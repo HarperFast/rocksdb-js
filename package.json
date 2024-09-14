@@ -29,7 +29,7 @@
     "glob": "^8.0.3",
     "lru-cache": "^11.0.0",
     "mitata": "^0.1.11",
-    "mkfiletree": "^2.0.0",
+    "mkfiletree": "^3.0.0",
     "node-gyp": "^9.3.0",
     "nyc": "^15.0.0",
     "readfiletree": "^1.0.0",
