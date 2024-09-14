@@ -32,7 +32,7 @@
     "mkfiletree": "^2.0.0",
     "node-gyp": "^9.3.0",
     "nyc": "^15.0.0",
-    "readfiletree": "^1.0.0",
+    "readfiletree": "^2.0.0",
     "rimraf": "^3.0.0",
     "standard": "^17.0.0",
     "tape": "^5.7.5",
