@@ -28,11 +28,11 @@ const map = new Map()
 const lru = new LRUCache({ max: 10e3 })
 
 for (const value of values) {
-  await db.put(value, value)
+  db.put(value, value)
   map.set(value.toString(), value.toString())
   lru.set(value.toString(), value)
 }
-
+console.log('setup done')
 let x = 0
 
 const getOpts = {

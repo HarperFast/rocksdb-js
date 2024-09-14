@@ -25,3 +25,4 @@ package-lock.json
 .tap
 tmp
 yarn-error.log
+test/data.*

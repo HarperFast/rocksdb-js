@@ -3,6 +3,7 @@
 const make = require('./make')
 
 make('iterator optimized for seek', function (db, t, done) {
+  db.put('a', 1);
   const batch = db.batch()
   batch.put('a', 1)
   batch.put('b', 1)

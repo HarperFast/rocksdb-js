@@ -7,6 +7,7 @@
 #include <rocksdb/cache.h>
 #include <rocksdb/comparator.h>
 #include <rocksdb/convenience.h>
+#include <rocksdb/utilities/transaction_db.h>
 #include <rocksdb/db.h>
 #include <rocksdb/env.h>
 #include <rocksdb/filter_policy.h>
@@ -93,7 +94,7 @@ struct Database final {
 
   const std::string location;
 
-  std::unique_ptr<rocksdb::DB> db;
+  std::unique_ptr<rocksdb::TransactionDB> db;
   std::map<int32_t, ColumnFamily> columns;
 
  private:
@@ -591,6 +592,9 @@ napi_status InitOptions(napi_env env, T& columnOptions, const U& options) {
     } else {
       return napi_invalid_arg;
     }
+    columnOptions.enable_blob_files = true;
+    columnOptions.min_blob_size = 1000;
+	columnOptions.enable_blob_garbage_collection = true;
   }
 
   bool compression = true;
@@ -794,6 +798,10 @@ NAPI_METHOD(db_open) {
     int parallelism = std::max<int>(1, std::thread::hardware_concurrency() / 2);
     NAPI_STATUS_THROWS(GetProperty(env, options, "parallelism", parallelism));
     dbOptions.IncreaseParallelism(parallelism);
+	dbOptions.OptimizeLevelStyleCompaction();
+	//dbOptions.allow_mmap_reads = true; // slower
+	dbOptions.use_direct_reads = true;
+	dbOptions.use_direct_io_for_flush_and_compaction = true;
 
     uint32_t walTTL = 0;
     NAPI_STATUS_THROWS(GetProperty(env, options, "walTTL", walTTL));
@@ -816,6 +824,7 @@ NAPI_METHOD(db_open) {
     dbOptions.write_dbid_to_manifest = true;
     dbOptions.create_missing_column_families = true;
     dbOptions.fail_if_options_file_error = true;
+	dbOptions.listeners.push_back(std::shared_ptr(std::make_shared<rocksdb::EventListener>()));
 
     NAPI_STATUS_THROWS(GetProperty(env, options, "createIfMissing", dbOptions.create_if_missing));
     NAPI_STATUS_THROWS(GetProperty(env, options, "errorIfExists", dbOptions.error_if_exists));
@@ -884,25 +893,21 @@ NAPI_METHOD(db_open) {
 
     auto callback = argv[2];
 
-    runAsync<std::vector<rocksdb::ColumnFamilyHandle*>>(
-        "leveldown.open", env, callback,
-        [=](auto& handles) {
+    std::vector<rocksdb::ColumnFamilyHandle*> handles;
           assert(!database->db);
 
-          rocksdb::DB* db = nullptr;
-
+          rocksdb::TransactionDB* db = nullptr;
+			rocksdb::TransactionDBOptions txndb_options;
           const auto status = descriptors.empty()
-                                  ? rocksdb::DB::Open(dbOptions, database->location, &db)
-                                  : rocksdb::DB::Open(dbOptions, database->location, descriptors, &handles, &db);
+                                  ? rocksdb::TransactionDB::Open(dbOptions, txndb_options, database->location, &db)
+                                  : rocksdb::TransactionDB::Open(dbOptions, txndb_options, database->location, descriptors, &handles, &db);
 
           database->db.reset(db);
 
-          return status;
-        },
-        [=](auto& handles, auto env, auto& argv) {
-          argv.resize(2);
+          //return status;
+          //argv.resize(2);
 
-          NAPI_STATUS_RETURN(napi_create_object(env, &argv[1]));
+
 
           for (size_t n = 0; n < handles.size(); ++n) {
             ColumnFamily column;
@@ -911,15 +916,15 @@ NAPI_METHOD(db_open) {
             database->columns[column.handle->GetID()] = column;
           }
 
-          napi_value columns = argv[1];
+          napi_value columns;
+			NAPI_STATUS_THROWS(napi_create_object(env, &columns));
           for (auto& [id, column] : database->columns) {
             napi_value val;
-            NAPI_STATUS_RETURN(napi_create_external(env, column.handle, nullptr, nullptr, &val));
-            NAPI_STATUS_RETURN(napi_set_named_property(env, columns, column.descriptor.name.c_str(), val));
+			  NAPI_STATUS_THROWS(napi_create_external(env, column.handle, nullptr, nullptr, &val));
+			  NAPI_STATUS_THROWS(napi_set_named_property(env, columns, column.descriptor.name.c_str(), val));
           }
 
-          return napi_ok;
-        });
+          return 0;
   }
 
   return 0;
@@ -1194,6 +1199,78 @@ NAPI_METHOD(db_get_latest_sequence) {
 
   return result;
 }
+
+NAPI_METHOD(db_put) {
+		NAPI_ARGV(4);
+
+		Database* database;
+		NAPI_STATUS_THROWS(napi_get_value_external(env, argv[0], reinterpret_cast<void**>(&database)));
+
+		rocksdb::Slice key;
+		NAPI_STATUS_THROWS(GetValue(env, argv[1], key));
+
+		rocksdb::Slice val;
+		NAPI_STATUS_THROWS(GetValue(env, argv[2], val));
+
+		const auto options = argv[3];
+
+		rocksdb::ColumnFamilyHandle* column = nullptr;
+		NAPI_STATUS_THROWS(GetProperty(env, options, "column", column));
+		rocksdb::WriteOptions writeOptions;
+		writeOptions.disableWAL = true;
+		writeOptions.sync = false;
+		rocksdb::TransactionOptions txn_options;
+		rocksdb::Transaction* txn = database->db->BeginTransaction(writeOptions, txn_options);
+		if (column) {
+			ROCKS_STATUS_THROWS_NAPI(txn->Put(column, key, val));
+		} else {
+			ROCKS_STATUS_THROWS_NAPI(txn->Put(key, val));
+		}
+		ROCKS_STATUS_THROWS_NAPI(txn->Commit());
+		delete txn;
+
+		return 0;
+}
+NAPI_METHOD(db_get) {
+		NAPI_ARGV(4);
+
+		Database* database;
+		NAPI_STATUS_THROWS(napi_get_value_external(env, argv[0], reinterpret_cast<void**>(&database)));
+
+		rocksdb::Slice key;
+		NAPI_STATUS_THROWS(GetValue(env, argv[1], key));
+
+		std::string val;
+
+		const auto options = argv[3];
+
+		rocksdb::ColumnFamilyHandle* column = nullptr;
+		//NAPI_STATUS_THROWS(GetProperty(env, options, "column", column));
+		rocksdb::ReadOptions read_options;
+		read_options.read_tier = rocksdb::kBlockCacheTier;
+		if (column) {
+			ROCKS_STATUS_THROWS_NAPI(database->db->Get(read_options, column, key, &val));
+		} else {
+			rocksdb::Status status = database->db->Get(read_options, key, &val);
+			if (!status.ok()) {
+				napi_value return_status;
+				if (status.IsNotFound()) {
+					napi_create_int32(env, 1, &return_status);
+					return return_status;
+				}
+				if (status.IsIncomplete()) {
+					read_options.read_tier = rocksdb::kReadAllTier;
+					status = database->db->Get(read_options, key, &val);
+					napi_create_int32(env, 2, &return_status);
+					return return_status;
+				}
+				ROCKS_STATUS_THROWS_NAPI(status);
+			}
+		}
+
+		return 0;
+}
+
 
 NAPI_METHOD(iterator_init) {
   NAPI_ARGV(2);
@@ -1498,7 +1575,7 @@ NAPI_METHOD(batch_write) {
   bool lowPriority = false;
   NAPI_STATUS_THROWS(GetProperty(env, options, "lowPriority", lowPriority));
 
-  runAsync<int64_t>(
+  /*runAsync<int64_t>(
       "leveldown.batch.write", env, callback,
       [=](int64_t& seq) {
         rocksdb::WriteOptions writeOptions;
@@ -1506,8 +1583,13 @@ NAPI_METHOD(batch_write) {
         writeOptions.low_pri = lowPriority;
         return database->db->Write(writeOptions, batch);
       },
-      [=](int64_t& seq, auto env, auto& argv) { return napi_ok; });
-
+      [=](int64_t& seq, auto env, auto& argv) { return napi_ok; });*/
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.sync = sync;
+	writeOptions.disableWAL = true;
+	writeOptions.low_pri = lowPriority;
+	rocksdb::Status status = database->db->Write(writeOptions, batch);
+	napi_get_boolean(env, status.ok(), &result);
   return result;
 }
 
@@ -1572,6 +1654,8 @@ NAPI_INIT() {
   NAPI_EXPORT_FUNCTION(db_get_property);
   NAPI_EXPORT_FUNCTION(db_get_latest_sequence);
   NAPI_EXPORT_FUNCTION(db_get_merge_operands);
+  NAPI_EXPORT_FUNCTION(db_put);
+	NAPI_EXPORT_FUNCTION(db_get);
 
   NAPI_EXPORT_FUNCTION(iterator_init);
   NAPI_EXPORT_FUNCTION(iterator_seek);

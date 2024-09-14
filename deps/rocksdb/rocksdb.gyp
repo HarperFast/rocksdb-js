@@ -88,7 +88,7 @@
               "ROCKSDB_RANGESYNC_PRESENT=1",
               "ROCKSDB_SCHED_GETCPU_PRESENT=1",
               "ROCKSDB_IOURING_PRESENT=1",
-              "USE_FOLLY=1",
+              #"USE_FOLLY=1",
               "HAVE_UINT128_EXTENSION=1",
               "HAVE_ALIGNED_NEW=1",
               # "HAVE_FULLFSYNC=1",
@@ -99,8 +99,9 @@
             ],
             "direct_dependent_settings": {
               "libraries": [
-                "/usr/lib/x86_64-linux-gnu/libzstd.a",
-                "/usr/lib/x86_64-linux-gnu/libfolly.a",
+                #"/usr/lib/x86_64-linux-gnu/libzstd.a",
+                #"/tmp/fbcode_builder_getdeps-ZhomeZkzypZdevZrocks-levelZdepsZfollyZbuildZfbcode_builder/installed/folly/lib/libfolly.a",
+                "/home/kzyp/dev/rocks-level/deps/zstd/lib/libzstd.so",
                 "/usr/lib/x86_64-linux-gnu/liburing.a",
                 # "/usr/lib/x86_64-linux-gnu/libjemalloc.a",
               ],
@@ -108,6 +109,8 @@
             "include_dirs": [
               "/usr/lib/x86_64-linux-gnu/include",
               "/usr/lib/include",
+              "/home/kzyp/dev/rocks-level/deps/folly",
+              "/home/kzyp/dev/rocks-level/deps/zstd/lib",
               # "/usr/local/Cellar/jemalloc/5.3.0/include"
             ],
             "cflags": [
