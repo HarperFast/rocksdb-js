@@ -101,7 +101,7 @@
               "libraries": [
                 #"/usr/lib/x86_64-linux-gnu/libzstd.a",
                 #"/tmp/fbcode_builder_getdeps-ZhomeZkzypZdevZrocks-levelZdepsZfollyZbuildZfbcode_builder/installed/folly/lib/libfolly.a",
-                "/home/kzyp/dev/rocks-level/deps/zstd/lib/libzstd.so",
+                "<(module_root_dir)/deps/zstd/lib/libzstd.so",
                 "/usr/lib/x86_64-linux-gnu/liburing.a",
                 # "/usr/lib/x86_64-linux-gnu/libjemalloc.a",
               ],
