@@ -4,3 +4,9 @@
 [submodule "deps/liburing/liburing"]
 	path = deps/liburing/liburing
 	url = https://github.com/axboe/liburing.git
+[submodule "deps/folly/folly"]
+	path = deps/folly/folly
+	url = https://github.com/facebook/folly.git
+[submodule "deps/zstd/lib"]
+	path = deps/zstd/lib
+	url = https://github.com/facebook/zstd.git
