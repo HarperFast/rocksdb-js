@@ -109,8 +109,6 @@
             "include_dirs": [
               "/usr/lib/x86_64-linux-gnu/include",
               "/usr/lib/include",
-              "/Users/chris/projects/rocksdb-js/deps/folly",
-              "/Users/chris/projects/rocksdb-js/deps/zstd/lib",
               # "/home/kzyp/dev/rocks-level/deps/folly",
               # "/home/kzyp/dev/rocks-level/deps/zstd/lib",
               # "/usr/local/Cellar/jemalloc/5.3.0/include"
