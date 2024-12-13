@@ -10,8 +10,13 @@
 Or
 
 ```
-git rm --cached deps/folly deps/zstd
 git submodule update --init --recursive
 npm i
 JOBS=16 npx prebuildify --napi --strip --arch arm64
+```
+
+If you run into the `fatal: No url found for submodule path 'deps/folly' in .gitmodules` issue, run:
+
+```
+git rm --cached deps/folly deps/zstd
 ```
