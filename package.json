@@ -1,0 +1,27 @@
+{
+  "name": "rocksdb-js",
+  "version": "0.0.0",
+  "description": "",
+  "main": "./dist/index.js",
+  "type": "module",
+  "gypfile": true,
+  "scripts": {
+    "build": "tsc && node-gyp rebuild",
+    "test": "vitest --allowOnly --pool=forks",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "napi-macros": "2.2.2",
+    "node-gyp-build": "4.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.7",
+    "@vitest/coverage-v8": "3.0.3",
+    "prebuildify": "6.0.1",
+    "typescript": "5.7.3",
+    "vitest": "3.0.3"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
