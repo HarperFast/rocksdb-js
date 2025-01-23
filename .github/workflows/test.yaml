@@ -1,6 +1,9 @@
 name: Tests
 
-on: [pull_request]
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 concurrency:
   cancel-in-progress: true
