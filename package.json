@@ -1,5 +1,5 @@
 {
-  "name": "rocksdb-js",
+  "name": "@harperdb/rocksdb-js",
   "version": "0.0.0",
   "description": "",
   "main": "./dist/index.js",
@@ -7,6 +7,7 @@
   "gypfile": true,
   "scripts": {
     "build": "tsc && node-gyp rebuild",
+    "lint": "oxlint",
     "test": "vitest --allowOnly --pool=forks",
     "type-check": "tsc --noEmit"
   },
@@ -15,11 +16,12 @@
     "node-gyp-build": "4.8.4"
   },
   "devDependencies": {
-    "@types/node": "22.10.7",
-    "@vitest/coverage-v8": "3.0.3",
+    "@types/node": "22.10.10",
+    "@vitest/coverage-v8": "3.0.4",
+    "oxlint": "0.15.7",
     "prebuildify": "6.0.1",
     "typescript": "5.7.3",
-    "vitest": "3.0.3"
+    "vitest": "3.0.4"
   },
   "engines": {
     "node": ">=16"
