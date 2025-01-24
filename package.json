@@ -17,14 +17,22 @@
     "node-gyp-build": "4.8.4"
   },
   "devDependencies": {
+    "@rollup/plugin-typescript": "12.1.2",
     "@types/node": "22.10.10",
     "@vitest/coverage-v8": "3.0.4",
+    "esbuild": "0.24.2",
+    "lefthook": "1.10.10",
     "oxlint": "0.15.7",
     "prebuildify": "6.0.1",
+    "rimraf": "6.0.1",
+    "rollup": "4.31.0",
+    "rollup-plugin-dts": "6.1.1",
+    "rollup-plugin-esbuild": "6.1.1",
+    "tslib": "2.8.1",
     "typescript": "5.7.3",
     "vitest": "3.0.4"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=18"
   }
 }
