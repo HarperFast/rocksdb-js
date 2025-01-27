@@ -33,9 +33,7 @@
 					'action': [
 						'make',
 						'-C', 'vendor/rocksdb-<(rocksdb_version)',
-						'static_lib',  # Builds static library
-						'DEBUG_LEVEL=0', # Production build
-						'OPT="-O2 -DNDEBUG"', # Optimization flags
+						'static_lib',
 					],
 					'message': 'Building RocksDB...'
 				}
