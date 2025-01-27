@@ -8,13 +8,16 @@ importers:
 
   .:
     dependencies:
-      napi-macros:
-        specifier: 2.2.2
-        version: 2.2.2
+      node-addon-api:
+        specifier: 8.3.0
+        version: 8.3.0
       node-gyp-build:
         specifier: 4.8.4
         version: 4.8.4
     devDependencies:
+      '@rollup/plugin-replace':
+        specifier: 6.0.2
+        version: 6.0.2(rollup@4.32.0)
       '@rollup/plugin-typescript':
         specifier: 12.1.2
         version: 12.1.2(rollup@4.32.0)(tslib@2.8.1)(typescript@5.7.3)
@@ -308,6 +311,15 @@ packages:
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
     engines: {node: '>=14'}
+
+  '@rollup/plugin-replace@6.0.2':
+    resolution: {integrity: sha512-7QaYCf8bqF04dOy7w/eHmJeNExxTYwvKAmlSAH/EaWWUzbT0h5sbF6bktFoX/0F/0qwng5/dWFMyf3gzaM8DsQ==}
+    engines: {node: '>=14.0.0'}
+    peerDependencies:
+      rollup: ^1.20.0||^2.0.0||^3.0.0||^4.0.0
+    peerDependenciesMeta:
+      rollup:
+        optional: true
 
   '@rollup/plugin-typescript@12.1.2':
     resolution: {integrity: sha512-cdtSp154H5sv637uMr1a8OTWB0L1SWDSm1rDGiyfcGcvQ6cuTs4MDk2BVEBGysUWago4OJN4EQZqOTl/QY3Jgg==}
@@ -755,12 +767,13 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  napi-macros@2.2.2:
-    resolution: {integrity: sha512-hmEVtAGYzVQpCKdbQea4skABsdXW4RUh5t5mJ2zzqowJS2OyXZTU1KhDVFhx+NlWZ4ap9mqR9TcDO3LTTttd+g==}
-
   node-abi@3.73.0:
     resolution: {integrity: sha512-z8iYzQGBu35ZkTQ9mtR8RqugJZ9RCLn8fv3d7LsgDBzOijGQP3RdKTX4LA7LXw03ZhU5z0l4xfhIMgSES31+cg==}
     engines: {node: '>=10'}
+
+  node-addon-api@8.3.0:
+    resolution: {integrity: sha512-8VOpLHFrOQlAH+qA0ZzuGRlALRA6/LVh8QJldbrC4DY0hXoMP0l4Acq8TzFC018HztWiRqyCEj2aTWY2UvnJUg==}
+    engines: {node: ^18 || ^20 || >= 21}
 
   node-gyp-build@4.8.4:
     resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
@@ -1213,6 +1226,13 @@ snapshots:
   '@pkgjs/parseargs@0.11.0':
     optional: true
 
+  '@rollup/plugin-replace@6.0.2(rollup@4.32.0)':
+    dependencies:
+      '@rollup/pluginutils': 5.1.4(rollup@4.32.0)
+      magic-string: 0.30.17
+    optionalDependencies:
+      rollup: 4.32.0
+
   '@rollup/plugin-typescript@12.1.2(rollup@4.32.0)(tslib@2.8.1)(typescript@5.7.3)':
     dependencies:
       '@rollup/pluginutils': 5.1.4(rollup@4.32.0)
@@ -1631,11 +1651,11 @@ snapshots:
 
   nanoid@3.3.8: {}
 
-  napi-macros@2.2.2: {}
-
   node-abi@3.73.0:
     dependencies:
       semver: 7.6.3
+
+  node-addon-api@8.3.0: {}
 
   node-gyp-build@4.8.4: {}
 

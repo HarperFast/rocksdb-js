@@ -1,6 +1,10 @@
 import typescript from '@rollup/plugin-typescript';
 import { defineConfig } from 'rollup';
 import { minify as esbuildMinifyPlugin } from 'rollup-plugin-esbuild';
+import replace from '@rollup/plugin-replace';
+import { readFileSync } from 'node:fs';
+
+const { version } = JSON.parse(readFileSync('./package.json', 'utf8'));
 
 export default defineConfig([
 	{
@@ -20,6 +24,9 @@ export default defineConfig([
 			}),
 			typescript({
 				tsconfig: './tsconfig.build.json'
+			}),
+			replace({
+				'ROCKSDB_JS_VERSION': version
 			})
 		]
 	}
