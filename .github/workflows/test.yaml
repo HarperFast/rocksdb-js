@@ -10,8 +10,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  test-node:
-    name: Test on Node.js ${{ matrix.node }} and ${{ matrix.os }}
+  test:
+    name: Test on Node.js ${{ matrix.node }}${{ matrix.node == '22' && ', Bun,' || '' }} and ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,11 +28,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Install Bun
+        if: ${{ matrix.node == '22' }}
+        uses: oven-sh/setup-bun@v2
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: latest
-        
+
       - name: Install dependencies
         run: pnpm install
 
@@ -42,32 +44,9 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Run tests
-        run: pnpm test
-
-  test-bun:
-    name: Test on Bun ${{ matrix.node }} and ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [18, 20, 22]
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          version: latest
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build
-        run: bun build
-
-      - name: Run tests
-        run: bun test
+      - name: Run tests on Node.js ${{ matrix.node }}
+        run: pnpm coverage
+      
+      - name: Run tests on Bun
+        if: ${{ matrix.node == '22' }}
+        run: bun coverage
