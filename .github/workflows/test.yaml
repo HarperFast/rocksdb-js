@@ -10,8 +10,44 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  build:
+    name: Build RocksDB on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compile RocksDB
+        run: |
+          mkdir -p build/rocksdb
+          cd vendor/rocksdb-*/
+          make static_lib
+          cp -r include librocksdb.a ../../build/rocksdb
+      
+      - name: Cache RocksDB
+        id: cache-rocksdb
+        uses: actions/cache@v4
+        with:
+          path: build/rocksdb
+          key: ${{ runner.os }}-rocksdb-${{ hashFiles('vendor/rocksdb-*/**') }}
+
+      - name: Build RocksDB
+        if: steps.cache-rocksdb.outputs.cache-hit != 'true'
+        run: pnpm rebuild
+
   test:
     name: Test on Node.js ${{ matrix.node }}${{ matrix.node == '22' && ', Bun,' || '' }} and ${{ matrix.os }}
+    needs: build
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -40,13 +76,17 @@ jobs:
           version: latest
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --ignore-scripts
 
       - name: Lint
         run: pnpm lint
 
-      - name: Build
-        run: pnpm build
+      - name: Restore RocksDB cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/rocksdb
+          key: ${{ runner.os }}-rocksdb-${{ hashFiles('vendor/rocksdb-*/**') }}
+          fail-on-cache-miss: true
 
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage
