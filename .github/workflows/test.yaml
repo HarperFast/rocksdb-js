@@ -35,15 +35,10 @@ jobs:
           cp -r include librocksdb.a ../../build/rocksdb
       
       - name: Cache RocksDB
-        id: cache-rocksdb
         uses: actions/cache@v4
         with:
           path: build/rocksdb
           key: ${{ runner.os }}-rocksdb-${{ hashFiles('vendor/rocksdb-*/**') }}
-
-      - name: Build RocksDB
-        if: steps.cache-rocksdb.outputs.cache-hit != 'true'
-        run: pnpm rebuild
 
   test:
     name: Test on Node.js ${{ matrix.node }}${{ matrix.node == '22' && ', Bun,' || '' }} and ${{ matrix.os }}
