@@ -1,8 +1,11 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = fileURLToPath(dirname(import.meta.url));
 
 export function getActiveVersion(): string | undefined {
-	const includeDir = resolve(import.meta.dirname, '../../deps/rocksdb/include');
+	const includeDir = resolve(__dirname, '../../deps/rocksdb/include');
 
 	if (existsSync(includeDir) && lstatSync(includeDir).isSymbolicLink()) {
 		// if include dir is a symlink, then the last build was from source,

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import semver from 'semver';
 
 type GithubRelease = {
@@ -19,6 +20,8 @@ export type Prebuild = {
 		url: string;
 	}[];
 };
+
+const __dirname = fileURLToPath(dirname(import.meta.url));
 
 export async function getPrebuild() {
 	// download the latest RocksDB prebuild
@@ -43,7 +46,7 @@ export async function getPrebuild() {
 
 	// default to the latest release
 	let prebuild: GithubRelease | undefined = releases[0];
-	const pkgJson = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../package.json'), 'utf8'));
+	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
 	const version = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || 'latest';
 	if (version && version !== 'latest') {
 		prebuild = releases.find(release => release.tag_name === `v${version}`);

@@ -9,20 +9,23 @@
  * To manually run this script: pnpm tsx scripts/init-rocksdb/main.ts
  */
 
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { config } from 'dotenv';
+import semver from 'semver';
 import { buildRocksDBFromSource } from './build-rocksdb-from-source';
 import { getActiveVersion } from './get-active-version';
 import { getPrebuild } from './get-prebuild';
 import { downloadRocksDB } from './download-rocksdb';
-import semver from 'semver';
+
+const __dirname = fileURLToPath(dirname(import.meta.url));
 
 try {
 	console.log('Initializing RocksDB library...');
 
 	config({ path: ['.env'], override: true });
 
-	const dest = resolve(import.meta.dirname, '../../deps/rocksdb');
+	const dest = resolve(__dirname, '../../deps/rocksdb');
 
 	console.log(`Destination: ${dest}`);
 
