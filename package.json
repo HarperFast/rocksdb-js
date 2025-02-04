@@ -45,7 +45,7 @@
     "oxlint": "0.15.9",
     "prebuildify": "6.0.1",
     "rimraf": "6.0.1",
-    "rollup": "4.34.1",
+    "rollup": "4.34.2",
     "rollup-plugin-dts": "6.1.1",
     "rollup-plugin-esbuild": "6.1.1",
     "semver": "7.7.1",
