@@ -18,9 +18,13 @@ import { downloadRocksDB } from './download-rocksdb';
 import semver from 'semver';
 
 try {
+	console.log('Initializing RocksDB library...');
+
 	config({ path: ['.env'], override: true });
 
 	const dest = resolve(import.meta.dirname, '../../deps/rocksdb');
+
+	console.log(`Destination: ${dest}`);
 
 	const rocksdbPath = process.env.ROCKSDB_PATH;
 	if (rocksdbPath) {
