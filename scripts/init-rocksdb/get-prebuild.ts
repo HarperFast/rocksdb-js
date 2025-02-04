@@ -38,6 +38,9 @@ export async function getPrebuild() {
 	});
 
 	const releases = await response.json() as GithubRelease[];
+	console.log('Releases:');
+	console.log(releases);
+
 	releases.sort((a, b) => {
 		const aVersion = a.tag_name.replace(/^v/, '');
 		const bVersion = b.tag_name.replace(/^v/, '');
