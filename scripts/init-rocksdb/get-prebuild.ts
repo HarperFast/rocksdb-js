@@ -28,8 +28,8 @@ export async function getPrebuild() {
 	const headers: Record<string, string> = {
 		Accept: 'application/vnd.github.v3.raw',
 	};
-	if (process.env.GITHUB_TOKEN) {
-		headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+	if (process.env.GH_TOKEN) {
+		headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
 	}
 
 	// get the latest RocksDB release
