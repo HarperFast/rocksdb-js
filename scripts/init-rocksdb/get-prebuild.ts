@@ -37,10 +37,11 @@ export async function getPrebuild() {
 		headers,
 	});
 
-	const releases = await response.json() as GithubRelease[];
-	console.log('Releases:');
-	console.log(releases);
+	if (!response.ok) {
+		throw new Error(`Failed to fetch latest RocksDB release (${response.status} ${response.statusText})`);
+	}
 
+	const releases = await response.json() as GithubRelease[];
 	releases.sort((a, b) => {
 		const aVersion = a.tag_name.replace(/^v/, '');
 		const bVersion = b.tag_name.replace(/^v/, '');

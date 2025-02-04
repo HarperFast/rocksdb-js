@@ -27,8 +27,6 @@ try {
 
 	const dest = resolve(__dirname, '../../deps/rocksdb');
 
-	console.log(`Destination: ${dest}`);
-
 	const rocksdbPath = process.env.ROCKSDB_PATH;
 	if (rocksdbPath) {
 		await buildRocksDBFromSource(rocksdbPath, dest);

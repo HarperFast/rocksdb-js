@@ -26,9 +26,13 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 
 	try {
 		console.log(`Downloading RocksDB v${prebuild.version}...`);
-		const response = await fetch(url);
+		const headers: Record<string, string> = {};
+		if (process.env.GH_TOKEN) {
+			headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
+		}
+		const response = await fetch(url, { headers });
 		if (!response.ok || !response.body) {
-			throw new Error(`Failed to download ${url} (status: ${response.status} ${response.statusText})`);
+			throw new Error(`Failed to download ${url} (${response.status} ${response.statusText})`);
 		}
 
 		// stream the response to the destination file
