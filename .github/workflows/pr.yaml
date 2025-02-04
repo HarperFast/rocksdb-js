@@ -3,6 +3,9 @@ name: Pull Request Tests
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - northstar
 
 concurrency:
   cancel-in-progress: true
