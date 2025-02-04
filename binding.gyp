@@ -25,11 +25,11 @@
 					'action_name': 'prepare_rocksdb',
 					'message': 'Preparing RocksDB...',
 					'action': [
-						'node_modules/.bin/tsx',
-						'scripts/init-rocksdb/main.ts',
+						'<(module_root_dir)/node_modules/.bin/tsx',
+						'<(module_root_dir)/scripts/init-rocksdb/main.ts',
 					],
 					'inputs': [
-						'scripts/init-rocksdb/main.ts',
+						'<(module_root_dir)/scripts/init-rocksdb/main.ts',
 					],
 					'outputs': [
 						'deps/rocksdb/include',
