@@ -9,7 +9,7 @@
 			],
 			'link_settings': {
 				'libraries': [
-					'<(module_root_dir)/deps/rocksdb/librocksdb.a'
+					'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
 				]
 			},
 			'target_name': 'rocksdb-js',
@@ -26,14 +26,14 @@
 					'message': 'Preparing RocksDB...',
 					'action': [
 						'node_modules/.bin/tsx',
-						'scripts/prepare-rocksdb.ts',
+						'scripts/init-rocksdb/main.ts',
 					],
 					'inputs': [
-						'scripts/prepare-rocksdb.ts',
+						'scripts/init-rocksdb/main.ts',
 					],
 					'outputs': [
 						'deps/rocksdb/include',
-						'deps/rocksdb/librocksdb.a',
+						'deps/rocksdb/lib/librocksdb.a',
 					],
 				}
 			]

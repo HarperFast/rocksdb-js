@@ -56,5 +56,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "rocksdb": {
+    "version": "9.10.0"
   }
 }
