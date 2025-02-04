@@ -36,19 +36,22 @@
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.2",
     "@rollup/plugin-typescript": "12.1.2",
-    "@types/node": "22.10.10",
-    "@vitest/coverage-v8": "3.0.4",
+    "@types/node": "22.13.1",
+    "@vitest/coverage-v8": "3.0.5",
+    "dotenv": "16.4.7",
     "esbuild": "0.24.2",
     "lefthook": "1.10.10",
-    "oxlint": "0.15.8",
+    "node-gyp": "11.0.0",
+    "oxlint": "0.15.9",
     "prebuildify": "6.0.1",
     "rimraf": "6.0.1",
-    "rollup": "4.32.0",
+    "rollup": "4.34.1",
     "rollup-plugin-dts": "6.1.1",
     "rollup-plugin-esbuild": "6.1.1",
     "tslib": "2.8.1",
+    "tsx": "4.19.2",
     "typescript": "5.7.3",
-    "vitest": "3.0.4"
+    "vitest": "3.0.5"
   },
   "engines": {
     "node": ">=18"
