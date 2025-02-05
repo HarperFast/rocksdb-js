@@ -8,8 +8,16 @@
 				'deps/rocksdb/include'
 			],
 			'link_settings': {
-				'libraries': [
-					'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+				'conditions': [
+					['OS=="win"', {
+						'libraries': [
+							'<(module_root_dir)/deps/rocksdb/lib/rocksdb.lib'
+						]
+					}, {
+						'libraries': [
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+						]
+					}]
 				]
 			},
 			'target_name': 'rocksdb-js',
@@ -33,7 +41,6 @@
 					],
 					'outputs': [
 						'deps/rocksdb/include',
-						'deps/rocksdb/lib/librocksdb.a',
 					],
 				}
 			]

@@ -48,7 +48,6 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 			execSync(`7z x "${tmpFile}" -o"${dirname(tmpFile)}"`, { stdio: 'inherit' });
 			console.log(`Extracting ${tmpFile.replace(/\.xz$/, '')}`);
 			execSync(`7z x "${tmpFile.replace(/\.xz$/, '')}" -o"${dest}"`, { stdio: 'inherit' });
-			execSync(`dir "${dest}"`, { stdio: 'inherit' });
 		} else {
 			execFileSync('tar', ['-xf', tmpFile, '-C', dest], { stdio: 'inherit' });
 		}
