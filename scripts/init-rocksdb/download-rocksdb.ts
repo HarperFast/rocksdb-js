@@ -25,7 +25,7 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 	const tmpFile = join(tmpdir(), name);
 
 	try {
-		console.log(`Downloading RocksDB v${prebuild.version}...`);
+		console.log(`Downloading ${url}`);
 		const headers: Record<string, string> = {};
 		if (process.env.GH_TOKEN) {
 			headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
@@ -39,14 +39,14 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 		const fileStream = createWriteStream(tmpFile);
 		await streamPipeline(response.body, fileStream);
 
-		console.log(`Extracting RocksDB v${prebuild.version}...`);
-
 		await rm(dest, { recursive: true, force: true });
 		await mkdir(dest, { recursive: true });
 
 		// extract the file
+		console.log(`Extracting ${tmpFile}`);
 		if (process.platform === 'win32') {
-			execSync(`7z x "${tmpFile}" -o"${dest}"`);
+			execSync(`7z x "${tmpFile}"`);
+			console.log(`Extracting ${tmpFile.replace(/\.xz$/, '')}`);
 			execSync(`7z x "${tmpFile.replace(/\.xz$/, '')}" -o"${dest}"`);
 		} else {
 			execFileSync('tar', ['-xf', tmpFile, '-C', dest]);
