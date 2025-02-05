@@ -23,7 +23,25 @@
 			'target_name': 'rocksdb-js',
 			'sources': [
 				'src/binding/rocksdb-js.cpp'
-			]
+			],
+			'configurations': {
+				'Release': {
+					'msvs_settings': {
+						'VCCLCompilerTool': {
+							'RuntimeLibrary': 2,
+							'ExceptionHandling': 1
+						}
+					}
+				},
+				'Debug': {
+					'msvs_settings': {
+						'VCCLCompilerTool': {
+							'RuntimeLibrary': 3,
+							'ExceptionHandling': 1
+						}
+					}
+				}
+			}
 		},
 		{
 			'target_name': 'prepare-rocksdb',
