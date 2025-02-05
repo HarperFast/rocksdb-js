@@ -2,7 +2,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream';
 import { promisify } from 'node:util';
 import type { Prebuild } from './get-prebuild';
@@ -45,11 +45,13 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 		// extract the file
 		console.log(`Extracting ${tmpFile}`);
 		if (process.platform === 'win32') {
-			execSync(`7z x "${tmpFile}"`);
+			execSync(`dir "${dirname(tmpFile)}"`, { stdio: 'inherit' });
+			execSync(`7z x "${tmpFile}"`, { stdio: 'inherit' });
+			execSync(`dir "${dirname(tmpFile)}"`, { stdio: 'inherit' });
 			console.log(`Extracting ${tmpFile.replace(/\.xz$/, '')}`);
-			execSync(`7z x "${tmpFile.replace(/\.xz$/, '')}" -o"${dest}"`);
+			execSync(`7z x "${tmpFile.replace(/\.xz$/, '')}" -o"${dest}"`, { stdio: 'inherit' });
 		} else {
-			execFileSync('tar', ['-xf', tmpFile, '-C', dest]);
+			execFileSync('tar', ['-xf', tmpFile, '-C', dest], { stdio: 'inherit' });
 		}
 	} finally {
 		await rm(tmpFile, { force: true });
