@@ -11,10 +11,15 @@ npm i --save rocksdb-js
 ## Usage
 
 ```ts
-import { RocksDB } from 'rocksdb-js';
+import { RocksDatabase } from 'rocksdb-js';
 
-const db = new RocksDB('path/to/db');
+const db = new RocksDatabase('path/to/db');
+await db.open();
 ```
+
+## API
+
+?
 
 ## Development
 

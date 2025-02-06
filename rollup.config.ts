@@ -3,6 +3,8 @@ import { defineConfig } from 'rollup';
 import { minify as esbuildMinifyPlugin } from 'rollup-plugin-esbuild';
 import replace from '@rollup/plugin-replace';
 import { readFileSync } from 'node:fs';
+import commonjs from '@rollup/plugin-commonjs';
+import { nodeResolve } from '@rollup/plugin-node-resolve';
 
 const { version } = JSON.parse(readFileSync('./package.json', 'utf8'));
 
@@ -26,8 +28,13 @@ export default defineConfig([
 				tsconfig: './tsconfig.build.json'
 			}),
 			replace({
-				'ROCKSDB_JS_VERSION': version
-			})
+				preventAssignment: true,
+				values: {
+					'ROCKSDB_JS_VERSION': version
+				}
+			}),
+			nodeResolve(),
+			commonjs()
 		]
 	}
 ]);
