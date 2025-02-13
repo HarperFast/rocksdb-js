@@ -22,7 +22,16 @@
 			},
 			'target_name': 'rocksdb-js',
 			'sources': [
-				'src/binding/rocksdb-js.cpp'
+				'src/binding/binding.cpp',
+				'src/binding/database.cpp',
+			],
+			'conditions': [
+				['OS=="mac"', {
+					'cflags+': ['-fvisibility=hidden'],
+					'xcode_settings': {
+						'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES', # -fvisibility=hidden
+					}
+				}]
 			],
 			'configurations': {
 				'Release': {

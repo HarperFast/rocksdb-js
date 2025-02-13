@@ -25,6 +25,12 @@ await db.open();
 
 This package requires Node.js 18 or higher, pnpm, and a C++ compiler.
 
+> [!TIP]
+> Enable pnpm log streaming to see full build output:
+> ```
+> pnpm config set stream true
+> ```
+
 ### Building the Native Binding
 
 To compile everything including the native binding and the TypeScript source, run:

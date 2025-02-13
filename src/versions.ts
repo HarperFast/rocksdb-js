@@ -1,6 +1,4 @@
-import nodeGypBuild from 'node-gyp-build';
-
-const binding = nodeGypBuild();
+import binding from './util/load-binding.js';
 
 export const versions = {
 	'rocksdb': binding.version,

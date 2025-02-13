@@ -1,8 +1,9 @@
-#ifndef __ROCKSDB_H__
-#define __ROCKSDB_H__
+#ifndef __BINDING_H__
+#define __BINDING_H__
 
 #include <node_api.h>
 #include <napi.h>
+#include "rocksdb/db.h"
 
 #define NAPI_VERSION 8
 

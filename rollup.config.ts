@@ -34,7 +34,9 @@ export default defineConfig([
 				}
 			}),
 			nodeResolve(),
-			commonjs()
+			commonjs({
+				ignoreDynamicRequires: true
+			})
 		]
 	}
 ]);
