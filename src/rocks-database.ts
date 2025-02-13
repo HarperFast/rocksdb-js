@@ -206,7 +206,7 @@ export class RocksDatabase {
 		return '';
 	}
 
-	async remove(key: Key, ifVersionOrValue?: Symbol | number | null) {
+	async remove(key: Key, ifVersionOrValue?: symbol | number | null) {
 		//
 	}
 
