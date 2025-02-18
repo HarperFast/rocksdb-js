@@ -30,7 +30,9 @@
     "vendor"
   ],
   "dependencies": {
-    "node-addon-api": "8.3.0",
+    "msgpackr": "^1.11.2",
+    "napi-macros": "~2.2.2",
+    "ordered-binary": "^1.5.3",
     "node-gyp-build": "4.8.4"
   },
   "devDependencies": {

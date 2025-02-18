@@ -1,4 +1,6 @@
+// Probably destructure and get all the named functions directly from the bindings directly
 // import binding from './util/load-binding.js';
+
 
 import type { Transaction } from './transaction';
 
@@ -35,11 +37,15 @@ type GetRangeOptions = {
 type PutOptions = {
 	append?: boolean;
 	ifVersion?: number;
-	instructedWrite?: boolean;
+	transaction: Transaction;
 	noDupData?: boolean;
 	noOverwrite?: boolean;
 	version?: number;
 };
+// global buffer for reading values that can be reused without recreating new buffers
+const READ_VALUE_BUFFER = Buffer.allocUnsafeSlow(0x10000);
+// global buffer for write keys that can be reused without recreating new buffers
+const KEY_BUFFER= Buffer.allocUnsafeSlow(0x1000);
 
 export const IF_EXISTS = Symbol('IF_EXISTS');
 
@@ -50,7 +56,7 @@ export const IF_EXISTS = Symbol('IF_EXISTS');
  */
 export class RocksDatabase {
 	#path: string;
-	#useVersions: boolean;
+	#dbPointer: number; // pointer to RocksDB native C++ instance
 
 	constructor(optionsOrPath: string | RocksDatabaseOptions, options?: RocksDatabaseOptions) {
 		if (!optionsOrPath) {
@@ -66,16 +72,36 @@ export class RocksDatabase {
 			throw new TypeError('Invalid options or path');
 		}
 
-		this.#useVersions = options?.useVersions === true;
+		//TODO: this.#address = binding.db_open(...);
 	}
+	openStore(options): RocksStore {
+		// TODO: get or create the RocksStore instance that wraps a native ColumnFamily instance
+		// TODO: if caching is enabled, we will need to do: `new (CachingStore(RocksStore, db))(options)` to extend the RocksStore with caching
+	}
+	transactionStore: RockStore // TODO: We may want to expose the transaction log as a store itself, that we can read and write from
+	startTxn(): Transaction {
+		let handle = binding.start_txn(this.#dbPointer);
+		return new Transaction(handle);
+	}
+}
 
+// TODO: Move to a separate module?
+/**
+ * This is a key-value store, which wraps a RocksDB ColumnFamily 
+ */
+export class RocksStore {
+	#dbPointer: number; // pointer to RocksDB native C++ instance
+	#columnFamilyPointer: number; // pointer to RocksDB FamilyColumn C++ instance
+	#useVersions: boolean;
+	db: RocksDatabase;
+	writeKey: (key: Key, buffer: Buffer, start: number) => void;
 	/**
 	 * In memory lock mechanism for cache resolution.
 	 * @param key 
 	 * @param version 
 	 */
 	attemptLock(key: Key, version: number) {
-		//
+		// TODO: should be copied from/identical to lmdb-js (there is no interaction with LMDB or RocksDB)
 	}
 
 	async clear(): Promise<void> {
@@ -102,7 +128,8 @@ export class RocksDatabase {
 
 	// flushed
 
-	async get(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
+	get(key: Key, options?: GetOptions): Promise<any> | any {
+		// TODO: Call this.getBinaryFast(key, options) and decode the bytes into a value/object
 		return Buffer.from('TODO');
 	}
 
@@ -110,12 +137,23 @@ export class RocksDatabase {
 	 * Calls `getBinaryFast()`. Used by HDBreplication
 	 */
 	async getBinary(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
-		// TODO: singleton buffer (default 64KB) that is reused to hold the data from any immediate returns
 		return Buffer.from('TODO');
 	}
 
-	async getBinaryFast(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
-		return Buffer.from('TODO');
+	async getBinaryFast(key: Key, options?: GetOptions): Buffer | undefined | Promise<Buffer | undefined> {
+		const keyLength = this.writeKey(key, KEY_BUFFER, 0);
+		const result = binding.get_from_cache(this.#columnFamilyPointer, keyLength, options.transaction.transactionPointer);
+		// If we were able to retrieve the value form RocksDB using only caching read tier (and the value fits in the global read buffer), we can immediately return synchronously
+		if (result >= 0) {
+			READ_VALUE_BUFFER.length = result;
+			return READ_VALUE_BUFFER;
+		}
+		// TODO: db_get_from_cache may sometimes be able to definitely say that the key doesn't exist, in which we should immediately return undefined
+		return new Promise((resolve, reject) =>
+			binding.get_async(this.#columnFamilyPointer, keyLength, options.transaction.transactionPointer, (value: Buffer, error: string) => {
+				resolve(value);
+			})
+		);
 	}
 
 	getEntry(key: Key, options?: GetOptions) {
@@ -141,7 +179,11 @@ export class RocksDatabase {
 	}
 
 	getRange(options?: GetRangeOptions) {
-		//
+		// we will want to use the RangeIterable from lmdb-js, as implements all the iteration functions
+		let iterable = new RangeIterable();
+		iterable.iterate = () => {
+			// initialize a RocksDB iterator and provide iteration
+		};
 	}
 
 	getStats() {
@@ -152,7 +194,7 @@ export class RocksDatabase {
 	}
 
 	getUserSharedBuffer(key: Key, defaultBuffer?: Buffer) {
-		//
+		// TODO: Should be directly ported over
 	}
 
 	getValues(key: Key, options?: GetRangeOptions) {
@@ -168,7 +210,8 @@ export class RocksDatabase {
 	}
 
 	async ifNoExists(key: Key): Promise<void> {
-		//
+		// ifNoExists and ifVersion probably aren't necessary because in a world with true transactions where the versions
+		// can be programmatically checked in a transaction without requiring it to be submitted as an instruction
 	}
 
 	async ifVersion(
@@ -182,44 +225,33 @@ export class RocksDatabase {
 		//
 	}
 
-	async open(dbName: string) {
-		// return a store?
-	}
-
 	async prefetch(keys: Key[]) {
-		//
+		// This is probably unnecessary in RocksDB.
+		// This was done in lmdb-js as a mechanism for async gets and to avoid the I/O costs of reading pages that need to be modified for writes.
+		// With true async gets, prefetch isn't necessary for that. And it is not clear if writes in rocksdb even needs to do any reads to find tree branches/leaves.
 	}
 
-	async put(key: Key, value: string | Buffer, options?: PutOptions) {
-		//
+
+	put(key: Key, value: Buffer, options: PutOptions) {
+		// TODO: pass in the address and length of the binary data that was encoded
+		const keyLength = this.writeKey(key, KEY_BUFFER, 0);
+		const arrayBuffer = value.buffer;
+		const pointer = (arrayBuffer.pointer ?? (arrayBuffer.pointer = binding.getBufferAddress(value))) + value.offset;
+
+		// this probably can be a synchronous function, at least if we are using a write policy of WriteCommitted, since this
+		// means that writes are relatively cheap and most of the work is done in the commit phase (which will always be async)
+		// we might reconsider an async put, if we use a different write policy
+		// TODO: implement this in the binding
+		binding.put(this.#columnFamilyPointer, keyLength, options.transaction.transactionPointer, valueBuffer.pointer , valueBuffer.length)
 	}
 
 	putSync(key: Key, value: string | Buffer, options?: PutOptions) {
-		//
+		// if put is sync, don't need this, or can just call this.put()
 	}
 
-	/**
-	 * Dump the entries in the LMDB reader lock table. This is probably not
-	 * applicable to RocksDB.
-	 */
-	readerList(): string {
-		return '';
-	}
 
-	async remove(key: Key, ifVersionOrValue?: symbol | number | null) {
-		//
-	}
-
-	resetReadTxn() {
-		//
-	}
-	
-	async transaction(callback: (txn: Transaction) => Promise<void>) {
-		//
-	}
-
-	transactionSync(callback: (txn: Transaction) => void) {
-		//
+	remove(key: Key, ifVersionOrValue?: symbol | number | null) {
+		// This should be similar to put, except no need to pass in the value
 	}
 
 	unlock(key: Key, version: number): boolean {
@@ -228,7 +260,4 @@ export class RocksDatabase {
 		return true;
 	}
 
-	useReadTransaction() {
-		// return transaction
-	}
 }
