@@ -1,6 +1,5 @@
-// import binding from './util/load-binding.js';
-
-import type { Transaction } from './transaction';
+import { Database } from './util/load-binding.js';
+import { Transaction } from './transaction';
 
 export type RocksDatabaseOptions = {
 	path: string;
@@ -49,24 +48,26 @@ export const IF_EXISTS = Symbol('IF_EXISTS');
  * lmdb-js would call this the environment. It contains multiple databases.
  */
 export class RocksDatabase {
-	#path: string;
-	#useVersions: boolean;
+	#db: any;
 
 	constructor(optionsOrPath: string | RocksDatabaseOptions, options?: RocksDatabaseOptions) {
 		if (!optionsOrPath) {
 			throw new Error('Options or path is required');
 		}
 
+		let path: string;
+
 		if (typeof optionsOrPath === 'string') {
-			this.#path = optionsOrPath;
+			path = optionsOrPath;
 		} else if (optionsOrPath && typeof optionsOrPath === 'object') {
 			options = optionsOrPath;
-			this.#path = options.path;
+			path = options.path;
 		} else {
 			throw new TypeError('Invalid options or path');
 		}
 
-		this.#useVersions = options?.useVersions === true;
+		this.#db = new Database();
+		this.#db.open(path);
 	}
 
 	/**
@@ -103,6 +104,9 @@ export class RocksDatabase {
 	// flushed
 
 	async get(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
+		// TODO: Remove async?
+		// TODO: Return Promise<any> | any?
+		// TODO: Call this.getBinaryFast(key, options) and decode the bytes into a value/object
 		return Buffer.from('TODO');
 	}
 
@@ -120,15 +124,9 @@ export class RocksDatabase {
 
 	getEntry(key: Key, options?: GetOptions) {
 		const value = this.get(key, options);
+
 		if (value === undefined) {
 			return;
-		}
-
-		if (this.#useVersions) {
-			return {
-				value,
-				// version: getLastVersion(),
-			};
 		}
 
 		return {
@@ -182,53 +180,27 @@ export class RocksDatabase {
 		//
 	}
 
-	async open(dbName: string) {
-		// return a store?
-	}
-
-	async prefetch(keys: Key[]) {
+	put(key: Key, value: string | Buffer, options?: PutOptions) {
 		//
 	}
 
-	async put(key: Key, value: string | Buffer, options?: PutOptions) {
-		//
+	remove(key: Key, ifVersionOrValue?: symbol | number | null) {
+		// This should be similar to put, except no need to pass in the value
 	}
 
-	putSync(key: Key, value: string | Buffer, options?: PutOptions) {
-		//
-	}
-
-	/**
-	 * Dump the entries in the LMDB reader lock table. This is probably not
-	 * applicable to RocksDB.
-	 */
-	readerList(): string {
-		return '';
-	}
-
-	async remove(key: Key, ifVersionOrValue?: symbol | number | null) {
-		//
-	}
-
-	resetReadTxn() {
-		//
-	}
-	
 	async transaction(callback: (txn: Transaction) => Promise<void>) {
-		//
-	}
-
-	transactionSync(callback: (txn: Transaction) => void) {
-		//
+		const txn = new Transaction();
+		try {
+			await callback(txn);
+			await txn.commit();
+		} finally {
+			await txn.abort();
+		}
 	}
 
 	unlock(key: Key, version: number): boolean {
 		//
 
 		return true;
-	}
-
-	useReadTransaction() {
-		// return transaction
 	}
 }

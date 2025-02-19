@@ -1,6 +1,6 @@
-import binding from './util/load-binding.js';
+import { version } from './util/load-binding.js';
 
 export const versions = {
-	'rocksdb': binding.version,
+	'rocksdb': version,
 	'rocksdb-js': 'ROCKSDB_JS_VERSION',
 };

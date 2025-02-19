@@ -1,10 +1,12 @@
 {
 	'targets': [
 		{
-			'defines': ['NODE_ADDON_API_DISABLE_CPP_EXCEPTIONS'],
+			'cflags!': [ '-fno-exceptions' ],
+			'cflags_cc!': [ '-fno-exceptions' ],
+			'cflags_cc': ['-std=c++20'],
 			'dependencies': ['prepare-rocksdb'],
 			'include_dirs': [
-				'<!(node -p "require(\'node-addon-api\').include_dir")',
+				'<!(node -e "require(\'napi-macros\')")',
 				'deps/rocksdb/include'
 			],
 			'link_settings': {
@@ -38,7 +40,8 @@
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 2,
-							'ExceptionHandling': 1
+							'ExceptionHandling': 1,
+							'AdditionalOptions': ['/std:c++20']
 						}
 					}
 				},
@@ -46,7 +49,8 @@
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 3,
-							'ExceptionHandling': 1
+							'ExceptionHandling': 1,
+							'AdditionalOptions': ['/std:c++20']
 						}
 					}
 				}

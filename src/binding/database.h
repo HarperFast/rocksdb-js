@@ -2,20 +2,21 @@
 #define __DATABASE_H__
 
 #include "rocksdb/db.h"
-#include <napi.h>
+#include <node_api.h>
 
 namespace rocksdb_js {
 
-class Database : public Napi::ObjectWrap<Database> {
+class Database final {
 public:
-	static Napi::Object Init(Napi::Env env, Napi::Object exports);
+	static void Init(napi_env env, napi_value exports);
+	static napi_value New(napi_env env, napi_callback_info info);
+	static napi_value Get(napi_env env, napi_callback_info info);
+	static napi_value Open(napi_env env, napi_callback_info info);
+	static napi_value Put(napi_env env, napi_callback_info info);
+	static napi_value Close(napi_env env, napi_callback_info info);
 
-	Database(const Napi::CallbackInfo& info);
+	Database();
 	~Database();
-
-	Napi::Value get(const Napi::CallbackInfo& info);
-	Napi::Value open(const Napi::CallbackInfo& info);
-	Napi::Value put(const Napi::CallbackInfo& info);
 
 private:
 	rocksdb::DB* db;
