@@ -1,12 +1,6 @@
-import { Database } from './util/load-binding.js';
-import { Transaction } from './transaction';
-
-export type RocksDatabaseOptions = {
-	path: string;
-	useVersions?: boolean;
-};
-
-export type Key = string | number | Buffer;
+import { Transaction } from './transaction.js';
+import type { Database } from './util/load-binding.js';
+import type { Key } from './types.js';
 
 type GetOptions = {
 	ifNotTxnId?: number;
@@ -40,34 +34,14 @@ type PutOptions = {
 	version?: number;
 };
 
-export const IF_EXISTS = Symbol('IF_EXISTS');
-
 /**
- * This class is the public API. It exposes the internal native `Database` class.
- *
- * lmdb-js would call this the environment. It contains multiple databases.
+ * A store represents a RocksDB column family.
  */
-export class RocksDatabase {
-	#db: any;
+export class RocksStore {
+	db: Database;
 
-	constructor(optionsOrPath: string | RocksDatabaseOptions, options?: RocksDatabaseOptions) {
-		if (!optionsOrPath) {
-			throw new Error('Options or path is required');
-		}
-
-		let path: string;
-
-		if (typeof optionsOrPath === 'string') {
-			path = optionsOrPath;
-		} else if (optionsOrPath && typeof optionsOrPath === 'object') {
-			options = optionsOrPath;
-			path = options.path;
-		} else {
-			throw new TypeError('Invalid options or path');
-		}
-
-		this.#db = new Database();
-		this.#db.open(path);
+	constructor(db: Database) {
+		this.db = db;
 	}
 
 	/**
@@ -82,8 +56,8 @@ export class RocksDatabase {
 	async clear(): Promise<void> {
 		//
 	}
-	
-	async close() {
+
+		async close() {
 		return this;
 	}
 
@@ -107,7 +81,7 @@ export class RocksDatabase {
 		// TODO: Remove async?
 		// TODO: Return Promise<any> | any?
 		// TODO: Call this.getBinaryFast(key, options) and decode the bytes into a value/object
-		return Buffer.from('TODO');
+		return this.db.get(key);
 	}
 
 	/**
@@ -181,7 +155,7 @@ export class RocksDatabase {
 	}
 
 	put(key: Key, value: string | Buffer, options?: PutOptions) {
-		//
+		this.db.put(key, value);
 	}
 
 	remove(key: Key, ifVersionOrValue?: symbol | number | null) {

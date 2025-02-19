@@ -30,7 +30,27 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 }
 
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	RETURN_UNDEFINED()
+	size_t argc = 1;
+	napi_value argv[1];
+	napi_value jsThis;
+	Database* database = nullptr;
+
+	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
+	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
+
+	ARG_GET_UTF8_STRING(key, argv[0])
+
+	std::string value;
+	rocksdb::Status status = database->db->Get(rocksdb::ReadOptions(), key, &value);
+
+	if (!status.ok()) {
+		::napi_throw_error(env, nullptr, status.ToString().c_str());
+	}
+
+	napi_value result;
+	CALL_NAPI_FUNCTION(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
+
+	return result;
 }
 
 void Database::Init(napi_env env, napi_value exports) {
@@ -76,10 +96,10 @@ napi_value Database::New(napi_env env, napi_callback_info info) {
 }
 
 napi_value Database::Open(napi_env env, napi_callback_info info) {
-	Database* database = nullptr;
 	size_t argc = 1;
 	napi_value argv[1];
 	napi_value jsThis;
+	Database* database = nullptr;
 
 	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
@@ -99,6 +119,23 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 }
 
 napi_value Database::Put(napi_env env, napi_callback_info info) {
+	size_t argc = 2;
+	napi_value argv[2];
+	napi_value jsThis;
+	Database* database = nullptr;
+
+	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
+	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
+
+	ARG_GET_UTF8_STRING(key, argv[0])
+	ARG_GET_UTF8_STRING(value, argv[1])
+
+	rocksdb::Status status = database->db->Put(rocksdb::WriteOptions(), key, value);
+
+	if (!status.ok()) {
+		::napi_throw_error(env, nullptr, status.ToString().c_str());
+	}
+
 	RETURN_UNDEFINED()
 }
 

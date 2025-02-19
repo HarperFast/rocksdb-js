@@ -31,7 +31,8 @@
   ],
   "dependencies": {
     "napi-macros": "2.2.2",
-    "node-gyp-build": "4.8.4"
+    "node-gyp-build": "4.8.4",
+    "ordered-binary": "1.5.3"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.2",

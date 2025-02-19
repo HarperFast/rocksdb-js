@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RocksDatabase } from '../src/rocks-database.js';
+import { RocksDatabase } from '../src/index.js';
 
 describe('basic functions', () => {
 	it('should get the versions', async () => {

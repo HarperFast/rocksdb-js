@@ -1,2 +1,2 @@
-export { RocksDatabase } from './rocks-database.js';
+export { RocksDatabase } from './database.js';
 export { versions } from './versions.js';
