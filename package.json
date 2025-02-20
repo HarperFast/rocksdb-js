@@ -31,8 +31,7 @@
   ],
   "dependencies": {
     "napi-macros": "2.2.2",
-    "node-gyp-build": "4.8.4",
-    "ordered-binary": "1.5.3"
+    "node-gyp-build": "4.8.4"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.2",
@@ -44,7 +43,9 @@
     "dotenv": "16.4.7",
     "esbuild": "0.25.0",
     "lefthook": "1.10.10",
+    "msgpackr": "1.11.2",
     "node-gyp": "11.1.0",
+    "ordered-binary": "1.5.3",
     "oxlint": "0.15.11",
     "prebuildify": "6.0.1",
     "rimraf": "6.0.1",
@@ -53,7 +54,7 @@
     "rollup-plugin-esbuild": "6.2.0",
     "semver": "7.7.1",
     "tslib": "2.8.1",
-    "tsx": "4.19.2",
+    "tsx": "4.19.3",
     "typescript": "5.7.3",
     "vitest": "3.0.6"
   },
@@ -62,5 +63,10 @@
   },
   "rocksdb": {
     "version": "9.10.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "msgpackr-extract"
+    ]
   }
 }

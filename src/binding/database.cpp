@@ -4,8 +4,9 @@
 
 namespace rocksdb_js {
 
-Database::Database() :
-	db(nullptr)
+Database::Database(const std::string& path) :
+	db(nullptr),
+	path(path)
 {
 	//
 }
@@ -18,8 +19,11 @@ Database::~Database() {
 }
 
 napi_value Database::Close(napi_env env, napi_callback_info info) {
-	Database* database;
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, (void**)&database))
+	napi_value jsThis;
+	Database* database = nullptr;
+
+	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
+	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
 	
 	if (database->db) {
 		delete database->db;
@@ -77,10 +81,14 @@ void Database::Init(napi_env env, napi_value exports) {
 }
 
 napi_value Database::New(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1];
 	napi_value jsThis;
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
+	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
-	Database* database = new Database();
+	ARG_GET_UTF8_STRING(path, argv[0])
+
+	Database* database = new Database(path);
 	CALL_NAPI_FUNCTION(::napi_wrap(
 		env,
 		jsThis,                                    // js object
@@ -96,20 +104,20 @@ napi_value Database::New(napi_env env, napi_callback_info info) {
 }
 
 napi_value Database::Open(napi_env env, napi_callback_info info) {
-	size_t argc = 1;
-	napi_value argv[1];
 	napi_value jsThis;
 	Database* database = nullptr;
 
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
+	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
 	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
 
-	ARG_GET_UTF8_STRING(path, argv[0])
+	if (database->db) {
+		RETURN_UNDEFINED()
+	}
 
 	rocksdb::Options options;
 	options.create_if_missing = true;
 
-	rocksdb::Status status = rocksdb::DB::Open(options, path, &database->db);
+	rocksdb::Status status = rocksdb::DB::Open(options, database->path, &database->db);
 
 	if (!status.ok()) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());

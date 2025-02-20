@@ -1,5 +1,5 @@
 import { NativeDatabase } from './util/load-binding.js';
-import { RocksStore } from './store.js';
+import { RocksStore, type RocksStoreOptions } from './store.js';
 
 export type RocksDatabaseOptions = {
 	path: string;
@@ -11,10 +11,13 @@ export const IF_EXISTS = Symbol('IF_EXISTS');
 /**
  * This class is the public API. It exposes the internal native `Database` class.
  *
- * lmdb-js would call this the environment. It contains multiple databases.
+ * lmdb-js would call this the environment. It contains multiple "databases" (namespaced stores?).
  */
 export class RocksDatabase extends RocksStore {
-	constructor(optionsOrPath: string | RocksDatabaseOptions, options?: RocksDatabaseOptions) {
+	constructor(
+		optionsOrPath: string | RocksDatabaseOptions,
+		options?: RocksDatabaseOptions
+	) {
 		if (!optionsOrPath) {
 			throw new Error('Options or path is required');
 		}
@@ -30,15 +33,31 @@ export class RocksDatabase extends RocksStore {
 			throw new TypeError('Invalid options or path');
 		}
 
-		super(new NativeDatabase());
-		this.db.open(path);
+		super(new NativeDatabase(path));
 	}
 
-	open() {
-		// dbName?
-		// options?
+	close() {
+		this.db.close();
+	}
 
-		const store = new RocksStore(this.db);
-		return store;
+	static async open(
+		optionsOrPath: string | RocksDatabaseOptions,
+		options?: RocksDatabaseOptions
+	): Promise<RocksDatabase> {
+		const db = new RocksDatabase(optionsOrPath, options);
+		await db.open();
+		return db;
+	}
+
+	async open(): Promise<RocksDatabase> {
+		await this.init();
+		return this;
+	}
+
+	async openStore(options?: RocksStoreOptions): Promise<RocksStore> {
+		// TODO: dbName?
+
+		const store = new RocksStore(this.db, options);
+		return store.init();
 	}
 }

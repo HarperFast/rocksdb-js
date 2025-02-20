@@ -1,11 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RocksDatabase } from '../src/index.js';
+import { rimraf } from 'rimraf';
 
 describe('basic functions', () => {
-	it('should get the versions', async () => {
-		let db = new RocksDatabase('/tmp/testdb');
+	let db: RocksDatabase | null = null;
+
+	beforeEach(() => rimraf('/tmp/testdb'));
+
+	afterEach(() => {
+		if (db) {
+			db.close();
+			db = null;
+		}
+	});
+
+	it('should set and get a value', async () => {
+		db = await RocksDatabase.open('/tmp/testdb');
 		await db.put('test', 'test');
 		const value = await db.get('test');
 		expect(value).toBe('test');
+	});
+
+	it('should error if database not initialized', async () => {
+		db = new RocksDatabase('/tmp/testdb');
+		await expect(db.get('test')).rejects.toThrow('Store not initialized');
 	});
 });

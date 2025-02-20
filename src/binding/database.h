@@ -15,11 +15,12 @@ public:
 	static napi_value Put(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
 
-	Database();
+	Database(const std::string& path);
 	~Database();
 
 private:
 	rocksdb::DB* db;
+	std::string path;
 };
 
 } // namespace rocksdb_js
