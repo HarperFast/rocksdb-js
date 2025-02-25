@@ -1,12 +1,10 @@
-import { NativeDatabase } from './util/load-binding.js';
+import { Database, NativeDatabase } from './util/load-binding.js';
 import { RocksStore, type RocksStoreOptions } from './store.js';
 
-export type RocksDatabaseOptions = {
-	path: string;
+export interface RocksDatabaseOptions extends RocksStoreOptions {
+	path?: string;
 	useVersions?: boolean;
-};
-
-export const IF_EXISTS = Symbol('IF_EXISTS');
+}
 
 /**
  * This class is the public API. It exposes the internal native `Database` class.
@@ -14,6 +12,8 @@ export const IF_EXISTS = Symbol('IF_EXISTS');
  * lmdb-js would call this the environment. It contains multiple "databases" (namespaced stores?).
  */
 export class RocksDatabase extends RocksStore {
+	#parallelism?: number;
+
 	constructor(
 		optionsOrPath: string | RocksDatabaseOptions,
 		options?: RocksDatabaseOptions
@@ -22,18 +22,21 @@ export class RocksDatabase extends RocksStore {
 			throw new Error('Options or path is required');
 		}
 
-		let path: string;
+		let path: string | undefined;
 
 		if (typeof optionsOrPath === 'string') {
 			path = optionsOrPath;
 		} else if (optionsOrPath && typeof optionsOrPath === 'object') {
 			options = optionsOrPath;
 			path = options.path;
-		} else {
+		}
+		if (!path) {
 			throw new TypeError('Invalid options or path');
 		}
 
 		super(new NativeDatabase(path), options);
+
+		this.#parallelism = options?.parallelism;
 	}
 
 	close() {
@@ -49,14 +52,24 @@ export class RocksDatabase extends RocksStore {
 	}
 
 	async open(): Promise<RocksDatabase> {
-		await super.open();
+		if (this.db.opened) {
+			return this;
+		}
+
+		this.db.open({
+			parallelism: this.#parallelism
+		});
+
+		// init the root store
+		await this.init();
+
 		return this;
 	}
 
-	async openStore(options?: RocksStoreOptions): Promise<RocksStore> {
-		// TODO: dbName?
+	// async openStore(options?: RocksStoreOptions): Promise<RocksStore> {
+	// 	// TODO: dbName?
 
-		const store = new RocksStore(this.db, options);
-		return store.open();
-	}
+	// 	const store = new RocksStore(options);
+	// 	return store.open();
+	// }
 }

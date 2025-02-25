@@ -12,6 +12,7 @@ public:
 	static void Init(napi_env env, napi_value exports);
 	static napi_value New(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
+	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
 	static napi_value Put(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);

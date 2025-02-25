@@ -1,6 +1,5 @@
 import { Transaction } from './transaction.js';
 import * as orderedBinary from 'ordered-binary';
-import type { Database } from './util/load-binding.js';
 import type { Key } from './types.js';
 import {
 	readBufferKey,
@@ -10,6 +9,7 @@ import {
 	type ReadKeyFunction,
 	type WriteKeyFunction,
 } from './encoding.js';
+import { Database } from './util/load-binding.js';
 
 type Decoder = {
 	decode?: (buffer: Buffer) => any;
@@ -91,7 +91,6 @@ export class RocksStore {
 		readKey?: ReadKeyFunction<Key>;
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
-	#parallelism?: number;
 	#readKey: ReadKeyFunction<Key>;
 	#useVersions: boolean;
 	#writeKey: WriteKeyFunction<Key>;
@@ -108,7 +107,6 @@ export class RocksStore {
 		this.#initialized = false;
 		this.#keyEncoder = options?.keyEncoder;
 		this.#keyEncoding = options?.keyEncoding ?? 'ordered-binary';
-		this.#parallelism = options?.parallelism;
 		this.#readKey = orderedBinary.readKey;
 		this.#useVersions = options?.useVersions ?? false; // TODO: better name?
 		this.#writeKey = orderedBinary.writeKey;
@@ -270,14 +268,10 @@ export class RocksStore {
 	/**
 	 * Initializes the store. This must be called before using the store.
 	 */
-	async open(): Promise<RocksStore> {
+	async init(): Promise<RocksStore> {
 		if (this.#initialized) {
 			return this;
 		}
-
-		this.db.open({
-			parallelism: this.#parallelism
-		});
 
 		// initialize the encoder
 		if (this.#encoding === 'ordered-binary') {
@@ -330,9 +324,12 @@ export class RocksStore {
 			this.#writeKey = writeKey as WriteKeyFunction<Key>;
 		}
 
-		// TODO: create a new column family
-
 		this.#initialized = true;
+		return this;
+	}
+
+	async openDB(): Promise<RocksStore> {
+		// TODO: create a new column family
 		return this;
 	}
 
