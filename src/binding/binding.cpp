@@ -1,6 +1,6 @@
 #include "binding.h"
-#include "rocksdb/db.h"
 #include "database.h"
+#include "rocksdb/db.h"
 
 NAPI_INIT() {
 	napi_value version;

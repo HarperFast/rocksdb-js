@@ -17,16 +17,36 @@
 	napi_get_undefined(env, &undefined); \
 	return undefined;
 
-#define CALL_NAPI_FUNCTION(fn) \
+#define CALL_NAPI_FUNCTION(fn, ...) \
 	{ \
-		napi_status status = fn; \
+		napi_status status = (fn); \
 		if (status != napi_ok) { \
 			const napi_extended_error_info* error; \
 			::napi_get_last_error_info(env, &error); \
 			char msg[1024]; \
 			::snprintf(msg, 1024, "%s (status=%d) ", error->error_message, status); \
 			::napi_throw_error(env, nullptr, msg); \
+			__VA_ARGS__; \
 		} \
+	}
+
+#define CALL_NAPI_FUNCTION_RETURN_STATUS(fn) \
+	CALL_NAPI_FUNCTION(fn, return status)
+
+#define ASSERT_NAPI_RETURN_UNDEFINED(fn) \
+	CALL_NAPI_FUNCTION(fn, RETURN_UNDEFINED())
+
+#define ASSERT_DB_INITIALIZED(env, database) \
+	if (database == nullptr) { \
+		::napi_throw_error(env, nullptr, "Database not initialized"); \
+		RETURN_UNDEFINED() \
+	} \
+
+#define ASSERT_DB_OPEN(env, database) \
+	ASSERT_DB_INITIALIZED(env, database) \
+	if (database->db == nullptr) { \
+		::napi_throw_error(env, nullptr, "Database not open"); \
+		RETURN_UNDEFINED() \
 	}
 
 #endif

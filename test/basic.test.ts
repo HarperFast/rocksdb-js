@@ -15,14 +15,14 @@ describe('basic functions', () => {
 	});
 
 	it('should set and get a value', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open('/tmp/testdb', { parallelism: 1 });
 		await db.put('test', 'test');
 		const value = await db.get('test');
 		expect(value).toBe('test');
 	});
 
-	it('should error if database not initialized', async () => {
+	it('should error if database not open', async () => {
 		db = new RocksDatabase('/tmp/testdb');
-		await expect(db.get('test')).rejects.toThrow('Store not initialized');
+		await expect(db.get('test')).rejects.toThrow('Database not open');
 	});
 });

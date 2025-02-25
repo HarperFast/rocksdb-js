@@ -4,7 +4,7 @@ import type { Key } from '../types.js';
 export interface Database {
 	close(): void;
 	get(key: Key): Buffer;
-	open(): void;
+	open(options?: { parallelism?: number }): void;
 	put(key: Key, value: any): void;
 }
 

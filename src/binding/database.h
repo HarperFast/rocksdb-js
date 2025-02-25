@@ -2,6 +2,7 @@
 #define __DATABASE_H__
 
 #include "rocksdb/db.h"
+#include "rocksdb/utilities/transaction_db.h"
 #include <node_api.h>
 
 namespace rocksdb_js {
@@ -19,7 +20,7 @@ public:
 	~Database();
 
 private:
-	rocksdb::DB* db;
+	rocksdb::TransactionDB* db;
 	std::string path;
 };
 

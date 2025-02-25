@@ -1,5 +1,7 @@
 #include "database.h"
 #include "macros.h"
+#include "util.h"
+#include <thread>
 #include <unistd.h>
 
 namespace rocksdb_js {
@@ -25,7 +27,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
 	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
 	
-	if (database->db) {
+	if (database != nullptr && database->db != nullptr) {
 		delete database->db;
 		database->db = nullptr;
 	}
@@ -42,6 +44,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
 
+	ASSERT_DB_OPEN(env, database)
+
 	ARG_GET_UTF8_STRING(key, argv[0])
 
 	std::string value;
@@ -57,6 +61,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Initializes the Database class.
+ *
+ * This function is called when the binding is loaded.
+ */
 void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "get", nullptr, Database::Get, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -80,6 +89,9 @@ void Database::Init(napi_env env, napi_value exports) {
 	CALL_NAPI_FUNCTION(::napi_set_named_property(env, exports, "Database", cons))
 }
 
+/**
+ * The `Database` JavaScript constructor.
+ */
 napi_value Database::New(napi_env env, napi_callback_info info) {
 	size_t argc = 1;
 	napi_value argv[1];
@@ -103,22 +115,42 @@ napi_value Database::New(napi_env env, napi_callback_info info) {
 	return jsThis;
 }
 
+/**
+ * Opens the RocksDB database. This must be called before any data methods are called.
+ */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1];
 	napi_value jsThis;
 	Database* database = nullptr;
 
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
+	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
 
-	if (database->db) {
+	ASSERT_DB_INITIALIZED(env, database)
+
+	if (database->db != nullptr) {
+		// already open
 		RETURN_UNDEFINED()
 	}
 
-	rocksdb::Options options;
-	options.create_if_missing = true;
+	const napi_value options = argv[0];
 
-	rocksdb::Status status = rocksdb::DB::Open(options, database->path, &database->db);
+	int parallelism = std::max<int>(1, std::thread::hardware_concurrency() / 2);
+	rocksdb_js::getProperty(env, options, "parallelism", parallelism);
 
+	rocksdb::DBOptions dbOptions;
+	dbOptions.create_if_missing = true;
+	dbOptions.create_missing_column_families = true;
+
+	rocksdb::TransactionDBOptions txndbOptions;
+
+	std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
+	cfDescriptors.emplace_back(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions());
+
+	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
+
+	rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, database->path, cfDescriptors, &cfHandles, &database->db);
 	if (!status.ok()) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());
 	}

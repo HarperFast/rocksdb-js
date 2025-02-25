@@ -33,7 +33,7 @@ export class RocksDatabase extends RocksStore {
 			throw new TypeError('Invalid options or path');
 		}
 
-		super(new NativeDatabase(path));
+		super(new NativeDatabase(path), options);
 	}
 
 	close() {
@@ -45,12 +45,11 @@ export class RocksDatabase extends RocksStore {
 		options?: RocksDatabaseOptions
 	): Promise<RocksDatabase> {
 		const db = new RocksDatabase(optionsOrPath, options);
-		await db.open();
-		return db;
+		return db.open();
 	}
 
 	async open(): Promise<RocksDatabase> {
-		await this.init();
+		await super.open();
 		return this;
 	}
 
@@ -58,6 +57,6 @@ export class RocksDatabase extends RocksStore {
 		// TODO: dbName?
 
 		const store = new RocksStore(this.db, options);
-		return store.init();
+		return store.open();
 	}
 }
