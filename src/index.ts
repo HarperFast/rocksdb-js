@@ -1,2 +1,8 @@
+import { version } from './util/load-binding.js';
+
 export { RocksDatabase } from './database.js';
-export { versions } from './versions.js';
+
+export const versions = {
+	'rocksdb': version,
+	'rocksdb-js': 'ROCKSDB_JS_VERSION',
+};

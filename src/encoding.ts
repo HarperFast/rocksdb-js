@@ -1,5 +1,21 @@
 import { BufferWithDataView, Key } from './types.js';
 
+export type Decoder = {
+	decode?: (buffer: Buffer) => any;
+};
+
+export type Encoder = {
+	copyBuffers?: boolean;
+	encode?: (value: any, mode?: number) => Buffer | string;
+	Encoder?: new (options: any) => Encoder;
+	readKey?: (buffer: Buffer, start: number, end: number, inSequence?: boolean) => any;
+	writeKey?: (key: any, target: Buffer, position: number, inSequence?: boolean) => number;
+};
+
+export type Encoding = 'binary' | 'cbor' | 'json' | 'msgpack' | 'ordered-binary' | 'string';
+
+export type KeyEncoding = 'binary' | 'ordered-binary' | 'uint32';
+
 export type ReadKeyFunction<T> = (source: BufferWithDataView, start: number, end?: number) => T;
 export type WriteKeyFunction<T> = T extends Buffer
 	? (key: Buffer, target: BufferWithDataView, start: number) => number

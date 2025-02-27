@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 
-export function getActiveVersion(): string | undefined {
+export function getCurrentVersion(): string | undefined {
 	const includeDir = resolve(__dirname, '../../deps/rocksdb/include');
 
 	if (existsSync(includeDir) && lstatSync(includeDir).isSymbolicLink()) {

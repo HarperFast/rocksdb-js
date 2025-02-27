@@ -4,49 +4,67 @@
 #include <string>
 #include <cstring>
 
-#define ARG_GET_UTF8_STRING(variable_name, arg) \
-	size_t variable_name##_length; \
-	napi_get_value_string_utf8(env, arg, nullptr, 0, &variable_name##_length); \
-	char* variable_name##_cstr = new char[variable_name##_length + 1]; \
-	napi_get_value_string_utf8(env, arg, variable_name##_cstr, variable_name##_length + 1, &variable_name##_length); \
-	std::string variable_name(variable_name##_cstr); \
-	delete[] variable_name##_cstr;
+#define NAPI_STATUS_RETURN(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			return status; \
+		} \
+	}
 
-#define RETURN_UNDEFINED() \
+#define NAPI_STATUS_THROWS(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			const napi_extended_error_info* error; \
+			::napi_get_last_error_info(env, &error); \
+			::napi_throw_error(env, nullptr, error->error_message); \
+			return nullptr; \
+		} \
+	}
+
+#define NAPI_STATUS_THROWS_VOID(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			const napi_extended_error_info* error; \
+			::napi_get_last_error_info(env, &error); \
+			::napi_throw_error(env, nullptr, error->error_message); \
+			return; \
+		} \
+	}
+
+#define NAPI_RETURN_UNDEFINED() \
 	napi_value undefined; \
 	napi_get_undefined(env, &undefined); \
 	return undefined;
 
-#define CALL_NAPI_FUNCTION(fn, ...) \
-	{ \
-		napi_status status = (fn); \
-		if (status != napi_ok) { \
-			const napi_extended_error_info* error; \
-			::napi_get_last_error_info(env, &error); \
-			char msg[1024]; \
-			::snprintf(msg, 1024, "%s (status=%d) ", error->error_message, status); \
-			::napi_throw_error(env, nullptr, msg); \
-			__VA_ARGS__; \
-		} \
-	}
+#define NAPI_METHOD() \
+	napi_value jsThis; \
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
 
-#define CALL_NAPI_FUNCTION_RETURN_STATUS(fn) \
-	CALL_NAPI_FUNCTION(fn, return status)
-
-#define ASSERT_NAPI_RETURN_UNDEFINED(fn) \
-	CALL_NAPI_FUNCTION(fn, RETURN_UNDEFINED())
+#define NAPI_METHOD_ARGV(n) \
+	napi_value argv[n]; \
+	size_t argc = n; \
+	napi_value jsThis; \
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
 #define ASSERT_DB_INITIALIZED(env, database) \
 	if (database == nullptr) { \
 		::napi_throw_error(env, nullptr, "Database not initialized"); \
-		RETURN_UNDEFINED() \
+		NAPI_RETURN_UNDEFINED() \
 	} \
 
 #define ASSERT_DB_OPEN(env, database) \
 	ASSERT_DB_INITIALIZED(env, database) \
 	if (database->db == nullptr) { \
 		::napi_throw_error(env, nullptr, "Database not open"); \
-		RETURN_UNDEFINED() \
+		NAPI_RETURN_UNDEFINED() \
 	}
+
+#define UNWRAP_DB() \
+	Database* database = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database))) \
+	ASSERT_DB_INITIALIZED(env, database)
 
 #endif

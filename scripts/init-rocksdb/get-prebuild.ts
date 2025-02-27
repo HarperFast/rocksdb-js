@@ -21,9 +21,7 @@ export type Prebuild = {
 	}[];
 };
 
-const __dirname = fileURLToPath(dirname(import.meta.url));
-
-export async function getPrebuild() {
+export async function getPrebuild(desiredVersion?: string) {
 	// download the latest RocksDB prebuild
 	const headers: Record<string, string> = {
 		Accept: 'application/vnd.github.v3.raw',
@@ -50,14 +48,12 @@ export async function getPrebuild() {
 
 	// default to the latest release
 	let prebuild: GithubRelease | undefined = releases[0];
-	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
-	const version = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || 'latest';
-	if (version && version !== 'latest') {
-		prebuild = releases.find(release => release.tag_name === `v${version}`);
+	if (desiredVersion && desiredVersion !== 'latest') {
+		prebuild = releases.find(release => release.tag_name === `v${desiredVersion}`);
 	}
 
 	if (!prebuild) {
-		throw new Error(`Prebuilt RocksDB ${version ? `v${version}` : 'releases'} not found!`);
+		throw new Error(`Prebuilt RocksDB ${desiredVersion ? `v${desiredVersion}` : 'releases'} not found!`);
 	}
 
 	return {

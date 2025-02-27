@@ -22,32 +22,24 @@ Database::~Database() {
 }
 
 napi_value Database::Close(napi_env env, napi_callback_info info) {
-	napi_value jsThis;
-	Database* database = nullptr;
+	NAPI_METHOD()
+	UNWRAP_DB()
 
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
-	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
-	
 	if (database != nullptr && database->db != nullptr) {
 		delete database->db;
 		database->db = nullptr;
 	}
 	
-	RETURN_UNDEFINED()
+	NAPI_RETURN_UNDEFINED()
 }
 
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	size_t argc = 1;
-	napi_value argv[1];
-	napi_value jsThis;
-	Database* database = nullptr;
-
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
-	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
-
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB()
 	ASSERT_DB_OPEN(env, database)
 
-	ARG_GET_UTF8_STRING(key, argv[0])
+	std::string key;
+	rocksdb_js::getString(env, argv[0], key);
 
 	std::string value;
 	rocksdb::Status status = database->db->Get(rocksdb::ReadOptions(), key, &value);
@@ -57,7 +49,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
-	CALL_NAPI_FUNCTION(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
 
 	return result;
 }
@@ -77,35 +69,32 @@ void Database::Init(napi_env env, napi_value exports) {
 	};
 
 	napi_value cons;
-	CALL_NAPI_FUNCTION(::napi_define_class(
+	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
 		"Database",             // className
 		9,                      // length of class name
 		Database::New,          // constructor
 		nullptr,                // constructor arg
-		5,                      // number of properties
+		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,             // properties array
 		&cons                   // [out] constructor
 	))
 
-	CALL_NAPI_FUNCTION(::napi_set_named_property(env, exports, "Database", cons))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "Database", cons))
 }
 
 napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
-	napi_value jsThis;
-	Database* database = nullptr;
-
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
-	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
+	NAPI_METHOD()
+	UNWRAP_DB()
 
 	if (database == nullptr || database->db == nullptr) {
 		napi_value result;
-		CALL_NAPI_FUNCTION(::napi_get_boolean(env, false, &result))
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
 		return result;
 	}
 
 	napi_value result;
-	CALL_NAPI_FUNCTION(::napi_get_boolean(env, database->db != nullptr, &result))
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, database->db != nullptr, &result))
 	return result;
 }
 
@@ -113,15 +102,13 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
  * The `Database` JavaScript constructor.
  */
 napi_value Database::New(napi_env env, napi_callback_info info) {
-	size_t argc = 1;
-	napi_value argv[1];
-	napi_value jsThis;
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], path)
 
-	ARG_GET_UTF8_STRING(path, argv[0])
-
+	// TODO: move this to `open`
 	Database* database = new Database(path);
-	CALL_NAPI_FUNCTION(::napi_wrap(
+
+	NAPI_STATUS_THROWS(::napi_wrap(
 		env,
 		jsThis,                                    // js object
 		reinterpret_cast<void*>(database),         // native object
@@ -139,19 +126,12 @@ napi_value Database::New(napi_env env, napi_callback_info info) {
  * Opens the RocksDB database. This must be called before any data methods are called.
  */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
-	size_t argc = 1;
-	napi_value argv[1];
-	napi_value jsThis;
-	Database* database = nullptr;
-
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
-	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
-
-	ASSERT_DB_INITIALIZED(env, database)
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB()
 
 	if (database->db != nullptr) {
 		// already open
-		RETURN_UNDEFINED()
+		NAPI_RETURN_UNDEFINED()
 	}
 
 	const napi_value options = argv[0];
@@ -159,9 +139,19 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	int parallelism = std::max<int>(1, std::thread::hardware_concurrency() / 2);
 	rocksdb_js::getProperty(env, options, "parallelism", parallelism);
 
+	std::string name;
+	rocksdb_js::getProperty(env, options, "name", name);
+	// TODO: if `name` is not set, then use default column family,
+	// otherwise create a new column family
+
 	rocksdb::Options dbOptions;
+	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = true;
 	dbOptions.create_missing_column_families = true;
+	dbOptions.enable_blob_files = true;
+	dbOptions.enable_blob_garbage_collection = true;
+	dbOptions.min_blob_size = 1024;
+	dbOptions.persist_user_defined_timestamps = true;
 
 	rocksdb::TransactionDBOptions txndbOptions;
 
@@ -175,20 +165,14 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());
 	}
 
-	RETURN_UNDEFINED()
+	NAPI_RETURN_UNDEFINED()
 }
 
 napi_value Database::Put(napi_env env, napi_callback_info info) {
-	size_t argc = 2;
-	napi_value argv[2];
-	napi_value jsThis;
-	Database* database = nullptr;
-
-	CALL_NAPI_FUNCTION(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
-	CALL_NAPI_FUNCTION(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database)))
-
-	ARG_GET_UTF8_STRING(key, argv[0])
-	ARG_GET_UTF8_STRING(value, argv[1])
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_STRING(argv[0], key)
+	NAPI_GET_STRING(argv[1], value)
+	UNWRAP_DB()
 
 	rocksdb::Status status = database->db->Put(rocksdb::WriteOptions(), key, value);
 
@@ -196,7 +180,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());
 	}
 
-	RETURN_UNDEFINED()
+	NAPI_RETURN_UNDEFINED()
 }
 
 } // namespace rocksdb_js

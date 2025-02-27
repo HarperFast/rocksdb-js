@@ -21,6 +21,7 @@ public:
 	~Database();
 
 private:
+	// TODO: store db in a map, indexed by path
 	rocksdb::TransactionDB* db;
 	std::string path;
 };

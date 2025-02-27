@@ -14,9 +14,10 @@ import { dirname, resolve } from 'node:path';
 import { config } from 'dotenv';
 import semver from 'semver';
 import { buildRocksDBFromSource } from './build-rocksdb-from-source';
-import { getActiveVersion } from './get-active-version';
+import { getCurrentVersion } from './get-current-version';
 import { getPrebuild } from './get-prebuild';
 import { downloadRocksDB } from './download-rocksdb';
+import { readFileSync } from 'node:fs';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 
@@ -33,10 +34,19 @@ try {
 		process.exit(0);
 	}
 
-	const activeVersion = getActiveVersion();
-	const prebuild = await getPrebuild();
+	const currentVersion: string | undefined = getCurrentVersion();
 
-	if (activeVersion && semver.lte(prebuild.version, activeVersion)) {
+	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
+	const desiredVersion = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || undefined;
+
+	if (currentVersion && desiredVersion && semver.gte(currentVersion, desiredVersion)) {
+		console.log(`No update needed, RocksDB ${currentVersion} is already installed.`);
+		process.exit(0);
+	}
+
+	const prebuild = await getPrebuild(desiredVersion);
+
+	if (currentVersion && semver.lte(prebuild.version, currentVersion)) {
 		console.log(`No update needed, latest version ${prebuild.version} is active.`);
 		process.exit(0);
 	}

@@ -6,8 +6,7 @@
 			'cflags_cc': ['-std=c++20'],
 			'dependencies': ['prepare-rocksdb'],
 			'include_dirs': [
-				'<!(node -e "require(\'napi-macros\')")',
-				'deps/rocksdb/include'
+				'deps/rocksdb/include',
 			],
 			'link_settings': {
 				'conditions': [
