@@ -9,11 +9,21 @@ export interface Database {
 	put(key: Key, value: any): void;
 }
 
-export interface Store {
-}
+// export interface Store {
+// }
 
 const binding = nodeGypBuild();
 
+export const openDB: (
+	path: string,
+	options?: {
+		name?: string;
+		parallelism?: number;
+	}
+) => Database = binding.openDB;
+
 export const NativeDatabase: { new(path: string): Database } = binding.Database;
-export const NativeStore: { new(name: string): Store } = binding.Store;
+
+// export const NativeStore: { new(name: string): Store } = binding.Store;
+
 export const version = binding.version;

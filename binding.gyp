@@ -25,6 +25,7 @@
 			'sources': [
 				'src/binding/binding.cpp',
 				'src/binding/database.cpp',
+				'src/binding/registry.cpp',
 			],
 			'conditions': [
 				['OS=="mac"', {

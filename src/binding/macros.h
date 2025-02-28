@@ -39,6 +39,11 @@
 	napi_get_undefined(env, &undefined); \
 	return undefined;
 
+#define NAPI_EXPORT_FUNCTION(name) \
+	napi_value name##_fn; \
+    NAPI_STATUS_THROWS(::napi_create_function(env, NULL, 0, name, NULL, &name##_fn)) \
+    NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, #name, name##_fn))
+
 #define NAPI_METHOD() \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
@@ -66,5 +71,9 @@
 	Database* database = nullptr; \
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database))) \
 	ASSERT_DB_INITIALIZED(env, database)
+
+#define NAPI_GET_STRING(from, to) \
+	std::string to; \
+	rocksdb_js::getString(env, from, to);
 
 #endif

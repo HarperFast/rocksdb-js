@@ -1,4 +1,4 @@
-import { type Database, NativeDatabase } from './util/load-binding.js';
+import { type Database, openDB } from './util/load-binding.js';
 import type { Key } from './types.js';
 import {
 	readBufferKey,
@@ -20,7 +20,7 @@ import { Transaction } from './transaction.js';
  */
 export class RocksDatabase {
 	#cache: boolean;
-	#db: Database;
+	#db: Database | undefined;
 	#decoder?: Decoder | null;
 	#dupSort: boolean;
 	#encoder: Encoder | null;
@@ -33,6 +33,7 @@ export class RocksDatabase {
 	};
 	#name?: string;
 	#parallelism?: number;
+	#path: string;
 	#readKey: ReadKeyFunction<Key>;
 	#useVersions: boolean;
 	#writeKey: WriteKeyFunction<Key>;
@@ -49,8 +50,6 @@ export class RocksDatabase {
 			throw new TypeError('Options must be an object');
 		}
 
-		this.#db = new NativeDatabase(path);
-
 		this.#cache = options?.cache ?? false; // TODO: better name?
 		this.#dupSort = options?.dupSort ?? false; // TODO: better name?
 		this.#encoder = options?.encoder ?? null;
@@ -58,7 +57,9 @@ export class RocksDatabase {
 		this.#keyBuffer = Buffer.allocUnsafeSlow(0x1000); // 4KB
 		this.#keyEncoder = options?.keyEncoder;
 		this.#keyEncoding = options?.keyEncoding ?? 'ordered-binary';
+		this.#name = options?.name;
 		this.#parallelism = options?.parallelism;
+		this.#path = path;
 		this.#readKey = orderedBinary.readKey;
 		this.#useVersions = options?.useVersions ?? false; // TODO: better name?
 		this.#writeKey = orderedBinary.writeKey;
@@ -82,7 +83,7 @@ export class RocksDatabase {
 	}
 
 	close() {
-		this.#db.close();
+		// this.#db.close();
 	}
 
 	// committed
@@ -119,6 +120,10 @@ export class RocksDatabase {
 			}
 
 			return bytes;
+		}
+
+		if (!this.#db) {
+			throw new Error('Database not open');
 		}
 
 		const result = this.#db.get(key);
@@ -221,7 +226,6 @@ export class RocksDatabase {
 		//
 	}
 
-
 	static async open(
 		path: string,
 		options?: RocksDatabaseOptions
@@ -231,11 +235,12 @@ export class RocksDatabase {
 	}
 
 	async open(): Promise<RocksDatabase> {
-		if (this.#db.opened) {
+		if (this.#db?.opened) {
 			return this;
 		}
 
-		this.#db.open({
+		// get the database class that is configured for the database path and column family name
+		this.#db = openDB(this.#path, {
 			name: this.#name,
 			parallelism: this.#parallelism,
 		});
@@ -294,10 +299,18 @@ export class RocksDatabase {
 	}
 
 	put(key: Key, value: any, options?: PutOptions) {
+		if (!this.#db) {
+			throw new Error('Database not open');
+		}
+
 		this.#db.put(key, value);
 	}
 
 	remove(key: Key, ifVersionOrValue?: symbol | number | null) {
+		if (!this.#db) {
+			throw new Error('Database not open');
+		}
+
 		// This should be similar to put, except no need to pass in the value
 	}
 

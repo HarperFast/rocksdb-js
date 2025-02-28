@@ -14,8 +14,8 @@ describe('basic functions', () => {
 		}
 	});
 
-	it('should set and get a value', async () => {
-		db = await RocksDatabase.open('/tmp/testdb', { parallelism: 1 });
+	it.only('should set and get a value', async () => {
+		db = await RocksDatabase.open('/tmp/testdb', { name: 'foo', parallelism: 2 });
 		await db.put('test', 'test');
 		const value = await db.get('test');
 		expect(value).toBe('test');

@@ -7,6 +7,8 @@
 
 namespace rocksdb_js {
 
+napi_ref Database::constructor_ref = nullptr;
+
 Database::Database(const std::string& path) :
 	db(nullptr),
 	path(path)
@@ -73,13 +75,34 @@ void Database::Init(napi_env env, napi_value exports) {
 		env,
 		"Database",             // className
 		9,                      // length of class name
-		Database::New,          // constructor
+		[](napi_env env, napi_callback_info info) -> napi_value {
+			NAPI_METHOD_ARGV(1)
+			NAPI_GET_STRING(argv[0], path)
+
+			// check if database already exists
+
+			Database* database = new Database(path);
+
+			NAPI_STATUS_THROWS(::napi_wrap(
+				env,
+				jsThis,
+				reinterpret_cast<void*>(database),
+				[](napi_env env, void* data, void* hint) {
+					delete reinterpret_cast<Database*>(data);
+				},
+				nullptr,
+				nullptr
+			))
+
+			return jsThis;
+		},                      // constructor as lambda
 		nullptr,                // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,             // properties array
 		&cons                   // [out] constructor
 	))
 
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, cons, 1, &constructor_ref))
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "Database", cons))
 }
 
@@ -96,30 +119,6 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, database->db != nullptr, &result))
 	return result;
-}
-
-/**
- * The `Database` JavaScript constructor.
- */
-napi_value Database::New(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], path)
-
-	// TODO: move this to `open`
-	Database* database = new Database(path);
-
-	NAPI_STATUS_THROWS(::napi_wrap(
-		env,
-		jsThis,                                    // js object
-		reinterpret_cast<void*>(database),         // native object
-		[](napi_env env, void* data, void* hint) { // finalize_cb
-			delete reinterpret_cast<Database*>(data);
-		}, 
-		nullptr,                                   // finalize_hint
-		nullptr                                    // [out] result
-	))
-
-	return jsThis;
 }
 
 /**
@@ -155,14 +154,17 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	rocksdb::TransactionDBOptions txndbOptions;
 
-	// std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
-	// cfDescriptors.emplace_back(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions());
-
-	// std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
-
-	rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, database->path, /*cfDescriptors, &cfHandles,*/ &database->db);
+	rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, database->path, &database->db);
 	if (!status.ok()) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());
+	}
+
+	if (!name.empty()) {
+		rocksdb::ColumnFamilyHandle* cfHandle;
+		status = database->db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
+		if (!status.ok()) {
+			::napi_throw_error(env, nullptr, status.ToString().c_str());
+		}
 	}
 
 	NAPI_RETURN_UNDEFINED()
