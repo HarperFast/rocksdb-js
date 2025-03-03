@@ -4,7 +4,7 @@ import type { Key } from '../types.js';
 const binding = nodeGypBuild();
 
 export interface DBI {
-	new(path: string): DBI;
+	new(path: string, name?: string): DBI;
 	close(): void;
 	get(key: Key): Buffer;
 	opened: boolean;

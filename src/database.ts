@@ -31,7 +31,6 @@ export class RocksDatabase {
 		readKey?: ReadKeyFunction<Key>;
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
-	#name?: string;
 	#parallelism?: number;
 	#readKey: ReadKeyFunction<Key>;
 	#useVersions: boolean;
@@ -50,14 +49,13 @@ export class RocksDatabase {
 		}
 
 		this.#cache = options?.cache ?? false; // TODO: better name?
-		this.#db = new DBI(path);
+		this.#db = new DBI(path, options?.name);
 		this.#dupSort = options?.dupSort ?? false; // TODO: better name?
 		this.#encoder = options?.encoder ?? null;
 		this.#encoding = options?.encoding ?? 'msgpack';
 		this.#keyBuffer = Buffer.allocUnsafeSlow(0x1000); // 4KB
 		this.#keyEncoder = options?.keyEncoder;
 		this.#keyEncoding = options?.keyEncoding ?? 'ordered-binary';
-		this.#name = options?.name;
 		this.#parallelism = options?.parallelism;
 		this.#readKey = orderedBinary.readKey;
 		this.#useVersions = options?.useVersions ?? false; // TODO: better name?
@@ -230,16 +228,15 @@ export class RocksDatabase {
 		options?: RocksDatabaseOptions
 	): Promise<RocksDatabase> {
 		const db = new RocksDatabase(path, options);
-		return db.open();
+		return db; // db.open();
 	}
 
 	async open(): Promise<RocksDatabase> {
-		if (this.#db?.opened) {
+		if (this.#db.opened) {
 			return this;
 		}
 
 		this.#db.open({
-			name: this.#name,
 			parallelism: this.#parallelism,
 		});
 

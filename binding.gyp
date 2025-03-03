@@ -1,12 +1,16 @@
 {
 	'targets': [
 		{
-			'cflags!': [ '-fno-exceptions' ],
-			'cflags_cc!': [ '-fno-exceptions' ],
-			'cflags_cc': ['-std=c++20'],
+			'target_name': 'rocksdb-js',
 			'dependencies': ['prepare-rocksdb'],
 			'include_dirs': [
 				'deps/rocksdb/include',
+			],
+			'sources': [
+				'src/binding/binding.cpp',
+				'src/binding/dbi.cpp',
+				'src/binding/dbi_wrap.cpp',
+				'src/binding/registry.cpp',
 			],
 			'link_settings': {
 				'conditions': [
@@ -21,17 +25,25 @@
 					}]
 				]
 			},
-			'target_name': 'rocksdb-js',
-			'sources': [
-				'src/binding/binding.cpp',
-				'src/binding/database.cpp',
-				'src/binding/registry.cpp',
+			'cflags!': [ '-fno-exceptions' ],
+			'cflags_cc!': [ '-fno-exceptions' ],
+			'cflags_cc': [
+				'-std=c++20',
+				'-fexceptions'
 			],
 			'conditions': [
-				['OS=="mac"', {
-					'cflags+': ['-fvisibility=hidden'],
+				['OS=="linux" or OS=="mac"', {
+					'cflags+': ['-fexceptions'],
+					'cflags_cc+': ['-fexceptions'],
 					'xcode_settings': {
-						'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES', # -fvisibility=hidden
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES'
+					}
+				}],
+				['OS=="win"', {
+					'msvs_settings': {
+						'VCCLCompilerTool': {
+							'ExceptionHandling': 1
+						}
 					}
 				}]
 			],
