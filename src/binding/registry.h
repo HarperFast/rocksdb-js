@@ -2,6 +2,7 @@
 #define __REGISTRY_H__
 
 #include "database.h"
+#include "store.h"
 #include <node_api.h>
 #include <mutex>
 
@@ -13,14 +14,14 @@ private:
 
 	struct DatabaseKey {
 		std::string path;
-		std::string name;
+		std::string name; // column family name
 		bool operator<(const DatabaseKey& other) const {
 			if (path != other.path) return path < other.path;
 			return name < other.name;
 		}
 	};
 
-	std::map<DatabaseKey, napi_value> databases;
+	std::map<std::string, std::shared_ptr<Database>> databases;
 	static std::unique_ptr<Registry> instance;
 	static std::mutex mutex;
 
@@ -38,7 +39,7 @@ public:
 		instance.reset();
 	}
 
-	static napi_value getDatabaseStore(napi_env env, napi_value argv[], size_t argc);
+	static std::shared_ptr<Database> getDatabase(const std::string& path);
 };
 
 } // namespace rocksdb_js

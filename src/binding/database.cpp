@@ -1,5 +1,6 @@
 #include "database.h"
 #include "macros.h"
+#include "registry.h"
 #include "util.h"
 #include <thread>
 #include <unistd.h>
@@ -73,23 +74,20 @@ void Database::Init(napi_env env, napi_value exports) {
 	napi_value cons;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		"Database",             // className
-		9,                      // length of class name
+		"DBI",                  // className
+		4,                      // length of class name
 		[](napi_env env, napi_callback_info info) -> napi_value {
+			// constructor
 			NAPI_METHOD_ARGV(1)
 			NAPI_GET_STRING(argv[0], path)
 
-			// check if database already exists
-
-			Database* database = new Database(path);
-
+			std::shared_ptr<Database> database = Registry::getDatabase(path);
+			
 			NAPI_STATUS_THROWS(::napi_wrap(
 				env,
 				jsThis,
-				reinterpret_cast<void*>(database),
-				[](napi_env env, void* data, void* hint) {
-					delete reinterpret_cast<Database*>(data);
-				},
+				reinterpret_cast<void*>(&database),
+				nullptr, // cleanup not needed right now... [](napi_env env, void* data, void* hint) {}
 				nullptr,
 				nullptr
 			))
@@ -103,7 +101,7 @@ void Database::Init(napi_env env, napi_value exports) {
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, cons, 1, &constructor_ref))
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "Database", cons))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "DBI", cons))
 }
 
 napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
@@ -140,6 +138,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	std::string name;
 	rocksdb_js::getProperty(env, options, "name", name);
+	fprintf(stderr, "name: %s\n", name.c_str());
 	// TODO: if `name` is not set, then use default column family,
 	// otherwise create a new column family
 

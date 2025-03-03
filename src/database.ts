@@ -1,4 +1,4 @@
-import { type Database, openDB } from './util/load-binding.js';
+import { DBI } from './util/load-binding.js';
 import type { Key } from './types.js';
 import {
 	readBufferKey,
@@ -20,7 +20,7 @@ import { Transaction } from './transaction.js';
  */
 export class RocksDatabase {
 	#cache: boolean;
-	#db: Database | undefined;
+	#db: DBI;
 	#decoder?: Decoder | null;
 	#dupSort: boolean;
 	#encoder: Encoder | null;
@@ -33,7 +33,6 @@ export class RocksDatabase {
 	};
 	#name?: string;
 	#parallelism?: number;
-	#path: string;
 	#readKey: ReadKeyFunction<Key>;
 	#useVersions: boolean;
 	#writeKey: WriteKeyFunction<Key>;
@@ -51,6 +50,7 @@ export class RocksDatabase {
 		}
 
 		this.#cache = options?.cache ?? false; // TODO: better name?
+		this.#db = new DBI(path);
 		this.#dupSort = options?.dupSort ?? false; // TODO: better name?
 		this.#encoder = options?.encoder ?? null;
 		this.#encoding = options?.encoding ?? 'msgpack';
@@ -59,7 +59,6 @@ export class RocksDatabase {
 		this.#keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		this.#name = options?.name;
 		this.#parallelism = options?.parallelism;
-		this.#path = path;
 		this.#readKey = orderedBinary.readKey;
 		this.#useVersions = options?.useVersions ?? false; // TODO: better name?
 		this.#writeKey = orderedBinary.writeKey;
@@ -239,8 +238,7 @@ export class RocksDatabase {
 			return this;
 		}
 
-		// get the database class that is configured for the database path and column family name
-		this.#db = openDB(this.#path, {
+		this.#db.open({
 			name: this.#name,
 			parallelism: this.#parallelism,
 		});

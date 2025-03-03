@@ -68,9 +68,9 @@
 	}
 
 #define UNWRAP_DB() \
-	Database* database = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database))) \
-	ASSERT_DB_INITIALIZED(env, database)
+    std::shared_ptr<Database>* database_ptr; \
+    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&database_ptr))) \
+    auto& database = *database_ptr;
 
 #define NAPI_GET_STRING(from, to) \
 	std::string to; \
