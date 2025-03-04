@@ -15,7 +15,19 @@ describe('basic functions', () => {
 	});
 
 	it('should set and get a value using default column family', async () => {
-		db = await RocksDatabase.open('/tmp/testdb', { name: 'foo', parallelism: 2 });
+		db = await RocksDatabase.open('/tmp/testdb', {
+			parallelism: 2
+		});
+		await db.put('test', 'test');
+		const value = await db.get('test');
+		expect(value).toBe('test');
+	});
+
+	it('should set and get a value using custom column family', async () => {
+		db = await RocksDatabase.open('/tmp/testdb', {
+			name: 'foo',
+			parallelism: 2
+		});
 		await db.put('test', 'test');
 		const value = await db.get('test');
 		expect(value).toBe('test');
