@@ -54,22 +54,16 @@
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
-#define ASSERT_DBI_INITIALIZED(env, dbi) \
-	if (dbi == nullptr) { \
-		::napi_throw_error(env, nullptr, "Database not initialized"); \
-		NAPI_RETURN_UNDEFINED() \
-	} \
+#define UNWRAP_DBI() \
+    DBI* dbi = nullptr; \
+    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbi)))
 
-#define ASSERT_DBI_OPEN(env, dbi) \
-	ASSERT_DBI_INITIALIZED(env, dbi) \
-	if (dbi->db == nullptr) { \
+#define UNWRAP_DBI_OPEN() \
+    UNWRAP_DBI() \
+    if (dbi == nullptr || !dbi->opened()) { \
 		::napi_throw_error(env, nullptr, "Database not open"); \
 		NAPI_RETURN_UNDEFINED() \
 	}
-
-#define UNWRAP_DB() \
-    DBI* dbi; \
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbi)))
 
 #define NAPI_GET_STRING(from, to) \
 	std::string to; \

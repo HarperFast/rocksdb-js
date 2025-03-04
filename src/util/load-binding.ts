@@ -4,11 +4,17 @@ import type { Key } from '../types.js';
 const binding = nodeGypBuild();
 
 export interface DBI {
-	new(path: string, name?: string): DBI;
+	new(): DBI;
 	close(): void;
 	get(key: Key): Buffer;
 	opened: boolean;
-	open(options?: { name?: string; parallelism?: number }): void;
+	open(
+		path: string,
+		options?: {
+			name?: string;
+			parallelism?: number;
+		}
+	): void;
 	put(key: Key, value: any): void;
 }
 

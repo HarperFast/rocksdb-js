@@ -20,7 +20,7 @@ import { Transaction } from './transaction.js';
  */
 export class RocksDatabase {
 	#cache: boolean;
-	#db: DBI;
+	#dbi: DBI;
 	#decoder?: Decoder | null;
 	#dupSort: boolean;
 	#encoder: Encoder | null;
@@ -31,7 +31,9 @@ export class RocksDatabase {
 		readKey?: ReadKeyFunction<Key>;
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
+	#name?: string;
 	#parallelism?: number;
+	#path: string;
 	#readKey: ReadKeyFunction<Key>;
 	#useVersions: boolean;
 	#writeKey: WriteKeyFunction<Key>;
@@ -49,14 +51,16 @@ export class RocksDatabase {
 		}
 
 		this.#cache = options?.cache ?? false; // TODO: better name?
-		this.#db = new DBI(path, options?.name);
+		this.#dbi = new DBI();
 		this.#dupSort = options?.dupSort ?? false; // TODO: better name?
 		this.#encoder = options?.encoder ?? null;
 		this.#encoding = options?.encoding ?? 'msgpack';
 		this.#keyBuffer = Buffer.allocUnsafeSlow(0x1000); // 4KB
 		this.#keyEncoder = options?.keyEncoder;
 		this.#keyEncoding = options?.keyEncoding ?? 'ordered-binary';
+		this.#name = options?.name;
 		this.#parallelism = options?.parallelism;
+		this.#path = path;
 		this.#readKey = orderedBinary.readKey;
 		this.#useVersions = options?.useVersions ?? false; // TODO: better name?
 		this.#writeKey = orderedBinary.writeKey;
@@ -66,7 +70,7 @@ export class RocksDatabase {
 		}
 	}
 
-		/**
+	/**
 	 * In memory lock mechanism for cache resolution.
 	 * @param key 
 	 * @param version 
@@ -80,7 +84,7 @@ export class RocksDatabase {
 	}
 
 	close() {
-		// this.#db.close();
+		this.#dbi.close();
 	}
 
 	// committed
@@ -119,11 +123,11 @@ export class RocksDatabase {
 			return bytes;
 		}
 
-		if (!this.#db) {
+		if (!this.#dbi.opened) {
 			throw new Error('Database not open');
 		}
 
-		const result = this.#db.get(key);
+		const result = this.#dbi.get(key);
 		if (result && this.#encoding === 'json') {
 			return JSON.parse(result.toString());
 		}
@@ -228,15 +232,16 @@ export class RocksDatabase {
 		options?: RocksDatabaseOptions
 	): Promise<RocksDatabase> {
 		const db = new RocksDatabase(path, options);
-		return db; // db.open();
+		return db.open();
 	}
 
 	async open(): Promise<RocksDatabase> {
-		if (this.#db.opened) {
+		if (this.#dbi.opened) {
 			return this;
 		}
 
-		this.#db.open({
+		this.#dbi.open(this.#path, {
+			name: this.#name,
 			parallelism: this.#parallelism,
 		});
 
@@ -294,15 +299,15 @@ export class RocksDatabase {
 	}
 
 	put(key: Key, value: any, options?: PutOptions) {
-		if (!this.#db) {
+		if (!this.#dbi.opened) {
 			throw new Error('Database not open');
 		}
 
-		this.#db.put(key, value);
+		this.#dbi.put(key, value);
 	}
 
 	remove(key: Key, ifVersionOrValue?: symbol | number | null) {
-		if (!this.#db) {
+		if (!this.#dbi.opened) {
 			throw new Error('Database not open');
 		}
 
@@ -368,7 +373,7 @@ interface RocksDatabaseOptions {
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	keyEncoding?: KeyEncoding;
-	name?: string;
+	name?: string; // defaults to 'default'
 	parallelism?: number;
 	useVersions?: boolean;
 };
