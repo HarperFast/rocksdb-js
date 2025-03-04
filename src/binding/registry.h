@@ -20,7 +20,7 @@ struct DBOptions final {
  * the Registry.
  */
 struct RocksDBDescriptor final {
-	RocksDBDescriptor(rocksdb::TransactionDB* db) : db(db) {}
+	RocksDBDescriptor(std::shared_ptr<rocksdb::TransactionDB> db) : db(db) {}
 
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
@@ -31,7 +31,10 @@ struct RocksDBDescriptor final {
  * returned by the Registry and is used by the DBI.
  */
 struct RocksDBHandle final {
-	RocksDBHandle(std::shared_ptr<rocksdb::TransactionDB> db, std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : db(db), column(column) {}
+	RocksDBHandle(
+		std::shared_ptr<rocksdb::TransactionDB> db,
+		std::shared_ptr<rocksdb::ColumnFamilyHandle> column
+	) : db(db), column(column) {}
 
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
@@ -60,6 +63,7 @@ public:
 	}
 
 	static void cleanup() {
+		// delete the registry instance
 		instance.reset();
 	}
 

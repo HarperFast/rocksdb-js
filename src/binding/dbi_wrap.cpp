@@ -104,21 +104,42 @@ napi_value put(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+napi_value remove(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], key)
+	UNWRAP_DBI_OPEN()
+
+	rocksdb::Status status = dbi->db->Delete(
+		rocksdb::WriteOptions(),
+		dbi->column.get(),
+		rocksdb::Slice(key)
+	);
+	if (!status.ok()) {
+		::napi_throw_error(env, nullptr, status.ToString().c_str());
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
+ * Initializes the `DBI` JavaScript class.
+ */
 void init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "close", nullptr, close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, opened, nullptr, nullptr, napi_default, nullptr },
-		{ "put", nullptr, put, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "put", nullptr, put, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "remove", nullptr, remove, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	constexpr auto className = "DBI";
 	napi_value cons;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,                  // className
-		sizeof(className) - 1,      // length of class name (subtract 1 for null terminator)
+		className,              // className
+		sizeof(className) - 1,  // length of class name (subtract 1 for null terminator)
 		[](napi_env env, napi_callback_info info) -> napi_value {
 			// constructor
 			NAPI_METHOD()

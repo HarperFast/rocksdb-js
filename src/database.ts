@@ -83,6 +83,15 @@ export class RocksDatabase {
 		//
 	}
 
+	/**
+	 * Closes the database.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = await RocksDatabase.open('/path/to/database');
+	 * db.close();
+	 * ```
+	 */
 	close() {
 		this.#dbi.close();
 	}
@@ -227,14 +236,41 @@ export class RocksDatabase {
 		//
 	}
 
+	isOpen() {
+		return this.#dbi.opened;
+	}
+
+	/**
+	 * Sugar method for opening a database.
+	 *
+	 * @param path - The filesystem path to the database.
+	 * @param options - The options for the database.
+	 * @returns A new RocksDatabase instance.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = await RocksDatabase.open('/path/to/database');
+	 * ```
+	 */
 	static async open(
 		path: string,
 		options?: RocksDatabaseOptions
 	): Promise<RocksDatabase> {
-		const db = new RocksDatabase(path, options);
-		return db.open();
+		return new RocksDatabase(path, options).open();
 	}
 
+	/**
+	 * Opens the database. This function returns immediately if the database is
+	 * already open.
+	 *
+	 * @returns A new RocksDatabase instance.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = new RocksDatabase('/path/to/database');
+	 * await db.open();
+	 * ```
+	 */
 	async open(): Promise<RocksDatabase> {
 		if (this.#dbi.opened) {
 			return this;
@@ -306,12 +342,12 @@ export class RocksDatabase {
 		this.#dbi.put(key, value);
 	}
 
-	remove(key: Key, ifVersionOrValue?: symbol | number | null) {
+	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
 		if (!this.#dbi.opened) {
 			throw new Error('Database not open');
 		}
 
-		// This should be similar to put, except no need to pass in the value
+		this.#dbi.remove(key);
 	}
 
 	async transaction(callback: (txn: Transaction) => Promise<void>) {

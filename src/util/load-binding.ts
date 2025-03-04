@@ -16,6 +16,7 @@ export interface DBI {
 		}
 	): void;
 	put(key: Key, value: any): void;
+	remove(key: Key): void;
 }
 
 export const DBI: DBI = binding.DBI;

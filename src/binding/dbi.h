@@ -7,9 +7,12 @@
 
 namespace rocksdb_js {
 
-struct DBI {
-	DBI() : db(nullptr), column(nullptr) {}
-
+/**
+ * Database interface for a specific RocksDB database and column family.
+ */
+class DBI {
+public:
+	~DBI();
 	void close();
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const { return this->db != nullptr; }
