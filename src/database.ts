@@ -1,4 +1,4 @@
-import { DBI } from './util/load-binding.js';
+import { DB } from './util/load-binding.js';
 import type { Key } from './types.js';
 import {
 	readBufferKey,
@@ -20,7 +20,7 @@ import { Transaction } from './transaction.js';
  */
 export class RocksDatabase {
 	#cache: boolean;
-	#dbi: DBI;
+	#db: DB;
 	#decoder?: Decoder | null;
 	#dupSort: boolean;
 	#encoder: Encoder | null;
@@ -51,7 +51,7 @@ export class RocksDatabase {
 		}
 
 		this.#cache = options?.cache ?? false; // TODO: better name?
-		this.#dbi = new DBI();
+		this.#db = new DB();
 		this.#dupSort = options?.dupSort ?? false; // TODO: better name?
 		this.#encoder = options?.encoder ?? null;
 		this.#encoding = options?.encoding ?? 'msgpack';
@@ -93,7 +93,7 @@ export class RocksDatabase {
 	 * ```
 	 */
 	close() {
-		this.#dbi.close();
+		this.#db.close();
 	}
 
 	// committed
@@ -132,11 +132,11 @@ export class RocksDatabase {
 			return bytes;
 		}
 
-		if (!this.#dbi.opened) {
+		if (!this.#db.opened) {
 			throw new Error('Database not open');
 		}
 
-		const result = this.#dbi.get(key);
+		const result = this.#db.get(key);
 		if (result && this.#encoding === 'json') {
 			return JSON.parse(result.toString());
 		}
@@ -237,7 +237,7 @@ export class RocksDatabase {
 	}
 
 	isOpen() {
-		return this.#dbi.opened;
+		return this.#db.opened;
 	}
 
 	/**
@@ -272,11 +272,11 @@ export class RocksDatabase {
 	 * ```
 	 */
 	async open(): Promise<RocksDatabase> {
-		if (this.#dbi.opened) {
+		if (this.#db.opened) {
 			return this;
 		}
 
-		this.#dbi.open(this.#path, {
+		this.#db.open(this.#path, {
 			name: this.#name,
 			parallelism: this.#parallelism,
 		});
@@ -335,19 +335,19 @@ export class RocksDatabase {
 	}
 
 	put(key: Key, value: any, options?: PutOptions) {
-		if (!this.#dbi.opened) {
+		if (!this.#db.opened) {
 			throw new Error('Database not open');
 		}
 
-		this.#dbi.put(key, value);
+		this.#db.put(key, value);
 	}
 
 	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
-		if (!this.#dbi.opened) {
+		if (!this.#db.opened) {
 			throw new Error('Database not open');
 		}
 
-		this.#dbi.remove(key);
+		this.#db.remove(key);
 	}
 
 	async transaction(callback: (txn: Transaction) => Promise<void>) {

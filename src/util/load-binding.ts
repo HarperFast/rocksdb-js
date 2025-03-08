@@ -3,8 +3,8 @@ import type { Key } from '../types.js';
 
 const binding = nodeGypBuild();
 
-export interface DBI {
-	new(): DBI;
+export interface DB {
+	new(): DB;
 	close(): void;
 	get(key: Key): Buffer;
 	opened: boolean;
@@ -19,6 +19,6 @@ export interface DBI {
 	remove(key: Key): void;
 }
 
-export const DBI: DBI = binding.DBI;
+export const DB: DB = binding.DB;
 
 export const version = binding.version;

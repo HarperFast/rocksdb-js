@@ -54,13 +54,13 @@
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
-#define UNWRAP_DBI() \
-    DBI* dbi = nullptr; \
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbi)))
+#define UNWRAP_DB_HANDLE() \
+    RocksDBHandle* dbHandle = nullptr; \
+    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
 
-#define UNWRAP_DBI_OPEN() \
-    UNWRAP_DBI() \
-    if (dbi == nullptr || !dbi->opened()) { \
+#define UNWRAP_DB_HANDLE_AND_OPEN() \
+    UNWRAP_DB_HANDLE() \
+    if (dbHandle == nullptr || !dbHandle->opened()) { \
 		::napi_throw_error(env, nullptr, "Database not open"); \
 		NAPI_RETURN_UNDEFINED() \
 	}

@@ -15,7 +15,6 @@ describe('CRUD Operations', () => {
 	});
 
 	describe('get()', () => {
-
 		it('should return undefined if key does not exist', async () => {
 			db = await RocksDatabase.open('/tmp/testdb');
 			const value = await db.get('baz');
@@ -31,7 +30,6 @@ describe('CRUD Operations', () => {
 			await db.put('foo', 'bar1');
 			const value = await db.get('foo');
 			expect(value).toBe('bar1');
-			console.log('done bar1');
 		});
 
 		it('should set and get a value using custom column family', async () => {

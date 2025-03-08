@@ -1,5 +1,5 @@
 #include "binding.h"
-#include "dbi_wrap.h"
+#include "db_wrap.h"
 #include "macros.h"
 #include "registry.h"
 #include "rocksdb/db.h"
@@ -19,7 +19,7 @@ NAPI_MODULE_INIT() {
 	}, rocksdb_js::Registry::getInstance()));
 
 	// database
-	rocksdb_js::dbi_wrap::init(env, exports);
+	rocksdb_js::db_wrap::init(env, exports);
 
 	return exports;
 }

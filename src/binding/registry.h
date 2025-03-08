@@ -20,10 +20,20 @@ struct DBOptions final {
  * the Registry.
  */
 struct RocksDBDescriptor final {
-	RocksDBDescriptor(std::shared_ptr<rocksdb::TransactionDB> db) : db(db) {}
+	RocksDBDescriptor(
+		std::string path,
+		std::shared_ptr<rocksdb::TransactionDB> db,
+		std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
+	)
+		: path(path), db(db) {
+		for (auto& column : columns) {
+			this->columns[column.first] = column.second;
+		}
+	}
 
-	std::shared_ptr<rocksdb::TransactionDB> db;
-	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+	std::string path;
+	std::weak_ptr<rocksdb::TransactionDB> db;
+	std::map<std::string, std::weak_ptr<rocksdb::ColumnFamilyHandle>> columns;
 };
 
 /**
@@ -31,30 +41,39 @@ struct RocksDBDescriptor final {
  * returned by the Registry and is used by the DBI.
  */
 struct RocksDBHandle final {
-	RocksDBHandle(
-		std::shared_ptr<rocksdb::TransactionDB> db,
-		std::shared_ptr<rocksdb::ColumnFamilyHandle> column
-	) : db(db), column(column) {}
+	RocksDBHandle() = default;
+	RocksDBHandle(std::shared_ptr<rocksdb::TransactionDB> db) : db(db), column(nullptr) {}
+
+	~RocksDBHandle() {
+		this->close();
+	}
+
+	void close() {
+		this->column.reset();
+		this->db.reset();
+	}
+	void open(const std::string& path, const DBOptions& options);
+	bool opened() const { return this->db != nullptr; }
 
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 };
 
 /**
- * Tracks all RocksDB databases instances.
+ * Tracks all RocksDB databases instances using a RocksDBDescriptor that
+ * contains a weak reference to the database and column families.
  */
 class Registry final {
 private:
+	// private constructor
 	Registry() = default;
 
 	std::map<std::string, std::unique_ptr<RocksDBDescriptor>> databases;
 
 	static std::unique_ptr<Registry> instance;
-	static std::mutex mutex;
+	std::mutex mutex;
 
 public:
-	~Registry() = default;
-
 	static Registry* getInstance() {
 		if (!instance) {
 			instance = std::unique_ptr<Registry>(new Registry());
@@ -67,7 +86,15 @@ public:
 		instance.reset();
 	}
 
-	static std::shared_ptr<RocksDBHandle> openRocksDB(const std::string& path, const DBOptions& options);
+	std::unique_ptr<RocksDBHandle> openRocksDB(const std::string& path, const DBOptions& options);
+
+	/**
+	 * Get the number of databases in the registry.
+	 */
+	size_t size() {
+		std::lock_guard<std::mutex> lock(mutex);
+		return this->databases.size();
+	}
 };
 
 } // namespace rocksdb_js

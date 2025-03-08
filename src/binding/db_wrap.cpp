@@ -1,20 +1,19 @@
-#include "dbi.h"
-#include "dbi_wrap.h"
+#include "db_wrap.h"
 #include "macros.h"
 #include "registry.h"
 #include "util.h"
 #include <thread>
 #include <node_api.h>
 
-namespace rocksdb_js::dbi_wrap {
+namespace rocksdb_js::db_wrap {
 
 napi_value close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-	UNWRAP_DBI()
+	UNWRAP_DB_HANDLE()
 
-	if (dbi != nullptr) {
-		dbi->close();
-		dbi = nullptr;
+	if (dbHandle != nullptr) {
+		dbHandle->close();
+		dbHandle = nullptr;
 	}
 	
 	NAPI_RETURN_UNDEFINED()
@@ -22,15 +21,16 @@ napi_value close(napi_env env, napi_callback_info info) {
 
 napi_value get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	UNWRAP_DBI_OPEN()
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
 
 	std::string value;
-	rocksdb::Status status = dbi->db->Get(
+	auto column = dbHandle->column.get();
+	rocksdb::Status status = dbHandle->db->Get(
 		rocksdb::ReadOptions(),
-		dbi->column.get(),
+		column,
 		rocksdb::Slice(key),
 		&value
 	);
@@ -54,9 +54,9 @@ napi_value get(napi_env env, napi_callback_info info) {
  */
 napi_value open(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	UNWRAP_DBI()
+	UNWRAP_DB_HANDLE()
 
-	if (dbi->opened()) {
+	if (dbHandle->opened()) {
 		// already open
 		NAPI_RETURN_UNDEFINED()
 	}
@@ -70,18 +70,18 @@ napi_value open(napi_env env, napi_callback_info info) {
 	int parallelism = std::max<int>(1, std::thread::hardware_concurrency() / 2);
 	rocksdb_js::getProperty(env, options, "parallelism", parallelism);
 
-	DBOptions dbiOptions { name, parallelism };
-	dbi->open(path, dbiOptions);
+	DBOptions dbHandleOptions { name, parallelism };
+	dbHandle->open(path, dbHandleOptions);
 
 	NAPI_RETURN_UNDEFINED()
 }
 
 napi_value opened(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-	UNWRAP_DBI()
+	UNWRAP_DB_HANDLE()
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, dbi->opened(), &result))
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, dbHandle->opened(), &result))
 	return result;
 }
 
@@ -89,11 +89,11 @@ napi_value put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
-	UNWRAP_DBI_OPEN()
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	rocksdb::Status status = dbi->db->Put(
+	rocksdb::Status status = dbHandle->db->Put(
 		rocksdb::WriteOptions(),
-		dbi->column.get(),
+		dbHandle->column.get(),
 		rocksdb::Slice(key),
 		value
 	);
@@ -107,11 +107,11 @@ napi_value put(napi_env env, napi_callback_info info) {
 napi_value remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	NAPI_GET_STRING(argv[0], key)
-	UNWRAP_DBI_OPEN()
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	rocksdb::Status status = dbi->db->Delete(
+	rocksdb::Status status = dbHandle->db->Delete(
 		rocksdb::WriteOptions(),
-		dbi->column.get(),
+		dbHandle->column.get(),
 		rocksdb::Slice(key)
 	);
 	if (!status.ok()) {
@@ -122,7 +122,7 @@ napi_value remove(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Initializes the `DBI` JavaScript class.
+ * Initializes the `DB` JavaScript class.
  */
 void init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
@@ -134,7 +134,7 @@ void init(napi_env env, napi_value exports) {
 		{ "remove", nullptr, remove, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
-	constexpr auto className = "DBI";
+	constexpr auto className = "DB";
 	napi_value cons;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
@@ -147,9 +147,9 @@ void init(napi_env env, napi_value exports) {
 				NAPI_STATUS_THROWS(::napi_wrap(
 					env,
 					jsThis,
-					reinterpret_cast<void*>(new DBI()),
+					reinterpret_cast<void*>(new RocksDBHandle()),
 					[](napi_env env, void* data, void* hint) {
-						DBI* ptr = reinterpret_cast<DBI*>(data);
+						RocksDBHandle* ptr = reinterpret_cast<RocksDBHandle*>(data);
 						delete ptr;
 					},
 					nullptr,
@@ -171,4 +171,4 @@ void init(napi_env env, napi_value exports) {
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, cons))
 }
 
-} // namespace rocksdb_js::dbi_wrap
+} // namespace rocksdb_js::db_wrap
