@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { RocksDatabase } from '../src/index.js';
 import { rimraf } from 'rimraf';
-import fs from 'fs';
 
 describe('CRUD Operations', () => {
 	let db: RocksDatabase | null = null;
