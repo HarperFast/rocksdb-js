@@ -46,7 +46,7 @@ void RocksDBHandle::open(const std::string& path, const DBOptions& options) {
  * column family handle.
  */
 std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, const DBOptions& options) {
-	bool doCreate = true;
+	bool dbExists = false;
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
@@ -58,6 +58,9 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 		std::shared_ptr<rocksdb::TransactionDB> existingDb = dbIterator->second->db.lock();
 		if (existingDb) {
 			db = existingDb;
+			dbExists = true;
+
+			// manually copy the columns because we don't know which ones are valid
 			bool columnExists = false;
 			for (auto& column : dbIterator->second->columns) {
 				std::shared_ptr<rocksdb::ColumnFamilyHandle> existingColumn = column.second.lock();
@@ -71,11 +74,10 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 			if (!columnExists) {
 				columns[name] = createColumn(db, name);
 			}
-			doCreate = false;
 		}
 	}
 	
-	if (doCreate) {
+	if (!dbExists) {
 		// database doesn't exist, create it
 		rocksdb::Options dbOptions;
 		dbOptions.comparator = rocksdb::BytewiseComparator();
