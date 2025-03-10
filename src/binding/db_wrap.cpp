@@ -1,6 +1,6 @@
+#include "db_registry.h"
 #include "db_wrap.h"
 #include "macros.h"
-#include "registry.h"
 #include "util.h"
 #include <thread>
 #include <node_api.h>

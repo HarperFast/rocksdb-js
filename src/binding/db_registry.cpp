@@ -1,14 +1,14 @@
-#include "registry.h"
+#include "db_registry.h"
 #include "macros.h"
 #include "util.h"
 
 namespace rocksdb_js {
 
 // Initialize the static instance
-std::unique_ptr<Registry> Registry::instance;
+std::unique_ptr<DBRegistry> DBRegistry::instance;
 
 void RocksDBHandle::open(const std::string& path, const DBOptions& options) {
-	auto handle = Registry::getInstance()->openRocksDB(path, options);
+	auto handle = DBRegistry::getInstance()->openRocksDB(path, options);
 	this->db = std::move(handle->db);
 	this->column = std::move(handle->column);
 	// note: handle is now invalid
@@ -23,7 +23,7 @@ void RocksDBHandle::open(const std::string& path, const DBOptions& options) {
  * @return A handle to the RocksDB database including the transaction db and
  * column family handle.
  */
-std::unique_ptr<RocksDBHandle> Registry::openRocksDB(const std::string& path, const DBOptions& options) {
+std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, const DBOptions& options) {
 	bool doCreate = true;
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;

@@ -1,7 +1,7 @@
 #include "binding.h"
+#include "db_registry.h"
 #include "db_wrap.h"
 #include "macros.h"
-#include "registry.h"
 #include "rocksdb/db.h"
 #include "util.h"
 
@@ -14,9 +14,9 @@ NAPI_MODULE_INIT() {
 
 	// registry
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		rocksdb_js::Registry* registry = (rocksdb_js::Registry*)data;
+		rocksdb_js::DBRegistry* registry = (rocksdb_js::DBRegistry*)data;
 		registry->cleanup();
-	}, rocksdb_js::Registry::getInstance()));
+	}, rocksdb_js::DBRegistry::getInstance()));
 
 	// database
 	rocksdb_js::db_wrap::init(env, exports);

@@ -1,5 +1,5 @@
-#ifndef __REGISTRY_H__
-#define __REGISTRY_H__
+#ifndef __DB_REGISTRY_H__
+#define __DB_REGISTRY_H__
 
 #include <mutex>
 #include "rocksdb/db.h"
@@ -63,20 +63,20 @@ struct RocksDBHandle final {
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
  * contains a weak reference to the database and column families.
  */
-class Registry final {
+class DBRegistry final {
 private:
 	// private constructor
-	Registry() = default;
+	DBRegistry() = default;
 
 	std::map<std::string, std::unique_ptr<RocksDBDescriptor>> databases;
 
-	static std::unique_ptr<Registry> instance;
+	static std::unique_ptr<DBRegistry> instance;
 	std::mutex mutex;
 
 public:
-	static Registry* getInstance() {
+	static DBRegistry* getInstance() {
 		if (!instance) {
-			instance = std::unique_ptr<Registry>(new Registry());
+			instance = std::unique_ptr<DBRegistry>(new DBRegistry());
 		}
 		return instance.get();
 	}

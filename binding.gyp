@@ -8,8 +8,8 @@
 			],
 			'sources': [
 				'src/binding/binding.cpp',
+				'src/binding/db_registry.cpp',
 				'src/binding/db_wrap.cpp',
-				'src/binding/registry.cpp',
 			],
 			'link_settings': {
 				'conditions': [
