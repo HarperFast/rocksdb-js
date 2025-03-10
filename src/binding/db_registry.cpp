@@ -7,6 +7,28 @@ namespace rocksdb_js {
 // Initialize the static instance
 std::unique_ptr<DBRegistry> DBRegistry::instance;
 
+/**
+ * Helper function to create a column family.
+ * 
+ * @param db - The RocksDB database instance.
+ * @param name - The name of the column family.
+ */
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<rocksdb::TransactionDB> db, const std::string& name) {
+	rocksdb::ColumnFamilyHandle* cfHandle;
+	rocksdb::Status status = db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
+	if (!status.ok()) {
+		throw std::runtime_error(status.ToString().c_str());
+	}
+	return std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandle);
+}
+
+/**
+ * Open a RocksDB database with column family, caches it in the registry, and
+ * return a handle to it.
+ * 
+ * @param path - The filesystem path to the database.
+ * @param options - The options for the database.
+ */
 void RocksDBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handle = DBRegistry::getInstance()->openRocksDB(path, options);
 	this->db = std::move(handle->db);
@@ -27,6 +49,7 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 	bool doCreate = true;
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+	std::string name = options.name.empty() ? "default" : options.name;
 	std::lock_guard<std::mutex> lock(mutex);
 
 	// check if database already exists
@@ -35,11 +58,18 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 		std::shared_ptr<rocksdb::TransactionDB> existingDb = dbIterator->second->db.lock();
 		if (existingDb) {
 			db = existingDb;
+			bool columnExists = false;
 			for (auto& column : dbIterator->second->columns) {
 				std::shared_ptr<rocksdb::ColumnFamilyHandle> existingColumn = column.second.lock();
 				if (existingColumn) {
 					columns[column.first] = existingColumn;
+					if (column.first == name) {
+						columnExists = true;
+					}
 				}
+			}
+			if (!columnExists) {
+				columns[name] = createColumn(db, name);
 			}
 			doCreate = false;
 		}
@@ -77,8 +107,15 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 			delete ptr;
 		});
 
+		bool columnExists = false;
 		for (size_t n = 0; n < cfHandles.size(); ++n) {
 			columns[cfDescriptors[n].name] = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
+			if (cfDescriptors[n].name == name) {
+				columnExists = true;
+			}
+		}
+		if (!columnExists) {
+			columns[name] = createColumn(db, name);
 		}
 
 		this->databases[path] = std::make_unique<RocksDBDescriptor>(path, db, columns);
@@ -87,19 +124,10 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 	std::unique_ptr<RocksDBHandle> handle = std::make_unique<RocksDBHandle>(db);
 	
 	// handle the column family
-	std::string name = options.name.empty() ? "default" : options.name;
 	auto colIterator = columns.find(name);
 	if (colIterator != columns.end()) {
 		// column family already exists
 		handle->column = colIterator->second;
-	} else if (name != "default") {
-		// column family doesn't exist, create it
-		rocksdb::ColumnFamilyHandle* cfHandle;
-		rocksdb::Status status = db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
-		if (!status.ok()) {
-			throw std::runtime_error(status.ToString().c_str());
-		}
-		handle->column = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandle);
 	} else {
 		// use the default column family
 		handle->column = columns[rocksdb::kDefaultColumnFamilyName];
