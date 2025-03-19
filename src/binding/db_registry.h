@@ -1,6 +1,7 @@
 #ifndef __DB_REGISTRY_H__
 #define __DB_REGISTRY_H__
 
+#include <memory>
 #include <mutex>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"

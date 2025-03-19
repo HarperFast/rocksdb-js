@@ -1,42 +1,15 @@
-import { DB } from './util/load-binding.js';
 import type { Key } from './types.js';
-import {
-	readBufferKey,
-	readUint32Key,
-	writeBufferKey,
-	writeUint32Key,
-	type Encoder,
-	type Decoder,
-	type Encoding,
-	type KeyEncoding,
-	type ReadKeyFunction,
-	type WriteKeyFunction,
-} from './encoding.js';
-import * as orderedBinary from 'ordered-binary';
 import { Transaction } from './transaction.js';
+import { DBI } from './dbi.js';
+import { Store, type StoreOptions } from './store.js';
 
 /**
  * This class is the public API. It exposes the internal native `Database` class.
  */
-export class RocksDatabase {
-	#cache: boolean;
-	#db: DB;
-	#decoder?: Decoder | null;
-	#dupSort: boolean;
-	#encoder: Encoder | null;
-	#encoding: Encoding;
-	#keyBuffer: Buffer;
-	#keyEncoding: KeyEncoding;
-	#keyEncoder?: {
-		readKey?: ReadKeyFunction<Key>;
-		writeKey?: WriteKeyFunction<Buffer | number>;
-	};
-	#name?: string;
-	#parallelism?: number;
-	#path: string;
-	#readKey: ReadKeyFunction<Key>;
-	#useVersions: boolean;
-	#writeKey: WriteKeyFunction<Key>;
+export class RocksDatabase extends DBI {
+	// #cache: boolean;
+	// #dupSort: boolean;
+	// #useVersions: boolean;
 
 	constructor(
 		path: string,
@@ -50,24 +23,17 @@ export class RocksDatabase {
 			throw new TypeError('Options must be an object');
 		}
 
-		this.#cache = options?.cache ?? false; // TODO: better name?
-		this.#db = new DB();
-		this.#dupSort = options?.dupSort ?? false; // TODO: better name?
-		this.#encoder = options?.encoder ?? null;
-		this.#encoding = options?.encoding ?? 'msgpack';
-		this.#keyBuffer = Buffer.allocUnsafeSlow(0x1000); // 4KB
-		this.#keyEncoder = options?.keyEncoder;
-		this.#keyEncoding = options?.keyEncoding ?? 'ordered-binary';
-		this.#name = options?.name;
-		this.#parallelism = options?.parallelism;
-		this.#path = path;
-		this.#readKey = orderedBinary.readKey;
-		this.#useVersions = options?.useVersions ?? false; // TODO: better name?
-		this.#writeKey = orderedBinary.writeKey;
+		const store = new Store(path, options);
 
-		if (this.#dupSort && (this.#cache || this.#useVersions)) {
-			throw new Error('The dupSort flag can not be combined with versions or caching');
-		}
+		super(store);
+
+		// this.#cache = options?.cache ?? false; // TODO: better name?
+		// this.#dupSort = options?.dupSort ?? false; // TODO: better name?
+		// this.#useVersions = options?.useVersions ?? false; // TODO: better name?
+
+		// if (this.#dupSort && (this.#cache || this.#useVersions)) {
+		// 	throw new Error('The dupSort flag can not be combined with versions or caching');
+		// }
 	}
 
 	/**
@@ -75,7 +41,7 @@ export class RocksDatabase {
 	 * @param key 
 	 * @param version 
 	 */
-	attemptLock(key: Key, version: number) {
+	attemptLock(_key: Key, _version: number) {
 		//
 	}
 
@@ -93,14 +59,10 @@ export class RocksDatabase {
 	 * ```
 	 */
 	close() {
-		this.#db.close();
+		this.store.close();
 	}
 
 	// committed
-
-	doesExist(key: Key, versionOrValue: number | Buffer) {
-		//
-	}
 
 	async drop(): Promise<void> {
 		//
@@ -112,92 +74,6 @@ export class RocksDatabase {
 
 	// flushed
 
-		/**
-	 * Retrieves the value for the given key, then returns the decoded value.
-	 */
-	async get(key: Key, options?: GetOptions): Promise<any | undefined> {
-		// TODO: Remove async?
-		// TODO: Return Promise<any> | any?
-		// TODO: Call this.getBinaryFast(key, options)
-		// TODO: decode the bytes into a value/object
-		// TODO: if decoder copies, then call getBinaryFast()
-
-		if (this.#encoding === 'binary' || this.#decoder) {
-			const bytes = this.getBinary(key, options);
-
-			if (this.#decoder) {
-				// TODO: decode
-			}
-
-			return bytes;
-		}
-
-		if (!this.#db.opened) {
-			throw new Error('Database not open');
-		}
-
-		const result = this.#db.get(key);
-		if (result && this.#encoding === 'json') {
-			return JSON.parse(result.toString());
-		}
-
-		return result;
-	}
-
-	/**
-	 * Retrieves the binary data for the given key. This is just like `get()`,
-	 * but bypasses the decoder.
-	 *
-	 * Note: Used by HDBreplication.
-	 */
-	async getBinary(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
-		const value = this.getBinaryFast(key, options);
-		return Buffer.from('TODO');
-	}
-
-	/**
-	 * Retrieves the binary data for the given key using a preallocated,
-	 * reusable buffer. Data in the buffer is only valid until the next get
-	 * operation (including cursor operations).
-	 *
-	 * Note: The reusable buffer slightly differs from a typical buffer:
-	 * - `.length` is set to the size of the value
-	 * - `.byteLength` is set to the size of the full allocated memory area for
-	 *   the buffer (usually much larger).
-	 */
-	async getBinaryFast(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
-		const keyLength = this.#writeKey(key, this.#keyBuffer, 0);
-		return Buffer.from('TODO');
-	}
-
-	/**
-	 * Retrieves a value for the given key as an "entry" object.
-	 *
-	 * An entry object contains a `value` property and when versions are enabled,
-	 * it also contains a `version` property.
-	 */
-	getEntry(key: Key, options?: GetOptions) {
-		const value = this.get(key, options);
-
-		if (value !== undefined) {
-			// TODO: if versions are enabled, add a `version` property
-			return {
-				value,
-			};
-		}
-	}
-
-	/**
-	 * Retrieves all keys within a range.
-	 */
-	getKeys(options?: GetRangeOptions) {
-		//
-	}
-
-	getRange(options?: GetRangeOptions) {
-		//
-	}
-
 	getStats() {
 		return {
 			free: {},
@@ -205,30 +81,22 @@ export class RocksDatabase {
 		};
 	}
 
-	getUserSharedBuffer(key: Key, defaultBuffer?: Buffer) {
+	getUserSharedBuffer(_key: Key, _defaultBuffer?: Buffer) {
 		//
 	}
 
-	getValues(key: Key, options?: GetRangeOptions) {
-		//
-	}
-
-	getValuesCount(key: Key, options?: GetRangeOptions) {
-		//
-	}
-
-	hasLock(key: Key, version: number): boolean {
+	hasLock(_key: Key, _version: number): boolean {
 		return false;
 	}
 
-	async ifNoExists(key: Key): Promise<void> {
+	async ifNoExists(_key: Key): Promise<void> {
 		//
 	}
 
 	async ifVersion(
-		key: Key,
-		version?: number | null,
-		options?: {
+		_key: Key,
+		_version?: number | null,
+		_options?: {
 			allowNotFound?: boolean;
 			ifLessThan?: number;
 		}
@@ -237,7 +105,7 @@ export class RocksDatabase {
 	}
 
 	isOpen() {
-		return this.#db.opened;
+		return this.store.isOpen();
 	}
 
 	/**
@@ -272,86 +140,31 @@ export class RocksDatabase {
 	 * ```
 	 */
 	async open(): Promise<RocksDatabase> {
-		if (this.#db.opened) {
-			return this;
-		}
-
-		this.#db.open(this.#path, {
-			name: this.#name,
-			parallelism: this.#parallelism,
-		});
-
-		if (this.#encoding === 'ordered-binary') {
-			this.#encoder = {
-				writeKey: orderedBinary.writeKey,
-				readKey: orderedBinary.readKey,
-			};
-		} else {
-			const encoderFn = this.#encoder?.encode;
-			let EncoderClass = this.#encoder?.Encoder;
-			if (EncoderClass) {
-				// since we have a custom encoder class, null out the encoder so we
-				// don't pass it to the custom encoder class constructor
-				this.#encoder = null;
-			}
-			if (!EncoderClass && !encoderFn && (this.#encoding === 'cbor' || this.#encoding === 'msgpack')) {
-				EncoderClass = await import(this.#encoding === 'cbor' ? 'cbor-x' : 'msgpackr').then(m => m.Encoder);
-			}
-			if (EncoderClass) {
-				this.#encoder = new EncoderClass({
-					...this.#encoder
-				});
-			} else if (!encoderFn && this.#encoding === 'json') {
-				this.#encoder = {
-					encode: (value: any) => JSON.stringify(value),
-				};
-			}
-		}
-
-		if (this.#encoder?.writeKey && !this.#encoder.encode) {
-			this.#encoder.encode = (value: any, mode?: number): Buffer => {
-				// TODO: Implement
-				return Buffer.from('');
-			};
-			this.#encoder.copyBuffers = true;
-		}
-
-		if (this.#keyEncoding === 'uint32') {
-			this.#readKey = readUint32Key;
-			this.#writeKey = writeUint32Key as WriteKeyFunction<Key>;
-		} else if (this.#keyEncoding === 'binary') {
-			this.#readKey = readBufferKey;
-			this.#writeKey = writeBufferKey as WriteKeyFunction<Key>;
-		} else if (this.#keyEncoder) {
-			const { readKey, writeKey } = this.#keyEncoder;
-			if (!readKey || !writeKey) {
-				throw new Error('Custom key encoder must provide both readKey and writeKey');
-			}
-			this.#readKey = readKey;
-			this.#writeKey = writeKey as WriteKeyFunction<Key>;
-		}
-
+		await this.store.open();
 		return this;
 	}
 
-	put(key: Key, value: any, options?: PutOptions) {
-		if (!this.#db.opened) {
-			throw new Error('Database not open');
-		}
-
-		this.#db.put(key, value);
-	}
-
-	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
-		if (!this.#db.opened) {
-			throw new Error('Database not open');
-		}
-
-		this.#db.remove(key);
-	}
-
+	/**
+	 * Executes all operations in the callback as a single transaction.
+	 *
+	 * @param callback - A async function that receives the transaction as an argument.
+	 * @returns A promise that resolves when the transaction is committed or aborted.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = await RocksDatabase.open('/path/to/database');
+	 * await db.transaction(async (txn) => {
+	 *   await txn.put('key', 'value');
+	 * });
+	 * ```
+	 */
 	async transaction(callback: (txn: Transaction) => Promise<void>) {
-		const txn = new Transaction();
+		if (typeof callback !== 'function') {
+			throw new TypeError('Callback must be a function');
+		}
+
+		const txn = new Transaction(this.store);
+
 		try {
 			await callback(txn);
 			await txn.commit();
@@ -360,55 +173,16 @@ export class RocksDatabase {
 		}
 	}
 
-	unlock(key: Key, version: number): boolean {
+	unlock(_key: Key, _version: number): boolean {
 		//
 
 		return true;
 	}
 }
 
-type GetOptions = {
-	ifNotTxnId?: number;
-	transaction?: Transaction;
-};
-
-type GetRangeOptions = {
-	end?: Key | Uint8Array;
-	exactMatch?: boolean;
-	exclusiveStart?: boolean;
-	inclusiveEnd?: boolean;
-	limit?: number;
-	key?: Key;
-	offset?: number;
-	onlyCount?: boolean;
-	reverse?: boolean;
-	snapshot?: boolean;
-	start?: Key | Uint8Array;
-	transaction?: Transaction;
-	values?: boolean;
-	valuesForKey?: boolean;
-	versions?: boolean;
-};
-
-type PutOptions = {
-	append?: boolean;
-	ifVersion?: number;
-	instructedWrite?: boolean;
-	noDupData?: boolean;
-	noOverwrite?: boolean;
-	version?: number;
-};
-
-interface RocksDatabaseOptions {
+interface RocksDatabaseOptions extends StoreOptions {
 	cache?: boolean;
 	dupSort?: boolean;
-	encoder?: Encoder;
-	encoding?: Encoding;
-	keyEncoder?: {
-		readKey?: ReadKeyFunction<Key>;
-		writeKey?: WriteKeyFunction<Buffer | number>;
-	};
-	keyEncoding?: KeyEncoding;
 	name?: string; // defaults to 'default'
 	parallelism?: number;
 	useVersions?: boolean;

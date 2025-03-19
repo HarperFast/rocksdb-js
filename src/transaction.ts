@@ -1,6 +1,13 @@
-export class Transaction {
-	constructor() {
-		//
+import { DBI } from './dbi';
+import { Store } from './store.js';
+import { Txn } from './util/load-binding.js';
+
+export class Transaction extends DBI {
+	txn: Txn;
+
+	constructor(store: Store) {
+		super(store);
+		this.txn = new Txn();
 	}
 
 	async abort() {
@@ -8,18 +15,6 @@ export class Transaction {
 	}
 	
 	async commit() {
-		//
-	}
-
-	async get(key: string) {
-		//
-	}
-
-	async put(key: string, value: string) {
-		//
-	}
-
-	async remove(key: string) {
 		//
 	}
 }

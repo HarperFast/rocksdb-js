@@ -3,6 +3,7 @@
 #include "db_wrap.h"
 #include "macros.h"
 #include "rocksdb/db.h"
+#include "txn_wrap.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -20,6 +21,9 @@ NAPI_MODULE_INIT() {
 
 	// database
 	rocksdb_js::db_wrap::init(env, exports);
+
+	// transaction
+	rocksdb_js::txn_wrap::init(env, exports);
 
 	return exports;
 }
