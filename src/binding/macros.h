@@ -44,6 +44,18 @@
     NAPI_STATUS_THROWS(::napi_create_function(env, NULL, 0, name, NULL, &name##_fn)) \
     NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, #name, name##_fn))
 
+#define NAPI_CONSTRUCTOR(className) \
+	{ \
+		napi_value newTarget; \
+		::napi_get_new_target(env, info, &newTarget); \
+		if (newTarget == nullptr) { \
+			::napi_throw_error(env, nullptr, className " must be called with 'new'"); \
+			return nullptr; \
+		} \
+	} \
+	napi_value jsThis; \
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
+
 #define NAPI_METHOD() \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))

@@ -5,7 +5,7 @@ const binding = nodeGypBuild();
 
 export type Txn = {
 	new(): Txn;
-	// abort(): void;
+	abort(): void;
 	// commit(): void;
 	get(key: Key): Buffer;
 	// put(key: Key, value: any): void;
@@ -15,6 +15,7 @@ export type Txn = {
 export type DB = {
 	new(): DB;
 	close(): void;
+	createTransaction(): Txn;
 	get(key: Key): Buffer;
 	opened: boolean;
 	open(
@@ -26,7 +27,6 @@ export type DB = {
 	): void;
 	put(key: Key, value: any): void;
 	remove(key: Key): void;
-	transaction(callback: (txn: Txn) => Promise<void>): Promise<void>;
 };
 
 export type DBContext = {

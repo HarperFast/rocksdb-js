@@ -10,8 +10,7 @@
 				'src/binding/binding.cpp',
 				'src/binding/db_registry.cpp',
 				'src/binding/db_wrap.cpp',
-				'src/binding/txn.cpp',
-				'src/binding/txn_wrap.cpp',
+				'src/binding/transaction.cpp',
 			],
 			'link_settings': {
 				'conditions': [

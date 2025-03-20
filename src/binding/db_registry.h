@@ -5,6 +5,7 @@
 #include <mutex>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
+#include <node_api.h>
 
 namespace rocksdb_js {
 
@@ -43,7 +44,7 @@ struct RocksDBDescriptor final {
  */
 struct RocksDBHandle final {
 	RocksDBHandle() = default;
-	RocksDBHandle(std::shared_ptr<rocksdb::TransactionDB> db) : db(db), column(nullptr) {}
+	RocksDBHandle(std::shared_ptr<rocksdb::TransactionDB> db) : db(db) {}
 
 	~RocksDBHandle() {
 		this->close();

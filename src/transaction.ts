@@ -7,7 +7,8 @@ export class Transaction extends DBI {
 
 	constructor(store: Store) {
 		super(store);
-		this.txn = new Txn();
+		this.txn = store.db.createTransaction();
+		console.log('txn', this.txn);
 	}
 
 	async abort() {

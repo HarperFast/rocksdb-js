@@ -1,6 +1,7 @@
 #include "db_registry.h"
 #include "db_wrap.h"
 #include "macros.h"
+#include "transaction.h"
 #include "util.h"
 #include <thread>
 #include <node_api.h>
@@ -17,6 +18,19 @@ napi_value close(napi_env env, napi_callback_info info) {
 	}
 	
 	NAPI_RETURN_UNDEFINED()
+}
+
+napi_value createTransaction(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE()
+
+	napi_value constructor;
+    NAPI_STATUS_THROWS(::napi_get_reference_value(env, rocksdb_js::Transaction::constructor, &constructor))
+
+	napi_value txn;
+	NAPI_STATUS_THROWS(::napi_new_instance(env, constructor, 0, nullptr, &txn))
+
+	return txn;
 }
 
 napi_value get(napi_env env, napi_callback_info info) {
@@ -121,34 +135,18 @@ napi_value remove(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
-napi_value transaction(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	UNWRAP_DB_HANDLE()
-
-	// create a transaction JS object
-	napi_value txn;
-	NAPI_STATUS_THROWS(::napi_create_object(env, &txn))
-
-	// call the callback with the transaction JS object
-	napi_value callback = argv[0];
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_call_function(env, nullptr, callback, 1, &txn, &result))
-
-	return result;
-}
-
 /**
  * Initializes the `DB` JavaScript class.
  */
 void init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "close", nullptr, close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "createTransaction", nullptr, createTransaction, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, opened, nullptr, nullptr, napi_default, nullptr },
 		{ "put", nullptr, put, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "remove", nullptr, remove, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "transaction", nullptr, transaction, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "remove", nullptr, remove, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	constexpr auto className = "DB";
@@ -159,18 +157,19 @@ void init(napi_env env, napi_value exports) {
 		sizeof(className) - 1,  // length of class name (subtract 1 for null terminator)
 		[](napi_env env, napi_callback_info info) -> napi_value {
 			// constructor
-			NAPI_METHOD()
+			napi_value jsThis;
+			NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
 			try {
 				NAPI_STATUS_THROWS(::napi_wrap(
 					env,
 					jsThis,
 					reinterpret_cast<void*>(new RocksDBHandle()),
-					[](napi_env env, void* data, void* hint) {
+					[](napi_env env, void* data, void* hint) { // finalize_cb
 						RocksDBHandle* ptr = reinterpret_cast<RocksDBHandle*>(data);
 						delete ptr;
 					},
-					nullptr,
-					nullptr
+					nullptr, // finalize_hint
+					nullptr  // result
 				));
 
 				return jsThis;
