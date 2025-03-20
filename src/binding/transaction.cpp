@@ -111,7 +111,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "remove", nullptr, Remove, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
-	constexpr auto className = "Txn";
+	constexpr auto className = "Transaction";
 	napi_value cons;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,

@@ -1,4 +1,4 @@
-import { DB } from './util/load-binding';
+import { NativeDatabase } from './util/load-binding';
 import {
 	readBufferKey,
 	readUint32Key,
@@ -34,7 +34,7 @@ export interface StoreOptions {
  * and the Transaction class.
  */
 export class Store {
-	db: DB;
+	db: NativeDatabase;
 	decoder?: Decoder | null;
 	encoder: Encoder | null;
 	encoding: Encoding;
@@ -51,7 +51,7 @@ export class Store {
 	writeKey: WriteKeyFunction<Key>;
 
 	constructor(path: string, options?: StoreOptions) {
-		this.db = new DB();
+		this.db = new NativeDatabase();
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? 'msgpack';
 		this.keyBuffer = Buffer.allocUnsafeSlow(0x1000); // 4KB

@@ -12,8 +12,8 @@ export type NativeTransaction = {
 	// remove(key: Key): void;
 };
 
-export type DB = {
-	new(): DB;
+export type NativeDatabase = {
+	new(): NativeDatabase;
 	close(): void;
 	createTransaction(): NativeTransaction;
 	get(key: Key): Buffer;
@@ -29,6 +29,6 @@ export type DB = {
 	remove(key: Key): void;
 };
 
-export const DB: DB = binding.DB;
+export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const version = binding.version;
