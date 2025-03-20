@@ -1,6 +1,5 @@
 import type { Key } from './types.js';
 import type { Store } from './store.js';
-import type { DBContext } from './util/load-binding.js';
 
 export class DBI {
 	store: Store;

@@ -3,8 +3,8 @@ import type { Key } from '../types.js';
 
 const binding = nodeGypBuild();
 
-export type Txn = {
-	new(): Txn;
+export type NativeTransaction = {
+	new(): NativeTransaction;
 	abort(): void;
 	// commit(): void;
 	get(key: Key): Buffer;
@@ -15,7 +15,7 @@ export type Txn = {
 export type DB = {
 	new(): DB;
 	close(): void;
-	createTransaction(): Txn;
+	createTransaction(): NativeTransaction;
 	get(key: Key): Buffer;
 	opened: boolean;
 	open(
@@ -29,10 +29,6 @@ export type DB = {
 	remove(key: Key): void;
 };
 
-export type DBContext = {
-	txn?: Txn;
-};
-
 export const DB: DB = binding.DB;
-export const Txn: Txn = binding.Txn;
+export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const version = binding.version;
