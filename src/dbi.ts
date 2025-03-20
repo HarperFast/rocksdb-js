@@ -3,11 +3,9 @@ import type { Store } from './store.js';
 import type { DBContext } from './util/load-binding.js';
 
 export class DBI {
-	// context: DBContext | null;
 	store: Store;
 
-	constructor(store: Store, context?: DBContext | null) {
-		// this.context = context ?? null;
+	constructor(store: Store) {
 		this.store = store;
 	}
 
