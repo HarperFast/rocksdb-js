@@ -2,7 +2,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { createWriteStream, readdirSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream';
 import { promisify } from 'node:util';
 import type { Prebuild } from './get-prebuild';
@@ -51,8 +51,12 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 			console.log('-'.repeat(20));
 			console.log(`Listing "${dirname(dest)}"`);
 			console.log(readdirSync(dirname(dest)));
+			console.log(`Listing "${resolve(dest, '../../build')}"`);
+			console.log(readdirSync(resolve(dest, '../../build')));
 			console.log(`Listing "${dest}"`);
 			console.log(readdirSync(dest));
+			console.log(`Listing "${join(dest, 'include')}"`);
+			console.log(readdirSync(join(dest, 'include')));
 			console.log('-'.repeat(20));
 		} else {
 			console.log(`Extracting ${tmpFile} to ${dest}`);
