@@ -11,13 +11,16 @@ namespace rocksdb_js {
 napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR("Database")
 
+	// create shared_ptr on heap so it persists after function returns
+	auto* dbHandle = new std::shared_ptr<RocksDBHandle>(std::make_shared<RocksDBHandle>());
+
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
 			env,
 			jsThis,
-			reinterpret_cast<void*>(new RocksDBHandle()),
-			[](napi_env env, void* data, void* hint) { // finalize_cb
-				RocksDBHandle* ptr = reinterpret_cast<RocksDBHandle*>(data);
+			reinterpret_cast<void*>(dbHandle),
+			[](napi_env env, void* data, void* hint) {
+				auto* ptr = static_cast<std::shared_ptr<RocksDBHandle>*>(data);
 				delete ptr;
 			},
 			nullptr, // finalize_hint
@@ -26,6 +29,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 
 		return jsThis;
 	} catch (const std::exception& e) {
+		delete dbHandle;  // Clean up on error
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
@@ -35,9 +39,8 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
 
-	if (dbHandle != nullptr) {
-		dbHandle->close();
-		dbHandle = nullptr;
+	if (*dbHandle != nullptr) {
+		(*dbHandle)->close();
 	}
 	
 	NAPI_RETURN_UNDEFINED()
@@ -45,28 +48,44 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 
 napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-	UNWRAP_DB_HANDLE()
+	UNWRAP_DB_HANDLE_AND_OPEN("createTransaction")
 
 	napi_value constructor;
-    NAPI_STATUS_THROWS(::napi_get_reference_value(env, rocksdb_js::Transaction::constructor, &constructor))
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, rocksdb_js::Transaction::constructor, &constructor))
 
-	// TODO: pass in the dbHandle?
+	napi_value args[1];
+	
+	// create a new shared_ptr on the heap that shares ownership
+	auto* txnDbHandle = new std::shared_ptr<RocksDBHandle>(*dbHandle);
+	
+	NAPI_STATUS_THROWS(::napi_create_external(
+		env,
+		txnDbHandle,
+		[](napi_env env, void* data, void* hint) {
+			auto* ptr = static_cast<std::shared_ptr<RocksDBHandle>*>(data);
+			delete ptr;
+		},
+		nullptr,
+		&args[0]
+	))
+
 	napi_value txn;
-	NAPI_STATUS_THROWS(::napi_new_instance(env, constructor, 0, nullptr, &txn))
+	NAPI_STATUS_THROWS(::napi_new_instance(env, constructor, 1, args, &txn))
 
 	return txn;
 }
 
 napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	UNWRAP_DB_HANDLE_AND_OPEN("get")
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
 
 	std::string value;
-	auto column = dbHandle->column.get();
-	rocksdb::Status status = dbHandle->db->Get(
+	auto column = (*dbHandle)->column.get();
+
+	rocksdb::Status status = (*dbHandle)->db->Get(
 		rocksdb::ReadOptions(),
 		column,
 		rocksdb::Slice(key),
@@ -76,6 +95,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()
 	}
+
 	if (!status.ok()) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());
 		return nullptr;
@@ -94,7 +114,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_DB_HANDLE()
 
-	if (dbHandle->opened()) {
+	if ((*dbHandle)->opened()) {
 		// already open
 		NAPI_RETURN_UNDEFINED()
 	}
@@ -109,7 +129,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	rocksdb_js::getProperty(env, options, "parallelism", parallelism);
 
 	DBOptions dbHandleOptions { name, parallelism };
-	dbHandle->open(path, dbHandleOptions);
+	(*dbHandle)->open(path, dbHandleOptions);
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -119,7 +139,7 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE()
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, dbHandle->opened(), &result))
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*dbHandle)->opened(), &result))
 	return result;
 }
 
@@ -127,17 +147,14 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	UNWRAP_DB_HANDLE_AND_OPEN("put")
 
-	rocksdb::Status status = dbHandle->db->Put(
+	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Put(
 		rocksdb::WriteOptions(),
-		dbHandle->column.get(),
+		(*dbHandle)->column.get(),
 		rocksdb::Slice(key),
 		value
-	);
-	if (!status.ok()) {
-		::napi_throw_error(env, nullptr, status.ToString().c_str());
-	}
+	))
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -145,16 +162,13 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	NAPI_GET_STRING(argv[0], key)
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	UNWRAP_DB_HANDLE_AND_OPEN("remove")
 
-	rocksdb::Status status = dbHandle->db->Delete(
+	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Delete(
 		rocksdb::WriteOptions(),
-		dbHandle->column.get(),
+		(*dbHandle)->column.get(),
 		rocksdb::Slice(key)
-	);
-	if (!status.ok()) {
-		::napi_throw_error(env, nullptr, status.ToString().c_str());
-	}
+	))
 
 	NAPI_RETURN_UNDEFINED()
 }

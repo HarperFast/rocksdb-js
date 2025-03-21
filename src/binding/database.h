@@ -5,7 +5,7 @@
 
 namespace rocksdb_js {
 
-class Database {
+class Database final {
 public:
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);

@@ -1,11 +1,14 @@
 import type { Key } from './types.js';
 import type { Store } from './store.js';
+import type { NativeDatabase, NativeTransaction } from './util/load-binding.js';
 
 export class DBI {
+	context: NativeDatabase | NativeTransaction;
 	store: Store;
 
-	constructor(store: Store) {
+	constructor(store: Store, context?: NativeDatabase | NativeTransaction) {
 		this.store = store;
+		this.context = context || store.db;
 	}
 
 	doesExist(_key: Key, _versionOrValue: number | Buffer) {
@@ -36,8 +39,7 @@ export class DBI {
 			throw new Error('Database not open');
 		}
 
-		// TODO: pass in the context
-		const result = this.store.db.get(key);
+		const result = this.context.get(key);
 
 		if (result && this.store.encoding === 'json') {
 			return JSON.parse(result.toString());
@@ -110,20 +112,20 @@ export class DBI {
 
 	put(key: Key, value: any, _options?: PutOptions) {
 		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
+			throw new Error('put: Database not open');
 		}
 
 		// TODO: pass in the context
-		this.store.db.put(key, value);
+		this.context.put(key, value);
 	}
 
 	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
 		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
+			throw new Error('remove: Database not open');
 		}
 
 		// TODO: pass in the context
-		this.store.db.remove(key);
+		this.context.remove(key);
 	}
 }
 

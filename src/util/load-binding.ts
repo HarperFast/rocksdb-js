@@ -6,10 +6,10 @@ const binding = nodeGypBuild();
 export type NativeTransaction = {
 	new(): NativeTransaction;
 	abort(): void;
-	// commit(): void;
+	commit(): void;
 	get(key: Key): Buffer;
-	// put(key: Key, value: any): void;
-	// remove(key: Key): void;
+	put(key: Key, value: any): void;
+	remove(key: Key): void;
 };
 
 export type NativeDatabase = {

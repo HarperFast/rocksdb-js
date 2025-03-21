@@ -168,8 +168,9 @@ export class RocksDatabase extends DBI {
 		try {
 			await callback(txn);
 			await txn.commit();
-		} finally {
+		} catch (error) {
 			await txn.abort();
+			throw error;
 		}
 	}
 

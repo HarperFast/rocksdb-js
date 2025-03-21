@@ -6,15 +6,16 @@ export class Transaction extends DBI {
 	txn: NativeTransaction;
 
 	constructor(store: Store) {
-		super(store);
-		this.txn = store.db.createTransaction();
+		const txn = store.db.createTransaction();
+		super(store, txn);
+		this.txn = txn;
 	}
 
 	async abort() {
-		//
+		this.txn.abort();
 	}
 	
 	async commit() {
-		//
+		this.txn.commit();
 	}
 }

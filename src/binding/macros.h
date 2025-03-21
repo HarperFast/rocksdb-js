@@ -44,7 +44,7 @@
     NAPI_STATUS_THROWS(::napi_create_function(env, NULL, 0, name, NULL, &name##_fn)) \
     NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, #name, name##_fn))
 
-#define NAPI_CONSTRUCTOR(className) \
+#define NAPI_CHECK_NEW_TARGET(className) \
 	{ \
 		napi_value newTarget; \
 		::napi_get_new_target(env, info, &newTarget); \
@@ -52,9 +52,19 @@
 			::napi_throw_error(env, nullptr, className " must be called with 'new'"); \
 			return nullptr; \
 		} \
-	} \
+	}
+
+#define NAPI_CONSTRUCTOR(className) \
+	NAPI_CHECK_NEW_TARGET(className) \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
+
+#define NAPI_CONSTRUCTOR_ARGV(className, n) \
+	NAPI_CHECK_NEW_TARGET(className) \
+	napi_value args[n]; \
+	size_t argc = n; \
+	napi_value jsThis; \
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, nullptr))
 
 #define NAPI_METHOD() \
 	napi_value jsThis; \
@@ -67,18 +77,27 @@
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
 #define UNWRAP_DB_HANDLE() \
-    RocksDBHandle* dbHandle = nullptr; \
+    std::shared_ptr<RocksDBHandle>* dbHandle = nullptr; \
     NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
 
-#define UNWRAP_DB_HANDLE_AND_OPEN() \
+#define UNWRAP_DB_HANDLE_AND_OPEN(fnName) \
     UNWRAP_DB_HANDLE() \
-    if (dbHandle == nullptr || !dbHandle->opened()) { \
-		::napi_throw_error(env, nullptr, "Database not open"); \
+    if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+		::napi_throw_error(env, nullptr, fnName ": Database not open"); \
 		NAPI_RETURN_UNDEFINED() \
 	}
 
 #define NAPI_GET_STRING(from, to) \
 	std::string to; \
 	rocksdb_js::getString(env, from, to);
+
+#define ROCKSDB_STATUS_THROWS(call) \
+	{ \
+		rocksdb::Status status = (call); \
+		if (!status.ok()) { \
+			::napi_throw_error(env, nullptr, status.ToString().c_str()); \
+			return nullptr; \
+		} \
+	}
 
 #endif

@@ -26,8 +26,10 @@ struct RocksDBDescriptor final {
 		std::string path,
 		std::shared_ptr<rocksdb::TransactionDB> db,
 		std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
-	)
-		: path(path), db(db) {
+	):
+		path(path),
+		db(db)
+	{
 		for (auto& column : columns) {
 			this->columns[column.first] = column.second;
 		}
