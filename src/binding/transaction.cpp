@@ -3,19 +3,40 @@
 #include "transaction.h"
 #include "util.h"
 
+#define UNWRAP_TRANSACTION_HANDLE() \
+	TransactionHandle* handle = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle))) \
+	if (!handle->txn) { \
+		::napi_throw_error(env, nullptr, "Transaction has already been closed"); \
+		return nullptr; \
+	}
+
 namespace rocksdb_js {
 
+/**
+ * Initialize the constructor reference for the `NativeTransaction` class. We
+ * need to do this because the constructor is static and we need to access it
+ * in the static methods.
+ */
 napi_ref Transaction::constructor = nullptr;
 
+/**
+ * Creates a new `NativeTransaction` object.
+ *
+ * @param env - The NAPI environment.
+ * @param info - The callback info.
+ * @returns The new `NativeTransaction` object.
+ */
 napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV("Transaction", 1)
 
-	std::shared_ptr<DBHandle> dbHandle;
+	// we need to do some null pointer tricks because we're passing around a shared pointer
 	void* ptr = nullptr;
 	NAPI_STATUS_THROWS(::napi_get_value_external(env, args[0], &ptr));
-	dbHandle = *reinterpret_cast<std::shared_ptr<DBHandle>*>(ptr);
+	std::shared_ptr<DBHandle> dbHandle = *reinterpret_cast<std::shared_ptr<DBHandle>*>(ptr);
+
 	if (!dbHandle || !dbHandle->opened()) {
-		::napi_throw_error(env, nullptr, "Transaction: Database not open");
+		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
 	}
 
@@ -39,15 +60,12 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	}
 }
 
+/**
+ * Aborts the transaction.
+ */
 napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-
-	TransactionHandle* handle = nullptr;
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle)))
-
-	if (!handle->txn) {
-		return nullptr;
-	}
+	UNWRAP_TRANSACTION_HANDLE()
 
 	handle->txn->Rollback();
 	handle->release();
@@ -55,16 +73,12 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Commits the transaction.
+ */
 napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-
-	TransactionHandle* handle = nullptr;
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle)))
-
-	if (!handle->txn) {
-		::napi_throw_error(env, nullptr, "Transaction has been aborted/rolled back");
-		return nullptr;
-	}
+	UNWRAP_TRANSACTION_HANDLE()
 
 	handle->txn->Commit();
 	handle->release();
@@ -72,16 +86,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Retrieves a value for the given key.
+ */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-
-	TransactionHandle* handle = nullptr;
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle)))
-
-	if (!handle->txn) {
-		::napi_throw_error(env, nullptr, "Transaction has been aborted/rolled back");
-		return nullptr;
-	}
+	UNWRAP_TRANSACTION_HANDLE()
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
@@ -113,16 +123,12 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Puts a value for the given key.
+ */
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	
-	TransactionHandle* handle = nullptr;
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle)))
-
-	if (!handle->txn) {
-		::napi_throw_error(env, nullptr, "Transaction has been aborted/rolled back");
-		return nullptr;
-	}
+	UNWRAP_TRANSACTION_HANDLE()
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
@@ -135,16 +141,12 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Removes a value for the given key.
+ */
 napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-
-	TransactionHandle* handle = nullptr;
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle)))
-
-	if (!handle->txn) {
-		::napi_throw_error(env, nullptr, "Transaction has been aborted/rolled back");
-		return nullptr;
-	}
+	UNWRAP_TRANSACTION_HANDLE()
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
@@ -154,6 +156,9 @@ napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Initializes the `NativeTransaction` JavaScript class.
+ */
 void Transaction::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr },

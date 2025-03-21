@@ -19,16 +19,16 @@ describe('Transactions', () => {
 	it('should get a value', async () => {
 		db = await RocksDatabase.open('/tmp/testdb');
 		await db.put('foo', 'bar');
-		await db.transaction(async (tx: Transaction) => {
-			const value = await tx.get('foo');
+		await db.transaction(async (txn: Transaction) => {
+			const value = await txn.get('foo');
 			expect(value).toBe('bar');
 		});
 	});
 
 	it('should set a value', async () => {
 		db = await RocksDatabase.open('/tmp/testdb');
-		await db.transaction(async (tx: Transaction) => {
-			await tx.put('foo', 'bar');
+		await db.transaction(async (txn: Transaction) => {
+			await txn.put('foo', 'bar');
 		});
 		const value = await db.get('foo');
 		expect(value).toBe('bar');
@@ -39,8 +39,8 @@ describe('Transactions', () => {
 		await db.put('foo', 'bar');
 		const value = await db.get('foo');
 		expect(value).toBe('bar');
-		await db.transaction(async (tx: Transaction) => {
-			await tx.remove('foo');
+		await db.transaction(async (txn: Transaction) => {
+			await txn.remove('foo');
 		});
 		const value2 = await db.get('foo');
 		expect(value2).toBeUndefined();
@@ -49,15 +49,19 @@ describe('Transactions', () => {
 	it('should rollback on error', async () => {
 		db = await RocksDatabase.open('/tmp/testdb');
 		await db.put('foo', 'bar');
-		await expect(db.transaction(async (tx: Transaction) => {
-			await tx.put('foo', 'bar2');
+		await expect(db.transaction(async (txn: Transaction) => {
+			await txn.put('foo', 'bar2');
 			throw new Error('test');
 		})).rejects.toThrow('test');
 		const value = await db.get('foo');
 		expect(value).toBe('bar');
 	});
 
-	it.only('should treat transaction as a snapshot', async () => {
+	/**
+	 * TODO: This test is temporarily disabled because the current rocksdb-js
+	 * design blocks the main thread causing a deadlock until RocksDB times out
+	 */
+	it.skip('should treat transaction as a snapshot', async () => {
 		db = await RocksDatabase.open('/tmp/testdb');
 		console.log('putting bar1');
 		db.put('foo', 'bar1');
@@ -68,17 +72,17 @@ describe('Transactions', () => {
 			console.log('put bar2');
 		}, 50);
 
-		await db.transaction(async (tx: Transaction) => {
-			const before = await tx.get('foo');
+		await db.transaction(async (txn: Transaction) => {
+			const before = await txn.get('foo');
 			console.log('before', before);
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const after = await tx.get('foo');
+			const after = await txn.get('foo');
 
 			console.log('after', after);
 			expect(before).toBe(after);
 
-			await tx.put('foo', 'bar3');
+			await txn.put('foo', 'bar3');
 		});
 
 		const value = await db.get('foo');

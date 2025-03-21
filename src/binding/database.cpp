@@ -6,8 +6,23 @@
 #include <thread>
 #include <node_api.h>
 
+#define UNWRAP_DB_HANDLE() \
+    std::shared_ptr<DBHandle>* dbHandle = nullptr; \
+    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
+
+#define UNWRAP_DB_HANDLE_AND_OPEN() \
+    UNWRAP_DB_HANDLE() \
+    if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+		::napi_throw_error(env, nullptr, "Database not open"); \
+		NAPI_RETURN_UNDEFINED() \
+	}
+
 namespace rocksdb_js {
 
+/**
+ * Creates a new `NativeDatabase` JavaScript object containing an database
+ * handle to an unopened RocksDB database.
+ */
 napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR("Database")
 
@@ -35,6 +50,11 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	}
 }
 
+/**
+ * Closes the RocksDB database. If this is the last database instance for this
+ * given path and column family, it will automatically be removed from the
+ * registry.
+ */
 napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
@@ -46,9 +66,13 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Creates a new `NativeTransaction` JavaScript object with the
+ * `rocksdb::Transaction` active and ready to go.
+ */
 napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-	UNWRAP_DB_HANDLE_AND_OPEN("createTransaction")
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	napi_value constructor;
 	NAPI_STATUS_THROWS(::napi_get_reference_value(env, rocksdb_js::Transaction::constructor, &constructor))
@@ -75,9 +99,12 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 	return txn;
 }
 
+/**
+ * Gets a value from the RocksDB database.
+ */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	UNWRAP_DB_HANDLE_AND_OPEN("get")
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
@@ -134,6 +161,9 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Checks if the RocksDB database is open.
+ */
 napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
@@ -143,11 +173,14 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Puts a key-value pair into the RocksDB database.
+ */
 napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
-	UNWRAP_DB_HANDLE_AND_OPEN("put")
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Put(
 		rocksdb::WriteOptions(),
@@ -159,10 +192,13 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Removes a key from the RocksDB database.
+ */
 napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	NAPI_GET_STRING(argv[0], key)
-	UNWRAP_DB_HANDLE_AND_OPEN("remove")
+	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Delete(
 		rocksdb::WriteOptions(),
@@ -173,6 +209,9 @@ napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Initializes the `NativeDatabase` JavaScript class.
+ */
 void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },

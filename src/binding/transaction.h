@@ -8,8 +8,14 @@
 
 namespace rocksdb_js {
 
-class TransactionHandle final {
-public:
+/**
+ * A handle to a RocksDB transaction. This is used to keep the transaction
+ * alive until the transaction is committed or aborted.
+ *
+ * It also has a reference to the database handle so that the transaction knows
+ * which column family to use.
+ */
+struct TransactionHandle final {
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
 		dbHandle(dbHandle),
 		txn(nullptr)
@@ -25,13 +31,7 @@ public:
 
 	void release() {
 		if (this->txn) {
-			fprintf(stderr, "releasing transaction snapshot\n");
-			auto snapshot = this->txn->GetSnapshot();
-			if (snapshot) {
-				this->dbHandle->db->ReleaseSnapshot(snapshot);
-			}
 			this->txn->ClearSnapshot();
-			fprintf(stderr, "released transaction snapshot\n");
 			delete this->txn;
 			this->txn = nullptr;
 		}
@@ -41,8 +41,19 @@ public:
 	rocksdb::Transaction* txn;
 };
 
-class Transaction final {
-public:
+/**
+ * The `NativeTransaction` JavaScript class implementation.
+ * 
+ * @example
+ * ```js
+ * const db = new binding.NativeDatabase();
+ * db.open('/tmp/testdb');
+ * const txn = new binding.NativeTransaction(db);
+ * txn.put('foo', 'bar');
+ * txn.commit();
+ * ```
+ */
+struct Transaction final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value Abort(napi_env env, napi_callback_info info);
 	static napi_value Commit(napi_env env, napi_callback_info info);

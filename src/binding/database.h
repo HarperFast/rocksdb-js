@@ -5,8 +5,17 @@
 
 namespace rocksdb_js {
 
-class Database final {
-public:
+/**
+ * The `NativeDatabase` JavaScript class implementation.
+ * 
+ * @example
+ * ```js
+ * const db = new binding.NativeDatabase();
+ * db.open('/tmp/testdb');
+ * db.put('foo', 'bar');
+ * ```
+ */
+struct Database final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
 	static napi_value CreateTransaction(napi_env env, napi_callback_info info);

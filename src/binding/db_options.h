@@ -6,7 +6,8 @@
 namespace rocksdb_js {
 
 /**
- * Options for opening a RocksDB database.
+ * Options for opening a RocksDB database. It holds the processed napi argument
+ * values passed in from public `open()` method.
  */
 struct DBOptions final {
 	std::string name;

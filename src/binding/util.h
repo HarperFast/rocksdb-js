@@ -4,6 +4,13 @@
 #include "binding.h"
 #include "macros.h"
 
+/**
+ * This file contains various napi helper functions.
+ *
+ * Note: These function must go in a header file because the compiler doesn't
+ * know the data type sizes until link time.
+ */
+
 namespace rocksdb_js {
 
 static napi_status getString(napi_env env, napi_value from, std::string& to) {

@@ -3,8 +3,26 @@ import { Transaction } from './transaction.js';
 import { DBI } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 
+interface RocksDatabaseOptions extends StoreOptions {
+	cache?: boolean;
+	dupSort?: boolean;
+	name?: string; // defaults to 'default'
+	parallelism?: number;
+	useVersions?: boolean;
+};
+
 /**
- * This class is the public API. It exposes the internal native `Database` class.
+ * The main class for interacting with a RocksDB database.
+ *
+ * Before using this class, you must open the database first.
+ *
+ * @example
+ * ```ts
+ * const db = await RocksDatabase.open('/path/to/database');
+ * await db.put('key', 'value');
+ * const value = await db.get('key');
+ * db.close();
+ * ```
  */
 export class RocksDatabase extends DBI {
 	// #cache: boolean;
@@ -180,11 +198,3 @@ export class RocksDatabase extends DBI {
 		return true;
 	}
 }
-
-interface RocksDatabaseOptions extends StoreOptions {
-	cache?: boolean;
-	dupSort?: boolean;
-	name?: string; // defaults to 'default'
-	parallelism?: number;
-	useVersions?: boolean;
-};

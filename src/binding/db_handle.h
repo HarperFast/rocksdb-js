@@ -12,7 +12,10 @@ namespace rocksdb_js {
 
 /**
  * Handle for a RocksDB database and the selected column family. This handle is
- * returned by the Registry and is used by the DBI.
+ * returned by the Registry and is used by the `Database` class.
+ *
+ * This handle is for convenience since passing around a shared pointer is a
+ * pain.
  */
 struct DBHandle final {
 	DBHandle() = default;

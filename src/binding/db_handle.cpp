@@ -1,7 +1,5 @@
 #include "db_handle.h"
 #include "db_registry.h"
-#include "macros.h"
-#include "util.h"
 
 namespace rocksdb_js {
 

@@ -14,6 +14,9 @@ import {
 import * as orderedBinary from 'ordered-binary';
 import type { Key } from './types';
 
+/**
+ * Options for the `Store` class.
+ */
 export interface StoreOptions {
 	decoder?: Decoder | null;
 	encoder?: Encoder;
@@ -29,9 +32,11 @@ export interface StoreOptions {
 }
 
 /**
- * A store wraps the native database binding and database settings so that a
- * single database instance can be shared between the main RocksDatabase class
- * and the Transaction class.
+ * A store wraps the `NativeDatabase` binding and database settings so that a
+ * single database instance can be shared between the main `RocksDatabase`
+ * instance and the `Transaction` instance.
+ *
+ * This store should not be shared between `RocksDatabase` instances.
  */
 export class Store {
 	db: NativeDatabase;
@@ -50,6 +55,12 @@ export class Store {
 	readKey: ReadKeyFunction<Key>;
 	writeKey: WriteKeyFunction<Key>;
 
+	/**
+	 * Initializes the store with a new `NativeDatabase` instance.
+	 *
+	 * @param path - The path to the database.
+	 * @param options - The options for the store.
+	 */
 	constructor(path: string, options?: StoreOptions) {
 		this.db = new NativeDatabase();
 		this.encoder = options?.encoder ?? null;
@@ -64,17 +75,29 @@ export class Store {
 		this.writeKey = orderedBinary.writeKey;
 	}
 
+	/**
+	 * Closes the database.
+	 */
 	close() {
 		this.db.close();
 	}
 
+	/**
+	 * Checks if the database is open.
+	 *
+	 * @returns `true` if the database is open, `false` otherwise.
+	 */
 	isOpen() {
 		return this.db.opened;
 	}
 
-	async open() {
+	/**
+	 * Opens the database. This must be called before any database operations
+	 * are performed.
+	 */
+	async open(): Promise<void> {
 		if (this.db.opened) {
-			return this;
+			return;
 		}
 
 		this.db.open(this.path, {

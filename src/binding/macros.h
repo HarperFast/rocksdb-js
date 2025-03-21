@@ -4,6 +4,11 @@
 #include <string>
 #include <cstring>
 
+/**
+ * This file contains various preprocessor macros for common napi and RocksDB
+ * operations.
+ */
+
 #define NAPI_STATUS_RETURN(call) \
 	{ \
 		napi_status status = (call); \
@@ -75,17 +80,6 @@
 	size_t argc = n; \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
-
-#define UNWRAP_DB_HANDLE() \
-    std::shared_ptr<DBHandle>* dbHandle = nullptr; \
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
-
-#define UNWRAP_DB_HANDLE_AND_OPEN(fnName) \
-    UNWRAP_DB_HANDLE() \
-    if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-		::napi_throw_error(env, nullptr, fnName ": Database not open"); \
-		NAPI_RETURN_UNDEFINED() \
-	}
 
 #define NAPI_GET_STRING(from, to) \
 	std::string to; \

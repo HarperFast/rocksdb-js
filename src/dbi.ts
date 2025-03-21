@@ -2,13 +2,32 @@ import type { Key } from './types.js';
 import type { Store } from './store.js';
 import type { NativeDatabase, NativeTransaction } from './util/load-binding.js';
 
+/**
+ * The base class for all database operations. This base class is shared by
+ * `RocksDatabase` and `Transaction`.
+ *
+ * This class is not meant to be used directly.
+ */
 export class DBI {
-	context: NativeDatabase | NativeTransaction;
+	#context: NativeDatabase | NativeTransaction;
 	store: Store;
 
-	constructor(store: Store, context?: NativeDatabase | NativeTransaction) {
+	/**
+	 * Initializes the DBI context.
+	 *
+	 * @param store - The store instance.
+	 * @param transaction - The transaction instance.
+	 */
+	constructor(store: Store, transaction?: NativeTransaction) {
+		if (new.target === DBI) {
+			throw new Error('DBI is an abstract class and cannot be instantiated directly');
+		}
+
+		// this ideally should not be public, but JavaScript doesn't support
+		// protected properties
 		this.store = store;
-		this.context = context || store.db;
+
+		this.#context = transaction || store.db;
 	}
 
 	doesExist(_key: Key, _versionOrValue: number | Buffer) {
@@ -39,7 +58,7 @@ export class DBI {
 			throw new Error('Database not open');
 		}
 
-		const result = this.context.get(key);
+		const result = this.#context.get(key);
 
 		if (result && this.store.encoding === 'json') {
 			return JSON.parse(result.toString());
@@ -110,24 +129,30 @@ export class DBI {
 		//
 	}
 
+	/**
+	 * Stores a value for the given key.
+	 */
 	put(key: Key, value: any, _options?: PutOptions) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.context.put(key, value);
+		this.#context.put(key, value);
 	}
 
+	/**
+	 * Removes a value for the given key. If the key does not exist, it will
+	 * not error.
+	 */
 	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.context.remove(key);
+		this.#context.remove(key);
 	}
 }
 
 type GetOptions = {
 	ifNotTxnId?: number;
-	// transaction?: Transaction;
 };
 
 type GetRangeOptions = {
