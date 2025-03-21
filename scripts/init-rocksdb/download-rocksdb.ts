@@ -1,5 +1,5 @@
 import { execFileSync, execSync } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, readdirSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -48,7 +48,12 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 			execSync(`7z x "${tmpFile}" -o"${dirname(tmpFile)}"`, { stdio: 'inherit' });
 			console.log(`Extracting ${tmpFile.replace(/\.xz$/, '')} to ${dest}`);
 			execSync(`7z x "${tmpFile.replace(/\.xz$/, '')}" -o"${dest}"`, { stdio: 'inherit' });
-			execSync(`dir "${dest}"`);
+			console.log('-'.repeat(20));
+			console.log(`Listing "${dirname(dest)}"`);
+			console.log(readdirSync(dirname(dest)));
+			console.log(`Listing "${dest}"`);
+			console.log(readdirSync(dest));
+			console.log('-'.repeat(20));
 		} else {
 			console.log(`Extracting ${tmpFile} to ${dest}`);
 			execFileSync('tar', ['-xf', tmpFile, '-C', dest], { stdio: 'inherit' });
