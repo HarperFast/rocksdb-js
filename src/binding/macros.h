@@ -77,7 +77,7 @@
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
 #define UNWRAP_DB_HANDLE() \
-    std::shared_ptr<RocksDBHandle>* dbHandle = nullptr; \
+    std::shared_ptr<DBHandle>* dbHandle = nullptr; \
     NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
 
 #define UNWRAP_DB_HANDLE_AND_OPEN(fnName) \

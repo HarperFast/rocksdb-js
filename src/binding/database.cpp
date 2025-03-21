@@ -1,5 +1,5 @@
 #include "database.h"
-#include "db_registry.h"
+#include "db_handle.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
@@ -12,7 +12,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR("Database")
 
 	// create shared_ptr on heap so it persists after function returns
-	auto* dbHandle = new std::shared_ptr<RocksDBHandle>(std::make_shared<RocksDBHandle>());
+	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -20,7 +20,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 			jsThis,
 			reinterpret_cast<void*>(dbHandle),
 			[](napi_env env, void* data, void* hint) {
-				auto* ptr = static_cast<std::shared_ptr<RocksDBHandle>*>(data);
+				auto* ptr = static_cast<std::shared_ptr<DBHandle>*>(data);
 				delete ptr;
 			},
 			nullptr, // finalize_hint
@@ -56,13 +56,13 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 	napi_value args[1];
 	
 	// create a new shared_ptr on the heap that shares ownership
-	auto* txnDbHandle = new std::shared_ptr<RocksDBHandle>(*dbHandle);
+	auto* txnDbHandle = new std::shared_ptr<DBHandle>(*dbHandle);
 	
 	NAPI_STATUS_THROWS(::napi_create_external(
 		env,
 		txnDbHandle,
 		[](napi_env env, void* data, void* hint) {
-			auto* ptr = static_cast<std::shared_ptr<RocksDBHandle>*>(data);
+			auto* ptr = static_cast<std::shared_ptr<DBHandle>*>(data);
 			delete ptr;
 		},
 		nullptr,

@@ -57,31 +57,33 @@ describe('Transactions', () => {
 		expect(value).toBe('bar');
 	});
 
-	it.skip('should treat transaction as a snapshot', async () => {
+	it.only('should treat transaction as a snapshot', async () => {
 		db = await RocksDatabase.open('/tmp/testdb');
-		let i = 0;
-		let interval = setInterval(() => {
-			i++;
-			db?.put('foo', i.toString());
-		}, 100);
+		console.log('putting bar1');
+		db.put('foo', 'bar1');
 
-		try {
-			await db.transaction(async (tx: Transaction) => {
-				await new Promise((resolve) => setTimeout(resolve, 250));
-				const before = await tx.get('foo');
-				await new Promise((resolve) => setTimeout(resolve, 250));
-				const after = await tx.get('foo');
-				expect(before).toBe(after);
+		setTimeout(() => {
+			console.log('putting bar2');
+			db?.put('foo', 'bar2');
+			console.log('put bar2');
+		}, 50);
 
-				clearInterval(interval);
-				await tx.put('foo', 'bar');
-			});
+		await db.transaction(async (tx: Transaction) => {
+			const before = await tx.get('foo');
+			console.log('before', before);
 
-			const value = await db.get('foo');
-			expect(value).toBe('bar');
-		} finally {
-			clearInterval(interval);
-		}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const after = await tx.get('foo');
+
+			console.log('after', after);
+			expect(before).toBe(after);
+
+			await tx.put('foo', 'bar3');
+		});
+
+		const value = await db.get('foo');
+		console.log('value', value);
+		expect(value).toBe('bar3');
 	});
 
 	it('should error if callback is not a function', async () => {

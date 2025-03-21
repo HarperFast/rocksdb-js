@@ -1,4 +1,4 @@
-#include "db_registry.h"
+#include "db_handle.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
@@ -10,10 +10,10 @@ napi_ref Transaction::constructor = nullptr;
 napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV("Transaction", 1)
 
-	std::shared_ptr<RocksDBHandle> dbHandle;
+	std::shared_ptr<DBHandle> dbHandle;
 	void* ptr = nullptr;
 	NAPI_STATUS_THROWS(::napi_get_value_external(env, args[0], &ptr));
-	dbHandle = *reinterpret_cast<std::shared_ptr<RocksDBHandle>*>(ptr);
+	dbHandle = *reinterpret_cast<std::shared_ptr<DBHandle>*>(ptr);
 	if (!dbHandle || !dbHandle->opened()) {
 		::napi_throw_error(env, nullptr, "Transaction: Database not open");
 		return nullptr;
@@ -50,8 +50,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 
 	handle->txn->Rollback();
-	delete handle->txn;
-	handle->txn = nullptr;
+	handle->release();
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -68,8 +67,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	handle->txn->Commit();
-	delete handle->txn;
-	handle->txn = nullptr;
+	handle->release();
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -88,10 +86,14 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
 
-	std::string value;
+	auto readOptions = rocksdb::ReadOptions();
+	readOptions.snapshot = handle->txn->GetSnapshot();
+
 	auto column = handle->dbHandle->column.get();
-	rocksdb::Status status = handle->txn->Get(
-		rocksdb::ReadOptions(),
+	std::string value;
+
+	rocksdb::Status status = handle->txn->GetForUpdate(
+		readOptions,
 		column,
 		rocksdb::Slice(key),
 		&value

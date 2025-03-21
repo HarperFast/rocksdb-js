@@ -112,19 +112,15 @@ export class DBI {
 
 	put(key: Key, value: any, _options?: PutOptions) {
 		if (!this.store.isOpen()) {
-			throw new Error('put: Database not open');
+			throw new Error('Database not open');
 		}
-
-		// TODO: pass in the context
 		this.context.put(key, value);
 	}
 
 	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
 		if (!this.store.isOpen()) {
-			throw new Error('remove: Database not open');
+			throw new Error('Database not open');
 		}
-
-		// TODO: pass in the context
 		this.context.remove(key);
 	}
 }
@@ -146,7 +142,6 @@ type GetRangeOptions = {
 	reverse?: boolean;
 	snapshot?: boolean;
 	start?: Key | Uint8Array;
-	// transaction?: Transaction;
 	values?: boolean;
 	valuesForKey?: boolean;
 	versions?: boolean;

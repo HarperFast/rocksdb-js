@@ -28,24 +28,10 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
  * 
  * @param path - The filesystem path to the database.
  * @param options - The options for the database.
- */
-void RocksDBHandle::open(const std::string& path, const DBOptions& options) {
-	auto handle = DBRegistry::getInstance()->openRocksDB(path, options);
-	this->db = std::move(handle->db);
-	this->column = std::move(handle->column);
-	// note: handle is now invalid
-}
-
-/**
- * Open a RocksDB database with column family, caches it in the registry, and
- * return a handle to it.
- * 
- * @param path - The filesystem path to the database.
- * @param options - The options for the database.
  * @return A handle to the RocksDB database including the transaction db and
  * column family handle.
  */
-std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, const DBOptions& options) {
+std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOptions& options) {
 	bool dbExists = false;
 	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
@@ -90,6 +76,8 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 		dbOptions.IncreaseParallelism(options.parallelism);
 
 		rocksdb::TransactionDBOptions txndbOptions;
+		txndbOptions.default_lock_timeout = 1000;
+		txndbOptions.transaction_lock_timeout = 1000;
 
 		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors = {
 			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
@@ -120,10 +108,10 @@ std::unique_ptr<RocksDBHandle> DBRegistry::openRocksDB(const std::string& path, 
 			columns[name] = createColumn(db, name);
 		}
 
-		this->databases[path] = std::make_unique<RocksDBDescriptor>(path, db, columns);
+		this->databases[path] = std::make_unique<DBDescriptor>(path, db, columns);
 	}
 
-	std::unique_ptr<RocksDBHandle> handle = std::make_unique<RocksDBHandle>(db);
+	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(db);
 	
 	// handle the column family
 	auto colIterator = columns.find(name);

@@ -1,5 +1,5 @@
-#ifndef DB_TRANSACTION_H
-#define DB_TRANSACTION_H
+#ifndef __TRANSACTION_H__
+#define __TRANSACTION_H__
 
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -10,15 +10,34 @@ namespace rocksdb_js {
 
 class TransactionHandle final {
 public:
-	TransactionHandle(std::shared_ptr<RocksDBHandle> dbHandle) :
+	TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
 		dbHandle(dbHandle),
 		txn(nullptr)
 	{
 		rocksdb::TransactionOptions txnOptions;
 		this->txn = this->dbHandle->db->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn->SetSnapshot();
 	}
 
-	std::shared_ptr<RocksDBHandle> dbHandle;
+	~TransactionHandle() {
+		this->release();
+	}
+
+	void release() {
+		if (this->txn) {
+			fprintf(stderr, "releasing transaction snapshot\n");
+			auto snapshot = this->txn->GetSnapshot();
+			if (snapshot) {
+				this->dbHandle->db->ReleaseSnapshot(snapshot);
+			}
+			this->txn->ClearSnapshot();
+			fprintf(stderr, "released transaction snapshot\n");
+			delete this->txn;
+			this->txn = nullptr;
+		}
+	}
+
+	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;
 };
 
