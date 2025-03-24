@@ -1,6 +1,6 @@
 import type { Key } from './types.js';
 import { Transaction } from './transaction.js';
-import { DBI } from './dbi.js';
+import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
@@ -24,7 +24,7 @@ interface RocksDatabaseOptions extends StoreOptions {
  * db.close();
  * ```
  */
-export class RocksDatabase extends DBI {
+export class RocksDatabase extends DBI<DBITransactional> {
 	// #cache: boolean;
 	// #dupSort: boolean;
 	// #useVersions: boolean;

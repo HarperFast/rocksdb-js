@@ -1,6 +1,12 @@
 import type { Key } from './types.js';
 import type { Store } from './store.js';
 import type { NativeDatabase, NativeTransaction } from './util/load-binding.js';
+import type { Transaction } from './transaction.js';
+
+export type DBITransactional = {
+	transaction: Transaction;
+};
+
 
 /**
  * The base class for all database operations. This base class is shared by
@@ -8,7 +14,7 @@ import type { NativeDatabase, NativeTransaction } from './util/load-binding.js';
  *
  * This class is not meant to be used directly.
  */
-export class DBI {
+export class DBI<T = unknown> {
 	#context: NativeDatabase | NativeTransaction;
 	store: Store;
 
@@ -37,7 +43,7 @@ export class DBI {
 	/**
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
-	async get(key: Key, options?: GetOptions): Promise<any | undefined> {
+	async get(key: Key, options?: GetOptions & T): Promise<any | undefined> {
 		// TODO: Remove async?
 		// TODO: Return Promise<any> | any?
 		// TODO: Call this.getBinaryFast(key, options)
@@ -73,7 +79,7 @@ export class DBI {
 	 *
 	 * Note: Used by HDBreplication.
 	 */
-	async getBinary(key: Key, options?: GetOptions): Promise<Buffer | undefined> {
+	async getBinary(key: Key, options?: GetOptions & T): Promise<Buffer | undefined> {
 		const _value = this.getBinaryFast(key, options);
 		return Buffer.from('TODO');
 	}
@@ -88,7 +94,7 @@ export class DBI {
 	 * - `.byteLength` is set to the size of the full allocated memory area for
 	 *   the buffer (usually much larger).
 	 */
-	async getBinaryFast(key: Key, _options?: GetOptions): Promise<Buffer | undefined> {
+	async getBinaryFast(key: Key, _options?: GetOptions & T): Promise<Buffer | undefined> {
 		const _keyLength = this.store.writeKey(key, this.store.keyBuffer, 0);
 		return Buffer.from('TODO');
 	}
@@ -99,7 +105,7 @@ export class DBI {
 	 * An entry object contains a `value` property and when versions are enabled,
 	 * it also contains a `version` property.
 	 */
-	getEntry(key: Key, options?: GetOptions) {
+	getEntry(key: Key, options?: GetOptions & T) {
 		const value = this.get(key, options);
 
 		if (value !== undefined) {
@@ -113,26 +119,26 @@ export class DBI {
 	/**
 	 * Retrieves all keys within a range.
 	 */
-	getKeys(_options?: GetRangeOptions) {
+	getKeys(_options?: GetRangeOptions & T) {
 		//
 	}
 
-	getRange(_options?: GetRangeOptions) {
+	getRange(_options?: GetRangeOptions & T) {
 		//
 	}
 
-	getValues(_key: Key, _options?: GetRangeOptions) {
+	getValues(_key: Key, _options?: GetRangeOptions & T) {
 		//
 	}
 
-	getValuesCount(_key: Key, _options?: GetRangeOptions) {
+	getValuesCount(_key: Key, _options?: GetRangeOptions & T) {
 		//
 	}
 
 	/**
 	 * Stores a value for the given key.
 	 */
-	put(key: Key, value: any, _options?: PutOptions) {
+	put(key: Key, value: any, _options?: PutOptions & T) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -143,7 +149,7 @@ export class DBI {
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
 	 */
-	remove(key: Key, _ifVersionOrValue?: symbol | number | null) {
+	remove(key: Key, _ifVersionOrValue?: symbol | number | null, _options?: T) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
