@@ -1,22 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RocksDatabase } from '../src/index.js';
+import { join } from 'node:path';
 import { rimraf } from 'rimraf';
+import { RocksDatabase } from '../src/index.js';
+import { tmpdir } from 'node:os';
 
 describe('Lifecycle', () => {
 	let db: RocksDatabase | null = null;
+	const dbPath = join(tmpdir(), 'testdb');
 
-	beforeEach(() => rimraf('/tmp/testdb'));
+	beforeEach(() => rimraf(dbPath));
 
 	afterEach(() => {
 		if (db) {
 			db.close();
 			db = null;
 		}
-		return rimraf('/tmp/testdb');
+		return rimraf(dbPath);
 	});
 
 	it('should open and close database', async () => {
-		db = new RocksDatabase('/tmp/testdb');
+		db = new RocksDatabase(dbPath);
 
 		db.close(); // noop
 

@@ -9,7 +9,7 @@ std::unique_ptr<DBRegistry> DBRegistry::instance;
 
 /**
  * Helper function to create a column family.
- * 
+ *
  * @param db - The RocksDB database instance.
  * @param name - The name of the column family.
  */
@@ -25,7 +25,7 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
 /**
  * Open a RocksDB database with column family, caches it in the registry, and
  * return a handle to it.
- * 
+ *
  * @param path - The filesystem path to the database.
  * @param options - The options for the database.
  * @return A handle to the RocksDB database including the transaction db and
@@ -62,7 +62,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 			}
 		}
 	}
-	
+
 	if (!dbExists) {
 		// database doesn't exist, create it
 		rocksdb::Options dbOptions;
@@ -112,7 +112,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 	}
 
 	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(db);
-	
+
 	// handle the column family
 	auto colIterator = columns.find(name);
 	if (colIterator != columns.end()) {

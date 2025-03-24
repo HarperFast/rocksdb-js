@@ -62,7 +62,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	if (*dbHandle != nullptr) {
 		(*dbHandle)->close();
 	}
-	
+
 	NAPI_RETURN_UNDEFINED()
 }
 
@@ -78,10 +78,10 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_reference_value(env, rocksdb_js::Transaction::constructor, &constructor))
 
 	napi_value args[1];
-	
+
 	// create a new shared_ptr on the heap that shares ownership
 	auto* txnDbHandle = new std::shared_ptr<DBHandle>(*dbHandle);
-	
+
 	NAPI_STATUS_THROWS(::napi_create_external(
 		env,
 		txnDbHandle,

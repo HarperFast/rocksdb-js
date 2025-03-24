@@ -1,23 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RocksDatabase } from '../src/index.js';
+import { join } from 'node:path';
 import { rimraf } from 'rimraf';
+import { RocksDatabase } from '../src/index.js';
+import { tmpdir } from 'node:os';
 import type { Transaction } from '../src/transaction.js';
 
 describe('Transactions', () => {
 	let db: RocksDatabase | null = null;
-	
-	beforeEach(() => rimraf('/tmp/testdb'));
+	const dbPath = join(tmpdir(), 'testdb');
+
+	beforeEach(() => rimraf(dbPath));
 
 	afterEach(() => {
 		if (db) {
 			db.close();
 			db = null;
 		}
-		return rimraf('/tmp/testdb');
+		return rimraf(dbPath);
 	});
 
 	it('should get a value', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open(dbPath);
 		await db.put('foo', 'bar');
 		await db.transaction(async (txn: Transaction) => {
 			const value = await txn.get('foo');
@@ -26,7 +29,7 @@ describe('Transactions', () => {
 	});
 
 	it('should set a value', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open(dbPath);
 		await db.transaction(async (txn: Transaction) => {
 			await txn.put('foo', 'bar');
 		});
@@ -35,7 +38,7 @@ describe('Transactions', () => {
 	});
 
 	it('should remove a value', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open(dbPath);
 		await db.put('foo', 'bar');
 		const value = await db.get('foo');
 		expect(value).toBe('bar');
@@ -47,7 +50,7 @@ describe('Transactions', () => {
 	});
 
 	it('should rollback on error', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open(dbPath);
 		await db.put('foo', 'bar');
 		await expect(db.transaction(async (txn: Transaction) => {
 			await txn.put('foo', 'bar2');
@@ -62,7 +65,7 @@ describe('Transactions', () => {
 	 * design blocks the main thread causing a deadlock until RocksDB times out
 	 */
 	it.skip('should treat transaction as a snapshot', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open(dbPath);
 		console.log('putting bar1');
 		db.put('foo', 'bar1');
 
@@ -91,7 +94,7 @@ describe('Transactions', () => {
 	});
 
 	it('should error if callback is not a function', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
+		db = await RocksDatabase.open(dbPath);
 		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
 	});
 });
