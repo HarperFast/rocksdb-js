@@ -17,7 +17,10 @@
 				'conditions': [
 					['OS=="win"', {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/rocksdb.lib'
+							'<(module_root_dir)/deps/rocksdb/lib/rocksdb.lib',
+							'rpcrt4.lib',
+							'shell32.lib',
+							'shlwapi.lib'
 						]
 					}, {
 						'libraries': [
