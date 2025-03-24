@@ -80,6 +80,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE()
 
+	// TODO: queue this as async work
 	handle->txn->Commit();
 	handle->release();
 
@@ -102,7 +103,8 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	auto column = handle->dbHandle->column.get();
 	std::string value;
 
-	rocksdb::Status status = handle->txn->GetForUpdate(
+	// TODO: should this be GetForUpdate?
+	rocksdb::Status status = handle->txn->Get(
 		readOptions,
 		column,
 		rocksdb::Slice(key),

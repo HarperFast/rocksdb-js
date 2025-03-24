@@ -30,7 +30,7 @@ describe('Column Families', () => {
 			db2?.close();
 		}
 	});
-	
+
 	it('should reuse same instance for same column family', async () => {
 		db = await RocksDatabase.open('/tmp/testdb', { name: 'foo'});
 		db.put('foo', 'bar');

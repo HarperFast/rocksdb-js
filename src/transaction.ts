@@ -14,11 +14,11 @@ export class Transaction extends DBI {
 		this.#txn = txn;
 	}
 
-	async abort() {
+	abort() {
 		this.#txn.abort();
 	}
 	
-	async commit() {
+	commit() {
 		this.#txn.commit();
 	}
 }
