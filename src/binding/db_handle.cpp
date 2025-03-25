@@ -14,6 +14,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handle = DBRegistry::getInstance()->openDB(path, options);
 	this->db = std::move(handle->db);
 	this->column = std::move(handle->column);
+	this->mode = std::move(handle->mode);
 	// note: handle is now invalid
 }
 

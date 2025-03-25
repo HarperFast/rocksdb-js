@@ -1,4 +1,8 @@
-import { NativeDatabase } from './util/load-binding';
+import {
+	NativeDatabase,
+	type NativeDatabaseOptions,
+	type NativeDatabaseMode,
+} from './util/load-binding';
 import {
 	readBufferKey,
 	readUint32Key,
@@ -17,7 +21,7 @@ import type { Key } from './types';
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions {
+export interface StoreOptions extends NativeDatabaseOptions {
 	decoder?: Decoder | null;
 	encoder?: Encoder;
 	encoding?: Encoding;
@@ -27,8 +31,6 @@ export interface StoreOptions {
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	keyEncoding?: KeyEncoding;
-	name?: string;
-	parallelism?: number;
 }
 
 /**
@@ -52,6 +54,7 @@ export class Store {
 	name: string;
 	parallelism: number;
 	path: string;
+	mode?: NativeDatabaseMode;
 	readKey: ReadKeyFunction<Key>;
 	writeKey: WriteKeyFunction<Key>;
 
@@ -72,6 +75,7 @@ export class Store {
 		this.parallelism = options?.parallelism ?? 1;
 		this.path = path;
 		this.readKey = orderedBinary.readKey;
+		this.mode = options?.mode;
 		this.writeKey = orderedBinary.writeKey;
 	}
 
@@ -103,6 +107,7 @@ export class Store {
 		this.db.open(this.path, {
 			name: this.name,
 			parallelism: this.parallelism,
+			mode: this.mode,
 		});
 
 		if (this.encoding === 'ordered-binary') {

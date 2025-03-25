@@ -20,8 +20,17 @@ struct TransactionHandle final {
 		dbHandle(dbHandle),
 		txn(nullptr)
 	{
-		rocksdb::TransactionOptions txnOptions;
-		this->txn = this->dbHandle->db->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		if (dbHandle->mode == DBMode::Pessimistic) {
+			auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->db.get());
+			rocksdb::TransactionOptions txnOptions;
+			this->txn = tdb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		} else if (dbHandle->mode == DBMode::Optimistic) {
+			auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->db.get());
+			rocksdb::OptimisticTransactionOptions txnOptions;
+			this->txn = odb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		} else {
+			throw std::runtime_error("Invalid database");
+		}
 		this->txn->SetSnapshot();
 	}
 

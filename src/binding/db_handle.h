@@ -5,6 +5,7 @@
 #include <mutex>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
+#include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "db_options.h"
 #include <node_api.h>
 
@@ -18,8 +19,8 @@ namespace rocksdb_js {
  * pain.
  */
 struct DBHandle final {
-	DBHandle() = default;
-	DBHandle(std::shared_ptr<rocksdb::TransactionDB> db) : db(db) {}
+	DBHandle(): mode(DBMode::Default) {}
+	DBHandle(std::shared_ptr<rocksdb::DB> db, DBMode mode) : db(db), mode(mode) {}
 
 	~DBHandle() {
 		this->close();
@@ -32,7 +33,8 @@ struct DBHandle final {
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const { return this->db != nullptr; }
 
-	std::shared_ptr<rocksdb::TransactionDB> db;
+	std::shared_ptr<rocksdb::DB> db;
+	DBMode mode;
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 };
 

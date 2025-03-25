@@ -14,10 +14,12 @@ namespace rocksdb_js {
 struct DBDescriptor final {
 	DBDescriptor(
 		std::string path,
-		std::shared_ptr<rocksdb::TransactionDB> db,
+		DBMode mode,
+		std::shared_ptr<rocksdb::DB> db,
 		std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
 	):
 		path(path),
+		mode(mode),
 		db(db)
 	{
 		for (auto& column : columns) {
@@ -26,7 +28,8 @@ struct DBDescriptor final {
 	}
 
 	std::string path;
-	std::weak_ptr<rocksdb::TransactionDB> db;
+	DBMode mode;
+	std::weak_ptr<rocksdb::DB> db;
 	std::map<std::string, std::weak_ptr<rocksdb::ColumnFamilyHandle>> columns;
 };
 

@@ -12,6 +12,14 @@ export type NativeTransaction = {
 	remove(key: Key): void;
 };
 
+export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
+
+export type NativeDatabaseOptions = {
+	name?: string;
+	parallelism?: number;
+	mode?: NativeDatabaseMode;
+};
+
 export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
@@ -20,10 +28,7 @@ export type NativeDatabase = {
 	opened: boolean;
 	open(
 		path: string,
-		options?: {
-			name?: string;
-			parallelism?: number;
-		}
+		options?: NativeDatabaseOptions
 	): void;
 	put(key: Key, value: any): void;
 	remove(key: Key): void;

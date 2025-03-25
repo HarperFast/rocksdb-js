@@ -13,7 +13,7 @@ std::unique_ptr<DBRegistry> DBRegistry::instance;
  * @param db - The RocksDB database instance.
  * @param name - The name of the column family.
  */
-std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<rocksdb::TransactionDB> db, const std::string& name) {
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<rocksdb::DB> db, const std::string& name) {
 	rocksdb::ColumnFamilyHandle* cfHandle;
 	rocksdb::Status status = db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
 	if (!status.ok()) {
@@ -33,16 +33,25 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
  */
 std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOptions& options) {
 	bool dbExists = false;
-	std::shared_ptr<rocksdb::TransactionDB> db;
 	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
+	std::shared_ptr<rocksdb::DB> db;
 	std::lock_guard<std::mutex> lock(mutex);
 
 	// check if database already exists
 	auto dbIterator = this->databases.find(path);
 	if (dbIterator != this->databases.end()) {
-		std::shared_ptr<rocksdb::TransactionDB> existingDb = dbIterator->second->db.lock();
+		auto existingDb = dbIterator->second->db.lock();
 		if (existingDb) {
+			// check if the database is already open with a different mode
+			if (options.mode != dbIterator->second->mode) {
+				throw std::runtime_error(
+					"Database already open in '" +
+					(dbIterator->second->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
+					"' mode"
+				);
+			}
+
 			db = existingDb;
 			dbExists = true;
 
@@ -75,27 +84,30 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		dbOptions.persist_user_defined_timestamps = true;
 		dbOptions.IncreaseParallelism(options.parallelism);
 
-		rocksdb::TransactionDBOptions txndbOptions;
-		txndbOptions.default_lock_timeout = 1000;
-		txndbOptions.transaction_lock_timeout = 1000;
-
 		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors = {
 			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
 		};
 		std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
 
-		rocksdb::TransactionDB* rdb;
-		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
-		if (!status.ok()) {
-			throw std::runtime_error(status.ToString().c_str());
-		}
+		if (options.mode == DBMode::Optimistic) {
+			rocksdb::OptimisticTransactionDB* rdb;
+			rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+			if (!status.ok()) {
+				throw std::runtime_error(status.ToString().c_str());
+			}
+			db = std::shared_ptr<rocksdb::DB>(rdb);
+		} else {
+			rocksdb::TransactionDBOptions txndbOptions;
+			txndbOptions.default_lock_timeout = 1000;
+			txndbOptions.transaction_lock_timeout = 1000;
 
-		db = std::shared_ptr<rocksdb::TransactionDB>(rdb, [this, path](rocksdb::TransactionDB* ptr) {
-			// this is called when the last reference to the db is released
-			std::lock_guard<std::mutex> lock(mutex);
-			this->databases.erase(path);
-			delete ptr;
-		});
+			rocksdb::TransactionDB* rdb;
+			rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
+			if (!status.ok()) {
+				throw std::runtime_error(status.ToString().c_str());
+			}
+			db = std::shared_ptr<rocksdb::DB>(rdb);
+		}
 
 		bool columnExists = false;
 		for (size_t n = 0; n < cfHandles.size(); ++n) {
@@ -108,10 +120,10 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 			columns[name] = createColumn(db, name);
 		}
 
-		this->databases[path] = std::make_unique<DBDescriptor>(path, db, columns);
+		this->databases[path] = std::make_unique<DBDescriptor>(path, options.mode, db, columns);
 	}
 
-	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(db);
+	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(db, options.mode);
 
 	// handle the column family
 	auto colIterator = columns.find(name);

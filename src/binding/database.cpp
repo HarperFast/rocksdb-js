@@ -135,6 +135,18 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Checks if the RocksDB database is open.
+ */
+napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE()
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*dbHandle)->opened(), &result))
+	return result;
+}
+
+/**
  * Opens the RocksDB database. This must be called before any data methods are called.
  */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
@@ -155,22 +167,24 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	int parallelism = std::max<int>(1, std::thread::hardware_concurrency() / 2);
 	rocksdb_js::getProperty(env, options, "parallelism", parallelism);
 
-	DBOptions dbHandleOptions { name, parallelism };
-	(*dbHandle)->open(path, dbHandleOptions);
+	std::string modeName;
+	rocksdb_js::getProperty(env, options, "mode", modeName);
+
+	DBMode mode = DBMode::Optimistic;
+	if (modeName == "pessimistic") {
+		mode = DBMode::Pessimistic;
+	}
+
+	DBOptions dbHandleOptions { mode, name, parallelism };
+
+	try {
+		(*dbHandle)->open(path, dbHandleOptions);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED()
-}
-
-/**
- * Checks if the RocksDB database is open.
- */
-napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_DB_HANDLE()
-
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*dbHandle)->opened(), &result))
-	return result;
 }
 
 /**
