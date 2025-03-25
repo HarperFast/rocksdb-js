@@ -1,8 +1,8 @@
 import { execFileSync, execSync } from 'node:child_process';
-import { createWriteStream, readdirSync } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream';
 import { promisify } from 'node:util';
 import type { Prebuild } from './get-prebuild';
