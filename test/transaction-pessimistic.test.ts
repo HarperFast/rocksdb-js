@@ -77,8 +77,6 @@ describe('Transactions (pessimistic)', () => {
 			expect(before).toBe(after);
 
 			await txn.put('foo', 'bar3');
-
-			const last = await txn.get('foo');
 		});
 
 		const value = await db.get('foo');
