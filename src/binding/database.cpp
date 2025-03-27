@@ -5,6 +5,7 @@
 #include "util.h"
 #include <thread>
 #include <node_api.h>
+#include <sstream>
 
 #define UNWRAP_DB_HANDLE() \
     std::shared_ptr<DBHandle>* dbHandle = nullptr; \
@@ -201,7 +202,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 		(*dbHandle)->column.get(),
 		rocksdb::Slice(key),
 		value
-	))
+	), "Put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -218,7 +219,7 @@ napi_value Database::Remove(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions(),
 		(*dbHandle)->column.get(),
 		rocksdb::Slice(key)
-	))
+	), "Remove failed")
 
 	NAPI_RETURN_UNDEFINED()
 }

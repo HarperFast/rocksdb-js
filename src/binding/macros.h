@@ -85,11 +85,13 @@
 	std::string to; \
 	rocksdb_js::getString(env, from, to);
 
-#define ROCKSDB_STATUS_THROWS(call) \
+#define ROCKSDB_STATUS_THROWS(call, msg) \
 	{ \
 		rocksdb::Status status = (call); \
 		if (!status.ok()) { \
-			::napi_throw_error(env, nullptr, status.ToString().c_str()); \
+			std::stringstream ss; \
+			ss << msg << ": " << status.ToString(); \
+			::napi_throw_error(env, nullptr, ss.str().c_str()); \
 			return nullptr; \
 		} \
 	}

@@ -60,37 +60,29 @@ describe('Transactions', () => {
 		expect(value).toBe('bar');
 	});
 
-	/**
-	 * TODO: This test is temporarily disabled because the current rocksdb-js
-	 * design blocks the main thread causing a deadlock until RocksDB times out
-	 */
-	it.skip('should treat transaction as a snapshot', async () => {
+	it('should treat transaction as a snapshot', async () => {
 		db = await RocksDatabase.open(dbPath);
-		console.log('putting bar1');
 		db.put('foo', 'bar1');
 
 		setTimeout(() => {
-			console.log('putting bar2');
 			db?.put('foo', 'bar2');
-			console.log('put bar2');
 		}, 50);
 
-		await db.transaction(async (txn: Transaction) => {
+		await expect(db.transaction(async (txn: Transaction) => {
 			const before = await txn.get('foo');
-			console.log('before', before);
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const after = await txn.get('foo');
 
-			console.log('after', after);
 			expect(before).toBe(after);
 
 			await txn.put('foo', 'bar3');
-		});
+
+			const last = await txn.get('foo');
+		})).rejects.toThrow('Transaction commit failed');
 
 		const value = await db.get('foo');
-		console.log('value', value);
-		expect(value).toBe('bar3');
+		expect(value).toBe('bar2');
 	});
 
 	it('should error if callback is not a function', async () => {

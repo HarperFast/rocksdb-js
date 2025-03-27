@@ -2,12 +2,13 @@
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
+#include <sstream>
 
-#define UNWRAP_TRANSACTION_HANDLE() \
+#define UNWRAP_TRANSACTION_HANDLE(fnName) \
 	TransactionHandle* handle = nullptr; \
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle))) \
 	if (!handle->txn) { \
-		::napi_throw_error(env, nullptr, "Transaction has already been closed"); \
+		::napi_throw_error(env, nullptr, fnName " failed: Transaction has already been closed"); \
 		return nullptr; \
 	}
 
@@ -65,9 +66,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-	UNWRAP_TRANSACTION_HANDLE()
+	UNWRAP_TRANSACTION_HANDLE("Abort")
 
-	handle->txn->Rollback();
+	ROCKSDB_STATUS_THROWS(handle->txn->Rollback(), "Transaction rollback failed")
 	handle->release();
 
 	NAPI_RETURN_UNDEFINED()
@@ -78,10 +79,10 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
-	UNWRAP_TRANSACTION_HANDLE()
+	UNWRAP_TRANSACTION_HANDLE("Commit")
 
 	// TODO: queue this as async work
-	handle->txn->Commit();
+	ROCKSDB_STATUS_THROWS(handle->txn->Commit(), "Transaction commit failed")
 	handle->release();
 
 	NAPI_RETURN_UNDEFINED()
@@ -92,7 +93,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	UNWRAP_TRANSACTION_HANDLE()
+	UNWRAP_TRANSACTION_HANDLE("Get")
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
@@ -130,7 +131,7 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	UNWRAP_TRANSACTION_HANDLE()
+	UNWRAP_TRANSACTION_HANDLE("Put")
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
@@ -138,7 +139,7 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	std::string value;
 	rocksdb_js::getString(env, argv[1], value);
 
-	ROCKSDB_STATUS_THROWS(handle->txn->Put(rocksdb::Slice(key), rocksdb::Slice(value)));
+	ROCKSDB_STATUS_THROWS(handle->txn->Put(rocksdb::Slice(key), rocksdb::Slice(value)), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -148,12 +149,12 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	UNWRAP_TRANSACTION_HANDLE()
+	UNWRAP_TRANSACTION_HANDLE("Remove")
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
 
-	ROCKSDB_STATUS_THROWS(handle->txn->Delete(rocksdb::Slice(key)));
+	ROCKSDB_STATUS_THROWS(handle->txn->Delete(rocksdb::Slice(key)), "Transaction remove failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
