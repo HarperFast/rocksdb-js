@@ -21,7 +21,7 @@ import type { Key } from './types';
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions extends NativeDatabaseOptions {
+export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	decoder?: Decoder | null;
 	encoder?: Encoder;
 	encoding?: Encoding;
@@ -31,6 +31,7 @@ export interface StoreOptions extends NativeDatabaseOptions {
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	keyEncoding?: KeyEncoding;
+	pessimistic?: boolean;
 }
 
 /**
@@ -54,7 +55,7 @@ export class Store {
 	name: string;
 	parallelism: number;
 	path: string;
-	mode?: NativeDatabaseMode;
+	pessimistic: boolean;
 	readKey: ReadKeyFunction<Key>;
 	writeKey: WriteKeyFunction<Key>;
 
@@ -74,8 +75,8 @@ export class Store {
 		this.name = options?.name ?? 'default';
 		this.parallelism = options?.parallelism ?? 1;
 		this.path = path;
+		this.pessimistic = options?.pessimistic ?? false;
 		this.readKey = orderedBinary.readKey;
-		this.mode = options?.mode;
 		this.writeKey = orderedBinary.writeKey;
 	}
 
@@ -107,7 +108,7 @@ export class Store {
 		this.db.open(this.path, {
 			name: this.name,
 			parallelism: this.parallelism,
-			mode: this.mode,
+			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 		});
 
 		if (this.encoding === 'ordered-binary') {
