@@ -1,7 +1,6 @@
 import {
 	NativeDatabase,
 	type NativeDatabaseOptions,
-	type NativeDatabaseMode,
 } from './util/load-binding';
 import {
 	readBufferKey,
