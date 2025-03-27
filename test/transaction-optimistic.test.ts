@@ -5,7 +5,7 @@ import { RocksDatabase } from '../src/index.js';
 import { tmpdir } from 'node:os';
 import type { Transaction } from '../src/transaction.js';
 
-describe('Transactions', () => {
+describe('Transactions (optimistic)', () => {
 	let db: RocksDatabase | null = null;
 	const dbPath = join(tmpdir(), 'testdb');
 
