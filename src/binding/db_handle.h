@@ -2,12 +2,11 @@
 #define __DB_HANDLE_H__
 
 #include <memory>
-#include <mutex>
+#include <node_api.h>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "db_options.h"
-#include <node_api.h>
 
 namespace rocksdb_js {
 

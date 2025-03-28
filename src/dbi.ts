@@ -14,7 +14,7 @@ export type DBITransactional = {
  *
  * This class is not meant to be used directly.
  */
-export class DBI<T = unknown> {
+export class DBI<T extends DBITransactional | unknown = unknown> {
 	#context: NativeDatabase | NativeTransaction;
 	store: Store;
 
@@ -138,11 +138,13 @@ export class DBI<T = unknown> {
 	/**
 	 * Stores a value for the given key.
 	 */
-	put(key: Key, value: any, _options?: PutOptions & T) {
+	put(key: Key, value: any, options?: PutOptions & T) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.put(key, value);
+		this.#context.put(key, value, {
+			txnId: 0 // options?.transaction?.id,
+		});
 	}
 
 	/**

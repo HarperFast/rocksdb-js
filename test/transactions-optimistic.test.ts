@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
@@ -81,6 +81,30 @@ describe('Transactions (optimistic)', () => {
 
 		const value = await db.get('foo');
 		expect(value).toBe('bar2');
+	});
+
+	it('should allow transactions across column families', async () => {
+		let db2: RocksDatabase | null = null;
+
+		try {
+			db = await RocksDatabase.open(dbPath);
+			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
+
+			await db.put('foo', 'bar');
+			await db2.put('foo2', 'baz');
+
+			await db.transaction(async (txn: Transaction) => {
+				assert(db);
+				assert(db2);
+				await db.put('foo', 'bar2', { transaction: txn });
+				await db2.put('foo2', 'baz2', { transaction: txn });
+			});
+
+			await expect(db.get('foo')).resolves.toBe('bar2');
+			await expect(db2.get('foo2')).resolves.toBe('baz2');
+		} finally {
+			db2?.close();
+		}
 	});
 
 	it('should error if callback is not a function', async () => {

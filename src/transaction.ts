@@ -23,4 +23,8 @@ export class Transaction extends DBI {
 			this.#txn.commit(resolve, reject);
 		});
 	}
+
+	get id() {
+		return this.#txn.id;
+	}
 }

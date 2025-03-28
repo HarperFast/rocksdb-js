@@ -4,6 +4,7 @@ import type { Key } from '../types.js';
 const binding = nodeGypBuild();
 
 export type NativeTransaction = {
+	id: number;
 	new(): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
@@ -30,7 +31,7 @@ export type NativeDatabase = {
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
-	put(key: Key, value: any, resolve?: () => void, reject?: (err: Error) => void): void;
+	put(key: Key, value: any, options?: { txnId?: number }): void;
 	remove(key: Key): void;
 };
 

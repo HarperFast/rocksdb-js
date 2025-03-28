@@ -187,6 +187,22 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Retrieves the ID of the transaction.
+ */
+napi_value Transaction::Id(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_TRANSACTION_HANDLE("Id")
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env,
+		handle->txn->GetId() & 0xffffffff,
+		&result
+	))
+	return result;
+}
+
 struct TransactionPutState final {
 	TransactionPutState(napi_env env, TransactionHandle* handle, std::string key, std::string value)
 		: asyncWork(nullptr), handle(handle), key(key), value(value) {}
@@ -238,6 +254,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		// merge?
 		{ "put", nullptr, Put, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "remove", nullptr, Remove, nullptr, nullptr, nullptr, napi_default, nullptr }
