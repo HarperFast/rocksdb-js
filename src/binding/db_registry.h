@@ -42,7 +42,7 @@ private:
 	// private constructor
 	DBRegistry() = default;
 
-	std::map<std::string, std::unique_ptr<DBDescriptor>> databases;
+	std::unordered_map<std::string, std::unique_ptr<DBDescriptor>> databases;
 
 	static std::unique_ptr<DBRegistry> instance;
 	std::mutex mutex;

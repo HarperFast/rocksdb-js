@@ -12,7 +12,7 @@ class TxnRegistry {
 private:
 	TxnRegistry() = default;
 
-	std::map<std::string, std::unique_ptr<TransactionHandle>> transactions;
+	std::unordered_map<uint32_t, std::weak_ptr<TransactionHandle>> transactions;
 
 	static std::unique_ptr<TxnRegistry> instance;
 	std::mutex mutex;
