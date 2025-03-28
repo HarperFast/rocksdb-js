@@ -89,20 +89,20 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		};
 		std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
 
-		if (options.mode == DBMode::Optimistic) {
-			rocksdb::OptimisticTransactionDB* rdb;
-			rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		if (options.mode == DBMode::Pessimistic) {
+			rocksdb::TransactionDBOptions txndbOptions;
+			txndbOptions.default_lock_timeout = 10000;
+			txndbOptions.transaction_lock_timeout = 10000;
+
+			rocksdb::TransactionDB* rdb;
+			rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
 			if (!status.ok()) {
 				throw std::runtime_error(status.ToString().c_str());
 			}
 			db = std::shared_ptr<rocksdb::DB>(rdb);
 		} else {
-			rocksdb::TransactionDBOptions txndbOptions;
-			txndbOptions.default_lock_timeout = 1000;
-			txndbOptions.transaction_lock_timeout = 1000;
-
-			rocksdb::TransactionDB* rdb;
-			rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
+			rocksdb::OptimisticTransactionDB* rdb;
+			rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 			if (!status.ok()) {
 				throw std::runtime_error(status.ToString().c_str());
 			}

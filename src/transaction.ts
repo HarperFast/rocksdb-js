@@ -18,7 +18,9 @@ export class Transaction extends DBI {
 		this.#txn.abort();
 	}
 	
-	commit() {
-		this.#txn.commit();
+	commit(): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			this.#txn.commit(resolve, reject);
+		});
 	}
 }

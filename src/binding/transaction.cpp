@@ -74,16 +74,84 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+struct TransactionCommitState final {
+	TransactionCommitState(napi_env env, TransactionHandle* handle)
+		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), handle(handle) {}
+
+	napi_async_work asyncWork;
+	napi_ref resolveRef;
+	napi_ref rejectRef;
+	TransactionHandle* handle;
+	rocksdb::Status status;
+};
+
 /**
  * Commits the transaction.
  */
 napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
+	NAPI_METHOD_ARGV(2)
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit")
 
-	// TODO: queue this as async work
-	ROCKSDB_STATUS_THROWS(handle->txn->Commit(), "Transaction commit failed")
-	handle->release();
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"transaction.commit",
+		NAPI_AUTO_LENGTH,
+		&name
+	))
+
+	TransactionCommitState* state = new TransactionCommitState(env, handle);
+	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, resolve, 1, &state->resolveRef))
+	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, reject, 1, &state->rejectRef))
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env env, void* data) { // execute
+			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
+			state->status = state->handle->txn->Commit();
+			if (state->status.ok()) {
+				state->handle->release();
+			} else {
+				fprintf(stderr, "transaction commit failed: [%s]\n", state->status.ToString().c_str());
+			}
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
+
+			napi_value global;
+			NAPI_STATUS_THROWS_RETURN(::napi_get_global(env, &global))
+
+			if (state->status.ok()) {
+				napi_value resolve;
+				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->resolveRef, &resolve))
+				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+			} else {
+				napi_value error;
+				napi_value errorMsg;
+				napi_value reject;
+				std::stringstream ss;
+				ss << "Transaction commit failed: " << state->status.ToString();
+				std::string errorStr = ss.str();
+				NAPI_STATUS_THROWS_RETURN(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg))
+				NAPI_STATUS_THROWS_RETURN(::napi_create_error(env, nullptr, errorMsg, &error))
+				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->rejectRef, &reject))
+				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, reject, 1, &error, nullptr))
+			}
+
+			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->resolveRef))
+			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->rejectRef))
+
+			delete state;
+		},
+		state,     // data
+		&state->asyncWork // -> result
+	));
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -93,10 +161,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], key)
 	UNWRAP_TRANSACTION_HANDLE("Get")
-
-	std::string key;
-	rocksdb_js::getString(env, argv[0], key);
 
 	auto readOptions = rocksdb::ReadOptions();
 	readOptions.snapshot = handle->txn->GetSnapshot();
@@ -126,20 +192,90 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+struct TransactionPutState final {
+	TransactionPutState(napi_env env, TransactionHandle* handle, std::string key, std::string value)
+		: asyncWork(nullptr), handle(handle), key(key), value(value) {}
+
+	napi_async_work asyncWork;
+	TransactionHandle* handle;
+	std::string key;
+	std::string value;
+	napi_ref resolveRef;
+	napi_ref rejectRef;
+	rocksdb::Status status;
+};
+
 /**
  * Puts a value for the given key.
  */
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(4)
+	NAPI_GET_STRING(argv[0], key)
+	NAPI_GET_STRING(argv[1], value)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
-	std::string key;
-	rocksdb_js::getString(env, argv[0], key);
+	TransactionPutState* state = new TransactionPutState(
+		env,
+		handle,
+		std::move(key),
+		std::move(value)
+	);
 
-	std::string value;
-	rocksdb_js::getString(env, argv[1], value);
+	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, argv[2], 1, &state->resolveRef))
+	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, argv[3], 1, &state->rejectRef))
 
-	ROCKSDB_STATUS_THROWS(handle->txn->Put(rocksdb::Slice(key), rocksdb::Slice(value)), "Transaction put failed")
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"transaction.put",
+		NAPI_AUTO_LENGTH,
+		&name
+	))
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env env, void* data) { // execute
+			TransactionPutState* state = reinterpret_cast<TransactionPutState*>(data);
+			state->status = state->handle->txn->Put(
+				rocksdb::Slice(state->key),
+				rocksdb::Slice(state->value)
+			);
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			TransactionPutState* state = reinterpret_cast<TransactionPutState*>(data);
+
+			napi_value global;
+			NAPI_STATUS_THROWS_RETURN(::napi_get_global(env, &global))
+
+			if (state->status.ok()) {
+				napi_value resolve;
+				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->resolveRef, &resolve))
+				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+			} else {
+				napi_value error;
+				napi_value errorMsg;
+				napi_value reject;
+				std::stringstream ss;
+				ss << "Transaction put failed: " << state->status.ToString();
+				std::string errorStr = ss.str();
+				NAPI_STATUS_THROWS_RETURN(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg))
+				NAPI_STATUS_THROWS_RETURN(::napi_create_error(env, nullptr, errorMsg, &error))
+				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->rejectRef, &reject))
+				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, reject, 1, &error, nullptr))
+			}
+
+			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->resolveRef))
+			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->rejectRef))
+
+			delete state;
+		},
+		state,     // data
+		&state->asyncWork // -> result
+	));
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -149,10 +285,8 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], key)
 	UNWRAP_TRANSACTION_HANDLE("Remove")
-
-	std::string key;
-	rocksdb_js::getString(env, argv[0], key);
 
 	ROCKSDB_STATUS_THROWS(handle->txn->Delete(rocksdb::Slice(key)), "Transaction remove failed")
 

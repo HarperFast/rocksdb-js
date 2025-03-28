@@ -48,6 +48,7 @@ struct TransactionHandle final {
 
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;
+	std::mutex commitMutex;
 };
 
 /**

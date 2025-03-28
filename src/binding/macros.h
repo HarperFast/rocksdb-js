@@ -17,14 +17,39 @@
 		} \
 	}
 
-#define NAPI_STATUS_THROWS(call) \
+#define NAPI_STATUS_THROWS_RETURN(call) \
 	{ \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
 			const napi_extended_error_info* error; \
 			::napi_get_last_error_info(env, &error); \
 			::napi_throw_error(env, nullptr, error->error_message); \
-			return nullptr; \
+			return; \
+		} \
+	}
+
+#define NAPI_STATUS_THROWS_RVAL(call, rval) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			const napi_extended_error_info* error; \
+			::napi_get_last_error_info(env, &error); \
+			::napi_throw_error(env, nullptr, error->error_message); \
+			return rval; \
+		} \
+	}
+
+#define NAPI_STATUS_THROWS(call) \
+	NAPI_STATUS_THROWS_RVAL(call, nullptr)
+
+#define NAPI_STATUS_THROWS_RUNTIME_ERROR(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			const napi_extended_error_info* error; \
+			::napi_get_last_error_info(env, &error); \
+			fprintf(stderr, "NAPI_STATUS_THROWS_RUNTIME_ERROR: %s\n", error->error_message); \
+			throw std::runtime_error(error->error_message); \
 		} \
 	}
 

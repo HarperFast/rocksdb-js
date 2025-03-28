@@ -5,7 +5,7 @@ import { RocksDatabase } from '../src/index.js';
 import { tmpdir } from 'node:os';
 import type { Transaction } from '../src/transaction.js';
 
-describe('Transactions (optimistic)', () => {
+describe('Transactions (pessimistic)', () => {
 	let db: RocksDatabase | null = null;
 	const dbPath = join(tmpdir(), 'testdb');
 
@@ -20,7 +20,7 @@ describe('Transactions (optimistic)', () => {
 	});
 
 	it('should get a value', async () => {
-		db = await RocksDatabase.open(dbPath);
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
 		await db.put('foo', 'bar');
 		await db.transaction(async (txn: Transaction) => {
 			const value = await txn.get('foo');
@@ -29,7 +29,7 @@ describe('Transactions (optimistic)', () => {
 	});
 
 	it('should set a value', async () => {
-		db = await RocksDatabase.open(dbPath);
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
 		await db.transaction(async (txn: Transaction) => {
 			await txn.put('foo', 'bar');
 		});
@@ -38,7 +38,7 @@ describe('Transactions (optimistic)', () => {
 	});
 
 	it('should remove a value', async () => {
-		db = await RocksDatabase.open(dbPath);
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
 		await db.put('foo', 'bar');
 		const value = await db.get('foo');
 		expect(value).toBe('bar');
@@ -50,7 +50,7 @@ describe('Transactions (optimistic)', () => {
 	});
 
 	it('should rollback on error', async () => {
-		db = await RocksDatabase.open(dbPath);
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
 		await db.put('foo', 'bar');
 		await expect(db.transaction(async (txn: Transaction) => {
 			await txn.put('foo', 'bar2');
@@ -61,7 +61,7 @@ describe('Transactions (optimistic)', () => {
 	});
 
 	it('should treat transaction as a snapshot', async () => {
-		db = await RocksDatabase.open(dbPath);
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
 		db.put('foo', 'bar1');
 
 		setTimeout(() => {
@@ -77,14 +77,14 @@ describe('Transactions (optimistic)', () => {
 			expect(before).toBe(after);
 
 			await txn.put('foo', 'bar3');
-		})).rejects.toThrow('Transaction commit failed');
+		})).rejects.toThrow('Transaction put failed: Resource busy');
 
 		const value = await db.get('foo');
 		expect(value).toBe('bar2');
 	});
 
 	it('should error if callback is not a function', async () => {
-		db = await RocksDatabase.open(dbPath);
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
 		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
 	});
 });

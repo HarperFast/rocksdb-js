@@ -1,6 +1,6 @@
 import type { Key } from './types.js';
 import type { Store } from './store.js';
-import type { NativeDatabase, NativeTransaction } from './util/load-binding.js';
+import { NativeDatabase, NativeTransaction } from './util/load-binding.js';
 import type { Transaction } from './transaction.js';
 
 export type DBITransactional = {
@@ -142,7 +142,17 @@ export class DBI<T = unknown> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.put(key, value);
+
+		// TODO: fix this
+		if (this.#context !== this.store.db) {
+			// transaction
+			return new Promise<void>((resolve, reject) => {
+				this.#context.put(key, value, resolve, reject);
+			});
+		} else {
+			// not a transaction
+			this.#context.put(key, value);
+		}
 	}
 
 	/**

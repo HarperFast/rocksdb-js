@@ -192,10 +192,14 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
  * Puts a key-value pair into the RocksDB database.
  */
 napi_value Database::Put(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(2) // 4
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
+	// napi_value resolve = argv[2];
+	// napi_value reject = argv[3];
 	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	// TODO: use async worker
 
 	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Put(
 		rocksdb::WriteOptions(),
