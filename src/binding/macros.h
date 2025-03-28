@@ -17,17 +17,6 @@
 		} \
 	}
 
-#define NAPI_STATUS_THROWS_RETURN(call) \
-	{ \
-		napi_status status = (call); \
-		if (status != napi_ok) { \
-			const napi_extended_error_info* error; \
-			::napi_get_last_error_info(env, &error); \
-			::napi_throw_error(env, nullptr, error->error_message); \
-			return; \
-		} \
-	}
-
 #define NAPI_STATUS_THROWS_RVAL(call, rval) \
 	{ \
 		napi_status status = (call); \
@@ -48,7 +37,6 @@
 		if (status != napi_ok) { \
 			const napi_extended_error_info* error; \
 			::napi_get_last_error_info(env, &error); \
-			fprintf(stderr, "NAPI_STATUS_THROWS_RUNTIME_ERROR: %s\n", error->error_message); \
 			throw std::runtime_error(error->error_message); \
 		} \
 	}
@@ -110,13 +98,50 @@
 	std::string to; \
 	rocksdb_js::getString(env, from, to);
 
+#define _ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+	std::string errorStr; \
+	{ \
+		std::stringstream ss; \
+		ss << msg << ": " << status.ToString(); \
+		errorStr = ss.str(); \
+		if (errorStr.size() > 2 && errorStr.compare(errorStr.size() - 2, 2, ": ") == 0) { \
+			errorStr.erase(errorStr.size() - 2); \
+		} \
+	}
+
+#define ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, msg) \
+	napi_value error; \
+	{ \
+		_ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		napi_value errorMsg; \
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
+		NAPI_STATUS_THROWS(::napi_create_error(env, nullptr, errorMsg, &error)) \
+	}
+
+#define ROCKSDB_STATUS_THROW_NAPI_ERROR(status, msg) \
+	napi_value error; \
+	{ \
+		_ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		napi_value errorMsg; \
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
+		NAPI_STATUS_THROWS(::napi_create_error(env, nullptr, errorMsg, &error)) \
+	}
+
+#define ROCKSDB_STATUS_THROW_NAPI_ERROR_VOID(status, msg) \
+	napi_value error; \
+	{ \
+		_ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		napi_value errorMsg; \
+		NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
+		NAPI_STATUS_THROWS_VOID(::napi_create_error(env, nullptr, errorMsg, &error)) \
+	}
+
 #define ROCKSDB_STATUS_THROWS(call, msg) \
 	{ \
 		rocksdb::Status status = (call); \
 		if (!status.ok()) { \
-			std::stringstream ss; \
-			ss << msg << ": " << status.ToString(); \
-			::napi_throw_error(env, nullptr, ss.str().c_str()); \
+			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, msg) \
+			::napi_throw(env, error); \
 			return nullptr; \
 		} \
 	}

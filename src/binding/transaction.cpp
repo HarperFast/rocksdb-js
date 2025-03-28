@@ -74,6 +74,9 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * State for the `Commit` async work.
+ */
 struct TransactionCommitState final {
 	TransactionCommitState(napi_env env, TransactionHandle* handle)
 		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), handle(handle) {}
@@ -103,8 +106,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	))
 
 	TransactionCommitState* state = new TransactionCommitState(env, handle);
-	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, resolve, 1, &state->resolveRef))
-	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, reject, 1, &state->rejectRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(
 		env,       // node_env
@@ -115,35 +118,27 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			state->status = state->handle->txn->Commit();
 			if (state->status.ok()) {
 				state->handle->release();
-			} else {
-				fprintf(stderr, "transaction commit failed: [%s]\n", state->status.ToString().c_str());
 			}
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
 			napi_value global;
-			NAPI_STATUS_THROWS_RETURN(::napi_get_global(env, &global))
+			NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 			if (state->status.ok()) {
 				napi_value resolve;
-				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
+				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
 			} else {
-				napi_value error;
-				napi_value errorMsg;
 				napi_value reject;
-				std::stringstream ss;
-				ss << "Transaction commit failed: " << state->status.ToString();
-				std::string errorStr = ss.str();
-				NAPI_STATUS_THROWS_RETURN(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg))
-				NAPI_STATUS_THROWS_RETURN(::napi_create_error(env, nullptr, errorMsg, &error))
-				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->rejectRef, &reject))
-				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, reject, 1, &error, nullptr))
+				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
+				ROCKSDB_STATUS_THROW_NAPI_ERROR_VOID(state->status, "Transaction commit failed")
+				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
 			}
 
-			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->resolveRef))
-			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->rejectRef))
+			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->resolveRef))
+			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->rejectRef))
 
 			delete state;
 		},
@@ -209,73 +204,15 @@ struct TransactionPutState final {
  * Puts a value for the given key.
  */
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(4)
+	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
-	TransactionPutState* state = new TransactionPutState(
-		env,
-		handle,
-		std::move(key),
-		std::move(value)
-	);
-
-	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, argv[2], 1, &state->resolveRef))
-	NAPI_STATUS_THROWS_RUNTIME_ERROR(::napi_create_reference(env, argv[3], 1, &state->rejectRef))
-
-	napi_value name;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(
-		env,
-		"transaction.put",
-		NAPI_AUTO_LENGTH,
-		&name
-	))
-
-	NAPI_STATUS_THROWS(::napi_create_async_work(
-		env,       // node_env
-		nullptr,   // async_resource
-		name,      // async_resource_name
-		[](napi_env env, void* data) { // execute
-			TransactionPutState* state = reinterpret_cast<TransactionPutState*>(data);
-			state->status = state->handle->txn->Put(
-				rocksdb::Slice(state->key),
-				rocksdb::Slice(state->value)
-			);
-		},
-		[](napi_env env, napi_status status, void* data) { // complete
-			TransactionPutState* state = reinterpret_cast<TransactionPutState*>(data);
-
-			napi_value global;
-			NAPI_STATUS_THROWS_RETURN(::napi_get_global(env, &global))
-
-			if (state->status.ok()) {
-				napi_value resolve;
-				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
-			} else {
-				napi_value error;
-				napi_value errorMsg;
-				napi_value reject;
-				std::stringstream ss;
-				ss << "Transaction put failed: " << state->status.ToString();
-				std::string errorStr = ss.str();
-				NAPI_STATUS_THROWS_RETURN(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg))
-				NAPI_STATUS_THROWS_RETURN(::napi_create_error(env, nullptr, errorMsg, &error))
-				NAPI_STATUS_THROWS_RETURN(::napi_get_reference_value(env, state->rejectRef, &reject))
-				NAPI_STATUS_THROWS_RETURN(::napi_call_function(env, global, reject, 1, &error, nullptr))
-			}
-
-			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->resolveRef))
-			NAPI_STATUS_THROWS_RETURN(::napi_delete_reference(env, state->rejectRef))
-
-			delete state;
-		},
-		state,     // data
-		&state->asyncWork // -> result
-	));
-
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+	ROCKSDB_STATUS_THROWS(handle->txn->Put(
+		rocksdb::Slice(key),
+		rocksdb::Slice(value)
+	), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }

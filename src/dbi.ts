@@ -142,17 +142,7 @@ export class DBI<T = unknown> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-
-		// TODO: fix this
-		if (this.#context !== this.store.db) {
-			// transaction
-			return new Promise<void>((resolve, reject) => {
-				this.#context.put(key, value, resolve, reject);
-			});
-		} else {
-			// not a transaction
-			this.#context.put(key, value);
-		}
+		this.#context.put(key, value);
 	}
 
 	/**
