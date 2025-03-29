@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
@@ -17,6 +17,11 @@ describe('Transactions (pessimistic)', () => {
 			db = null;
 		}
 		return rimraf(dbPath);
+	});
+
+	it('should error if callback is not a function', async () => {
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
+		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
 	});
 
 	it('should get a value', async () => {
@@ -83,8 +88,37 @@ describe('Transactions (pessimistic)', () => {
 		expect(value).toBe('bar2');
 	});
 
-	it('should error if callback is not a function', async () => {
+	it('should allow transactions across column families', async () => {
+		let db2: RocksDatabase | null = null;
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			db2 = await RocksDatabase.open(dbPath, { name: 'foo', pessimistic: true });
+
+			await db.put('foo', 'bar');
+			await db2.put('foo2', 'baz');
+
+			await db.transaction(async (txn: Transaction) => {
+				assert(db);
+				assert(db2);
+				await db.put('foo', 'bar2', { transaction: txn });
+				await db2.put('foo2', 'baz2', { transaction: txn });
+			});
+
+			expect(await db.get('foo')).toBe('bar2');
+			expect(await db2.get('foo2')).toBe('baz2');
+		} finally {
+			db2?.close();
+		}
+	});
+
+	it('should error if transaction is invalid', async () => {
 		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
+		await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
+	});
+
+	it('should error if transaction is not found', async () => {
+		db = await RocksDatabase.open(dbPath, { pessimistic: true });
+		await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 	});
 });

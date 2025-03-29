@@ -12,6 +12,7 @@
 				'src/binding/db_handle.cpp',
 				'src/binding/db_registry.cpp',
 				'src/binding/transaction.cpp',
+				'src/binding/txn_registry.cpp',
 			],
 			'link_settings': {
 				'conditions': [

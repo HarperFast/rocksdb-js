@@ -64,7 +64,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		const result = this.#context.get(key);
+		const result = this.#context.get(key, {
+			txnId: getTxnId(options)
+		});
 
 		if (result && this.store.encoding === 'json') {
 			return JSON.parse(result.toString());
@@ -143,7 +145,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 		this.#context.put(key, value, {
-			txnId: 0 // options?.transaction?.id,
+			txnId: getTxnId(options)
 		});
 	}
 
@@ -151,12 +153,25 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
 	 */
-	remove(key: Key, _ifVersionOrValue?: symbol | number | null, _options?: T) {
+	remove(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.remove(key);
+		this.#context.remove(key, {
+			txnId: getTxnId(options)
+		});
 	}
+}
+
+function getTxnId(options?: DBITransactional | unknown) {
+	let txnId;
+	if (options && typeof options === 'object' && 'transaction' in options) {
+		txnId = (options.transaction as Transaction)?.id;
+		if (txnId === undefined) {
+			throw new TypeError('Invalid transaction');
+		}
+	}
+	return txnId;
 }
 
 type GetOptions = {

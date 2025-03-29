@@ -1,13 +1,14 @@
 #include "db_handle.h"
 #include "macros.h"
 #include "transaction.h"
+#include "txn_registry.h"
 #include "util.h"
 #include <sstream>
 
 #define UNWRAP_TRANSACTION_HANDLE(fnName) \
-	TransactionHandle* handle = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&handle))) \
-	if (!handle->txn) { \
+	TransactionHandle* txnHandle = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&txnHandle))) \
+	if (txnHandle == nullptr || !txnHandle->txn) { \
 		::napi_throw_error(env, nullptr, fnName " failed: Transaction has already been closed"); \
 		return nullptr; \
 	}
@@ -41,14 +42,18 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	TransactionHandle* txnHandle = new TransactionHandle(dbHandle);
+	TxnRegistry::getInstance()->addTransaction(txnHandle);
+
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
 			env,
 			jsThis,
-			reinterpret_cast<void*>(new TransactionHandle(dbHandle)),
+			reinterpret_cast<void*>(txnHandle),
 			[](napi_env env, void* data, void* hint) {
-				auto* ptr = reinterpret_cast<TransactionHandle*>(data);
-				delete ptr;
+				TransactionHandle* txnHandle = reinterpret_cast<TransactionHandle*>(data);
+				TxnRegistry::getInstance()->removeTransaction(txnHandle);
+				delete txnHandle;
 			},
 			nullptr,
 			nullptr
@@ -68,8 +73,8 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("Abort")
 
-	ROCKSDB_STATUS_THROWS(handle->txn->Rollback(), "Transaction rollback failed")
-	handle->release();
+	ROCKSDB_STATUS_THROWS(txnHandle->txn->Rollback(), "Transaction rollback failed")
+	txnHandle->release();
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -78,13 +83,13 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
  * State for the `Commit` async work.
  */
 struct TransactionCommitState final {
-	TransactionCommitState(napi_env env, TransactionHandle* handle)
-		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), handle(handle) {}
+	TransactionCommitState(napi_env env, TransactionHandle* txnHandle)
+		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), txnHandle(txnHandle) {}
 
 	napi_async_work asyncWork;
 	napi_ref resolveRef;
 	napi_ref rejectRef;
-	TransactionHandle* handle;
+	TransactionHandle* txnHandle;
 	rocksdb::Status status;
 };
 
@@ -105,7 +110,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		&name
 	))
 
-	TransactionCommitState* state = new TransactionCommitState(env, handle);
+	TransactionCommitState* state = new TransactionCommitState(env, txnHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -115,9 +120,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		name,      // async_resource_name
 		[](napi_env env, void* data) { // execute
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
-			state->status = state->handle->txn->Commit();
+			state->status = state->txnHandle->txn->Commit();
 			if (state->status.ok()) {
-				state->handle->release();
+				state->txnHandle->release();
 			}
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -159,23 +164,13 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], key)
 	UNWRAP_TRANSACTION_HANDLE("Get")
 
-	auto readOptions = rocksdb::ReadOptions();
-	readOptions.snapshot = handle->txn->GetSnapshot();
-
-	auto column = handle->dbHandle->column.get();
 	std::string value;
-
-	// TODO: should this be GetForUpdate?
-	rocksdb::Status status = handle->txn->Get(
-		readOptions,
-		column,
-		rocksdb::Slice(key),
-		&value
-	);
+	rocksdb::Status status = txnHandle->get(key, value);
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()
 	}
+
 	if (!status.ok()) {
 		::napi_throw_error(env, nullptr, status.ToString().c_str());
 		return nullptr;
@@ -197,24 +192,11 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_uint32(
 		env,
-		handle->txn->GetId() & 0xffffffff,
+		txnHandle->id,
 		&result
 	))
 	return result;
 }
-
-struct TransactionPutState final {
-	TransactionPutState(napi_env env, TransactionHandle* handle, std::string key, std::string value)
-		: asyncWork(nullptr), handle(handle), key(key), value(value) {}
-
-	napi_async_work asyncWork;
-	TransactionHandle* handle;
-	std::string key;
-	std::string value;
-	napi_ref resolveRef;
-	napi_ref rejectRef;
-	rocksdb::Status status;
-};
 
 /**
  * Puts a value for the given key.
@@ -225,10 +207,7 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[1], value)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
-	ROCKSDB_STATUS_THROWS(handle->txn->Put(
-		rocksdb::Slice(key),
-		rocksdb::Slice(value)
-	), "Transaction put failed")
+	ROCKSDB_STATUS_THROWS(txnHandle->put(key, value), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -241,7 +220,7 @@ napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], key)
 	UNWRAP_TRANSACTION_HANDLE("Remove")
 
-	ROCKSDB_STATUS_THROWS(handle->txn->Delete(rocksdb::Slice(key)), "Transaction remove failed")
+	ROCKSDB_STATUS_THROWS(txnHandle->remove(key), "Transaction remove failed")
 
 	NAPI_RETURN_UNDEFINED()
 }

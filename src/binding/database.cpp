@@ -2,6 +2,7 @@
 #include "db_handle.h"
 #include "macros.h"
 #include "transaction.h"
+#include "txn_registry.h"
 #include "util.h"
 #include <thread>
 #include <node_api.h>
@@ -104,28 +105,40 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
  * Gets a value from the RocksDB database.
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
+	NAPI_METHOD_ARGV(2)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
-
+	const napi_value options = argv[1];
 	std::string value;
-	auto column = (*dbHandle)->column.get();
+	rocksdb::Status status;
+	uint32_t txnId;
+	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
-	rocksdb::Status status = (*dbHandle)->db->Get(
-		rocksdb::ReadOptions(),
-		column,
-		rocksdb::Slice(key),
-		&value
-	);
+	if (isTxn) {
+		auto txnHandle = TxnRegistry::getInstance()->getTransaction(txnId);
+		if (!txnHandle) {
+			::napi_throw_error(env, nullptr, "Transaction not found");
+			NAPI_RETURN_UNDEFINED()
+		}
+		status = txnHandle->get(key, value, *dbHandle);
+	} else {
+		status = (*dbHandle)->db->Get(
+			rocksdb::ReadOptions(),
+			(*dbHandle)->column.get(),
+			rocksdb::Slice(key),
+			&value
+		);
+	}
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()
 	}
 
 	if (!status.ok()) {
-		::napi_throw_error(env, nullptr, status.ToString().c_str());
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get failed")
+		::napi_throw(env, error);
 		return nullptr;
 	}
 
@@ -192,17 +205,37 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
  * Puts a key-value pair into the RocksDB database.
  */
 napi_value Database::Put(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(3)
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
+	const napi_value options = argv[2];
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Put(
-		rocksdb::WriteOptions(),
-		(*dbHandle)->column.get(),
-		rocksdb::Slice(key),
-		value
-	), "Put failed")
+	rocksdb::Status status;
+	uint32_t txnId;
+	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
+
+	if (isTxn) {
+		auto txnHandle = TxnRegistry::getInstance()->getTransaction(txnId);
+		if (!txnHandle) {
+			::napi_throw_error(env, nullptr, "Transaction not found");
+			NAPI_RETURN_UNDEFINED()
+		}
+		status = txnHandle->put(key, value, *dbHandle);
+	} else {
+		status = (*dbHandle)->db->Put(
+			rocksdb::WriteOptions(),
+			(*dbHandle)->column.get(),
+			rocksdb::Slice(key),
+			value
+		);
+	}
+
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Put failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -211,15 +244,35 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
  * Removes a key from the RocksDB database.
  */
 napi_value Database::Remove(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
+	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key)
+	const napi_value options = argv[1];
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	ROCKSDB_STATUS_THROWS((*dbHandle)->db->Delete(
-		rocksdb::WriteOptions(),
-		(*dbHandle)->column.get(),
-		rocksdb::Slice(key)
-	), "Remove failed")
+	rocksdb::Status status;
+	uint32_t txnId;
+	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
+
+	if (isTxn) {
+		auto txnHandle = TxnRegistry::getInstance()->getTransaction(txnId);
+		if (!txnHandle) {
+			::napi_throw_error(env, nullptr, "Transaction not found");
+			NAPI_RETURN_UNDEFINED()
+		}
+		status = txnHandle->remove(key, *dbHandle);
+	} else {
+		status = (*dbHandle)->db->Delete(
+			rocksdb::WriteOptions(),
+			(*dbHandle)->column.get(),
+			rocksdb::Slice(key)
+		);
+	}
+
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Remove failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED()
 }

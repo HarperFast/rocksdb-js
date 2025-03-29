@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_H__
 #define __TRANSACTION_H__
 
+#include "db_handle.h"
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include <node_api.h>
@@ -14,6 +15,9 @@ namespace rocksdb_js {
  *
  * It also has a reference to the database handle so that the transaction knows
  * which column family to use.
+ *
+ * This handle contains `get()`, `put()`, and `remove()` methods which are
+ * shared between the `Database` and `Transaction` classes.
  */
 struct TransactionHandle final {
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
@@ -32,12 +36,60 @@ struct TransactionHandle final {
 			throw std::runtime_error("Invalid database");
 		}
 		this->txn->SetSnapshot();
+		this->id = this->txn->GetId() & 0xffffffff;
 	}
 
 	~TransactionHandle() {
 		this->release();
 	}
 
+	/**
+	 * Get a value using the specified database handle.
+	 */
+	rocksdb::Status get(
+		std::string& key,
+		std::string& result,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	) {
+		auto readOptions = rocksdb::ReadOptions();
+		readOptions.snapshot = this->txn->GetSnapshot();
+
+		std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+		auto column = dbHandle->column.get();
+
+		// TODO: should this be GetForUpdate?
+		return this->txn->Get(readOptions, column, rocksdb::Slice(key), &result);
+	}
+
+	/**
+	 * Put a value using the specified database handle.
+	 */
+	rocksdb::Status put(
+		std::string& key,
+		std::string& value,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	) {
+		std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+		auto column = dbHandle->column.get();
+		return this->txn->Put(column, rocksdb::Slice(key), rocksdb::Slice(value));
+	}
+
+	/**
+	 * Remove a value using the specified database handle.
+	 */
+	rocksdb::Status remove(
+		std::string& key,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	) {
+		std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+		auto column = dbHandle->column.get();
+		return this->txn->Delete(column, rocksdb::Slice(key));
+	}
+
+	/**
+	 * Release the transaction. This is called after successful commit, after
+	 * the transaction has been aborted, or when the transaction is destroyed.
+	 */
 	void release() {
 		if (this->txn) {
 			this->txn->ClearSnapshot();
@@ -49,6 +101,7 @@ struct TransactionHandle final {
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;
 	std::mutex commitMutex;
+	uint32_t id;
 };
 
 /**

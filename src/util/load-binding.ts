@@ -25,14 +25,14 @@ export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
 	createTransaction(): NativeTransaction;
-	get(key: Key): Buffer;
+	get(key: Key, options?: { txnId?: number }): Buffer;
 	opened: boolean;
 	open(
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
 	put(key: Key, value: any, options?: { txnId?: number }): void;
-	remove(key: Key): void;
+	remove(key: Key, options?: { txnId?: number }): void;
 };
 
 export const NativeDatabase: NativeDatabase = binding.Database;

@@ -19,6 +19,11 @@ describe('Transactions (optimistic)', () => {
 		return rimraf(dbPath);
 	});
 
+	it('should error if callback is not a function', async () => {
+		db = await RocksDatabase.open(dbPath);
+		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
+	});
+
 	it('should get a value', async () => {
 		db = await RocksDatabase.open(dbPath);
 		await db.put('foo', 'bar');
@@ -100,15 +105,20 @@ describe('Transactions (optimistic)', () => {
 				await db2.put('foo2', 'baz2', { transaction: txn });
 			});
 
-			await expect(db.get('foo')).resolves.toBe('bar2');
-			await expect(db2.get('foo2')).resolves.toBe('baz2');
+			expect(await db.get('foo')).toBe('bar2');
+			expect(await db2.get('foo2')).toBe('baz2');
 		} finally {
 			db2?.close();
 		}
 	});
 
-	it('should error if callback is not a function', async () => {
+	it('should error if transaction is invalid', async () => {
 		db = await RocksDatabase.open(dbPath);
-		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
+		await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
+	});
+
+	it('should error if transaction is not found', async () => {
+		db = await RocksDatabase.open(dbPath);
+		await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 	});
 });
