@@ -43,7 +43,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	}
 
 	TransactionHandle* txnHandle = new TransactionHandle(dbHandle);
-	TxnRegistry::getInstance()->addTransaction(txnHandle);
+	TxnRegistry::getInstance()->addTransaction(dbHandle->path, txnHandle);
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -52,7 +52,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			reinterpret_cast<void*>(txnHandle),
 			[](napi_env env, void* data, void* hint) {
 				TransactionHandle* txnHandle = reinterpret_cast<TransactionHandle*>(data);
-				TxnRegistry::getInstance()->removeTransaction(txnHandle);
+				TxnRegistry::getInstance()->removeTransaction(txnHandle->dbHandle->path, txnHandle);
 				delete txnHandle;
 			},
 			nullptr,

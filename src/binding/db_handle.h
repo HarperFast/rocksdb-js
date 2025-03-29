@@ -19,7 +19,8 @@ namespace rocksdb_js {
  */
 struct DBHandle final {
 	DBHandle(): mode(DBMode::Default) {}
-	DBHandle(std::shared_ptr<rocksdb::DB> db, DBMode mode) : db(db), mode(mode) {}
+	DBHandle(const std::string& path, std::shared_ptr<rocksdb::DB> db, DBMode mode)
+		: db(db), mode(mode), path(path) {}
 
 	~DBHandle() {
 		this->close();
@@ -35,6 +36,7 @@ struct DBHandle final {
 	std::shared_ptr<rocksdb::DB> db;
 	DBMode mode;
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+	std::string path;
 };
 
 } // namespace rocksdb_js

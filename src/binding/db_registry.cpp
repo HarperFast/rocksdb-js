@@ -123,7 +123,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		this->databases[path] = std::make_unique<DBDescriptor>(path, options.mode, db, columns);
 	}
 
-	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(db, options.mode);
+	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(path, db, options.mode);
 
 	// handle the column family
 	auto colIterator = columns.find(name);

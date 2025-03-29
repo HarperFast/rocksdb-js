@@ -117,7 +117,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
 	if (isTxn) {
-		auto txnHandle = TxnRegistry::getInstance()->getTransaction(txnId);
+		auto txnHandle = TxnRegistry::getInstance()->getTransaction((*dbHandle)->path, txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
@@ -216,7 +216,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
 	if (isTxn) {
-		auto txnHandle = TxnRegistry::getInstance()->getTransaction(txnId);
+		auto txnHandle = TxnRegistry::getInstance()->getTransaction((*dbHandle)->path, txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
@@ -254,7 +254,7 @@ napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
 	if (isTxn) {
-		auto txnHandle = TxnRegistry::getInstance()->getTransaction(txnId);
+		auto txnHandle = TxnRegistry::getInstance()->getTransaction((*dbHandle)->path, txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()

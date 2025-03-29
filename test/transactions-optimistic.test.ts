@@ -112,6 +112,33 @@ describe('Transactions (optimistic)', () => {
 		}
 	});
 
+	it('should allow multiple transactions to run in parallel', async () => {
+		let db2: RocksDatabase | null = null;
+		const dbPath2 = join(tmpdir(), 'testdb2');
+
+		try {
+			db = await RocksDatabase.open(dbPath);
+			db2 = await RocksDatabase.open(dbPath2);
+
+			await Promise.all([
+				db.transaction(async (txn: Transaction) => {
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					await db?.put('foo', 'bar2', { transaction: txn });
+				}),
+				db2.transaction(async (txn: Transaction) => {
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					await db2?.put('foo2', 'baz3', { transaction: txn });
+				}),
+			]);
+
+			expect(await db.get('foo')).toBe('bar2');
+			expect(await db2.get('foo2')).toBe('baz3');
+		} finally {
+			db2?.close();
+			await rimraf(dbPath2);
+		}
+	});
+
 	it('should error if transaction is invalid', async () => {
 		db = await RocksDatabase.open(dbPath);
 		await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
