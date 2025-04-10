@@ -37,7 +37,7 @@ describe('Block Cache', () => {
 
 		try {
 			await expect(RocksDatabase.open(dbPath, { blockCacheSize: -1 }))
-				.rejects.toThrow('napi_invalid_arg');
+				.rejects.toThrow('Block cache size must be a positive integer or 0 to disable caching');
 		} finally {
 			await rimraf(dbPath);
 		}

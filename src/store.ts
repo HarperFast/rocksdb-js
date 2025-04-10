@@ -106,6 +106,10 @@ export class Store {
 			return;
 		}
 
+		if (this.blockCacheSize && this.blockCacheSize < 0) {
+			throw new RangeError('Block cache size must be a positive integer or 0 to disable caching');
+		}
+
 		this.db.open(this.path, {
 			blockCacheSize: this.blockCacheSize,
 			name: this.name,

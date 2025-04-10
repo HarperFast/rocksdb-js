@@ -23,7 +23,7 @@
 		if (status != napi_ok) { \
 			const napi_extended_error_info* error; \
 			::napi_get_last_error_info(env, &error); \
-			::napi_throw_error(env, nullptr, error->error_message ? error->error_message : getNapiStatusName(status)); \
+			::napi_throw_error(env, nullptr, error->error_message ? error->error_message : "unknown error"); \
 			return rval; \
 		} \
 	}
@@ -145,32 +145,5 @@
 			return nullptr; \
 		} \
 	}
-
-[[maybe_unused]] static const char* getNapiStatusName(napi_status status) {
-    switch (status) {
-        case napi_array_expected: return "napi_array_expected";
-        case napi_arraybuffer_expected: return "napi_arraybuffer_expected";
-        case napi_bigint_expected: return "napi_bigint_expected";
-        case napi_boolean_expected: return "napi_boolean_expected";
-        case napi_callback_scope_mismatch: return "napi_callback_scope_mismatch";
-        case napi_cancelled: return "napi_cancelled";
-        case napi_closing: return "napi_closing";
-        case napi_date_expected: return "napi_date_expected";
-        case napi_detachable_arraybuffer_expected: return "napi_detachable_arraybuffer_expected";
-        case napi_escape_called_twice: return "napi_escape_called_twice";
-        case napi_function_expected: return "napi_function_expected";
-        case napi_generic_failure: return "napi_generic_failure";
-        case napi_handle_scope_mismatch: return "napi_handle_scope_mismatch";
-        case napi_invalid_arg: return "napi_invalid_arg";
-        case napi_name_expected: return "napi_name_expected";
-        case napi_number_expected: return "napi_number_expected";
-        case napi_object_expected: return "napi_object_expected";
-        case napi_ok: return "napi_ok";
-        case napi_pending_exception: return "napi_pending_exception";
-        case napi_queue_full: return "napi_queue_full";
-        case napi_string_expected: return "napi_string_expected";
-        default: return "unknown";
-    }
-}
 
 #endif
