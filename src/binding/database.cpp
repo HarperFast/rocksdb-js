@@ -175,7 +175,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], path)
 	const napi_value options = argv[1];
 
-	size_t blockCacheSize = 100 * 1024 * 1024;
+	uint32_t blockCacheSize = 100 * 1024 * 1024;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "blockCacheSize", blockCacheSize));
 
 	std::string name;
