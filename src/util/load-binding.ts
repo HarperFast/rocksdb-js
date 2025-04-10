@@ -16,8 +16,9 @@ export type NativeTransaction = {
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
+	blockCacheSize?: number;
 	name?: string;
-	parallelism?: number;
+	parallelismThreads?: number;
 	mode?: NativeDatabaseMode;
 };
 

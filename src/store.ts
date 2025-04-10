@@ -41,6 +41,7 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
  * This store should not be shared between `RocksDatabase` instances.
  */
 export class Store {
+	blockCacheSize?: number;
 	db: NativeDatabase;
 	decoder?: Decoder | null;
 	encoder: Encoder | null;
@@ -52,7 +53,7 @@ export class Store {
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	name: string;
-	parallelism: number;
+	parallelismThreads: number;
 	path: string;
 	pessimistic: boolean;
 	readKey: ReadKeyFunction<Key>;
@@ -65,6 +66,7 @@ export class Store {
 	 * @param options - The options for the store.
 	 */
 	constructor(path: string, options?: StoreOptions) {
+		this.blockCacheSize = options?.blockCacheSize;
 		this.db = new NativeDatabase();
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? 'msgpack';
@@ -72,7 +74,7 @@ export class Store {
 		this.keyEncoder = options?.keyEncoder;
 		this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		this.name = options?.name ?? 'default';
-		this.parallelism = options?.parallelism ?? 1;
+		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
 		this.readKey = orderedBinary.readKey;
@@ -105,8 +107,9 @@ export class Store {
 		}
 
 		this.db.open(this.path, {
+			blockCacheSize: this.blockCacheSize,
 			name: this.name,
-			parallelism: this.parallelism,
+			parallelismThreads: this.parallelismThreads,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 		});
 

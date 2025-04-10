@@ -27,7 +27,7 @@ describe('CRUD Operations', () => {
 
 			try {
 				db = await RocksDatabase.open(dbPath, {
-					parallelism: 2
+					parallelismThreads: 2
 				});
 				await db.put('foo', 'bar1');
 				const value = await db.get('foo');
@@ -45,7 +45,7 @@ describe('CRUD Operations', () => {
 			try {
 				db = await RocksDatabase.open(dbPath, {
 					name: 'foo',
-					parallelism: 2
+					parallelismThreads: 2
 				});
 				await db.put('foo', 'bar2');
 				const value = await db.get('foo');

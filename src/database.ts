@@ -7,7 +7,6 @@ interface RocksDatabaseOptions extends StoreOptions {
 	cache?: boolean;
 	dupSort?: boolean;
 	name?: string; // defaults to 'default'
-	parallelism?: number;
 	useVersions?: boolean;
 };
 
