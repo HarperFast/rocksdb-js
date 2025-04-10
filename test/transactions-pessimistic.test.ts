@@ -1,95 +1,139 @@
-import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
-import { join } from 'node:path';
+import { assert, describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
-import { tmpdir } from 'node:os';
+import { generateDBPath } from './lib/util.js';
 import type { Transaction } from '../src/transaction.js';
 
 describe('Transactions (pessimistic)', () => {
-	let db: RocksDatabase | null = null;
-	const dbPath = join(tmpdir(), 'testdb');
-
-	beforeEach(() => rimraf(dbPath));
-
-	afterEach(() => {
-		if (db) {
-			db.close();
-			db = null;
-		}
-		return rimraf(dbPath);
-	});
-
 	it('should error if callback is not a function', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should get a value', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await db.put('foo', 'bar');
-		await db.transaction(async (txn: Transaction) => {
-			const value = await txn.get('foo');
-			expect(value).toBe('bar');
-		});
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			await db.put('foo', 'bar');
+
+			await db.transaction(async (txn: Transaction) => {
+				const value = await txn.get('foo');
+				expect(value).toBe('bar');
+			});
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should set a value', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await db.transaction(async (txn: Transaction) => {
-			await txn.put('foo', 'bar');
-		});
-		const value = await db.get('foo');
-		expect(value).toBe('bar');
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+
+			await db.transaction(async (txn: Transaction) => {
+				await txn.put('foo', 'bar');
+			});
+
+			const value = await db.get('foo');
+			expect(value).toBe('bar');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should remove a value', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await db.put('foo', 'bar');
-		const value = await db.get('foo');
-		expect(value).toBe('bar');
-		await db.transaction(async (txn: Transaction) => {
-			await txn.remove('foo');
-		});
-		const value2 = await db.get('foo');
-		expect(value2).toBeUndefined();
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+
+			await db.put('foo', 'bar');
+			const value = await db.get('foo');
+			expect(value).toBe('bar');
+
+			await db.transaction(async (txn: Transaction) => {
+				await txn.remove('foo');
+			});
+
+			const value2 = await db.get('foo');
+			expect(value2).toBeUndefined();
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should rollback on error', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await db.put('foo', 'bar');
-		await expect(db.transaction(async (txn: Transaction) => {
-			await txn.put('foo', 'bar2');
-			throw new Error('test');
-		})).rejects.toThrow('test');
-		const value = await db.get('foo');
-		expect(value).toBe('bar');
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			await db.put('foo', 'bar');
+
+			await expect(db.transaction(async (txn: Transaction) => {
+				await txn.put('foo', 'bar2');
+				throw new Error('test');
+			})).rejects.toThrow('test');
+
+			const value = await db.get('foo');
+			expect(value).toBe('bar');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should treat transaction as a snapshot', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		db.put('foo', 'bar1');
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
 
-		setTimeout(() => {
-			db?.put('foo', 'bar2');
-		}, 50);
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			await db.put('foo', 'bar1');
 
-		await expect(db.transaction(async (txn: Transaction) => {
-			const before = await txn.get('foo');
+			setTimeout(() => {
+				db?.put('foo', 'bar2');
+			}, 50);
 
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const after = await txn.get('foo');
+			await expect(db.transaction(async (txn: Transaction) => {
+				const before = await txn.get('foo');
 
-			expect(before).toBe(after);
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				const after = await txn.get('foo');
 
-			await txn.put('foo', 'bar3');
-		})).rejects.toThrow('Transaction put failed: Resource busy');
+				expect(before).toBe(after);
 
-		const value = await db.get('foo');
-		expect(value).toBe('bar2');
+				await txn.put('foo', 'bar3');
+			})).rejects.toThrow('Transaction put failed: Resource busy');
+
+			const value = await db.get('foo');
+			expect(value).toBe('bar2');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should allow transactions across column families', async () => {
+		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
 
 		try {
 			db = await RocksDatabase.open(dbPath, { pessimistic: true });
@@ -108,13 +152,17 @@ describe('Transactions (pessimistic)', () => {
 			expect(await db.get('foo')).toBe('bar2');
 			expect(await db2.get('foo2')).toBe('baz2');
 		} finally {
+			db?.close();
 			db2?.close();
+			await rimraf(dbPath);
 		}
 	});
 
 	it('should allow multiple transactions to run in parallel', async () => {
+		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
-		const dbPath2 = join(tmpdir(), 'testdb2');
+		const dbPath = generateDBPath();
+		const dbPath2 = generateDBPath();
 
 		try {
 			db = await RocksDatabase.open(dbPath, { pessimistic: true });
@@ -134,18 +182,36 @@ describe('Transactions (pessimistic)', () => {
 			expect(await db.get('foo')).toBe('bar2');
 			expect(await db2.get('foo2')).toBe('baz3');
 		} finally {
+			db?.close();
 			db2?.close();
+			await rimraf(dbPath);
 			await rimraf(dbPath2);
 		}
 	});
 
 	it('should error if transaction is invalid', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 
 	it('should error if transaction is not found', async () => {
-		db = await RocksDatabase.open(dbPath, { pessimistic: true });
-		await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = await RocksDatabase.open(dbPath, { pessimistic: true });
+			await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 });

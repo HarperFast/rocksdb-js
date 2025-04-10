@@ -1,17 +1,18 @@
 #include "db_handle.h"
 #include "macros.h"
 #include "transaction.h"
-#include "txn_registry.h"
+#include "transaction_handle.h"
 #include "util.h"
 #include <sstream>
 
 #define UNWRAP_TRANSACTION_HANDLE(fnName) \
-	TransactionHandle* txnHandle = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&txnHandle))) \
-	if (txnHandle == nullptr || !txnHandle->txn) { \
+	DBTxnHandle* dbTxnHandle = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbTxnHandle))) \
+	if (dbTxnHandle == nullptr || !dbTxnHandle->txnHandle) { \
 		::napi_throw_error(env, nullptr, fnName " failed: Transaction has already been closed"); \
 		return nullptr; \
-	}
+	} \
+	std::shared_ptr<TransactionHandle> txnHandle = dbTxnHandle->txnHandle;
 
 namespace rocksdb_js {
 
@@ -21,6 +22,22 @@ namespace rocksdb_js {
  * in the static methods.
  */
 napi_ref Transaction::constructor = nullptr;
+
+/**
+ * A simple wrapper around the DBHandle and TransactionHandle to pass into the
+ * Transaction JS constructor so it can be cleaned up when the Transaction JS
+ * object is garbage collected.
+ */
+struct DBTxnHandle final {
+	DBTxnHandle(std::shared_ptr<DBHandle> dbHandle) {
+		this->dbHandle = dbHandle;
+		this->txnHandle = std::make_shared<TransactionHandle>(dbHandle);
+		dbHandle->descriptor->addTransaction(this->txnHandle);
+	}
+
+	std::shared_ptr<DBHandle> dbHandle;
+	std::shared_ptr<TransactionHandle> txnHandle;
+};
 
 /**
  * Creates a new `NativeTransaction` object.
@@ -42,25 +59,24 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	TransactionHandle* txnHandle = new TransactionHandle(dbHandle);
-	TxnRegistry::getInstance()->addTransaction(dbHandle->path, txnHandle);
+	DBTxnHandle* dbTxnHandle = new DBTxnHandle(dbHandle);
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
 			env,
 			jsThis,
-			reinterpret_cast<void*>(txnHandle),
+			reinterpret_cast<void*>(dbTxnHandle),
 			[](napi_env env, void* data, void* hint) {
-				TransactionHandle* txnHandle = reinterpret_cast<TransactionHandle*>(data);
-				TxnRegistry::getInstance()->removeTransaction(txnHandle->dbHandle->path, txnHandle);
-				delete txnHandle;
+				DBTxnHandle* dbTxnHandle = reinterpret_cast<DBTxnHandle*>(data);
+				delete dbTxnHandle;
 			},
-			nullptr,
-			nullptr
+			nullptr, // finalize_hint
+			nullptr  // result
 		));
 
 		return jsThis;
 	} catch (const std::exception& e) {
+		delete dbTxnHandle;
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
@@ -83,13 +99,13 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
  * State for the `Commit` async work.
  */
 struct TransactionCommitState final {
-	TransactionCommitState(napi_env env, TransactionHandle* txnHandle)
+	TransactionCommitState(napi_env env, std::shared_ptr<TransactionHandle> txnHandle)
 		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), txnHandle(txnHandle) {}
 
 	napi_async_work asyncWork;
 	napi_ref resolveRef;
 	napi_ref rejectRef;
-	TransactionHandle* txnHandle;
+	std::shared_ptr<TransactionHandle> txnHandle;
 	rocksdb::Status status;
 };
 

@@ -3,35 +3,11 @@
 
 #include <memory>
 #include <mutex>
+#include "db_descriptor.h"
 #include "db_handle.h"
+#include "transaction.h"
 
 namespace rocksdb_js {
-
-/**
- * Descriptor for a RocksDB database and its column families. This is used by
- * the Registry.
- */
-struct DBDescriptor final {
-	DBDescriptor(
-		std::string path,
-		DBMode mode,
-		std::shared_ptr<rocksdb::DB> db,
-		std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
-	):
-		path(path),
-		mode(mode),
-		db(db)
-	{
-		for (auto& column : columns) {
-			this->columns[column.first] = column.second;
-		}
-	}
-
-	std::string path;
-	DBMode mode;
-	std::weak_ptr<rocksdb::DB> db;
-	std::map<std::string, std::weak_ptr<rocksdb::ColumnFamilyHandle>> columns;
-};
 
 /**
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
@@ -42,7 +18,9 @@ private:
 	// private constructor
 	DBRegistry() = default;
 
-	std::unordered_map<std::string, std::unique_ptr<DBDescriptor>> databases;
+	// map of database path to descriptor
+	// this needs to be a weak_ptr because the DBHandles own the descriptor
+	std::unordered_map<std::string, std::weak_ptr<DBDescriptor>> databases;
 
 	static std::unique_ptr<DBRegistry> instance;
 	std::mutex mutex;
@@ -61,6 +39,8 @@ public:
 	}
 
 	std::unique_ptr<DBHandle> openDB(const std::string& path, const DBOptions& options);
+
+	void purge();
 
 	/**
 	 * Get the number of databases in the registry.

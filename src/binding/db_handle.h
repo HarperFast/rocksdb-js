@@ -4,11 +4,11 @@
 #include <memory>
 #include <node_api.h>
 #include "rocksdb/db.h"
-#include "rocksdb/utilities/transaction_db.h"
-#include "rocksdb/utilities/optimistic_transaction_db.h"
-#include "db_options.h"
+#include "db_descriptor.h"
 
 namespace rocksdb_js {
+
+struct DBDescriptor;
 
 /**
  * Handle for a RocksDB database and the selected column family. This handle is
@@ -18,25 +18,16 @@ namespace rocksdb_js {
  * pain.
  */
 struct DBHandle final {
-	DBHandle(): mode(DBMode::Default) {}
-	DBHandle(const std::string& path, std::shared_ptr<rocksdb::DB> db, DBMode mode)
-		: db(db), mode(mode), path(path) {}
+	DBHandle();
+	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
+	~DBHandle();
 
-	~DBHandle() {
-		this->close();
-	}
-
-	void close() {
-		this->column.reset();
-		this->db.reset();
-	}
+	void close();
 	void open(const std::string& path, const DBOptions& options);
-	bool opened() const { return this->db != nullptr; }
+	bool opened() const;
 
-	std::shared_ptr<rocksdb::DB> db;
-	DBMode mode;
+	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
-	std::string path;
 };
 
 } // namespace rocksdb_js

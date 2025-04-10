@@ -33,32 +33,31 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
  */
 std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOptions& options) {
 	bool dbExists = false;
-	std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
-	std::shared_ptr<rocksdb::DB> db;
+	std::shared_ptr<DBDescriptor> descriptor;
 	std::lock_guard<std::mutex> lock(mutex);
 
 	// check if database already exists
 	auto dbIterator = this->databases.find(path);
 	if (dbIterator != this->databases.end()) {
-		auto existingDb = dbIterator->second->db.lock();
-		if (existingDb) {
+		descriptor = dbIterator->second.lock();
+		if (descriptor) {
 			// check if the database is already open with a different mode
-			if (options.mode != dbIterator->second->mode) {
+			if (options.mode != descriptor->mode) {
 				throw std::runtime_error(
 					"Database already open in '" +
-					(dbIterator->second->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
+					(descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
 					"' mode"
 				);
 			}
 
-			db = existingDb;
 			dbExists = true;
 
 			// manually copy the columns because we don't know which ones are valid
 			bool columnExists = false;
-			for (auto& column : dbIterator->second->columns) {
-				std::shared_ptr<rocksdb::ColumnFamilyHandle> existingColumn = column.second.lock();
+			for (auto& column : descriptor->columns) {
+				std::shared_ptr<rocksdb::ColumnFamilyHandle> existingColumn = column.second;
 				if (existingColumn) {
 					columns[column.first] = existingColumn;
 					if (column.first == name) {
@@ -67,7 +66,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 				}
 			}
 			if (!columnExists) {
-				columns[name] = createColumn(db, name);
+				columns[name] = createColumn(descriptor->db, name);
 			}
 		}
 	}
@@ -84,6 +83,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		dbOptions.persist_user_defined_timestamps = true;
 		dbOptions.IncreaseParallelism(options.parallelism);
 
+		std::shared_ptr<rocksdb::DB> db;
 		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors = {
 			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
 		};
@@ -120,10 +120,11 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 			columns[name] = createColumn(db, name);
 		}
 
-		this->databases[path] = std::make_unique<DBDescriptor>(path, options.mode, db, columns);
+		descriptor = std::make_shared<DBDescriptor>(path, options.mode, db, columns);
+		this->databases[path] = descriptor;
 	}
 
-	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(path, db, options.mode);
+	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(descriptor);
 
 	// handle the column family
 	auto colIterator = columns.find(name);
@@ -136,6 +137,20 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 	}
 
 	return handle;
+}
+
+/**
+ * Purge expired database descriptors from the registry.
+ */
+void DBRegistry::purge() {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	for (auto it = this->databases.begin(); it != this->databases.end();) {
+        if (it->second.expired()) {
+            it = this->databases.erase(it);
+	    } else {
+            ++it;
+        }
+    }
 }
 
 } // namespace rocksdb_js

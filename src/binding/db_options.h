@@ -5,8 +5,10 @@
 
 namespace rocksdb_js {
 
+/**
+ * The RocksDB database mode.
+ */
 enum class DBMode {
-	Default,
 	Optimistic,
 	Pessimistic,
 };

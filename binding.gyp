@@ -9,10 +9,11 @@
 			'sources': [
 				'src/binding/binding.cpp',
 				'src/binding/database.cpp',
+				'src/binding/db_descriptor.cpp',
 				'src/binding/db_handle.cpp',
 				'src/binding/db_registry.cpp',
+				'src/binding/transaction_handle.cpp',
 				'src/binding/transaction.cpp',
-				'src/binding/txn_registry.cpp',
 			],
 			'link_settings': {
 				'conditions': [

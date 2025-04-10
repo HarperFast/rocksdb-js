@@ -66,6 +66,14 @@ await db.transaction(async (txn: Transaction) => {
 });
 ```
 
+Additionally, you may pass the transaction into any database data method:
+
+```typescript
+await db.transaction(async (transaction: Transaction) => {
+	await db.put('foo', 'baz', { transaction });
+});
+```
+
 ## Development
 
 This package requires Node.js 18 or higher, pnpm, and a C++ compiler.
