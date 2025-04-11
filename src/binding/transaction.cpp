@@ -89,7 +89,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("Abort")
 
-	ROCKSDB_STATUS_THROWS(txnHandle->txn->Rollback(), "Transaction rollback failed")
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->txn->Rollback(), "Transaction rollback failed")
 	txnHandle->release();
 
 	NAPI_RETURN_UNDEFINED()
@@ -154,7 +154,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			} else {
 				napi_value reject;
 				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-				ROCKSDB_STATUS_THROW_NAPI_ERROR_VOID(state->status, "Transaction commit failed")
+				ROCKSDB_STATUS_CREATE_ERROR_LIKE_VOID(state->status, "Transaction commit failed")
 				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
 			}
 
@@ -223,7 +223,7 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[1], value)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
-	ROCKSDB_STATUS_THROWS(txnHandle->put(key, value), "Transaction put failed")
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(key, value), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -236,7 +236,7 @@ napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], key)
 	UNWRAP_TRANSACTION_HANDLE("Remove")
 
-	ROCKSDB_STATUS_THROWS(txnHandle->remove(key), "Transaction remove failed")
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->remove(key), "Transaction remove failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
