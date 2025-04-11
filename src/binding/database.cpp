@@ -212,14 +212,17 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
 	NAPI_GET_STRING(argv[0], key)
 	NAPI_GET_STRING(argv[1], value)
-	const napi_value options = argv[2];
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
-	uint32_t txnId;
-	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
-	if (isTxn) {
+	napi_valuetype txnIdType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
+
+	if (txnIdType == napi_number) {
+		uint32_t txnId;
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
+
 		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
@@ -250,14 +253,17 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key)
-	const napi_value options = argv[1];
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
-	uint32_t txnId;
-	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
-	if (isTxn) {
+	napi_valuetype txnIdType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+
+	if (txnIdType == napi_number) {
+		uint32_t txnId;
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+
 		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
