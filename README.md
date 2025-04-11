@@ -31,7 +31,7 @@ Sets global database settings.
 
 ```typescript
 RocksDatabase.config({
-  blockCacheSize: 100 * 1024 * 1024 // 1GB
+  blockCacheSize: 100 * 1024 * 1024 // 100MB
 })
 ```
 
