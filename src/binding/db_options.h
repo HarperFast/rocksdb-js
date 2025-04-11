@@ -18,9 +18,9 @@ enum class DBMode {
  * values passed in from public `open()` method.
  */
 struct DBOptions final {
-	uint32_t blockCacheSize;
 	DBMode mode;
 	std::string name;
+	bool noBlockCache;
 	int parallelismThreads;
 };
 

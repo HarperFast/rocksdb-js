@@ -9,7 +9,7 @@ describe('Block Cache', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, { blockCacheSize: 0 });
+			db = await RocksDatabase.open(dbPath, { noBlockCache: true });
 			db.put('foo', 'bar');
 			await expect(db.get('foo')).resolves.toBe('bar');
 		} finally {
@@ -18,13 +18,36 @@ describe('Block Cache', () => {
 		}
 	});
 
-	it('should enable block cache', async () => {
+	it('should enable block cache and override default size', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, { blockCacheSize: 1024 * 1024 });
+			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
+			db = await RocksDatabase.open(dbPath);
 			db.put('foo', 'bar');
+			await expect(db.get('foo')).resolves.toBe('bar');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
+	});
+
+	it('should change the block cache size', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
+
+			db = await RocksDatabase.open(dbPath);
+			db.put('foo', 'bar');
+			await expect(db.get('foo')).resolves.toBe('bar');
+
+			RocksDatabase.config({ blockCacheSize: 2048 * 1024 });
+			await expect(db.get('foo')).resolves.toBe('bar');
+
+			RocksDatabase.config({ blockCacheSize: 0 });
 			await expect(db.get('foo')).resolves.toBe('bar');
 		} finally {
 			db?.close();
@@ -36,8 +59,8 @@ describe('Block Cache', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			await expect(RocksDatabase.open(dbPath, { blockCacheSize: -1 }))
-				.rejects.toThrow('Block cache size must be a positive integer or 0 to disable caching');
+			expect(() => RocksDatabase.config({ blockCacheSize: -1 }))
+				.toThrowError('Block cache size must be a positive integer or 0 to disable caching');
 		} finally {
 			await rimraf(dbPath);
 		}

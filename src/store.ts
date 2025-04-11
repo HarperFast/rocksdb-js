@@ -41,7 +41,6 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
  * This store should not be shared between `RocksDatabase` instances.
  */
 export class Store {
-	blockCacheSize?: number;
 	db: NativeDatabase;
 	decoder?: Decoder | null;
 	encoder: Encoder | null;
@@ -53,6 +52,7 @@ export class Store {
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	name: string;
+	noBlockCache?: boolean;
 	parallelismThreads: number;
 	path: string;
 	pessimistic: boolean;
@@ -66,7 +66,6 @@ export class Store {
 	 * @param options - The options for the store.
 	 */
 	constructor(path: string, options?: StoreOptions) {
-		this.blockCacheSize = options?.blockCacheSize;
 		this.db = new NativeDatabase();
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? 'msgpack';
@@ -74,6 +73,7 @@ export class Store {
 		this.keyEncoder = options?.keyEncoder;
 		this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		this.name = options?.name ?? 'default';
+		this.noBlockCache = options?.noBlockCache;
 		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
@@ -106,13 +106,9 @@ export class Store {
 			return;
 		}
 
-		if (this.blockCacheSize && this.blockCacheSize < 0) {
-			throw new RangeError('Block cache size must be a positive integer or 0 to disable caching');
-		}
-
 		this.db.open(this.path, {
-			blockCacheSize: this.blockCacheSize,
 			name: this.name,
+			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 		});

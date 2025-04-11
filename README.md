@@ -17,10 +17,23 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not
   need to exist, but the parent directories do.
 - `options: object` [optional]
-  - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks. Defaults to 100MB. Set to `0` (zero) disables block cache. Negative values throw error.
+  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by default and the cache is shared across all database instances.
   - `name:string` The column family name. Defaults to `"default"`.
   - `parallelismThreads: number` The number of background threads to use for flush and compaction. Defaults to `1`.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting until commit. Defaults to `false`.
+
+### `db.config(options)`
+
+Sets global database settings.
+
+- `options: object`
+  - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks. Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing block cache for any opened databases is resized immediately. Negative values throw an error.
+
+```typescript
+RocksDatabase.config({
+  blockCacheSize: 100 * 1024 * 1024 // 1GB
+})
+```
 
 ### `db.open(): Promise<RocksDatabase>`
 

@@ -1,4 +1,5 @@
 #include "db_registry.h"
+#include "db_settings.h"
 #include "macros.h"
 #include "util.h"
 #include "rocksdb/table.h"
@@ -85,9 +86,10 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		dbOptions.persist_user_defined_timestamps = true;
 		dbOptions.IncreaseParallelism(options.parallelismThreads);
 
-		if (options.blockCacheSize > 0) {
+		if (!options.noBlockCache) {
+			DBSettings& settings = DBSettings::getInstance();
 			rocksdb::BlockBasedTableOptions tableOptions;
-			tableOptions.block_cache = rocksdb::NewLRUCache(options.blockCacheSize);
+			tableOptions.block_cache = settings.getBlockCache();
 			dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 		}
 

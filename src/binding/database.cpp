@@ -179,11 +179,11 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], path)
 	const napi_value options = argv[1];
 
-	uint32_t blockCacheSize = 100 * 1024 * 1024;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "blockCacheSize", blockCacheSize));
-
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
+
+	bool noBlockCache = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", noBlockCache));
 
 	int parallelismThreads = std::max<int>(1, std::thread::hardware_concurrency() / 2);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
@@ -196,7 +196,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		mode = DBMode::Pessimistic;
 	}
 
-	DBOptions dbHandleOptions { blockCacheSize, mode, name, parallelismThreads };
+	DBOptions dbHandleOptions { mode, name, noBlockCache, parallelismThreads };
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
