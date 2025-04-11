@@ -110,13 +110,17 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 	std::string key;
 	rocksdb_js::getString(env, argv[0], key);
-	const napi_value options = argv[1];
+
 	std::string value;
 	rocksdb::Status status;
-	uint32_t txnId;
-	bool isTxn = rocksdb_js::getProperty(env, options, "txnId", txnId, true) == napi_ok;
 
-	if (isTxn) {
+	napi_valuetype txnIdType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+
+	if (txnIdType == napi_number) {
+		uint32_t txnId;
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+
 		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");

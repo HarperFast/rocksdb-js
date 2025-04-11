@@ -13,7 +13,7 @@
 
 namespace rocksdb_js {
 
-static napi_status getString(napi_env env, napi_value from, std::string& to) {
+[[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	napi_valuetype type;
 	NAPI_STATUS_RETURN(::napi_typeof(env, from, &type));
 
@@ -43,12 +43,12 @@ static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	return ::napi_get_value_bool(env, value, &result);
 }
 
-[[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, uint32_t& result) {
-	return ::napi_get_value_uint32(env, value, &result);
-}
-
 [[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, int32_t& result) {
 	return ::napi_get_value_int32(env, value, &result);
+}
+
+[[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, uint32_t& result) {
+	return ::napi_get_value_uint32(env, value, &result);
 }
 
 [[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, int64_t& result) {
