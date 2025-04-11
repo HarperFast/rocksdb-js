@@ -64,9 +64,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		const result = this.#context.get(key, {
-			txnId: getTxnId(options)
-		});
+		const result = this.#context.get(key, getTxnId(options));
 
 		if (result && this.store.encoding === 'json') {
 			return JSON.parse(result.toString());
@@ -144,9 +142,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.put(key, value, {
-			txnId: getTxnId(options)
-		});
+		this.#context.put(key, value, getTxnId(options));
 	}
 
 	/**
@@ -157,9 +153,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.remove(key, {
-			txnId: getTxnId(options)
-		});
+		this.#context.remove(key, getTxnId(options));
 	}
 }
 
