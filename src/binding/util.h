@@ -3,6 +3,7 @@
 
 #include "binding.h"
 #include "macros.h"
+#include <optional>
 
 /**
  * This file contains various napi helper functions.
