@@ -177,7 +177,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key)
+	NAPI_GET_STRING(argv[0], key, "Key is required")
 	UNWRAP_TRANSACTION_HANDLE("Get")
 
 	std::string value;
@@ -219,8 +219,8 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key)
-	NAPI_GET_STRING(argv[1], value)
+	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_STRING(argv[1], value, nullptr)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(key, value), "Transaction put failed")
@@ -233,7 +233,7 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key)
+	NAPI_GET_STRING(argv[0], key, "Key is required")
 	UNWRAP_TRANSACTION_HANDLE("Remove")
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->remove(key), "Transaction remove failed")
