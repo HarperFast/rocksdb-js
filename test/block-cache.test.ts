@@ -10,7 +10,7 @@ describe('Block Cache', () => {
 
 		try {
 			db = await RocksDatabase.open(dbPath, { noBlockCache: true });
-			db.put('foo', 'bar');
+			await db.put('foo', 'bar');
 			await expect(db.get('foo')).resolves.toBe('bar');
 		} finally {
 			db?.close();
@@ -25,7 +25,7 @@ describe('Block Cache', () => {
 		try {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
 			db = await RocksDatabase.open(dbPath);
-			db.put('foo', 'bar');
+			await db.put('foo', 'bar');
 			await expect(db.get('foo')).resolves.toBe('bar');
 		} finally {
 			db?.close();
@@ -41,7 +41,7 @@ describe('Block Cache', () => {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
 
 			db = await RocksDatabase.open(dbPath);
-			db.put('foo', 'bar');
+			await db.put('foo', 'bar');
 			await expect(db.get('foo')).resolves.toBe('bar');
 
 			RocksDatabase.config({ blockCacheSize: 2048 * 1024 });

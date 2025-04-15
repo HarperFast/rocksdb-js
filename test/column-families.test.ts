@@ -11,10 +11,10 @@ describe('Column Families', () => {
 
 		try {
 			db = await RocksDatabase.open(dbPath);
-			db.put('foo', 'bar');
+			await db.put('foo', 'bar');
 
 			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
-			db2.put('foo', 'bar2');
+			await db2.put('foo', 'bar2');
 
 			await expect(db.get('foo')).resolves.toBe('bar');
 			await expect(db2.get('foo')).resolves.toBe('bar2');
@@ -32,7 +32,7 @@ describe('Column Families', () => {
 
 		try {
 			db = await RocksDatabase.open(dbPath, { name: 'foo' });
-			db.put('foo', 'bar');
+			await db.put('foo', 'bar');
 
 			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
 			await expect(db2.get('foo')).resolves.toBe('bar');

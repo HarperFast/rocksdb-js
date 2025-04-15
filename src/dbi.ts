@@ -138,7 +138,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * Stores a value for the given key.
 	 */
-	put(key: Key, value: any, options?: PutOptions & T) {
+	async put(key: Key, value: any, options?: PutOptions & T): Promise<void> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -149,7 +149,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
 	 */
-	remove(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T) {
+	async remove(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T): Promise<void> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}

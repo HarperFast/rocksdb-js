@@ -42,7 +42,7 @@ describe('CRUD Operations', () => {
 				db = await RocksDatabase.open(dbPath, {
 					parallelismThreads: 2
 				});
-				db.put('foo', 'bar1');
+				await db.put('foo', 'bar1');
 				const value = await db.get('foo');
 				expect(value).toBe('bar1');
 			} finally {
@@ -60,7 +60,7 @@ describe('CRUD Operations', () => {
 					name: 'foo',
 					parallelismThreads: 2
 				});
-				db.put('foo', 'bar2');
+				await db.put('foo', 'bar2');
 				const value = await db.get('foo');
 				expect(value).toBe('bar2');
 			} finally {
@@ -75,8 +75,7 @@ describe('CRUD Operations', () => {
 
 			try {
 				db = await RocksDatabase.open(dbPath);
-				// @ts-expect-error - Calling remove without any args
-				expect(() => (db.put as any)()).toThrow('Key is required');
+				await expect((db.put as any)()).rejects.toThrow('Key is required');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -91,7 +90,7 @@ describe('CRUD Operations', () => {
 
 			try {
 				db = await RocksDatabase.open(dbPath);
-				db.remove('baz');
+				await db.remove('baz');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -106,10 +105,10 @@ describe('CRUD Operations', () => {
 				db = await RocksDatabase.open(dbPath);
 				let value = await db.get('foo');
 				expect(value).toBeUndefined();
-				db.put('foo', 'bar3');
+				await db.put('foo', 'bar3');
 				value = await db.get('foo');
 				expect(value).toBe('bar3');
-				db.remove('foo');
+				await db.remove('foo');
 				value = await db.get('foo');
 				expect(value).toBeUndefined();
 			} finally {
@@ -124,8 +123,7 @@ describe('CRUD Operations', () => {
 
 			try {
 				db = await RocksDatabase.open(dbPath);
-				// @ts-expect-error - Calling remove without any args
-				expect(() => (db.remove as any)()).toThrow('Key is required');
+				await expect((db.remove as any)()).rejects.toThrow('Key is required');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
