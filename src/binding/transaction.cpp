@@ -153,8 +153,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
 			} else {
 				napi_value reject;
+				napi_value error;
 				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-				ROCKSDB_STATUS_CREATE_ERROR_LIKE_VOID(state->status, "Transaction commit failed")
+				ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
 				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
 			}
 

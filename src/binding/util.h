@@ -1,8 +1,10 @@
 #ifndef __UTIL_H__
 #define __UTIL_H__
 
+#include <node_api.h>
 #include "binding.h"
 #include "macros.h"
+#include "rocksdb/status.h"
 
 /**
  * This file contains various napi helper functions.
@@ -13,23 +15,25 @@
 
 namespace rocksdb_js {
 
+void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
+
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	napi_valuetype type;
 	NAPI_STATUS_RETURN(::napi_typeof(env, from, &type));
 
 	if (type == napi_string) {
 		size_t length = 0;
-		NAPI_STATUS_RETURN(napi_get_value_string_utf8(env, from, nullptr, 0, &length));
+		NAPI_STATUS_RETURN(::napi_get_value_string_utf8(env, from, nullptr, 0, &length));
 		to.resize(length, '\0');
-		NAPI_STATUS_RETURN(napi_get_value_string_utf8(env, from, &to[0], length + 1, &length));
+		NAPI_STATUS_RETURN(::napi_get_value_string_utf8(env, from, &to[0], length + 1, &length));
 	} else {
 		bool isBuffer;
-		NAPI_STATUS_RETURN(napi_is_buffer(env, from, &isBuffer));
+		NAPI_STATUS_RETURN(::napi_is_buffer(env, from, &isBuffer));
 
 		if (isBuffer) {
 			char* buf = nullptr;
 			size_t length = 0;
-			NAPI_STATUS_RETURN(napi_get_buffer_info(env, from, reinterpret_cast<void**>(&buf), &length));
+			NAPI_STATUS_RETURN(::napi_get_buffer_info(env, from, reinterpret_cast<void**>(&buf), &length));
 			to.assign(buf, length);
 		} else {
 			return napi_invalid_arg;
