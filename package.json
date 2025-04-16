@@ -30,9 +30,6 @@
     "src/binding",
     "vendor"
   ],
-  "dependencies": {
-    "node-gyp-build": "4.8.4"
-  },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.3",
     "@rollup/plugin-node-resolve": "16.0.1",
