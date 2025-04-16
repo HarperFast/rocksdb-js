@@ -1,9 +1,6 @@
 #ifndef __MACROS_H__
 #define __MACROS_H__
 
-#include <string>
-#include <cstring>
-
 /**
  * This file contains various preprocessor macros for common napi and RocksDB
  * operations.
@@ -17,27 +14,21 @@
 		} \
 	}
 
+#define NAPI_STATUS_RETURN(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			return status; \
+		} \
+	}
+
 #define NAPI_STATUS_THROWS_RVAL(call, rval) \
 	{ \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
-			const napi_extended_error_info* error; \
-			::napi_get_last_error_info(env, &error); \
-			::napi_throw_error(env, nullptr, error->error_message ? error->error_message : "unknown error"); \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+			::napi_throw_error(env, nullptr, errorStr.c_str()); \
 			return rval; \
-		} \
-	}
-
-#define NAPI_STATUS_THROWS(call) \
-	NAPI_STATUS_THROWS_RVAL(call, nullptr)
-
-#define NAPI_STATUS_THROWS_RUNTIME_ERROR(call) \
-	{ \
-		napi_status status = (call); \
-		if (status != napi_ok) { \
-			const napi_extended_error_info* error; \
-			::napi_get_last_error_info(env, &error); \
-			throw std::runtime_error(error->error_message); \
 		} \
 	}
 
@@ -45,10 +36,34 @@
 	{ \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
-			const napi_extended_error_info* error; \
-			::napi_get_last_error_info(env, &error); \
-			::napi_throw_error(env, nullptr, error->error_message); \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+			::napi_throw_error(env, nullptr, errorStr.c_str()); \
 			return; \
+		} \
+	}
+
+#define NAPI_STATUS_THROWS(call) \
+	NAPI_STATUS_THROWS_RVAL(call, nullptr)
+
+#define NAPI_STATUS_THROWS_ERROR_RVAL(call, rval, errorMsg) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status, errorMsg); \
+			::napi_throw_error(env, nullptr, errorStr.c_str()); \
+			return rval; \
+		} \
+	}
+
+#define NAPI_STATUS_THROWS_ERROR(call, errorMsg) \
+	NAPI_STATUS_THROWS_ERROR_RVAL(call, nullptr, errorMsg)
+
+#define NAPI_STATUS_THROWS_RUNTIME_ERROR(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+			throw std::runtime_error(errorStr); \
 		} \
 	}
 
@@ -94,9 +109,9 @@
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
-#define NAPI_GET_STRING(from, to) \
+#define NAPI_GET_STRING(from, to, errorMsg) \
 	std::string to; \
-	rocksdb_js::getString(env, from, to);
+	NAPI_STATUS_THROWS_ERROR(rocksdb_js::getString(env, from, to), errorMsg)
 
 #define ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
 	std::string errorStr; \

@@ -1,8 +1,10 @@
 #ifndef __UTIL_H__
 #define __UTIL_H__
 
+#include <cstdint>
 #include <node_api.h>
 #include <optional>
+#include <string>
 #include "binding.h"
 #include "macros.h"
 #include "rocksdb/status.h"
@@ -15,6 +17,8 @@
  */
 
 namespace rocksdb_js {
+
+std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
@@ -78,7 +82,13 @@ template <typename T>
 }
 
 template <typename T>
-[[maybe_unused]] static napi_status getProperty(napi_env env, napi_value obj, const char* prop, T& result, bool required = false) {
+[[maybe_unused]] static napi_status getProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	T& result,
+	bool required = false
+) {
 	napi_valuetype objType;
 	NAPI_STATUS_RETURN(::napi_typeof(env, obj, &objType));
 

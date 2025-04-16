@@ -23,6 +23,11 @@ namespace rocksdb_js {
 /**
  * Creates a new `NativeDatabase` JavaScript object containing an database
  * handle to an unopened RocksDB database.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * ```
  */
 napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR("Database")
@@ -56,6 +61,12 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
  * Closes the RocksDB database. If this is the last database instance for this
  * given path and column family, it will automatically be removed from the
  * registry.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * db.close();
+ * ```
  */
 napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
@@ -71,6 +82,12 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 /**
  * Creates a new `NativeTransaction` JavaScript object with the
  * `rocksdb::Transaction` active and ready to go.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const txn = db.createTransaction();
+ * ```
  */
 napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
@@ -103,13 +120,29 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
 
 /**
  * Gets a value from the RocksDB database.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const value = await db.get('foo');
+ * ```
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const txnId = 123;
+ * const value = await db.get('foo', txnId);
+ * ```
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	std::string key;
-	rocksdb_js::getString(env, argv[0], key);
+	NAPI_STATUS_THROWS_ERROR(
+		rocksdb_js::getString(env, argv[0], key),
+		"Key is required"
+	);
 
 	std::string value;
 	rocksdb::Status status;
@@ -176,7 +209,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED()
 	}
 
-	NAPI_GET_STRING(argv[0], path)
+	NAPI_GET_STRING(argv[0], path, "Database path is required")
 	const napi_value options = argv[1];
 
 	std::string name;
@@ -213,8 +246,8 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
  */
 napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
-	NAPI_GET_STRING(argv[0], key)
-	NAPI_GET_STRING(argv[1], value)
+	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_STRING(argv[1], value, nullptr)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
@@ -255,7 +288,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
  */
 napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key)
+	NAPI_GET_STRING(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
