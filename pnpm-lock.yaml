@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      node-gyp-build:
-        specifier: 4.8.4
-        version: 4.8.4
     devDependencies:
       '@rollup/plugin-commonjs':
         specifier: ^28.0.3
@@ -1163,10 +1159,6 @@ packages:
 
   node-gyp-build-optional-packages@5.2.2:
     resolution: {integrity: sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==}
-    hasBin: true
-
-  node-gyp-build@4.8.4:
-    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
     hasBin: true
 
   node-gyp@11.2.0:
@@ -2467,8 +2459,6 @@ snapshots:
     dependencies:
       detect-libc: 2.0.3
     optional: true
-
-  node-gyp-build@4.8.4: {}
 
   node-gyp@11.2.0:
     dependencies:
