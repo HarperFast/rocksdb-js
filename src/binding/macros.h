@@ -113,7 +113,7 @@
 	std::string to; \
 	NAPI_STATUS_THROWS_ERROR(rocksdb_js::getString(env, from, to), errorMsg)
 
-#define _ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+#define ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
 	std::string errorStr; \
 	{ \
 		std::stringstream ss; \
@@ -127,20 +127,10 @@
 #define ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, msg) \
 	napi_value error; \
 	{ \
-		_ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
 		napi_value errorMsg; \
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
 		NAPI_STATUS_THROWS(::napi_create_error(env, nullptr, errorMsg, &error)) \
-	}
-
-#define ROCKSDB_STATUS_THROWS(call, msg) \
-	{ \
-		rocksdb::Status status = (call); \
-		if (!status.ok()) { \
-			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, msg) \
-			::napi_throw(env, error); \
-			return nullptr; \
-		} \
 	}
 
 #define ROCKSDB_STATUS_THROWS_ERROR_LIKE(call, msg) \
@@ -148,45 +138,15 @@
 		rocksdb::Status status = (call); \
 		if (!status.ok()) { \
 			napi_value error; \
-			_ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
-			napi_value global; \
-			napi_value objectCtor; \
-			napi_value objectCreateFn; \
-			napi_value errorCtor; \
-			napi_value errorProto; \
-			napi_value errorMsg; \
-			NAPI_STATUS_THROWS(::napi_get_global(env, &global)) \
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "Object", &objectCtor)) \
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn)) \
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "Error", &errorCtor)) \
-			NAPI_STATUS_THROWS(::napi_get_prototype(env, errorCtor, &errorProto)) \
-			napi_value createArgs[1] = { errorProto }; \
-			NAPI_STATUS_THROWS(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error)) \
-			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "message", errorMsg)) \
+			rocksdb_js::createRocksDBError(env, status, msg, error); \
 			::napi_throw(env, error); \
 		} \
 	}
 
-#define ROCKSDB_STATUS_CREATE_ERROR_LIKE_VOID(status, msg) \
-	napi_value error; \
+#define ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, msg) \
 	{ \
-		_ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
-		napi_value global; \
-		napi_value objectCtor; \
-		napi_value objectCreateFn; \
-		napi_value errorCtor; \
-		napi_value errorProto; \
-		napi_value errorMsg; \
-		NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global)) \
-		NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor)) \
-		NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn)) \
-		NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor)) \
-		NAPI_STATUS_THROWS_VOID(::napi_get_prototype(env, errorCtor, &errorProto)) \
-		napi_value createArgs[1] = { errorProto }; \
-		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error)) \
-		NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
-		NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg)) \
+		ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		rocksdb_js::createRocksDBError(env, status, msg, error); \
 	}
 
 #endif

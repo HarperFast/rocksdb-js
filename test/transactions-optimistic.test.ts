@@ -150,16 +150,26 @@ describe('Transactions (optimistic)', () => {
 				db?.put('foo', 'bar2');
 			}, 50);
 
-			await expect(db.transaction(async (txn: Transaction) => {
-				const before = await txn.get('foo');
+			try {
+				await db.transaction(async (txn: Transaction) => {
+					const before = await txn.get('foo');
 
-				await new Promise((resolve) => setTimeout(resolve, 100));
-				const after = await txn.get('foo');
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					const after = await txn.get('foo');
 
-				expect(before).toBe(after);
+					expect(before).toBe(after);
 
-				await txn.put('foo', 'bar3');
-			})).rejects.toThrow('Transaction commit failed: Resource busy');
+					await txn.put('foo', 'bar3');
+				});
+			} catch (error: unknown | Error & { code: string }) {
+				expect(error).toBeInstanceOf(Error);
+				if (error instanceof Error) {
+					expect(error.message).toBe('Transaction commit failed: Resource busy');
+					if ('code' in error) {
+						expect(error.code).toBe('ERR_BUSY');
+					}
+				}
+			}
 
 			const value = await db.get('foo');
 			expect(value).toBe('bar2');
