@@ -2,12 +2,12 @@ import type { Key } from './types.js';
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
+import { config, type RocksDatabaseConfig } from './util/load-binding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
 	cache?: boolean;
 	dupSort?: boolean;
 	name?: string; // defaults to 'default'
-	parallelism?: number;
 	useVersions?: boolean;
 };
 
@@ -78,6 +78,20 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	close() {
 		this.store.close();
+	}
+
+	/**
+	 * Set global database settings.
+	 *
+	 * @param options - The options for the database.
+	 *
+	 * @example
+	 * ```ts
+	 * RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
+	 * ```
+	 */
+	static config(options: RocksDatabaseConfig): void {
+		config(options);
 	}
 
 	// committed

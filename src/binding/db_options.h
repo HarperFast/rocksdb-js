@@ -20,7 +20,8 @@ enum class DBMode {
 struct DBOptions final {
 	DBMode mode;
 	std::string name;
-	int parallelism;
+	bool noBlockCache;
+	int parallelismThreads;
 };
 
 } // namespace rocksdb_js

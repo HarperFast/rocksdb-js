@@ -52,7 +52,8 @@ export class Store {
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	name: string;
-	parallelism: number;
+	noBlockCache?: boolean;
+	parallelismThreads: number;
 	path: string;
 	pessimistic: boolean;
 	readKey: ReadKeyFunction<Key>;
@@ -72,7 +73,8 @@ export class Store {
 		this.keyEncoder = options?.keyEncoder;
 		this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		this.name = options?.name ?? 'default';
-		this.parallelism = options?.parallelism ?? 1;
+		this.noBlockCache = options?.noBlockCache;
+		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
 		this.readKey = orderedBinary.readKey;
@@ -106,7 +108,8 @@ export class Store {
 
 		this.db.open(this.path, {
 			name: this.name,
-			parallelism: this.parallelism,
+			noBlockCache: this.noBlockCache,
+			parallelismThreads: this.parallelismThreads,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 		});
 

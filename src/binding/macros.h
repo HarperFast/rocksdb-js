@@ -23,7 +23,7 @@
 		if (status != napi_ok) { \
 			const napi_extended_error_info* error; \
 			::napi_get_last_error_info(env, &error); \
-			::napi_throw_error(env, nullptr, error->error_message); \
+			::napi_throw_error(env, nullptr, error->error_message ? error->error_message : "unknown error"); \
 			return rval; \
 		} \
 	}

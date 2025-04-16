@@ -1,6 +1,8 @@
 #include "db_registry.h"
+#include "db_settings.h"
 #include "macros.h"
 #include "util.h"
+#include "rocksdb/table.h"
 
 namespace rocksdb_js {
 
@@ -73,6 +75,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 
 	if (!dbExists) {
 		// database doesn't exist, create it
+
 		rocksdb::Options dbOptions;
 		dbOptions.comparator = rocksdb::BytewiseComparator();
 		dbOptions.create_if_missing = true;
@@ -81,7 +84,14 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		dbOptions.enable_blob_garbage_collection = true;
 		dbOptions.min_blob_size = 1024;
 		dbOptions.persist_user_defined_timestamps = true;
-		dbOptions.IncreaseParallelism(options.parallelism);
+		dbOptions.IncreaseParallelism(options.parallelismThreads);
+
+		if (!options.noBlockCache) {
+			DBSettings& settings = DBSettings::getInstance();
+			rocksdb::BlockBasedTableOptions tableOptions;
+			tableOptions.block_cache = settings.getBlockCache();
+			dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+		}
 
 		std::shared_ptr<rocksdb::DB> db;
 		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors = {

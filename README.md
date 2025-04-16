@@ -10,6 +10,36 @@ npm i --save @harperdb/rocksdb-js
 
 ## Usage
 
+### `new RocksDatabase(path, options?)`
+
+Creates a new database instance.
+
+- `path: string` The path to write the database files to. This path does not
+  need to exist, but the parent directories do.
+- `options: object` [optional]
+  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by default and the cache is shared across all database instances.
+  - `name:string` The column family name. Defaults to `"default"`.
+  - `parallelismThreads: number` The number of background threads to use for flush and compaction. Defaults to `1`.
+  - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting until commit. Defaults to `false`.
+
+### `db.config(options)`
+
+Sets global database settings.
+
+- `options: object`
+  - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks. Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing block cache for any opened databases is resized immediately. Negative values throw an error.
+
+```typescript
+RocksDatabase.config({
+  blockCacheSize: 100 * 1024 * 1024 // 100MB
+})
+```
+
+### `db.open(): Promise<RocksDatabase>`
+
+Opens the database at the given path. This must be called before performing
+any data operations.
+
 ```typescript
 import { RocksDatabase } from '@harperdb/rocksdb-js';
 
@@ -17,10 +47,11 @@ const db = new RocksDatabase('path/to/db');
 await db.open();
 ```
 
-### `db.open(): Promise<RocksDatabase>`
+There's also a static `open()` method for convenience that performs the same thing:
 
-Opens the database at the given path. This must be called before performing
-any data operations.
+```typescript
+const db = await RocksDatabase.open('path/to/db');
+```
 
 ### `db.close()`
 

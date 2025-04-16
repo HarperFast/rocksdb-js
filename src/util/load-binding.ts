@@ -17,7 +17,8 @@ export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
 	name?: string;
-	parallelism?: number;
+	noBlockCache?: boolean;
+	parallelismThreads?: number;
 	mode?: NativeDatabaseMode;
 };
 
@@ -35,6 +36,11 @@ export type NativeDatabase = {
 	remove(key: Key, txnId?: number): void;
 };
 
+export type RocksDatabaseConfig = {
+	blockCacheSize?: number;
+};
+
+export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const version = binding.version;
