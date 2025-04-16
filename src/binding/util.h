@@ -2,6 +2,7 @@
 #define __UTIL_H__
 
 #include <node_api.h>
+#include <optional>
 #include "binding.h"
 #include "macros.h"
 #include "rocksdb/status.h"

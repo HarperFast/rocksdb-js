@@ -37,7 +37,6 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 	napi_value errorProto;
 	napi_value errorCode;
 	napi_value errorMsg;
-	napi_value errorName;
 
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor))
