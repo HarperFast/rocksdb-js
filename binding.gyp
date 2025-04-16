@@ -15,6 +15,7 @@
 				'src/binding/db_settings.cpp',
 				'src/binding/transaction_handle.cpp',
 				'src/binding/transaction.cpp',
+				'src/binding/util.cpp',
 			],
 			'link_settings': {
 				'conditions': [
