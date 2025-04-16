@@ -1,8 +1,9 @@
 #include "binding.h"
+#include "database.h"
 #include "db_registry.h"
-#include "db_wrap.h"
 #include "macros.h"
 #include "rocksdb/db.h"
+#include "transaction.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -19,7 +20,10 @@ NAPI_MODULE_INIT() {
 	}, rocksdb_js::DBRegistry::getInstance()));
 
 	// database
-	rocksdb_js::db_wrap::init(env, exports);
+	rocksdb_js::Database::Init(env, exports);
+
+	// transaction
+	rocksdb_js::Transaction::Init(env, exports);
 
 	return exports;
 }

@@ -1,22 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RocksDatabase } from '../src/index.js';
+import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
+import { RocksDatabase } from '../src/index.js';
+import { generateDBPath } from './lib/util.js';
 
 describe('Error Handling', () => {
-	let db: RocksDatabase | null = null;
-
-	beforeEach(() => rimraf('/tmp/testdb'));
-
-	afterEach(() => {
-		if (db) {
-			db.close();
-			db = null;
-		}
-		return rimraf('/tmp/testdb');
-	});
-
 	it('should error if database not open', async () => {
-		db = new RocksDatabase('/tmp/testdb');
-		await expect(db.get('test')).rejects.toThrow('Database not open');
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = new RocksDatabase(dbPath);
+			await expect(db.get('test')).rejects.toThrow('Database not open');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
 	});
 });

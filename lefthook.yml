@@ -3,4 +3,4 @@ pre-commit:
   commands:
     check:
       glob: "*.{js,ts}"
-      run: pnpm type-check && pnpm lint && git update-index --again
+      run: pnpm check

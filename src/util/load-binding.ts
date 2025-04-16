@@ -3,22 +3,38 @@ import type { Key } from '../types.js';
 
 const binding = nodeGypBuild();
 
-export interface DB {
-	new(): DB;
-	close(): void;
+export type NativeTransaction = {
+	id: number;
+	new(): NativeTransaction;
+	abort(): void;
+	commit(resolve: () => void, reject: (err: Error) => void): void;
 	get(key: Key): Buffer;
+	put(key: Key, value: any): void;
+	remove(key: Key): void;
+};
+
+export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
+
+export type NativeDatabaseOptions = {
+	name?: string;
+	parallelism?: number;
+	mode?: NativeDatabaseMode;
+};
+
+export type NativeDatabase = {
+	new(): NativeDatabase;
+	close(): void;
+	createTransaction(): NativeTransaction;
+	get(key: Key, txnId?: number): Buffer;
 	opened: boolean;
 	open(
 		path: string,
-		options?: {
-			name?: string;
-			parallelism?: number;
-		}
+		options?: NativeDatabaseOptions
 	): void;
-	put(key: Key, value: any): void;
-	remove(key: Key): void;
-}
+	put(key: Key, value: any, txnId?: number): void;
+	remove(key: Key, txnId?: number): void;
+};
 
-export const DB: DB = binding.DB;
-
+export const NativeDatabase: NativeDatabase = binding.Database;
+export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const version = binding.version;

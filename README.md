@@ -5,21 +5,74 @@ A Node.js binding for the RocksDB library.
 ## Installation
 
 ```bash
-npm i --save rocksdb-js
+npm i --save @harperdb/rocksdb-js
 ```
 
 ## Usage
 
-```ts
-import { RocksDatabase } from 'rocksdb-js';
+```typescript
+import { RocksDatabase } from '@harperdb/rocksdb-js';
 
 const db = new RocksDatabase('path/to/db');
 await db.open();
 ```
 
-## API
+### `db.open(): Promise<RocksDatabase>`
 
-?
+Opens the database at the given path. This must be called before performing
+any data operations.
+
+### `db.close()`
+
+Closes a database. A database instance can be reopened once its closed.
+
+### `db.get(key, options?): Promise<any>`
+
+Retreives the value for a given key. If the key does not exist, it will return
+`undefined`.
+
+```typescript
+const foo = await db.get('foo');
+assert.equal(foo, 'foo');
+```
+
+### `db.put(key, value, options?): Promise`
+
+Stores a value for a given key.
+
+```typescript
+await db.put('foo', 'bar');
+```
+
+### `db.remove(key): Promise`
+
+Removes the value for a given key.
+
+```typescript
+await db.remove('foo');
+```
+
+### `db.transaction(async (txn: Transaction) => Promise): Promise`
+
+Executes all database operations within the specified callback within a single
+transaction. If the callback completes without error, the database operations
+are automatically committed. However, if an error is thrown during the
+callback, all database operations will be rolled back.
+
+```typescript
+import type { Transaction } from '@harperdb/rocksdb-js';
+await db.transaction(async (txn: Transaction) => {
+	await txn.put('foo', 'baz');
+});
+```
+
+Additionally, you may pass the transaction into any database data method:
+
+```typescript
+await db.transaction(async (transaction: Transaction) => {
+	await db.put('foo', 'baz', { transaction });
+});
+```
 
 ## Development
 

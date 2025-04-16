@@ -1,25 +1,44 @@
-export class Transaction {
-	constructor() {
-		//
+import { DBI } from './dbi';
+import { Store } from './store.js';
+import type { NativeTransaction } from './util/load-binding.js';
+
+/**
+ * Provides transaction level operations to a transaction callback.
+ */
+export class Transaction extends DBI {
+	#txn: NativeTransaction;
+
+	/**
+	 * Create a new transaction.
+	 * 
+	 * @param store - The base store interface for this transaction.
+	 */
+	constructor(store: Store) {
+		const txn = store.db.createTransaction();
+		super(store, txn);
+		this.#txn = txn;
 	}
 
-	async abort() {
-		//
+	/**
+	 * Abort the transaction.
+	 */
+	abort() {
+		this.#txn.abort();
 	}
 	
-	async commit() {
-		//
+	/**
+	 * Commit the transaction.
+	 */
+	commit(): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			this.#txn.commit(resolve, reject);
+		});
 	}
 
-	async get(key: string) {
-		//
-	}
-
-	async put(key: string, value: string) {
-		//
-	}
-
-	async remove(key: string) {
-		//
+	/**
+	 * Get the transaction id.
+	 */
+	get id() {
+		return this.#txn.id;
 	}
 }

@@ -43,14 +43,17 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 		await mkdir(dest, { recursive: true });
 
 		// extract the file
-		console.log(`Extracting ${tmpFile}`);
 		if (process.platform === 'win32') {
+			console.log(`Extracting ${tmpFile}`);
 			execSync(`7z x "${tmpFile}" -o"${dirname(tmpFile)}"`, { stdio: 'inherit' });
-			console.log(`Extracting ${tmpFile.replace(/\.xz$/, '')}`);
+			console.log(`Extracting ${tmpFile.replace(/\.xz$/, '')} to ${dest}`);
 			execSync(`7z x "${tmpFile.replace(/\.xz$/, '')}" -o"${dest}"`, { stdio: 'inherit' });
 		} else {
+			console.log(`Extracting ${tmpFile} to ${dest}`);
 			execFileSync('tar', ['-xf', tmpFile, '-C', dest], { stdio: 'inherit' });
 		}
+
+		console.log('Extraction complete');
 	} finally {
 		await rm(tmpFile, { force: true });
 		await rm(tmpFile.replace(/\.xz$/, ''), { force: true });

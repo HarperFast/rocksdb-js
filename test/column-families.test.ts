@@ -1,46 +1,45 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RocksDatabase } from '../src/index.js';
+import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
+import { RocksDatabase } from '../src/index.js';
+import { generateDBPath } from './lib/util.js';
 
 describe('Column Families', () => {
-	let db: RocksDatabase | null = null;
-
-	beforeEach(() => rimraf('/tmp/testdb'));
-
-	afterEach(() => {
-		if (db) {
-			db.close();
-			db = null;
-		}
-		return rimraf('/tmp/testdb');
-	});
-
 	it('should open multiple column families', async () => {
-		db = await RocksDatabase.open('/tmp/testdb');
-		db.put('foo', 'bar');
-
+		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
 		try {
-			db2 = await RocksDatabase.open('/tmp/testdb', { name: 'foo' });
+			db = await RocksDatabase.open(dbPath);
+			db.put('foo', 'bar');
+
+			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
 			db2.put('foo', 'bar2');
 
 			await expect(db.get('foo')).resolves.toBe('bar');
 			await expect(db2.get('foo')).resolves.toBe('bar2');
 		} finally {
+			db?.close();
 			db2?.close();
+			await rimraf(dbPath);
 		}
 	});
-	
-	it('should reuse same instance for same column family', async () => {
-		db = await RocksDatabase.open('/tmp/testdb', { name: 'foo'});
-		db.put('foo', 'bar');
 
+	it('should reuse same instance for same column family', async () => {
+		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
 		try {
-			db2 = await RocksDatabase.open('/tmp/testdb', { name: 'foo' });
+			db = await RocksDatabase.open(dbPath, { name: 'foo' });
+			db.put('foo', 'bar');
+
+			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
 			await expect(db2.get('foo')).resolves.toBe('bar');
 		} finally {
+			db?.close();
 			db2?.close();
+			await rimraf(dbPath);
 		}
 	});
 });

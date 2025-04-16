@@ -8,14 +8,22 @@
 			],
 			'sources': [
 				'src/binding/binding.cpp',
+				'src/binding/database.cpp',
+				'src/binding/db_descriptor.cpp',
+				'src/binding/db_handle.cpp',
 				'src/binding/db_registry.cpp',
-				'src/binding/db_wrap.cpp',
+				'src/binding/transaction_handle.cpp',
+				'src/binding/transaction.cpp',
+				'src/binding/util.cpp',
 			],
 			'link_settings': {
 				'conditions': [
 					['OS=="win"', {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/rocksdb.lib'
+							'<(module_root_dir)/deps/rocksdb/lib/rocksdb.lib',
+							'rpcrt4.lib',
+							'shell32.lib',
+							'shlwapi.lib'
 						]
 					}, {
 						'libraries': [
@@ -35,7 +43,7 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'xcode_settings': {
-						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES'
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
 					}
 				}],
 				['OS=="win"', {
