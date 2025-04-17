@@ -60,6 +60,14 @@ rocksdb::Status TransactionHandle::put(
 ) {
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
+fprintf(stderr, "Transactional Put called for key %s\n", key.c_str());
+	rocksdb::WriteOptions options = rocksdb::WriteOptions();
+	options.disableWAL = false;
+	this->txn->SetWriteOptions(options);
+
+this->txn->PutLogData(rocksdb::Slice(value));
+	options.disableWAL = true;
+	this->txn->SetWriteOptions(options);
 	return this->txn->Put(column, rocksdb::Slice(key), rocksdb::Slice(value));
 }
 

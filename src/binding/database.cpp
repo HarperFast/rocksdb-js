@@ -266,8 +266,11 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->put(key, value, *dbHandle);
 	} else {
+fprintf(stderr, "Put called for key %s\n", key.c_str());
+		rocksdb::WriteOptions options = rocksdb::WriteOptions();
+		options.disableWAL = true;
 		status = (*dbHandle)->descriptor->db->Put(
-			rocksdb::WriteOptions(),
+			options,
 			(*dbHandle)->column.get(),
 			rocksdb::Slice(key),
 			value

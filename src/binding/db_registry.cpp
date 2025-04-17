@@ -3,6 +3,7 @@
 #include "macros.h"
 #include "util.h"
 #include "rocksdb/table.h"
+#include "rocksdb/wal_filter.h"
 
 namespace rocksdb_js {
 
@@ -23,6 +24,19 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
 	}
 	return std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandle);
 }
+
+class MyWalFilter : public rocksdb::WalFilter {
+public:
+	MyWalFilter(){}
+
+	rocksdb::WalFilter::WalProcessingOption LogRecordFound(
+	unsigned long long log_number, const std::string& log_file_name,
+		const rocksdb::WriteBatch& batch, rocksdb::WriteBatch* new_batch, bool* batch_changed) override {
+		fprintf(stderr, "LogRecordFound called for log number %llu\n", log_number);
+		return rocksdb::WalFilter::WalProcessingOption::kContinueProcessing;
+	}
+	const char* Name() const override { return "TestWalFilter"; }
+};
 
 /**
  * Open a RocksDB database with column family, caches it in the registry, and
@@ -85,6 +99,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		dbOptions.min_blob_size = 1024;
 		dbOptions.persist_user_defined_timestamps = true;
 		dbOptions.IncreaseParallelism(options.parallelismThreads);
+		dbOptions.wal_filter = new MyWalFilter();
 
 		if (!options.noBlockCache) {
 			DBSettings& settings = DBSettings::getInstance();
