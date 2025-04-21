@@ -6,6 +6,7 @@ export type Decoder = {
 
 export type Encoder = {
 	copyBuffers?: boolean;
+	decode?: (buffer: Buffer) => any;
 	encode?: (value: any, mode?: number) => Buffer | string;
 	Encoder?: new (options: any) => Encoder;
 	readKey?: (buffer: Buffer, start: number, end: number, inSequence?: boolean) => any;

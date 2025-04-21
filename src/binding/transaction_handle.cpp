@@ -36,7 +36,7 @@ TransactionHandle::~TransactionHandle() {
  * Get a value using the specified database handle.
  */
 rocksdb::Status TransactionHandle::get(
-	std::string& key,
+	rocksdb::Slice& key,
 	std::string& result,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
@@ -47,32 +47,32 @@ rocksdb::Status TransactionHandle::get(
 	auto column = dbHandle->column.get();
 
 	// TODO: should this be GetForUpdate?
-	return this->txn->Get(readOptions, column, rocksdb::Slice(key), &result);
+	return this->txn->Get(readOptions, column, key, &result);
 }
 
 /**
  * Put a value using the specified database handle.
  */
 rocksdb::Status TransactionHandle::put(
-	std::string& key,
+	rocksdb::Slice& key,
 	std::string& value,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
-	return this->txn->Put(column, rocksdb::Slice(key), rocksdb::Slice(value));
+	return this->txn->Put(column, key, rocksdb::Slice(value));
 }
 
 /**
  * Remove a value using the specified database handle.
  */
 rocksdb::Status TransactionHandle::remove(
-	std::string& key,
+	rocksdb::Slice& key,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
-	return this->txn->Delete(column, rocksdb::Slice(key));
+	return this->txn->Delete(column, key);
 }
 
 /**

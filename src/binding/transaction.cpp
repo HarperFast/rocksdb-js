@@ -178,11 +178,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_TRANSACTION_HANDLE("Get")
 
+	rocksdb::Slice keySlice(key, keyLength);
 	std::string value;
-	rocksdb::Status status = txnHandle->get(key, value);
+	rocksdb::Status status = txnHandle->get(keySlice, value);
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()
@@ -220,11 +221,13 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	NAPI_GET_STRING(argv[1], value, nullptr)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(key, value), "Transaction put failed")
+	rocksdb::Slice keySlice(key, keyLength);
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(keySlice, value), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -234,10 +237,12 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_TRANSACTION_HANDLE("Remove")
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->remove(key), "Transaction remove failed")
+	rocksdb::Slice keySlice(key, keyLength);
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->remove(keySlice), "Transaction remove failed")
 
 	NAPI_RETURN_UNDEFINED()
 }

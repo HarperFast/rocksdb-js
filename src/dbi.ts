@@ -44,33 +44,21 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
 	async get(key: Key, options?: GetOptions & T): Promise<any | undefined> {
-		// TODO: Remove async?
-		// TODO: Return Promise<any> | any?
-		// TODO: Call this.getBinaryFast(key, options)
-		// TODO: decode the bytes into a value/object
-		// TODO: if decoder copies, then call getBinaryFast()
-
 		if (this.store.encoding === 'binary' || this.store.decoder) {
-			const bytes = this.getBinary(key, options);
-
-			if (this.store.decoder) {
-				// TODO: decode
+			const result = await this.getBinary(key, options);
+			if (this.store.decoder && result) {
+				return this.store.decodeValue(result);
 			}
-
-			return bytes;
+			return result;
 		}
 
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
-		const result = this.#context.get(key, getTxnId(options));
-
-		if (result && this.store.encoding === 'json') {
-			return JSON.parse(result.toString());
-		}
-
-		return result;
+		const keyBuffer = this.store.encodeKey(key);
+		const result = this.#context.get(keyBuffer, getTxnId(options));
+		return this.store.decodeValue(result);
 	}
 
 	/**
@@ -80,8 +68,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Note: Used by HDBreplication.
 	 */
 	async getBinary(key: Key, options?: GetOptions & T): Promise<Buffer | undefined> {
-		const _value = this.getBinaryFast(key, options);
-		return Buffer.from('TODO');
+		if (!this.store.isOpen()) {
+			throw new Error('Database not open');
+		}
+
+		const keyBuffer = this.store.encodeKey(key);
+		const result = this.#context.get(keyBuffer, getTxnId(options));
+		return result;
 	}
 
 	/**
@@ -94,9 +87,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * - `.byteLength` is set to the size of the full allocated memory area for
 	 *   the buffer (usually much larger).
 	 */
-	async getBinaryFast(key: Key, _options?: GetOptions & T): Promise<Buffer | undefined> {
-		const _keyLength = this.store.writeKey(key, this.store.keyBuffer, 0);
-		return Buffer.from('TODO');
+	async getBinaryFast(key: Key, options?: GetOptions & T): Promise<Buffer | undefined> {
+		if (!this.store.isOpen()) {
+			throw new Error('Database not open');
+		}
+
+		const keyBuffer = this.store.encodeKey(key);
+		const result = this.#context.get(keyBuffer, getTxnId(options));
+		return result;
 	}
 
 	/**
@@ -142,7 +140,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.put(key, value, getTxnId(options));
+
+		const keyBuffer = this.store.encodeKey(key);
+		const valueBuffer: Buffer | undefined = this.store.encodeValue(value);
+
+		console.log(valueBuffer);
+
+		this.#context.put(keyBuffer, valueBuffer, getTxnId(options));
 	}
 
 	/**
@@ -153,7 +157,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-		this.#context.remove(key, getTxnId(options));
+
+		const keyBuffer = this.store.encodeKey(key);
+		this.#context.remove(keyBuffer, getTxnId(options));
 	}
 }
 

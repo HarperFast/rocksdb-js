@@ -4,11 +4,11 @@ import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 
 describe('Key Encoding', () => {
-	describe('uint32', () => {
-	});
+	// describe('uint32', () => {
+	// });
 
-	describe('binary', () => {
-	});
+	// describe('binary', () => {
+	// });
 
 	describe('ordered-binary', () => {
 		it('should encode key with string', async () => {
@@ -18,10 +18,13 @@ describe('Key Encoding', () => {
 			try {
 				const key = 'foo';
 
-				db = await RocksDatabase.open(dbPath, { keyEncoding: 'ordered-binary' });
+				db = await RocksDatabase.open(dbPath, {
+					keyEncoding: 'ordered-binary'
+				});
 				await db.put(key, 'bar');
 
-				await expect(db.get(key)).resolves.toBe('bar');
+				const value = await db.get(key);
+				expect(value.toString()).toBe('bar');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

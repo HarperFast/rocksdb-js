@@ -8,9 +8,9 @@ export type NativeTransaction = {
 	new(): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
-	get(key: Key): Buffer;
-	put(key: Key, value: any): void;
-	remove(key: Key): void;
+	get(key: Key, txnId?: number): Buffer;
+	put(key: Key, value: any, txnId?: number): void;
+	remove(key: Key, txnId?: number): void;
 };
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';

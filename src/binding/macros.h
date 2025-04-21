@@ -109,6 +109,19 @@
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
+#define NAPI_GET_BUFFER(from, to, errorMsg) \
+	char* to = nullptr; \
+	size_t to##Length = 0; \
+	{ \
+		bool isBuffer; \
+		NAPI_STATUS_THROWS(::napi_is_buffer(env, from, &isBuffer)); \
+		if (!isBuffer) { \
+			::napi_throw_error(env, nullptr, errorMsg); \
+			return nullptr; \
+		} \
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, from, reinterpret_cast<void**>(&to), &to##Length)); \
+	}
+
 #define NAPI_GET_STRING(from, to, errorMsg) \
 	std::string to; \
 	NAPI_STATUS_THROWS_ERROR(rocksdb_js::getString(env, from, to), errorMsg)
