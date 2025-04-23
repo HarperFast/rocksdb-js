@@ -1,14 +1,13 @@
-import type { Key } from './types.js';
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type RocksDatabaseConfig } from './util/load-binding.js';
+import { initKeyEncoder } from './encoding.js';
+import * as orderedBinary from 'ordered-binary';
+import type { Key } from './types.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
-	cache?: boolean;
-	dupSort?: boolean;
 	name?: string; // defaults to 'default'
-	useVersions?: boolean;
 };
 
 /**
@@ -172,7 +171,77 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	async open(): Promise<RocksDatabase> {
-		await this.store.open();
+		if (this.store.open()) {
+			// already open
+			return this;
+		}
+
+		const { store } = this;
+
+		/**
+		 * The encoder precedence is:
+		 * 1. encoder.Encoder
+		 * 2. encoder.encode()
+		 * 3. encoding === `msgpack`
+		 * 4. encoding === `ordered-binary`
+		 * 5. encoder.writeKey()
+		 */
+		let EncoderClass = store.encoder?.Encoder;
+		if (typeof EncoderClass === 'function') {
+			store.encoder = null;
+		} else if (
+			typeof store.encoder?.encode !== 'function' &&
+			(!store.encoding || store.encoding === 'msgpack')
+		) {
+			store.encoding = 'msgpack';
+			EncoderClass = await import('msgpackr').then(m => m.Encoder);
+		}
+		if (EncoderClass) {
+			const opts: Record<string, any> = {
+				copyBuffers: true
+			};
+			if (store.sharedStructuresKey) {
+				opts.getStructures = () => {
+					// this needs to call getBinary()
+				};
+				opts.setStructures = (structures: any, isCompatible: boolean) => {
+					//
+				};
+			}
+			store.encoder = new EncoderClass({
+				...opts,
+				...store.encoder
+			});
+			store.decoder = store.encoder;
+		} else if (typeof store.encoder?.encode === 'function') {
+			if (!store.decoder) {
+				store.decoder = store.encoder;
+			}
+			store.decoderCopies = !store.encoder.needsStableBuffer;
+		} else if (store.encoding === 'ordered-binary') {
+			store.encoder = {
+				readKey: orderedBinary.readKey,
+				writeKey: orderedBinary.writeKey,
+			};
+			store.decoder = store.encoder;
+		} else if (typeof store.encoder?.writeKey === 'function') {
+			store.encoder.encode = (value: any, mode?: number): Buffer => {
+				return Buffer.from('TODO');
+			};
+		}
+
+		if (store.decoder?.readKey && !store.decoder.decode) {
+			store.decoder.decode = (buffer: Buffer): any => {
+				if (store.decoder?.readKey) {
+					return store.decoder.readKey(buffer, 0, buffer.length);
+				}
+				return buffer;
+			};
+			store.decoderCopies = true;
+		}
+
+		Object.assign(store, initKeyEncoder(store.keyEncoding, store.keyEncoder));
+
 		return this;
 	}
 

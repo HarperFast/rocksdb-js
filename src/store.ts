@@ -3,53 +3,50 @@ import {
 	type NativeDatabaseOptions,
 } from './util/load-binding';
 import {
-	readBufferKey,
-	readUint32Key,
-	writeBufferKey,
-	writeUint32Key,
+	Encoding,
+	type KeyEncoder,
 	type Encoder,
-	type Decoder,
-	type Encoding,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
 } from './encoding.js';
-import * as orderedBinary from 'ordered-binary';
-import type { Key } from './types';
+import type { BufferWithDataView, Key } from './types';
 
-const KEY_BUFFER_SIZE = 4096;
+const MAX_KEY_SIZE = 1024 * 1024; // 1MB
+// const KEY_BUFFER_SIZE = 4096;
 const REUSE_BUFFER_MODE = 512;
 const RESET_BUFFER_MODE = 1024;
 const WRITE_BUFFER_SIZE = 65536;
-
-// class KeyBuffer {
-// 	buffer: Buffer;
-// 	uint32: Uint32Array;
-// 	float64: Float64Array;
-// 	view: DataView;
-
-// 	constructor() {
-// 		this.buffer = Buffer.allocUnsafeSlow(KEY_BUFFER_SIZE);
-// 		const { buffer: internalBuffer } = this.buffer;
-// 		this.view = new DataView(internalBuffer, 0, KEY_BUFFER_SIZE);
-// 		this.uint32 = new Uint32Array(internalBuffer, 0, KEY_BUFFER_SIZE >> 2);
-// 		this.float64 = new Float64Array(internalBuffer, 0, KEY_BUFFER_SIZE >> 3);
-// 	}
-// }
 
 /**
  * Options for the `Store` class.
  */
 export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
-	decoder?: Decoder | null;
-	encoder?: Encoder;
-	encoding?: Encoding;
+	// cache?: boolean;
+	decoder?: Encoder | null;
+	// dupSort?: boolean;
+	encoder?: Encoder | null;
+	encoding?: 'msgpack' | 'ordered-binary';
 	keyEncoder?: {
 		readKey?: ReadKeyFunction<Key>;
 		writeKey?: WriteKeyFunction<Buffer | number>;
 	};
 	keyEncoding?: KeyEncoding;
+	// mapSize?: number;
+	// maxDbs?: number;
+	// maxFreeSpaceToLoad?: number;
+	// maxFreeSpaceToRetain?: number;
+	// maxReaders?: number;
+	// maxKeySize?: number;
+	// noReadAhead?: boolean;
+	// noSync?: boolean;
+	// overlappingSync?: boolean;
+	// pageSize?: number;
 	pessimistic?: boolean;
+	// readOnly?: boolean;
+	sharedStructuresKey?: symbol;
+	// trackMetrics?: boolean;
+	// useVersions?: boolean;
 }
 
 /**
@@ -61,21 +58,19 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
  */
 export class Store {
 	db: NativeDatabase;
-	decoder?: Decoder | null;
+	decoder: Encoder | null;
+	decoderCopies: boolean = false;
 	encoder: Encoder | null;
-	encoding: Encoding;
-	// keyBuffer: KeyBuffer;
+	encoding: Encoding | null;
+	keyEncoder?: KeyEncoder;
 	keyEncoding: KeyEncoding;
-	keyEncoder?: {
-		readKey?: ReadKeyFunction<Key>;
-		writeKey?: WriteKeyFunction<Buffer | number>;
-	};
 	name: string;
 	noBlockCache?: boolean;
 	parallelismThreads: number;
 	path: string;
 	pessimistic: boolean;
 	readKey: ReadKeyFunction<Key>;
+	sharedStructuresKey?: symbol;
 	writeKey: WriteKeyFunction<Key>;
 
 	/**
@@ -86,9 +81,9 @@ export class Store {
 	 */
 	constructor(path: string, options?: StoreOptions) {
 		this.db = new NativeDatabase();
+		this.decoder = options?.decoder ?? null;
 		this.encoder = options?.encoder ?? null;
-		this.encoding = options?.encoding ?? 'msgpack';
-		// this.keyBuffer = new KeyBuffer();
+		this.encoding = options?.encoding ?? null;
 		this.keyEncoder = options?.keyEncoder;
 		this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		this.name = options?.name ?? 'default';
@@ -96,8 +91,9 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
-		this.readKey = orderedBinary.readKey;
-		this.writeKey = orderedBinary.writeKey;
+		this.readKey = (_source: BufferWithDataView, _start: number, _end?: number): any => {};
+		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.writeKey = (key: any, target: BufferWithDataView, start: number): any => {};
 	}
 
 	/**
@@ -108,12 +104,8 @@ export class Store {
 	}
 
 	decodeValue(value: Buffer) {
-		if (this.decoder?.decode) {
+		if (typeof this.decoder?.decode === 'function') {
 			return this.decoder.decode(value);
-		}
-
-		if (value && this.encoding === 'json') {
-			return JSON.parse(value.toString());
 		}
 
 		return value;
@@ -133,16 +125,16 @@ export class Store {
 	 * @param value - The value to encode.
 	 * @returns The encoded value.
 	 */
-	encodeValue(value: any) {
+	encodeValue(value: any): Buffer | Uint8Array {
 		if (value && value['\x10binary-data\x02']) {
 			return value['\x10binary-data\x02'];
 		}
 
-		if (this.encoder?.encode) {
+		if (typeof this.encoder?.encode === 'function') {
 			if (this.encoder.copyBuffers) {
 				return this.encoder.encode(
 					value,
-					REUSE_BUFFER_MODE // | (writeTxn ? RESET_BUFFER_MODE : 0),
+					REUSE_BUFFER_MODE | RESET_BUFFER_MODE
 				);
 			}
 
@@ -177,9 +169,9 @@ export class Store {
 	 * Opens the database. This must be called before any database operations
 	 * are performed.
 	 */
-	async open(): Promise<void> {
+	open() {
 		if (this.db.opened) {
-			return;
+			return true;
 		}
 
 		this.db.open(this.path, {
@@ -188,61 +180,5 @@ export class Store {
 			parallelismThreads: this.parallelismThreads,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 		});
-
-		if (this.encoding === 'ordered-binary') {
-			this.encoder = {
-				writeKey: orderedBinary.writeKey,
-				readKey: orderedBinary.readKey,
-			};
-		} else {
-			// custom encoder, binary, cbor, json, msgpack, or string
-			const encoderFn = this.encoder?.encode;
-			let EncoderClass = this.encoder?.Encoder;
-			if (EncoderClass) {
-				// since we have a custom encoder class, null out the encoder so we
-				// don't pass it to the custom encoder class constructor
-				this.encoder = null;
-			}
-			if (!EncoderClass && !encoderFn && (this.encoding === 'cbor' || this.encoding === 'msgpack')) {
-				EncoderClass = await import(this.encoding === 'cbor' ? 'cbor-x' : 'msgpackr').then(m => m.Encoder);
-			}
-			if (EncoderClass) {
-				this.encoder = new EncoderClass({
-					...this.encoder
-				});
-			} else if (this.encoding === 'json') {
-				this.encoder = {
-					encode: (value: any) => JSON.stringify(value),
-				};
-			} else if (this.encoder?.decode) {
-				// binary or string
-				this.decoder = {
-					decode: this.encoder.decode,
-				};
-			}
-		}
-
-		if (this.encoder?.writeKey && !this.encoder.encode) {
-			this.encoder.encode = (_value: any, _mode?: number): Buffer => {
-				// TODO: Implement
-				return Buffer.from('');
-			};
-			this.encoder.copyBuffers = true;
-		}
-
-		if (this.keyEncoding === 'uint32') {
-			this.readKey = readUint32Key;
-			this.writeKey = writeUint32Key as WriteKeyFunction<Key>;
-		} else if (this.keyEncoding === 'binary') {
-			this.readKey = readBufferKey;
-			this.writeKey = writeBufferKey as WriteKeyFunction<Key>;
-		} else if (this.keyEncoder) {
-			const { readKey, writeKey } = this.keyEncoder;
-			if (!readKey || !writeKey) {
-				throw new Error('Custom key encoder must provide both readKey and writeKey');
-			}
-			this.readKey = readKey;
-			this.writeKey = writeKey as WriteKeyFunction<Key>;
-		}
 	}
 }

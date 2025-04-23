@@ -44,7 +44,15 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
 	async get(key: Key, options?: GetOptions & T): Promise<any | undefined> {
-		if (this.store.encoding === 'binary' || this.store.decoder) {
+		if (this.store.decoderCopies) {
+			// TODO: implement
+		}
+
+		if (this.store.encoding === 'binary') {
+			return this.getBinary(key, options);
+		}
+
+		if (this.store.decoder) {
 			const result = await this.getBinary(key, options);
 			if (this.store.decoder && result) {
 				return this.store.decodeValue(result);
@@ -142,10 +150,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const valueBuffer: Buffer | undefined = this.store.encodeValue(value);
-
-		console.log(valueBuffer);
-
+		const valueBuffer = this.store.encodeValue(value);
+			
 		this.#context.put(keyBuffer, valueBuffer, getTxnId(options));
 	}
 

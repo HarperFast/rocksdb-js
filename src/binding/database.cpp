@@ -176,7 +176,13 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
+	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+		env,
+		value.size(),
+		value.data(),
+		nullptr,
+		&result
+	))
 
 	return result;
 }
@@ -243,7 +249,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
-	NAPI_GET_STRING(argv[1], value, nullptr)
+	NAPI_GET_BUFFER(argv[1], value, nullptr)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
@@ -252,6 +258,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
 
 	rocksdb::Slice keySlice(key, keyLength);
+	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
@@ -264,7 +271,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->put(
 			keySlice,
-			value,
+			valueSlice,
 			*dbHandle
 		);
 	} else {
@@ -272,7 +279,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 			rocksdb::WriteOptions(),
 			(*dbHandle)->column.get(),
 			keySlice,
-			value
+			valueSlice
 		);
 	}
 

@@ -195,7 +195,13 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
+	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+		env,
+		value.size(),
+		value.data(),
+		nullptr,
+		&result
+	))
 
 	return result;
 }
@@ -222,12 +228,13 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
 napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
-	NAPI_GET_STRING(argv[1], value, nullptr)
+	NAPI_GET_BUFFER(argv[1], value, nullptr)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
 	rocksdb::Slice keySlice(key, keyLength);
+	rocksdb::Slice valueSlice(value, valueLength);
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(keySlice, value), "Transaction put failed")
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(keySlice, valueSlice), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }

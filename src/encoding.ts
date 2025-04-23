@@ -1,19 +1,26 @@
-import { BufferWithDataView, Key } from './types.js';
-
-export type Decoder = {
-	decode?: (buffer: Buffer) => any;
-};
+import * as orderedBinary from 'ordered-binary';
+import type { BufferWithDataView, Key } from './types.js';
 
 export type Encoder = {
 	copyBuffers?: boolean;
 	decode?: (buffer: Buffer) => any;
-	encode?: (value: any, mode?: number) => Buffer | string;
-	Encoder?: new (options: any) => Encoder;
+	encode?: (value: any, mode?: number) => Buffer; // | string;
+	Encoder?: new (options?: any) => Encoder;
+	freezeData?: boolean;
+	needsStableBuffer?: boolean;
+	randomAccessStructure?: boolean;
 	readKey?: (buffer: Buffer, start: number, end: number, inSequence?: boolean) => any;
+	structuredClone?: boolean;
+	useFloat32?: boolean;
 	writeKey?: (key: any, target: Buffer, position: number, inSequence?: boolean) => number;
 };
 
-export type Encoding = 'binary' | 'cbor' | 'json' | 'msgpack' | 'ordered-binary' | 'string';
+export type Encoding = 'binary' | 'ordered-binary' | 'msgpack';
+
+export type KeyEncoder = {
+	readKey?: ReadKeyFunction<Key>;
+	writeKey?: WriteKeyFunction<Buffer | number>;
+};
 
 export type KeyEncoding = 'binary' | 'ordered-binary' | 'uint32';
 
@@ -44,4 +51,28 @@ export function writeUint32Key(key: number, target: BufferWithDataView, start: n
 	}
 	target.dataView.setUint32(start, key, true);
 	return start + 4;
+}
+
+export function initKeyEncoder(keyEncoding?: KeyEncoding, keyEncoder?: KeyEncoder) {
+	let readKey;
+	let writeKey;
+	
+	if (keyEncoder) {
+		({ readKey, writeKey } = keyEncoder);
+		if (!readKey || !writeKey) {
+			throw new Error('Custom key encoder must provide both readKey and writeKey');
+		}
+	} else if (keyEncoding === 'binary') {
+		readKey = readBufferKey;
+		writeKey = writeBufferKey;
+	} else if (keyEncoding === 'uint32') {
+		readKey = readUint32Key;
+		writeKey = writeUint32Key;
+	} else {
+		keyEncoding = 'ordered-binary';
+		readKey = orderedBinary.readKey;
+		writeKey = orderedBinary.writeKey;
+	}
+
+	return { keyEncoding, readKey, writeKey };
 }

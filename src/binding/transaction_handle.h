@@ -29,7 +29,7 @@ struct TransactionHandle final {
 	~TransactionHandle();
 
 	rocksdb::Status get(rocksdb::Slice& key, std::string& result, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
-	rocksdb::Status put(rocksdb::Slice& key, std::string& value, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
+	rocksdb::Status put(rocksdb::Slice& key, rocksdb::Slice& value, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
 	rocksdb::Status remove(rocksdb::Slice& key, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
 	void release();
 

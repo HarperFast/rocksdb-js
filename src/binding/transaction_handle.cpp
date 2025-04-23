@@ -55,12 +55,12 @@ rocksdb::Status TransactionHandle::get(
  */
 rocksdb::Status TransactionHandle::put(
 	rocksdb::Slice& key,
-	std::string& value,
+	rocksdb::Slice& value,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
-	return this->txn->Put(column, key, rocksdb::Slice(value));
+	return this->txn->Put(column, key, value);
 }
 
 /**
