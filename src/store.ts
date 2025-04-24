@@ -13,7 +13,7 @@ import {
 import type { BufferWithDataView, Key } from './types';
 
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
-// const KEY_BUFFER_SIZE = 4096;
+const KEY_BUFFER_SIZE = 4096;
 const REUSE_BUFFER_MODE = 512;
 const RESET_BUFFER_MODE = 1024;
 const WRITE_BUFFER_SIZE = 65536;
@@ -112,11 +112,10 @@ export class Store {
 	}
 
 	encodeKey(key: Key) {
-		const buffer = Buffer.from(
-			new SharedArrayBuffer(WRITE_BUFFER_SIZE)
-		);
-		const _bytesWritten = this.writeKey(key, buffer, 0);
-		return buffer;
+		const keyBytes: BufferWithDataView = Buffer.allocUnsafeSlow(KEY_BUFFER_SIZE);
+		keyBytes.dataView = new DataView(keyBytes.buffer);
+		const _bytesWritten = this.writeKey(key, keyBytes, 0);
+		return keyBytes;
 	}
 
 	/**

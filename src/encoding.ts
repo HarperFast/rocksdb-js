@@ -40,19 +40,29 @@ export function writeBufferKey(key: Buffer, target: BufferWithDataView, start: n
 
 export function readUint32Key(source: BufferWithDataView, start: number, _end?: number): number {
 	if (!source.dataView) {
-		source.dataView = new DataView(source.buffer, 0, source.length);
+		source.dataView = new DataView(source.buffer);
 	}
 	return source.dataView.getUint32(start, true);
 }
 
 export function writeUint32Key(key: number, target: BufferWithDataView, start: number): number {
 	if (!target.dataView) {
-		target.dataView = new DataView(target.buffer, 0, target.length);
+		target.dataView = new DataView(target.buffer);
+	}
+	if (isNaN(key)) {
+		throw new TypeError('Key is not a number');
 	}
 	target.dataView.setUint32(start, key, true);
 	return start + 4;
 }
 
+/**
+ * Initializes the key encoder functions.
+ *
+ * @param keyEncoding - The key encoding to use.
+ * @param keyEncoder - The key encoder to use.
+ * @returns The key encoder.
+ */
 export function initKeyEncoder(keyEncoding?: KeyEncoding, keyEncoder?: KeyEncoder) {
 	let readKey;
 	let writeKey;
@@ -68,10 +78,12 @@ export function initKeyEncoder(keyEncoding?: KeyEncoding, keyEncoder?: KeyEncode
 	} else if (keyEncoding === 'uint32') {
 		readKey = readUint32Key;
 		writeKey = writeUint32Key;
-	} else {
+	} else if (!keyEncoding || keyEncoding === 'ordered-binary') {
 		keyEncoding = 'ordered-binary';
 		readKey = orderedBinary.readKey;
 		writeKey = orderedBinary.writeKey;
+	} else {
+		throw new Error(`Invalid key encoding: ${keyEncoding}`);
 	}
 
 	return { keyEncoding, readKey, writeKey };
