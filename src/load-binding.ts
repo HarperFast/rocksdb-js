@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import type { Key } from '../types.js';
+import type { Key } from './types.js';
 
 export type NativeTransaction = {
 	id: number;

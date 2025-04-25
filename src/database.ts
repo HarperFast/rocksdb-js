@@ -1,7 +1,7 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
-import { config, type RocksDatabaseConfig } from './util/load-binding.js';
+import { config, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
 import type { Key } from './types.js';
 

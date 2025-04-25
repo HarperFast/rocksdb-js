@@ -1,6 +1,6 @@
 import type { Key } from './types.js';
 import type { Store } from './store.js';
-import { NativeDatabase, NativeTransaction } from './util/load-binding.js';
+import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import type { Transaction } from './transaction.js';
 
 export type DBITransactional = {

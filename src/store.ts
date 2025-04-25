@@ -1,7 +1,7 @@
 import {
 	NativeDatabase,
 	type NativeDatabaseOptions,
-} from './util/load-binding';
+} from './load-binding.js';
 import {
 	Encoding,
 	// type KeyEncoder,

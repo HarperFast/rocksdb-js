@@ -1,4 +1,4 @@
-import { version } from './util/load-binding.js';
+import { version } from './load-binding.js';
 
 export { RocksDatabase } from './database.js';
 
