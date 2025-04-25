@@ -4,11 +4,12 @@ import {
 } from './util/load-binding';
 import {
 	Encoding,
-	type KeyEncoder,
+	// type KeyEncoder,
 	type Encoder,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
+	initKeyEncoder,
 } from './encoding.js';
 import type { BufferWithDataView, Key } from './types';
 
@@ -63,8 +64,6 @@ export class Store {
 	encoder: Encoder | null;
 	encoding: Encoding | null;
 	keyBuffer: BufferWithDataView;
-	keyEncoder?: KeyEncoder;
-	keyEncoding: KeyEncoding;
 	name: string;
 	noBlockCache?: boolean;
 	parallelismThreads: number;
@@ -91,8 +90,13 @@ export class Store {
 		this.keyBuffer.start = 0;
 		this.keyBuffer.end = 0;
 
-		this.keyEncoder = options?.keyEncoder;
-		this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
+		// this.keyEncoder = options?.keyEncoder;
+		// this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
+		Object.assign(this, initKeyEncoder(
+			options?.keyEncoding ?? 'ordered-binary',
+			options?.keyEncoder
+		));
+
 		this.name = options?.name ?? 'default';
 		this.noBlockCache = options?.noBlockCache;
 		this.parallelismThreads = options?.parallelismThreads ?? 1;

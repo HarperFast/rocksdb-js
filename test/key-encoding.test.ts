@@ -178,10 +178,10 @@ describe('Key Encoding', () => {
 			} as any)).rejects.toThrow('Invalid key encoding: foo');
 		});
 
-		it('should', async () => {
-			await expect(RocksDatabase.open(generateDBPath(), {
-				keyEncoding: 'foo'
-			} as any)).rejects.toThrow('Invalid key encoding: foo');
-		});
+		// it('should', async () => {
+		// 	await expect(RocksDatabase.open(generateDBPath(), {
+		// 		keyEncoding: {}
+		// 	} as any)).rejects.toThrow('Invalid key encoding: foo');
+		// });
 	});
 });

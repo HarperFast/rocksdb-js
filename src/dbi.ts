@@ -7,6 +7,7 @@ export type DBITransactional = {
 	transaction: Transaction;
 };
 
+const UNMODIFIED = Symbol('UNMODIFIED');
 
 /**
  * The base class for all database operations. This base class is shared by
@@ -45,7 +46,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 */
 	async get(key: Key, options?: GetOptions & T): Promise<any | undefined> {
 		if (this.store.decoderCopies) {
-			// TODO: implement
+			let bytes = await this.getBinaryFast(key, options);
+			return !bytes ? undefined : bytes === UNMODIFIED ? {} : this.store.decodeValue(bytes as Buffer);
 		}
 
 		if (this.store.encoding === 'binary') {
@@ -91,13 +93,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * - `.byteLength` is set to the size of the full allocated memory area for
 	 *   the buffer (usually much larger).
 	 */
-	async getBinaryFast(key: Key, options?: GetOptions & T): Promise<Buffer | undefined> {
+	async getBinaryFast(key: Key, options?: GetOptions & T): Promise<Buffer | symbol | undefined> {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
 		return this.#context.get(keyBuffer, getTxnId(options));
+		// TODO: return UNMODIFIED if the value is not modified
 	}
 
 	/**

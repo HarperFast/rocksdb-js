@@ -5,6 +5,19 @@ import { generateDBPath } from './lib/util.js';
 
 describe('Read Operations', () => {
 	describe('get()', () => {
+		it('should error if database is not open', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = new RocksDatabase(dbPath);
+				await expect(db.get('foo')).rejects.toThrow('Database not open');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
 		it('should return undefined if key does not exist', async () => {
 			const dbPath = generateDBPath();
 			let db: RocksDatabase | null = null;
@@ -33,8 +46,35 @@ describe('Read Operations', () => {
 		});
 	});
 
-	// getBinary()
-	// getBinaryFast()
+	describe('getBinary()', () => {
+		it('should error if database is not open', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = new RocksDatabase(dbPath);
+				await expect(db.getBinary('foo')).rejects.toThrow('Database not open');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+	});
+
+	describe('getBinaryFast()', () => {
+		it('should error if database is not open', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = new RocksDatabase(dbPath);
+				await expect(db.getBinaryFast('foo')).rejects.toThrow('Database not open');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+	});
 
 	// getEntry()
 	// getKeys()

@@ -63,7 +63,7 @@ export function writeUint32Key(key: number, target: BufferWithDataView, start: n
  * @param keyEncoder - The key encoder to use.
  * @returns The key encoder.
  */
-export function initKeyEncoder(keyEncoding?: KeyEncoding, keyEncoder?: KeyEncoder) {
+export function initKeyEncoder(keyEncoding?: KeyEncoding | undefined, keyEncoder?: KeyEncoder | undefined) {
 	let readKey;
 	let writeKey;
 	
