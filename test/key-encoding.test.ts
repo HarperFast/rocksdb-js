@@ -171,9 +171,17 @@ describe('Key Encoding', () => {
 
 	// mixed keys
 
-	it('should error if key encoding is not supported', async () => {
-		await expect(RocksDatabase.open(generateDBPath(), {
-			keyEncoding: 'foo'
-		} as any)).rejects.toThrow('Invalid key encoding: foo');
+	describe('Error handling', () => {
+		it('should error if key encoding is not supported', async () => {
+			await expect(RocksDatabase.open(generateDBPath(), {
+				keyEncoding: 'foo'
+			} as any)).rejects.toThrow('Invalid key encoding: foo');
+		});
+
+		it('should', async () => {
+			await expect(RocksDatabase.open(generateDBPath(), {
+				keyEncoding: 'foo'
+			} as any)).rejects.toThrow('Invalid key encoding: foo');
+		});
 	});
 });

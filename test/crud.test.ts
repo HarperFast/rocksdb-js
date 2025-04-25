@@ -3,7 +3,7 @@ import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 
-describe('CRUD Operations', () => {
+describe('Write operations', () => {
 	describe('put()', () => {
 		it('should set and get a value using default column family', async () => {
 			const dbPath = generateDBPath();
@@ -52,6 +52,20 @@ describe('CRUD Operations', () => {
 				await rimraf(dbPath);
 			}
 		});
+
+		it('should throw an error if database is closed', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = await RocksDatabase.open(dbPath);
+				await db.close();
+				await expect((db.put as any)()).rejects.toThrow('Database not open');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
 	});
 
 	describe('remove()', () => {
@@ -95,6 +109,20 @@ describe('CRUD Operations', () => {
 			try {
 				db = await RocksDatabase.open(dbPath);
 				await expect((db.remove as any)()).rejects.toThrow('Key is required');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should throw an error if database is closed', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = await RocksDatabase.open(dbPath);
+				await db.close();
+				await expect((db.remove as any)()).rejects.toThrow('Database not open');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

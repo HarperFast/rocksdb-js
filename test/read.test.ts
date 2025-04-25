@@ -35,6 +35,7 @@ describe('Read Operations', () => {
 
 	// getBinary()
 	// getBinaryFast()
+
 	// getEntry()
 	// getKeys()
 	// getRange()

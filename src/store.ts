@@ -70,9 +70,9 @@ export class Store {
 	parallelismThreads: number;
 	path: string;
 	pessimistic: boolean;
-	readKey: ReadKeyFunction<Key>;
+	readKey: ReadKeyFunction<Key> | null = null;
 	sharedStructuresKey?: symbol;
-	writeKey: WriteKeyFunction<Key>;
+	writeKey: WriteKeyFunction<Key> | null = null;
 
 	/**
 	 * Initializes the store with a new `NativeDatabase` instance.
@@ -98,9 +98,7 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
-		this.readKey = (_source: BufferWithDataView, _start: number, _end?: number): any => {};
 		this.sharedStructuresKey = options?.sharedStructuresKey;
-		this.writeKey = (_key: any, _target: BufferWithDataView, _start: number): any => {};
 	}
 
 	/**
@@ -132,6 +130,10 @@ export class Store {
 	encodeKey(key: Key): BufferWithDataView {
 		if (key === undefined) {
 			throw new Error('Key is required');
+		}
+
+		if (!this.writeKey) {
+			throw new Error('Write key function is not set');
 		}
 
 		const bytesWritten = this.writeKey(key, this.keyBuffer, 0);
