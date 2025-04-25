@@ -12,11 +12,11 @@ import {
 } from './encoding.js';
 import type { BufferWithDataView, Key } from './types';
 
-const MAX_KEY_SIZE = 1024 * 1024; // 1MB
+// const MAX_KEY_SIZE = 1024 * 1024; // 1MB
 const KEY_BUFFER_SIZE = 4096;
 const REUSE_BUFFER_MODE = 512;
 const RESET_BUFFER_MODE = 1024;
-const WRITE_BUFFER_SIZE = 65536;
+// const WRITE_BUFFER_SIZE = 65536;
 
 /**
  * Options for the `Store` class.
@@ -100,7 +100,7 @@ export class Store {
 		this.pessimistic = options?.pessimistic ?? false;
 		this.readKey = (_source: BufferWithDataView, _start: number, _end?: number): any => {};
 		this.sharedStructuresKey = options?.sharedStructuresKey;
-		this.writeKey = (key: any, target: BufferWithDataView, start: number): any => {};
+		this.writeKey = (_key: any, _target: BufferWithDataView, _start: number): any => {};
 	}
 
 	/**

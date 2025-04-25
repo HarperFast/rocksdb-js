@@ -204,7 +204,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				opts.getStructures = () => {
 					// this needs to call getBinary()
 				};
-				opts.setStructures = (structures: any, isCompatible: boolean) => {
+				opts.setStructures = (_structures: any, _isCompatible: boolean) => {
 					//
 				};
 			}
@@ -225,7 +225,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			};
 			store.decoder = store.encoder;
 		} else if (typeof store.encoder?.writeKey === 'function') {
-			store.encoder.encode = (value: any, mode?: number): Buffer => {
+			store.encoder.encode = (_value: any, _mode?: number): Buffer => {
 				return Buffer.from('TODO');
 			};
 		}

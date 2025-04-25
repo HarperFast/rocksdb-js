@@ -145,8 +145,8 @@ describe('Key Encoding', () => {
 			try {
 				db = await RocksDatabase.open(dbPath, {
 					keyEncoder: {
-						readKey: (key: Buffer) => Buffer.from('foo'),
-						writeKey: (key: Buffer, target: Buffer) => 0
+						readKey: (_key: Buffer) => Buffer.from('foo'),
+						writeKey: (_key: Buffer, _target: Buffer, _start: number) => 0
 					}
 				});
 				await expect(db.get('foo')).rejects.toThrow('Zero length key is not allowed');
