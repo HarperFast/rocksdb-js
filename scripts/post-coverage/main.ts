@@ -17,6 +17,9 @@ const css = `<style type="text/css">
 	.coverage-summary td.empty {
 		opacity: 1;
 	}
+	.coverage-summary td {
+		padding: 10px !important;
+	}
 	.empty {
 		background-color: #fff;
 	}
@@ -58,8 +61,7 @@ const dirs: string[] = [
 	resolve(import.meta.dirname, '../../coverage')
 ];
 
-let dir: string | undefined;
-while (dir = dirs.shift()) {
+for (let dir = dirs.shift(); dir; dir = dirs.shift()) {
 	if (existsSync(dir)) {
 		for (const name of readdirSync(dir)) {
 			try {

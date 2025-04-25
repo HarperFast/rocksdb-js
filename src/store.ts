@@ -4,7 +4,6 @@ import {
 } from './load-binding.js';
 import {
 	Encoding,
-	// type KeyEncoder,
 	type Encoder,
 	type KeyEncoding,
 	type ReadKeyFunction,
@@ -90,8 +89,6 @@ export class Store {
 		this.keyBuffer.start = 0;
 		this.keyBuffer.end = 0;
 
-		// this.keyEncoder = options?.keyEncoder;
-		// this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		Object.assign(this, initKeyEncoder(
 			options?.keyEncoding ?? 'ordered-binary',
 			options?.keyEncoder
