@@ -139,7 +139,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	rocksdb::Slice keySlice(key, keyLength);
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	std::string value;
 	rocksdb::Status status;
 
@@ -257,7 +257,7 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
 
-	rocksdb::Slice keySlice(key, keyLength);
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
 	if (txnIdType == napi_number) {
@@ -305,7 +305,7 @@ napi_value Database::Remove(napi_env env, napi_callback_info info) {
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
 
-	rocksdb::Slice keySlice(key, keyLength);
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;

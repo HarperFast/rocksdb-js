@@ -6,8 +6,8 @@ import { generateDBPath } from './lib/util.js';
 describe('Key Encoding', () => {
 	describe('uint32', () => {
 		it('should encode key with string using uint32', async () => {
-			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
 
 			try {
 				db = await RocksDatabase.open(dbPath, {
@@ -29,8 +29,8 @@ describe('Key Encoding', () => {
 		});
 
 		it.skip('should read and write a range', async () => {
-			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
 
 			try {
 				db = await RocksDatabase.open(dbPath, {
@@ -62,8 +62,8 @@ describe('Key Encoding', () => {
 		});
 
 		it('should error if key is not a number', async () => {
-			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
 
 			try {
 				db = await RocksDatabase.open(dbPath, {
@@ -79,8 +79,8 @@ describe('Key Encoding', () => {
 
 	describe('binary', () => {
 		it('should encode key with string using binary', async () => {
-			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
 
 			try {
 				db = await RocksDatabase.open(dbPath, {
@@ -99,8 +99,8 @@ describe('Key Encoding', () => {
 
 	describe('ordered-binary', () => {
 		it('should encode key with string using ordered-binary', async () => {
-			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
 
 			try {
 				db = await RocksDatabase.open(dbPath, {
@@ -112,6 +112,58 @@ describe('Key Encoding', () => {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+	});
+
+	describe('Custom key encoder', () => {
+		it('should encode key with string using custom key encoder', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = await RocksDatabase.open(dbPath, {
+					keyEncoder: {
+						readKey: (key: Buffer) => JSON.parse(key.toString('utf-8')),
+						writeKey: (key: Buffer, target: Buffer) => target.write(JSON.stringify(key), 0)
+					}
+				});
+				await db.put({ foo: 'bar' } as any, 'baz');
+				const value = await db.get({ foo: 'bar' } as any);
+				expect(value).toBe('baz');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should throw an error if key has zero length', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = await RocksDatabase.open(dbPath, {
+					keyEncoder: {
+						readKey: (key: Buffer) => Buffer.from('foo'),
+						writeKey: (key: Buffer, target: Buffer) => 0
+					}
+				});
+				await expect(db.get('foo')).rejects.toThrow('Zero length key is not allowed');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should error if key encoder is missing readKey or writeKey', async () => {
+			const dbPath = generateDBPath();
+
+			try {
+				await expect(RocksDatabase.open(dbPath, {
+					keyEncoder: {}
+				})).rejects.toThrow('Custom key encoder must provide both readKey and writeKey');
+			} finally {
 				await rimraf(dbPath);
 			}
 		});

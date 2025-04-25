@@ -110,36 +110,12 @@
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
 #define NAPI_GET_BUFFER(from, to, errorMsg) \
-	char* to = nullptr; \
 	uint32_t to##Start = 0; \
 	uint32_t to##End = 0; \
 	size_t to##Length = 0; \
-	{ \
-		bool isBuffer; \
-		NAPI_STATUS_THROWS(::napi_is_buffer(env, from, &isBuffer)); \
-		if (!isBuffer) { \
-			::napi_throw_error(env, nullptr, errorMsg); \
-			return nullptr; \
-		} \
-		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, from, reinterpret_cast<void**>(&to), &to##Length)); \
-		bool hasStart; \
-		napi_value start; \
-		NAPI_STATUS_THROWS(::napi_has_named_property(env, from, "start", &hasStart)); \
-		if (hasStart) { \
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, from, "start", &start)); \
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, start, &to##Start)); \
-		} else { \
-			to##Start = 0; \
-		} \
-		bool hasEnd; \
-		napi_value end; \
-		NAPI_STATUS_THROWS(::napi_has_named_property(env, from, "end", &hasEnd)); \
-		if (hasEnd) { \
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, from, "end", &end)); \
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, end, &to##End)); \
-		} else { \
-			to##End = to##Length; \
-		} \
+	const char* to = rocksdb_js::getNapiBufferFromArg(env, from, to##Start, to##End, to##Length, errorMsg); \
+	if (to == nullptr) { \
+		return nullptr; \
 	}
 
 #define NAPI_GET_STRING(from, to, errorMsg) \

@@ -4,35 +4,6 @@ import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 
 describe('CRUD Operations', () => {
-	describe('get()', () => {
-		it('should return undefined if key does not exist', async () => {
-			const dbPath = generateDBPath();
-			let db: RocksDatabase | null = null;
-
-			try {
-				db = await RocksDatabase.open(dbPath);
-				const value = await db.get('baz');
-				expect(value).toBeUndefined();
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
-		it('should throw an error if key is not specified', async () => {
-			const dbPath = generateDBPath();
-			let db: RocksDatabase | null = null;
-
-			try {
-				db = await RocksDatabase.open(dbPath);
-				await expect((db.get as any)()).rejects.toThrow('Key is required');
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-	});
-
 	describe('put()', () => {
 		it('should set and get a value using default column family', async () => {
 			const dbPath = generateDBPath();

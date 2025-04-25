@@ -62,6 +62,7 @@ export class Store {
 	decoderCopies: boolean = false;
 	encoder: Encoder | null;
 	encoding: Encoding | null;
+	keyBuffer: BufferWithDataView;
 	keyEncoder?: KeyEncoder;
 	keyEncoding: KeyEncoding;
 	name: string;
@@ -84,6 +85,12 @@ export class Store {
 		this.decoder = options?.decoder ?? null;
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
+
+		this.keyBuffer = Buffer.allocUnsafeSlow(KEY_BUFFER_SIZE);
+		this.keyBuffer.dataView = new DataView(this.keyBuffer.buffer);
+		this.keyBuffer.start = 0;
+		this.keyBuffer.end = 0;
+
 		this.keyEncoder = options?.keyEncoder;
 		this.keyEncoding = options?.keyEncoding ?? 'ordered-binary';
 		this.name = options?.name ?? 'default';
@@ -103,19 +110,38 @@ export class Store {
 		this.db.close();
 	}
 
-	decodeValue(value: Buffer) {
+	/**
+	 * Decodes a value from the database.
+	 *
+	 * @param value - The value to decode.
+	 * @returns The decoded value.
+	 */
+	decodeValue(value: Buffer): any {
 		if (typeof this.decoder?.decode === 'function') {
 			return this.decoder.decode(value);
 		}
-
 		return value;
 	}
 
-	encodeKey(key: Key) {
-		const keyBytes: BufferWithDataView = Buffer.allocUnsafeSlow(KEY_BUFFER_SIZE);
-		keyBytes.dataView = new DataView(keyBytes.buffer);
-		const _bytesWritten = this.writeKey(key, keyBytes, 0);
-		return keyBytes;
+	/**
+	 * Encodes a key for the database.
+	 *
+	 * @param key - The key to encode.
+	 * @returns The encoded key.
+	 */
+	encodeKey(key: Key): BufferWithDataView {
+		if (key === undefined) {
+			throw new Error('Key is required');
+		}
+
+		const bytesWritten = this.writeKey(key, this.keyBuffer, 0);
+		if (bytesWritten === 0) {
+			throw new Error('Zero length key is not allowed');
+		}
+
+		this.keyBuffer.end = bytesWritten;
+
+		return this.keyBuffer;
 	}
 
 	/**

@@ -33,6 +33,7 @@ describe('Column Families', () => {
 		try {
 			db = await RocksDatabase.open(dbPath, { name: 'foo' });
 			await db.put('foo', 'bar');
+			await expect(db.get('foo')).resolves.toBe('bar');
 
 			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
 			await expect(db2.get('foo')).resolves.toBe('bar');

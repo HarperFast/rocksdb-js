@@ -116,4 +116,56 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg))
 }
 
+/**
+ * Gets a buffer from a JavaScript function argument. Additionally, it sets
+ * the `start` and `end` based on the `start` and `end` properties of the
+ * buffer, otherwise it will set them based on the length of the buffer.
+ */
+const char* getNapiBufferFromArg(
+	napi_env env,
+	napi_value arg,
+	uint32_t& start,
+	uint32_t& end,
+	size_t& length,
+	const char* errorMsg
+) {
+	char* data = nullptr;
+
+	start = 0;
+	end = 0;
+	length = 0;
+
+	bool isBuffer;
+	NAPI_STATUS_THROWS(::napi_is_buffer(env, arg, &isBuffer));
+	if (!isBuffer) {
+		::napi_throw_error(env, nullptr, errorMsg);
+		return nullptr;
+	}
+
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, arg, reinterpret_cast<void**>(&data), &length));
+
+	bool hasStart;
+	napi_value startValue;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, arg, "start", &hasStart));
+	if (hasStart) {
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, arg, "start", &startValue));
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, startValue, &start));
+	}
+
+	bool hasEnd;
+	napi_value endValue;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, arg, "end", &hasEnd));
+	if (hasEnd) {
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, arg, "end", &endValue));
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, endValue, &end));
+	}
+
+	if (start > end) {
+		::napi_throw_error(env, nullptr, "Invalid buffer value start and end");
+		return nullptr;
+	}
+
+	return data;
+}
+
 }

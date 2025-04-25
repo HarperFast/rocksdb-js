@@ -22,6 +22,15 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
+const char* getNapiBufferFromArg(
+	napi_env env,
+	napi_value arg,
+	uint32_t& start,
+	uint32_t& end,
+	size_t& length,
+	const char* errorMsg
+);
+
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	napi_valuetype type;
 	NAPI_STATUS_RETURN(::napi_typeof(env, from, &type));

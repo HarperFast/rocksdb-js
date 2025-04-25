@@ -54,10 +54,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		if (this.store.decoder) {
 			const result = await this.getBinary(key, options);
-			if (this.store.decoder && result) {
-				return this.store.decodeValue(result);
-			}
-			return result;
+			return result ? this.store.decodeValue(result) : undefined;
 		}
 
 		if (!this.store.isOpen()) {
@@ -81,8 +78,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const result = this.#context.get(keyBuffer, getTxnId(options));
-		return result;
+		return this.#context.get(keyBuffer, getTxnId(options));
 	}
 
 	/**
@@ -101,8 +97,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const result = this.#context.get(keyBuffer, getTxnId(options));
-		return result;
+		return this.#context.get(keyBuffer, getTxnId(options));
 	}
 
 	/**
@@ -151,7 +146,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		const keyBuffer = this.store.encodeKey(key);
 		const valueBuffer = this.store.encodeValue(value);
-			
+
 		this.#context.put(keyBuffer, valueBuffer, getTxnId(options));
 	}
 
