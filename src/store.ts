@@ -4,12 +4,12 @@ import {
 } from './load-binding.js';
 import {
 	Encoding,
+	initKeyEncoder,
+	createFixedBuffer,
 	type Encoder,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
-	initKeyEncoder,
-	createFixedBuffer,
 } from './encoding.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 
@@ -76,6 +76,12 @@ export class Store {
 	decoderCopies: boolean = false;
 
 	/**
+	 * Reusable buffer for encoding values using `writeKey()` when the custom
+	 * encoder does not provide a `encode()` method.
+	 */
+	encodeBuffer: BufferWithDataView;
+
+	/**
 	 * The encoder instance.
 	 */
 	encoder: Encoder | null;
@@ -135,12 +141,6 @@ export class Store {
 	readKey: ReadKeyFunction<Key>;
 
 	/**
-	 * Reusable buffer for encoding values using `writeKey()` when the custom
-	 * encoder does not provide a `encode()` method.
-	 */
-	saveBuffer: BufferWithDataView;
-
-	/**
 	 * The key used to store shared structures.
 	 */
 	sharedStructuresKey?: symbol;
@@ -172,6 +172,7 @@ export class Store {
 
 		this.db = new NativeDatabase();
 		this.decoder = options?.decoder ?? null;
+		this.encodeBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
 		this.keyBuffer = createFixedBuffer(KEY_BUFFER_SIZE);
@@ -183,7 +184,6 @@ export class Store {
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
 		this.readKey = readKey;
-		this.saveBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.sharedStructuresKey = options?.sharedStructuresKey;
 		this.writeKey = writeKey;
 	}
