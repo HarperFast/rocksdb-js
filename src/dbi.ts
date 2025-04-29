@@ -1,4 +1,4 @@
-import type { Key } from './types.js';
+import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import type { Transaction } from './transaction.js';
@@ -149,7 +149,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		const keyBuffer = this.store.encodeKey(key);
 		const valueBuffer = this.store.encodeValue(value);
-
 		this.#context.put(keyBuffer, valueBuffer, getTxnId(options));
 	}
 

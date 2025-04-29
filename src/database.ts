@@ -3,7 +3,8 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
-import type { Key } from './types.js';
+import type { BufferWithDataView, Key } from './encoding.js';
+import { REUSE_BUFFER_MODE } from 'msgpackr';
 
 interface RocksDatabaseOptions extends StoreOptions {
 	name?: string; // defaults to 'default'
@@ -31,16 +32,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		path: string,
 		options?: RocksDatabaseOptions
 	) {
-		if (!path || typeof path !== 'string') {
-			throw new TypeError('Path is required');
-		}
-
-		if (options !== undefined && typeof options !== 'object') {
-			throw new TypeError('Options must be an object');
-		}
-
 		const store = new Store(path, options);
-
 		super(store);
 
 		// this.#cache = options?.cache ?? false; // TODO: better name?
@@ -186,7 +178,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		 * 5. encoder.writeKey()
 		 */
 		let EncoderClass = store.encoder?.Encoder;
-		if (typeof EncoderClass === 'function') {
+		if (store.encoding === false || typeof EncoderClass === 'function') {
 			store.encoder = null;
 		} else if (
 			typeof store.encoder?.encode !== 'function' &&
@@ -195,16 +187,37 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			store.encoding = 'msgpack';
 			EncoderClass = await import('msgpackr').then(m => m.Encoder);
 		}
+
 		if (EncoderClass) {
 			const opts: Record<string, any> = {
 				copyBuffers: true
 			};
-			if (store.sharedStructuresKey) {
-				opts.getStructures = () => {
-					// this needs to call getBinary()
+			const { sharedStructuresKey } = store;
+			if (sharedStructuresKey) {
+				opts.getStructures = async (): Promise<any | undefined> => {
+					// let lastVersion: number;
+					// if (this.useVersions) {
+					// 	lastVersion = getLastVersion();
+					// }
+					const buffer = await this.getBinary(sharedStructuresKey);
+					// if (lastVersion) {
+					// 	setLastVersion(lastVersion);
+					// }
+					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
 				};
-				opts.setStructures = (_structures: any, _isCompatible: boolean) => {
-					//
+				opts.saveStructures = async (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
+					await this.transaction(async (txn: Transaction) => {
+						const existingStructuresBuffer = await txn.getBinary(sharedStructuresKey);
+						const existingStructures = existingStructuresBuffer && store.decoder?.decode ? store.decoder.decode(existingStructuresBuffer) : undefined;
+						if (typeof isCompatible == 'function') {
+							if (!isCompatible(existingStructures)) {
+								return false;
+							}
+						} else if (existingStructures && existingStructures.length !== isCompatible) {
+							return false;
+						}
+						await txn.put(sharedStructuresKey, structures);
+					});
 				};
 			}
 			store.encoder = new EncoderClass({
@@ -223,9 +236,16 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				writeKey: orderedBinary.writeKey,
 			};
 			store.decoder = store.encoder;
-		} else if (typeof store.encoder?.writeKey === 'function') {
-			store.encoder.encode = (_value: any, _mode?: number): Buffer => {
-				return Buffer.from('TODO');
+		}
+
+		if (typeof store.encoder?.writeKey === 'function' && !store.encoder?.encode) {
+			// define a fallback encode method that uses writeKey to encode values
+			store.encoder = {
+				...store.encoder,
+				encode: (value: any, mode?: number): Buffer => {
+					const bytesWritten = store.writeKey(value, store.saveBuffer, 0);
+					return store.saveBuffer.subarray(0, bytesWritten);
+				}
 			};
 		}
 
@@ -256,7 +276,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction(callback: (txn: Transaction) => Promise<void>) {
+	async transaction(callback: (txn: Transaction) => Promise<any>) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -264,8 +284,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const txn = new Transaction(this.store);
 
 		try {
-			await callback(txn);
+			const result = await callback(txn);
 			await txn.commit();
+			return result;
 		} catch (error) {
 			txn.abort();
 			throw error;
@@ -273,8 +294,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	unlock(_key: Key, _version: number): boolean {
-		//
-
 		return true;
 	}
 }

@@ -158,6 +158,8 @@ const char* getNapiBufferFromArg(
 	if (hasEnd) {
 		NAPI_STATUS_THROWS(::napi_get_named_property(env, arg, "end", &endValue));
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, endValue, &end));
+	} else {
+		end = length;
 	}
 
 	if (start > end) {

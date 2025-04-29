@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import type { Key } from './types.js';
+import type { Key } from './encoding.js';
 
 export type NativeTransaction = {
 	id: number;
@@ -58,10 +58,13 @@ function locateBinding(): string {
 					return resolve(dir, file);
 				}
 			}
-		} catch {
-			// squelch
-		}
+
+		/* v8 ignore next -- @preserve */
+		} catch {}
 	}
+
+	// the following lines are non-trivial to test, so we'll ignore them
+	/* v8 ignore next 17 -- @preserve */
 
 	// check prebuilds
 	try {
