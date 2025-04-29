@@ -5,6 +5,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const css = `<style type="text/css">
 	body {
@@ -58,7 +59,7 @@ const css = `<style type="text/css">
 </style>`;
 
 const dirs: string[] = [
-	resolve(import.meta.dirname, '../../coverage')
+	resolve(fileURLToPath(import.meta.url), '../../../coverage')
 ];
 
 for (let dir = dirs.shift(); dir; dir = dirs.shift()) {
