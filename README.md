@@ -75,6 +75,14 @@ Stores a value for a given key.
 await db.put('foo', 'bar');
 ```
 
+### `db.putSync(key, value, options?): void`
+
+Stores a value for a given key synchronously.
+
+```typescript
+db.putSync('foo', 'bar');
+```
+
 ### `db.remove(key): Promise`
 
 Removes the value for a given key.

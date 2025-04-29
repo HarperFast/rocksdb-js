@@ -143,6 +143,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Stores a value for the given key.
 	 */
 	async put(key: Key, value: any, options?: PutOptions & T): Promise<void> {
+		this.putSync(key, value, options);
+	}
+
+	/**
+	 * Synchronously stores a value for the given key.
+	 */
+	putSync(key: Key, value: any, options?: PutOptions & T) {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
