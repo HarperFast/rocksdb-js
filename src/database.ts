@@ -159,20 +159,20 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			};
 			const { sharedStructuresKey } = store;
 			if (sharedStructuresKey) {
-				opts.getStructures = async (): Promise<any | undefined> => {
+				opts.getStructures = (): any => {
 					// let lastVersion: number;
 					// if (this.useVersions) {
 					// 	lastVersion = getLastVersion();
 					// }
-					const buffer = await this.getBinary(sharedStructuresKey);
+					const buffer = this.getBinary(sharedStructuresKey);
 					// if (lastVersion) {
 					// 	setLastVersion(lastVersion);
 					// }
 					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
 				};
-				opts.saveStructures = async (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
-					await this.transaction(async (txn: Transaction) => {
-						const existingStructuresBuffer = await txn.getBinary(sharedStructuresKey);
+				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
+					this.transactionSync((txn: Transaction) => {
+						const existingStructuresBuffer = txn.getBinary(sharedStructuresKey);
 						const existingStructures = existingStructuresBuffer && store.decoder?.decode ? store.decoder.decode(existingStructuresBuffer) : undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
@@ -181,7 +181,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 						} else if (existingStructures && existingStructures.length !== isCompatible) {
 							return false;
 						}
-						await txn.put(sharedStructuresKey, structures);
+						txn.putSync(sharedStructuresKey, structures);
 					});
 				};
 			}
@@ -295,6 +295,23 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		try {
 			const result = await callback(txn);
 			await txn.commit();
+			return result;
+		} catch (error) {
+			txn.abort();
+			throw error;
+		}
+	}
+
+	transactionSync(callback: (txn: Transaction) => void) {
+		if (typeof callback !== 'function') {
+			throw new TypeError('Callback must be a function');
+		}
+
+		const txn = new Transaction(this.store);
+
+		try {
+			const result = callback(txn);
+			txn.commitSync();
 			return result;
 		} catch (error) {
 			txn.abort();

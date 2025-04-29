@@ -21,6 +21,7 @@ struct Transaction final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value Abort(napi_env env, napi_callback_info info);
 	static napi_value Commit(napi_env env, napi_callback_info info);
+	static napi_value CommitSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value Id(napi_env env, napi_callback_info info);
 	static napi_value Put(napi_env env, napi_callback_info info);

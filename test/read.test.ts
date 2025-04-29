@@ -53,7 +53,7 @@ describe('Read Operations', () => {
 
 			try {
 				db = new RocksDatabase(dbPath);
-				await expect(db.getBinary('foo')).rejects.toThrow('Database not open');
+				expect(() => db!.getBinary('foo')).toThrow('Database not open');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -68,7 +68,7 @@ describe('Read Operations', () => {
 
 			try {
 				db = new RocksDatabase(dbPath);
-				await expect(db.getBinaryFast('foo')).rejects.toThrow('Database not open');
+				expect(() => db!.getBinaryFast('foo')).toThrow('Database not open');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

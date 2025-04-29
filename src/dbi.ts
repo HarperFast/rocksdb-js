@@ -74,7 +74,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 *
 	 * Note: Used by HDBreplication.
 	 */
-	async getBinary(key: Key, options?: GetOptions & T): Promise<Buffer | undefined> {
+	getBinary(key: Key, options?: GetOptions & T): Buffer | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -93,7 +93,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * - `.byteLength` is set to the size of the full allocated memory area for
 	 *   the buffer (usually much larger).
 	 */
-	async getBinaryFast(key: Key, options?: GetOptions & T): Promise<Buffer | symbol | undefined> {
+	getBinaryFast(key: Key, options?: GetOptions & T): Buffer | symbol | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}

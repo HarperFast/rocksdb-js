@@ -8,6 +8,7 @@ export type NativeTransaction = {
 	new(): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
+	commitSync(): void;
 	get(key: Key, txnId?: number): Buffer;
 	put(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	remove(key: Key, txnId?: number): void;

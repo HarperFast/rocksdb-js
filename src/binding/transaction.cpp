@@ -174,6 +174,25 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Commits the transaction synchronously.
+ */
+napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_TRANSACTION_HANDLE("CommitSync")
+
+	rocksdb::Status status = txnHandle->txn->Commit();
+	if (status.ok()) {
+		txnHandle->release();
+	} else {
+		napi_value error;
+		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed")
+		NAPI_STATUS_THROWS(::napi_throw(env, error))
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
  * Retrieves a value for the given key.
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {

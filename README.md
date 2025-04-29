@@ -91,7 +91,7 @@ Removes the value for a given key.
 await db.remove('foo');
 ```
 
-### `db.transaction(async (txn: Transaction) => Promise): Promise`
+### `db.transaction(async (txn: Transaction) => Promise<any>): Promise<any>`
 
 Executes all database operations within the specified callback within a single
 transaction. If the callback completes without error, the database operations
@@ -110,6 +110,30 @@ Additionally, you may pass the transaction into any database data method:
 ```typescript
 await db.transaction(async (transaction: Transaction) => {
 	await db.put('foo', 'baz', { transaction });
+});
+```
+
+Note that `db.transaction()` resolves whatever value the transaction callback
+resolves:
+
+```typescript
+const isBar = await db.transaction(async (txn: Transaction) => {
+  const foo = await txn.get('foo');
+  return foo === 'bar';
+});
+console.log(isBar ? 'Foo is bar' : 'Foo is not bar');
+```
+
+### `db.transactionSync((txn: Transaction) => any): any`
+
+Executes a transaction callback and commits synchronously. Once the transaction
+callback returns, the commit is executed synchronously and blocks the current
+thread until finished.
+
+```typescript
+import type { Transaction } from '@harperdb/rocksdb-js';
+db.transactionSync((txn: Transaction) => {
+	txn.put('foo', 'baz');
 });
 ```
 

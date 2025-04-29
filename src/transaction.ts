@@ -35,6 +35,10 @@ export class Transaction extends DBI {
 		});
 	}
 
+	commitSync(): void {
+		this.#txn.commitSync();
+	}
+
 	/**
 	 * Get the transaction id.
 	 */
