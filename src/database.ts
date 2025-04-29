@@ -3,8 +3,7 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
-import type { BufferWithDataView, Key } from './encoding.js';
-import { REUSE_BUFFER_MODE } from 'msgpackr';
+import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
 	name?: string; // defaults to 'default'
@@ -242,7 +241,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			// define a fallback encode method that uses writeKey to encode values
 			store.encoder = {
 				...store.encoder,
-				encode: (value: any, mode?: number): Buffer => {
+				encode: (value: any, _mode?: number): Buffer => {
 					const bytesWritten = store.writeKey(value, store.saveBuffer, 0);
 					return store.saveBuffer.subarray(0, bytesWritten);
 				}
