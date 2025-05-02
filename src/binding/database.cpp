@@ -122,14 +122,24 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
  * State for the `Get` async work.
  */
 struct GetState final {
-	GetState(napi_env env, std::shared_ptr<DBHandle> dbHandle, rocksdb::ReadOptions& read_options, rocksdb::Slice& keySlice)
-		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), dbHandle(dbHandle), read_options(read_options), keySlice(keySlice) {}
+	GetState(
+		napi_env env,
+		std::shared_ptr<DBHandle> dbHandle,
+		rocksdb::ReadOptions& readOptions,
+		rocksdb::Slice& keySlice
+	) :
+		asyncWork(nullptr),
+		resolveRef(nullptr),
+		rejectRef(nullptr),
+		dbHandle(dbHandle),
+		readOptions(readOptions),
+		keySlice(keySlice) {}
 
 	napi_async_work asyncWork;
 	napi_ref resolveRef;
 	napi_ref rejectRef;
 	std::shared_ptr<DBHandle> dbHandle;
-	rocksdb::ReadOptions read_options;
+	rocksdb::ReadOptions readOptions;
 	rocksdb::Slice keySlice;
 	rocksdb::Status status;
 	std::string value;
@@ -159,40 +169,36 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	std::string value;
-	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &txnIdType));
 
-	rocksdb::ReadOptions read_options;
-
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
 
 		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
 		}
-		status = txnHandle->get(keySlice, value, *dbHandle);
-	} else {
-		read_options.read_tier = rocksdb::kBlockCacheTier;
-
-		status = (*dbHandle)->descriptor->db->Get(
-			read_options,
-			(*dbHandle)->column.get(),
-			keySlice,
-			&value
-		);
+		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
 	}
+
+	rocksdb::ReadOptions readOptions;
+	readOptions.read_tier = rocksdb::kBlockCacheTier;
+
+	std::string value;
+	rocksdb::Status status = (*dbHandle)->descriptor->db->Get(
+		readOptions,
+		(*dbHandle)->column.get(),
+		keySlice,
+		&value
+	);
 
 	napi_value returnStatus;
 
 	if (!status.IsIncomplete()) {
-		NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
-
 		napi_value global;
 		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
 
@@ -215,10 +221,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
 		}
 
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
 		return returnStatus;
 	}
-
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -228,8 +233,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&name
 	))
 
-	read_options.read_tier = rocksdb::kReadAllTier;
-	GetState* state = new GetState(env, *dbHandle, read_options, keySlice);
+	readOptions.read_tier = rocksdb::kReadAllTier;
+	GetState* state = new GetState(env, *dbHandle, readOptions, keySlice);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -240,7 +245,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		[](napi_env env, void* data) { // execute
 			GetState* state = reinterpret_cast<GetState*>(data);
 			state->status = state->dbHandle->descriptor->db->Get(
-				state->read_options,
+				state->readOptions,
 				state->dbHandle->column.get(),
 				state->keySlice,
 				&state->value
@@ -288,6 +293,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
 	return returnStatus;
 }
 

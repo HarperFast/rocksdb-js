@@ -196,33 +196,14 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
  * Retrieves a value for the given key.
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
+	NAPI_METHOD_ARGV(3)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	napi_value resolve = argv[1];
+	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get")
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	std::string value;
-	rocksdb::Status status = txnHandle->get(keySlice, value);
-
-	if (status.IsNotFound()) {
-		NAPI_RETURN_UNDEFINED()
-	}
-
-	if (!status.ok()) {
-		::napi_throw_error(env, nullptr, status.ToString().c_str());
-		return nullptr;
-	}
-
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
-		env,
-		value.size(),
-		value.data(),
-		nullptr,
-		&result
-	))
-
-	return result;
+	return txnHandle->get(env, keySlice, resolve, reject);
 }
 
 /**
@@ -235,7 +216,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	std::string value;
-	rocksdb::Status status = txnHandle->get(keySlice, value);
+	rocksdb::Status status = txnHandle->getSync(keySlice, value);
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()

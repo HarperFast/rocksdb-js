@@ -2,7 +2,7 @@ import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import type { Transaction } from './transaction.js';
-import { when, type MaybePromise } from './util.js';
+import { when, withResolvers, type MaybePromise } from './util.js';
 
 export interface DBITransactional {
 	transaction: Transaction;
@@ -76,7 +76,20 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		const keyBuffer = this.store.encodeKey(key);
 		return when(
-			() => this.#context.getSync(keyBuffer, getTxnId(options)),
+			() => {
+				const { resolve, reject, promise } = withResolvers<Buffer | undefined>();
+				let result: Buffer | undefined;
+				const status = this.#context.get(
+					keyBuffer,
+					value => {
+						result = value;
+						resolve(value);
+					},
+					reject,
+					getTxnId(options)
+				);
+				return status === 1 ? promise : result;
+			},
 			result => result === undefined ? undefined : this.store.decodeValue(result)
 		);
 	}
@@ -117,16 +130,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-
-		let resolve, reject;
-		const promise = new Promise<Buffer | undefined>((res, rej) => {
-			resolve = res;
-			reject = rej;
-		});
-
+		const { resolve, reject, promise } = withResolvers<Buffer | undefined>();
 		let result: Buffer | undefined;
 
-		const status: number = this.#context.get(
+		const status = this.#context.get(
 			keyBuffer,
 			value => {
 				result = value;
@@ -136,11 +143,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			getTxnId(options)
 		);
 
-		if (status === 1) {
-			return promise;
-		}
-
-		return result;
+		return status === 1 ? promise : result;
 	}
 
 	/**

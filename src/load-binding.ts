@@ -28,7 +28,6 @@ export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
 	createTransaction(): NativeTransaction;
-	// get(key: Key, txnId?: number): Buffer;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
 	getSync(key: Key, txnId?: number): Buffer;
 	opened: boolean;

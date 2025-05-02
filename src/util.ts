@@ -32,3 +32,23 @@ export function when<T>(
 		return errback ? errback(error) : Promise.reject(error);
 	}
 }
+
+/**
+ * Polyfill for `Promise.withResolvers`.
+ *
+ * Note: This can be removed once Node.js 18 and 20 are no longer supported.
+ *
+ * @returns A tuple of `resolve`, `reject`, and `promise`.
+ */
+export function withResolvers<T>() {
+	let resolve, reject;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return {
+		resolve,
+		reject,
+		promise
+	};
+}

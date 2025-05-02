@@ -1,4 +1,7 @@
+#include <sstream>
 #include "transaction_handle.h"
+#include "macros.h"
+#include "util.h"
 
 namespace rocksdb_js {
 
@@ -33,21 +36,155 @@ TransactionHandle::~TransactionHandle() {
 }
 
 /**
+ * State for the `Get` async work.
+ */
+struct TransactionGetState final {
+	TransactionGetState(
+		napi_env env,
+		TransactionHandle* txnHandle,
+		rocksdb::ReadOptions& readOptions,
+		rocksdb::Slice& keySlice
+	) :
+		asyncWork(nullptr),
+		resolveRef(nullptr),
+		rejectRef(nullptr),
+		txnHandle(txnHandle),
+		readOptions(readOptions),
+		keySlice(keySlice) {}
+
+	napi_async_work asyncWork;
+	napi_ref resolveRef;
+	napi_ref rejectRef;
+	std::shared_ptr<TransactionHandle> txnHandle;
+	rocksdb::ReadOptions readOptions;
+	rocksdb::Slice keySlice;
+	rocksdb::Status status;
+	std::string value;
+};
+
+/**
  * Get a value using the specified database handle.
  */
-rocksdb::Status TransactionHandle::get(
+napi_value TransactionHandle::get(
+	napi_env env,
 	rocksdb::Slice& key,
-	std::string& result,
+	napi_value resolve,
+	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	std::string value;
+	napi_value returnStatus;
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+
 	auto readOptions = rocksdb::ReadOptions();
 	readOptions.snapshot = this->txn->GetSnapshot();
+	readOptions.read_tier = rocksdb::kBlockCacheTier;
 
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	auto column = dbHandle->column.get();
+	rocksdb::Status status = this->txn->Get(
+		readOptions,
+		dbHandle->column.get(),
+		key,
+		&value
+	);
 
-	// TODO: should this be GetForUpdate?
-	return this->txn->Get(readOptions, column, key, &result);
+	if (!status.IsIncomplete()) {
+		napi_value global;
+		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
+
+		napi_value result;
+
+		if (status.IsNotFound()) {
+			napi_get_undefined(env, &result);
+			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+		} else if (!status.ok()) {
+			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Transaction get failed")
+			NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
+		} else {
+			NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+				env,
+				value.size(),
+				value.data(),
+				nullptr,
+				&result
+			))
+			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+		}
+
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
+
+		return returnStatus;
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"transaction.get",
+		NAPI_AUTO_LENGTH,
+		&name
+	))
+
+	readOptions.read_tier = rocksdb::kReadAllTier;
+	TransactionGetState* state = new TransactionGetState(env, this, readOptions, key);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env env, void* data) { // execute
+			TransactionGetState* state = reinterpret_cast<TransactionGetState*>(data);
+			state->status = state->txnHandle->txn->Get(
+				state->readOptions,
+				state->txnHandle->dbHandle->column.get(),
+				state->keySlice,
+				&state->value
+			);
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			TransactionGetState* state = reinterpret_cast<TransactionGetState*>(data);
+
+			napi_value global;
+			NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+
+			napi_value result;
+
+			if (state->status.IsNotFound()) {
+				napi_get_undefined(env, &result);
+				napi_value resolve;
+				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
+				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+			} else if (!state->status.ok()) {
+				ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
+				napi_value reject;
+				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
+				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+			} else {
+				NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(
+					env,
+					state->value.size(),
+					state->value.data(),
+					nullptr,
+					&result
+				))
+				napi_value resolve;
+				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
+				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+			}
+
+			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->resolveRef))
+			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->rejectRef))
+
+			delete state;
+		},
+		state,     // data
+		&state->asyncWork // -> result
+	));
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
+	return returnStatus;
 }
 
 /**
