@@ -42,7 +42,7 @@ describe('Util', () => {
 		});
 
 		it('should call callback that throws error', async () => {
-			await expect(when('foo', value => { throw new Error('foo'); })).rejects.toThrow('foo');
+			await expect(when('foo', () => { throw new Error('foo'); })).rejects.toThrow('foo');
 		});
 
 		it('should call callback that rejects with error', async () => {
