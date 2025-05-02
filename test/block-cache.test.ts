@@ -11,7 +11,8 @@ describe('Block Cache', () => {
 		try {
 			db = await RocksDatabase.open(dbPath, { noBlockCache: true });
 			await db.put('foo', 'bar');
-			await expect(db.get('foo')).resolves.toBe('bar');
+			// note get() will find 'foo' in the memtable and return it synchronously
+			expect(db.get('foo')).toBe('bar');
 		} finally {
 			db?.close();
 			await rimraf(dbPath);
@@ -26,7 +27,7 @@ describe('Block Cache', () => {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
 			db = await RocksDatabase.open(dbPath);
 			await db.put('foo', 'bar');
-			await expect(db.get('foo')).resolves.toBe('bar');
+			expect(db.get('foo')).toBe('bar');
 		} finally {
 			db?.close();
 			await rimraf(dbPath);
@@ -42,13 +43,13 @@ describe('Block Cache', () => {
 
 			db = await RocksDatabase.open(dbPath);
 			await db.put('foo', 'bar');
-			await expect(db.get('foo')).resolves.toBe('bar');
+			expect(db.get('foo')).toBe('bar');
 
 			RocksDatabase.config({ blockCacheSize: 2048 * 1024 });
-			await expect(db.get('foo')).resolves.toBe('bar');
+			expect(db.get('foo')).toBe('bar');
 
 			RocksDatabase.config({ blockCacheSize: 0 });
-			await expect(db.get('foo')).resolves.toBe('bar');
+			expect(db.get('foo')).toBe('bar');
 		} finally {
 			db?.close();
 			await rimraf(dbPath);

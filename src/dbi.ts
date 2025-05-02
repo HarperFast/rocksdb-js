@@ -174,8 +174,20 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.getSync(keyBuffer, getTxnId(options));
-		// TODO: return UNMODIFIED if the value is not modified
+		const { resolve, reject, promise } = withResolvers<Buffer | undefined>();
+		let result: Buffer | undefined;
+
+		const status = this.#context.get(
+			keyBuffer,
+			value => {
+				result = value;
+				resolve(value);
+			},
+			reject,
+			getTxnId(options)
+		);
+
+		return status === 1 ? promise : result;
 	}
 
 	getBinaryFastSync(key: Key, options?: GetOptions & T): Buffer | undefined {

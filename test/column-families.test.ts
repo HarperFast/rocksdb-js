@@ -16,8 +16,8 @@ describe('Column Families', () => {
 			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
 			await db2.put('foo', 'bar2');
 
-			await expect(db.get('foo')).resolves.toBe('bar');
-			await expect(db2.get('foo')).resolves.toBe('bar2');
+			expect(db.get('foo')).toBe('bar');
+			expect(db2.get('foo')).toBe('bar2');
 		} finally {
 			db?.close();
 			db2?.close();
@@ -33,10 +33,10 @@ describe('Column Families', () => {
 		try {
 			db = await RocksDatabase.open(dbPath, { name: 'foo' });
 			await db.put('foo', 'bar');
-			await expect(db.get('foo')).resolves.toBe('bar');
+			expect(db.get('foo')).toBe('bar');
 
 			db2 = await RocksDatabase.open(dbPath, { name: 'foo' });
-			await expect(db2.get('foo')).resolves.toBe('bar');
+			expect(db2.get('foo')).toBe('bar');
 		} finally {
 			db?.close();
 			db2?.close();

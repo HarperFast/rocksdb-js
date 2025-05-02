@@ -88,10 +88,10 @@ napi_value TransactionHandle::get(
 	);
 
 	if (!status.IsIncomplete()) {
+		// found it in the block cache!
+		napi_value result;
 		napi_value global;
 		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
-
-		napi_value result;
 
 		if (status.IsNotFound()) {
 			napi_get_undefined(env, &result);
@@ -100,6 +100,7 @@ napi_value TransactionHandle::get(
 			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Transaction get failed")
 			NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
 		} else {
+			// TODO: when in "fast" mode, use the shared buffer
 			NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 				env,
 				value.size(),
