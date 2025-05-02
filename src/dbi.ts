@@ -2,12 +2,11 @@ import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import type { Transaction } from './transaction.js';
+import { when, type MaybePromise } from './util.js';
 
-export type DBITransactional = {
+export interface DBITransactional {
 	transaction: Transaction;
 };
-
-const UNMODIFIED = Symbol('UNMODIFIED');
 
 /**
  * The base class for all database operations. This base class is shared by
@@ -16,7 +15,15 @@ const UNMODIFIED = Symbol('UNMODIFIED');
  * This class is not meant to be used directly.
  */
 export class DBI<T extends DBITransactional | unknown = unknown> {
+	/**
+	 * The RocksDB context for `get()`, `put()`, and `remove()`.
+	 */
 	#context: NativeDatabase | NativeTransaction;
+
+	/**
+	 * The database store instance. The store instance is tied to the database
+	 * instance and shared with transaction instances.
+	 */
 	store: Store;
 
 	/**
@@ -44,18 +51,48 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
-	async get(key: Key, options?: GetOptions & T): Promise<any | undefined> {
+	get(key: Key, options?: GetOptions & T): MaybePromise<any | undefined> {
 		if (this.store.decoderCopies) {
-			let bytes = await this.getBinaryFast(key, options);
-			return !bytes ? undefined : bytes === UNMODIFIED ? {} : this.store.decodeValue(bytes as Buffer);
+			return when(
+				() => this.getBinaryFast(key, options),
+				result => result === undefined ? undefined : this.store.decodeValue(result as Buffer)
+			);
 		}
 
 		if (this.store.encoding === 'binary') {
-			return this.getBinary(key, options);
+			return when(() => this.getBinary(key, options));
 		}
 
 		if (this.store.decoder) {
-			const result = await this.getBinary(key, options);
+			return when(
+				() => this.getBinary(key, options),
+				result => result === undefined ? undefined : this.store.decodeValue(result as Buffer)
+			);
+		}
+
+		if (!this.store.isOpen()) {
+			return Promise.reject(new Error('Database not open'));
+		}
+
+		const keyBuffer = this.store.encodeKey(key);
+		return when(
+			() => this.#context.getSync(keyBuffer, getTxnId(options)),
+			result => result === undefined ? undefined : this.store.decodeValue(result)
+		);
+	}
+
+	getSync(key: Key, options?: GetOptions & T) {
+		if (this.store.decoderCopies) {
+			const bytes = this.getBinaryFastSync(key, options);
+			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+		}
+
+		if (this.store.encoding === 'binary') {
+			return this.getBinarySync(key, options);
+		}
+
+		if (this.store.decoder) {
+			const result = this.getBinarySync(key, options);
 			return result ? this.store.decodeValue(result) : undefined;
 		}
 
@@ -64,7 +101,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const result = this.#context.get(keyBuffer, getTxnId(options));
+		const result = this.#context.getSync(keyBuffer, getTxnId(options));
 		return this.store.decodeValue(result);
 	}
 
@@ -74,13 +111,48 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 *
 	 * Note: Used by HDBreplication.
 	 */
-	getBinary(key: Key, options?: GetOptions & T): Buffer | undefined {
+	getBinary(key: Key, options?: GetOptions & T): MaybePromise<Buffer | undefined> {
+		if (!this.store.isOpen()) {
+			return Promise.reject(new Error('Database not open'));
+		}
+
+		const keyBuffer = this.store.encodeKey(key);
+
+		let resolve, reject;
+		const promise = new Promise<Buffer | undefined>((res, rej) => {
+			resolve = res;
+			reject = rej;
+		});
+
+		let result: Buffer | undefined;
+
+		const status: number = this.#context.get(
+			keyBuffer,
+			value => {
+				result = value;
+				resolve(value);
+			},
+			reject,
+			getTxnId(options)
+		);
+
+		if (status === 1) {
+			return promise;
+		}
+
+		return result;
+	}
+
+	/**
+	 * Synchronously retrieves the binary data for the given key.
+	 */
+	getBinarySync(key: Key, options?: GetOptions & T): Buffer | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.get(keyBuffer, getTxnId(options));
+		return this.#context.getSync(keyBuffer, getTxnId(options));
 	}
 
 	/**
@@ -93,13 +165,23 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * - `.byteLength` is set to the size of the full allocated memory area for
 	 *   the buffer (usually much larger).
 	 */
-	getBinaryFast(key: Key, options?: GetOptions & T): Buffer | symbol | undefined {
+	getBinaryFast(key: Key, options?: GetOptions & T): MaybePromise<Buffer | undefined> {
+		if (!this.store.isOpen()) {
+			return Promise.reject(new Error('Database not open'));
+		}
+
+		const keyBuffer = this.store.encodeKey(key);
+		return this.#context.getSync(keyBuffer, getTxnId(options));
+		// TODO: return UNMODIFIED if the value is not modified
+	}
+
+	getBinaryFastSync(key: Key, options?: GetOptions & T): Buffer | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.get(keyBuffer, getTxnId(options));
+		return this.#context.getSync(keyBuffer, getTxnId(options));
 		// TODO: return UNMODIFIED if the value is not modified
 	}
 
@@ -109,21 +191,28 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * An entry object contains a `value` property and when versions are enabled,
 	 * it also contains a `version` property.
 	 */
-	getEntry(key: Key, options?: GetOptions & T) {
-		const value = this.get(key, options);
-
-		if (value !== undefined) {
-			// TODO: if versions are enabled, add a `version` property
-			return {
-				value,
-			};
-		}
+	getEntry(key: Key, options?: GetOptions & T): MaybePromise<{ value: any } | undefined> {
+		const result = this.get(key, options);
+		return when(result, value => {
+			if (value !== undefined) {
+				// TODO: if versions are enabled, add a `version` property
+				return {
+					value,
+				};
+			}
+		});
 	}
 
 	/**
 	 * Retrieves all keys within a range.
 	 */
 	getKeys(_options?: GetRangeOptions & T) {
+		if (!this.store.isOpen()) {
+			return Promise.reject(new Error('Database not open'));
+		}
+	}
+
+	getKeysSync(_options?: GetRangeOptions & T) {
 		//
 	}
 
@@ -131,11 +220,23 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		//
 	}
 
+	getRangeSync(_options?: GetRangeOptions & T) {
+		//
+	}
+
 	getValues(_key: Key, _options?: GetRangeOptions & T) {
 		//
 	}
 
+	getValuesSync(_key: Key, _options?: GetRangeOptions & T) {
+		//
+	}
+
 	getValuesCount(_key: Key, _options?: GetRangeOptions & T) {
+		//
+	}
+
+	getValuesCountSync(_key: Key, _options?: GetRangeOptions & T) {
 		//
 	}
 
@@ -156,23 +257,35 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		const keyBuffer = this.store.encodeKey(key);
 		const valueBuffer = this.store.encodeValue(value);
-		this.#context.put(keyBuffer, valueBuffer, getTxnId(options));
+		this.#context.putSync(keyBuffer, valueBuffer, getTxnId(options));
 	}
 
 	/**
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
 	 */
-	async remove(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T): Promise<void> {
+	async remove(key: Key, ifVersionOrValue?: symbol | number | null, options?: T): Promise<void> {
+		this.removeSync(key, ifVersionOrValue, options);
+	}
+
+	/**
+	 * Removes a value for the given key. If the key does not exist, it will
+	 * not error.
+	 */
+	removeSync(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T): void {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		this.#context.remove(keyBuffer, getTxnId(options));
+		this.#context.removeSync(keyBuffer, getTxnId(options));
 	}
 }
 
+/**
+ * Checks if the data method options object contains a transaction ID and
+ * returns it.
+ */
 function getTxnId(options?: DBITransactional | unknown) {
 	let txnId;
 	if (options && typeof options === 'object' && 'transaction' in options) {
@@ -184,11 +297,12 @@ function getTxnId(options?: DBITransactional | unknown) {
 	return txnId;
 }
 
-type GetOptions = {
-	ifNotTxnId?: number;
-};
+interface GetOptions {
+	// ifNotTxnId?: number;
+	// currentThread?: boolean;
+}
 
-type GetRangeOptions = {
+interface GetRangeOptions {
 	end?: Key | Uint8Array;
 	exactMatch?: boolean;
 	exclusiveStart?: boolean;
@@ -205,7 +319,7 @@ type GetRangeOptions = {
 	versions?: boolean;
 };
 
-type PutOptions = {
+interface PutOptions {
 	append?: boolean;
 	ifVersion?: number;
 	instructedWrite?: boolean;

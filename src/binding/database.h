@@ -20,10 +20,11 @@ struct Database final {
 	static napi_value Close(napi_env env, napi_callback_info info);
 	static napi_value CreateTransaction(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
+	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
-	static napi_value Put(napi_env env, napi_callback_info info);
-	static napi_value Remove(napi_env env, napi_callback_info info);
+	static napi_value PutSync(napi_env env, napi_callback_info info);
+	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
 };

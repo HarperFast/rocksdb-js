@@ -164,7 +164,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					// if (this.useVersions) {
 					// 	lastVersion = getLastVersion();
 					// }
-					const buffer = this.getBinary(sharedStructuresKey);
+					const buffer = this.getBinarySync(sharedStructuresKey);
 					// if (lastVersion) {
 					// 	setLastVersion(lastVersion);
 					// }
@@ -172,7 +172,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				};
 				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
 					this.transactionSync((txn: Transaction) => {
-						const existingStructuresBuffer = txn.getBinary(sharedStructuresKey);
+						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
 						const existingStructures = existingStructuresBuffer && store.decoder?.decode ? store.decoder.decode(existingStructuresBuffer) : undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {

@@ -2,13 +2,13 @@ import * as orderedBinary from 'ordered-binary';
 
 export type Key = Key[] | string | symbol | number | boolean | Uint8Array | Buffer;
 
-export type BufferWithDataView = Buffer & {
+export interface BufferWithDataView extends Buffer {
 	dataView: DataView;
 	start: number;
 	end: number;
-};
+}
 
-export type Encoder = {
+export interface Encoder {
 	copyBuffers?: boolean;
 	decode?: (buffer: Buffer) => any;
 	encode?: (value: any, mode?: number) => Buffer; // | string;
@@ -20,14 +20,14 @@ export type Encoder = {
 	structuredClone?: boolean;
 	useFloat32?: boolean;
 	writeKey?: (key: any, target: Buffer, position: number, inSequence?: boolean) => number;
-};
+}
 
 export type Encoding = 'binary' | 'ordered-binary' | 'msgpack' | false;
 
-export type KeyEncoder = {
+export interface KeyEncoder {
 	readKey?: ReadKeyFunction<Key>;
 	writeKey?: WriteKeyFunction;
-};
+}
 
 export type KeyEncoding = 'binary' | 'ordered-binary' | 'uint32';
 
@@ -114,7 +114,7 @@ export function initKeyEncoder(
  * @returns The buffer with a data view.
  */
 export function createFixedBuffer(size: number): BufferWithDataView {
-	const buffer = Buffer.allocUnsafe(size) as BufferWithDataView;
+	const buffer = Buffer.allocUnsafeSlow(size) as BufferWithDataView;
 	buffer.dataView = new DataView(buffer.buffer);
 	buffer.start = 0;
 	buffer.end = 0;

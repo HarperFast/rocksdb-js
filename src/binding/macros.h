@@ -142,6 +142,15 @@
 		NAPI_STATUS_THROWS(::napi_create_error(env, nullptr, errorMsg, &error)) \
 	}
 
+#define ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(status, msg) \
+	napi_value error; \
+	{ \
+		ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		napi_value errorMsg; \
+		NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
+		NAPI_STATUS_THROWS_VOID(::napi_create_error(env, nullptr, errorMsg, &error)) \
+	}
+
 #define ROCKSDB_STATUS_THROWS_ERROR_LIKE(call, msg) \
 	{ \
 		rocksdb::Status status = (call); \

@@ -15,8 +15,8 @@ import type { BufferWithDataView, Key } from './encoding.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
-const REUSE_BUFFER_MODE = 512;
 const RESET_BUFFER_MODE = 1024;
+const REUSE_BUFFER_MODE = 512;
 const SAVE_BUFFER_SIZE = 8192;
 // const WRITE_BUFFER_SIZE = 65536;
 

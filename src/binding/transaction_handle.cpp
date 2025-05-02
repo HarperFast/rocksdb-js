@@ -51,9 +51,27 @@ rocksdb::Status TransactionHandle::get(
 }
 
 /**
+ * Get a value using the specified database handle.
+ */
+rocksdb::Status TransactionHandle::getSync(
+	rocksdb::Slice& key,
+	std::string& result,
+	std::shared_ptr<DBHandle> dbHandleOverride
+) {
+	auto readOptions = rocksdb::ReadOptions();
+	readOptions.snapshot = this->txn->GetSnapshot();
+
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	auto column = dbHandle->column.get();
+
+	// TODO: should this be GetForUpdate?
+	return this->txn->Get(readOptions, column, key, &result);
+}
+
+/**
  * Put a value using the specified database handle.
  */
-rocksdb::Status TransactionHandle::put(
+rocksdb::Status TransactionHandle::putSync(
 	rocksdb::Slice& key,
 	rocksdb::Slice& value,
 	std::shared_ptr<DBHandle> dbHandleOverride
@@ -66,7 +84,7 @@ rocksdb::Status TransactionHandle::put(
 /**
  * Remove a value using the specified database handle.
  */
-rocksdb::Status TransactionHandle::remove(
+rocksdb::Status TransactionHandle::removeSync(
 	rocksdb::Slice& key,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {

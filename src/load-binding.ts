@@ -9,9 +9,10 @@ export type NativeTransaction = {
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
-	get(key: Key, txnId?: number): Buffer;
-	put(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
-	remove(key: Key, txnId?: number): void;
+	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
+	getSync(key: Key, txnId?: number): Buffer;
+	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
+	removeSync(key: Key, txnId?: number): void;
 };
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
@@ -27,14 +28,16 @@ export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
 	createTransaction(): NativeTransaction;
-	get(key: Key, txnId?: number): Buffer;
+	// get(key: Key, txnId?: number): Buffer;
+	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
+	getSync(key: Key, txnId?: number): Buffer;
 	opened: boolean;
 	open(
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
-	put(key: Key, value: any, txnId?: number): void;
-	remove(key: Key, txnId?: number): void;
+	putSync(key: Key, value: any, txnId?: number): void;
+	removeSync(key: Key, txnId?: number): void;
 };
 
 export type RocksDatabaseConfig = {
