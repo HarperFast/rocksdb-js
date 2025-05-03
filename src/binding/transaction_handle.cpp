@@ -112,7 +112,6 @@ napi_value TransactionHandle::get(
 		}
 
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
-
 		return returnStatus;
 	}
 
@@ -161,6 +160,7 @@ napi_value TransactionHandle::get(
 				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
 				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
 			} else {
+				// TODO: when in "fast" mode, use the shared buffer
 				NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(
 					env,
 					state->value.size(),

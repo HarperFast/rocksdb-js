@@ -185,11 +185,13 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
 	}
 
+	napi_value returnStatus;
+	std::string value;
+
 	rocksdb::ReadOptions readOptions;
 	readOptions.read_tier = rocksdb::kBlockCacheTier;
 
 	// try to get the value from the block cache
-	std::string value;
 	rocksdb::Status status = (*dbHandle)->descriptor->db->Get(
 		readOptions,
 		(*dbHandle)->column.get(),
@@ -197,13 +199,13 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&value
 	);
 
-	napi_value returnStatus;
-
 	if (!status.IsIncomplete()) {
 		// found it in the block cache!
-		napi_value result;
+
 		napi_value global;
 		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
+
+		napi_value result;
 
 		if (status.IsNotFound()) {
 			napi_get_undefined(env, &result);
@@ -212,6 +214,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get failed")
 			NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
 		} else {
+			// TODO: when in "fast" mode, use the shared buffer
 			NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 				env,
 				value.size(),
