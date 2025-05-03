@@ -128,6 +128,7 @@ struct GetState final {
 		rocksdb::ReadOptions& readOptions,
 		rocksdb::Slice& keySlice
 	) :
+		env(env),
 		asyncWork(nullptr),
 		resolveRef(nullptr),
 		rejectRef(nullptr),
@@ -135,6 +136,12 @@ struct GetState final {
 		readOptions(readOptions),
 		keySlice(keySlice) {}
 
+	~GetState() {
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
+	}
+
+	napi_env env;
 	napi_async_work asyncWork;
 	napi_ref resolveRef;
 	napi_ref rejectRef;
@@ -144,6 +151,79 @@ struct GetState final {
 	rocksdb::Status status;
 	std::string value;
 };
+
+/**
+ * Resolves the result of a `Get` operation.
+ */
+napi_value resolveGetSyncResult(
+	napi_env env,
+	const char* errorMsg,
+	rocksdb::Status& status,
+	std::string& value,
+	napi_value resolve,
+	napi_value reject
+) {
+	napi_value global;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global))
+
+	napi_value result;
+
+	if (status.IsNotFound()) {
+		napi_get_undefined(env, &result);
+		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	} else if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, errorMsg)
+		NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
+	} else {
+		// TODO: when in "fast" mode, use the shared buffer
+		NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+			env,
+			value.size(),
+			value.data(),
+			nullptr,
+			&result
+		))
+		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	}
+
+	napi_value returnStatus;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
+	return returnStatus;
+}
+
+/**
+ * Resolves the result of a `Get` operation.
+ */
+void resolveGetResult(
+	napi_env env,
+	const char* errorMsg,
+	rocksdb::Status& status,
+	std::string& value,
+	napi_ref resolveRef,
+	napi_ref rejectRef
+) {
+	napi_value result;
+	napi_value global;
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+	
+	if (status.IsNotFound()) {
+		napi_get_undefined(env, &result);
+		napi_value resolve;
+		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, resolveRef, &resolve))
+		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	} else if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(status, "Get failed")
+		napi_value reject;
+		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, rejectRef, &reject))
+		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+	} else {
+		// TODO: when in "fast" mode, use the shared buffer
+		NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, value.size(), value.data(), nullptr, &result))
+		napi_value resolve;
+		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, resolveRef, &resolve))
+		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	}
+}
 
 /**
  * Gets a value from the RocksDB database.
@@ -185,13 +265,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
 	}
 
-	napi_value returnStatus;
-	std::string value;
-
 	rocksdb::ReadOptions readOptions;
 	readOptions.read_tier = rocksdb::kBlockCacheTier;
 
 	// try to get the value from the block cache
+	std::string value;
 	rocksdb::Status status = (*dbHandle)->descriptor->db->Get(
 		readOptions,
 		(*dbHandle)->column.get(),
@@ -201,32 +279,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 	if (!status.IsIncomplete()) {
 		// found it in the block cache!
-
-		napi_value global;
-		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
-
-		napi_value result;
-
-		if (status.IsNotFound()) {
-			napi_get_undefined(env, &result);
-			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-		} else if (!status.ok()) {
-			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get failed")
-			NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
-		} else {
-			// TODO: when in "fast" mode, use the shared buffer
-			NAPI_STATUS_THROWS(::napi_create_buffer_copy(
-				env,
-				value.size(),
-				value.data(),
-				nullptr,
-				&result
-			))
-			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-		}
-
-		NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
-		return returnStatus;
+		return resolveGetSyncResult(env, "Get failed", status, value, resolve, reject);
 	}
 
 	napi_value name;
@@ -257,39 +310,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			GetState* state = reinterpret_cast<GetState*>(data);
-
-			napi_value global;
-			NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-
-			napi_value result;
-
-			if (state->status.IsNotFound()) {
-				napi_get_undefined(env, &result);
-				napi_value resolve;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-			} else if (!state->status.ok()) {
-				ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
-				napi_value reject;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
-			} else {
-				// TODO: when in "fast" mode, use the shared buffer
-				NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(
-					env,
-					state->value.size(),
-					state->value.data(),
-					nullptr,
-					&result
-				))
-				napi_value resolve;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-			}
-
-			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->resolveRef))
-			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->rejectRef))
-
+			resolveGetResult(env, "Get failed", state->status, state->value, state->resolveRef, state->rejectRef);
 			delete state;
 		},
 		state,     // data
@@ -298,6 +319,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 
+	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
 	return returnStatus;
 }

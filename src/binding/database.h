@@ -2,6 +2,7 @@
 #define __DATABASE_H__
 
 #include <node_api.h>
+#include "rocksdb/status.h"
 
 namespace rocksdb_js {
 
@@ -28,6 +29,24 @@ struct Database final {
 
 	static void Init(napi_env env, napi_value exports);
 };
+
+napi_value resolveGetSyncResult(
+	napi_env env,
+	const char* errorMsg,
+	rocksdb::Status& status,
+	std::string& value,
+	napi_value resolve,
+	napi_value reject
+);
+
+void resolveGetResult(
+	napi_env env,
+	const char* errorMsg,
+	rocksdb::Status& status,
+	std::string& value,
+	napi_ref resolveRef,
+	napi_ref rejectRef
+);
 
 } // namespace rocksdb_js
 

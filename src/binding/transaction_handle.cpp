@@ -1,4 +1,5 @@
 #include <sstream>
+#include "database.h"
 #include "transaction_handle.h"
 #include "macros.h"
 #include "util.h"
@@ -45,6 +46,7 @@ struct TransactionGetState final {
 		rocksdb::ReadOptions& readOptions,
 		rocksdb::Slice& keySlice
 	) :
+		env(env),
 		asyncWork(nullptr),
 		resolveRef(nullptr),
 		rejectRef(nullptr),
@@ -52,6 +54,12 @@ struct TransactionGetState final {
 		readOptions(readOptions),
 		keySlice(keySlice) {}
 
+	~TransactionGetState() {
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
+	}
+
+	napi_env env;
 	napi_async_work asyncWork;
 	napi_ref resolveRef;
 	napi_ref rejectRef;
@@ -72,8 +80,8 @@ napi_value TransactionHandle::get(
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	std::string value;
 	napi_value returnStatus;
+	std::string value;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 
 	rocksdb::ReadOptions readOptions;
@@ -89,30 +97,7 @@ napi_value TransactionHandle::get(
 
 	if (!status.IsIncomplete()) {
 		// found it in the block cache!
-		napi_value result;
-		napi_value global;
-		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
-
-		if (status.IsNotFound()) {
-			napi_get_undefined(env, &result);
-			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-		} else if (!status.ok()) {
-			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Transaction get failed")
-			NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
-		} else {
-			// TODO: when in "fast" mode, use the shared buffer
-			NAPI_STATUS_THROWS(::napi_create_buffer_copy(
-				env,
-				value.size(),
-				value.data(),
-				nullptr,
-				&result
-			))
-			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-		}
-
-		NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
-		return returnStatus;
+		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
 	}
 
 	napi_value name;
@@ -143,39 +128,7 @@ napi_value TransactionHandle::get(
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionGetState* state = reinterpret_cast<TransactionGetState*>(data);
-
-			napi_value global;
-			NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-
-			napi_value result;
-
-			if (state->status.IsNotFound()) {
-				napi_get_undefined(env, &result);
-				napi_value resolve;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-			} else if (!state->status.ok()) {
-				ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
-				napi_value reject;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
-			} else {
-				// TODO: when in "fast" mode, use the shared buffer
-				NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(
-					env,
-					state->value.size(),
-					state->value.data(),
-					nullptr,
-					&result
-				))
-				napi_value resolve;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-			}
-
-			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->resolveRef))
-			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->rejectRef))
-
+			resolveGetResult(env, "Transaction get failed", state->status, state->value, state->resolveRef, state->rejectRef);
 			delete state;
 		},
 		state,     // data
