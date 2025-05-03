@@ -37,40 +37,6 @@ TransactionHandle::~TransactionHandle() {
 }
 
 /**
- * State for the `Get` async work.
- */
-struct TransactionGetState final {
-	TransactionGetState(
-		napi_env env,
-		TransactionHandle* txnHandle,
-		rocksdb::ReadOptions& readOptions,
-		rocksdb::Slice& keySlice
-	) :
-		env(env),
-		asyncWork(nullptr),
-		resolveRef(nullptr),
-		rejectRef(nullptr),
-		txnHandle(txnHandle),
-		readOptions(readOptions),
-		keySlice(keySlice) {}
-
-	~TransactionGetState() {
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
-	}
-
-	napi_env env;
-	napi_async_work asyncWork;
-	napi_ref resolveRef;
-	napi_ref rejectRef;
-	std::shared_ptr<TransactionHandle> txnHandle;
-	rocksdb::ReadOptions readOptions;
-	rocksdb::Slice keySlice;
-	rocksdb::Status status;
-	std::string value;
-};
-
-/**
  * Get a value using the specified database handle.
  */
 napi_value TransactionHandle::get(
@@ -109,7 +75,7 @@ napi_value TransactionHandle::get(
 	))
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	TransactionGetState* state = new TransactionGetState(env, this, readOptions, key);
+	auto state = new GetState<TransactionHandle*>(env, this, readOptions, key);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -118,16 +84,16 @@ napi_value TransactionHandle::get(
 		nullptr,   // async_resource
 		name,      // async_resource_name
 		[](napi_env env, void* data) { // execute
-			TransactionGetState* state = reinterpret_cast<TransactionGetState*>(data);
-			state->status = state->txnHandle->txn->Get(
+			auto state = reinterpret_cast<GetState<TransactionHandle*>*>(data);
+			state->status = state->handle->txn->Get(
 				state->readOptions,
-				state->txnHandle->dbHandle->column.get(),
+				state->handle->dbHandle->column.get(),
 				state->keySlice,
 				&state->value
 			);
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			TransactionGetState* state = reinterpret_cast<TransactionGetState*>(data);
+			auto state = reinterpret_cast<GetState<TransactionHandle*>*>(data);
 			resolveGetResult(env, "Transaction get failed", state->status, state->value, state->resolveRef, state->rejectRef);
 			delete state;
 		},

@@ -2,7 +2,10 @@
 #define __DATABASE_H__
 
 #include <node_api.h>
+#include "rocksdb/db.h"
 #include "rocksdb/status.h"
+#include "macros.h"
+#include "util.h"
 
 namespace rocksdb_js {
 
@@ -28,6 +31,41 @@ struct Database final {
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
+};
+
+/**
+ * State for the `Get` async work.
+ */
+template<typename T>
+struct GetState final {
+	GetState(
+		napi_env env,
+		T handle,
+		rocksdb::ReadOptions& readOptions,
+		rocksdb::Slice& keySlice
+	) :
+		env(env),
+		asyncWork(nullptr),
+		resolveRef(nullptr),
+		rejectRef(nullptr),
+		handle(handle),
+		readOptions(readOptions),
+		keySlice(keySlice) {}
+
+	~GetState() {
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
+	}
+
+	napi_env env;
+	napi_async_work asyncWork;
+	napi_ref resolveRef;
+	napi_ref rejectRef;
+	T handle;
+	rocksdb::ReadOptions readOptions;
+	rocksdb::Slice keySlice;
+	rocksdb::Status status;
+	std::string value;
 };
 
 napi_value resolveGetSyncResult(
