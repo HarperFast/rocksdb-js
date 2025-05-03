@@ -4,15 +4,28 @@ import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import type { Transaction } from '../src/transaction.js';
 
-describe('Transactions (pessimistic)', () => {
-	describe('transaction()', () => {
+const testOptions = [
+	{
+		name: 'optimistic',
+		options: {},
+	},
+	{
+		name: 'pessimistic',
+		options: { pessimistic: true },
+	},
+];
+
+for (const { name, options } of testOptions) {
+	describe(`transaction() (${name})`, () => {
 		it('should error if callback is not a function', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
-				await expect(db.transaction('foo' as any)).rejects.toThrow(new TypeError('Callback must be a function'));
+				db = await RocksDatabase.open(dbPath, options);
+				await expect(db.transaction('foo' as any)).rejects.toThrow(
+					new TypeError('Callback must be a function')
+				);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -24,9 +37,8 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
-
 				await db.transaction(async (txn: Transaction) => {
 					const value = await txn.get('foo');
 					expect(value).toBe('bar');
@@ -42,11 +54,50 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
+				await db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar2');
+				});
+				const value = await db.get('foo');
+				expect(value).toBe('bar2');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should remove a value', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, options);
+				await db.put('foo', 'bar');
 
 				await db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar');
+					await txn.remove('foo');
 				});
+
+				const value = await db.get('foo');
+				expect(value).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should rollback on error', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, options);
+				await db.put('foo', 'bar');
+
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar2');
+					throw new Error('test');
+				})).rejects.toThrow('test');
 
 				const value = await db.get('foo');
 				expect(value).toBe('bar');
@@ -61,8 +112,7 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
-
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 				const value = await db.get('foo');
 				expect(value).toBe('bar');
@@ -84,7 +134,7 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				await expect(db.transaction(async (txn: Transaction) => {
@@ -105,12 +155,10 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar1');
 
-				setTimeout(() => {
-					db?.put('foo', 'bar2');
-				}, 50);
+				setTimeout(() => db?.put('foo', 'bar2'));
 
 				try {
 					await db.transaction(async (txn: Transaction) => {
@@ -126,7 +174,9 @@ describe('Transactions (pessimistic)', () => {
 				} catch (error: unknown | Error & { code: string }) {
 					expect(error).toBeInstanceOf(Error);
 					if (error instanceof Error) {
-						expect(error.message).toBe('Transaction put failed: Resource busy');
+						expect(error.message).toBe(`Transaction ${
+							options.pessimistic ? 'put' : 'commit'
+						} failed: Resource busy`);
 						if ('code' in error) {
 							expect(error.code).toBe('ERR_BUSY');
 						}
@@ -147,8 +197,8 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
-				db2 = await RocksDatabase.open(dbPath, { name: 'foo', pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
+				db2 = await RocksDatabase.open(dbPath, { ...options, name: 'foo' });
 
 				await db.put('foo', 'bar');
 				await db2.put('foo2', 'baz');
@@ -176,8 +226,8 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath2 = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
-				db2 = await RocksDatabase.open(dbPath2, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
+				db2 = await RocksDatabase.open(dbPath2, options);
 
 				await Promise.all([
 					db.transaction(async (txn: Transaction) => {
@@ -201,13 +251,13 @@ describe('Transactions (pessimistic)', () => {
 		});
 	});
 
-	describe('transactionSync()', () => {
+	describe(`transactionSync() (${name})`, () => {
 		it('should error if callback is not a function', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				expect(() => db!.transactionSync('foo' as any))
 					.toThrow(new TypeError('Callback must be a function'));
 			} finally {
@@ -221,10 +271,9 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
-
-				await db.transactionSync((txn: Transaction) => {
+				db.transactionSync((txn: Transaction) => {
 					const value = txn.getSync('foo');
 					expect(value).toBe('bar');
 				});
@@ -239,14 +288,14 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 
 				db.transactionSync((txn: Transaction) => {
-					txn.putSync('foo', 'bar');
+					txn.putSync('foo', 'bar2');
 				});
 
 				const value = await db.get('foo');
-				expect(value).toBe('bar');
+				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -258,8 +307,7 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
-
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				db.transactionSync((txn: Transaction) => {
@@ -279,7 +327,7 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				expect(() => db!.transactionSync((txn: Transaction) => {
@@ -301,8 +349,8 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
-				db2 = await RocksDatabase.open(dbPath, { name: 'foo', pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
+				db2 = await RocksDatabase.open(dbPath, { ...options, name: 'foo' });
 
 				await db.put('foo', 'bar');
 				await db2.put('foo2', 'baz');
@@ -324,13 +372,13 @@ describe('Transactions (pessimistic)', () => {
 		});
 	});
 
-	describe('Error handling', () => {
+	describe(`Error handling (${name})`, () => {
 		it('should error if transaction is invalid', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
 			} finally {
 				db?.close();
@@ -343,7 +391,7 @@ describe('Transactions (pessimistic)', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, { pessimistic: true });
+				db = await RocksDatabase.open(dbPath, options);
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 			} finally {
 				db?.close();
@@ -351,4 +399,4 @@ describe('Transactions (pessimistic)', () => {
 			}
 		});
 	});
-});
+}

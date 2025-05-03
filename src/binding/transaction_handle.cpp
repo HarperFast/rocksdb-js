@@ -76,7 +76,7 @@ napi_value TransactionHandle::get(
 	napi_value returnStatus;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 
-	auto readOptions = rocksdb::ReadOptions();
+	rocksdb::ReadOptions readOptions;
 	readOptions.snapshot = this->txn->GetSnapshot();
 	readOptions.read_tier = rocksdb::kBlockCacheTier;
 
