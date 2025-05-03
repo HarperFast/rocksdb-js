@@ -57,15 +57,30 @@ const db = await RocksDatabase.open('path/to/db');
 
 Closes a database. A database instance can be reopened once its closed.
 
-### `db.get(key, options?): Promise<any>`
+### `db.get(key, options?): MaybePromise<any>`
 
-Retreives the value for a given key. If the key does not exist, it will return
+Retreives the value for a given key. If the key does not exist, it will resolve
 `undefined`.
 
 ```typescript
-const foo = await db.get('foo');
-assert.equal(foo, 'foo');
+const result = await db.get('foo');
+assert.equal(result, 'foo');
 ```
+
+If the value is in the memtable or block cache, `get()` will immediately return
+the value synchronously instead of returning a promise.
+
+```typescript
+const result = db.get('foo');
+const value = result instanceof Promise ? (await result) : result;
+assert.equal(result, 'foo');
+```
+
+Note that all errors are returned as rejected promises.
+
+### `db.getSync(key, options?): any`
+
+Synchronous version of `get()`.
 
 ### `db.put(key, value, options?): Promise`
 
@@ -77,11 +92,7 @@ await db.put('foo', 'bar');
 
 ### `db.putSync(key, value, options?): void`
 
-Stores a value for a given key synchronously.
-
-```typescript
-db.putSync('foo', 'bar');
-```
+Synchronous version of `put()`.
 
 ### `db.remove(key): Promise`
 
@@ -90,6 +101,10 @@ Removes the value for a given key.
 ```typescript
 await db.remove('foo');
 ```
+
+### `db.removeSync(key): void`
+
+Synchronous version of `remove()`.
 
 ### `db.transaction(async (txn: Transaction) => Promise<any>): Promise<any>`
 
@@ -130,10 +145,12 @@ Executes a transaction callback and commits synchronously. Once the transaction
 callback returns, the commit is executed synchronously and blocks the current
 thread until finished.
 
+Inside a synchronous transaction, use `getSync()`, `putSync()`, and `removeSync()`.
+
 ```typescript
 import type { Transaction } from '@harperdb/rocksdb-js';
 db.transactionSync((txn: Transaction) => {
-	txn.put('foo', 'baz');
+	txn.putSync('foo', 'baz');
 });
 ```
 
