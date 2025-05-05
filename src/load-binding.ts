@@ -1,6 +1,7 @@
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import type { Key } from './encoding.js';
 
 export type NativeTransaction = {
@@ -52,9 +53,12 @@ const nativeExtRE = /\.node$/;
  * @returns The path to the native binding.
  */
 function locateBinding(): string {
+	const __dirname = dirname(dirname(fileURLToPath(import.meta.url)));
+	console.log(__dirname);
+
 	for (const type of ['Release', 'Debug'] as const) {
 		try {
-			const dir = join('build', type);
+			const dir = join(__dirname, 'build', type);
 			const files = readdirSync(dir);
 			for (const file of files) {
 				if (nativeExtRE.test(file)) {
@@ -71,12 +75,12 @@ function locateBinding(): string {
 
 	// check prebuilds
 	try {
-		for (const target of readdirSync('prebuilds')) {
+		for (const target of readdirSync(join(__dirname, 'prebuilds'))) {
 			const [platform, arch] = target.split('-');
 			if (platform === process.platform && arch === process.arch) {
-				for (const binding of readdirSync(join('prebuilds', target))) {
+				for (const binding of readdirSync(join(__dirname, 'prebuilds', target))) {
 					if (nativeExtRE.test(binding)) {
-						return resolve('prebuilds', target, binding);
+						return resolve(join(__dirname, 'prebuilds', target, binding));
 					}
 				}
 			}
