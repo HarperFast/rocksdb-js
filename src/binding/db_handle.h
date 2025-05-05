@@ -23,6 +23,13 @@ struct DBHandle final {
 	~DBHandle();
 
 	void close();
+	napi_value get(
+		napi_env env,
+		rocksdb::Slice& key,
+		napi_value resolve,
+		napi_value reject,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
 

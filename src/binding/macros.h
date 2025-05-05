@@ -109,6 +109,15 @@
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
+#define NAPI_GET_BUFFER(from, to, errorMsg) \
+	uint32_t to##Start = 0; \
+	uint32_t to##End = 0; \
+	size_t to##Length = 0; \
+	const char* to = rocksdb_js::getNapiBufferFromArg(env, from, to##Start, to##End, to##Length, errorMsg); \
+	if (to == nullptr) { \
+		return nullptr; \
+	}
+
 #define NAPI_GET_STRING(from, to, errorMsg) \
 	std::string to; \
 	NAPI_STATUS_THROWS_ERROR(rocksdb_js::getString(env, from, to), errorMsg)
@@ -131,6 +140,15 @@
 		napi_value errorMsg; \
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
 		NAPI_STATUS_THROWS(::napi_create_error(env, nullptr, errorMsg, &error)) \
+	}
+
+#define ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(status, msg) \
+	napi_value error; \
+	{ \
+		ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
+		napi_value errorMsg; \
+		NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg)) \
+		NAPI_STATUS_THROWS_VOID(::napi_create_error(env, nullptr, errorMsg, &error)) \
 	}
 
 #define ROCKSDB_STATUS_THROWS_ERROR_LIKE(call, msg) \

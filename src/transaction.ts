@@ -1,6 +1,6 @@
 import { DBI } from './dbi';
 import { Store } from './store.js';
-import type { NativeTransaction } from './util/load-binding.js';
+import type { NativeTransaction } from './load-binding.js';
 
 /**
  * Provides transaction level operations to a transaction callback.
@@ -33,6 +33,10 @@ export class Transaction extends DBI {
 		return new Promise<void>((resolve, reject) => {
 			this.#txn.commit(resolve, reject);
 		});
+	}
+
+	commitSync(): void {
+		this.#txn.commitSync();
 	}
 
 	/**

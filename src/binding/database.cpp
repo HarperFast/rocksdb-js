@@ -1,11 +1,11 @@
+#include <sstream>
+#include <node_api.h>
+#include <thread>
 #include "database.h"
 #include "db_handle.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
-#include <thread>
-#include <node_api.h>
-#include <sstream>
 
 #define UNWRAP_DB_HANDLE() \
     std::shared_ptr<DBHandle>* dbHandle = nullptr; \
@@ -135,15 +135,110 @@ napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(4)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	napi_value resolve = argv[1];
+	napi_value reject = argv[2];
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	std::string key;
-	NAPI_STATUS_THROWS_ERROR(
-		rocksdb_js::getString(env, argv[0], key),
-		"Key is required"
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+
+	napi_valuetype txnIdType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &txnIdType));
+
+	if (txnIdType == napi_number) {
+		uint32_t txnId;
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
+
+		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
+		if (!txnHandle) {
+			::napi_throw_error(env, nullptr, "Transaction not found");
+			NAPI_RETURN_UNDEFINED()
+		}
+		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
+	}
+
+	rocksdb::ReadOptions readOptions;
+	readOptions.read_tier = rocksdb::kBlockCacheTier;
+
+	// try to get the value from the block cache
+	std::string value;
+	rocksdb::Status status = (*dbHandle)->descriptor->db->Get(
+		readOptions,
+		(*dbHandle)->column.get(),
+		keySlice,
+		&value
 	);
 
+	if (!status.IsIncomplete()) {
+		// found it in the block cache!
+		return resolveGetSyncResult(env, "Get failed", status, value, resolve, reject);
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.get",
+		NAPI_AUTO_LENGTH,
+		&name
+	))
+
+	readOptions.read_tier = rocksdb::kReadAllTier;
+	auto state = new GetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, keySlice);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env env, void* data) { // execute
+			auto state = reinterpret_cast<GetState<std::shared_ptr<DBHandle>>*>(data);
+			state->status = state->handle->descriptor->db->Get(
+				state->readOptions,
+				state->handle->column.get(),
+				state->keySlice,
+				&state->value
+			);
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<GetState<std::shared_ptr<DBHandle>>*>(data);
+			resolveGetResult(env, "Get failed", state->status, state->value, state->resolveRef, state->rejectRef);
+			delete state;
+		},
+		state,     // data
+		&state->asyncWork // -> result
+	));
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+
+	napi_value returnStatus;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
+	return returnStatus;
+}
+
+/**
+ * Gets a value from the RocksDB database.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const value = await db.get('foo');
+ * ```
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const txnId = 123;
+ * const value = await db.get('foo', txnId);
+ * ```
+ */
+napi_value Database::GetSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	std::string value;
 	rocksdb::Status status;
 
@@ -159,12 +254,16 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
 		}
-		status = txnHandle->get(key, value, *dbHandle);
+		status = txnHandle->getSync(keySlice, value, *dbHandle);
 	} else {
+		rocksdb::ReadOptions read_options;
+		// TODO: try with kBlockCacheTier, if it fails, then retry with rocksdb::kReadAllTier
+		// read_options.read_tier = rocksdb::kBlockCacheTier;
+
 		status = (*dbHandle)->descriptor->db->Get(
-			rocksdb::ReadOptions(),
+			read_options,
 			(*dbHandle)->column.get(),
-			rocksdb::Slice(key),
+			keySlice,
 			&value
 		);
 	}
@@ -180,7 +279,13 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
+	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+		env,
+		value.size(),
+		value.data(),
+		nullptr,
+		&result
+	))
 
 	return result;
 }
@@ -244,16 +349,19 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 /**
  * Puts a key-value pair into the RocksDB database.
  */
-napi_value Database::Put(napi_env env, napi_callback_info info) {
+napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
-	NAPI_GET_STRING(argv[1], value, nullptr)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[1], value, nullptr)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
+
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
@@ -264,13 +372,17 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
 		}
-		status = txnHandle->put(key, value, *dbHandle);
+		status = txnHandle->putSync(
+			keySlice,
+			valueSlice,
+			*dbHandle
+		);
 	} else {
 		status = (*dbHandle)->descriptor->db->Put(
 			rocksdb::WriteOptions(),
 			(*dbHandle)->column.get(),
-			rocksdb::Slice(key),
-			value
+			keySlice,
+			valueSlice
 		);
 	}
 
@@ -286,15 +398,17 @@ napi_value Database::Put(napi_env env, napi_callback_info info) {
 /**
  * Removes a key from the RocksDB database.
  */
-napi_value Database::Remove(napi_env env, napi_callback_info info) {
+napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
@@ -305,12 +419,12 @@ napi_value Database::Remove(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
 		}
-		status = txnHandle->remove(key, *dbHandle);
+		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
 		status = (*dbHandle)->descriptor->db->Delete(
 			rocksdb::WriteOptions(),
 			(*dbHandle)->column.get(),
-			rocksdb::Slice(key)
+			keySlice
 		);
 	}
 
@@ -331,10 +445,11 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "createTransaction", nullptr, CreateTransaction, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
-		{ "put", nullptr, Put, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "remove", nullptr, Remove, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	constexpr auto className = "Database";
@@ -353,4 +468,77 @@ void Database::Init(napi_env env, napi_value exports) {
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, cons))
 }
 
-} // namespace rocksdb_js::db_wrap
+/**
+ * Resolves the result of a `Get` operation.
+ */
+napi_value resolveGetSyncResult(
+	napi_env env,
+	const char* errorMsg,
+	rocksdb::Status& status,
+	std::string& value,
+	napi_value resolve,
+	napi_value reject
+) {
+	napi_value global;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global))
+
+	napi_value result;
+
+	if (status.IsNotFound()) {
+		napi_get_undefined(env, &result);
+		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	} else if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, errorMsg)
+		NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr))
+	} else {
+		// TODO: when in "fast" mode, use the shared buffer
+		NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+			env,
+			value.size(),
+			value.data(),
+			nullptr,
+			&result
+		))
+		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	}
+
+	napi_value returnStatus;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
+	return returnStatus;
+}
+
+/**
+ * Resolves the result of a `Get` operation.
+ */
+void resolveGetResult(
+	napi_env env,
+	const char* errorMsg,
+	rocksdb::Status& status,
+	std::string& value,
+	napi_ref resolveRef,
+	napi_ref rejectRef
+) {
+	napi_value result;
+	napi_value global;
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+	
+	if (status.IsNotFound()) {
+		napi_get_undefined(env, &result);
+		napi_value resolve;
+		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, resolveRef, &resolve))
+		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	} else if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(status, "Get failed")
+		napi_value reject;
+		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, rejectRef, &reject))
+		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+	} else {
+		// TODO: when in "fast" mode, use the shared buffer
+		NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, value.size(), value.data(), nullptr, &result))
+		napi_value resolve;
+		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, resolveRef, &resolve))
+		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+	}
+}
+}
+ // namespace rocksdb_js

@@ -1,16 +1,19 @@
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import type { Key } from '../types.js';
+import { fileURLToPath } from 'node:url';
+import type { Key } from './encoding.js';
 
 export type NativeTransaction = {
 	id: number;
 	new(): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
-	get(key: Key): Buffer;
-	put(key: Key, value: any): void;
-	remove(key: Key): void;
+	commitSync(): void;
+	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
+	getSync(key: Key, txnId?: number): Buffer;
+	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
+	removeSync(key: Key, txnId?: number): void;
 };
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
@@ -26,14 +29,15 @@ export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
 	createTransaction(): NativeTransaction;
-	get(key: Key, txnId?: number): Buffer;
+	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
+	getSync(key: Key, txnId?: number): Buffer;
 	opened: boolean;
 	open(
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
-	put(key: Key, value: any, txnId?: number): void;
-	remove(key: Key, txnId?: number): void;
+	putSync(key: Key, value: any, txnId?: number): void;
+	removeSync(key: Key, txnId?: number): void;
 };
 
 export type RocksDatabaseConfig = {
@@ -49,28 +53,33 @@ const nativeExtRE = /\.node$/;
  * @returns The path to the native binding.
  */
 function locateBinding(): string {
+	const baseDir = dirname(dirname(fileURLToPath(import.meta.url)));
+
 	for (const type of ['Release', 'Debug'] as const) {
 		try {
-			const dir = join('build', type);
+			const dir = join(baseDir, 'build', type);
 			const files = readdirSync(dir);
 			for (const file of files) {
 				if (nativeExtRE.test(file)) {
 					return resolve(dir, file);
 				}
 			}
-		} catch {
-			// squelch
-		}
+
+		/* v8 ignore next -- @preserve */
+		} catch {}
 	}
+
+	// the following lines are non-trivial to test, so we'll ignore them
+	/* v8 ignore next 17 -- @preserve */
 
 	// check prebuilds
 	try {
-		for (const target of readdirSync('prebuilds')) {
+		for (const target of readdirSync(join(baseDir, 'prebuilds'))) {
 			const [platform, arch] = target.split('-');
 			if (platform === process.platform && arch === process.arch) {
-				for (const binding of readdirSync(join('prebuilds', target))) {
+				for (const binding of readdirSync(join(baseDir, 'prebuilds', target))) {
 					if (nativeExtRE.test(binding)) {
-						return resolve('prebuilds', target, binding);
+						return resolve(join(baseDir, 'prebuilds', target, binding));
 					}
 				}
 			}

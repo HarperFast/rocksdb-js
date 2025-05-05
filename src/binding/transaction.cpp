@@ -174,15 +174,49 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Commits the transaction synchronously.
+ */
+napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_TRANSACTION_HANDLE("CommitSync")
+
+	rocksdb::Status status = txnHandle->txn->Commit();
+	if (status.ok()) {
+		txnHandle->release();
+	} else {
+		napi_value error;
+		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed")
+		NAPI_STATUS_THROWS(::napi_throw(env, error))
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
  * Retrieves a value for the given key.
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_METHOD_ARGV(3)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	napi_value resolve = argv[1];
+	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get")
 
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+	return txnHandle->get(env, keySlice, resolve, reject);
+}
+
+/**
+ * Retrieves a value for the given key.
+ */
+napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_TRANSACTION_HANDLE("GetSync")
+
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	std::string value;
-	rocksdb::Status status = txnHandle->get(key, value);
+	rocksdb::Status status = txnHandle->getSync(keySlice, value);
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()
@@ -194,7 +228,13 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, value.c_str(), value.size(), &result))
+	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+		env,
+		value.size(),
+		value.data(),
+		nullptr,
+		&result
+	))
 
 	return result;
 }
@@ -218,13 +258,16 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
 /**
  * Puts a value for the given key.
  */
-napi_value Transaction::Put(napi_env env, napi_callback_info info) {
+napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
-	NAPI_GET_STRING(argv[1], value, nullptr)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[1], value, nullptr)
 	UNWRAP_TRANSACTION_HANDLE("Put")
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->put(key, value), "Transaction put failed")
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->putSync(keySlice, valueSlice), "Transaction put failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -232,12 +275,14 @@ napi_value Transaction::Put(napi_env env, napi_callback_info info) {
 /**
  * Removes a value for the given key.
  */
-napi_value Transaction::Remove(napi_env env, napi_callback_info info) {
+napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key, "Key is required")
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_TRANSACTION_HANDLE("Remove")
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->remove(key), "Transaction remove failed")
+	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->removeSync(keySlice), "Transaction remove failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -249,11 +294,13 @@ void Transaction::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "commitSync", nullptr, CommitSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		// merge?
-		{ "put", nullptr, Put, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "remove", nullptr, Remove, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	constexpr auto className = "Transaction";

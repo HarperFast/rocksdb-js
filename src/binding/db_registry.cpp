@@ -76,6 +76,16 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 	if (!dbExists) {
 		// database doesn't exist, create it
 
+		// set or disable the block cache
+		rocksdb::BlockBasedTableOptions tableOptions;
+		if (options.noBlockCache) {
+			tableOptions.no_block_cache = true;
+		} else {
+			DBSettings& settings = DBSettings::getInstance();
+			tableOptions.block_cache = settings.getBlockCache();
+		}
+
+		// set the database options
 		rocksdb::Options dbOptions;
 		dbOptions.comparator = rocksdb::BytewiseComparator();
 		dbOptions.create_if_missing = true;
@@ -85,19 +95,15 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 		dbOptions.min_blob_size = 1024;
 		dbOptions.persist_user_defined_timestamps = true;
 		dbOptions.IncreaseParallelism(options.parallelismThreads);
+		dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
-		if (!options.noBlockCache) {
-			DBSettings& settings = DBSettings::getInstance();
-			rocksdb::BlockBasedTableOptions tableOptions;
-			tableOptions.block_cache = settings.getBlockCache();
-			dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
-		}
-
-		std::shared_ptr<rocksdb::DB> db;
+		// prepare the column family stuff
 		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors = {
 			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
 		};
 		std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
+
+		std::shared_ptr<rocksdb::DB> db;
 
 		if (options.mode == DBMode::Pessimistic) {
 			rocksdb::TransactionDBOptions txndbOptions;
@@ -119,6 +125,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 			db = std::shared_ptr<rocksdb::DB>(rdb);
 		}
 
+		// figure out if desired column family exists and if not create it
 		bool columnExists = false;
 		for (size_t n = 0; n < cfHandles.size(); ++n) {
 			columns[cfDescriptors[n].name] = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
@@ -130,6 +137,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 			columns[name] = createColumn(db, name);
 		}
 
+		// create the descriptor and add it to the registry
 		descriptor = std::make_shared<DBDescriptor>(path, options.mode, db, columns);
 		this->databases[path] = descriptor;
 	}

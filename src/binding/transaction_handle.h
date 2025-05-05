@@ -28,9 +28,27 @@ struct TransactionHandle final {
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle);
 	~TransactionHandle();
 
-	rocksdb::Status get(std::string& key, std::string& result, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
-	rocksdb::Status put(std::string& key, std::string& value, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
-	rocksdb::Status remove(std::string& key, std::shared_ptr<DBHandle> dbHandleOverride = nullptr);
+	napi_value get(
+		napi_env env,
+		rocksdb::Slice& key,
+		napi_value resolve,
+		napi_value reject,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+	rocksdb::Status getSync(
+		rocksdb::Slice& key,
+		std::string& result,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+	rocksdb::Status putSync(
+		rocksdb::Slice& key,
+		rocksdb::Slice& value,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+	rocksdb::Status removeSync(
+		rocksdb::Slice& key,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
 	void release();
 
 	std::shared_ptr<DBHandle> dbHandle;

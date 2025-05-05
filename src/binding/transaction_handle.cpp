@@ -1,4 +1,8 @@
+#include <sstream>
+#include "database.h"
 #include "transaction_handle.h"
+#include "macros.h"
+#include "util.h"
 
 namespace rocksdb_js {
 
@@ -35,8 +39,79 @@ TransactionHandle::~TransactionHandle() {
 /**
  * Get a value using the specified database handle.
  */
-rocksdb::Status TransactionHandle::get(
-	std::string& key,
+napi_value TransactionHandle::get(
+	napi_env env,
+	rocksdb::Slice& key,
+	napi_value resolve,
+	napi_value reject,
+	std::shared_ptr<DBHandle> dbHandleOverride
+) {
+	napi_value returnStatus;
+	std::string value;
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+
+	rocksdb::ReadOptions readOptions;
+	readOptions.snapshot = this->txn->GetSnapshot();
+	readOptions.read_tier = rocksdb::kBlockCacheTier;
+
+	rocksdb::Status status = this->txn->Get(
+		readOptions,
+		dbHandle->column.get(),
+		key,
+		&value
+	);
+
+	if (!status.IsIncomplete()) {
+		// found it in the block cache!
+		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"transaction.get",
+		NAPI_AUTO_LENGTH,
+		&name
+	))
+
+	readOptions.read_tier = rocksdb::kReadAllTier;
+	auto state = new GetState<TransactionHandle*>(env, this, readOptions, key);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env env, void* data) { // execute
+			auto state = reinterpret_cast<GetState<TransactionHandle*>*>(data);
+			state->status = state->handle->txn->Get(
+				state->readOptions,
+				state->handle->dbHandle->column.get(),
+				state->keySlice,
+				&state->value
+			);
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<GetState<TransactionHandle*>*>(data);
+			resolveGetResult(env, "Transaction get failed", state->status, state->value, state->resolveRef, state->rejectRef);
+			delete state;
+		},
+		state,     // data
+		&state->asyncWork // -> result
+	));
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
+	return returnStatus;
+}
+
+/**
+ * Get a value using the specified database handle.
+ */
+rocksdb::Status TransactionHandle::getSync(
+	rocksdb::Slice& key,
 	std::string& result,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
@@ -47,32 +122,32 @@ rocksdb::Status TransactionHandle::get(
 	auto column = dbHandle->column.get();
 
 	// TODO: should this be GetForUpdate?
-	return this->txn->Get(readOptions, column, rocksdb::Slice(key), &result);
+	return this->txn->Get(readOptions, column, key, &result);
 }
 
 /**
  * Put a value using the specified database handle.
  */
-rocksdb::Status TransactionHandle::put(
-	std::string& key,
-	std::string& value,
+rocksdb::Status TransactionHandle::putSync(
+	rocksdb::Slice& key,
+	rocksdb::Slice& value,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
-	return this->txn->Put(column, rocksdb::Slice(key), rocksdb::Slice(value));
+	return this->txn->Put(column, key, value);
 }
 
 /**
  * Remove a value using the specified database handle.
  */
-rocksdb::Status TransactionHandle::remove(
-	std::string& key,
+rocksdb::Status TransactionHandle::removeSync(
+	rocksdb::Slice& key,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
-	return this->txn->Delete(column, rocksdb::Slice(key));
+	return this->txn->Delete(column, key);
 }
 
 /**

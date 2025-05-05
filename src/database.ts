@@ -1,14 +1,12 @@
-import type { Key } from './types.js';
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
-import { config, type RocksDatabaseConfig } from './util/load-binding.js';
+import { config, type RocksDatabaseConfig } from './load-binding.js';
+import * as orderedBinary from 'ordered-binary';
+import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
-	cache?: boolean;
-	dupSort?: boolean;
 	name?: string; // defaults to 'default'
-	useVersions?: boolean;
 };
 
 /**
@@ -33,16 +31,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		path: string,
 		options?: RocksDatabaseOptions
 	) {
-		if (!path || typeof path !== 'string') {
-			throw new TypeError('Path is required');
-		}
-
-		if (options !== undefined && typeof options !== 'object') {
-			throw new TypeError('Options must be an object');
-		}
-
 		const store = new Store(path, options);
-
 		super(store);
 
 		// this.#cache = options?.cache ?? false; // TODO: better name?
@@ -136,6 +125,106 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
+	/**
+	 * Initializes the encoder.
+
+	 * Note: ideally would go in the `Store` class, but the "structures"
+	 * functionality requires access to the high-level data functions.
+	 */
+	async #initEncoder(): Promise<void> {
+		const { store } = this;
+
+		/**
+		 * The encoder initialization precedence is:
+		 * 1. encoder.Encoder
+		 * 2. encoder.encode()
+		 * 3. encoding === `msgpack`
+		 * 4. encoding === `ordered-binary`
+		 * 5. encoder.writeKey()
+		 */
+		let EncoderClass = store.encoder?.Encoder;
+		if (store.encoding === false || typeof EncoderClass === 'function') {
+			store.encoder = null;
+		} else if (
+			typeof store.encoder?.encode !== 'function' &&
+			(!store.encoding || store.encoding === 'msgpack')
+		) {
+			store.encoding = 'msgpack';
+			EncoderClass = await import('msgpackr').then(m => m.Encoder);
+		}
+
+		if (EncoderClass) {
+			const opts: Record<string, any> = {
+				copyBuffers: true
+			};
+			const { sharedStructuresKey } = store;
+			if (sharedStructuresKey) {
+				opts.getStructures = (): any => {
+					// let lastVersion: number;
+					// if (this.useVersions) {
+					// 	lastVersion = getLastVersion();
+					// }
+					const buffer = this.getBinarySync(sharedStructuresKey);
+					// if (lastVersion) {
+					// 	setLastVersion(lastVersion);
+					// }
+					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
+				};
+				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
+					this.transactionSync((txn: Transaction) => {
+						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+						const existingStructures = existingStructuresBuffer && store.decoder?.decode ? store.decoder.decode(existingStructuresBuffer) : undefined;
+						if (typeof isCompatible == 'function') {
+							if (!isCompatible(existingStructures)) {
+								return false;
+							}
+						} else if (existingStructures && existingStructures.length !== isCompatible) {
+							return false;
+						}
+						txn.putSync(sharedStructuresKey, structures);
+					});
+				};
+			}
+			store.encoder = new EncoderClass({
+				...opts,
+				...store.encoder
+			});
+			store.decoder = store.encoder;
+		} else if (typeof store.encoder?.encode === 'function') {
+			if (!store.decoder) {
+				store.decoder = store.encoder;
+			}
+			store.decoderCopies = !store.encoder.needsStableBuffer;
+		} else if (store.encoding === 'ordered-binary') {
+			store.encoder = {
+				readKey: orderedBinary.readKey,
+				writeKey: orderedBinary.writeKey,
+			};
+			store.decoder = store.encoder;
+		}
+
+		if (typeof store.encoder?.writeKey === 'function' && !store.encoder?.encode) {
+			// define a fallback encode method that uses writeKey to encode values
+			store.encoder = {
+				...store.encoder,
+				encode: (value: any, _mode?: number): Buffer => {
+					const bytesWritten = store.writeKey(value, store.encodeBuffer, 0);
+					return store.encodeBuffer.subarray(0, bytesWritten);
+				}
+			};
+		}
+
+		if (store.decoder?.readKey && !store.decoder.decode) {
+			store.decoder.decode = (buffer: Buffer): any => {
+				if (store.decoder?.readKey) {
+					return store.decoder.readKey(buffer, 0, buffer.length);
+				}
+				return buffer;
+			};
+			store.decoderCopies = true;
+		}
+	}
+
 	isOpen() {
 		return this.store.isOpen();
 	}
@@ -172,7 +261,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	async open(): Promise<RocksDatabase> {
-		await this.store.open();
+		if (this.store.open()) {
+			// already open
+			return this;
+		}
+
+		await this.#initEncoder();
+
 		return this;
 	}
 
@@ -190,7 +285,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction(callback: (txn: Transaction) => Promise<void>) {
+	async transaction(callback: (txn: Transaction) => Promise<any>) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -198,8 +293,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const txn = new Transaction(this.store);
 
 		try {
-			await callback(txn);
+			const result = await callback(txn);
 			await txn.commit();
+			return result;
+		} catch (error) {
+			txn.abort();
+			throw error;
+		}
+	}
+
+	transactionSync(callback: (txn: Transaction) => void) {
+		if (typeof callback !== 'function') {
+			throw new TypeError('Callback must be a function');
+		}
+
+		const txn = new Transaction(this.store);
+
+		try {
+			const result = callback(txn);
+			txn.commitSync();
+			return result;
 		} catch (error) {
 			txn.abort();
 			throw error;
@@ -207,8 +320,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	unlock(_key: Key, _version: number): boolean {
-		//
-
 		return true;
 	}
 }
