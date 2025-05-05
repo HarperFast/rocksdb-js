@@ -59,38 +59,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			);
 		}
 
-		if (this.store.encoding === 'binary') {
-			return when(() => this.getBinary(key, options));
-		}
-
-		if (this.store.decoder) {
-			return when(
-				() => this.getBinary(key, options),
-				result => result === undefined ? undefined : this.store.decodeValue(result as Buffer)
-			);
-		}
-
-		if (!this.store.isOpen()) {
-			return Promise.reject(new Error('Database not open'));
-		}
-
-		const keyBuffer = this.store.encodeKey(key);
 		return when(
-			() => {
-				const { resolve, reject, promise } = withResolvers<Buffer | undefined>();
-				let result: Buffer | undefined;
-				const status = this.#context.get(
-					keyBuffer,
-					value => {
-						result = value;
-						resolve(value);
-					},
-					reject,
-					getTxnId(options)
-				);
-				return status === 1 ? promise : result;
-			},
-			result => result === undefined ? undefined : this.store.decodeValue(result)
+			() => this.getBinary(key, options),
+			result => result === undefined
+				? undefined
+				: this.store.encoding === 'binary' || !this.store.decoder
+					? result
+					: this.store.decodeValue(result as Buffer)
 		);
 	}
 
@@ -130,20 +105,34 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const { resolve, reject, promise } = withResolvers<Buffer | undefined>();
 		let result: Buffer | undefined;
+		let error: Error | undefined;
+		let resolve: (value: Buffer | undefined) => void | undefined;
+		let reject: (error: Error) => void | undefined;
 
 		const status = this.#context.get(
 			keyBuffer,
 			value => {
 				result = value;
-				resolve(value);
+				resolve?.(value);
 			},
-			reject,
+			err => {
+				error = err;
+				reject?.(err);
+			},
 			getTxnId(options)
 		);
 
-		return status === 1 ? promise : result;
+		if (error) {
+			return Promise.reject(error);
+		}
+		if (status === 0) {
+			return result;
+		}
+
+		let promise: Promise<Buffer | undefined>;
+		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
+		return promise;
 	}
 
 	/**
@@ -174,20 +163,35 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const { resolve, reject, promise } = withResolvers<Buffer | undefined>();
 		let result: Buffer | undefined;
+		let error: Error | undefined;
+		let resolve: (value: Buffer | undefined) => void | undefined;
+		let reject: (error: Error) => void | undefined;
 
+		// TODO: specify the shared buffer to write the value to
 		const status = this.#context.get(
 			keyBuffer,
 			value => {
 				result = value;
-				resolve(value);
+				resolve?.(value);
 			},
-			reject,
+			err => {
+				error = err;
+				reject?.(err);
+			},
 			getTxnId(options)
 		);
 
-		return status === 1 ? promise : result;
+		if (error) {
+			return Promise.reject(error);
+		}
+		if (status === 0) {
+			return result;
+		}
+
+		let promise: Promise<Buffer | undefined>;
+		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
+		return promise;
 	}
 
 	getBinaryFastSync(key: Key, options?: GetOptions & T): Buffer | undefined {

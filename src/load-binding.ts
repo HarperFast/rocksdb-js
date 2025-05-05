@@ -53,12 +53,11 @@ const nativeExtRE = /\.node$/;
  * @returns The path to the native binding.
  */
 function locateBinding(): string {
-	const __dirname = dirname(dirname(fileURLToPath(import.meta.url)));
-	console.log(__dirname);
+	const baseDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
 	for (const type of ['Release', 'Debug'] as const) {
 		try {
-			const dir = join(__dirname, 'build', type);
+			const dir = join(baseDir, 'build', type);
 			const files = readdirSync(dir);
 			for (const file of files) {
 				if (nativeExtRE.test(file)) {
@@ -75,12 +74,12 @@ function locateBinding(): string {
 
 	// check prebuilds
 	try {
-		for (const target of readdirSync(join(__dirname, 'prebuilds'))) {
+		for (const target of readdirSync(join(baseDir, 'prebuilds'))) {
 			const [platform, arch] = target.split('-');
 			if (platform === process.platform && arch === process.arch) {
-				for (const binding of readdirSync(join(__dirname, 'prebuilds', target))) {
+				for (const binding of readdirSync(join(baseDir, 'prebuilds', target))) {
 					if (nativeExtRE.test(binding)) {
-						return resolve(join(__dirname, 'prebuilds', target, binding));
+						return resolve(join(baseDir, 'prebuilds', target, binding));
 					}
 				}
 			}
