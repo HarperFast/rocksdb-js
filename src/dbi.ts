@@ -1,11 +1,12 @@
+import { NativeDatabase, NativeTransaction } from './load-binding.js';
+import { when, withResolvers, type MaybePromise } from './util.js';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
-import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import type { Transaction } from './transaction.js';
-import { when, withResolvers, type MaybePromise } from './util.js';
+import { RangeIterator, type IteratorOptions } from './iterator.js';
 
 export interface DBITransactional {
-	transaction: Transaction;
+	transaction?: Transaction;
 };
 
 /**
@@ -225,37 +226,35 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * Retrieves all keys within a range.
 	 */
-	getKeys(_options?: GetRangeOptions & T) {
+	getKeys(_options?: IteratorOptions & T) {
 		if (!this.store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
 	}
 
-	getKeysSync(_options?: GetRangeOptions & T) {
+	getKeysSync(_options?: IteratorOptions & T) {
 		//
 	}
 
-	getRange(_options?: GetRangeOptions & T) {
+	getRange<U>(options?: IteratorOptions & T) {
+		const start = options?.start ? this.store.encodeKey(options.start) : undefined;
+		const end = options?.end ? this.store.encodeKey(options.end) : undefined;
+		return new RangeIterator<U>(this.#context, { ...options, start, end });
+	}
+
+	getValues(_key: Key, _options?: IteratorOptions & T) {
 		//
 	}
 
-	getRangeSync(_options?: GetRangeOptions & T) {
+	getValuesSync(_key: Key, _options?: IteratorOptions & T) {
 		//
 	}
 
-	getValues(_key: Key, _options?: GetRangeOptions & T) {
+	getValuesCount(_key: Key, _options?: IteratorOptions & T) {
 		//
 	}
 
-	getValuesSync(_key: Key, _options?: GetRangeOptions & T) {
-		//
-	}
-
-	getValuesCount(_key: Key, _options?: GetRangeOptions & T) {
-		//
-	}
-
-	getValuesCountSync(_key: Key, _options?: GetRangeOptions & T) {
+	getValuesCountSync(_key: Key, _options?: IteratorOptions & T) {
 		//
 	}
 
@@ -320,23 +319,6 @@ interface GetOptions {
 	// ifNotTxnId?: number;
 	// currentThread?: boolean;
 }
-
-interface GetRangeOptions {
-	end?: Key | Uint8Array;
-	exactMatch?: boolean;
-	exclusiveStart?: boolean;
-	inclusiveEnd?: boolean;
-	limit?: number;
-	key?: Key;
-	offset?: number;
-	onlyCount?: boolean;
-	reverse?: boolean;
-	snapshot?: boolean;
-	start?: Key | Uint8Array;
-	values?: boolean;
-	valuesForKey?: boolean;
-	versions?: boolean;
-};
 
 interface PutOptions {
 	append?: boolean;

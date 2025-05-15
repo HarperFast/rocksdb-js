@@ -29,13 +29,27 @@ napi_ref Transaction::constructor = nullptr;
  * object is garbage collected.
  */
 struct DBTxnHandle final {
-	DBTxnHandle(std::shared_ptr<DBHandle> dbHandle) {
-		this->dbHandle = dbHandle;
+	DBTxnHandle(std::shared_ptr<DBHandle> dbHandle)
+		: dbDescriptor(dbHandle->descriptor)
+	{
 		this->txnHandle = std::make_shared<TransactionHandle>(dbHandle);
-		dbHandle->descriptor->addTransaction(this->txnHandle);
+		this->dbDescriptor->transactionAdd(this->txnHandle);
 	}
 
-	std::shared_ptr<DBHandle> dbHandle;
+	~DBTxnHandle() {
+		this->close();
+	}
+
+	void close() {
+		if (this->txnHandle) {
+			fprintf(stderr, "DBTxnHandle::close txnHandle=%p txn refcount=%d\n", this->txnHandle.get(), this->txnHandle.use_count());
+			this->dbDescriptor->transactionRemove(this->txnHandle);
+			this->txnHandle.reset();
+			fprintf(stderr, "DBTxnHandle::close txnHandle=%p done\n", this->txnHandle.get());
+		}
+	}
+
+	std::shared_ptr<DBDescriptor> dbDescriptor;
 	std::shared_ptr<TransactionHandle> txnHandle;
 };
 
@@ -49,17 +63,16 @@ struct DBTxnHandle final {
 napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV("Transaction", 1)
 
-	// we need to do some null pointer tricks because we're passing around a shared pointer
-	void* ptr = nullptr;
-	NAPI_STATUS_THROWS(::napi_get_value_external(env, args[0], &ptr));
-	std::shared_ptr<DBHandle> dbHandle = *reinterpret_cast<std::shared_ptr<DBHandle>*>(ptr);
+	std::shared_ptr<DBHandle>* dbHandle = nullptr;
+	NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&dbHandle)))
 
-	if (!dbHandle || !dbHandle->opened()) {
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) {
 		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
 	}
 
-	DBTxnHandle* dbTxnHandle = new DBTxnHandle(dbHandle);
+	DBTxnHandle* dbTxnHandle = new DBTxnHandle(*dbHandle);
+	fprintf(stderr, "Transaction::Constructor dbTxnHandle=%p\n", dbHandle, dbTxnHandle);
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -68,6 +81,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			reinterpret_cast<void*>(dbTxnHandle),
 			[](napi_env env, void* data, void* hint) {
 				DBTxnHandle* dbTxnHandle = reinterpret_cast<DBTxnHandle*>(data);
+				fprintf(stderr, "Transaction::Constructor finalize dbTxnHandle=%p\n", dbTxnHandle);
 				delete dbTxnHandle;
 			},
 			nullptr, // finalize_hint
@@ -89,8 +103,10 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("Abort")
 
+	fprintf(stderr, "Transaction::Abort dbTxnHandle=%p\n", dbTxnHandle);
+
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(txnHandle->txn->Rollback(), "Transaction rollback failed")
-	txnHandle->release();
+	dbTxnHandle->close();
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -118,6 +134,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit")
 
+	fprintf(stderr, "Transaction::Commit start dbTxnHandle=%p\n", dbTxnHandle);
+
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
 		env,
@@ -138,7 +156,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 			state->status = state->txnHandle->txn->Commit();
 			if (state->status.ok()) {
-				state->txnHandle->release();
+				state->txnHandle->close();
 			}
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -162,6 +180,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->resolveRef))
 			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->rejectRef))
 
+			fprintf(stderr, "Transaction::Commit complete dbTxnHandle=%p\n", state->txnHandle.get());
 			delete state;
 		},
 		state,     // data
@@ -182,7 +201,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = txnHandle->txn->Commit();
 	if (status.ok()) {
-		txnHandle->release();
+		dbTxnHandle->close();
 	} else {
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed")
@@ -303,17 +322,19 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
-	constexpr auto className = "Transaction";
+	auto className = "Transaction";
+	constexpr size_t len = sizeof("Transaction") - 1;
+
 	napi_value cons;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,              // className
-		sizeof(className) - 1,  // length of class name (subtract 1 for null terminator)
-		Constructor,            // constructor
-		nullptr,                // constructor arg
+		className,    // className
+		len,          // length of class name
+		Constructor,  // constructor
+		nullptr,      // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
-		properties,             // properties array
-		&cons                   // [out] constructor
+		properties,   // properties array
+		&cons         // [out] constructor
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, cons, 1, &constructor))

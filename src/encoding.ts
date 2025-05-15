@@ -1,6 +1,6 @@
 import * as orderedBinary from 'ordered-binary';
 
-export type Key = Key[] | string | symbol | number | boolean | Uint8Array | Buffer;
+export type Key = Key[] | string | symbol | number | boolean | Uint8Array | Buffer | null;
 
 export interface BufferWithDataView extends Buffer {
 	dataView: DataView;
@@ -97,7 +97,7 @@ export function initKeyEncoder(
 		return {
 			keyEncoding,
 			readKey: orderedBinary.readKey,
-			writeKey: orderedBinary.writeKey,
+			writeKey: orderedBinary.writeKey as WriteKeyFunction,
 		};
 	}
 	

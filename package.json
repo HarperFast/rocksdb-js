@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm build:bundle && pnpm rebuild",
     "build:bundle": "rimraf dist && rollup -c rollup.config.ts --configPlugin typescript && pnpm build:types",
+    "build:debug": "pnpm build:bundle && pnpm rebuild:debug",
     "build:types": "pnpm build:types:temp && pnpm build:types:roll && pnpm build:types:check",
     "build:types:temp": "tsc --declaration --emitDeclarationOnly --outDir temp --project tsconfig.build.json",
     "build:types:roll": "rollup --config rollup.dts.config.ts --configPlugin typescript && rimraf temp",
@@ -20,6 +21,7 @@
     "prepublishOnly": "pnpm build:bundle && pnpm prebuild",
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
+    "rebuild:debug": "node-gyp rebuild --debug",
     "test": "vitest --allowOnly --pool=forks --reporter=verbose",
     "type-check": "tsc --noEmit"
   },
@@ -30,6 +32,10 @@
     "src/binding",
     "vendor"
   ],
+  "dependencies": {
+    "msgpackr": "1.11.2",
+    "ordered-binary": "1.5.3"
+  },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.3",
     "@rollup/plugin-node-resolve": "16.0.1",
@@ -40,9 +46,7 @@
     "dotenv": "16.5.0",
     "esbuild": "0.25.3",
     "lefthook": "1.11.12",
-    "msgpackr": "1.11.2",
     "node-gyp": "11.2.0",
-    "ordered-binary": "1.5.3",
     "oxlint": "0.16.9",
     "prebuildify": "6.0.1",
     "rimraf": "6.0.1",

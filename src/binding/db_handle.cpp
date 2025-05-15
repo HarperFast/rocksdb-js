@@ -19,16 +19,26 @@ DBHandle::DBHandle(std::shared_ptr<DBDescriptor> descriptor)
  * Close the DBHandle and destroy it.
  */
 DBHandle::~DBHandle() {
-	this->close();
+	// TODO: Do we NEED this?
+	// this->close();
 }
 
 /**
  * Closes the DBHandle.
  */
 void DBHandle::close() {
-	this->column.reset();
-	this->descriptor.reset();
+	fprintf(stderr, "DBHandle::close this=%p\n", this);
+	if (this->column) {
+		this->column.reset();
+	}
+
+	if (this->descriptor) {
+		this->descriptor.reset();
+	}
+
+	// purge all weak references in the registry
 	DBRegistry::getInstance()->purge();
+	fprintf(stderr, "DBHandle::close done this=%p\n", this);
 }
 
 /**
@@ -48,7 +58,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
  * Checks if the referenced database is opened.
  */
 bool DBHandle::opened() const {
-	return this->descriptor != nullptr && this->descriptor->db != nullptr;
+	return this->descriptor && this->descriptor->db;
 }
 
 } // namespace rocksdb_js

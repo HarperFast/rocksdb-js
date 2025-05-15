@@ -2,7 +2,6 @@
 #include "database.h"
 #include "transaction_handle.h"
 #include "macros.h"
-#include "util.h"
 
 namespace rocksdb_js {
 
@@ -10,7 +9,7 @@ namespace rocksdb_js {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
+TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
 	txn(nullptr)
 {
@@ -25,7 +24,9 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
-	this->txn->SetSnapshot();
+	if (!disableSnapshot) {
+		this->txn->SetSnapshot();
+	}
 	this->id = this->txn->GetId() & 0xffffffff;
 }
 
@@ -33,7 +34,20 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
  * Destroys the handle's RocksDB transaction.
  */
 TransactionHandle::~TransactionHandle() {
-	this->release();
+	this->close();
+}
+
+/**
+ * Release the transaction. This is called after successful commit, after
+ * the transaction has been aborted, or when the transaction is destroyed.
+ */
+void TransactionHandle::close() {
+	if (this->txn) {
+		this->txn->ClearSnapshot();
+		delete this->txn;
+		this->txn = nullptr;
+	}
+	this->dbHandle->descriptor->closables.erase(this);
 }
 
 /**
@@ -148,18 +162,6 @@ rocksdb::Status TransactionHandle::removeSync(
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
 	return this->txn->Delete(column, key);
-}
-
-/**
- * Release the transaction. This is called after successful commit, after
- * the transaction has been aborted, or when the transaction is destroyed.
- */
-void TransactionHandle::release() {
-	if (this->txn) {
-		this->txn->ClearSnapshot();
-		delete this->txn;
-		this->txn = nullptr;
-	}
 }
 
 } // namespace rocksdb_js

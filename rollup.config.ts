@@ -10,6 +10,10 @@ const { version } = JSON.parse(readFileSync('./package.json', 'utf8'));
 
 export default defineConfig([
 	{
+		external: [
+			'msgpackr',
+			'ordered-binary'
+		],
 		input: './src/index.ts',
 		output: {
 			dir: './dist',
@@ -34,9 +38,7 @@ export default defineConfig([
 				}
 			}),
 			nodeResolve(),
-			commonjs({
-				ignoreDynamicRequires: true
-			})
+			commonjs()
 		]
 	}
 ]);

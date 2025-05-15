@@ -170,4 +170,68 @@ const char* getNapiBufferFromArg(
 	return data;
 }
 
+void getKeyFromProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	rocksdb::Slice& result,
+	const char* errorMsg,
+	bool exclusiveStart,
+	bool inclusiveEnd
+) {
+	uint32_t start = 0;
+	uint32_t end = 0;
+	size_t length = 0;
+
+	napi_valuetype objType;
+	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, obj, &objType));
+	if (objType != napi_object) {
+		return;
+	}
+
+	napi_value value;
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, obj, prop, &value));
+
+	bool has = false;
+	NAPI_STATUS_THROWS_VOID(::napi_has_named_property(env, obj, prop, &has));
+	if (!has) {
+		return;
+	}
+
+	napi_valuetype valueType;
+	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, value, &valueType));
+	if (valueType == napi_undefined) {
+		return;
+	}
+
+	bool isBuffer;
+	NAPI_STATUS_THROWS_VOID(::napi_is_buffer(env, value, &isBuffer));
+	if (!isBuffer) {
+		::napi_throw_error(env, nullptr, errorMsg);
+		return;
+	}
+
+	if (inclusiveEnd) {
+		// allocate one more byte for the null terminator
+		length++;
+	}
+
+	const char* data = rocksdb_js::getNapiBufferFromArg(env, value, start, end, length, errorMsg);
+	if (data == nullptr) {
+		return;
+	}
+
+	if (exclusiveStart) {
+		// TODO: how to make this exclusive?
+		// have the iterator seek past the first key?
+	}
+
+	if (inclusiveEnd) {
+		// TODO: how to make this inclusive?
+		// add \0 to the end of the key?
+	}
+
+	result = rocksdb::Slice(data + start, end - start);
+}
+
 }

@@ -9,6 +9,12 @@ export default defineConfig({
 		environment: 'node',
 		globals: false,
 		include: ['test/**/*.test.ts'],
+		poolOptions: {
+			forks: {
+				execArgv: ['--expose-gc'],
+				singleFork: true
+			}
+		},
 		watch: false
 	}
 });
