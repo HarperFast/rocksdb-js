@@ -90,6 +90,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	transactions.erase(id);
 	fprintf(stderr, "DBDescriptor::transactionRemove closable=%p\n", txnHandle.get());
 	this->closables.erase(txnHandle.get());
+	fprintf(stderr, "DBDescriptor::transactionRemove done\n");
 }
 
 } // namespace rocksdb_js

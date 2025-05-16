@@ -32,20 +32,26 @@ struct DBTxnHandle final {
 	DBTxnHandle(std::shared_ptr<DBHandle> dbHandle)
 		: dbDescriptor(dbHandle->descriptor)
 	{
+		fprintf(stderr, "DBTxnHandle::DBTxnHandle start this=%p\n", this);
 		this->txnHandle = std::make_shared<TransactionHandle>(dbHandle);
 		this->dbDescriptor->transactionAdd(this->txnHandle);
+		fprintf(stderr, "DBTxnHandle::DBTxnHandle done this=%p\n", this);
 	}
 
 	~DBTxnHandle() {
+		fprintf(stderr, "DBTxnHandle::~DBTxnHandle start this=%p\n", this);
 		this->close();
+		fprintf(stderr, "DBTxnHandle::~DBTxnHandle done this=%p\n", this);
 	}
 
 	void close() {
 		if (this->txnHandle) {
-			fprintf(stderr, "DBTxnHandle::close txnHandle=%p txn refcount=%d\n", this->txnHandle.get(), this->txnHandle.use_count());
+			fprintf(stderr, "DBTxnHandle::close txnHandle=%p descriptor=%p txn refcount=%d\n", this->txnHandle.get(), this->dbDescriptor.get(), this->txnHandle.use_count());
 			this->dbDescriptor->transactionRemove(this->txnHandle);
+			this->txnHandle->close();
+			fprintf(stderr, "DBTxnHandle::close txnHandle=%p txn refcount=%d\n", this->txnHandle.get(), this->txnHandle.use_count());
 			this->txnHandle.reset();
-			fprintf(stderr, "DBTxnHandle::close txnHandle=%p done\n", this->txnHandle.get());
+			fprintf(stderr, "DBTxnHandle::close done\n");
 		}
 	}
 
@@ -72,7 +78,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	}
 
 	DBTxnHandle* dbTxnHandle = new DBTxnHandle(*dbHandle);
-	fprintf(stderr, "Transaction::Constructor dbTxnHandle=%p\n", dbHandle, dbTxnHandle);
+	fprintf(stderr, "Transaction::Constructor dbHandle=%p dbTxnHandle=%p\n", dbHandle->get(), dbTxnHandle);
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -81,6 +87,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			reinterpret_cast<void*>(dbTxnHandle),
 			[](napi_env env, void* data, void* hint) {
 				DBTxnHandle* dbTxnHandle = reinterpret_cast<DBTxnHandle*>(data);
+				dbTxnHandle->close();
 				fprintf(stderr, "Transaction::Constructor finalize dbTxnHandle=%p\n", dbTxnHandle);
 				delete dbTxnHandle;
 			},

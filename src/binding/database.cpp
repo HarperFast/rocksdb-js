@@ -44,6 +44,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 			[](napi_env env, void* data, void* hint) {
 				auto* ptr = static_cast<std::shared_ptr<DBHandle>*>(data);
 				fprintf(stderr, "Database::Constructor finalize dbHandle=%p\n", ptr);
+				(*ptr)->close();
 				ptr->reset();
 				delete ptr;
 			},
@@ -77,6 +78,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	fprintf(stderr, "Database::Close start\n");
 
 	if (*dbHandle != nullptr) {
+		fprintf(stderr, "Database::Close closing dbHandle=%p\n", dbHandle->get());
 		(*dbHandle)->close();
 	}
 

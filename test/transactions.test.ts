@@ -16,10 +16,15 @@ const testOptions = [
 ];
 
 describe.sequential('transactions', () => {
-		afterEach(() => {
-			process.stderr.write('afterEach --------------------------------------------\n\n');
-			gc?.();
-		});
+		// afterEach(async () => {
+		// 	process.stderr.write('afterEach --------------------------------------------\n\n');
+		// 	gc?.();
+		// 	await new Promise((resolve) => setTimeout(resolve, 1000));
+		// 	gc?.();
+		// 	await new Promise((resolve) => setTimeout(resolve, 1000));
+		// 	gc?.();
+		// 	await new Promise((resolve) => setTimeout(resolve, 1000));
+		// });
 
 for (const { name, options } of testOptions) {
 	// describe(`transaction() (${name})`, () => {

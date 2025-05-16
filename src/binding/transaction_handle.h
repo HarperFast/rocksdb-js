@@ -29,6 +29,8 @@ struct TransactionHandle final : Closable {
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
+	void close() override;
+
 	napi_value get(
 		napi_env env,
 		rocksdb::Slice& key,
@@ -50,7 +52,6 @@ struct TransactionHandle final : Closable {
 		rocksdb::Slice& key,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
-	void close() override;
 
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;

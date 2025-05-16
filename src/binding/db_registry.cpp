@@ -162,6 +162,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
  */
 void DBRegistry::purge() {
 	std::lock_guard<std::mutex> lock(this->mutex);
+	fprintf(stderr, "DBRegistry::purge start size=%zu\n", this->databases.size());
 	for (auto it = this->databases.begin(); it != this->databases.end();) {
         if (it->second.expired()) {
             it = this->databases.erase(it);
@@ -169,6 +170,7 @@ void DBRegistry::purge() {
             ++it;
         }
     }
+	fprintf(stderr, "DBRegistry::purge done size=%zu\n", this->databases.size());
 }
 
 } // namespace rocksdb_js
