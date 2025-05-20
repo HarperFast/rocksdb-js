@@ -15,11 +15,12 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	// registry
+	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		rocksdb_js::DBRegistry* registry = (rocksdb_js::DBRegistry*)data;
-		registry->cleanup();
-	}, rocksdb_js::DBRegistry::getInstance()));
+		rocksdb_js::DBRegistry::purge();
+		// NOTE: we cannot destroy the registry instance because it could
+		// still be in use by other threads
+	}, nullptr));
 
 	// database
 	rocksdb_js::Database::Init(env, exports);

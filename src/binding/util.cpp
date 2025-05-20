@@ -1,6 +1,9 @@
 #include <node_api.h>
 #include <string>
 #include <sstream>
+#include <cstdarg>
+#include <thread>
+#include <functional>
 #include "util.h"
 
 namespace rocksdb_js {
@@ -170,6 +173,21 @@ const char* getNapiBufferFromArg(
 	return data;
 }
 
+/**
+ * Logs a debug message to stderr prefixed with the current thread id.
+ */
+void debugLog(const char* msg, ...) {
+    va_list args;
+    va_start(args, msg);
+    fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+    vfprintf(stderr, msg, args);
+    va_end(args);
+}
+
+/**
+ * Gets a `key` from a JavaScript object property and stores it in the
+ * specified `RocksDB::Slice`.
+ */
 void getKeyFromProperty(
 	napi_env env,
 	napi_value obj,

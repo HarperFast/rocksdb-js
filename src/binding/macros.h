@@ -1,10 +1,19 @@
 #ifndef __MACROS_H__
 #define __MACROS_H__
 
+
 /**
  * This file contains various preprocessor macros for common napi and RocksDB
  * operations.
  */
+
+#ifdef DEBUG
+	#define DEBUG_LOG(msg, ...) \
+		rocksdb_js::debugLog(msg, ##__VA_ARGS__);
+#else
+	// release builds debug logging is a no-op
+	#define DEBUG_LOG(msg, ...)
+#endif
 
 #define NAPI_STATUS_RETURN(call) \
 	{ \

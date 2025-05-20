@@ -26,29 +26,9 @@ private:
 	std::mutex mutex;
 
 public:
-	static DBRegistry* getInstance() {
-		if (!instance) {
-			instance = std::unique_ptr<DBRegistry>(new DBRegistry());
-		}
-		return instance.get();
-	}
-
-	static void cleanup() {
-		// delete the registry instance
-		instance.reset();
-	}
-
-	std::unique_ptr<DBHandle> openDB(const std::string& path, const DBOptions& options);
-
-	void purge();
-
-	/**
-	 * Get the number of databases in the registry.
-	 */
-	size_t size() {
-		std::lock_guard<std::mutex> lock(mutex);
-		return this->databases.size();
-	}
+	static std::unique_ptr<DBHandle> openDB(const std::string& path, const DBOptions& options);
+	static void purge();
+	static size_t size();
 };
 
 } // namespace rocksdb_js

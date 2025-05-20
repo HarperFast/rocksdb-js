@@ -25,15 +25,12 @@ DBDescriptor::DBDescriptor(
  * (transactions, iterators, etc).
  */	
 DBDescriptor::~DBDescriptor() {
-	fprintf(stderr, "DBDescriptor::~DBDescriptor closables=%zu\n", this->closables.size());
-
 	if (this->closables.size()) {
 		while (!this->closables.empty()) {
 			Closable* handle = *this->closables.begin();
 			this->closables.erase(handle);
 			handle->close();
 		}
-		fprintf(stderr, "DBDescriptor::~DBDescriptor closables done\n");
 	}
 
 	// Clear everything else after all closables are done
@@ -69,7 +66,6 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
 	uint32_t id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->mutex);
 	transactions[id] = txnHandle;
-	fprintf(stderr, "DBDescriptor::transactionAdd closable=%p\n", txnHandle.get());
 	this->closables.insert(txnHandle.get());
 }
 
@@ -88,9 +84,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	uint32_t id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->mutex);
 	transactions.erase(id);
-	fprintf(stderr, "DBDescriptor::transactionRemove closable=%p\n", txnHandle.get());
 	this->closables.erase(txnHandle.get());
-	fprintf(stderr, "DBDescriptor::transactionRemove done\n");
 }
 
 } // namespace rocksdb_js

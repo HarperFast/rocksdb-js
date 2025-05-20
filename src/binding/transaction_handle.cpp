@@ -13,7 +13,6 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	dbHandle(dbHandle),
 	txn(nullptr)
 {
-	fprintf(stderr, "TransactionHandle::TransactionHandle this=%p\n", this);
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
@@ -35,9 +34,7 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
  * Destroys the handle's RocksDB transaction.
  */
 TransactionHandle::~TransactionHandle() {
-	fprintf(stderr, "TransactionHandle::~TransactionHandle start this=%p\n", this);
 	this->close();
-	fprintf(stderr, "TransactionHandle::~TransactionHandle done this=%p\n", this);
 }
 
 /**
@@ -45,25 +42,15 @@ TransactionHandle::~TransactionHandle() {
  * the transaction has been aborted, or when the transaction is destroyed.
  */
 void TransactionHandle::close() {
-	fprintf(stderr, "TransactionHandle::close this=%p\n", this);
 	if (this->txn) {
-		fprintf(stderr, "TransactionHandle::close this=%p clearing snapshot\n", this);
 		this->txn->ClearSnapshot();
-		fprintf(stderr, "TransactionHandle::close this=%p deleting RocksDB Transaction\n", this);
 		delete this->txn;
 		this->txn = nullptr;
-	} else {
-		fprintf(stderr, "TransactionHandle::close this=%p no RocksDB Transaction to delete\n", this);
 	}
 
 	if (this->dbHandle->descriptor) {
-		fprintf(stderr, "TransactionHandle::close this=%p erasing from closables dbHandle=%p descriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
 		this->dbHandle->descriptor->closables.erase(this);
-	} else {
-		fprintf(stderr, "TransactionHandle::close this=%p no dbHandle or descriptor\n", this);
 	}
-
-	fprintf(stderr, "TransactionHandle::close this=%p done\n", this);
 }
 
 /**

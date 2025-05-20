@@ -27,6 +27,8 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
+void debugLog(const char* msg, ...);
+
 const char* getNapiBufferFromArg(
 	napi_env env,
 	napi_value arg,

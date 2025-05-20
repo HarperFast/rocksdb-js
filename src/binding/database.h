@@ -30,6 +30,8 @@ struct Database final {
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
+
+	static napi_ref constructor;
 };
 
 /**

@@ -212,7 +212,7 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 
-	fprintf(stderr, "Throw\n");
+	DEBUG_LOG("DBIterator::Throw\n")
 
 	DBIteratorHandle* itHandle = nullptr;
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle)))
@@ -242,7 +242,7 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 	auto className = "Iterator";
 	constexpr size_t len = sizeof("Iterator") - 1;
 
-	napi_value cons;
+	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
 		className,    // className
@@ -251,12 +251,12 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 		nullptr,      // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,   // properties array
-		&cons         // [out] constructor
+		&ctor         // [out] constructor
 	))
 
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, cons, 1, &constructor))
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, ctor, 1, &constructor))
 
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, cons))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
 }
 
 }
