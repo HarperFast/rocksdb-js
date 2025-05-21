@@ -22,13 +22,6 @@
 namespace rocksdb_js {
 
 /**
- * Initialize the constructor reference for the `NativeDatabase` class. We need
- * to do this because the constructor is static and we need to access it in the
- * static methods.
- */
-napi_ref Database::constructor = nullptr;
-
-/**
  * Creates a new `NativeDatabase` JavaScript object containing an database
  * handle to an unopened RocksDB database.
  *
@@ -52,10 +45,10 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 			reinterpret_cast<void*>(dbHandle),
 			[](napi_env env, void* data, void* hint) {
 				DEBUG_LOG("%p Database::Constructor NativeDatabase GC'd\n", data)
-				auto* ptr = static_cast<std::shared_ptr<DBHandle>*>(data);
-				(*ptr)->close();
-				ptr->reset();
-				delete ptr;
+				auto* dbHandle = static_cast<std::shared_ptr<DBHandle>*>(data);
+				(*dbHandle)->close();
+				dbHandle->reset();
+				delete dbHandle;
 			},
 			nullptr, // finalize_hint
 			nullptr  // result
@@ -437,8 +430,6 @@ void Database::Init(napi_env env, napi_value exports) {
 		properties,   // properties array
 		&ctor         // [out] constructor
 	))
-
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, ctor, 1, &constructor))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
 }

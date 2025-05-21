@@ -39,13 +39,6 @@ struct DBIteratorHandle final : Closable {
 	std::unique_ptr<rocksdb::Iterator> iterator;
 };
 
-/**
- * Initialize the constructor reference for the `NativeIterator` class. We need
- * to do this because the constructor is static and we need to access it in the
- * static methods.
- */
-napi_ref DBIterator::constructor = nullptr;
-
 napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV("Iterator", 2)
 
@@ -232,6 +225,9 @@ napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Initializes the `NativeIterator` JavaScript class.
+ */
 void DBIterator::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "next", nullptr, Next, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -253,8 +249,6 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 		properties,   // properties array
 		&ctor         // [out] constructor
 	))
-
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, ctor, 1, &constructor))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
 }

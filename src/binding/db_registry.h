@@ -26,9 +26,9 @@ private:
 	std::mutex mutex;
 
 public:
-	static std::unique_ptr<DBHandle> openDB(const std::string& path, const DBOptions& options);
-	static void purge();
-	static size_t size();
+	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
+	static void Purge();
+	static size_t Size();
 };
 
 } // namespace rocksdb_js

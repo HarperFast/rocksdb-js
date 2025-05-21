@@ -23,20 +23,11 @@ struct Closable {
 	virtual void close() = 0;
 };
 
-std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
-
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
 void debugLog(const char* msg, ...);
 
-const char* getNapiBufferFromArg(
-	napi_env env,
-	napi_value arg,
-	uint32_t& start,
-	uint32_t& end,
-	size_t& length,
-	const char* errorMsg
-);
+void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent = 0, bool isObject = false);
 
 void getKeyFromProperty(
 	napi_env env,
@@ -47,6 +38,17 @@ void getKeyFromProperty(
 	bool exclusiveStart,
 	bool inclusiveEnd
 );
+
+const char* getNapiBufferFromArg(
+	napi_env env,
+	napi_value arg,
+	uint32_t& start,
+	uint32_t& end,
+	size_t& length,
+	const char* errorMsg
+);
+
+std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	napi_valuetype type;

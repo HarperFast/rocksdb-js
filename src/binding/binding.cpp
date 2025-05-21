@@ -17,9 +17,7 @@ NAPI_MODULE_INIT() {
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		rocksdb_js::DBRegistry::purge();
-		// NOTE: we cannot destroy the registry instance because it could
-		// still be in use by other threads
+		rocksdb_js::DBRegistry::Purge();
 	}, nullptr));
 
 	// database

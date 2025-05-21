@@ -33,12 +33,12 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
  * @return A handle to the RocksDB database including the transaction db and
  * column family handle.
  */
-std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOptions& options) {
+std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
 	if (!instance) {
 		instance = std::unique_ptr<DBRegistry>(new DBRegistry());
-		DEBUG_LOG("%p DBRegistry::openDB Initializing registry\n", instance.get())
+		DEBUG_LOG("%p DBRegistry::OpenDB Initializing registry\n", instance.get())
 	} else {
-		DEBUG_LOG("%p DBRegistry::openDB Registry already initialized\n", instance.get())
+		DEBUG_LOG("%p DBRegistry::OpenDB Registry already initialized\n", instance.get())
 	}
 
 	bool dbExists = false;
@@ -61,7 +61,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 				);
 			}
 
-			DEBUG_LOG("%p DBRegistry::openDB Database %s already open\n", instance.get(), path.c_str())
+			DEBUG_LOG("%p DBRegistry::OpenDB Database %s already open\n", instance.get(), path.c_str())
 
 			dbExists = true;
 
@@ -83,7 +83,7 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 	}
 
 	if (!dbExists) {
-		DEBUG_LOG("%p DBRegistry::openDB Opening %s\n", instance.get(), path.c_str())
+		DEBUG_LOG("%p DBRegistry::OpenDB Opening %s\n", instance.get(), path.c_str())
 
 		// database doesn't exist, create it
 
@@ -154,17 +154,17 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 	}
 
 	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(descriptor);
-	DEBUG_LOG("%p DBRegistry::openDB Created DBHandle %p\n", instance.get(), handle.get())
+	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandle %p\n", instance.get(), handle.get())
 
 	// handle the column family
 	auto colIterator = columns.find(name);
 	if (colIterator != columns.end()) {
 		// column family already exists
-		DEBUG_LOG("%p DBRegistry::openDB Column family %s found\n", instance.get(), name.c_str())
+		DEBUG_LOG("%p DBRegistry::OpenDB Column family %s found\n", instance.get(), name.c_str())
 		handle->column = colIterator->second;
 	} else {
 		// use the default column family
-		DEBUG_LOG("%p DBRegistry::openDB Column family %s not found, using default\n", instance.get(), name.c_str())
+		DEBUG_LOG("%p DBRegistry::OpenDB Column family %s not found, using default\n", instance.get(), name.c_str())
 		handle->column = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
@@ -174,10 +174,12 @@ std::unique_ptr<DBHandle> DBRegistry::openDB(const std::string& path, const DBOp
 /**
  * Purge expired database descriptors from the registry.
  */
-void DBRegistry::purge() {
+void DBRegistry::Purge() {
 	if (instance) {
-		DEBUG_LOG("%p DBRegistry::purge start\n", instance.get())
 		std::lock_guard<std::mutex> lock(instance->mutex);
+#ifdef DEBUG
+		size_t initialSize = instance->databases.size();
+#endif
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 			if (it->second.expired()) {
 				it = instance->databases.erase(it);
@@ -185,14 +187,22 @@ void DBRegistry::purge() {
 				++it;
 			}
 		}
-		DEBUG_LOG("%p DBRegistry::purge end (size=%zu)\n", instance.get(), instance->databases.size())
+#ifdef DEBUG
+		size_t currentSize = instance->databases.size();
+		DEBUG_LOG(
+			"%p DBRegistry::purge Purged %zu unused descriptors (size=%zu)\n",
+			instance.get(),
+			initialSize - currentSize,
+			currentSize
+		);
+#endif
 	}
 }
 
 /**
  * Get the number of databases in the registry.
  */
-size_t DBRegistry::size() {
+size_t DBRegistry::Size() {
 	if (instance) {
 		std::lock_guard<std::mutex> lock(instance->mutex);
 		return instance->databases.size();

@@ -11,14 +11,19 @@ describe('Lifecycle', () => {
 		try {
 			db = new RocksDatabase(dbPath);
 
+			expect(db.isOpen()).toBe(false);
+
 			db.close(); // noop
 
 			await db.open();
 			await db.open(); // noop
 
+			expect(db.isOpen()).toBe(true);
 			expect(db.get('foo')).toBeUndefined();
 
 			await db.close();
+
+			expect(db.isOpen()).toBe(false);
 
 			await expect(db.get('foo')).rejects.toThrow('Database not open');
 		} finally {

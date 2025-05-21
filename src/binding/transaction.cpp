@@ -18,78 +18,6 @@
 namespace rocksdb_js {
 
 /**
- * Initialize the constructor reference for the `NativeTransaction` class. We
- * need to do this because the constructor is static and we need to access it
- * in the static methods.
- */
-napi_ref Transaction::constructor = nullptr;
-
-void dumpNapiValue(napi_env env, const char* name, napi_value value) {
-	napi_valuetype type;
-	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, value, &type))
-	
-	fprintf(stderr, "%s: (type %d) ", name, type);
-	switch (type) {
-		case napi_undefined: fprintf(stderr, "undefined"); break;
-		case napi_null: fprintf(stderr, "null"); break;
-		case napi_boolean: {
-			bool result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_bool(env, value, &result))
-			fprintf(stderr, "boolean: %s", result ? "true" : "false");
-			break;
-		}
-		case napi_number: {
-			double result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_double(env, value, &result))
-			fprintf(stderr, "number: %f", result);
-			break;
-		}
-		case napi_string: {
-			char buffer[1024];
-			size_t result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, value, buffer, sizeof(buffer), &result))
-			fprintf(stderr, "string: %s", buffer);
-			break;
-		}
-		case napi_symbol: fprintf(stderr, "symbol"); break;
-		case napi_object: {
-			fprintf(stderr, "object");
-			// Get property names
-			napi_value properties;
-			NAPI_STATUS_THROWS_VOID(::napi_get_property_names(env, value, &properties))
-			
-			uint32_t length;
-			NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, properties, &length))
-			
-			fprintf(stderr, " with %u properties:\n", length);
-			
-			// Iterate through properties
-			for (uint32_t i = 0; i < length; i++) {
-				napi_value propertyName;
-				NAPI_STATUS_THROWS_VOID(::napi_get_element(env, properties, i, &propertyName))
-				
-				char nameBuffer[1024];
-				size_t nameLength;
-				NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, propertyName, nameBuffer, sizeof(nameBuffer), &nameLength))
-				
-				napi_value propertyValue;
-				NAPI_STATUS_THROWS_VOID(::napi_get_property(env, value, propertyName, &propertyValue))
-				
-				fprintf(stderr, "  - %s: ", nameBuffer);
-				dumpNapiValue(env, name, propertyValue); // Recursively dump property values
-				fprintf(stderr, "\n");
-			}
-			return; // Return early since we've already printed the object details
-		}
-		case napi_function: fprintf(stderr, "function"); break;
-		case napi_external: fprintf(stderr, "external"); break;
-		case napi_bigint: fprintf(stderr, "bigint"); break;
-		default: fprintf(stderr, "unknown");
-	}
-	fprintf(stderr, ")\n");
-}
-
-/**
  * A simple wrapper around the DBHandle and TransactionHandle to pass into the
  * Transaction JS constructor so it can be cleaned up when the Transaction JS
  * object is garbage collected.
@@ -126,91 +54,35 @@ struct DBTxnHandle final {
  * @returns The new `NativeTransaction` object.
  */
 napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV("Transaction", 1)
+	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Transaction", 1)
 
-	// 6 object
-	// 7 function
-	napi_valuetype argsZeroType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, args[0], &argsZeroType))
-	fprintf(stderr, "Transaction::Constructor args[0] type=%d\n", argsZeroType);
-	if (argsZeroType == 6) {
-		fprintf(stderr, "Transaction::Constructor args[0] is an object!\n");
-		// display the object properties
-	} else if (argsZeroType == 7) {
-		fprintf(stderr, "Transaction::Constructor args[0] is a function!\n");
-	}
+	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
+	napi_value exports;
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, exportsRef, &exports))
 
 	napi_value databaseCtor;
-	NAPI_STATUS_THROWS(::napi_get_reference_value(env, Database::constructor, &databaseCtor))
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor))
 
 	bool isDatabase = false;
 	NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], databaseCtor, &isDatabase))
 
-	napi_value prototype;
-	NAPI_STATUS_THROWS(::napi_get_prototype(env, args[0], &prototype))
-
-	napi_value constructorName;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, "constructor", NAPI_AUTO_LENGTH, &constructorName))
-
-	napi_value protoConstructor;
-	NAPI_STATUS_THROWS(::napi_get_property(env, prototype, constructorName, &protoConstructor))
-
-	dumpNapiValue(env, "args[0]", args[0]);
-	dumpNapiValue(env, "args[0].prototype", prototype);
-	dumpNapiValue(env, "args[0].prototype.constructor", protoConstructor);
-	dumpNapiValue(env, "Database.constructor", databaseCtor);
-
-	napi_valuetype protoConstructorType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, protoConstructor, &protoConstructorType))
-	fprintf(stderr, "Transaction::Constructor protoConstructorType=%d\n", protoConstructorType);
-	if (protoConstructorType == 6) {
-		fprintf(stderr, "Transaction::Constructor protoConstructor is an object!\n");
-		// display the object properties
-	} else if (protoConstructorType == 7) {
-		fprintf(stderr, "Transaction::Constructor protoConstructor is a function!\n");
-	}
-
-	napi_value protoConstructorName;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, "name", NAPI_AUTO_LENGTH, &protoConstructorName))
-
-	napi_value protoConstructorNameValue;
-	NAPI_STATUS_THROWS(::napi_get_property(env, protoConstructor, protoConstructorName, &protoConstructorNameValue))
-	char buffer[1024];
-	size_t bufferSize = sizeof(buffer);
-	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, protoConstructorNameValue, buffer, bufferSize, nullptr))
-	fprintf(stderr, "Transaction::Constructor protoConstructorNameValue=%s\n", buffer);
-
-	napi_value properties;
-	NAPI_STATUS_THROWS(::napi_get_property_names(env, prototype, &properties))
-	uint32_t propertyCount;
-	NAPI_STATUS_THROWS(::napi_get_array_length(env, properties, &propertyCount))
-	fprintf(stderr, "Transaction::Constructor PropertyCount=%zu\n", propertyCount);
-	for (size_t i = 0; i < propertyCount; i++) {
-		napi_value propertyName;
-		NAPI_STATUS_THROWS(::napi_get_element(env, properties, i, &propertyName))
-		fprintf(stderr, "Transaction::Constructor PropertyName=%s\n", propertyName);
-	}
-
-	bool isEqual;
-	NAPI_STATUS_THROWS(::napi_strict_equals(env, protoConstructor, databaseCtor, &isEqual))
-	fprintf(stderr, "Transaction::Constructor isEqual=%s\n", isEqual ? "true" : "false");
-
 	DBTxnHandle* dbTxnHandle = nullptr;
 
 	if (isDatabase) {
-		DEBUG_LOG("Transaction::Constructor Received Database instance\n")
 		std::shared_ptr<DBHandle>* dbHandle = nullptr;
 		NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&dbHandle)))
-		DEBUG_LOG("Transaction::Constructor DBHandle=%p\n", (*dbHandle).get())
+		DEBUG_LOG("Transaction::Constructor Initializing transaction handle with Database instance (dbHandle=%p)\n", (*dbHandle).get())
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) {
 			::napi_throw_error(env, nullptr, "Database not open");
 			return nullptr;
 		}
 		dbTxnHandle = new DBTxnHandle(*dbHandle);
 	} else {
-		bool isTransaction = false;
+		DEBUG_LOG("Transaction::Constructor Using existing transaction handle\n")
 		napi_value transactionCtor;
-		NAPI_STATUS_THROWS(::napi_get_reference_value(env, Transaction::constructor, &transactionCtor))
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor))
+
+		bool isTransaction = false;
 		NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], transactionCtor, &isTransaction))
 
 		if (isTransaction) {
@@ -472,19 +344,22 @@ void Transaction::Init(napi_env env, napi_value exports) {
 	auto className = "Transaction";
 	constexpr size_t len = sizeof("Transaction") - 1;
 
+	DEBUG_LOG("Transaction::Init exports=%p\n", exports)
+
+	napi_ref exportsRef;
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef))
+
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
 		className,    // className
 		len,          // length of class name
 		Constructor,  // constructor
-		nullptr,      // constructor arg
+		(void*)exportsRef,      // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,   // properties array
 		&ctor         // [out] constructor
 	))
-
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, ctor, 1, &constructor))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
 }

@@ -22,7 +22,7 @@
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --debug",
-    "test": "vitest --allowOnly --reporter=verbose",
+    "test": "NODE_OPTIONS='--expose-gc' vitest --allowOnly --reporter=verbose",
     "type-check": "tsc --noEmit"
   },
   "files": [

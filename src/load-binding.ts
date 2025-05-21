@@ -17,12 +17,12 @@ export type NativeTransaction = {
 	removeSync(key: Key, txnId?: number): void;
 };
 
-export interface NativeIterator<T> {
+export type NativeIterator<T> = {
 	new(context: NativeDatabase | NativeTransaction, options?: IteratorOptions): NativeIterator<T>;
 	next(): IteratorResult<T>;
 	return(): IteratorResult<T>;
 	throw(): IteratorResult<T>;
-}
+};
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 

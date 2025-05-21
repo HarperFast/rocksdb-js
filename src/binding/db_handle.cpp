@@ -35,7 +35,7 @@ void DBHandle::close() {
 	}
 
 	// purge all weak references in the registry
-	DBRegistry::purge();
+	DBRegistry::Purge();
 }
 
 /**
@@ -46,7 +46,7 @@ void DBHandle::close() {
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
-	auto handle = DBRegistry::openDB(path, options);
+	auto handle = DBRegistry::OpenDB(path, options);
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
 }

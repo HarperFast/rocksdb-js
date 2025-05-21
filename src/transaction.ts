@@ -14,7 +14,6 @@ export class Transaction extends DBI {
 	 * @param store - The base store interface for this transaction.
 	 */
 	constructor(store: Store) {
-		console.error('CREATING NATIVE TRANSACTION', store.db);
 		const txn = new NativeTransaction(store.db);
 		super(store, txn);
 		this.#txn = txn;
