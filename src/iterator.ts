@@ -59,47 +59,74 @@ export class RangeIterator<T> {
 		return new IteratorWrapper(this.#context, this.#options);
 	}
 
+	get asArray() {
+		// TODO
+		return [];
+	}
+
+	at(_index: number) {
+		// TODO
+	}
+
+	concat() {
+		const iter = new RangeIterator(this.#context, this.#options);
+		// TODO
+		return iter;
+	}
+
 	drop(_limit: number) {
-		//
+		const iter = new RangeIterator(this.#context, this.#options);
+		// TODO
+		return iter;
 	}
 
 	every(_callback: (value: T, index: number) => boolean) {
-		//
+		// TODO
 	}
 
 	filter(_callback: (value: T, index: number) => boolean) {
-		//
+		// TODO
 	}
 
 	find(_callback: (value: T, index: number) => boolean) {
-		//
+		// TODO
 	}
 
 	flatMap(_callback: (value: T, index: number) => Iterator<T, unknown, undefined> | Iterable<T, unknown, undefined>) {
-		//
+		const iter = new RangeIterator(this.#context, this.#options);
+		// TODO
+		return iter;
 	}
 
 	forEach(_callback: (value: T, index: number) => void) {
-		//
+		// TODO
 	}
 
 	map<U>(_callback: (value: T, index: number) => U) {
-		//
+		const iter = new RangeIterator(this.#context, this.#options);
+		// TODO
+		return iter;
+	}
+
+	mapError(_callback: (error: Error) => Error) {
+		// TODO
 	}
 
 	reduce(_callback: (previousValue: T, currentValue: T, currentIndex: number) => T) {
-		//
+		// TODO
+	}
+
+	slice(_start: number, _end: number) {
+		// TODO
 	}
 
 	some(_callback: (value: T, index: number) => boolean) {
-		//
+		// TODO
 	}
 
 	take(_limit: number) {
-		//
-	}
-
-	toArray() {
-		//
+		const iter = new RangeIterator(this.#context, this.#options);
+		// TODO
+		return iter;
 	}
 }
