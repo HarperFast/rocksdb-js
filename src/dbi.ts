@@ -3,7 +3,7 @@ import { when, withResolvers, type MaybePromise } from './util.js';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import type { Transaction } from './transaction.js';
-import { RangeIterator, type IteratorOptions } from './iterator.js';
+import { RangeIterable, type IteratorOptions } from './iterator.js';
 
 export interface DBITransactional {
 	transaction?: Transaction;
@@ -239,7 +239,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getRange<U>(options?: IteratorOptions & T) {
 		const start = options?.start ? this.store.encodeKey(options.start) : undefined;
 		const end = options?.end ? this.store.encodeKey(options.end) : undefined;
-		return new RangeIterator<U>(this.#context, { ...options, start, end });
+		return new RangeIterable<U>(this.#context, { ...options, start, end });
 	}
 
 	getValues(_key: Key, _options?: IteratorOptions & T) {

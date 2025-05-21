@@ -42,7 +42,7 @@ class IteratorWrapper extends NativeIterator {
 /**
  * An iterable that queries a range of keys.
  */
-export class RangeIterator<T> {
+export class RangeIterable<T> {
 	#context: NativeDatabase | NativeTransaction;
 	#options: IteratorOptions;
 
@@ -69,13 +69,13 @@ export class RangeIterator<T> {
 	}
 
 	concat() {
-		const iter = new RangeIterator(this.#context, this.#options);
+		const iter = new RangeIterable(this.#context, this.#options);
 		// TODO
 		return iter;
 	}
 
 	drop(_limit: number) {
-		const iter = new RangeIterator(this.#context, this.#options);
+		const iter = new RangeIterable(this.#context, this.#options);
 		// TODO
 		return iter;
 	}
@@ -93,7 +93,7 @@ export class RangeIterator<T> {
 	}
 
 	flatMap(_callback: (value: T, index: number) => Iterator<T, unknown, undefined> | Iterable<T, unknown, undefined>) {
-		const iter = new RangeIterator(this.#context, this.#options);
+		const iter = new RangeIterable(this.#context, this.#options);
 		// TODO
 		return iter;
 	}
@@ -103,7 +103,7 @@ export class RangeIterator<T> {
 	}
 
 	map<U>(_callback: (value: T, index: number) => U) {
-		const iter = new RangeIterator(this.#context, this.#options);
+		const iter = new RangeIterable(this.#context, this.#options);
 		// TODO
 		return iter;
 	}
@@ -125,7 +125,7 @@ export class RangeIterator<T> {
 	}
 
 	take(_limit: number) {
-		const iter = new RangeIterator(this.#context, this.#options);
+		const iter = new RangeIterable(this.#context, this.#options);
 		// TODO
 		return iter;
 	}
