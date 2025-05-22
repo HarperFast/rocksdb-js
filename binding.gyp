@@ -67,7 +67,14 @@
 					}
 				},
 				'Debug': {
+					'cflags_cc+': ['-g', '--coverage'],
 					'defines': ['DEBUG'],
+					'ldflags': ['--coverage'],
+					'xcode_settings': {
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+						'OTHER_CFLAGS': ['-g', '--coverage'],
+						'OTHER_LDFLAGS': ['--coverage']
+					},
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 3,

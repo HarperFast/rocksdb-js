@@ -140,6 +140,8 @@ struct TransactionCommitState final {
 	TransactionCommitState(napi_env env, std::shared_ptr<TransactionHandle> txnHandle)
 		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), txnHandle(txnHandle) {}
 
+	~TransactionCommitState() = default;
+
 	napi_async_work asyncWork;
 	napi_ref resolveRef;
 	napi_ref rejectRef;

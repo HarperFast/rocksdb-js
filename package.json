@@ -21,7 +21,7 @@
     "prepublishOnly": "pnpm build:bundle && pnpm prebuild",
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
-    "rebuild:debug": "node-gyp rebuild --debug",
+    "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
     "test": "NODE_OPTIONS='--expose-gc' vitest --allowOnly --reporter=verbose",
     "type-check": "tsc --noEmit"
   },

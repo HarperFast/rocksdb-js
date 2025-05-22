@@ -19,22 +19,48 @@ export interface IteratorOptions {
 	versions?: boolean;
 };
 
-class IteratorWrapper extends NativeIterator {
-	constructor(context: NativeDatabase | NativeTransaction, options?: IteratorOptions) {
-		super(context, options);
+export interface NativeIteratorOptions extends IteratorOptions {
+	context: NativeDatabase | NativeTransaction;
+};
+
+export type IteratorYieldResult<T> = {
+	done?: false;
+	value: {
+		key: Key;
+		value: T;
+	};
+};
+
+export type IteratorReturnResult<T> = {
+	done: true;
+	value: {
+		key: Key;
+		value: T;
+	};
+};
+
+export type IteratorResult<T, TReturn = any> = IteratorYieldResult<T> | IteratorReturnResult<TReturn>;
+
+export class Iterator<T, TReturn = any, TNext = any> extends NativeIterator {
+	async = false;
+
+	constructor(options: NativeIteratorOptions) {
+		super(options);
 	}
 
-	next() {
+	next(...[_value]: [] | [TNext]): IteratorResult<T, TReturn> {
 		const result = super.next();
 		if (result.done) {
 			return result;
 		}
 
-		// TODO: decode the key and value?
+		// TODO: decode the key and value
 
 		return {
-			key: result.value.key,
-			value: result.value.value,
+			value: {
+				key: result.value.key,
+				value: result.value.value,
+			}
 		};
 	}
 }
@@ -43,20 +69,19 @@ class IteratorWrapper extends NativeIterator {
  * An iterable that queries a range of keys.
  */
 export class RangeIterable<T> {
-	#context: NativeDatabase | NativeTransaction;
-	#options: IteratorOptions;
+	#iterator: Iterator<T>;
 
-	constructor(context: NativeDatabase | NativeTransaction, options?: IteratorOptions) {
-		this.#context = context;
-		this.#options = options ?? {};
+	constructor(iterator: Iterator<T>) {
+		this.#iterator = iterator;
 	}
 
 	[Symbol.iterator]() {
-		return new IteratorWrapper(this.#context, this.#options);
+		return this.#iterator;
 	}
 
 	[Symbol.asyncIterator]() {
-		return new IteratorWrapper(this.#context, this.#options);
+		this.#iterator.async = true;
+		return this.#iterator;
 	}
 
 	get asArray() {
@@ -69,15 +94,11 @@ export class RangeIterable<T> {
 	}
 
 	concat() {
-		const iter = new RangeIterable(this.#context, this.#options);
-		// TODO
-		return iter;
+		return new RangeIterable(this.#iterator);
 	}
 
 	drop(_limit: number) {
-		const iter = new RangeIterable(this.#context, this.#options);
-		// TODO
-		return iter;
+		return new RangeIterable(this.#iterator);
 	}
 
 	every(_callback: (value: T, index: number) => boolean) {
@@ -92,10 +113,8 @@ export class RangeIterable<T> {
 		// TODO
 	}
 
-	flatMap(_callback: (value: T, index: number) => Iterator<T, unknown, undefined> | Iterable<T, unknown, undefined>) {
-		const iter = new RangeIterable(this.#context, this.#options);
-		// TODO
-		return iter;
+	flatMap<U>(_callback: (value: T, index: number) => U) {
+		return new RangeIterable(this.#iterator);
 	}
 
 	forEach(_callback: (value: T, index: number) => void) {
@@ -103,9 +122,7 @@ export class RangeIterable<T> {
 	}
 
 	map<U>(_callback: (value: T, index: number) => U) {
-		const iter = new RangeIterable(this.#context, this.#options);
-		// TODO
-		return iter;
+		return new RangeIterable(this.#iterator);
 	}
 
 	mapError(_callback: (error: Error) => Error) {
@@ -125,8 +142,6 @@ export class RangeIterable<T> {
 	}
 
 	take(_limit: number) {
-		const iter = new RangeIterable(this.#context, this.#options);
-		// TODO
-		return iter;
+		return new RangeIterable(this.#iterator);
 	}
 }
