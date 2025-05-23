@@ -75,7 +75,7 @@ export class RangeIterable<T> {
 	get asArray() {
 		let result: IteratorResultValue<T>[] | undefined;
 
-		const promise = new Promise<IteratorResultValue<T>[]>((resolve, reject) => {
+		const promise = new Promise<IteratorResultValue<T>[]>(resolve => {
 			const iterator = this.#iterator;
 
 			const array: IteratorResultValue<T>[] = [];
@@ -128,6 +128,15 @@ export class RangeIterable<T> {
 
 	/**
 	 * Returns a new iterable with the results of calling a callback function.
+	 *
+	 * @param callback - The callback function to call for each result.
+	 * @returns The new iterable.
+	 *
+	 * @example
+	 * ```ts
+	 * const iter = new RangeIterable(new BaseIterator(new NativeIterator(db.db, { start: 'a' }), db));
+	 * const mapped = iter.map(result => ({ ...result, value: result.value.toUpperCase() }));
+	 * ```
 	 */
 	map(callback: (value: IteratorResultValue<T>, index: number) => IteratorResultValue<T>) {
 		class MapIterator extends BaseIterator<T> {
