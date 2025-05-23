@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { Key } from './encoding.js';
-import type { NativeIteratorOptions } from './iterator.js';
+import type { IteratorOptions } from './iterator.js';
 
 export type NativeTransaction = {
 	id: number;
@@ -18,7 +18,7 @@ export type NativeTransaction = {
 };
 
 export type NativeIterator<T> = {
-	new(options: NativeIteratorOptions): NativeIterator<T>;
+	new(context: NativeDatabase | NativeTransaction, options: IteratorOptions): NativeIterator<T>;
 	next(): IteratorResult<T>;
 	return(): IteratorResult<T>;
 	throw(): IteratorResult<T>;

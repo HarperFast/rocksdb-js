@@ -1,5 +1,6 @@
+import { NativeIterator } from './load-binding';
+import { Store } from './store';
 import type { Key } from './encoding';
-import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding';
 
 export interface IteratorOptions {
 	decoder?: (value: any) => any,
@@ -19,48 +20,32 @@ export interface IteratorOptions {
 	versions?: boolean;
 };
 
-export interface NativeIteratorOptions extends IteratorOptions {
-	context: NativeDatabase | NativeTransaction;
-};
+export interface IteratorResultValue<T> {
+	key: Key;
+	value: T;
+}
 
-export type IteratorYieldResult<T> = {
-	done?: false;
-	value: {
-		key: Key;
-		value: T;
-	};
-};
-
-export type IteratorReturnResult<T> = {
-	done: true;
-	value: {
-		key: Key;
-		value: T;
-	};
-};
-
-export type IteratorResult<T, TReturn = any> = IteratorYieldResult<T> | IteratorReturnResult<TReturn>;
-
-export class Iterator<T, TReturn = any, TNext = any> extends NativeIterator {
+export class BaseIterator<T> implements Iterator<IteratorResultValue<T>> {
 	async = false;
+	iterator: NativeIterator<IteratorResultValue<T>>;
+	store: Store;
 
-	constructor(options: NativeIteratorOptions) {
-		super(options);
+	constructor(iterator: NativeIterator<IteratorResultValue<T>>, store: Store) {
+		this.iterator = iterator;
+		this.store = store;
 	}
 
-	next(...[_value]: [] | [TNext]): IteratorResult<T, TReturn> {
-		const result = super.next();
+	next(...[_value]: [] | [any]): IteratorResult<IteratorResultValue<T>> {
+		const result = this.iterator.next() as IteratorResult<IteratorResultValue<T>>;
 		if (result.done) {
 			return result;
 		}
 
-		// TODO: decode the key and value
+		const key = this.store.decodeKey(result.value.key as Buffer);
+		const value = this.store.decodeValue(result.value.value as Buffer);
 
 		return {
-			value: {
-				key: result.value.key,
-				value: result.value.value,
-			}
+			value: { key, value }
 		};
 	}
 }
@@ -69,9 +54,9 @@ export class Iterator<T, TReturn = any, TNext = any> extends NativeIterator {
  * An iterable that queries a range of keys.
  */
 export class RangeIterable<T> {
-	#iterator: Iterator<T>;
+	#iterator: BaseIterator<T>;
 
-	constructor(iterator: Iterator<T>) {
+	constructor(iterator: BaseIterator<T>) {
 		this.#iterator = iterator;
 	}
 
@@ -84,9 +69,29 @@ export class RangeIterable<T> {
 		return this.#iterator;
 	}
 
+	/**
+	 * Collects the iterator results in an array and returns it.
+	 */
 	get asArray() {
-		// TODO
-		return [];
+		let result: IteratorResultValue<T>[] | undefined;
+
+		const promise = new Promise<IteratorResultValue<T>[]>((resolve, reject) => {
+			const iterator = this.#iterator;
+
+			const array: IteratorResultValue<T>[] = [];
+			(function next(iResult) {
+				while (iResult.done !== true) {
+					if (iResult instanceof Promise) {
+						return iResult.then(next);
+					}
+					array.push(iResult.value);
+					iResult = iterator.next();
+				}
+				resolve(result = array);
+			}(iterator.next()));
+		});
+
+		return result || promise;
 	}
 
 	at(_index: number) {
@@ -113,7 +118,7 @@ export class RangeIterable<T> {
 		// TODO
 	}
 
-	flatMap<U>(_callback: (value: T, index: number) => U) {
+	flatMap(_callback: (value: T, index: number) => T) {
 		return new RangeIterable(this.#iterator);
 	}
 
@@ -121,8 +126,31 @@ export class RangeIterable<T> {
 		// TODO
 	}
 
-	map<U>(_callback: (value: T, index: number) => U) {
-		return new RangeIterable(this.#iterator);
+	/**
+	 * Returns a new iterable with the results of calling a callback function.
+	 */
+	map(callback: (value: IteratorResultValue<T>, index: number) => IteratorResultValue<T>) {
+		class MapIterator extends BaseIterator<T> {
+			i = 0;
+
+			next(...[_value]: [] | [any]): IteratorResult<IteratorResultValue<T>> {
+				const iResult = super.next();
+				if (iResult.done) {
+					return iResult;
+				}
+
+				const result = callback(iResult.value, this.i++);
+				// if (result instanceof Promise) {
+				// 	return result.then(this.next.bind(this));
+				// }
+				return {
+					value: result,
+					done: false
+				};
+			}
+		}
+
+		return new RangeIterable(new MapIterator(this.#iterator.iterator, this.#iterator.store));
 	}
 
 	mapError(_callback: (error: Error) => Error) {

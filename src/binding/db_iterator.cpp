@@ -40,20 +40,17 @@ struct DBIteratorHandle final : Closable {
 };
 
 napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV("Iterator", 1)
-
-	napi_value options = args[0];
-
-	napi_value context;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "context", &context))
+	NAPI_CONSTRUCTOR_ARGV("Iterator", 2)
 
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
-	NAPI_STATUS_THROWS(::napi_unwrap(env, context, reinterpret_cast<void**>(&dbHandle)))
+	NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&dbHandle)))
 
 	if (dbHandle == nullptr || !(*dbHandle)->opened()) {
 		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
 	}
+
+	napi_value options = args[1];
 
 	rocksdb::ReadOptions readOptions;
 

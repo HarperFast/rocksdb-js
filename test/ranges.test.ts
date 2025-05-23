@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+import type { Key } from '../src/encoding.js';
 
 describe('Ranges', () => {
 	describe('getRange()', () => {
@@ -42,13 +43,12 @@ describe('Ranges', () => {
 					start: Symbol.for('A')
 				};
 
-				const returnedKeys: string[] = [];
-				for (const { key, value } of db.getRange<{ key: any; value: any }>(opts)) {
+				const returnedKeys: Key[] = [];
+				for (const { key, value } of db.getRange(opts)) {
 					returnedKeys.push(key);
-					// console.log({key, value});
-					// expect(value).toBe(db.getSync(key));
+					expect(value).toBe(db.getSync(key));
 				}
-				// expect(testKeys).toEqual(returnedKeys);
+				expect(testKeys).toEqual(returnedKeys);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -70,13 +70,12 @@ describe('Ranges', () => {
 					start: Symbol.for('A')
 				};
 
-				const returnedKeys: string[] = [];
-				for await (const { key, value } of db.getRange<{ key: any; value: any }>(opts)) {
+				const returnedKeys: Key[] = [];
+				for await (const { key, value } of db.getRange(opts)) {
 					returnedKeys.push(key);
-					// console.log({key, value});
-					// expect(value).toBe(db.getSync(key));
+					expect(value).toBe(db.getSync(key));
 				}
-				// expect(testKeys).toEqual(returnedKeys);
+				expect(testKeys).toEqual(returnedKeys);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -99,36 +98,96 @@ describe('Ranges', () => {
 					end: 'd'
 				};
 
-				const returnedKeys: string[] = [];
-				for await (const { key, value } of db.getRange<{ key: any; value: any }>(opts)) {
+				const returnedKeys: Key[] = [];
+				for await (const { key, value } of db.getRange(opts)) {
 					returnedKeys.push(key);
-					console.log({key, value});
-					// expect(value).toBe(db.getSync(key));
+					expect(value).toBe(db.getSync(key));
 				}
-				// expect(['b', 'c']).toEqual(returnedKeys);
+				expect(['b', 'c']).toEqual(returnedKeys);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
 			}
 		});
 
-		it('should get all values', async () => {
+		it.skip('should get all values', async () => {
 			//
 		});
 
-		it('should get all values in range', async () => {
+		it.skip('should get all values in range', async () => {
 			//
 		});
 
-		it('should get iterate in reverse', async () => {
+		it.skip('should get iterate in reverse', async () => {
 			//
 		});
 
-		it('should get keys only', async () => {
+		it.skip('should get keys only', async () => {
 			//
 		});
 
-		it.only('should map a function over a range', async () => {
+		it('should return a range as an array', async () => {
+			// .asArray
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath);
+
+				for (const key of ['a', 'b', 'c', 'd', 'e']) {
+					await db.put(key, `value ${key}`);
+				}
+
+				const iter = db.getRange();
+				const array = iter.asArray;
+				expect(Array.isArray(array)).toBe(true);
+
+				expect(array).toMatchObject([
+					{ key: 'a', value: 'value a' },
+					{ key: 'b', value: 'value b' },
+					{ key: 'c', value: 'value c' },
+					{ key: 'd', value: 'value d' },
+					{ key: 'e', value: 'value e' },
+				]);
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it.skip('should return an item at a specific index', async () => {
+			// .at()
+		});
+
+		it.skip('should concat two ranges', async () => {
+			// .concat()
+		});
+
+		it.skip('should drop items from a range', async () => {
+			// .drop()
+		});
+
+		it.skip('should check if every item in a range passes a test', async () => {
+			// .every()
+		});
+
+		it.skip('should filter items in a range', async () => {
+			// .filter()
+		});
+
+		it.skip('should find the first item in a range', async () => {
+			// .find()
+		});
+
+		it.skip('should flatten a range', async () => {
+			// .flatMap()
+		});
+
+		it.skip('should call a function for each item in a range', async () => {
+			// .forEach()
+		});
+
+		it('should map each item in a range', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -143,7 +202,7 @@ describe('Ranges', () => {
 					start: Symbol.for('A')
 				};
 
-				const iter = db.getRange<{ key: any; value: any }>(opts);
+				const iter = db.getRange(opts);
 				const mapped = iter.map(item => {
 					return {
 						...item,
@@ -162,6 +221,26 @@ describe('Ranges', () => {
 				db?.close();
 				await rimraf(dbPath);
 			}
+		});
+
+		it.skip('should map an error', async () => {
+			// .mapError()
+		});
+
+		it.skip('should reduce a range', async () => {
+			// .reduce()
+		});
+
+		it.skip('should slice a range', async () => {
+			// .slice()
+		});
+
+		it.skip('should take items from a range', async () => {
+			// .take()
+		});
+
+		it.skip('should check if some items in a range pass a test', async () => {
+			// .some()
 		});
 	});
 });
