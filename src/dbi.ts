@@ -1,6 +1,7 @@
 import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { BaseIterator, RangeIterable, type IteratorOptions } from './iterator.js';
+import { BaseIterator, type IteratorOptions } from './iterator.js';
+import { ExtendedIterable } from '@harperdb/extended-iterable';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import type { Transaction } from './transaction.js';
@@ -243,16 +244,18 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		const start = options?.start ? this.store.encodeKey(options.start) : undefined;
 		const end = options?.end ? this.store.encodeKey(options.end) : undefined;
 
-		const defaultIterator = new BaseIterator(
-			new NativeIterator(this.#context, {
-				...options,
-				start,
-				end
-			}),
-			this.store
-		);
-
-		return new RangeIterable(defaultIterator);
+		let results = new ExtendedIterable();
+		results.iterate = () => {
+			return new BaseIterator(
+				new NativeIterator(this.#context, {
+					...options,
+					start,
+					end
+				}),
+				this.store
+			);
+		};
+		return results;
 	}
 
 	getValues(_key: Key, _options?: IteratorOptions & T) {

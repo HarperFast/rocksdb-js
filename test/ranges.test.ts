@@ -171,8 +171,31 @@ describe('Ranges', () => {
 			// .every()
 		});
 
-		it.skip('should filter items in a range', async () => {
-			// .filter()
+		it('should filter items in a range', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath);
+
+				for (const key of ['a', 'b', 'c', 'd', 'e']) {
+					await db.put(key, `value ${key}`);
+				}
+
+				const iter = db.getRange();
+				const filtered = iter.filter(item => item.key !== 'b');
+				const mapped = filtered.map((item) => item.value);
+
+				const array = mapped.asArray;
+				expect(Array.isArray(array)).toBe(true);
+
+				expect(array).toMatchObject([
+					'value a', 'value c', 'value d', 'value e'
+				]);
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
 		});
 
 		it.skip('should find the first item in a range', async () => {
