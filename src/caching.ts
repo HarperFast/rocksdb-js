@@ -46,6 +46,8 @@ const versionToHash = new Float64Array(hashedVersion.buffer); // the input to th
 const int32ToHash = new Int32Array(hashedVersion.buffer);
 const keyAsFloat = new Float64Array(1);
 const keyAsInt32 = new Int32Array(keyAsFloat.buffer);
+let lastHashForVersion = 0; // this is used to record a segment of the key hash to apply to the version to hash it
+const MAX_KEY_LENGTH_TO_CACHE = 100; // hashing strings can be expensive, and so we limit our caching of long strings
 type MaybePromise<T = any> = T | Promise<T>;
 
 const mapGet = Map.prototype.get;
@@ -53,6 +55,8 @@ export class CachingRocksDatabase extends RocksDatabase {
 	sharedHashedVersions: BigInt64Array;
 	sharedRecentWriteVersions: Float64Array;
 	cache: WeakLRUCache;
+	currentMaxKeyLengthToCache= MAX_KEY_LENGTH_TO_CACHE;
+	cacheMisses = 0;
 	constructor(dbName, options) {
 		super(dbName, options); // whatever super stuff
 		// create a cache map for this store
@@ -80,7 +84,7 @@ export class CachingRocksDatabase extends RocksDatabase {
 	 * @return {number} A 16-bit integer hash generated for the given key
 	 * @throws {Error} If an unsupported key type is provided.
 	 */
-	hashKeyVersion(key: any, version?: number): number {
+	hashKey(key: any, version?: number): number {
 		if (version !== undefined) {
 			// we use the version number as the input to the hash function (which is a float)
 			versionToHash[0] = version;
@@ -90,13 +94,13 @@ export class CachingRocksDatabase extends RocksDatabase {
 				// We have a 32-bit integer, which makes it simple.
 				// Hash the number against the version with a simple XOR, and make sure to keep the sign bit as a zero
 				// this will leave the hashedVersion in a state of having a hashed version (hashed with the key)
-				int32ToHash[1] = (int32ToHash[1] ^ key) & 0x7fffffff;
+				lastHashForVersion = key;
 				return key & VERSION_CACHE_SIZE_MASK;
 			} else {
 				// a floating point representation, work with the constituent 32-bit ints for ease/speed with bitwise operators
 				keyAsFloat[0] = key;
 				let int0 = keyAsInt32[0]; // least significant int
-				int32ToHash[1] = (int32ToHash[1] ^ int0 ^ keyAsFloat[1]) & 0x7fffffff;
+				lastHashForVersion = int0 ^ keyAsFloat[1];
 				return (int0 >> 16 ^ int0) & VERSION_CACHE_SIZE_MASK; // with floats, the last few bits may not vary, so xor both 16-bit parts
 			}
 		} else if (typeof key === 'string') {
@@ -109,19 +113,33 @@ export class CachingRocksDatabase extends RocksDatabase {
 				fnv1 = Math.imul(fnv1, 435) ^ code;
 				fnv1a = Math.imul(fnv1a ^ code, 435);
 			}
-			// Ensure we stay within 31-bit bounds with a leading zero
-			int32ToHash[1] = (int32ToHash[1] ^ fnv1) & 0x7fffffff;
+			lastHashForVersion = fnv1;
 			return fnv1a & VERSION_CACHE_SIZE_MASK;
 		} else if (Array.isArray(key)) {
 			// hash the array by hashing each element in the array, and XORing the result together
-			return key.reduce((a, b) => this.hashKeyVersion(a) ^ this.hashKeyVersion(b), 0);
+			let accumulatedHash = 0;
+			let accumulatedHashForVersion = 0;
+			for (let part of key) {
+				accumulatedHash ^= this.hashKey(part);
+				accumulatedHashForVersion ^= lastHashForVersion;
+			}
+			lastHashForVersion = accumulatedHashForVersion;
+			return accumulatedHash & VERSION_CACHE_SIZE_MASK;
 		} else if (typeof key === 'symbol') {
 			// hash the symbol by hashing the string representation of the symbol
-			return this.hashKeyVersion(key.toString());
+			return this.hashKey(key.toString());
 		}
 		else {
 			throw new Error('Unsupported key type');
 		}
+	}
+	hashVersion(version: number) {
+		// we use the version number as the input to the hash function (which is a float)
+		versionToHash[0] = version;
+		// Hash the version against the last hash from the key hash using a simple XOR, and make sure to keep the sign bit as a zero.
+		// This will leave the hashedVersion in a state of having a hashed version (hashed with the key)
+		int32ToHash[1] = (int32ToHash[1] ^ lastHashForVersion) & 0x7fffffff;
+		return hashedVersion[0];
 	}
 
 	getEntry(id: any, options: any): MaybePromise<Entry> {
@@ -130,24 +148,40 @@ export class CachingRocksDatabase extends RocksDatabase {
 		let hashIndex: number;
 		if (entry) {
 			// first we hash the key so we can check the shared buffer of versions to see if we have a fresh version
-			hashIndex = this.hashKeyVersion(id, entry.version ?? 0);
-			// the hashed version in the cache to see if it matches
-			if (hashedVersion[0] === this.sharedHashedVersions[hashIndex]) {
+			hashIndex = this.hashKey(id);
+			// Check the hashed version in the cache to see if it matches
+			if (this.hashVersion(entry.version ?? 0) === this.sharedHashedVersions[hashIndex]) {
 				// it matches, so we can return the cached value
 				return entry;
 			}
 		}
 		let entryResult = super.getEntry(id, options);
+		if (hashIndex === undefined) {
+			// if it hasn't been computed yet, determine if it meets our threshold for caching, otherwise just return the result
+			if (!((id?.length ?? 4) > this.currentMaxKeyLengthToCache)) {
+				// don't bother, just return;
+				return entryResult;
+			}
+			// we separately count cache misses so we don't count misses from keys we don't even try to cache
+			if (this.cacheMisses++ % 100 === 0) {
+				// recalculate our max key length based on the cache hit rate
+				// we artificially inflate our cache hits because we start with an empty cache and we want to initially try to cache and measure our cache rate
+				let hits = this.cache.hits + (VERSION_CACHE_SIZE >> 3);
+				this.currentMaxKeyLengthToCache = Math.min(Math.floor(MAX_KEY_LENGTH_TO_CACHE * hits / this.cacheMisses), MAX_KEY_LENGTH_TO_CACHE);
+			}
+			hashIndex = this.hashKey(id);
+		}
+		let hashForVersion = lastHashForVersion; // save the last hash for the version hash
 
 		return when(entryResult, (entry) => {
 			let existingHashedVersion = this.sharedHashedVersions[hashIndex];
 			if (existingHashedVersion >= 0) {
-				// there are no recent writes for this slot, this slot can be used for caching
-				this.hashKeyVersion(id, entry.version ?? 0); // recalculate the hashed version
+				// There are no recent writes for this slot, this slot can be used for caching
+				lastHashForVersion = hashForVersion; // restore the last hash for the version hash
 				// Atomically and conditionally add the hashed version to the shared buffer.
 				// If the hashed version has changed since we last checked (since a write could have taken place
 				// since we last checked) the atomic operation should fail
-				Atomics.compareExchange(this.sharedHashedVersions, hashIndex, existingHashedVersion, hashedVersion[0]);
+				Atomics.compareExchange(this.sharedHashedVersions, hashIndex, existingHashedVersion, this.hashVersion(entry.version ?? 0));
 				// Note we could verify that exchanged value matches existingHashedVersion before adding to cache, but that
 				// is not necessary because it doesn't produce any false positives, and is extremely rare
 				this.cache.setValue(id, entry.value, entry.size >> 10);
@@ -157,12 +191,14 @@ export class CachingRocksDatabase extends RocksDatabase {
 	}
 
 	putSync(id, value, options) {
-		let hashIndex = this.hashKeyVersion(id);
-		// we set the shared buffer to indicate that there was a recent write, with the current timestamp
-		// so this can't be used for caching until the timestamp is old enough. Note that we negate this
-		// so that the leading/sign bit (1) indicates the state of a recent write
-		// Do we need to use Atomics.store here? (that would require converting to bigint, so preferably not)
-		this.sharedRecentWriteVersions[hashIndex] = -Date.now();
+		if (!(id?.length > MAX_KEY_LENGTH_TO_CACHE)) {
+			let hashIndex = this.hashKey(id);
+			// we set the shared buffer to indicate that there was a recent write, with the current timestamp
+			// so this can't be used for caching until the timestamp is old enough. Note that we negate this
+			// so that the leading/sign bit (1) indicates the state of a recent write
+			// Do we need to use Atomics.store here? (that would require converting to bigint, so preferably not)
+			this.sharedRecentWriteVersions[hashIndex] = -Date.now();
+		}
 		return super.putSync(id, value, options);
 	}
 
