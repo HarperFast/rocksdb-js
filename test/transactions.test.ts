@@ -25,12 +25,15 @@ afterEach(async () => {
 		if (path) {
 			for (let i = 0; i < 10 && existsSync(path); i++) {
 				if (i + 1 === 10) {
-					throw new Error('Failed to remove db path');
+					throw new Error('Failed to remove db path!');
 				}
 				try {
+					console.log('Attempting to remove', path);
+					await delay(500);
 					await rimraf(path);
+					console.log('Success!', path);
 				} catch (error) {
-					console.error(error);
+					console.error('Failed to remove, trying again', path, error);
 				}
 				await delay(250);
 			}
