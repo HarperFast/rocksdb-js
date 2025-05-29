@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Transaction } from '../src/transaction.js';
 
 const testOptions = [
@@ -28,6 +29,7 @@ for (const { name, options } of testOptions) {
 				);
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -45,6 +47,7 @@ for (const { name, options } of testOptions) {
 				});
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -62,6 +65,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -82,6 +86,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBeUndefined();
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -103,6 +108,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -125,6 +131,7 @@ for (const { name, options } of testOptions) {
 				expect(value2).toBeUndefined();
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -146,6 +153,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -187,6 +195,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -215,6 +224,7 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -245,6 +255,7 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await delay(250);
 				await rimraf(dbPath);
 				await rimraf(dbPath2);
 			}
@@ -262,6 +273,7 @@ for (const { name, options } of testOptions) {
 					.toThrow(new TypeError('Callback must be a function'));
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -279,6 +291,7 @@ for (const { name, options } of testOptions) {
 				});
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -298,6 +311,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -318,6 +332,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBeUndefined();
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -339,6 +354,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -367,6 +383,7 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -382,6 +399,7 @@ for (const { name, options } of testOptions) {
 				await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
@@ -395,6 +413,7 @@ for (const { name, options } of testOptions) {
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 			} finally {
 				db?.close();
+				await delay(250);
 				await rimraf(dbPath);
 			}
 		});
