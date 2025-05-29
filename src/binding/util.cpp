@@ -1,3 +1,5 @@
+#include <cstdarg>
+#include <functional>
 #include <node_api.h>
 #include <string>
 #include <sstream>
