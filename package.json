@@ -16,13 +16,13 @@
     "build:types:check": "tsc --project tsconfig.check.json",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
-    "coverage": "node --expose-gc ./node_modules/.bin/vitest --coverage && tsx scripts/post-coverage/main.ts",
+    "coverage": "node --expose-gc ./node_modules/vitest/vitest.mjs --coverage && tsx scripts/post-coverage/main.ts",
     "lint": "oxlint",
     "prepublishOnly": "pnpm build:bundle && pnpm prebuild",
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
-    "test": "node --expose-gc ./node_modules/.bin/vitest --allowOnly --reporter=verbose",
+    "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --allowOnly --reporter=verbose",
     "type-check": "tsc --noEmit"
   },
   "files": [
