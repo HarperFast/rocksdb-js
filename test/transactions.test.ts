@@ -12,12 +12,12 @@ const testOptions = [
 	{
 		name: 'pessimistic',
 		options: { pessimistic: true },
-	}
+	},
 ];
 
 for (const { name, options } of testOptions) {
 	describe(`transaction() (${name})`, () => {
-		it(`${name} async should error if callback is not a function`, async () => {
+		it('should error if callback is not a function', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -32,7 +32,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should get a value`, async () => {
+		it('should get a value', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -49,7 +49,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should set a value`, async () => {
+		it('should set a value', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -66,7 +66,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should remove a value`, async () => {
+		it('should remove a value', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -86,7 +86,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should rollback on error`, async () => {
+		it('should rollback on error', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -107,7 +107,50 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should treat transaction as a snapshot`, async () => {
+		it('should remove a value', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, options);
+				await db.put('foo', 'bar');
+				const value = await db.get('foo');
+				expect(value).toBe('bar');
+
+				await db.transaction(async (txn: Transaction) => {
+					await txn.remove('foo');
+				});
+
+				const value2 = await db.get('foo');
+				expect(value2).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should rollback on error', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, options);
+				await db.put('foo', 'bar');
+
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar2');
+					throw new Error('test');
+				})).rejects.toThrow('test');
+
+				const value = await db.get('foo');
+				expect(value).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should treat transaction as a snapshot', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -148,7 +191,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should allow transactions across column families`, async () => {
+		it('should allow transactions across column families', async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
@@ -176,7 +219,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should allow multiple transactions to run in parallel`, async () => {
+		it('should allow multiple transactions to run in parallel', async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
@@ -209,7 +252,7 @@ for (const { name, options } of testOptions) {
 	});
 
 	describe(`transactionSync() (${name})`, () => {
-		it(`${name} sync should error if callback is not a function`, async () => {
+		it('should error if callback is not a function', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -223,7 +266,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} sync should get a value`, async () => {
+		it('should get a value', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -240,7 +283,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} sync should set a value`, async () => {
+		it('should set a value', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -259,7 +302,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} sync should remove a value`, async () => {
+		it('should remove a value', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -279,7 +322,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} sync should rollback on error`, async () => {	
+		it('should rollback on error', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -300,7 +343,7 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} sync should allow transactions across column families`, async () => {	
+		it('should allow transactions across column families', async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
