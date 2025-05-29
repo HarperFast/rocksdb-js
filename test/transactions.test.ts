@@ -18,22 +18,26 @@ const testOptions = [
 ];
 
 let dbPath: string | null = null;
+let dbPath2: string | null = null;
 
 afterEach(async () => {
-	if (dbPath) {
-		for (let i = 0; i < 10 && existsSync(dbPath); i++) {
-			if (i + 1 === 10) {
-				throw new Error('Failed to remove db path');
+	for (const path of [dbPath, dbPath2]) {
+		if (path) {
+			for (let i = 0; i < 10 && existsSync(path); i++) {
+				if (i + 1 === 10) {
+					throw new Error('Failed to remove db path');
+				}
+				try {
+					await rimraf(path);
+				} catch (error) {
+					console.error(error);
+				}
+				await delay(250);
 			}
-			try {
-				await rimraf(dbPath);
-			} catch (error) {
-				console.error(error);
-			}
-			await delay(250);
 		}
-		dbPath = null;
 	}
+	dbPath = null;
+	dbPath2 = null;
 })
 
 for (const { name, options } of testOptions) {
