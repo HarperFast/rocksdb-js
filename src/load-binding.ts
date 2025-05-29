@@ -6,7 +6,7 @@ import type { Key } from './encoding.js';
 
 export type NativeTransaction = {
 	id: number;
-	new(): NativeTransaction;
+	new(context: NativeDatabase): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
@@ -28,7 +28,6 @@ export type NativeDatabaseOptions = {
 export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
-	createTransaction(): NativeTransaction;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
 	getSync(key: Key, txnId?: number): Buffer;
 	opened: boolean;

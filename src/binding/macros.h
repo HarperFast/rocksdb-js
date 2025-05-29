@@ -6,6 +6,14 @@
  * operations.
  */
 
+#ifdef DEBUG
+	#define DEBUG_LOG(msg, ...) \
+		rocksdb_js::debugLog(msg, ##__VA_ARGS__);
+#else
+	// release builds debug logging is a no-op
+	#define DEBUG_LOG(msg, ...)
+#endif
+
 #define NAPI_STATUS_RETURN(call) \
 	{ \
 		napi_status status = (call); \
@@ -98,6 +106,14 @@
 	size_t argc = n; \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, nullptr))
+
+#define NAPI_CONSTRUCTOR_ARGV_WITH_DATA(className, n) \
+	NAPI_CHECK_NEW_TARGET(className) \
+	napi_value args[n]; \
+	size_t argc = n; \
+	napi_value jsThis; \
+	void* data; \
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, reinterpret_cast<void**>(&data)))
 
 #define NAPI_METHOD() \
 	napi_value jsThis; \

@@ -2,7 +2,6 @@
 #include "database.h"
 #include "transaction_handle.h"
 #include "macros.h"
-#include "util.h"
 
 namespace rocksdb_js {
 
@@ -33,7 +32,23 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
  * Destroys the handle's RocksDB transaction.
  */
 TransactionHandle::~TransactionHandle() {
-	this->release();
+	this->close();
+}
+
+/**
+ * Release the transaction. This is called after successful commit, after
+ * the transaction has been aborted, or when the transaction is destroyed.
+ */
+void TransactionHandle::close() {
+	if (this->txn) {
+		this->txn->ClearSnapshot();
+		delete this->txn;
+		this->txn = nullptr;
+	}
+
+	if (this->dbHandle->descriptor) {
+		this->dbHandle->descriptor->closables.erase(this);
+	}
 }
 
 /**
@@ -148,18 +163,6 @@ rocksdb::Status TransactionHandle::removeSync(
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
 	return this->txn->Delete(column, key);
-}
-
-/**
- * Release the transaction. This is called after successful commit, after
- * the transaction has been aborted, or when the transaction is destroyed.
- */
-void TransactionHandle::release() {
-	if (this->txn) {
-		this->txn->ClearSnapshot();
-		delete this->txn;
-		this->txn = nullptr;
-	}
 }
 
 } // namespace rocksdb_js

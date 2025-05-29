@@ -20,7 +20,7 @@
     "prepublishOnly": "pnpm build:bundle && pnpm prebuild",
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
-    "test": "vitest --allowOnly --pool=forks --reporter=verbose",
+    "test": "vitest --allowOnly --reporter=verbose",
     "type-check": "tsc --noEmit"
   },
   "files": [

@@ -1,12 +1,13 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
+#include <memory>
+#include <mutex>
 #include "db_handle.h"
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
-#include <memory>
-#include <mutex>
+#include "util.h"
 
 namespace rocksdb_js {
 
@@ -24,9 +25,11 @@ struct DBHandle;
  * This handle contains `get()`, `put()`, and `remove()` methods which are
  * shared between the `Database` and `Transaction` classes.
  */
-struct TransactionHandle final {
+struct TransactionHandle final : Closable {
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle);
 	~TransactionHandle();
+
+	void close() override;
 
 	napi_value get(
 		napi_env env,
@@ -49,7 +52,6 @@ struct TransactionHandle final {
 		rocksdb::Slice& key,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
-	void release();
 
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;

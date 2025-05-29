@@ -18,9 +18,14 @@
 
 namespace rocksdb_js {
 
-std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
+struct Closable {
+	virtual ~Closable() = default;
+	virtual void close() = 0;
+};
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
+
+void debugLog(const char* msg, ...);
 
 const char* getNapiBufferFromArg(
 	napi_env env,
@@ -30,6 +35,8 @@ const char* getNapiBufferFromArg(
 	size_t& length,
 	const char* errorMsg
 );
+
+std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	napi_valuetype type;
