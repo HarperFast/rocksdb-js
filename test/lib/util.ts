@@ -5,6 +5,6 @@ import { randomBytes } from 'node:crypto';
 export function generateDBPath() {
 	return join(
 		tmpdir(),
-		`testdb-${randomBytes(8).toString('hex')}`
+		`testdb-${randomBytes(10).toString('hex')}`
 	);
 }
