@@ -7,6 +7,9 @@ namespace rocksdb_js {
 
 /**
  * Dumps the value of a napi_value to stderr.
+ *
+ * Note: Use the `DEBUG_LOG_NAPI_VALUE()` macro instead of calling this
+ * directly.
  */
 void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isObject) {
 	napi_valuetype type;
