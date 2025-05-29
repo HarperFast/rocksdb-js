@@ -1,9 +1,10 @@
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 
 export function generateDBPath() {
 	return join(
 		tmpdir(),
-		`testdb-${Math.random().toString(36).substring(2, 15)}`
+		`testdb-${randomBytes(8).toString('hex')}`
 	);
 }
