@@ -4,7 +4,7 @@ import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Transaction } from '../src/transaction.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 
 const testOptions = [
 	{
@@ -29,6 +29,7 @@ afterEach(async () => {
 				}
 				try {
 					console.log('Attempting to remove', path);
+					console.log(readdirSync(path));
 					gc?.();
 					await delay(500);
 					await rimraf(path);
