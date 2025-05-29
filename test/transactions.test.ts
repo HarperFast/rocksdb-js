@@ -29,6 +29,7 @@ afterEach(async () => {
 				}
 				try {
 					console.log('Attempting to remove', path);
+					gc?.();
 					await delay(500);
 					await rimraf(path);
 					console.log('Success!', path);

@@ -16,7 +16,7 @@
     "build:types:check": "tsc --project tsconfig.check.json",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
-    "coverage": "vitest --coverage && tsx scripts/post-coverage/main.ts",
+    "coverage": "NODE_OPTIONS='--expose-gc' vitest --coverage && tsx scripts/post-coverage/main.ts",
     "lint": "oxlint",
     "prepublishOnly": "pnpm build:bundle && pnpm prebuild",
     "prebuild": "echo 'TODO'",
