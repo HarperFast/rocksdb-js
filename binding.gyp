@@ -66,6 +66,7 @@
 					}
 				},
 				'Debug': {
+					'defines': ['DEBUG', '_ITERATOR_DEBUG_LEVEL=2'],
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 3,
