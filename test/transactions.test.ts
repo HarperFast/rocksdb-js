@@ -2,6 +2,7 @@ import { afterEach, assert, describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+// import { setTimeout as delay } from 'node:timers/promises';
 import type { Transaction } from '../src/transaction.js';
 
 const testOptions = [
@@ -21,6 +22,8 @@ let dbPath2: string | null = null;
 afterEach(async () => {
 	for (const path of [dbPath, dbPath2]) {
 		if (path) {
+			gc?.();
+			// await delay(500);
 			await rimraf(path);
 		}
 	}
