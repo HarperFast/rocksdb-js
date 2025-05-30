@@ -25,7 +25,7 @@ struct DBHandle;
  * shared between the `Database` and `Transaction` classes.
  */
 struct TransactionHandle final {
-	TransactionHandle(std::shared_ptr<DBHandle> dbHandle);
+	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
 	napi_value get(
