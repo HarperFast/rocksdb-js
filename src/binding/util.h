@@ -27,6 +27,8 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 
 void debugLog(const char* msg, ...);
 
+void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent = 0, bool isObject = false);
+
 const char* getNapiBufferFromArg(
 	napi_env env,
 	napi_value arg,

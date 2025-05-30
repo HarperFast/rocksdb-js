@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { when } from '../src/util.js';
+import { when, withResolvers } from '../src/util.js';
 
 describe('Util', () => {
 	describe('when()', () => {
@@ -47,6 +47,20 @@ describe('Util', () => {
 
 		it('should call callback that rejects with error', async () => {
 			await expect(when('foo', () => Promise.reject(new Error('foo')))).rejects.toThrow('foo');
+		});
+	});
+
+	describe('withResolvers()', () => {
+		it('should resolve with value', async () => {
+			const { resolve, promise } = withResolvers();
+			resolve('foo');
+			await expect(promise).resolves.toBe('foo');
+		});
+
+		it('should reject with error', async () => {
+			const { reject, promise } = withResolvers();
+			reject(new Error('foo'));
+			await expect(promise).rejects.toThrow('foo');
 		});
 	});
 });

@@ -14,7 +14,7 @@ const testOptions = [
 	{
 		name: 'pessimistic',
 		options: { pessimistic: true },
-	},
+	}
 ];
 
 let dbPath: string | null = null;
@@ -47,7 +47,7 @@ afterEach(async () => {
 
 for (const { name, options } of testOptions) {
 	describe(`transaction() (${name})`, () => {
-		it('should error if callback is not a function', async () => {
+		it(`${name} async should error if callback is not a function`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -58,11 +58,10 @@ for (const { name, options } of testOptions) {
 				);
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should get a value', async () => {
+		it(`${name} async should get a value`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -75,11 +74,10 @@ for (const { name, options } of testOptions) {
 				});
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should set a value', async () => {
+		it(`${name} async should set a value`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -92,11 +90,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should remove a value', async () => {
+		it(`${name} async should remove a value`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -112,11 +109,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBeUndefined();
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should rollback on error', async () => {
+		it(`${name} async should rollback on error`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -133,54 +129,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should remove a value', async () => {
-			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
-
-			try {
-				db = await RocksDatabase.open(dbPath, options);
-				await db.put('foo', 'bar');
-				const value = await db.get('foo');
-				expect(value).toBe('bar');
-
-				await db.transaction(async (txn: Transaction) => {
-					await txn.remove('foo');
-				});
-
-				const value2 = await db.get('foo');
-				expect(value2).toBeUndefined();
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
-		it('should rollback on error', async () => {
-			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
-
-			try {
-				db = await RocksDatabase.open(dbPath, options);
-				await db.put('foo', 'bar');
-
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar2');
-					throw new Error('test');
-				})).rejects.toThrow('test');
-
-				const value = await db.get('foo');
-				expect(value).toBe('bar');
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
-		it('should treat transaction as a snapshot', async () => {
+		it(`${name} async should treat transaction as a snapshot`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -217,11 +169,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should allow transactions across column families', async () => {
+		it(`${name} async should allow transactions across column families`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
 			dbPath = generateDBPath();
@@ -245,11 +196,10 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should allow multiple transactions to run in parallel', async () => {
+		it(`${name} async should allow multiple transactions to run in parallel`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
 			dbPath = generateDBPath();
@@ -275,14 +225,12 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
-				await rimraf(dbPath);
-				await rimraf(dbPath2);
 			}
 		});
 	});
 
 	describe(`transactionSync() (${name})`, () => {
-		it('should error if callback is not a function', async () => {
+		it(`${name} sync should error if callback is not a function`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -292,11 +240,10 @@ for (const { name, options } of testOptions) {
 					.toThrow(new TypeError('Callback must be a function'));
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should get a value', async () => {
+		it(`${name} sync should get a value`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -309,11 +256,10 @@ for (const { name, options } of testOptions) {
 				});
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should set a value', async () => {
+		it(`${name} sync should set a value`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -328,11 +274,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should remove a value', async () => {
+		it(`${name} sync should remove a value`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -348,11 +293,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBeUndefined();
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should rollback on error', async () => {
+		it(`${name} sync should rollback on error`, async () => {
 			let db: RocksDatabase | null = null;
 			dbPath = generateDBPath();
 
@@ -369,11 +313,10 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
-		it('should allow transactions across column families', async () => {
+		it(`${name} sync should allow transactions across column families`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
 			dbPath = generateDBPath();
@@ -397,7 +340,6 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
-				await rimraf(dbPath);
 			}
 		});
 	});
@@ -412,7 +354,6 @@ for (const { name, options } of testOptions) {
 				await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 
@@ -425,7 +366,6 @@ for (const { name, options } of testOptions) {
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 			} finally {
 				db?.close();
-				await rimraf(dbPath);
 			}
 		});
 	});

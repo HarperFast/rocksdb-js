@@ -9,6 +9,7 @@
 namespace rocksdb_js {
 
 /**
+<<<<<<< HEAD
  * Logs a debug message to stderr prefixed with the current thread id.
  */
 void debugLog(const char* msg, ...) {
@@ -17,6 +18,145 @@ void debugLog(const char* msg, ...) {
     fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     vfprintf(stderr, msg, args);
     va_end(args);
+=======
+ * Dumps the value of a napi_value to stderr.
+ *
+ * Note: Use the `DEBUG_LOG_NAPI_VALUE()` macro instead of calling this
+ * directly.
+ */
+void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isObject) {
+	napi_valuetype type;
+	if (indent > 5 || ::napi_typeof(env, value, &type) != napi_ok) {
+		return;
+	}
+
+	if (!isObject) {
+		for (uint16_t i = 0; i < indent; i++) {
+			fprintf(stderr, "  ");
+		}
+	}
+
+	switch (type) {
+		case napi_undefined: fprintf(stderr, "undefined"); break;
+		case napi_null: fprintf(stderr, "null"); break;
+		case napi_boolean: {
+			bool result;
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_bool(env, value, &result))
+			if (result) {
+				fprintf(stderr, "true");
+			} else {
+				fprintf(stderr, "false");
+			}
+			break;
+		}
+		case napi_number: {
+			double result;
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_double(env, value, &result))
+			fprintf(stderr, "%f", result);
+			break;
+		}
+		case napi_string: {
+			char buffer[1024];
+			size_t result;
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, value, buffer, sizeof(buffer), &result))
+			fprintf(stderr, "\"%s\"", buffer);
+			break;
+		}
+		case napi_function:
+		case napi_symbol: {
+			napi_value toStringFn;
+			NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, value, "toString", &toStringFn))
+
+			napi_value resultValue;
+			NAPI_STATUS_THROWS_VOID(::napi_call_function(env, value, toStringFn, 0, nullptr, &resultValue));
+
+			char buffer[128];
+			size_t result;
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, resultValue, buffer, sizeof(buffer), &result))
+
+			fprintf(stderr, "%s", buffer);
+			break;
+		}
+		case napi_object: {
+			bool isArray;
+			NAPI_STATUS_THROWS_VOID(::napi_is_array(env, value, &isArray));
+			if (isArray) {
+				uint32_t length;
+				NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, value, &length))
+
+				fprintf(stderr, "[");
+				if (length > 0) {
+					fprintf(stderr, "\n");
+					for (uint32_t i = 0; i < length; i++) {
+						napi_value element;
+						NAPI_STATUS_THROWS_VOID(::napi_get_element(env, value, i, &element))
+						debugLogNapiValue(env, element, indent + 1);
+						if (i < length - 1) {
+							fprintf(stderr, ", // %u\n", i);
+						} else {
+							fprintf(stderr, "  // %u\n", i);
+						}
+					}
+				}
+				fprintf(stderr, "]");
+			} else {
+				napi_value properties;
+				NAPI_STATUS_THROWS_VOID(::napi_get_property_names(env, value, &properties))
+				uint32_t length;
+				NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, properties, &length))
+
+				fprintf(stderr, "{");
+				if (length > 0) {
+					fprintf(stderr, "\n");
+					for (uint32_t i = 0; i < length; i++) {
+						napi_value propertyName;
+						NAPI_STATUS_THROWS_VOID(::napi_get_element(env, properties, i, &propertyName))
+
+						char nameBuffer[1024];
+						size_t nameLength;
+						NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, propertyName, nameBuffer, sizeof(nameBuffer), &nameLength))
+
+						napi_value propertyValue;
+						NAPI_STATUS_THROWS_VOID(::napi_get_property(env, value, propertyName, &propertyValue))
+
+						for (uint16_t i = 0; i < indent; i++) {
+							fprintf(stderr, "  ");
+						}
+						fprintf(stderr, "  %s: ", nameBuffer);
+						debugLogNapiValue(env, propertyValue, indent + 1, true);
+						if (i < length - 1) {
+							fprintf(stderr, ",");
+						}
+						fprintf(stderr, "\n");
+					}
+				}
+
+				for (uint16_t i = 0; i < indent; i++) {
+					fprintf(stderr, "  ");
+				}
+				fprintf(stderr, "}");
+			}
+			break;
+		}
+		case napi_external: fprintf(stderr, "[external]"); break;
+		case napi_bigint: {
+			int64_t result;
+			bool lossless;
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_bigint_int64(env, value, &result, &lossless))
+			if (lossless) {
+				fprintf(stderr, "%lld", result);
+			} else {
+				fprintf(stderr, "%lld (lossy)", result);
+			}
+			break;
+		}
+		default: fprintf(stderr, "[unknown]");
+	}
+
+	if (!isObject) {
+		fprintf(stderr, "\n");
+	}
+>>>>>>> northstar
 }
 
 /**

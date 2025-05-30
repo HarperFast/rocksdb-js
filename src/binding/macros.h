@@ -9,9 +9,12 @@
 #ifdef DEBUG
 	#define DEBUG_LOG(msg, ...) \
 		rocksdb_js::debugLog(msg, ##__VA_ARGS__);
+	#define DEBUG_LOG_NAPI_VALUE(value) \
+		rocksdb_js::debugLogNapiValue(env, value);
 #else
 	// release builds debug logging is a no-op
 	#define DEBUG_LOG(msg, ...)
+	#define DEBUG_LOG_NAPI_VALUE(value)
 #endif
 
 #define NAPI_STATUS_RETURN(call) \
