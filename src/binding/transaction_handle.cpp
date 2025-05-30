@@ -9,7 +9,7 @@ namespace rocksdb_js {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
+TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
 	txn(nullptr)
 {
@@ -24,7 +24,9 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle) :
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
-	this->txn->SetSnapshot();
+	if (!disableSnapshot) {
+		this->txn->SetSnapshot();
+	}
 	this->id = this->txn->GetId() & 0xffffffff;
 }
 

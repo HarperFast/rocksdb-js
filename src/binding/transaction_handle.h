@@ -26,7 +26,7 @@ struct DBHandle;
  * shared between the `Database` and `Transaction` classes.
  */
 struct TransactionHandle final : Closable {
-	TransactionHandle(std::shared_ptr<DBHandle> dbHandle);
+	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
 	void close() override;

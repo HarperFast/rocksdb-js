@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      msgpackr:
+        specifier: 1.11.2
+        version: 1.11.2
+      ordered-binary:
+        specifier: 1.5.3
+        version: 1.5.3
     devDependencies:
       '@rollup/plugin-commonjs':
         specifier: ^28.0.3
@@ -35,15 +42,9 @@ importers:
       lefthook:
         specifier: 1.11.12
         version: 1.11.12
-      msgpackr:
-        specifier: 1.11.2
-        version: 1.11.2
       node-gyp:
         specifier: 11.2.0
         version: 11.2.0
-      ordered-binary:
-        specifier: 1.5.3
-        version: 1.5.3
       oxlint:
         specifier: 0.16.9
         version: 0.16.9
