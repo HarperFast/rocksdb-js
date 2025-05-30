@@ -9,7 +9,6 @@
 namespace rocksdb_js {
 
 /**
-<<<<<<< HEAD
  * Logs a debug message to stderr prefixed with the current thread id.
  */
 void debugLog(const char* msg, ...) {
@@ -18,7 +17,9 @@ void debugLog(const char* msg, ...) {
     fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     vfprintf(stderr, msg, args);
     va_end(args);
-=======
+}
+
+/**
  * Dumps the value of a napi_value to stderr.
  *
  * Note: Use the `DEBUG_LOG_NAPI_VALUE()` macro instead of calling this
@@ -156,7 +157,6 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 	if (!isObject) {
 		fprintf(stderr, "\n");
 	}
->>>>>>> northstar
 }
 
 /**
