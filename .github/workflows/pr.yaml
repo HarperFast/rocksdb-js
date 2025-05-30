@@ -44,9 +44,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --ignore-scripts
 
-      - name: Debug build
-        run: pnpm rebuild:debug
-
       - name: Lint
         run: pnpm lint
 
