@@ -6,6 +6,14 @@
  * operations.
  */
 
+#ifdef DEBUG
+	#define DEBUG_LOG_NAPI_VALUE(value) \
+		rocksdb_js::debugLogNapiValue(env, value);
+#else
+	// release builds debug logging is a no-op
+	#define DEBUG_LOG_NAPI_VALUE(value)
+#endif
+
 #define NAPI_STATUS_RETURN(call) \
 	{ \
 		napi_status status = (call); \
