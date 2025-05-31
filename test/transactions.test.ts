@@ -45,6 +45,7 @@ for (const { name, options } of testOptions) {
 				});
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -61,6 +62,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -80,6 +82,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBeUndefined();
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -100,6 +103,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -140,6 +144,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -167,6 +172,7 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -196,6 +202,8 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await rimraf(dbPath);
+				await rimraf(dbPath2);
 			}
 		});
 	});
@@ -211,6 +219,7 @@ for (const { name, options } of testOptions) {
 					.toThrow(new TypeError('Callback must be a function'));
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -227,6 +236,7 @@ for (const { name, options } of testOptions) {
 				});
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -245,6 +255,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar2');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -264,6 +275,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBeUndefined();
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -284,6 +296,7 @@ for (const { name, options } of testOptions) {
 				expect(value).toBe('bar');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -311,6 +324,7 @@ for (const { name, options } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await rimraf(dbPath);
 			}
 		});
 	});
@@ -325,6 +339,7 @@ for (const { name, options } of testOptions) {
 				await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 
@@ -337,6 +352,7 @@ for (const { name, options } of testOptions) {
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 			} finally {
 				db?.close();
+				await rimraf(dbPath);
 			}
 		});
 	});
