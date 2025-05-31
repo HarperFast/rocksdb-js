@@ -1,8 +1,7 @@
-import { afterEach, assert, describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-// import { setTimeout as delay } from 'node:timers/promises';
 import type { Transaction } from '../src/transaction.js';
 
 const testOptions = [
@@ -15,21 +14,6 @@ const testOptions = [
 		options: { pessimistic: true },
 	}
 ];
-
-let dbPath: string | null = null;
-let dbPath2: string | null = null;
-
-afterEach(async () => {
-	for (const path of [dbPath, dbPath2]) {
-		if (path) {
-			gc?.();
-			// await delay(500);
-			await rimraf(path);
-		}
-	}
-	dbPath = null;
-	dbPath2 = null;
-});
 
 for (const { name, options } of testOptions) {
 	describe(`transaction() (${name})`, () => {
@@ -50,7 +34,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} async should get a value`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -66,7 +50,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} async should set a value`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -82,7 +66,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} async should remove a value`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -101,7 +85,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} async should rollback on error`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -121,7 +105,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} async should treat transaction as a snapshot`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -162,7 +146,7 @@ for (const { name, options } of testOptions) {
 		it(`${name} async should allow transactions across column families`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -189,8 +173,8 @@ for (const { name, options } of testOptions) {
 		it(`${name} async should allow multiple transactions to run in parallel`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
-			dbPath = generateDBPath();
-			dbPath2 = generateDBPath();
+			const dbPath = generateDBPath();
+			const dbPath2 = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -219,7 +203,7 @@ for (const { name, options } of testOptions) {
 	describe(`transactionSync() (${name})`, () => {
 		it(`${name} sync should error if callback is not a function`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -232,7 +216,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} sync should get a value`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -248,7 +232,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} sync should set a value`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -266,7 +250,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} sync should remove a value`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -285,7 +269,7 @@ for (const { name, options } of testOptions) {
 
 		it(`${name} sync should rollback on error`, async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -306,7 +290,7 @@ for (const { name, options } of testOptions) {
 		it(`${name} sync should allow transactions across column families`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -334,7 +318,7 @@ for (const { name, options } of testOptions) {
 	describe(`Error handling (${name})`, () => {
 		it('should error if transaction is invalid', async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
@@ -346,7 +330,7 @@ for (const { name, options } of testOptions) {
 
 		it('should error if transaction is not found', async () => {
 			let db: RocksDatabase | null = null;
-			dbPath = generateDBPath();
+			const dbPath = generateDBPath();
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);

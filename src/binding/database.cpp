@@ -35,7 +35,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	// create shared_ptr on heap so it persists after function returns
 	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
 
-	DEBUG_LOG("%p Database::Constructor Creating NativeDatabase\n", dbHandle->get())
+	DEBUG_LOG("%p Database::Constructor Creating NativeDatabase use_count=%zu\n", dbHandle->get(), dbHandle->use_count())
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -43,10 +43,11 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 			jsThis,
 			reinterpret_cast<void*>(dbHandle),
 			[](napi_env env, void* data, void* hint) {
-				DEBUG_LOG("%p Database::Constructor NativeDatabase GC'd\n", data)
+				DEBUG_LOG("Database::Constructor NativeDatabase GC'd dbHandle=%p\n", data)
 				auto* dbHandle = static_cast<std::shared_ptr<DBHandle>*>(data);
-				(*dbHandle)->close();
-				dbHandle->reset();
+				if (*dbHandle) {
+					(*dbHandle).reset();
+				}
 				delete dbHandle;
 			},
 			nullptr, // finalize_hint
@@ -76,10 +77,8 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
 
-	if (*dbHandle != nullptr) {
-		DEBUG_LOG("%p Database::Close closing database\n", dbHandle->get())
+	if (*dbHandle) {
 		(*dbHandle)->close();
-		DEBUG_LOG("%p Database::Close closed database\n", dbHandle->get())
 	}
 
 	NAPI_RETURN_UNDEFINED()
@@ -300,7 +299,6 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	DBOptions dbHandleOptions { mode, name, noBlockCache, parallelismThreads };
 
 	try {
-		DEBUG_LOG("%p Database::Open opening database %s\n", dbHandle->get(), path.c_str())
 		(*dbHandle)->open(path, dbHandleOptions);
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());

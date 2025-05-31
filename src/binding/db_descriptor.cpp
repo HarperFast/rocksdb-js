@@ -65,7 +65,7 @@ void DBDescriptor::detach(Closable* closable) {
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
 	uint32_t id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->mutex);
-	transactions[id] = txnHandle;
+	this->transactions[id] = txnHandle;
 	this->closables.insert(txnHandle.get());
 }
 
@@ -74,17 +74,15 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
  */
 std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
 	std::lock_guard<std::mutex> lock(this->mutex);
-	return transactions[id];
+	return this->transactions[id];
 }
 
 /**
  * Removes a transaction from the registry.
  */
-void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandle) {
-	uint32_t id = txnHandle->id;
+void DBDescriptor::transactionRemove(uint32_t id) {
 	std::lock_guard<std::mutex> lock(this->mutex);
-	transactions.erase(id);
-	this->closables.erase(txnHandle.get());
+	this->transactions.erase(id);
 }
 
 } // namespace rocksdb_js

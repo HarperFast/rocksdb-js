@@ -5,9 +5,11 @@
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "db_descriptor.h"
+#include "util.h"
 
 namespace rocksdb_js {
 
+// forward declare DBDescriptor because of circular dependency
 struct DBDescriptor;
 
 /**
@@ -17,7 +19,7 @@ struct DBDescriptor;
  * This handle is for convenience since passing around a shared pointer is a
  * pain.
  */
-struct DBHandle final {
+struct DBHandle final : Closable {
 	DBHandle();
 	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
 	~DBHandle();

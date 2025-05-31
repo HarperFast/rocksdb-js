@@ -12,7 +12,6 @@
 namespace rocksdb_js {
 
 // forward declare DBHandle because of circular dependency
-// (DBHandle -> DBDescriptor -> TransactionHandle)
 struct DBHandle;
 
 /**

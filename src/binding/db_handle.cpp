@@ -49,13 +49,17 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handle = DBRegistry::OpenDB(path, options);
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
+	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed\n", this, handle.get())
 }
 
 /**
  * Checks if the referenced database is opened.
  */
 bool DBHandle::opened() const {
-	return this->descriptor && this->descriptor->db;
+	if (this->descriptor && this->descriptor->db) {
+		return true;
+	}
+	return false;
 }
 
 } // namespace rocksdb_js

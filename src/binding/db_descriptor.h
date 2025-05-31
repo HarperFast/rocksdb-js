@@ -13,6 +13,7 @@
 
 namespace rocksdb_js {
 
+// forward declare TransactionHandle because of circular dependency
 struct TransactionHandle;
 
 /**
@@ -33,7 +34,7 @@ struct DBDescriptor final {
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
-	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
+	void transactionRemove(uint32_t id);
 
 	std::string path;
 	DBMode mode;

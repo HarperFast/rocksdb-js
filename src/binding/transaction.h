@@ -6,35 +6,6 @@
 namespace rocksdb_js {
 
 /**
- * A simple wrapper around the DBHandle and TransactionHandle to pass into the
- * Transaction JS constructor so it can be cleaned up when the Transaction JS
- * object is garbage collected.
- */
-struct DBTxnHandle final : Closable {
-	DBTxnHandle(std::shared_ptr<DBHandle> dbHandle)
-		: dbDescriptor(dbHandle->descriptor)
-	{
-		this->txnHandle = std::make_shared<TransactionHandle>(dbHandle);
-		this->dbDescriptor->transactionAdd(this->txnHandle);
-	}
-
-	~DBTxnHandle() {
-		this->close();
-	}
-
-	void close() {
-		if (this->txnHandle) {
-			this->dbDescriptor->transactionRemove(this->txnHandle);
-			this->txnHandle->close();
-			this->txnHandle.reset();
-		}
-	}
-
-	std::shared_ptr<DBDescriptor> dbDescriptor;
-	std::shared_ptr<TransactionHandle> txnHandle;
-};
-
-/**
  * The `NativeTransaction` JavaScript class implementation.
  * 
  * @example
