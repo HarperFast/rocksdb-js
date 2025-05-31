@@ -67,7 +67,7 @@
 				},
 				'Debug': {
 					'cflags_cc+': ['-g', '--coverage'],
-					'defines': ['DEBUG', '_ITERATOR_DEBUG_LEVEL=2'],
+					'defines': ['DEBUG'],
 					'ldflags': ['--coverage'],
 					'xcode_settings': {
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
