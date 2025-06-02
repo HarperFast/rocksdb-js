@@ -78,6 +78,16 @@
 		} \
 	}
 
+#define NAPI_ASSERT_OBJECT_OR_UNDEFINED(obj, errorMsg) \
+	{ \
+		napi_valuetype objType; \
+		NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, obj, &objType), napi_invalid_arg); \
+		if (objType != napi_object && objType != napi_undefined && objType != napi_null) { \
+			::napi_throw_error(env, nullptr, errorMsg); \
+			return napi_invalid_arg; \
+		} \
+	}
+
 #define NAPI_RETURN_UNDEFINED() \
 	napi_value undefined; \
 	napi_get_undefined(env, &undefined); \

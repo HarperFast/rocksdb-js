@@ -1,5 +1,6 @@
 #include "database.h"
 #include "db_handle.h"
+#include "db_iterator.h"
 #include "macros.h"
 #include "transaction.h"
 #include "transaction_handle.h"
@@ -225,6 +226,32 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Gets the number of keys within a range or in the entire RocksDB database.
+ *
+ * @example
+ * ```ts
+ * const txn = new NativeTransaction(db);
+ * const total = txn.getCount();
+ * const range = txn.getCount({ start: 'a', end: 'z' });
+ * ```
+ */
+napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_HANDLE("GetCount")
+
+	DBIteratorOptions itOptions;
+	itOptions.initFromNapiObject(env, argv[0]);
+	itOptions.values = false;
+
+	uint64_t count = 0;
+	(*txnHandle)->getCount(itOptions, count);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result))
+	return result;
+}
+
+/**
  * Retrieves a value for the given key.
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
@@ -314,6 +341,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commitSync", nullptr, CommitSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		// merge?

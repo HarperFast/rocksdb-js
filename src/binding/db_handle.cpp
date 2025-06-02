@@ -26,6 +26,7 @@ DBHandle::~DBHandle() {
  * Closes the DBHandle.
  */
 void DBHandle::close() {
+	DEBUG_LOG("%p DBHandle::close() dbDescriptor=%p\n", this, this->descriptor.get())
 	if (this->column) {
 		this->column.reset();
 	}

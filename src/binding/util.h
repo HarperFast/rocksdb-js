@@ -29,6 +29,16 @@ void debugLog(const char* msg, ...);
 
 void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent = 0, bool isObject = false);
 
+napi_status getKeyFromProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	const char* errorMsg,
+	const char*& keyStr,
+	uint32_t& start,
+	uint32_t& end
+);
+
 const char* getNapiBufferFromArg(
 	napi_env env,
 	napi_value arg,
@@ -86,6 +96,13 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	int64_t result2;
 	NAPI_STATUS_RETURN(::napi_get_value_int64(env, value, &result2));
 	result = static_cast<uint64_t>(result2);
+	return napi_ok;
+}
+
+[[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, size_t& result) {
+	int64_t result2;
+	NAPI_STATUS_RETURN(::napi_get_value_int64(env, value, &result2));
+	result = static_cast<size_t>(result2);
 	return napi_ok;
 }
 

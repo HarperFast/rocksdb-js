@@ -160,6 +160,47 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 }
 
 /**
+ * Gets a `key` from a JavaScript object property and stores it in the
+ * specified `RocksDB::Slice`.
+ */
+napi_status getKeyFromProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	const char* errorMsg,
+	const char*& keyStr,
+	uint32_t& start,
+	uint32_t& end
+) {
+	napi_value value;
+	NAPI_STATUS_THROWS_RVAL(::napi_get_named_property(env, obj, prop, &value), napi_invalid_arg);
+
+	bool has = false;
+	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, obj, prop, &has), napi_invalid_arg);
+	if (!has) {
+		return napi_ok;
+	}
+
+	napi_valuetype valueType;
+	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, value, &valueType), napi_invalid_arg);
+	if (valueType == napi_undefined) {
+		return napi_ok;
+	}
+
+	bool isBuffer;
+	NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, value, &isBuffer), napi_invalid_arg);
+	if (!isBuffer) {
+		::napi_throw_error(env, nullptr, errorMsg);
+		return napi_invalid_arg;
+	}
+
+	size_t length = 0;
+	keyStr = rocksdb_js::getNapiBufferFromArg(env, value, start, end, length, errorMsg);
+
+	return napi_ok;
+}
+
+/**
  * Gets an error message from the NAPI error.
  */
 std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg) {

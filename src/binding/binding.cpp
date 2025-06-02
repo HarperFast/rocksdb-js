@@ -1,5 +1,6 @@
 #include "binding.h"
 #include "database.h"
+#include "db_iterator.h"
 #include "db_registry.h"
 #include "db_settings.h"
 #include "macros.h"
@@ -24,6 +25,9 @@ NAPI_MODULE_INIT() {
 
 	// transaction
 	rocksdb_js::Transaction::Init(env, exports);
+
+	// db iterator
+	rocksdb_js::DBIterator::Init(env, exports);
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);

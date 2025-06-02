@@ -196,6 +196,16 @@ export class Store {
 	}
 
 	/**
+	 * Decodes a key from the database.
+	 *
+	 * @param key - The key to decode.
+	 * @returns The decoded key.
+	 */
+	decodeKey(key: Buffer): Key {
+		return this.readKey(key as BufferWithDataView, 0, key.length);
+	}
+
+	/**
 	 * Decodes a value from the database.
 	 *
 	 * @param value - The value to decode.
