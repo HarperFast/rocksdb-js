@@ -9,11 +9,19 @@ export class RangeIterable<T> {
 	#transformer?: ValueTransformer<any, T>;
 
 	constructor(
-		iterator: Iterator<T> | Array<T>,
+		iterator: Array<T> | Iterator<T> | IterableIterator<T>,
 		transformer?: ValueTransformer<any, T>
 	) {
+		const isIterable = typeof iterator[Symbol.iterator] === 'function';
+		if (!iterator || (!isIterable && typeof iterator?.next !== 'function')) {
+			throw new TypeError('Invalid iterator');
+		}
+		this.#iterator = isIterable ? iterator[Symbol.iterator]() : iterator;
+
+		if (transformer && typeof transformer !== 'function') {
+			throw new TypeError('Transformer must be a function');
+		}
 		this.#transformer = transformer;
-		this.#iterator = Array.isArray(iterator) ? iterator[Symbol.iterator]() : iterator;
 	}
 
 	/**
