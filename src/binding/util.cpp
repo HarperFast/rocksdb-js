@@ -1,9 +1,23 @@
+#include <cstdarg>
+#include <functional>
 #include <node_api.h>
 #include <string>
 #include <sstream>
+#include <thread>
 #include "util.h"
 
 namespace rocksdb_js {
+
+/**
+ * Logs a debug message to stderr prefixed with the current thread id.
+ */
+void debugLog(const char* msg, ...) {
+    va_list args;
+    va_start(args, msg);
+    fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+    vfprintf(stderr, msg, args);
+    va_end(args);
+}
 
 /**
  * Dumps the value of a napi_value to stderr.

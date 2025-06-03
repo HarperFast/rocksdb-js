@@ -3,14 +3,17 @@
 
 #include <memory>
 #include <node_api.h>
+#include <set>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "db_options.h"
 #include "transaction_handle.h"
+#include "util.h"
 
 namespace rocksdb_js {
 
+// forward declare TransactionHandle because of circular dependency
 struct TransactionHandle;
 
 /**
@@ -26,16 +29,20 @@ struct DBDescriptor final {
 	);
 	~DBDescriptor();
 
-	void addTransaction(std::shared_ptr<TransactionHandle> txnHandle);
-	std::shared_ptr<TransactionHandle> getTransaction(uint32_t id);
-	void removeTransaction(std::shared_ptr<TransactionHandle> txnHandle);
+	void attach(Closable* closable);
+	void detach(Closable* closable);
+
+	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
+	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
+	void transactionRemove(uint32_t id);
 
 	std::string path;
 	DBMode mode;
 	std::shared_ptr<rocksdb::DB> db;
 	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
-	std::mutex txnMutex;
+	std::mutex mutex;
+	std::set<Closable*> closables;
 };
 
 } // namespace rocksdb_js

@@ -26,9 +26,16 @@ DBHandle::~DBHandle() {
  * Closes the DBHandle.
  */
 void DBHandle::close() {
-	this->column.reset();
-	this->descriptor.reset();
-	DBRegistry::getInstance()->purge();
+	if (this->column) {
+		this->column.reset();
+	}
+
+	if (this->descriptor) {
+		this->descriptor.reset();
+	}
+
+	// purge all weak references in the registry
+	DBRegistry::Purge();
 }
 
 /**
@@ -39,16 +46,20 @@ void DBHandle::close() {
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
-	auto handle = DBRegistry::getInstance()->openDB(path, options);
+	auto handle = DBRegistry::OpenDB(path, options);
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
+	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed\n", this, handle.get())
 }
 
 /**
  * Checks if the referenced database is opened.
  */
 bool DBHandle::opened() const {
-	return this->descriptor != nullptr && this->descriptor->db != nullptr;
+	if (this->descriptor && this->descriptor->db) {
+		return true;
+	}
+	return false;
 }
 
 } // namespace rocksdb_js

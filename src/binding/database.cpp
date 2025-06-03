@@ -35,15 +35,20 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	// create shared_ptr on heap so it persists after function returns
 	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
 
+	DEBUG_LOG("%p Database::Constructor Creating NativeDatabase use_count=%zu\n", dbHandle->get(), dbHandle->use_count())
+
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
 			env,
 			jsThis,
 			reinterpret_cast<void*>(dbHandle),
 			[](napi_env env, void* data, void* hint) {
-				auto* ptr = static_cast<std::shared_ptr<DBHandle>*>(data);
-				ptr->reset();
-				delete ptr;
+				DEBUG_LOG("Database::Constructor NativeDatabase GC'd dbHandle=%p\n", data)
+				auto* dbHandle = static_cast<std::shared_ptr<DBHandle>*>(data);
+				if (*dbHandle) {
+					(*dbHandle).reset();
+				}
+				delete dbHandle;
 			},
 			nullptr, // finalize_hint
 			nullptr  // result
@@ -72,50 +77,11 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
 
-	if (*dbHandle != nullptr) {
+	if (*dbHandle) {
 		(*dbHandle)->close();
 	}
 
 	NAPI_RETURN_UNDEFINED()
-}
-
-/**
- * Creates a new `NativeTransaction` JavaScript object with the
- * `rocksdb::Transaction` active and ready to go.
- *
- * @example
- * ```ts
- * const db = new NativeDatabase();
- * const txn = db.createTransaction();
- * ```
- */
-napi_value Database::CreateTransaction(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_DB_HANDLE_AND_OPEN()
-
-	napi_value constructor;
-	NAPI_STATUS_THROWS(::napi_get_reference_value(env, rocksdb_js::Transaction::constructor, &constructor))
-
-	napi_value args[1];
-
-	// create a new shared_ptr on the heap that shares ownership
-	auto* txnDbHandle = new std::shared_ptr<DBHandle>(*dbHandle);
-
-	NAPI_STATUS_THROWS(::napi_create_external(
-		env,
-		txnDbHandle,
-		[](napi_env env, void* data, void* hint) {
-			auto* ptr = static_cast<std::shared_ptr<DBHandle>*>(data);
-			delete ptr;
-		},
-		nullptr,
-		&args[0]
-	))
-
-	napi_value txn;
-	NAPI_STATUS_THROWS(::napi_new_instance(env, constructor, 1, args, &txn))
-
-	return txn;
 }
 
 /**
@@ -150,7 +116,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
 
-		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
@@ -249,19 +215,15 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
 
-		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->getSync(keySlice, value, *dbHandle);
 	} else {
-		rocksdb::ReadOptions read_options;
-		// TODO: try with kBlockCacheTier, if it fails, then retry with rocksdb::kReadAllTier
-		// read_options.read_tier = rocksdb::kBlockCacheTier;
-
 		status = (*dbHandle)->descriptor->db->Get(
-			read_options,
+			rocksdb::ReadOptions(),
 			(*dbHandle)->column.get(),
 			keySlice,
 			&value
@@ -367,7 +329,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
 
-		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
@@ -414,7 +376,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
 
-		auto txnHandle = (*dbHandle)->descriptor->getTransaction(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			::napi_throw_error(env, nullptr, "Transaction not found");
 			NAPI_RETURN_UNDEFINED()
@@ -443,7 +405,6 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "createTransaction", nullptr, CreateTransaction, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -452,20 +413,22 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
-	constexpr auto className = "Database";
-	napi_value cons;
+	auto className = "Database";
+	constexpr size_t len = sizeof("Database") - 1;
+
+	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,              // className
-		sizeof(className) - 1,  // length of class name (subtract 1 for null terminator)
-		Constructor,            // constructor
-		nullptr,                // constructor arg
+		className,    // className
+		len,          // length of class name
+		Constructor,  // constructor
+		nullptr,      // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
-		properties,             // properties array
-		&cons                   // [out] constructor
+		properties,   // properties array
+		&ctor         // [out] constructor
 	))
 
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, cons))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
 }
 
 /**

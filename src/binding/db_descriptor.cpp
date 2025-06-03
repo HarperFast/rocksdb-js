@@ -21,42 +21,68 @@ DBDescriptor::DBDescriptor(
 }
 
 /**
- * Destroys the database descriptor.
- */
+ * Destroy the database descriptor and any resources associated to it
+ * (transactions, iterators, etc).
+ */	
 DBDescriptor::~DBDescriptor() {
-	std::lock_guard<std::mutex> lock(txnMutex);
-	for (auto& txn : this->transactions) {
-		txn.second.reset();
+	if (this->closables.size()) {
+		while (!this->closables.empty()) {
+			Closable* handle = *this->closables.begin();
+			this->closables.erase(handle);
+			handle->close();
+		}
 	}
-	this->transactions.clear();
-	this->columns.clear();
-	this->db.reset();
+
+	// Clear everything else after all closables are done
+	{
+		std::lock_guard<std::mutex> lock(this->mutex);
+		this->transactions.clear();
+		this->columns.clear();
+		this->db.reset();
+	}
+}
+
+/**
+ * Registers a database resource to be closed when the descriptor is closed.
+ */
+void DBDescriptor::attach(Closable* closable) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->closables.insert(closable);
+}
+
+/**
+ * Unregisters a database resource from being closed when the descriptor is
+ * closed.
+ */
+void DBDescriptor::detach(Closable* closable) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->closables.erase(closable);
 }
 
 /**
  * Adds a transaction to the registry.
  */
-void DBDescriptor::addTransaction(std::shared_ptr<TransactionHandle> txnHandle) {
+void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
 	uint32_t id = txnHandle->id;
-	std::lock_guard<std::mutex> lock(txnMutex);
-	transactions[id] = txnHandle;
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->transactions[id] = txnHandle;
+	this->closables.insert(txnHandle.get());
 }
 
 /**
  * Retrieves a transaction from the registry.
  */
-std::shared_ptr<TransactionHandle> DBDescriptor::getTransaction(uint32_t id) {
-	std::lock_guard<std::mutex> lock(txnMutex);
-	return transactions[id];
+std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	return this->transactions[id];
 }
 
 /**
  * Removes a transaction from the registry.
  */
-void DBDescriptor::removeTransaction(std::shared_ptr<TransactionHandle> txnHandle) {
-	uint32_t id = txnHandle->id;
-	std::lock_guard<std::mutex> lock(txnMutex);
-	transactions.erase(id);
+void DBDescriptor::transactionRemove(uint32_t id) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->transactions.erase(id);
 }
 
 } // namespace rocksdb_js

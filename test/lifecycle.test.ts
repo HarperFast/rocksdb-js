@@ -21,7 +21,7 @@ describe('Lifecycle', () => {
 			expect(db.isOpen()).toBe(true);
 			expect(db.get('foo')).toBeUndefined();
 
-			await db.close();
+			db.close();
 
 			expect(db.isOpen()).toBe(false);
 

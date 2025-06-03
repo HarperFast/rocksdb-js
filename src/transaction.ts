@@ -1,6 +1,6 @@
 import { DBI } from './dbi';
 import { Store } from './store.js';
-import type { NativeTransaction } from './load-binding.js';
+import { NativeTransaction } from './load-binding.js';
 
 /**
  * Provides transaction level operations to a transaction callback.
@@ -14,7 +14,7 @@ export class Transaction extends DBI {
 	 * @param store - The base store interface for this transaction.
 	 */
 	constructor(store: Store) {
-		const txn = store.db.createTransaction();
+		const txn = new NativeTransaction(store.db);
 		super(store, txn);
 		this.#txn = txn;
 	}

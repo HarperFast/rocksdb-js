@@ -2,7 +2,6 @@
 #include "database.h"
 #include "transaction_handle.h"
 #include "macros.h"
-#include "util.h"
 
 namespace rocksdb_js {
 
@@ -25,9 +24,11 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
+
 	if (!disableSnapshot) {
 		this->txn->SetSnapshot();
 	}
+
 	this->id = this->txn->GetId() & 0xffffffff;
 }
 
@@ -35,7 +36,29 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
  * Destroys the handle's RocksDB transaction.
  */
 TransactionHandle::~TransactionHandle() {
-	this->release();
+	this->close();
+}
+
+/**
+ * Release the transaction. This is called after successful commit, after
+ * the transaction has been aborted, or when the transaction is destroyed.
+ */
+void TransactionHandle::close() {
+	if (!this->txn) {
+		return;
+	}
+
+	// destroy the RocksDB transaction
+	this->txn->ClearSnapshot();
+	delete this->txn;
+	this->txn = nullptr;
+
+	// unregister this transaction handle from the descriptor
+	if (this->dbHandle && this->dbHandle->descriptor) {
+		this->dbHandle->descriptor->transactionRemove(this->id);
+	}
+	
+	this->dbHandle.reset();
 }
 
 /**
@@ -48,6 +71,11 @@ napi_value TransactionHandle::get(
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	if (!this->txn) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+
 	napi_value returnStatus;
 	std::string value;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
@@ -117,6 +145,10 @@ rocksdb::Status TransactionHandle::getSync(
 	std::string& result,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	if (!this->txn) {
+		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+
 	auto readOptions = rocksdb::ReadOptions();
 	readOptions.snapshot = this->txn->GetSnapshot();
 
@@ -135,6 +167,10 @@ rocksdb::Status TransactionHandle::putSync(
 	rocksdb::Slice& value,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	if (!this->txn) {
+		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
 	return this->txn->Put(column, key, value);
@@ -147,21 +183,13 @@ rocksdb::Status TransactionHandle::removeSync(
 	rocksdb::Slice& key,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	if (!this->txn) {
+		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
 	return this->txn->Delete(column, key);
-}
-
-/**
- * Release the transaction. This is called after successful commit, after
- * the transaction has been aborted, or when the transaction is destroyed.
- */
-void TransactionHandle::release() {
-	if (this->txn) {
-		this->txn->ClearSnapshot();
-		delete this->txn;
-		this->txn = nullptr;
-	}
 }
 
 } // namespace rocksdb_js
