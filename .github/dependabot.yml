@@ -41,7 +41,3 @@ updates:
     # Allow specific updates
     allow:
       - dependency-type: "all"
-    # Ignore specific dependencies if needed
-    ignore:
-      # Completely ignore NATS
-      - dependency-name: "nats"
