@@ -48,6 +48,7 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// readOnly?: boolean;
 	sharedStructuresKey?: symbol;
 	// trackMetrics?: boolean;
+	// useVersions?: boolean;
 }
 
 /**
