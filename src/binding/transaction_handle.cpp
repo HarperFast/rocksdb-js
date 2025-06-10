@@ -57,7 +57,7 @@ void TransactionHandle::close() {
 	if (this->dbHandle && this->dbHandle->descriptor) {
 		this->dbHandle->descriptor->transactionRemove(this->id);
 	}
-	
+
 	this->dbHandle.reset();
 }
 
