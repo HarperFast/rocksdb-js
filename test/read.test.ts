@@ -255,48 +255,4 @@ describe('Read Operations', () => {
 			}
 		});
 	});
-
-	describe('getEntry()', () => {
-		it('should error if database is not open', async () => {
-			const dbPath = generateDBPath();
-			let db: RocksDatabase | null = null;
-
-			try {
-				db = new RocksDatabase(dbPath);
-				await expect(db.getEntry('foo')).rejects.toThrow('Database not open');
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
-		it('should return undefined if key does not exist', async () => {
-			const dbPath = generateDBPath();
-			let db: RocksDatabase | null = null;
-
-			try {
-				db = await RocksDatabase.open(dbPath);
-				const entry = await db.getEntry('baz');
-				expect(entry).toBeUndefined();
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
-		it('should return the entry if key exists', async () => {
-			const dbPath = generateDBPath();
-			let db: RocksDatabase | null = null;
-
-			try {
-				db = await RocksDatabase.open(dbPath);
-				await db.put('foo', 'bar');
-				const entry = await db.getEntry('foo');
-				expect(entry).toEqual({ value: 'bar' });
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-	});
 });

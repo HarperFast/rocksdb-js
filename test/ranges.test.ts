@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import { RangeIterable } from '../src/iterator.js';
+import { ExtendedIterable } from '../src/iterator.js';
 import type { Key } from '../src/encoding.js';
 
 async function initTestDB(test: (db: RocksDatabase) => Promise<void>, name?: string) {
@@ -659,7 +659,7 @@ describe('Ranges', () => {
 		});
 	});
 
-	describe('RangeIterable.asArray', () => {
+	describe('ExtendedIterable.asArray', () => {
 		it('should return a iterable as an array', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -681,13 +681,13 @@ describe('Ranges', () => {
 		});
 
 		it('should return an array as an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const array = iter.asArray;
 			expect(array).toEqual([1, 2, 3, 4]);
 		});
 	});
 
-	describe('RangeIterable.at()', () => {
+	describe('ExtendedIterable.at()', () => {
 		it('should return an item at a specific index of an iterable', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -698,17 +698,17 @@ describe('Ranges', () => {
 				expect(iter.at(2)).toEqual({ key: 'c', value: 'value c' });
 			});
 
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			expect(iter.at(2)).toEqual(3);
 		});
 
 		it('should return an item at a specific index of an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			expect(iter.at(2)).toEqual(3);
 		});
 	});
 
-	describe('RangeIterable.concat()', () => {
+	describe('ExtendedIterable.concat()', () => {
 		it('should concat two ranges', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd']) {
@@ -728,14 +728,14 @@ describe('Ranges', () => {
 		});
 
 		it('should concat two arrays', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
-			const iter2 = new RangeIterable([5, 6, 7, 8]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
+			const iter2 = new ExtendedIterable([5, 6, 7, 8]);
 			const concat = iter.concat(iter2);
 			expect(Array.from(concat)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 		});
 	});
 
-	describe('RangeIterable.drop()', () => {
+	describe('ExtendedIterable.drop()', () => {
 		it('should drop items from a range', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd']) {
@@ -749,13 +749,13 @@ describe('Ranges', () => {
 		});
 
 		it('should drop items from an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const dropped = iter.drop(2);
 			expect(Array.from(dropped)).toEqual([3, 4]);
 		});
 	});
 
-	describe('RangeIterable.every()', () => {
+	describe('ExtendedIterable.every()', () => {
 		it('should return true if every item of an iterable passes a test', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd']) {
@@ -781,19 +781,19 @@ describe('Ranges', () => {
 		});
 
 		it('should return true if every item of an array passes a test', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const every = iter.every(item => item > 0);
 			expect(every).toBe(true);
 		});
 
 		it('should return false if any item of an array fails a test', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const every = iter.every(item => item > 1);
 			expect(every).toBe(false);
 		});
 	});
 
-	describe('RangeIterable.filter()', () => {
+	describe('ExtendedIterable.filter()', () => {
 		it('should filter items of an iterable', async () => {
 			await initTestDB(async db => {
 				let i = 0;
@@ -811,13 +811,13 @@ describe('Ranges', () => {
 		});
 
 		it('should filter items of an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const filtered = iter.filter(item => item % 2 === 0);
 			expect(Array.from(filtered)).toEqual([2, 4]);
 		});
 	});
 
-	describe('RangeIterable.find()', () => {
+	describe('ExtendedIterable.find()', () => {
 		it('should find the first item of an iterable', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd']) {
@@ -831,13 +831,13 @@ describe('Ranges', () => {
 		});
 
 		it('should find the first item of an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const found = iter.find(item => item === 3);
 			expect(found).toEqual(3);
 		});
 	});
 
-	describe('RangeIterable.flatMap()', () => {
+	describe('ExtendedIterable.flatMap()', () => {
 		it('should flatten a range', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c']) {
@@ -853,13 +853,13 @@ describe('Ranges', () => {
 		});
 
 		it('should flatten an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const flattened = iter.flatMap(item => [item, item]);
 			expect(Array.from(flattened)).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
 		});
 	});
 
-	describe('RangeIterable.forEach()', () => {
+	describe('ExtendedIterable.forEach()', () => {
 		it('should call a function for each item of an iterable', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -874,14 +874,14 @@ describe('Ranges', () => {
 		});
 
 		it('should call a function for each item of an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const values: number[] = [];
 			iter.forEach(item => values.push(item));
 			expect(values).toEqual([1, 2, 3, 4]);
 		});
 	});
 
-	describe('RangeIterable.map()', () => {
+	describe('ExtendedIterable.map()', () => {
 		it('should map each item of an iterable', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -907,13 +907,13 @@ describe('Ranges', () => {
 		});
 
 		it('should map each item of an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const mapped = iter.map(item => item * 2);
 			expect(Array.from(mapped)).toEqual([2, 4, 6, 8]);
 		});
 	});
 
-	describe('RangeIterable.mapError()', () => {
+	describe('ExtendedIterable.mapError()', () => {
 		it('should catch errors thrown iterating over a range', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -932,7 +932,7 @@ describe('Ranges', () => {
 						};
 					})
 					.mapError(error => {
-						return new Error(`Error: ${error.message}`);
+						return new Error(`Error: ${(error as Error).message}`);
 					});
 
 				expect(Array.from(mapped)).toEqual([
@@ -946,7 +946,7 @@ describe('Ranges', () => {
 		});
 
 		it('should catch errors thrown iterating over an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const mapped = iter
 				.map(item => {
 					if (item === 3) {
@@ -955,14 +955,14 @@ describe('Ranges', () => {
 					return item;
 				})
 				.mapError(error => {
-					return new Error(`Error: ${error.message}`);
+					return new Error(`Error: ${(error as Error).message}`);
 				});
 
 			expect(Array.from(mapped)).toEqual([1, 2, new Error('Error: found 3'), 4]);
 		});
 	});
 
-	describe('RangeIterable.reduce()', () => {
+	describe('ExtendedIterable.reduce()', () => {
 		it('should reduce a range', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -976,13 +976,13 @@ describe('Ranges', () => {
 		});
 
 		it('should reduce an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const reduced = iter.reduce((acc, item) => acc + item, 0);
 			expect(reduced).toEqual(10);
 		});
 	});
 
-	describe('RangeIterable.slice()', () => {
+	describe('ExtendedIterable.slice()', () => {
 		it('should slice a range', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -996,13 +996,13 @@ describe('Ranges', () => {
 		});
 
 		it('should slice an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const sliced = iter.slice(1, 3);
 			expect(Array.from(sliced)).toEqual([2, 3]);
 		});
 	});
 
-	describe('RangeIterable.some()', () => {
+	describe('ExtendedIterable.some()', () => {
 		it('should check if some items in a range pass a test', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -1018,15 +1018,15 @@ describe('Ranges', () => {
 		});
 
 		it('should check if some items in an array pass a test', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			expect( iter.some(item => item === 5)).toBe(false);
 
-			const iter2 = new RangeIterable([1, 2, 3, 4]);
+			const iter2 = new ExtendedIterable([1, 2, 3, 4]);
 			expect(iter2.some(item => item === 3)).toBe(true);
 		});
 	});
 
-	describe('RangeIterable.take()', () => {
+	describe('ExtendedIterable.take()', () => {
 		it('should take items from a range', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
@@ -1040,13 +1040,13 @@ describe('Ranges', () => {
 		});
 
 		it('should take items from an array', async () => {
-			const iter = new RangeIterable([1, 2, 3, 4]);
+			const iter = new ExtendedIterable([1, 2, 3, 4]);
 			const taken = iter.take(2);
 			expect(Array.from(taken)).toEqual([1, 2]);
 		});
 	});
 
-	describe('RangeIterable chaining', () => {
+	describe('ExtendedIterable chaining', () => {
 		it('should chain multiple methods', async () => {
 			await initTestDB(async db => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {

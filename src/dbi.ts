@@ -1,6 +1,7 @@
 import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { RangeIterable } from './iterator.js';
+import { ExtendedIterable } from './iterator.js';
+// import { ExtendedIterable } from '@harperdb/extended-iterable';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import type { Transaction } from './transaction.js';
@@ -120,8 +121,6 @@ export interface IteratorOptions extends RangeOptions {
 	 * omitted. Defaults to `true`.
 	 */
 	values?: boolean;
-
-	// versions?: boolean;
 };
 
 export interface DBITransactional {
@@ -463,7 +462,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		const endKey = !options?.key && options?.end ? this.store.encodeKey(options.end) : undefined;
 		const end = options?.key ? start : endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
 
-		return new RangeIterable<DBIteratorValue<any>>(
+		return new ExtendedIterable<DBIteratorValue<any>>(
 			new DBIterator(
 				new NativeIterator(this.#context, {
 					...options,
@@ -599,17 +598,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * db.removeSync('a');
 	 * ```
 	 */
-	removeSync(key: Key, ifVersionOrValue?: symbol | number | null, options?: T): void {
+	removeSync(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T): void {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
-
-		if (!options && ifVersionOrValue && typeof ifVersionOrValue === 'object') {
-			options = ifVersionOrValue as T;
-			ifVersionOrValue = null;
-		}
-
-		// TODO: ifVersionOrValue
 
 		const keyBuffer = this.store.encodeKey(key);
 		this.#context.removeSync(keyBuffer, getTxnId(options));
