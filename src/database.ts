@@ -45,8 +45,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	/**
 	 * In memory lock mechanism for cache resolution.
-	 * @param key 
-	 * @param version 
+	 * @param key
+	 * @param version
 	 */
 	attemptLock(_key: Key, _version: number) {
 		//

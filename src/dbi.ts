@@ -5,7 +5,7 @@ import type { Transaction } from './transaction.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
 
 export interface DBITransactional {
-	transaction: Transaction;
+	transaction?: Transaction;
 };
 
 /**
@@ -63,7 +63,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			() => this.getBinary(key, options),
 			result => result === undefined
 				? undefined
-				: this.store.encoding === 'binary' || !this.store.decoder
+				: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
 					? result
 					: this.store.decodeValue(result as Buffer)
 		);
@@ -317,6 +317,13 @@ function getTxnId(options?: DBITransactional | unknown) {
 }
 
 interface GetOptions {
+	/**
+	 * Whether to skip decoding the value.
+	 *
+	 * @default false
+	 */
+	skipDecode?: boolean;
+
 	// ifNotTxnId?: number;
 	// currentThread?: boolean;
 }
