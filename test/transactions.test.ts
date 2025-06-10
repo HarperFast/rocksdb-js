@@ -130,10 +130,12 @@ for (const { name, options, txnOptions } of testOptions) {
 						await db.transaction(async (txn: Transaction) => {
 							const before = await txn.get('foo');
 
+							// let the first timeout set `bar2`
 							await new Promise((resolve) => setTimeout(resolve, 100));
 
-							const after = await txn.get('foo');
 							// since there's no snapshot, the value should be the latest
+							const after = await txn.get('foo');
+							expect(before).not.toBe(after);
 							expect(after).toBe('bar2');
 
 							await txn.put('foo', 'bar3');
