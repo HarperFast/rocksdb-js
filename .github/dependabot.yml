@@ -1,0 +1,43 @@
+version: 2
+updates:
+  # Main package.json updates
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'daily'
+      day: 'monday'
+      time: '05:15' # UTC
+    open-pull-requests-limit: 10
+    # Group updates to reduce PR noise. Major version updates will fall through to individual PRs.
+    groups:
+      # Group all other patch updates
+      patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group all production minor updates
+      minor-production:
+        dependency-type: "production"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+      # Group all development minor updates
+      minor-development:
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+    # Add labels to PRs
+    labels:
+      - "dependencies"
+      - "automated"
+    # Customize commit message
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Allow specific updates
+    allow:
+      - dependency-type: "all"
