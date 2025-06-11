@@ -44,10 +44,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		this.#context = transaction || store.db;
 	}
 
-	doesExist(_key: Key, _versionOrValue: number | Buffer) {
-		//
-	}
-
 	/**
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
@@ -205,24 +201,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Retrieves a value for the given key as an "entry" object.
-	 *
-	 * An entry object contains a `value` property and when versions are enabled,
-	 * it also contains a `version` property.
-	 */
-	getEntry(key: Key, options?: GetOptions & T): MaybePromise<{ value: any } | undefined> {
-		const result = this.get(key, options);
-		return when(result, value => {
-			if (value !== undefined) {
-				// TODO: if versions are enabled, add a `version` property
-				return {
-					value,
-				};
-			}
-		});
-	}
-
-	/**
 	 * Retrieves all keys within a range.
 	 */
 	getKeys(_options?: GetRangeOptions & T) {
@@ -283,15 +261,15 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
 	 */
-	async remove(key: Key, ifVersionOrValue?: symbol | number | null, options?: T): Promise<void> {
-		this.removeSync(key, ifVersionOrValue, options);
+	async remove(key: Key, options?: T): Promise<void> {
+		this.removeSync(key, options);
 	}
 
 	/**
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
 	 */
-	removeSync(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T): void {
+	removeSync(key: Key, options?: T): void {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -335,14 +313,11 @@ interface GetRangeOptions {
 	start?: Key | Uint8Array;
 	values?: boolean;
 	valuesForKey?: boolean;
-	versions?: boolean;
 };
 
 interface PutOptions {
 	append?: boolean;
-	ifVersion?: number;
 	instructedWrite?: boolean;
 	noDupData?: boolean;
 	noOverwrite?: boolean;
-	version?: number;
 };
