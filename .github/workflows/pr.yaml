@@ -3,9 +3,6 @@ name: Test
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches:
-      - northstar
 
 concurrency:
   cancel-in-progress: true
@@ -54,7 +51,7 @@ jobs:
 
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage
-      
+
       - name: Run tests on Bun
         if: ${{ matrix.node == '22' }}
         run: bun coverage
