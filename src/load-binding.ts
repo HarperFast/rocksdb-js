@@ -4,9 +4,18 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { Key } from './encoding.js';
 
+export type TransactionOptions = {
+	/**
+	 * Whether to disable snapshots.
+	 *
+	 * @default false
+	 */
+	disableSnapshot?: boolean;
+};
+
 export type NativeTransaction = {
 	id: number;
-	new(context: NativeDatabase): NativeTransaction;
+	new(context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;

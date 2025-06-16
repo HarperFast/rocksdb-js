@@ -1,7 +1,7 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
-import { config, type RocksDatabaseConfig } from './load-binding.js';
+import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
 import type { Key } from './encoding.js';
 
@@ -285,12 +285,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction(callback: (txn: Transaction) => Promise<any>) {
+	async transaction(callback: (txn: Transaction) => Promise<any>, options?: TransactionOptions) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
 
-		const txn = new Transaction(this.store);
+		const txn = new Transaction(this.store, options);
 
 		try {
 			const result = await callback(txn);
@@ -302,12 +302,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 	}
 
-	transactionSync(callback: (txn: Transaction) => void) {
+	transactionSync(callback: (txn: Transaction) => void, options?: TransactionOptions) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
 
-		const txn = new Transaction(this.store);
+		const txn = new Transaction(this.store, options);
 
 		try {
 			const result = callback(txn);
