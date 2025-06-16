@@ -11,7 +11,9 @@ namespace rocksdb_js {
  */
 TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
-	txn(nullptr)
+	txn(nullptr),
+	disableSnapshot(disableSnapshot),
+	snapshotSet(false)
 {
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
@@ -23,10 +25,6 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 		this->txn = odb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
 	} else {
 		throw std::runtime_error("Invalid database");
-	}
-
-	if (!disableSnapshot) {
-		this->txn->SetSnapshot();
 	}
 
 	this->id = this->txn->GetId() & 0xffffffff;
@@ -76,12 +74,19 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
+	if (!this->disableSnapshot && !this->snapshotSet) {
+		this->snapshotSet = true;
+		this->txn->SetSnapshot();
+	}
+
 	napi_value returnStatus;
 	std::string value;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 
 	rocksdb::ReadOptions readOptions;
-	readOptions.snapshot = this->txn->GetSnapshot();
+	if (this->snapshotSet) {
+		readOptions.snapshot = this->txn->GetSnapshot();
+	}
 	readOptions.read_tier = rocksdb::kBlockCacheTier;
 
 	rocksdb::Status status = this->txn->Get(
@@ -149,8 +154,15 @@ rocksdb::Status TransactionHandle::getSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
+	if (!this->disableSnapshot && !this->snapshotSet) {
+		this->snapshotSet = true;
+		this->txn->SetSnapshot();
+	}
+
 	auto readOptions = rocksdb::ReadOptions();
-	readOptions.snapshot = this->txn->GetSnapshot();
+	if (this->snapshotSet) {
+		readOptions.snapshot = this->txn->GetSnapshot();
+	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
@@ -171,6 +183,11 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
+	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
+		this->snapshotSet = true;
+		this->txn->SetSnapshot();
+	}
+
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->column.get();
 	return this->txn->Put(column, key, value);
@@ -185,6 +202,11 @@ rocksdb::Status TransactionHandle::removeSync(
 ) {
 	if (!this->txn) {
 		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+
+	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
+		this->snapshotSet = true;
+		this->txn->SetSnapshot();
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
