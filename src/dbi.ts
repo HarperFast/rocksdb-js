@@ -210,10 +210,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		this.#context = transaction || store.db;
 	}
 
-	doesExist(_key: Key, _versionOrValue: number | Buffer) {
-		//
-	}
-
 	/**
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
@@ -229,7 +225,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			() => this.getBinary(key, options),
 			result => result === undefined
 				? undefined
-				: this.store.encoding === 'binary' || !this.store.decoder
+				: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
 					? result
 					: this.store.decodeValue(result as Buffer)
 		);
@@ -377,24 +373,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		const keyBuffer = this.store.encodeKey(key);
 		return this.#context.getSync(keyBuffer, getTxnId(options));
 		// TODO: return UNMODIFIED if the value is not modified
-	}
-
-	/**
-	 * Retrieves a value for the given key as an "entry" object.
-	 *
-	 * An entry object contains a `value` property and when versions are enabled,
-	 * it also contains a `version` property.
-	 */
-	getEntry(key: Key, options?: GetOptions & T): MaybePromise<{ value: any } | undefined> {
-		const result = this.get(key, options);
-		return when(result, value => {
-			if (value !== undefined) {
-				// TODO: if versions are enabled, add a `version` property
-				return {
-					value,
-				};
-			}
-		});
 	}
 
 	/**
@@ -580,8 +558,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * await db.remove('a');
 	 * ```
 	 */
-	async remove(key: Key, ifVersionOrValue?: symbol | number | null, options?: T): Promise<void> {
-		this.removeSync(key, ifVersionOrValue, options);
+	async remove(key: Key, options?: T): Promise<void> {
+		this.removeSync(key, options);
 	}
 
 	/**
@@ -598,7 +576,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * db.removeSync('a');
 	 * ```
 	 */
-	removeSync(key: Key, _ifVersionOrValue?: symbol | number | null, options?: T): void {
+	removeSync(key: Key, options?: T): void {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -624,15 +602,36 @@ function getTxnId(options?: DBITransactional | unknown) {
 }
 
 interface GetOptions {
+	/**
+	 * Whether to skip decoding the value.
+	 *
+	 * @default false
+	 */
+	skipDecode?: boolean;
+
 	// ifNotTxnId?: number;
 	// currentThread?: boolean;
 }
 
+interface GetRangeOptions {
+	end?: Key | Uint8Array;
+	exactMatch?: boolean;
+	exclusiveStart?: boolean;
+	inclusiveEnd?: boolean;
+	limit?: number;
+	key?: Key;
+	offset?: number;
+	onlyCount?: boolean;
+	reverse?: boolean;
+	snapshot?: boolean;
+	start?: Key | Uint8Array;
+	values?: boolean;
+	valuesForKey?: boolean;
+};
+
 interface PutOptions {
 	append?: boolean;
-	ifVersion?: number;
 	instructedWrite?: boolean;
 	noDupData?: boolean;
 	noOverwrite?: boolean;
-	version?: number;
 };

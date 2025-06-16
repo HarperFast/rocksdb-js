@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+import { Encoder, RESET_BUFFER_MODE, REUSE_BUFFER_MODE } from 'msgpackr';
 
 describe('Read Operations', () => {
 	describe('get()', () => {
@@ -39,6 +40,25 @@ describe('Read Operations', () => {
 			try {
 				db = await RocksDatabase.open(dbPath);
 				await expect((db.get as any)()).rejects.toThrow('Key is required');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should return the undecoded value if decode is false', async () => {
+			const dbPath = generateDBPath();
+			let db: RocksDatabase | null = null;
+
+			try {
+				db = await RocksDatabase.open(dbPath);
+				await db.put('foo', 'bar');
+				const value = await db.get('foo', { skipDecode: true });
+				expect(value).not.toBe('bar');
+
+				const encoder = new Encoder({ copyBuffers: true });
+				const expected = encoder.encode('bar', REUSE_BUFFER_MODE | RESET_BUFFER_MODE);
+				expect(value.equals(expected)).toBe(true);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

@@ -6,16 +6,24 @@ import type { Transaction } from '../src/transaction.js';
 
 const testOptions = [
 	{
-		name: 'optimistic',
-		options: {},
+		name: 'optimistic'
 	},
 	{
 		name: 'pessimistic',
+		options: { pessimistic: true }
+	},
+		{
+		name: 'optimistic (disableSnapshot)',
+		txnOptions: { disableSnapshot: true },
+	},
+	{
+		name: 'pessimistic (disableSnapshot)',
 		options: { pessimistic: true },
+		txnOptions: { disableSnapshot: true },
 	}
 ];
 
-for (const { name, options } of testOptions) {
+for (const { name, options, txnOptions } of testOptions) {
 	describe(`transaction() (${name})`, () => {
 		it(`${name} async should error if callback is not a function`, async () => {
 			let db: RocksDatabase | null = null;
@@ -23,7 +31,7 @@ for (const { name, options } of testOptions) {
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
-				await expect(db.transaction('foo' as any)).rejects.toThrow(
+				await expect(db.transaction('foo' as any, txnOptions)).rejects.toThrow(
 					new TypeError('Callback must be a function')
 				);
 			} finally {
@@ -42,7 +50,7 @@ for (const { name, options } of testOptions) {
 				await db.transaction(async (txn: Transaction) => {
 					const value = await txn.get('foo');
 					expect(value).toBe('bar');
-				});
+				}, txnOptions);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -57,7 +65,7 @@ for (const { name, options } of testOptions) {
 				db = await RocksDatabase.open(dbPath, options);
 				await db.transaction(async (txn: Transaction) => {
 					await txn.put('foo', 'bar2');
-				});
+				}, txnOptions);
 				const value = await db.get('foo');
 				expect(value).toBe('bar2');
 			} finally {
@@ -97,7 +105,7 @@ for (const { name, options } of testOptions) {
 				await expect(db.transaction(async (txn: Transaction) => {
 					await txn.put('foo', 'bar2');
 					throw new Error('test');
-				})).rejects.toThrow('test');
+				}, txnOptions)).rejects.toThrow('test');
 
 				const value = await db.get('foo');
 				expect(value).toBe('bar');
@@ -107,46 +115,92 @@ for (const { name, options } of testOptions) {
 			}
 		});
 
-		it(`${name} async should treat transaction as a snapshot`, async () => {
-			let db: RocksDatabase | null = null;
-			const dbPath = generateDBPath();
-
-			try {
-				db = await RocksDatabase.open(dbPath, options);
-				await db.put('foo', 'bar1');
-
-				setTimeout(() => db?.put('foo', 'bar2'));
+		if (txnOptions?.disableSnapshot) {
+			it(`${name} async should throw error if snapshot is disabled`, async () => {
+				let db: RocksDatabase | null = null;
+				const dbPath = generateDBPath();
 
 				try {
-					await db.transaction(async (txn: Transaction) => {
-						const before = await txn.get('foo');
+					db = await RocksDatabase.open(dbPath, options);
+					await db.put('foo', 'bar1');
 
-						await new Promise((resolve) => setTimeout(resolve, 100));
-						const after = await txn.get('foo');
+					setTimeout(() => db?.put('foo', 'bar2'));
 
-						expect(before).toBe(after);
+					try {
+						await db.transaction(async (txn: Transaction) => {
+							const before = await txn.get('foo');
 
-						await txn.put('foo', 'bar3');
-					});
-				} catch (error: unknown | Error & { code: string }) {
-					expect(error).toBeInstanceOf(Error);
-					if (error instanceof Error) {
-						expect(error.message).toBe(`Transaction ${
-							options.pessimistic ? 'put' : 'commit'
-						} failed: Resource busy`);
-						if ('code' in error) {
-							expect(error.code).toBe('ERR_BUSY');
+							// let the first timeout set `bar2`
+							await new Promise((resolve) => setTimeout(resolve, 100));
+
+							// since there's no snapshot, the value should be the latest
+							const after = await txn.get('foo');
+							expect(before).not.toBe(after);
+							expect(after).toBe('bar2');
+
+							await txn.put('foo', 'bar3');
+						}, txnOptions);
+					} catch (error: unknown | Error & { code: string }) {
+						expect(error).toBeInstanceOf(Error);
+						if (error instanceof Error) {
+							expect(error.message).toBe(`Transaction ${
+								options?.pessimistic ? 'put' : 'commit'
+							} failed: Resource busy`);
+							if ('code' in error) {
+								expect(error.code).toBe('ERR_BUSY');
+							}
 						}
 					}
-				}
 
-				const value = await db.get('foo');
-				expect(value).toBe('bar2');
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
+					const value = await db.get('foo');
+					expect(value).toBe('bar3');
+				} finally {
+					db?.close();
+					await rimraf(dbPath);
+				}
+			});
+		} else {
+			it(`${name} async should treat transaction as a snapshot`, async () => {
+				let db: RocksDatabase | null = null;
+				const dbPath = generateDBPath();
+
+				try {
+					db = await RocksDatabase.open(dbPath, options);
+					await db.put('foo', 'bar1');
+
+					setTimeout(() => db?.put('foo', 'bar2'));
+
+					try {
+						await db.transaction(async (txn: Transaction) => {
+							const before = await txn.get('foo');
+
+							await new Promise((resolve) => setTimeout(resolve, 100));
+							const after = await txn.get('foo');
+
+							expect(before).toBe(after);
+
+							await txn.put('foo', 'bar3');
+						}, txnOptions);
+					} catch (error: unknown | Error & { code: string }) {
+						expect(error).toBeInstanceOf(Error);
+						if (error instanceof Error) {
+							expect(error.message).toBe(`Transaction ${
+								options?.pessimistic ? 'put' : 'commit'
+							} failed: Resource busy`);
+							if ('code' in error) {
+								expect(error.code).toBe('ERR_BUSY');
+							}
+						}
+					}
+
+					const value = await db.get('foo');
+					expect(value).toBe('bar2');
+				} finally {
+					db?.close();
+					await rimraf(dbPath);
+				}
+			});
+		}
 
 		it(`${name} async should allow transactions across column families`, async () => {
 			let db: RocksDatabase | null = null;
@@ -165,7 +219,7 @@ for (const { name, options } of testOptions) {
 					assert(db2);
 					await db.put('foo', 'bar2', { transaction: txn });
 					await db2.put('foo2', 'baz2', { transaction: txn });
-				});
+				}, txnOptions);
 
 				expect(await db.get('foo')).toBe('bar2');
 				expect(await db2.get('foo2')).toBe('baz2');
@@ -190,11 +244,11 @@ for (const { name, options } of testOptions) {
 					db.transaction(async (txn: Transaction) => {
 						await new Promise((resolve) => setTimeout(resolve, 100));
 						await db?.put('foo', 'bar2', { transaction: txn });
-					}),
+					}, txnOptions),
 					db2.transaction(async (txn: Transaction) => {
 						await new Promise((resolve) => setTimeout(resolve, 100));
 						await db2?.put('foo2', 'baz3', { transaction: txn });
-					}),
+					}, txnOptions),
 				]);
 
 				expect(await db.get('foo')).toBe('bar2');
@@ -215,7 +269,7 @@ for (const { name, options } of testOptions) {
 
 			try {
 				db = await RocksDatabase.open(dbPath, options);
-				expect(() => db!.transactionSync('foo' as any))
+				expect(() => db!.transactionSync('foo' as any, txnOptions))
 					.toThrow(new TypeError('Callback must be a function'));
 			} finally {
 				db?.close();
@@ -233,7 +287,7 @@ for (const { name, options } of testOptions) {
 				db.transactionSync((txn: Transaction) => {
 					const value = txn.getSync('foo');
 					expect(value).toBe('bar');
-				});
+				}, txnOptions);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -249,7 +303,7 @@ for (const { name, options } of testOptions) {
 
 				db.transactionSync((txn: Transaction) => {
 					txn.putSync('foo', 'bar2');
-				});
+				}, txnOptions);
 
 				const value = await db.get('foo');
 				expect(value).toBe('bar2');
@@ -269,7 +323,7 @@ for (const { name, options } of testOptions) {
 
 				db.transactionSync((txn: Transaction) => {
 					txn.removeSync('foo');
-				});
+				}, txnOptions);
 
 				const value = await db.get('foo');
 				expect(value).toBeUndefined();
@@ -290,7 +344,7 @@ for (const { name, options } of testOptions) {
 				expect(() => db!.transactionSync((txn: Transaction) => {
 					txn.putSync('foo', 'bar2');
 					throw new Error('test');
-				})).toThrow('test');
+				}, txnOptions)).toThrow('test');
 
 				const value = await db.get('foo');
 				expect(value).toBe('bar');
@@ -317,7 +371,7 @@ for (const { name, options } of testOptions) {
 					assert(db2);
 					db.putSync('foo', 'bar2', { transaction: txn });
 					db2.putSync('foo2', 'baz2', { transaction: txn });
-				});
+				}, txnOptions);
 
 				expect(await db.get('foo')).toBe('bar2');
 				expect(await db2.get('foo2')).toBe('baz2');

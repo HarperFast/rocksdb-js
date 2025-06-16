@@ -25,7 +25,7 @@ namespace rocksdb_js {
  * @returns The new `NativeTransaction` object.
  */
 napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Transaction", 1)
+	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Transaction", 2)
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
 	napi_value exports;
@@ -37,6 +37,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	bool isDatabase = false;
 	NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], databaseCtor, &isDatabase))
 
+	bool disableSnapshot = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, args[1], "disableSnapshot", disableSnapshot));
+
 	std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
 
 	if (isDatabase) {
@@ -47,7 +50,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, "Database not open");
 			return nullptr;
 		}
-		txnHandle = new std::shared_ptr<TransactionHandle>(std::make_shared<TransactionHandle>(*dbHandle));
+		txnHandle = new std::shared_ptr<TransactionHandle>(std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot));
 		(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 	} else {
 		DEBUG_LOG("Transaction::Constructor Using existing transaction handle\n")

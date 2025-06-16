@@ -74,6 +74,8 @@ struct TransactionHandle final : Closable {
 
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;
+	bool disableSnapshot;
+	bool snapshotSet;
 	std::mutex commitMutex;
 	uint32_t id;
 };
