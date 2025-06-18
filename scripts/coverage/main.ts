@@ -6,6 +6,19 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const child = spawnSync(process.execPath, [
+	'--expose-gc',
+	'./node_modules/vitest/vitest.mjs',
+	'--coverage',
+	...process.argv.slice(2),
+], {
+	stdio: 'inherit',
+});
+if (child.status !== 0) {
+	process.exit(child.status);
+}
 
 const css = `<style type="text/css">
 	body {
