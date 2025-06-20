@@ -211,7 +211,7 @@ export class Store {
 	 * @returns The decoded value.
 	 */
 	decodeValue(value: Buffer): any {
-		if (typeof this.decoder?.decode === 'function') {
+		if (value?.length > 0 && typeof this.decoder?.decode === 'function') {
 			return this.decoder.decode(value);
 		}
 		return value;
