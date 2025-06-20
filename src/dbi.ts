@@ -622,22 +622,6 @@ interface GetOptions {
 	// currentThread?: boolean;
 }
 
-interface GetRangeOptions {
-	end?: Key | Uint8Array;
-	exactMatch?: boolean;
-	exclusiveStart?: boolean;
-	inclusiveEnd?: boolean;
-	limit?: number;
-	key?: Key;
-	offset?: number;
-	onlyCount?: boolean;
-	reverse?: boolean;
-	snapshot?: boolean;
-	start?: Key | Uint8Array;
-	values?: boolean;
-	valuesForKey?: boolean;
-};
-
 interface PutOptions {
 	append?: boolean;
 	instructedWrite?: boolean;
