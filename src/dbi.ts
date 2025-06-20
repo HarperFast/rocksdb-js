@@ -1,8 +1,7 @@
-import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding.js';
+import { getTxnId, type GetOptions, type PutOptions, type Store } from './store.js';
+import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { ExtendedIterable } from './iterator.js';
 import type { Key } from './encoding.js';
-import type { Store } from './store.js';
 import type { Transaction } from './transaction.js';
 
 export interface RocksDBOptions {
@@ -116,6 +115,11 @@ export interface IteratorOptions extends RangeOptions {
 	// snapshot?: boolean;
 
 	/**
+	 * When `true`, the iterator will iterate return the raw undecoded key.
+	 */
+	sortKey?: boolean;
+
+	/**
 	 * When `true`, decodes and returns the value. When `false`, the value is
 	 * omitted. Defaults to `true`.
 	 */
@@ -125,63 +129,6 @@ export interface IteratorOptions extends RangeOptions {
 export interface DBITransactional {
 	transaction?: Transaction;
 };
-
-interface DBIteratorValue<T> {
-	key: Key;
-	value: T;
-};
-
-/**
- * Wraps an iterator, namely the `NativeIterator` class, and decodes the key
- * and value.
- */
-class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
-	iterator: Iterator<DBIteratorValue<T>>;
-	store: Store;
-	#includeValues: boolean;
-
-	constructor(
-		iterator: Iterator<DBIteratorValue<T>>,
-		store: Store,
-		options?: IteratorOptions & T
-	) {
-		this.iterator = iterator;
-		this.store = store;
-		this.#includeValues = options?.values ?? true;
-	}
-
-	next(...[_value]: [] | [any]): IteratorResult<DBIteratorValue<T>> {
-		const result = this.iterator.next();
-		if (result.done) {
-			return result;
-		}
-
-		const value: Partial<DBIteratorValue<T>> = {};
-		value.key = this.store.decodeKey(result.value.key as Buffer);
-		if (this.#includeValues) {
-			value.value = this.store.decodeValue(result.value.value as Buffer);
-		}
-
-		return {
-			done: false,
-			value: value as DBIteratorValue<T>
-		};
-	}
-
-	return(value?: any): IteratorResult<DBIteratorValue<T>, any> {
-		if (this.iterator.return) {
-			return this.iterator.return(value);
-		}
-		return { done: true, value };
-	}
-
-	throw(err: unknown): IteratorResult<DBIteratorValue<T>, any> {
-		if (this.iterator.throw) {
-			return this.iterator.throw(err);
-		}
-		throw err;
-	}
-}
 
 /**
  * The base class for all database operations. This base class is shared by
@@ -264,7 +211,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		const result = this.#context.getSync(keyBuffer, getTxnId(options));
+		const result = this.store.getSync(this.#context, keyBuffer, options);
 		return this.store.decodeValue(result);
 	}
 
@@ -285,7 +232,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		let resolve: (value: Buffer | undefined) => void | undefined;
 		let reject: (error: Error) => void | undefined;
 
-		const status = this.#context.get(
+		const status = this.store.get(
+			this.#context,
 			keyBuffer,
 			value => {
 				result = value;
@@ -319,7 +267,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.getSync(keyBuffer, getTxnId(options));
+		return this.store.getSync(this.#context, keyBuffer, options);
 	}
 
 	/**
@@ -344,7 +292,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		let reject: (error: Error) => void | undefined;
 
 		// TODO: specify the shared buffer to write the value to
-		const status = this.#context.get(
+		const status = this.store.get(
+			this.#context,
 			keyBuffer,
 			value => {
 				result = value;
@@ -380,7 +329,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.getSync(keyBuffer, getTxnId(options));
+		return this.store.getSync(this.#context, keyBuffer, options);
 		// TODO: return UNMODIFIED if the value is not modified
 	}
 
@@ -388,10 +337,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Retrieves all keys within a range.
 	 */
 	getKeys(options?: IteratorOptions & T) {
-		return this.getRange({
+		return this.store.getRange(this.#context, {
 			...options,
 			values: false
-		} as IteratorOptions & T);
+		});
 	}
 
 	/**
@@ -413,7 +362,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		const endKey = options?.end ? this.store.encodeKey(options.end) : undefined;
 		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
 
-		return this.#context.getCount({
+		return this.store.getCount(this.#context, {
 			...options,
 			start,
 			end,
@@ -438,29 +387,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getRange(options?: IteratorOptions & T) {
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		const unencodedStartKey = options?.key || options?.start;
-		const startKey = unencodedStartKey ? this.store.encodeKey(unencodedStartKey) : undefined;
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
-
-		const endKey = !options?.key && options?.end ? this.store.encodeKey(options.end) : undefined;
-		const end = options?.key ? start : endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
-
-		return new ExtendedIterable<DBIteratorValue<any>>(
-			new DBIterator(
-				new NativeIterator(this.#context, {
-					...options,
-					inclusiveEnd: options?.inclusiveEnd || !!options?.key,
-					start,
-					end
-				}),
-				this.store,
-				options
-			)
-		);
+		return this.store.getRange(this.#context, options);
 	}
 
 	/**
@@ -480,10 +407,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getValues(key: Key, options?: IteratorOptions & T) {
 		// TODO: create array-valued key `[ indexedValue, primaryKey ]`
 
-		return this.getRange({
+		return this.store.getRange(this.#context, {
 			...options,
 			key
-		} as IteratorOptions & T);
+		});
 	}
 
 	/**
@@ -505,7 +432,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		// TODO: create array-valued key `[ indexedValue, primaryKey ]`
 
-		return this.#context.getCount({
+		return this.store.getCount(this.#context, {
 			...options,
 			start,
 			end,
@@ -527,7 +454,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	async put(key: Key, value: any, options?: PutOptions & T): Promise<void> {
-		this.putSync(key, value, options);
+		return this.store.putSync(this.#context, key, value, options);
 	}
 
 	/**
@@ -544,13 +471,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	putSync(key: Key, value: any, options?: PutOptions & T) {
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		const keyBuffer = this.store.encodeKey(key);
-		const valueBuffer = this.store.encodeValue(value);
-		this.#context.putSync(keyBuffer, valueBuffer, getTxnId(options));
+		return this.store.putSync(this.#context, key, value, options);
 	}
 
 	/**
@@ -567,8 +488,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * await db.remove('a');
 	 * ```
 	 */
-	async remove(key: Key, options?: T): Promise<void> {
-		this.removeSync(key, options);
+	async remove(key: Key, options?: T & DBITransactional): Promise<void> {
+		return this.store.removeSync(this.#context, key, options);
 	}
 
 	/**
@@ -585,46 +506,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * db.removeSync('a');
 	 * ```
 	 */
-	removeSync(key: Key, options?: T): void {
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		const keyBuffer = this.store.encodeKey(key);
-		this.#context.removeSync(keyBuffer, getTxnId(options));
+	removeSync(key: Key, options?: T & DBITransactional): void {
+		return this.store.removeSync(this.#context, key, options);
 	}
 }
-
-/**
- * Checks if the data method options object contains a transaction ID and
- * returns it.
- */
-function getTxnId(options?: DBITransactional | unknown) {
-	let txnId;
-	if (options && typeof options === 'object' && 'transaction' in options) {
-		txnId = (options.transaction as Transaction)?.id;
-		if (txnId === undefined) {
-			throw new TypeError('Invalid transaction');
-		}
-	}
-	return txnId;
-}
-
-interface GetOptions {
-	/**
-	 * Whether to skip decoding the value.
-	 *
-	 * @default false
-	 */
-	skipDecode?: boolean;
-
-	// ifNotTxnId?: number;
-	// currentThread?: boolean;
-}
-
-interface PutOptions {
-	append?: boolean;
-	instructedWrite?: boolean;
-	noDupData?: boolean;
-	noOverwrite?: boolean;
-};

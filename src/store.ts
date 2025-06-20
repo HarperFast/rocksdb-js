@@ -1,5 +1,7 @@
 import {
 	NativeDatabase,
+	NativeIterator,
+	NativeTransaction,
 	type NativeDatabaseOptions,
 } from './load-binding.js';
 import {
@@ -12,6 +14,10 @@ import {
 	type WriteKeyFunction,
 } from './encoding.js';
 import type { BufferWithDataView, Key } from './encoding.js';
+import { type DBITransactional, type IteratorOptions, type RangeOptions } from './dbi.js';
+import { type DBIteratorValue, DBIterator } from './dbi-iterator.js';
+import { Transaction } from './transaction.js';
+import ExtendedIterable from '@harperdb/extended-iterable';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -26,7 +32,6 @@ const SAVE_BUFFER_SIZE = 8192;
 export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// cache?: boolean;
 	decoder?: Encoder | null;
-	// dupSort?: boolean;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
 	keyEncoder?: {
@@ -275,6 +280,50 @@ export class Store {
 		throw new Error(`Invalid value put in database (${typeof value}), consider using an encoder`);
 	}
 
+	get(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		resolve: (value: Buffer) => void,
+		reject: (err: Error) => void,
+		txnId?: number
+	) {
+		return context.get(key, resolve, reject, txnId);
+	}
+
+	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions, txnId?: number) {
+		return context.getCount(options, txnId);
+	}
+
+	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
+		return context.getSync(key, getTxnId(options));
+	}
+
+	getRange(context: NativeDatabase | NativeTransaction, options?: IteratorOptions & DBITransactional): ExtendedIterable<DBIteratorValue<any>> {
+		if (!this.db.opened) {
+			throw new Error('Database not open');
+		}
+
+		const unencodedStartKey = options?.key || options?.start;
+		const startKey = unencodedStartKey ? this.encodeKey(unencodedStartKey) : undefined;
+		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+
+		const endKey = !options?.key && options?.end ? this.encodeKey(options.end) : undefined;
+		const end = options?.key ? start : endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
+
+		return new ExtendedIterable<DBIteratorValue<any>>(
+			new DBIterator(
+				new NativeIterator(context, {
+					...options,
+					inclusiveEnd: options?.inclusiveEnd || !!options?.key,
+					start,
+					end
+				}),
+				this,
+				options
+			)
+		);
+	}
+
 	/**
 	 * Checks if the database is open.
 	 *
@@ -300,4 +349,61 @@ export class Store {
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 		});
 	}
+
+	putSync(context: NativeDatabase | NativeTransaction, key: Key, value: any, options?: PutOptions & DBITransactional) {
+		if (!this.db.opened) {
+			throw new Error('Database not open');
+		}
+
+		context.putSync(
+			this.encodeKey(key),
+			this.encodeValue(value),
+			getTxnId(options)
+		);
+	}
+
+	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional) {
+		if (!this.db.opened) {
+			throw new Error('Database not open');
+		}
+
+		context.removeSync(
+			this.encodeKey(key),
+			getTxnId(options)
+		);
+	}
 }
+
+/**
+ * Checks if the data method options object contains a transaction ID and
+ * returns it.
+ */
+export function getTxnId(options?: DBITransactional | unknown) {
+	let txnId: number | undefined;
+	if (options && typeof options === 'object' && 'transaction' in options) {
+		txnId = (options.transaction as Transaction)?.id;
+		if (txnId === undefined) {
+			throw new TypeError('Invalid transaction');
+		}
+	}
+	return txnId;
+}
+
+export interface GetOptions {
+	/**
+	 * Whether to skip decoding the value.
+	 *
+	 * @default false
+	 */
+	skipDecode?: boolean;
+
+	// ifNotTxnId?: number;
+	// currentThread?: boolean;
+}
+
+export interface PutOptions {
+	append?: boolean;
+	instructedWrite?: boolean;
+	noDupData?: boolean;
+	noOverwrite?: boolean;
+};

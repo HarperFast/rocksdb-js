@@ -3,9 +3,11 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
+import { IndexStore } from './index-store.js';
 import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
+	dupSort?: boolean;
 	name?: string; // defaults to 'default'
 };
 
@@ -24,18 +26,19 @@ interface RocksDatabaseOptions extends StoreOptions {
  */
 export class RocksDatabase extends DBI<DBITransactional> {
 	// #cache: boolean;
-	// #dupSort: boolean;
 	// #useVersions: boolean;
 
 	constructor(
 		path: string,
 		options?: RocksDatabaseOptions
 	) {
-		const store = new Store(path, options);
-		super(store);
+		if (options?.dupSort) {
+			super(new IndexStore(path, options));
+		} else {
+			super(new Store(path, options));
+		}
 
 		// this.#cache = options?.cache ?? false; // TODO: better name?
-		// this.#dupSort = options?.dupSort ?? false; // TODO: better name?
 		// this.#useVersions = options?.useVersions ?? false; // TODO: better name?
 
 		// if (this.#dupSort && (this.#cache || this.#useVersions)) {

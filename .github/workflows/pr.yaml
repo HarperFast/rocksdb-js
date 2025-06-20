@@ -38,6 +38,10 @@ jobs:
         with:
           version: latest
 
+      # temporary
+      - name: Install extended-iterable
+        run: pnpm add github:harperdb/extended-iterable#iterable2
+
       - name: Install dependencies
         run: pnpm install --ignore-scripts
 

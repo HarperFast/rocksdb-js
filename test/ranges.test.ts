@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import { ExtendedIterable } from '../src/iterator.js';
+import { ExtendedIterable } from '@harperdb/extended-iterable';
 import type { Key } from '../src/encoding.js';
 
 async function initTestDB(test: (db: RocksDatabase) => Promise<void>, name?: string) {
@@ -935,7 +935,7 @@ describe('Ranges', () => {
 						return new Error(`Error: ${(error as Error).message}`);
 					});
 
-				expect(Array.from(mapped)).toEqual([
+				expect(mapped.asArray).toEqual([
 					{ key: 'a', value: 'value a!' },
 					{ key: 'b', value: 'value b!' },
 					new Error('Error: found c'),
