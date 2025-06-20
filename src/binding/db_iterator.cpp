@@ -195,7 +195,6 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value))
 		}
-		// TODO: add version?
 
 		if (itHandle->reverse) {
 			itHandle->iterator->Prev();
@@ -203,6 +202,12 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 			itHandle->iterator->Next();
 		}
 	} else {
+		if (!itHandle->iterator->status().ok()) {
+			DEBUG_LOG("DBIterator::Next iterator not valid/ok: %s\n", itHandle->iterator->status().ToString().c_str());
+		} else {
+			DEBUG_LOG("DBIterator::Next iterator no keys found in range\n");
+		}
+
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone))
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue))
 	}
@@ -221,7 +226,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
  * @returns An iterator done result.
  */
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
+	NAPI_METHOD_ARGV(1)
 	UNWRAP_ITERATOR_HANDLE("Return")
 
 	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", itHandle)
@@ -233,7 +238,14 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	napi_value value;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &result))
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &done))
-	NAPI_STATUS_THROWS(::napi_get_undefined(env, &value))
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
+	if (type == napi_undefined) {
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &value))
+	} else {
+		value = argv[0];
+	}
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", done))
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", value))
 

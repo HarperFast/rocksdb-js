@@ -67,6 +67,17 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 	if (options.startKeyStr != nullptr) {
 		this->startKey = rocksdb::Slice(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
 		options.readOptions.iterate_lower_bound = &this->startKey;
+
+#ifdef DEBUG
+		// print the startKey to stderr as hex
+		fprintf(stderr, "Start Key:");
+		for (size_t i = 0; i < this->startKey.size(); i++) {
+			fprintf(stderr, " %02x", (unsigned char)this->startKey.data()[i]);
+		}
+		fprintf(stderr, "\n");
+	} else {
+		DEBUG_LOG("No start key\n");
+#endif
 	}
 
 	if (options.endKeyStr != nullptr) {
@@ -76,6 +87,14 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		}
 		this->endKey = rocksdb::Slice(this->endKeyStr);
 		options.readOptions.iterate_upper_bound = &this->endKey;
+
+		fprintf(stderr, "  End Key:");
+		for (size_t i = 0; i < this->endKey.size(); i++) {
+			fprintf(stderr, " %02x", (unsigned char)this->endKey.data()[i]);
+		}
+		fprintf(stderr, "\n");
+	} else {
+		DEBUG_LOG("No end key\n");
 	}
 
 	this->dbHandle->descriptor->attach(this);

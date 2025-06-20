@@ -362,6 +362,11 @@ const char* getNapiBufferFromArg(
 		return nullptr;
 	}
 
+	if (data == nullptr) {
+		// data is null because the buffer is empty
+		return "";
+	}
+
 	return data;
 }
 
