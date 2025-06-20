@@ -1,7 +1,6 @@
 import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
 import { ExtendedIterable } from './iterator.js';
-// import { ExtendedIterable } from '@harperdb/extended-iterable';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import type { Transaction } from './transaction.js';
@@ -141,7 +140,11 @@ class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	store: Store;
 	#includeValues: boolean;
 
-	constructor(iterator: Iterator<DBIteratorValue<T>>, store: Store, options?: IteratorOptions & T) {
+	constructor(
+		iterator: Iterator<DBIteratorValue<T>>,
+		store: Store,
+		options?: IteratorOptions & T
+	) {
 		this.iterator = iterator;
 		this.store = store;
 		this.#includeValues = options?.values ?? true;
@@ -165,12 +168,18 @@ class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		};
 	}
 
-	return?(_value?: any): IteratorResult<DBIteratorValue<T>, any> {
-		return this.iterator.return?.() || { done: true, value: undefined };
+	return(value?: any): IteratorResult<DBIteratorValue<T>, any> {
+		if (this.iterator.return) {
+			return this.iterator.return(value);
+		}
+		return { done: true, value };
 	}
 
-	throw?(_e?: any): IteratorResult<DBIteratorValue<T>, any> {
-		return this.iterator.throw?.() || { done: true, value: undefined };
+	throw(err: unknown): IteratorResult<DBIteratorValue<T>, any> {
+		if (this.iterator.throw) {
+			return this.iterator.throw(err);
+		}
+		throw err;
 	}
 }
 
