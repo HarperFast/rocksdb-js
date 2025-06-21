@@ -48,6 +48,7 @@ jobs:
           pnpm link
           cd $GITHUB_WORKSPACE
           pnpm link @harperdb/extended-iterable
+          pnpm install
 
       - name: Install dependencies
         run: pnpm install --ignore-scripts
