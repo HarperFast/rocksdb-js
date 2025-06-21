@@ -33,7 +33,6 @@
     "vendor"
   ],
   "dependencies": {
-    "@harperdb/extended-iterable": "github:harperdb/extended-iterable#iterable2",
     "msgpackr": "1.11.2",
     "ordered-binary": "1.5.3"
   },

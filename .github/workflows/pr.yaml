@@ -38,6 +38,17 @@ jobs:
         with:
           version: latest
 
+      # temporary
+      - name: Install extended-iterable
+        run: |
+          git clone --depth 1 --branch iterable2 https://github.com/harperdb/extended-iterable.git /tmp/extended-iterable
+          cd /tmp/extended-iterable
+          pnpm install
+          pnpm build
+          pnpm link
+          cd $GITHUB_WORKSPACE
+          pnpm link @harperdb/extended-iterable
+
       - name: Install dependencies
         run: pnpm install --ignore-scripts
 
