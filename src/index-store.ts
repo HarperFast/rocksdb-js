@@ -68,7 +68,6 @@ export class IndexStore extends Store {
 			new DBIterator(
 				new NativeIterator(context, {
 					...options,
-					inclusiveEnd: true,
 					start,
 					end
 				}),
