@@ -43,12 +43,12 @@ jobs:
         run: |
           git clone --depth 1 --branch iterable2 https://github.com/harperdb/extended-iterable.git /tmp/extended-iterable
           cd /tmp/extended-iterable
-          pnpm install
+          pnpm install --no-frozen-lockfile
           pnpm build
           pnpm link
           cd $GITHUB_WORKSPACE
           pnpm link @harperdb/extended-iterable
-          pnpm install
+          pnpm install --no-frozen-lockfile
 
       - name: Install dependencies
         run: pnpm install --ignore-scripts
