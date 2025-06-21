@@ -400,6 +400,19 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
+#ifdef DEBUG
+		fprintf(stderr, "[%04zu] Database::PutSync() Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+		for (size_t i = 0; i < keySlice.size(); i++) {
+			fprintf(stderr, " %02x", (unsigned char)keySlice.data()[i]);
+		}
+		fprintf(stderr, "\n");
+		fprintf(stderr, "[%04zu] Database::PutSync() Value:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+		for (size_t i = 0; i < valueSlice.size(); i++) {
+			fprintf(stderr, " %02x", (unsigned char)valueSlice.data()[i]);
+		}
+		fprintf(stderr, "\n");
+#endif
+
 		status = (*dbHandle)->descriptor->db->Put(
 			rocksdb::WriteOptions(),
 			(*dbHandle)->column.get(),
@@ -545,7 +558,7 @@ void resolveGetResult(
 	napi_value result;
 	napi_value global;
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-	
+
 	if (status.IsNotFound()) {
 		napi_get_undefined(env, &result);
 		napi_value resolve;

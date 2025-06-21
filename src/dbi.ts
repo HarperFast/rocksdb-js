@@ -115,11 +115,6 @@ export interface IteratorOptions extends RangeOptions {
 	// snapshot?: boolean;
 
 	/**
-	 * When `true`, the iterator will iterate return the raw undecoded key.
-	 */
-	sortKey?: boolean;
-
-	/**
 	 * When `true`, decodes and returns the value. When `false`, the value is
 	 * omitted. Defaults to `true`.
 	 */

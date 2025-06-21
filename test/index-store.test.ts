@@ -17,8 +17,6 @@ describe('Index Store', () => {
 				await db.put(key, 'bar2');
 
 				expect(await db.get(key)).toBe('bar2');
-				expect((await db.get([key, 'bar1']))?.length).toBe(0);
-				expect((await db.get([key, 'bar2']))?.length).toBe(0);
 
 				let results = db.getValues(key).asArray;
 				expect(results).toEqual([
@@ -37,7 +35,7 @@ describe('Index Store', () => {
 			}
 		});
 
-		it.only('should set a non-simple key', async () => {
+		it('should set a non-simple key', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -49,8 +47,6 @@ describe('Index Store', () => {
 				await db.put(key, 'bar2');
 
 				expect(await db.get(key)).toBe('bar2');
-				expect((await db.get([key, 'bar1']))?.length).toBe(0);
-				expect((await db.get([key, 'bar2']))?.length).toBe(0);
 
 				let results = db.getRange({ key }).asArray;
 				expect(results).toEqual([

@@ -2,13 +2,11 @@ import type { IteratorOptions } from './dbi.js';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 
+export const BOUNDARY = 0xFFFFFFFF;
+
 export type DBIteratorValue<T> = {
 	key: Key;
 	value: T;
-};
-
-export type DBIteratorSortKey = {
-	sortKey: Buffer;
 };
 
 /**
@@ -33,7 +31,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	/**
 	 * ?
 	 */
-	#sortKey: Key | undefined;
+	#sortKeyOnly = false
 
 	/**
 	 * The store instance used for decoding keys/values and determining if the
@@ -44,16 +42,13 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	constructor(
 		iterator: Iterator<DBIteratorValue<T>>,
 		store: Store,
-		options?: IteratorOptions & T
+		options?: IteratorOptions & T & { sortKeyOnly?: boolean }
 	) {
+		this.#dupSortMode = !!('dupSort' in store && store.dupSort);
 		this.#includeValues = options?.values ?? true;
 		this.#iterator = iterator;
+		this.#sortKeyOnly = !!options?.sortKeyOnly;
 		this.#store = store;
-
-		if ('dupSort' in store && store.dupSort) {
-			this.#dupSortMode = true;
-			this.#sortKey = options?.sortKey;
-		}
 	}
 
 	next(...[_value]: [] | [any]): IteratorResult<DBIteratorValue<T>> {
@@ -61,8 +56,8 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		while (!result.done) {
 			const resultValue = result.value;
 
-			if (this.#dupSortMode && this.#sortKey !== undefined) {
-				// In dupSort mode with sortKey option, return the sortKey as the key
+			if (this.#dupSortMode && this.#sortKeyOnly) {
+				// in dupSort mode with sortKey option, return the sortKey as the key
 				return {
 					done: false,
 					value: {
@@ -74,23 +69,17 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 
 			let key = this.#store.decodeKey(resultValue.key as Buffer);
 			let value = resultValue.value;
-			let sortKey: Buffer | undefined;
 
 			if (this.#dupSortMode) {
-				if (!Array.isArray(key)) {
+				const boundary = Array.isArray(key) ? key.indexOf(BOUNDARY) : -1;
+				if (!Array.isArray(key) || boundary === -1) {
 					result = this.#iterator.next();
 					continue;
 				}
 
-				const [primaryKey, indexedValue] = key;
+				const indexedValue = key[boundary + 1];
+				key = boundary > 1 ? key.slice(0, boundary) : key[0];
 
-				// double check the key matches
-				// if (this.#sortKey !== undefined && this.#sortKey !== primaryKey) {
-				// 	result = this.#iterator.next();
-				// 	continue;
-				// }
-
-				key = primaryKey;
 				if (this.#includeValues) {
 					value = indexedValue as T;
 				}

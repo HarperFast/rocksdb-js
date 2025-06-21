@@ -1,6 +1,6 @@
 import { ExtendedIterable } from '@harperdb/extended-iterable';
 import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding.js';
-import { DBIterator, type DBIteratorValue, type DBIteratorSortKey } from './dbi-iterator.js';
+import { BOUNDARY, DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { getTxnId, Store, type PutOptions } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { DBITransactional, IteratorOptions } from './dbi.js';
@@ -26,9 +26,9 @@ export class IndexStore extends Store {
 		let encodedStartKey: BufferWithDataView | undefined;
 
 		if (options?.key) {
-			encodedStartKey = this.encodeKey([options.key]);
+			encodedStartKey = this.encodeKey([options.key, BOUNDARY]);
 			start = Buffer.from(encodedStartKey.subarray(encodedStartKey.start, encodedStartKey.end));
-			end = Buffer.concat([start.subarray(0, -1), Buffer.from([0xff])]);
+			end = Buffer.concat([start, Buffer.from([0xff])]);
 		} else {
 			if (options?.start) {
 				const startKey = this.encodeKey(options.start);
@@ -60,9 +60,9 @@ export class IndexStore extends Store {
 			throw new Error('Database not open');
 		}
 
-		const encodedStartKey = this.encodeKey([key]);
+		const encodedStartKey = this.encodeKey([key, BOUNDARY]);
 		const start = Buffer.from(encodedStartKey.subarray(encodedStartKey.start, encodedStartKey.end));
-		const end = Buffer.concat([start.subarray(0, -1), Buffer.from([0xff])]);
+		const end = Buffer.concat([start, Buffer.from([0xff])]);
 
 		return new ExtendedIterable<DBIteratorValue<any>>(
 			new DBIterator(
@@ -73,7 +73,7 @@ export class IndexStore extends Store {
 					end
 				}),
 				this,
-				{ ...options, sortKey: true }
+				{ ...options, sortKeyOnly: true }
 			)
 		);
 	}
@@ -83,7 +83,7 @@ export class IndexStore extends Store {
 			throw new Error('Database not open');
 		}
 
-		const keyValueBuffer = this.encodeKey([key, value]);
+		const keyValueBuffer = this.encodeKey([key, BOUNDARY, value]);
 		context.putSync(keyValueBuffer, EMPTY, getTxnId(options));
 
 		const keyBuffer = this.encodeKey(key);
