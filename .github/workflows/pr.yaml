@@ -42,7 +42,7 @@ jobs:
       - name: Install extended-iterable
         run: |
           pnpm add github:harperdb/extended-iterable#iterable2
-          cd node_modules/@harperdb/extended-iterable && ls -la node_modules/@harperdb/extended-iterable && pnpm build
+          cd node_modules/@harperdb/extended-iterable && ls -la && pnpm build
 
       - name: Install dependencies
         run: pnpm install --ignore-scripts
