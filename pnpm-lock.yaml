@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@harperdb/extended-iterable':
+        specifier: github:harperdb/extended-iterable#iterable2
+        version: https://codeload.github.com/harperdb/extended-iterable/tar.gz/194d61fa6bfef12ac99c5f775660f4be81431fc1
       msgpackr:
         specifier: 1.11.2
         version: 1.11.2
@@ -409,6 +412,10 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@harperdb/extended-iterable@https://codeload.github.com/harperdb/extended-iterable/tar.gz/194d61fa6bfef12ac99c5f775660f4be81431fc1':
+    resolution: {tarball: https://codeload.github.com/harperdb/extended-iterable/tar.gz/194d61fa6bfef12ac99c5f775660f4be81431fc1}
+    version: 2.0.0
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -1735,6 +1742,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.25.3':
     optional: true
+
+  '@harperdb/extended-iterable@https://codeload.github.com/harperdb/extended-iterable/tar.gz/194d61fa6bfef12ac99c5f775660f4be81431fc1': {}
 
   '@isaacs/cliui@8.0.2':
     dependencies:
