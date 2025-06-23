@@ -40,6 +40,8 @@ jobs:
 
       # temporary
       - name: Install extended-iterable
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git clone --depth 1 --branch iterable2 https://github.com/harperdb/extended-iterable.git /tmp/extended-iterable
           cd /tmp/extended-iterable
