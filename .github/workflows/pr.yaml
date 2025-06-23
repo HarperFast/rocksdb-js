@@ -77,20 +77,15 @@ jobs:
           cd ${{ runner.temp }}/extended-iterable
           pnpm install --no-frozen-lockfile
           pnpm build
-          pnpm link
           cd $GITHUB_WORKSPACE
-          pnpm link @harperdb/extended-iterable
-          pnpm install --no-frozen-lockfile
+          pnpm add ${{ runner.temp }}/extended-iterable
 
       # temporary
-      - name: Link extended-iterable (cache hit)
+      - name: Install extended-iterable from cache
         if: steps.extended-iterable-cache.outputs.cache-hit == 'true'
         run: |
-          cd ${{ runner.temp }}/extended-iterable
-          pnpm link
           cd $GITHUB_WORKSPACE
-          pnpm link @harperdb/extended-iterable
-          pnpm install --no-frozen-lockfile
+          pnpm add ${{ runner.temp }}/extended-iterable
 
       - name: Install dependencies
         env:
