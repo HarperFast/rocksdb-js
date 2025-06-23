@@ -64,7 +64,7 @@ jobs:
         id: extended-iterable-cache
         uses: actions/cache@v4
         with:
-          path: /tmp/extended-iterable
+          path: ${{ runner.temp }}/extended-iterable
           key: ${{ runner.os }}-extended-iterable-iterable2
 
       # temporary
@@ -73,8 +73,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          git clone --depth 1 --branch iterable2 https://github.com/harperdb/extended-iterable.git /tmp/extended-iterable
-          cd /tmp/extended-iterable
+          git clone --depth 1 --branch iterable2 https://github.com/harperdb/extended-iterable.git ${{ runner.temp }}/extended-iterable
+          cd ${{ runner.temp }}/extended-iterable
           pnpm install --no-frozen-lockfile
           pnpm build
           pnpm link
@@ -86,7 +86,7 @@ jobs:
       - name: Link extended-iterable (cache hit)
         if: steps.extended-iterable-cache.outputs.cache-hit == 'true'
         run: |
-          cd /tmp/extended-iterable
+          cd ${{ runner.temp }}/extended-iterable
           pnpm link
           cd $GITHUB_WORKSPACE
           pnpm link @harperdb/extended-iterable
