@@ -12,7 +12,7 @@ export type DBIteratorValue<T> = {
 /**
  * Wraps the `NativeIterator` class, and decodes the key and value.
  */
-export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
+export class DBIterator<T> implements Iterator<DBIteratorValue<T> | T> {
 	/**
 	 * When true, encodes the key with both the primary key and the indexed value.
 	 */
@@ -29,15 +29,20 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	#iterator: Iterator<DBIteratorValue<T>>;
 
 	/**
-	 * ?
+	 * When true, the iterator will iterate return the raw undecoded key.
 	 */
-	#sortKeyOnly = false
+	#sortKeyOnly = false;
 
 	/**
 	 * The store instance used for decoding keys/values and determining if the
 	 * iterator is in dupSort mode.
 	 */
 	#store: Store;
+
+	/**
+	 * When `true`, the iterator will return the values only.
+	 */
+	#valuesOnly?: boolean;
 
 	constructor(
 		iterator: Iterator<DBIteratorValue<T>>,
@@ -49,9 +54,14 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		this.#iterator = iterator;
 		this.#sortKeyOnly = !!options?.sortKeyOnly;
 		this.#store = store;
+		this.#valuesOnly = options?.valuesOnly ?? false;
+
+		if (!this.#includeValues && this.#valuesOnly) {
+			throw new Error('valuesOnly cannot be true when values is false');
+		}
 	}
 
-	next(...[_value]: [] | [any]): IteratorResult<DBIteratorValue<T>> {
+	next(...[_value]: [] | [any]): IteratorResult<DBIteratorValue<T> | T> {
 		let result = this.#iterator.next();
 		while (!result.done) {
 			const resultValue = result.value;
@@ -62,7 +72,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 					done: false,
 					value: {
 						key: resultValue.key as Buffer,
-						value: undefined as T
+						value: resultValue.value as T
 					}
 				};
 			}
@@ -85,6 +95,13 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 				}
 			} else if (this.#includeValues) {
 				value = this.#store.decodeValue(value as Buffer);
+			}
+
+			if (this.#valuesOnly) {
+				return {
+					done: false,
+					value
+				};
 			}
 
 			return {

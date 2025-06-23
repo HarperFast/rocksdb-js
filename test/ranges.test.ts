@@ -539,7 +539,7 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getValues('b');
-				expect(Array.from(iter)).toEqual([{ key: 'b', value: 'value b' }]);
+				expect(Array.from(iter)).toEqual(['value b']);
 			});
 		});
 
@@ -550,7 +550,7 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getValues('b');
-				expect(Array.from(iter)).toEqual([{ key: 'b', value: 'value b' }]);
+				expect(Array.from(iter)).toEqual(['value b']);
 			}, 'foo');
 		});
 
@@ -562,7 +562,7 @@ describe('Ranges', () => {
 
 				await db.transaction(async txn => {
 					const iter = txn.getValues('b');
-					expect(Array.from(iter)).toEqual([{ key: 'b', value: 'value b' }]);
+					expect(Array.from(iter)).toEqual(['value b']);
 				});
 			});
 		});
@@ -575,7 +575,7 @@ describe('Ranges', () => {
 
 				await db.transaction(async txn => {
 					const iter = txn.getValues('b');
-					expect(Array.from(iter)).toEqual([{ key: 'b', value: 'value b' }]);
+					expect(Array.from(iter)).toEqual(['value b']);
 				});
 			}, 'foo');
 		});

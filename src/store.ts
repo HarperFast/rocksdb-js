@@ -284,10 +284,11 @@ export class Store {
 		context: NativeDatabase | NativeTransaction,
 		key: Key,
 		resolve: (value: Buffer) => void,
-		reject: (err: Error) => void,
+		reject: (err: unknown) => void,
 		txnId?: number
 	) {
-		return context.get(key, resolve, reject, txnId);
+		const keyBuffer = this.encodeKey(key);
+		return context.get(keyBuffer, resolve, reject, txnId);
 	}
 
 	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions, txnId?: number) {
@@ -295,7 +296,8 @@ export class Store {
 	}
 
 	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
-		return context.getSync(key, getTxnId(options));
+		const keyBuffer = this.encodeKey(key);
+		return context.getSync(keyBuffer, getTxnId(options));
 	}
 
 	getRange(context: NativeDatabase | NativeTransaction, options?: IteratorOptions & DBITransactional): ExtendedIterable<DBIteratorValue<any>> {
@@ -362,10 +364,18 @@ export class Store {
 		);
 	}
 
-	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional) {
+	removeSync(context: NativeDatabase | NativeTransaction, key: Key, value?: any, options?: DBITransactional) {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
+
+		if (options === undefined && value?.transaction !== undefined) {
+			options = value;
+			value = undefined;
+		}
+
+		// Note: the default store does not support duplicate keys, so there's
+		// nothing to do with the `value parameter`
 
 		context.removeSync(
 			this.encodeKey(key),

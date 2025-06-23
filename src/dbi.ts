@@ -119,6 +119,11 @@ export interface IteratorOptions extends RangeOptions {
 	 * omitted. Defaults to `true`.
 	 */
 	values?: boolean;
+
+	/**
+	 * When `true`, the iterator will only return the values.
+	 */
+	valuesOnly?: boolean;
 };
 
 export interface DBITransactional {
@@ -205,8 +210,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
-		const result = this.store.getSync(this.#context, keyBuffer, options);
+		const result = this.store.getSync(this.#context, key, options);
 		return this.store.decodeValue(result);
 	}
 
@@ -221,20 +225,19 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
 		let result: Buffer | undefined;
-		let error: Error | undefined;
+		let error: unknown | undefined;
 		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: Error) => void | undefined;
+		let reject: (error: unknown) => void | undefined;
 
 		const status = this.store.get(
 			this.#context,
-			keyBuffer,
+			key,
 			value => {
 				result = value;
 				resolve?.(value);
 			},
-			err => {
+			(err: unknown) => {
 				error = err;
 				reject?.(err);
 			},
@@ -261,8 +264,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
-		return this.store.getSync(this.#context, keyBuffer, options);
+		return this.store.getSync(this.#context, key, options);
 	}
 
 	/**
@@ -280,21 +282,20 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
 		let result: Buffer | undefined;
-		let error: Error | undefined;
+		let error: unknown | undefined;
 		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: Error) => void | undefined;
+		let reject: (error: unknown) => void | undefined;
 
 		// TODO: specify the shared buffer to write the value to
 		const status = this.store.get(
 			this.#context,
-			keyBuffer,
+			key,
 			value => {
 				result = value;
 				resolve?.(value);
 			},
-			err => {
+			(err: unknown) => {
 				error = err;
 				reject?.(err);
 			},
@@ -400,11 +401,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getValues(key: Key, options?: IteratorOptions & T) {
-		// TODO: create array-valued key `[ indexedValue, primaryKey ]`
-
 		return this.store.getRange(this.#context, {
 			...options,
-			key
+			key,
+			valuesOnly: true
 		});
 	}
 
@@ -483,8 +483,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * await db.remove('a');
 	 * ```
 	 */
-	async remove(key: Key, options?: T & DBITransactional): Promise<void> {
-		return this.store.removeSync(this.#context, key, options);
+	async remove(key: Key, value?: any, options?: T & DBITransactional): Promise<void> {
+		return this.store.removeSync(this.#context, key, value, options);
 	}
 
 	/**
@@ -501,7 +501,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * db.removeSync('a');
 	 * ```
 	 */
-	removeSync(key: Key, options?: T & DBITransactional): void {
-		return this.store.removeSync(this.#context, key, options);
+	removeSync(key: Key, value?: any, options?: T & DBITransactional): void {
+		return this.store.removeSync(this.#context, key, value, options);
 	}
 }
