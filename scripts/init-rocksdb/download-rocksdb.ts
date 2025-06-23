@@ -32,6 +32,7 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 		}
 		const response = await fetch(url, { headers });
 		if (!response.ok || !response.body) {
+			console.log(response.headers);
 			throw new Error(`Failed to download ${url} (${response.status} ${response.statusText})`);
 		}
 

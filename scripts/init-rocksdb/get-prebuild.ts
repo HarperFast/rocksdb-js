@@ -33,6 +33,7 @@ export async function getPrebuild(desiredVersion?: string) {
 	});
 
 	if (!response.ok) {
+		console.log(response.headers);
 		throw new Error(`Failed to fetch latest RocksDB release (${response.status} ${response.statusText})`);
 	}
 
