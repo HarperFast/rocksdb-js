@@ -28,7 +28,10 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
 		console.log(`Downloading ${url}`);
 		const headers: Record<string, string> = {};
 		if (process.env.GH_TOKEN) {
+			console.log('Using GH_TOKEN');
 			headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
+		} else {
+			console.log('No GH_TOKEN');
 		}
 		const response = await fetch(url, { headers });
 		if (!response.ok || !response.body) {

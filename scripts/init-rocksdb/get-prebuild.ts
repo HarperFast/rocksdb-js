@@ -24,7 +24,10 @@ export async function getPrebuild(desiredVersion?: string) {
 		Accept: 'application/vnd.github.v3.raw',
 	};
 	if (process.env.GH_TOKEN) {
+		console.log('Using GH_TOKEN');
 		headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
+	} else {
+		console.log('No GH_TOKEN');
 	}
 
 	// get the latest RocksDB release
