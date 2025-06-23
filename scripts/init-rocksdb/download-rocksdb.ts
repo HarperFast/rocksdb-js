@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream';
 import { promisify } from 'node:util';
-import { getPrebuildFromGitHub } from './get-prebuild';
-import semver from 'semver';
+import type { Prebuild } from './get-prebuild';
 
 const platformMap = {
 	darwin: 'osx',
@@ -15,60 +14,28 @@ const platformMap = {
 
 const streamPipeline = promisify(pipeline);
 
-export async function downloadFromGitHub(
-	dest: string,
-	currentVersion: string | undefined,
-	desiredVersion: string | undefined
-) {
-	const prebuild = await getPrebuildFromGitHub(desiredVersion);
-
-	if (currentVersion && semver.lte(prebuild.version, currentVersion)) {
-		console.log(`No update needed, latest version ${prebuild.version} is active.`);
-		process.exit(0);
-	}
-
-	const filename = getFilename(prebuild.version);
-	const [asset] = prebuild.assets.filter((asset) => asset.name === filename);
+export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
+	const filename = `rocksdb-${prebuild.version}-${process.arch}-${platformMap[process.platform] || process.platform}`;
+	const [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 	if (!asset) {
 		throw new Error('No asset found');
 	}
 
-	const headers: Record<string, string> = {};
-	if (process.env.GH_TOKEN) {
-		headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
-	}
-
-	await downloadAndExtract({ dest, filename, headers, url: asset.url });
-}
-
-export async function downloadFromS3(dest: string, desiredVersion: string) {
-	const filename = getFilename(desiredVersion);
-	const url = `https://harper-artifacts.s3.us-east-2.amazonaws.com/rocksdb-prebuilds/v${desiredVersion}/${filename}`;
-
-	await downloadAndExtract({ dest, filename, url });
-}
-
-function getFilename(version: string) {
-	return `rocksdb-${version}-${process.arch}-${platformMap[process.platform] || process.platform}.tar.xz`;
-}
-
-async function downloadAndExtract({
-	dest, filename, headers, url
-}: {
-	dest: string;
-	filename: string;
-	headers?: Record<string, string>;
-	url: string;
-}) {
-	const tmpFile = join(tmpdir(), filename);
-	console.log(`Downloading ${url}`);
+	const { name, url } = asset;
+	const tmpFile = join(tmpdir(), name);
 
 	try {
+		console.log(`Downloading ${url}`);
+		const headers: Record<string, string> = {};
+		if (process.env.GH_TOKEN) {
+			headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
+		}
 		const response = await fetch(url, { headers });
 		if (!response.ok || !response.body) {
 			throw new Error(`Failed to download ${url} (${response.status} ${response.statusText})`);
 		}
 
+		// stream the response to the destination file
 		const fileStream = createWriteStream(tmpFile);
 		await streamPipeline(response.body, fileStream);
 

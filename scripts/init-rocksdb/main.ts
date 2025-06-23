@@ -15,7 +15,8 @@ import { config } from 'dotenv';
 import semver from 'semver';
 import { buildRocksDBFromSource } from './build-rocksdb-from-source';
 import { getCurrentVersion } from './get-current-version';
-import { downloadFromGitHub, downloadFromS3 } from './download-rocksdb';
+import { getPrebuild } from './get-prebuild';
+import { downloadRocksDB } from './download-rocksdb';
 import { readFileSync } from 'node:fs';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
@@ -43,11 +44,14 @@ try {
 		process.exit(0);
 	}
 
-	if (desiredVersion) {
-		await downloadFromS3(dest, desiredVersion);
-	} else {
-		await downloadFromGitHub(dest, currentVersion, desiredVersion);
+	const prebuild = await getPrebuild(desiredVersion);
+
+	if (currentVersion && semver.lte(prebuild.version, currentVersion)) {
+		console.log(`No update needed, latest version ${prebuild.version} is active.`);
+		process.exit(0);
 	}
+
+	await downloadRocksDB(prebuild, dest);
 } catch (error) {
 	console.error(error);
 	process.exit(1);
