@@ -38,8 +38,38 @@ jobs:
         with:
           version: latest
 
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Setup RocksDB cache
+        uses: actions/cache@v4
+        with:
+          path: deps/rocksdb
+          key: ${{ runner.os }}-rocksdb-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-rocksdb-
+
+      # temporary
+      - name: Setup extended-iterable cache
+        id: extended-iterable-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/extended-iterable
+          key: ${{ runner.os }}-extended-iterable-iterable2
+
       # temporary
       - name: Install extended-iterable
+        if: steps.extended-iterable-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -47,6 +77,16 @@ jobs:
           cd /tmp/extended-iterable
           pnpm install --no-frozen-lockfile
           pnpm build
+          pnpm link
+          cd $GITHUB_WORKSPACE
+          pnpm link @harperdb/extended-iterable
+          pnpm install --no-frozen-lockfile
+
+      # temporary
+      - name: Link extended-iterable (cache hit)
+        if: steps.extended-iterable-cache.outputs.cache-hit == 'true'
+        run: |
+          cd /tmp/extended-iterable
           pnpm link
           cd $GITHUB_WORKSPACE
           pnpm link @harperdb/extended-iterable
