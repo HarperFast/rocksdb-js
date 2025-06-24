@@ -3,7 +3,7 @@ import { NativeDatabase, NativeIterator, NativeTransaction } from './load-bindin
 import { BOUNDARY, DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { GetOptions, getTxnId, Store, type PutOptions } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
-import type { DBITransactional, IteratorOptions } from './dbi.js';
+import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 
 const EMPTY = Buffer.alloc(0);
 
@@ -21,6 +21,34 @@ export class IndexStore extends Store {
 		return value;
 	}
 
+	#encodeIndexedKey(key: Key, value?: any) {
+		return this.encodeKey(
+			value !== undefined ? [key, BOUNDARY, value] : [key, BOUNDARY]
+		);
+	}
+
+	get(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		resolve: (value: Buffer) => void,
+		reject: (err: unknown) => void,
+		_txnId?: number
+	): number {
+		try {
+			for (const value of this.getRange(context, {
+				key,
+				valuesOnly: true
+			})) {
+				resolve(value);
+				break;
+			}
+			return 0;
+		} catch (err) {
+			reject(err);
+			return 1;
+		}
+	}
+
 	getRange(context: NativeDatabase | NativeTransaction, options?: IteratorOptions & DBITransactional): ExtendedIterable<DBIteratorValue<any> | any> {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
@@ -31,7 +59,7 @@ export class IndexStore extends Store {
 		let encodedStartKey: BufferWithDataView | undefined;
 
 		if (options?.key) {
-			encodedStartKey = this.encodeKey([options.key, BOUNDARY]);
+			encodedStartKey = this.#encodeIndexedKey(options.key);
 			start = Buffer.from(encodedStartKey.subarray(encodedStartKey.start, encodedStartKey.end));
 			end = Buffer.concat([start, Buffer.from([0xff])]);
 		} else {
@@ -65,8 +93,8 @@ export class IndexStore extends Store {
 			throw new Error('Database not open');
 		}
 
-		const encodedStartKey = this.encodeKey([key, BOUNDARY]);
-		const start = Buffer.from(encodedStartKey.subarray(encodedStartKey.start, encodedStartKey.end));
+		const startKey = this.#encodeIndexedKey(key);
+		const start = Buffer.from(startKey.subarray(startKey.start, startKey.end));
 		const end = Buffer.concat([start, Buffer.from([0xff])]);
 
 		return new ExtendedIterable<DBIteratorValue<any> | any>(
@@ -82,28 +110,6 @@ export class IndexStore extends Store {
 		);
 	}
 
-	get(
-		context: NativeDatabase | NativeTransaction,
-		key: Key,
-		resolve: (value: Buffer) => void,
-		reject: (err: unknown) => void,
-		_txnId?: number
-	): number {
-		try {
-			for (const value of this.getRange(context, {
-				key,
-				valuesOnly: true
-			})) {
-				resolve(value);
-				break;
-			}
-			return 0;
-		} catch (err) {
-			reject(err);
-			return 1;
-		}
-	}
-
 	getSync(context: NativeDatabase | NativeTransaction, key: Key, _options?: GetOptions & DBITransactional) {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
@@ -117,12 +123,28 @@ export class IndexStore extends Store {
 		}
 	}
 
+	getValuesCount(context: NativeDatabase | NativeTransaction, key: Key, options?: RangeOptions & DBITransactional) {
+		const startKey = this.#encodeIndexedKey(key);
+		const start = Buffer.from(startKey.subarray(startKey.start, startKey.end));
+		const end = Buffer.concat([start, Buffer.from([0xff])]);
+
+		return context.getCount({
+			...options,
+			start,
+			end
+		}, getTxnId(options));
+	}
+
 	putSync(context: NativeDatabase | NativeTransaction, key: Key, value: any, options?: PutOptions & DBITransactional) {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
 
-		const keyValueBuffer = this.encodeKey([key, BOUNDARY, value]);
+		if (key === undefined) {
+			throw new Error('Key is required');
+		}
+
+		const keyValueBuffer = this.#encodeIndexedKey(key, value);
 		context.putSync(keyValueBuffer, EMPTY, getTxnId(options));
 	}
 
@@ -131,23 +153,22 @@ export class IndexStore extends Store {
 			throw new Error('Database not open');
 		}
 
+		if (key === undefined) {
+			throw new Error('Key is required');
+		}
+
 		if (options === undefined && value?.transaction !== undefined) {
 			options = value;
 			value = undefined;
 		}
 
 		if (value !== undefined) {
-			const keyValueBuffer = this.encodeKey([key, BOUNDARY, value]);
+			const keyValueBuffer = this.#encodeIndexedKey(key, value);
 			context.removeSync(keyValueBuffer, getTxnId(options));
 		} else {
 			for (const { key: sortKey } of this.#getSortKeysOnly(context, key, options)) {
 				context.removeSync(sortKey, getTxnId(options));
 			}
 		}
-
-		context.removeSync(
-			this.encodeKey(key),
-			getTxnId(options)
-		);
 	}
 }

@@ -295,6 +295,18 @@ export class Store {
 		return context.getCount(options, txnId);
 	}
 
+	getValuesCount(context: NativeDatabase | NativeTransaction, key: Key, options?: RangeOptions & DBITransactional) {
+		const startKey = this.encodeKey(key);
+		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+		const end = start;
+		return context.getCount({
+			...options,
+			start,
+			end,
+			inclusiveEnd: true
+		}, getTxnId(options));
+	}
+
 	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
 		const keyBuffer = this.encodeKey(key);
 		return context.getSync(keyBuffer, getTxnId(options));

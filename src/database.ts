@@ -7,8 +7,20 @@ import { IndexStore } from './index-store.js';
 import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
+	/**
+	 * Use the index store.
+	 */
 	dupSort?: boolean;
+
+	/**
+	 * The column family name.
+	 */
 	name?: string; // defaults to 'default'
+
+	/**
+	 * A custom store.
+	 */
+	store?: Store;
 };
 
 /**
@@ -32,7 +44,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		path: string,
 		options?: RocksDatabaseOptions
 	) {
-		if (options?.dupSort) {
+		if (options?.store) {
+			super(options.store);
+		} else if (options?.dupSort) {
 			super(new IndexStore(path, options));
 		} else {
 			super(new Store(path, options));

@@ -421,18 +421,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getValuesCount(key: Key, options?: RangeOptions & T) {
-		const startKey = this.store.encodeKey(key);
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
-		const end = start;
-
-		// TODO: create array-valued key `[ indexedValue, primaryKey ]`
-
-		return this.store.getCount(this.#context, {
-			...options,
-			start,
-			end,
-			inclusiveEnd: true
-		}, getTxnId(options));
+		return this.store.getValuesCount(this.#context, key, options);
 	}
 
 	/**

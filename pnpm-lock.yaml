@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@harperdb/extended-iterable':
+        specifier: link:../../Library/pnpm/global/5/node_modules/@harperdb/extended-iterable
+        version: link:../../Library/pnpm/global/5/node_modules/@harperdb/extended-iterable
       msgpackr:
         specifier: 1.11.2
         version: 1.11.2

@@ -33,6 +33,7 @@
     "vendor"
   ],
   "dependencies": {
+    "@harperdb/extended-iterable": "link:../../Library/pnpm/global/5/node_modules/@harperdb/extended-iterable",
     "msgpackr": "1.11.2",
     "ordered-binary": "1.5.3"
   },
