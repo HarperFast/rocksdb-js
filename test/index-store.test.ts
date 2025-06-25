@@ -112,6 +112,70 @@ describe('Index Store', () => {
 			}
 		});
 
+		it.only('should query a bunch of keys', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, { dupSort: true });
+
+				const keys = [
+					Symbol.for('test'),
+					false,
+					true,
+					-33,
+					-1.1,
+					3.3,
+					5,
+					[5, 4],
+					[5, 55],
+					[5, 'words after number'],
+					[6, 'abc'],
+					// ['Test', null, 1],
+					['Test', Symbol.for('test'), 2],
+					['Test', 'not null', 3],
+					'hello',
+					['hello', 3],
+					['hello', 'world'],
+					['uid', 'I-7l9ySkD-wAOULIjOEnb', 'Rwsu6gqOw8cqdCZG5_YNF'],
+					'z',
+				];
+				for (const key of keys) {
+					// console.log(key);
+					await db.put(key, key);
+				}
+				console.log('--------------------------------');
+
+				let returnedKeys: Key[] = [];
+				for (const { key, value } of db.getRange({
+					// start: Symbol.for('A'),
+				})) {
+					console.log();
+					const db_val = db.get(key);
+					console.log({ key, value, db_val });
+					returnedKeys.push(key);
+					expect(db_val).toBe(value);
+					console.log();
+				}
+				expect(returnedKeys).toEqual(keys);
+				console.log('--------------------------------');
+
+				returnedKeys = [];
+				for (const { key, value } of db.getRange({
+					reverse: true,
+				})) {
+					// console.log({ key, value, db_val: db.get(key)});
+					returnedKeys.unshift(key);
+					expect(db.get(key)).toBe(value);
+				}
+				keys.shift(); // remove the symbol test, it should be omitted
+				expect(returnedKeys).toEqual(keys);
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
 		it('should error if the database is not open', async () => {
 			const db = new RocksDatabase(generateDBPath(), { dupSort: true });
 			expect(() => db.getRange()).toThrow('Database not open');
