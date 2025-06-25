@@ -6,7 +6,17 @@ import * as orderedBinary from 'ordered-binary';
 import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
-	name?: string; // defaults to 'default'
+	/**
+	 * The column family name.
+	 *
+	 * @default 'default'
+	 */
+	name?: string;
+
+	/**
+	 * A custom store.
+	 */
+	store?: Store;
 };
 
 /**
@@ -28,11 +38,16 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// #useVersions: boolean;
 
 	constructor(
-		path: string,
+		pathOrStore: string | Store,
 		options?: RocksDatabaseOptions
 	) {
-		const store = new Store(path, options);
-		super(store);
+		if (typeof pathOrStore === 'string') {
+			super(new Store(pathOrStore, options));
+		} else if (pathOrStore instanceof Store) {
+			super(pathOrStore);
+		} else {
+			throw new TypeError('Invalid database path or store');
+		}
 
 		// this.#cache = options?.cache ?? false; // TODO: better name?
 		// this.#dupSort = options?.dupSort ?? false; // TODO: better name?
@@ -232,7 +247,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * Sugar method for opening a database.
 	 *
-	 * @param path - The filesystem path to the database.
+	 * @param pathOrStore - The filesystem path to the database or a custom store.
 	 * @param options - The options for the database.
 	 * @returns A new RocksDatabase instance.
 	 *
@@ -242,10 +257,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	static async open(
-		path: string,
+		pathOrStore: string | Store,
 		options?: RocksDatabaseOptions
 	): Promise<RocksDatabase> {
-		return new RocksDatabase(path, options).open();
+		return new RocksDatabase(pathOrStore, options).open();
 	}
 
 	/**
