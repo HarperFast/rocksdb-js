@@ -1,3 +1,4 @@
+#include <cinttypes>
 #include <cstdarg>
 #include <functional>
 #include <node_api.h>
@@ -145,9 +146,9 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 			bool lossless;
 			NAPI_STATUS_THROWS_VOID(::napi_get_value_bigint_int64(env, value, &result, &lossless))
 			if (lossless) {
-				fprintf(stderr, "%lld", result);
+				fprintf(stderr, "%" PRId64, result);
 			} else {
-				fprintf(stderr, "%lld (lossy)", result);
+				fprintf(stderr, "%" PRId64 " (lossy)", result);
 			}
 			break;
 		}

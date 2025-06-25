@@ -70,7 +70,7 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		options.readOptions.iterate_lower_bound = &this->startKey;
 
 #ifdef DEBUG
-		fprintf(stderr, "[%04zu] Start Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+		fprintf(stderr, "[%04zu] DBIteratorHandle::init() Start Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
 		for (size_t i = 0; i < this->startKey.size(); i++) {
 			fprintf(stderr, " %02x", (unsigned char)this->startKey.data()[i]);
 		}
@@ -89,7 +89,7 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		options.readOptions.iterate_upper_bound = &this->endKey;
 
 #ifdef DEBUG
-		fprintf(stderr, "[%04zu]   End Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+		fprintf(stderr, "[%04zu] DBIteratorHandle::init()   End Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
 		for (size_t i = 0; i < this->endKey.size(); i++) {
 			fprintf(stderr, " %02x", (unsigned char)this->endKey.data()[i]);
 		}
