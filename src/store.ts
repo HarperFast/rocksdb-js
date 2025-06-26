@@ -17,7 +17,7 @@ import type { BufferWithDataView, Key } from './encoding.js';
 import { type DBITransactional, type IteratorOptions, type RangeOptions } from './dbi.js';
 import { type DBIteratorValue, DBIterator } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
-import ExtendedIterable from './iterator.js';
+import { ExtendedIterable } from './extended-iterable/extended-iterable.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB

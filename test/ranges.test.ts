@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import { ExtendedIterable } from '../src/iterator.js';
+import { ExtendedIterable } from '../src/extended-iterable/extended-iterable.js';
 import type { Key } from '../src/encoding.js';
 
 async function initTestDB(test: (db: RocksDatabase) => Promise<void>, name?: string) {
