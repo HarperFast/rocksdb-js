@@ -358,8 +358,26 @@ for (const { key, value } of db.getRange().take(10)) {
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`
-instance and handles all data going in and out of the native database
-interface.
+instance and the native RocksDB interface. It owns the native RocksDB instance
+along with various settings including encoding and the db name. It handles all interactions with the native RocksDB instance.
+
+The default `Store` contains the following methods which can be overridden:
+
+- `constructor(path, options?)`
+- `close()`
+- `decodeKey(key)`
+- `decodeValue(value)`
+- `encodeKey(key)`
+- `encodeValue(value)`
+- `get(context, key, resolve, reject, txnId?)`
+- `getCount(context, options?, txnId?)`
+- `getRange(context, options?)`
+- `getSync(context, key, options?)`
+- `getValuesCount(context, key, options?)`
+- `isOpen()`
+- `open()`
+- `putSync(context, key, value, options?)`
+- `removeSync(context, key, options?)`
 
 To use it, extend the default `Store` and pass in an instance of your store
 into the `RocksDatabase` constructor.
