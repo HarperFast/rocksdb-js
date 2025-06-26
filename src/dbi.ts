@@ -1,6 +1,6 @@
 import { NativeDatabase, NativeIterator, NativeTransaction } from './load-binding.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { ExtendedIterable } from './iterator.js';
+import { ExtendedIterable } from './extended-iterable/extended-iterable.js';
 import type { Key } from './encoding.js';
 import type { Store } from './store.js';
 import type { Transaction } from './transaction.js';
