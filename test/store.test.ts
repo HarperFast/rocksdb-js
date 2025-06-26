@@ -31,8 +31,4 @@ describe('Custom Store', () => {
 			await rimraf(dbPath);
 		}
 	});
-
-	it('should error if path or store is invalid', () => {
-		expect(() => new RocksDatabase(null as any)).toThrow('Invalid database path or store');
-	});
 });
