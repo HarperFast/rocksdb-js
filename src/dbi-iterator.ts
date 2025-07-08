@@ -26,6 +26,10 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		this.#includeValues = options?.values ?? true;
 	}
 
+	[Symbol.iterator]() {
+		return this;
+	}
+
 	next(...[_value]: [] | [any]): IteratorResult<DBIteratorValue<T>> {
 		const result = this.iterator.next();
 		if (result.done) {

@@ -203,9 +203,9 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 		}
 	} else {
 		if (!itHandle->iterator->status().ok()) {
-			DEBUG_LOG("DBIterator::Next iterator not valid/ok: %s\n", itHandle->iterator->status().ToString().c_str());
+			DEBUG_LOG("%p DBIterator::Next iterator not valid/ok: %s\n", itHandle, itHandle->iterator->status().ToString().c_str());
 		} else {
-			DEBUG_LOG("DBIterator::Next iterator no keys found in range\n");
+			DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", itHandle);
 		}
 
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone))

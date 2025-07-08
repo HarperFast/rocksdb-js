@@ -3,6 +3,7 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
+import { Encoder as MsgpackEncoder } from 'msgpackr';
 import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
@@ -146,7 +147,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Note: ideally would go in the `Store` class, but the "structures"
 	 * functionality requires access to the high-level data functions.
 	 */
-	async #initEncoder(): Promise<void> {
+	#initEncoder() {
 		const { store } = this;
 
 		/**
@@ -165,7 +166,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			(!store.encoding || store.encoding === 'msgpack')
 		) {
 			store.encoding = 'msgpack';
-			EncoderClass = await import('msgpackr').then(m => m.Encoder);
+			EncoderClass = MsgpackEncoder;
 		}
 
 		if (EncoderClass) {
@@ -275,13 +276,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * await db.open();
 	 * ```
 	 */
-	async open(): Promise<RocksDatabase> {
+	open(): RocksDatabase {
 		if (this.store.open()) {
 			// already open
 			return this;
 		}
 
-		await this.#initEncoder();
+		this.#initEncoder();
 
 		return this;
 	}

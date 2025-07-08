@@ -18,6 +18,7 @@ void debugLog(const char* msg, ...) {
     fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     vfprintf(stderr, msg, args);
     va_end(args);
+	fflush(stderr);
 }
 
 /**

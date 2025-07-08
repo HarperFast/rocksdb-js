@@ -11,6 +11,11 @@
 namespace rocksdb_js {
 
 NAPI_MODULE_INIT() {
+#ifdef DEBUG
+	// disable buffering for stderr to ensure messages are written immediately
+	setvbuf(stderr, nullptr, _IONBF, 0);
+#endif
+
 	napi_value version;
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);

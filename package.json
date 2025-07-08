@@ -2,8 +2,15 @@
   "name": "@harperdb/rocksdb-js",
   "version": "0.0.0",
   "description": "",
-  "exports": "./dist/index.js",
-  "types": "./dist/index.d.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.js",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
   "type": "module",
   "gypfile": true,
   "scripts": {
@@ -33,6 +40,7 @@
     "vendor"
   ],
   "dependencies": {
+    "@harperdb/extended-iterable": "1.0.0",
     "msgpackr": "1.11.2",
     "ordered-binary": "1.5.3"
   },

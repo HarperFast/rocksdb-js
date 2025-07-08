@@ -8,16 +8,17 @@ import {
 	Encoding,
 	initKeyEncoder,
 	createFixedBuffer,
+	type BufferWithDataView,
 	type Encoder,
+	type Key,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
 } from './encoding.js';
-import type { BufferWithDataView, Key } from './encoding.js';
-import { type DBITransactional, type IteratorOptions, type RangeOptions } from './dbi.js';
-import { type DBIteratorValue, DBIterator } from './dbi-iterator.js';
+import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
+import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
-import { ExtendedIterable } from './extended-iterable/extended-iterable.js';
+import { ExtendedIterable } from '@harperdb/extended-iterable';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -30,9 +31,7 @@ const SAVE_BUFFER_SIZE = 8192;
  * Options for the `Store` class.
  */
 export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
-	// cache?: boolean;
 	decoder?: Encoder | null;
-	// dupSort?: boolean;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
 	keyEncoder?: {
@@ -296,7 +295,10 @@ export class Store {
 		return context.getCount(options, txnId);
 	}
 
-	getRange(context: NativeDatabase | NativeTransaction, options?: IteratorOptions & DBITransactional): ExtendedIterable<DBIteratorValue<any>> {
+	getRange(
+		context: NativeDatabase | NativeTransaction,
+		options?: IteratorOptions & DBITransactional
+	): ExtendedIterable<DBIteratorValue<any>> {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -308,14 +310,15 @@ export class Store {
 		const endKey = !options?.key && options?.end ? this.encodeKey(options.end) : undefined;
 		const end = options?.key ? start : endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
 
-		return new ExtendedIterable<DBIteratorValue<any>>(
+		return new ExtendedIterable(
+			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
 			new DBIterator(
 				new NativeIterator(context, {
 					...options,
 					inclusiveEnd: options?.inclusiveEnd || !!options?.key,
 					start,
 					end
-				}),
+				}) as Iterator<DBIteratorValue<any>>,
 				this,
 				options
 			)
