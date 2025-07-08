@@ -830,7 +830,6 @@ describe('Ranges', () => {
 
 				const iter = db.getRange();
 				const results = iter
-					// @ts-expect-error ExtendedIterable v1 map() type definition is missing `index`
 					.map((item, index) => {
 						return {
 							...item,
@@ -855,7 +854,6 @@ describe('Ranges', () => {
 
 				const iter = db.getRange();
 				const results = iter
-					// @ts-expect-error ExtendedIterable v1 map() type definition is missing `index`
 					.map((item, index) => {
 						if (index === 1) {
 							throw new Error('test');
@@ -886,12 +884,16 @@ describe('Ranges', () => {
 
 				const iter = db.getRange();
 				const results = iter
-					.map(_item => {
-						throw new Error('test');
+					.map((item, index) => {
+						if (index === 1) {
+							throw new Error('test');
+						}
+						return item;
 					});
 
-				expect(() => results.next()).toThrow('test');
-				expect(() => results.next()).toThrow('Next failed: Iterator not initialized');
+				const iterator = results[Symbol.iterator]();
+				expect(iterator.next()).toEqual({ value: { key: 'a', value: 'value a' } });
+				expect(() => iterator.next()).toThrow('test');
 			});
 		});
 
@@ -911,11 +913,9 @@ describe('Ranges', () => {
 					})
 					.mapError(error => error);
 
-				for await (const _item of results) {
-					break;
-				}
-
-				expect(() => results.next()).toThrow('Next failed: Iterator not initialized');
+				const iterator = results[Symbol.iterator]();
+				expect(iterator.return?.()).toEqual({ done: true, value: undefined });
+				expect(() => iterator.next()).toThrow('Next failed: Iterator not initialized');
 			});
 		});
 	});

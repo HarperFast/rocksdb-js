@@ -40,7 +40,7 @@
     "vendor"
   ],
   "dependencies": {
-    "@harperdb/extended-iterable": "1.0.0",
+    "@harperdb/extended-iterable": "1.0.1",
     "msgpackr": "1.11.2",
     "ordered-binary": "1.5.3"
   },

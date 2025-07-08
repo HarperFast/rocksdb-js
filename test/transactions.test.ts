@@ -280,7 +280,8 @@ for (const { name, options, txnOptions } of testOptions) {
 						.map(_item => {
 							throw new Error('test');
 						});
-					results.next();
+					const iterator = results[Symbol.asyncIterator]();
+					await iterator.next();
 				}, txnOptions)).rejects.toThrow('test');
 
 				expect(() => db!.getSync('a', { transaction: txn })).toThrow('Transaction not found');
@@ -430,7 +431,8 @@ for (const { name, options, txnOptions } of testOptions) {
 						.map(_item => {
 							throw new Error('test');
 						});
-					results.next();
+					const iterator = results[Symbol.iterator]();
+					iterator.next();
 				}, txnOptions)).toThrow('test');
 
 				expect(() => db!.getSync('a', { transaction: txn })).toThrow('Transaction not found');
