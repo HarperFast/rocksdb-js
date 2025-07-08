@@ -17,10 +17,11 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not
   need to exist, but the parent directories do.
 - `options: object` [optional]
-  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by default and the cache is shared across all database instances.
   - `name:string` The column family name. Defaults to `"default"`.
+  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by default and the cache is shared across all database instances.
   - `parallelismThreads: number` The number of background threads to use for flush and compaction. Defaults to `1`.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting until commit. Defaults to `false`.
+  - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for more information.
 
 ### `db.config(options)`
 
@@ -352,6 +353,54 @@ Returns a new iterable with the first `limit` items.
 for (const { key, value } of db.getRange().take(10)) {
   console.log({ key, value });
 }
+```
+
+## Custom Store
+
+The store is a class that sits between the `RocksDatabase` or `Transaction`
+instance and the native RocksDB interface. It owns the native RocksDB instance
+along with various settings including encoding and the db name. It handles all interactions with the native RocksDB instance.
+
+The default `Store` contains the following methods which can be overridden:
+
+- `constructor(path, options?)`
+- `close()`
+- `decodeKey(key)`
+- `decodeValue(value)`
+- `encodeKey(key)`
+- `encodeValue(value)`
+- `get(context, key, resolve, reject, txnId?)`
+- `getCount(context, options?, txnId?)`
+- `getRange(context, options?)`
+- `getSync(context, key, options?)`
+- `getValuesCount(context, key, options?)`
+- `isOpen()`
+- `open()`
+- `putSync(context, key, value, options?)`
+- `removeSync(context, key, options?)`
+
+To use it, extend the default `Store` and pass in an instance of your store
+into the `RocksDatabase` constructor.
+
+```typescript
+import { RocksDatabase, Store } from '@harperdb/rocksdb-js';
+
+class MyStore extends Store {
+  get(context, key, resolve, reject, txnId) {
+    console.log('Getting:' key);
+    return super.get(context, key, resolve, reject, txnId);
+  }
+
+  putSync(context, key, value, options) {
+    console.log('Putting:', key);
+    return super.putSync(context, key, value, options);
+  }
+}
+
+const myStore = new MyStore('path/to/db');
+const db = await RocksDatabase.open(myStore);
+await db.put('foo', 'bar');
+console.log(await db.get('foo'));
 ```
 
 ## Interfaces
