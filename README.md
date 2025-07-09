@@ -124,7 +124,8 @@ created on the first read or write.
 console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
 
 const promise = db.transaction(async (txn) => {
-  await txn.put('foo', 'bar');
+  // perform a write to create a snapshot
+  await txn.get('foo');
   await setTimeout(100);
 });
 
