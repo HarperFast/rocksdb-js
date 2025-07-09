@@ -41,7 +41,7 @@
   ],
   "dependencies": {
     "@harperdb/extended-iterable": "1.0.1",
-    "msgpackr": "1.11.2",
+    "msgpackr": "1.11.4",
     "ordered-binary": "1.5.3"
   },
   "devDependencies": {
