@@ -391,44 +391,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Retrieves all values for the given key.
-	 *
-	 * @param key - The key to retrieve values for.
-	 * @param options - The iterator options.
-	 * @returns A range iterable.
-	 *
-	 * @example
-	 * ```typescript
-	 * for (const { key, value } of db.getValues('a')) {
-	 *   console.log({ key, value });
-	 * }
-	 * ```
-	 */
-	getValues(key: Key, options?: IteratorOptions & T) {
-		return this.store.getRange(this.#context, {
-			...options,
-			key,
-			valuesOnly: true
-		});
-	}
-
-	/**
-	 * Retrieves the number of values for the given key.
-	 *
-	 * @param key - The key to retrieve values for.
-	 * @param options - The range options.
-	 * @returns The number of values for the given key.
-	 *
-	 * @example
-	 * ```typescript
-	 * const count = db.getValuesCount('a');
-	 * ```
-	 */
-	getValuesCount(key: Key, options?: RangeOptions & T) {
-		return this.store.getValuesCount(this.#context, key, options);
-	}
-
-	/**
 	 * Stores a value for the given key.
 	 *
 	 * @param key - The key to store the value for.

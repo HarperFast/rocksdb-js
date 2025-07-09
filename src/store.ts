@@ -332,18 +332,6 @@ export class Store {
 		);
 	}
 
-	getValuesCount(context: NativeDatabase | NativeTransaction, key: Key, options?: RangeOptions & DBITransactional) {
-		const startKey = this.encodeKey(key);
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
-		const end = start;
-		return context.getCount({
-			...options,
-			start,
-			end,
-			inclusiveEnd: true
-		}, getTxnId(options));
-	}
-
 	/**
 	 * Checks if the database is open.
 	 *

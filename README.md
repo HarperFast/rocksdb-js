@@ -131,24 +131,6 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
-### `db.getValues(key: Key, options?: IteratorOptions): RangeIterable`
-
-Retrieves all values for the given key.
-
-```typescript
-for (const { value } of db.getValues('a')) {
-  console.log({ value });
-}
-```
-
-### `db.getValuesCount(key: Key, options?: RangeOptions): number`
-
-Retrieves the number of values for the given key.
-
-```typescript
-const count = db.getValuesCount('a');
-```
-
 ### `db.put(key, value, options?): Promise`
 
 Stores a value for a given key.
@@ -373,7 +355,6 @@ The default `Store` contains the following methods which can be overridden:
 - `getCount(context, options?, txnId?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
-- `getValuesCount(context, key, options?)`
 - `isOpen()`
 - `open()`
 - `putSync(context, key, value, options?)`
