@@ -110,9 +110,36 @@ const total = db.getKeysCount();
 const range = db.getKeysCount({ start: 'a', end: 'z' });
 ```
 
+### `db.getOldestSnapshotTimestamp(): number`
+
+Returns a number representing a unix timestamp of the oldest unreleased
+snapshot.
+
+Snapshots are only created during transactions. When the database is opened in
+optimistic mode (the default), the snapshot will be created on the first
+read. When the database is opened in pessimistic mode, the snapshot will be
+created on the first read or write.
+
+```typescript
+console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
+
+const promise = db.transaction(async (txn) => {
+  await txn.put('foo', 'bar');
+  await setTimeout(100);
+});
+
+console.log(db.getOldestSnapshotTimestamp()); // returns `1752102248558`
+
+await promise;
+// transaction completes, snapshot released
+
+console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
+```
+
 ### `db.getRange(options?: IteratorOptions): RangeIterable`
 
-Retrieves a range of keys and their values. Supports both synchronous and asynchronous iteration.
+Retrieves a range of keys and their values. Supports both synchronous and
+asynchronous iteration.
 
 ```typescript
 // sync
