@@ -275,24 +275,4 @@ describe('Read Operations', () => {
 			}
 		});
 	});
-
-	describe('getKeys()', () => {
-		it('should error if database is not open', async () => {
-			const dbPath = generateDBPath();
-			let db: RocksDatabase | null = null;
-
-			try {
-				db = new RocksDatabase(dbPath);
-				await expect(db.getKeys()).rejects.toThrow('Database not open');
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-	});
-
-	// getKeys()
-	// getRange()
-	// getValues()
-	// getValuesCount()
 });

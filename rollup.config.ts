@@ -8,8 +8,8 @@ import { nodeResolve } from '@rollup/plugin-node-resolve';
 
 const { version } = JSON.parse(readFileSync('./package.json', 'utf8'));
 
-export default defineConfig([
-	{
+function generateConfig(format: 'es' | 'cjs') {
+	return {
 		external: [
 			'msgpackr',
 			'ordered-binary'
@@ -18,10 +18,11 @@ export default defineConfig([
 		output: {
 			dir: './dist',
 			externalLiveBindings: false,
-			format: 'es',
+			format,
 			freeze: false,
 			preserveModules: false,
-			sourcemap: true
+			sourcemap: true,
+			entryFileNames: format === 'es' ? 'index.js' : 'index.cjs'
 		},
 		plugins: [
 			esbuildMinifyPlugin({
@@ -40,5 +41,10 @@ export default defineConfig([
 			nodeResolve(),
 			commonjs()
 		]
-	}
+	};
+}
+
+export default defineConfig([
+	generateConfig('es'),
+	generateConfig('cjs')
 ]);

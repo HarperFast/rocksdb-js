@@ -25,9 +25,12 @@ DBDescriptor::DBDescriptor(
  * (transactions, iterators, etc).
  */	
 DBDescriptor::~DBDescriptor() {
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor() %ld closables\n", this, this->closables.size())
+
 	if (this->closables.size()) {
 		while (!this->closables.empty()) {
 			Closable* handle = *this->closables.begin();
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor() closing closable %p\n", this, handle)
 			this->closables.erase(handle);
 			handle->close();
 		}

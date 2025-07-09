@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include "db_handle.h"
+#include "db_iterator.h"
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
@@ -11,8 +12,9 @@
 
 namespace rocksdb_js {
 
-// forward declare DBHandle because of circular dependency
+// forward declare DBHandle and DBIteratorOptions because of circular dependency
 struct DBHandle;
+struct DBIteratorOptions;
 
 /**
  * A handle to a RocksDB transaction. This is used to keep the transaction
@@ -37,16 +39,34 @@ struct TransactionHandle final : Closable {
 		napi_value reject,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
+
+	/**
+	 * Gets the number of keys within a range or in the entire RocksDB database.
+	 *
+	 * @param itOptions - The iterator options.
+	 * @param count - The number of keys.
+	 * @param dbHandleOverride - Database handle override to use instead of the
+	 * transaction's database handle when called via the `NativeDatabase` with
+	 * the `transaction` property set.
+	 */
+	void getCount(
+		DBIteratorOptions& itOptions,
+		uint64_t& count,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+
 	rocksdb::Status getSync(
 		rocksdb::Slice& key,
 		std::string& result,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
+
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,
 		rocksdb::Slice& value,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
+
 	rocksdb::Status removeSync(
 		rocksdb::Slice& key,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr

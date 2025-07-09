@@ -2,8 +2,15 @@
   "name": "@harperdb/rocksdb-js",
   "version": "0.0.0",
   "description": "",
-  "exports": "./dist/index.js",
-  "types": "./dist/index.d.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.js",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
   "type": "module",
   "gypfile": true,
   "scripts": {
@@ -22,7 +29,7 @@
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
-    "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --allowOnly --reporter=verbose",
+    "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "type-check": "tsc --noEmit"
   },
   "files": [
@@ -33,6 +40,7 @@
     "vendor"
   ],
   "dependencies": {
+    "@harperdb/extended-iterable": "1.0.1",
     "msgpackr": "1.11.2",
     "ordered-binary": "1.5.3"
   },

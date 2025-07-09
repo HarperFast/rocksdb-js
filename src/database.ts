@@ -3,10 +3,21 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
+import { Encoder as MsgpackEncoder } from 'msgpackr';
 import type { Key } from './encoding.js';
 
 interface RocksDatabaseOptions extends StoreOptions {
-	name?: string; // defaults to 'default'
+	/**
+	 * The column family name.
+	 *
+	 * @default 'default'
+	 */
+	name?: string;
+
+	/**
+	 * A custom store.
+	 */
+	store?: Store;
 };
 
 /**
@@ -28,11 +39,16 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// #useVersions: boolean;
 
 	constructor(
-		path: string,
+		pathOrStore: string | Store,
 		options?: RocksDatabaseOptions
 	) {
-		const store = new Store(path, options);
-		super(store);
+		if (typeof pathOrStore === 'string') {
+			super(new Store(pathOrStore, options));
+		} else if (pathOrStore instanceof Store) {
+			super(pathOrStore);
+		} else {
+			throw new TypeError('Invalid database path or store');
+		}
 
 		// this.#cache = options?.cache ?? false; // TODO: better name?
 		// this.#dupSort = options?.dupSort ?? false; // TODO: better name?
@@ -131,7 +147,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Note: ideally would go in the `Store` class, but the "structures"
 	 * functionality requires access to the high-level data functions.
 	 */
-	async #initEncoder(): Promise<void> {
+	#initEncoder() {
 		const { store } = this;
 
 		/**
@@ -150,7 +166,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			(!store.encoding || store.encoding === 'msgpack')
 		) {
 			store.encoding = 'msgpack';
-			EncoderClass = await import('msgpackr').then(m => m.Encoder);
+			EncoderClass = MsgpackEncoder;
 		}
 
 		if (EncoderClass) {
@@ -232,7 +248,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * Sugar method for opening a database.
 	 *
-	 * @param path - The filesystem path to the database.
+	 * @param pathOrStore - The filesystem path to the database or a custom store.
 	 * @param options - The options for the database.
 	 * @returns A new RocksDatabase instance.
 	 *
@@ -242,10 +258,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	static async open(
-		path: string,
+		pathOrStore: string | Store,
 		options?: RocksDatabaseOptions
 	): Promise<RocksDatabase> {
-		return new RocksDatabase(path, options).open();
+		return new RocksDatabase(pathOrStore, options).open();
 	}
 
 	/**
@@ -260,13 +276,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * await db.open();
 	 * ```
 	 */
-	async open(): Promise<RocksDatabase> {
+	open(): RocksDatabase {
 		if (this.store.open()) {
 			// already open
 			return this;
 		}
 
-		await this.#initEncoder();
+		this.#initEncoder();
 
 		return this;
 	}

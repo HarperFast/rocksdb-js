@@ -1,5 +1,6 @@
 #include <sstream>
 #include "database.h"
+#include "db_iterator_handle.h"
 #include "transaction_handle.h"
 #include "macros.h"
 
@@ -140,6 +141,28 @@ napi_value TransactionHandle::get(
 
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
 	return returnStatus;
+}
+
+void TransactionHandle::getCount(
+	DBIteratorOptions& itOptions,
+	uint64_t& count,
+	std::shared_ptr<DBHandle> dbHandleOverride
+) {
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+
+	// if we don't have a start or end key, we can just get the estimated number of keys
+	if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
+		dbHandle->descriptor->db->GetIntProperty(
+			dbHandle->column.get(),
+			"rocksdb.estimate-num-keys",
+			&count
+		);
+	} else {
+		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(this, itOptions);
+		for (count = 0; itHandle->iterator->Valid(); ++count) {
+			itHandle->iterator->Next();
+		}
+	}
 }
 
 /**

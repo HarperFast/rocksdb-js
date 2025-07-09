@@ -1,8 +1,130 @@
-import type { Key } from './encoding.js';
-import type { Store } from './store.js';
-import { NativeDatabase, NativeTransaction } from './load-binding.js';
-import type { Transaction } from './transaction.js';
+import { getTxnId, type GetOptions, type PutOptions, type Store } from './store.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
+import { NativeDatabase, NativeTransaction } from './load-binding.js';
+import type { Key } from './encoding.js';
+import type { Transaction } from './transaction.js';
+
+export interface RocksDBOptions {
+	/**
+	 * When `true`, RocksDB will do some enhancements for prefetching the data.
+	 * Defaults to `true`. Note that RocksDB defaults this to `false`.
+	 */
+	adaptiveReadahead?: boolean;
+
+	/**
+	 * When `true`, RocksDB will prefetch some data async and apply it if reads
+	 * are sequential and its internal automatic prefetching. Defaults to
+	 * `true`. Note that RocksDB defaults this to `false`.
+	 */
+	asyncIO?: boolean;
+
+	/**
+	 * When `true`, RocksDB will auto-tune the readahead size during scans
+	 * internally based on the block cache data when block caching is enabled,
+	 * an end key (e.g. upper bound) is set, and prefix is the same as the start
+	 * key. Defaults to `true`.
+	 */
+	autoReadaheadSize?: boolean;
+
+	/**
+	 * When `true`, after the iterator is closed, a background job is scheduled
+	 * to flush the job queue and delete obsolete files. Defaults to `true`.
+	 * Note that RocksDB defaults this to `false`.
+	 */
+	backgroundPurgeOnIteratorCleanup?: boolean;
+
+	/**
+	 * When `true`, the iterator will fill the block cache. Filling the block
+	 * cache is not desirable for bulk scans and could impact eviction order.
+	 * Defaults to `false`. Note that RocksDB defaults this to `true`.
+	 */
+	fillCache?: boolean;
+
+	/**
+	 * The RocksDB readahead size. RocksDB does auto-readahead for iterators
+	 * when there is more than two reads for a table file. The readahead
+	 * starts at 8KB and doubles on every additional read up to 256KB. This
+	 * option can help if most of the range scans are large and if a larger
+	 * readahead than that enabled by auto-readahead is needed. Using a large
+	 * readahead size (> 2MB) can typically improve the performance of forward
+	 * iteration on spinning disks. Defaults to `0`.
+	 */
+	readaheadSize?: number;
+
+	/**
+	 * When `true`, creates a "tailing iterator" which is a special iterator
+	 * that has a view of the complete database including newly added data and
+	 * is optimized for sequential reads. This will return records that were
+	 * inserted into the database after the creation of the iterator. Defaults
+	 * to `false`.
+	 */
+	tailing?: boolean;
+}
+
+export interface RangeOptions extends RocksDBOptions {
+	/**
+	 * The range end key, otherwise known as the "upper bound". Defaults to
+	 * the last key in the database.
+	 */
+	end?: Key | Uint8Array;
+
+	/**
+	 * When `true`, the iterator will exclude the first key if it matches the start key.
+	 * Defaults to `false`.
+	 */
+	exclusiveStart?: boolean;
+
+	/**
+	 * When `true`, the iterator will include the last key if it matches the end
+	 * key. Defaults to `false`.
+	 */
+	inclusiveEnd?: boolean;
+
+	/**
+	 * The range start key, otherwise known as the "lower bound". Defaults to
+	 * the first key in the database.
+	 */
+	start?: Key | Uint8Array;
+}
+
+export interface IteratorOptions extends RangeOptions {
+	// decoder?: (value: any) => any,
+
+	// exactMatch?: boolean;
+
+	// limit?: number;
+
+	/**
+	 * A specific key to match which may result in zero, one, or many values.
+	 */
+	key?: Key;
+
+	// offset?: number;
+
+	/**
+	 * When `true`, only returns the number of values for the given query.
+	 */
+	onlyCount?: boolean;
+
+	/**
+	 * When `true`, the iterator will iterate in reverse order. Defaults to
+	 * `false`.
+	 */
+	reverse?: boolean;
+
+	// snapshot?: boolean;
+
+	/**
+	 * When `true`, decodes and returns the value. When `false`, the value is
+	 * omitted. Defaults to `true`.
+	 */
+	values?: boolean;
+
+	/**
+	 * When `true`, the iterator will only return the values.
+	 */
+	valuesOnly?: boolean;
+};
 
 export interface DBITransactional {
 	transaction?: Transaction;
@@ -65,6 +187,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		);
 	}
 
+	/**
+	 * Synchronously retrieves the value for the given key, then returns the
+	 * decoded value.
+	 */
 	getSync(key: Key, options?: GetOptions & T) {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
@@ -84,9 +210,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
-		const result = this.#context.getSync(keyBuffer, getTxnId(options));
-		return this.store.decodeValue(result);
+		return this.store.decodeValue(
+			this.store.getSync(this.#context, key, options)
+		);
 	}
 
 	/**
@@ -100,14 +226,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
 		let result: Buffer | undefined;
-		let error: Error | undefined;
+		let error: unknown | undefined;
 		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: Error) => void | undefined;
+		let reject: (error: unknown) => void | undefined;
 
-		const status = this.#context.get(
-			keyBuffer,
+		const status = this.store.get(
+			this.#context,
+			key,
 			value => {
 				result = value;
 				resolve?.(value);
@@ -139,8 +265,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.getSync(keyBuffer, getTxnId(options));
+		return this.store.getSync(this.#context, key, options);
 	}
 
 	/**
@@ -158,15 +283,15 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
 		let result: Buffer | undefined;
-		let error: Error | undefined;
+		let error: unknown | undefined;
 		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: Error) => void | undefined;
+		let reject: (error: unknown) => void | undefined;
 
 		// TODO: specify the shared buffer to write the value to
-		const status = this.#context.get(
-			keyBuffer,
+		const status = this.store.get(
+			this.#context,
+			key,
 			value => {
 				result = value;
 				resolve?.(value);
@@ -190,141 +315,184 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return promise;
 	}
 
+	/**
+	 * Synchronously retrieves the binary data for the given key using a
+	 * preallocated, reusable buffer. Data in the buffer is only valid until the
+	 * next get operation (including cursor operations).
+	 */
 	getBinaryFastSync(key: Key, options?: GetOptions & T): Buffer | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.store.encodeKey(key);
-		return this.#context.getSync(keyBuffer, getTxnId(options));
+		return this.store.getSync(
+			this.#context,
+			this.store.encodeKey(key),
+			options
+		);
 		// TODO: return UNMODIFIED if the value is not modified
 	}
 
 	/**
 	 * Retrieves all keys within a range.
 	 */
-	getKeys(_options?: GetRangeOptions & T) {
-		if (!this.store.isOpen()) {
-			return Promise.reject(new Error('Database not open'));
-		}
+	getKeys(options?: IteratorOptions & T) {
+		return this.store.getRange(this.#context, {
+			...options,
+			values: false
+		});
 	}
 
-	getKeysSync(_options?: GetRangeOptions & T) {
-		//
+	/**
+	 * Retrieves the number of keys within a range.
+	 *
+	 * @param options - The range options.
+	 * @returns The number of keys within the range.
+	 *
+	 * @example
+	 * ```typescript
+	 * const total = db.getKeysCount();
+	 * const range = db.getKeysCount({ start: 'a', end: 'z' });
+	 * ```
+	 */
+	getKeysCount(options?: RangeOptions & T): number {
+		const startKey = options?.start ? this.store.encodeKey(options?.start) : undefined;
+		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+
+		const endKey = options?.end ? this.store.encodeKey(options.end) : undefined;
+		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
+
+		return this.store.getCount(this.#context, {
+			...options,
+			start,
+			end,
+		}, getTxnId(options));
 	}
 
-	getRange(_options?: GetRangeOptions & T) {
-		//
+	/**
+	 * Retrieves a range of keys and their values.
+	 *
+	 * @param options - The iterator options.
+	 * @returns A range iterable.
+	 *
+	 * @example
+	 * ```typescript
+	 * for (const { key, value } of db.getRange()) {
+	 *   console.log({ key, value });
+	 * }
+	 *
+	 * for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
+	 *   console.log({ key, value });
+	 * }
+	 * ```
+	 */
+	getRange(options?: IteratorOptions & T) {
+		return this.store.getRange(this.#context, options);
 	}
 
-	getRangeSync(_options?: GetRangeOptions & T) {
-		//
+	/**
+	 * Retrieves all values for the given key.
+	 *
+	 * @param key - The key to retrieve values for.
+	 * @param options - The iterator options.
+	 * @returns A range iterable.
+	 *
+	 * @example
+	 * ```typescript
+	 * for (const { key, value } of db.getValues('a')) {
+	 *   console.log({ key, value });
+	 * }
+	 * ```
+	 */
+	getValues(key: Key, options?: IteratorOptions & T) {
+		return this.store.getRange(this.#context, {
+			...options,
+			key,
+			valuesOnly: true
+		});
 	}
 
-	getValues(_key: Key, _options?: GetRangeOptions & T) {
-		//
-	}
-
-	getValuesSync(_key: Key, _options?: GetRangeOptions & T) {
-		//
-	}
-
-	getValuesCount(_key: Key, _options?: GetRangeOptions & T) {
-		//
-	}
-
-	getValuesCountSync(_key: Key, _options?: GetRangeOptions & T) {
-		//
+	/**
+	 * Retrieves the number of values for the given key.
+	 *
+	 * @param key - The key to retrieve values for.
+	 * @param options - The range options.
+	 * @returns The number of values for the given key.
+	 *
+	 * @example
+	 * ```typescript
+	 * const count = db.getValuesCount('a');
+	 * ```
+	 */
+	getValuesCount(key: Key, options?: RangeOptions & T) {
+		return this.store.getValuesCount(this.#context, key, options);
 	}
 
 	/**
 	 * Stores a value for the given key.
+	 *
+	 * @param key - The key to store the value for.
+	 * @param value - The value to store.
+	 * @param options - The put options.
+	 * @returns The key and value.
+	 *
+	 * @example
+	 * ```typescript
+	 * await db.put('a', 'b');
+	 * ```
 	 */
 	async put(key: Key, value: any, options?: PutOptions & T): Promise<void> {
-		this.putSync(key, value, options);
+		return this.store.putSync(this.#context, key, value, options);
 	}
 
 	/**
 	 * Synchronously stores a value for the given key.
+	 *
+	 * @param key - The key to store the value for.
+	 * @param value - The value to store.
+	 * @param options - The put options.
+	 * @returns The key and value.
+	 *
+	 * @example
+	 * ```typescript
+	 * db.putSync('a', 'b');
+	 * ```
 	 */
 	putSync(key: Key, value: any, options?: PutOptions & T) {
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		const keyBuffer = this.store.encodeKey(key);
-		const valueBuffer = this.store.encodeValue(value);
-		this.#context.putSync(keyBuffer, valueBuffer, getTxnId(options));
+		return this.store.putSync(this.#context, key, value, options);
 	}
 
 	/**
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
+	 *
+	 * @param key - The key to remove the value for.
+	 * @param options - The remove options.
+	 * @returns The key and value.
+	 *
+	 * @example
+	 * ```typescript
+	 * await db.remove('a');
+	 * ```
 	 */
 	async remove(key: Key, options?: T): Promise<void> {
-		this.removeSync(key, options);
+		return this.store.removeSync(this.#context, key, options);
 	}
 
 	/**
 	 * Removes a value for the given key. If the key does not exist, it will
 	 * not error.
+	 *
+	 * @param key - The key to remove the value for.
+	 * @param options - The remove options.
+	 * @returns The key and value.
+	 *
+	 * @example
+	 * ```typescript
+	 * db.removeSync('a');
+	 * ```
 	 */
 	removeSync(key: Key, options?: T): void {
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		const keyBuffer = this.store.encodeKey(key);
-		this.#context.removeSync(keyBuffer, getTxnId(options));
+		return this.store.removeSync(this.#context, key, options);
 	}
 }
-
-/**
- * Checks if the data method options object contains a transaction ID and
- * returns it.
- */
-function getTxnId(options?: DBITransactional | unknown) {
-	let txnId;
-	if (options && typeof options === 'object' && 'transaction' in options) {
-		txnId = (options.transaction as Transaction)?.id;
-		if (txnId === undefined) {
-			throw new TypeError('Invalid transaction');
-		}
-	}
-	return txnId;
-}
-
-interface GetOptions {
-	/**
-	 * Whether to skip decoding the value.
-	 *
-	 * @default false
-	 */
-	skipDecode?: boolean;
-
-	// ifNotTxnId?: number;
-	// currentThread?: boolean;
-}
-
-interface GetRangeOptions {
-	end?: Key | Uint8Array;
-	exactMatch?: boolean;
-	exclusiveStart?: boolean;
-	inclusiveEnd?: boolean;
-	limit?: number;
-	key?: Key;
-	offset?: number;
-	onlyCount?: boolean;
-	reverse?: boolean;
-	snapshot?: boolean;
-	start?: Key | Uint8Array;
-	values?: boolean;
-	valuesForKey?: boolean;
-};
-
-interface PutOptions {
-	append?: boolean;
-	instructedWrite?: boolean;
-	noDupData?: boolean;
-	noOverwrite?: boolean;
-};

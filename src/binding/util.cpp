@@ -1,3 +1,4 @@
+#include <cinttypes>
 #include <cstdarg>
 #include <functional>
 #include <node_api.h>
@@ -17,6 +18,7 @@ void debugLog(const char* msg, ...) {
     fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     vfprintf(stderr, msg, args);
     va_end(args);
+	fflush(stderr);
 }
 
 /**
@@ -145,9 +147,9 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 			bool lossless;
 			NAPI_STATUS_THROWS_VOID(::napi_get_value_bigint_int64(env, value, &result, &lossless))
 			if (lossless) {
-				fprintf(stderr, "%lld", result);
+				fprintf(stderr, "%" PRId64, result);
 			} else {
-				fprintf(stderr, "%lld (lossy)", result);
+				fprintf(stderr, "%" PRId64 " (lossy)", result);
 			}
 			break;
 		}
@@ -157,6 +159,47 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 	if (!isObject) {
 		fprintf(stderr, "\n");
 	}
+}
+
+/**
+ * Gets a `key` from a JavaScript object property and stores it in the
+ * specified `RocksDB::Slice`.
+ */
+napi_status getKeyFromProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	const char* errorMsg,
+	const char*& keyStr,
+	uint32_t& start,
+	uint32_t& end
+) {
+	napi_value value;
+	NAPI_STATUS_THROWS_RVAL(::napi_get_named_property(env, obj, prop, &value), napi_invalid_arg);
+
+	bool has = false;
+	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, obj, prop, &has), napi_invalid_arg);
+	if (!has) {
+		return napi_ok;
+	}
+
+	napi_valuetype valueType;
+	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, value, &valueType), napi_invalid_arg);
+	if (valueType == napi_undefined) {
+		return napi_ok;
+	}
+
+	bool isBuffer;
+	NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, value, &isBuffer), napi_invalid_arg);
+	if (!isBuffer) {
+		::napi_throw_error(env, nullptr, errorMsg);
+		return napi_invalid_arg;
+	}
+
+	size_t length = 0;
+	keyStr = rocksdb_js::getNapiBufferFromArg(env, value, start, end, length, errorMsg);
+
+	return napi_ok;
 }
 
 /**
@@ -319,6 +362,11 @@ const char* getNapiBufferFromArg(
 	if (start > end) {
 		::napi_throw_error(env, nullptr, "Invalid buffer value start and end");
 		return nullptr;
+	}
+
+	if (data == nullptr) {
+		// data is null because the buffer is empty
+		return "";
 	}
 
 	return data;

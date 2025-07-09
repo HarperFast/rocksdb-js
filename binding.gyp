@@ -11,6 +11,8 @@
 				'src/binding/database.cpp',
 				'src/binding/db_descriptor.cpp',
 				'src/binding/db_handle.cpp',
+				'src/binding/db_iterator.cpp',
+				'src/binding/db_iterator_handle.cpp',
 				'src/binding/db_registry.cpp',
 				'src/binding/db_settings.cpp',
 				'src/binding/transaction_handle.cpp',

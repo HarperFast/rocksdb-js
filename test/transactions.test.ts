@@ -260,6 +260,36 @@ for (const { name, options, txnOptions } of testOptions) {
 				await rimraf(dbPath2);
 			}
 		});
+
+		it(`${name} async should close transaction and iterator if getRange throws`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, options);
+				for (const key of ['a', 'b', 'c', 'd', 'e']) {
+					await db.put(key, `value ${key}`);
+				}
+
+				let txn: Transaction;
+
+				await expect(db.transaction(async (t: Transaction) => {
+					txn = t;
+					const iter = txn.getRange();
+					const results = iter
+						.map(_item => {
+							throw new Error('test');
+						});
+					const iterator = results[Symbol.asyncIterator]();
+					await iterator.next();
+				}, txnOptions)).rejects.toThrow('test');
+
+				expect(() => db!.getSync('a', { transaction: txn })).toThrow('Transaction not found');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
 	});
 
 	describe(`transactionSync() (${name})`, () => {
@@ -378,6 +408,36 @@ for (const { name, options, txnOptions } of testOptions) {
 			} finally {
 				db?.close();
 				db2?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should close transaction and iterator if getRange throws`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = await RocksDatabase.open(dbPath, options);
+				for (const key of ['a', 'b', 'c', 'd', 'e']) {
+					db.putSync(key, `value ${key}`);
+				}
+
+				let txn: Transaction;
+
+				expect(() => db!.transactionSync((t: Transaction) => {
+					txn = t;
+					const iter = txn.getRange();
+					const results = iter
+						.map(_item => {
+							throw new Error('test');
+						});
+					const iterator = results[Symbol.iterator]();
+					iterator.next();
+				}, txnOptions)).toThrow('test');
+
+				expect(() => db!.getSync('a', { transaction: txn })).toThrow('Transaction not found');
+			} finally {
+				db?.close();
 				await rimraf(dbPath);
 			}
 		});

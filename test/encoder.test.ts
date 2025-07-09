@@ -63,7 +63,7 @@ describe('Encoder', () => {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: 'binary'
 			});
-			
+
 			await db.put('foo', 'bar');
 			const value: Buffer = await db.get('foo');
 			expect(value.equals(Buffer.from('bar'))).toBe(true);
@@ -81,7 +81,7 @@ describe('Encoder', () => {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: 'ordered-binary'
 			});
-			
+
 			await db.put('foo', 'bar');
 			const value = await db.get('foo');
 			expect(value).toBe('bar');
@@ -99,7 +99,7 @@ describe('Encoder', () => {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: 'msgpack'
 			});
-			
+
 			await db.put('foo', 'bar');
 			const value = await db.get('foo');
 			expect(value).toBe('bar');
@@ -112,7 +112,7 @@ describe('Encoder', () => {
 	it('should ensure encoded values are buffers', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
-		
+
 		try {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: 'binary',
@@ -120,7 +120,7 @@ describe('Encoder', () => {
 					encode: (value: any) => value
 				}
 			});
-			
+
 			await db.put('foo', 'bar');
 			const value = await db.get('foo');
 			expect(value).toBeInstanceOf(Buffer);
@@ -139,7 +139,7 @@ describe('Encoder', () => {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: false
 			});
-			
+
 			await db.put('foo', Buffer.from('bar'));
 			const value: Buffer = await db.get('foo');
 			expect(value.equals(Buffer.from('bar'))).toBe(true);
@@ -152,8 +152,8 @@ describe('Encoder', () => {
 	it('should error encoding an unsupported value', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
-		
-		try {	
+
+		try {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: false
 			});
@@ -168,7 +168,7 @@ describe('Encoder', () => {
 	it('should decode using readKey', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
-		
+
 		try {
 			db = await RocksDatabase.open(dbPath, {
 				encoding: false,

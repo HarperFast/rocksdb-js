@@ -1,8 +1,10 @@
-#include <sstream>
 #include <node_api.h>
+#include <sstream>
 #include <thread>
 #include "database.h"
 #include "db_handle.h"
+#include "db_iterator.h"
+#include "db_iterator_handle.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
@@ -184,6 +186,64 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Gets the number of keys within a range or in the entire RocksDB database.
+ *
+ * @example
+ * ```ts
+ * const db = await NativeDatabase.open('path/to/db');
+ * const total = db.getCount();
+ * const range = db.getCount({ start: 'a', end: 'z' });
+ * ```
+ */
+napi_value Database::GetCount(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	DBIteratorOptions itOptions;
+	itOptions.initFromNapiObject(env, argv[0]);
+	itOptions.values = false;
+
+	uint64_t count = 0;
+
+	napi_valuetype txnIdType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+
+	if (txnIdType == napi_number) {
+		uint32_t txnId;
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		if (!txnHandle) {
+			::napi_throw_error(env, nullptr, "Transaction not found");
+			NAPI_RETURN_UNDEFINED()
+		}
+		txnHandle->getCount(itOptions, count, *dbHandle);
+	} else {
+		// if we don't have a start or end key, we can just get the estimated number of keys
+		if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
+			(*dbHandle)->descriptor->db->GetIntProperty(
+				(*dbHandle)->column.get(),
+				"rocksdb.estimate-num-keys",
+				&count
+			);
+		} else {
+			// for range queries, we need to iterate to count keys
+			std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
+			while (itHandle->iterator->Valid()) {
+				++count;
+				itHandle->iterator->Next();
+			}
+		}
+	}
+
+	DEBUG_LOG("%p Database::GetCount count=%llu\n", dbHandle->get(), count)
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result))
+	return result;
+}
+
+/**
  * Gets a value from the RocksDB database.
  *
  * @example
@@ -325,6 +385,19 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
+#ifdef DEBUG
+	fprintf(stderr, "[%04zu] Database::PutSync() Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+	for (size_t i = 0; i < keySlice.size(); i++) {
+		fprintf(stderr, " %02x", (unsigned char)keySlice.data()[i]);
+	}
+	fprintf(stderr, "\n");
+	fprintf(stderr, "[%04zu] Database::PutSync() Value:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+	for (size_t i = 0; i < valueSlice.size(); i++) {
+		fprintf(stderr, " %02x", (unsigned char)valueSlice.data()[i]);
+	}
+	fprintf(stderr, "\n");
+#endif
+
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
@@ -406,6 +479,7 @@ void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
@@ -484,7 +558,7 @@ void resolveGetResult(
 	napi_value result;
 	napi_value global;
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-	
+
 	if (status.IsNotFound()) {
 		napi_get_undefined(env, &result);
 		napi_value resolve;

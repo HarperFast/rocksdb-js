@@ -3,6 +3,7 @@ import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { Key } from './encoding.js';
+import type { IteratorOptions, RangeOptions } from './dbi.js';
 
 export type TransactionOptions = {
 	/**
@@ -20,10 +21,18 @@ export type NativeTransaction = {
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
-	getSync(key: Key, txnId?: number): Buffer;
+	getCount(options?: RangeOptions): number;
+	getSync(key: Key): Buffer;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
-	removeSync(key: Key, txnId?: number): void;
+	removeSync(key: Key): void;
 };
+
+export declare class NativeIteratorCls<T> implements Iterator<T> {
+	constructor(context: NativeDatabase | NativeTransaction, options: IteratorOptions);
+	next(): IteratorResult<T>;
+	return(): IteratorResult<T>;
+	throw(): IteratorResult<T>;
+}
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
@@ -38,6 +47,7 @@ export type NativeDatabase = {
 	new(): NativeDatabase;
 	close(): void;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
+	getCount(options?: RangeOptions, txnId?: number): number;
 	getSync(key: Key, txnId?: number): Buffer;
 	opened: boolean;
 	open(
@@ -102,5 +112,6 @@ const binding = req(locateBinding());
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const NativeDatabase: NativeDatabase = binding.Database;
+export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const version = binding.version;
