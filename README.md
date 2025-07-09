@@ -36,7 +36,7 @@ RocksDatabase.config({
 })
 ```
 
-### `db.open(): Promise<RocksDatabase>`
+### `db.open(): RocksDatabase`
 
 Opens the database at the given path. This must be called before performing
 any data operations.
@@ -45,13 +45,13 @@ any data operations.
 import { RocksDatabase } from '@harperdb/rocksdb-js';
 
 const db = new RocksDatabase('path/to/db');
-await db.open();
+db.open();
 ```
 
 There's also a static `open()` method for convenience that performs the same thing:
 
 ```typescript
-const db = await RocksDatabase.open('path/to/db');
+const db = RocksDatabase.open('path/to/db');
 ```
 
 ### `db.close()`
@@ -398,7 +398,7 @@ class MyStore extends Store {
 }
 
 const myStore = new MyStore('path/to/db');
-const db = await RocksDatabase.open(myStore);
+const db = RocksDatabase.open(myStore);
 await db.put('foo', 'bar');
 console.log(await db.get('foo'));
 ```

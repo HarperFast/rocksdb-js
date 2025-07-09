@@ -30,7 +30,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await expect(db.transaction('foo' as any, txnOptions)).rejects.toThrow(
 					new TypeError('Callback must be a function')
 				);
@@ -45,7 +45,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 				await db.transaction(async (txn: Transaction) => {
 					const value = await txn.get('foo');
@@ -62,7 +62,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.transaction(async (txn: Transaction) => {
 					await txn.put('foo', 'bar2');
 				}, txnOptions);
@@ -79,7 +79,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				await db.transaction(async (txn: Transaction) => {
@@ -99,7 +99,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				await expect(db.transaction(async (txn: Transaction) => {
@@ -121,7 +121,7 @@ for (const { name, options, txnOptions } of testOptions) {
 				const dbPath = generateDBPath();
 
 				try {
-					db = await RocksDatabase.open(dbPath, options);
+					db = RocksDatabase.open(dbPath, options);
 					await db.put('foo', 'bar1');
 
 					setTimeout(() => db?.put('foo', 'bar2'));
@@ -165,7 +165,7 @@ for (const { name, options, txnOptions } of testOptions) {
 				const dbPath = generateDBPath();
 
 				try {
-					db = await RocksDatabase.open(dbPath, options);
+					db = RocksDatabase.open(dbPath, options);
 					await db.put('foo', 'bar1');
 
 					setTimeout(() => db?.put('foo', 'bar2'));
@@ -208,8 +208,8 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
-				db2 = await RocksDatabase.open(dbPath, { ...options, name: 'foo' });
+				db = RocksDatabase.open(dbPath, options);
+				db2 = RocksDatabase.open(dbPath, { ...options, name: 'foo' });
 
 				await db.put('foo', 'bar');
 				await db2.put('foo2', 'baz');
@@ -237,8 +237,8 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath2 = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
-				db2 = await RocksDatabase.open(dbPath2, options);
+				db = RocksDatabase.open(dbPath, options);
+				db2 = RocksDatabase.open(dbPath2, options);
 
 				await Promise.all([
 					db.transaction(async (txn: Transaction) => {
@@ -266,7 +266,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
 					await db.put(key, `value ${key}`);
 				}
@@ -298,7 +298,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				expect(() => db!.transactionSync('foo' as any, txnOptions))
 					.toThrow(new TypeError('Callback must be a function'));
 			} finally {
@@ -312,7 +312,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 				db.transactionSync((txn: Transaction) => {
 					const value = txn.getSync('foo');
@@ -329,7 +329,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 
 				db.transactionSync((txn: Transaction) => {
 					txn.putSync('foo', 'bar2');
@@ -348,7 +348,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				db.transactionSync((txn: Transaction) => {
@@ -368,7 +368,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await db.put('foo', 'bar');
 
 				expect(() => db!.transactionSync((txn: Transaction) => {
@@ -390,8 +390,8 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
-				db2 = await RocksDatabase.open(dbPath, { ...options, name: 'foo' });
+				db = RocksDatabase.open(dbPath, options);
+				db2 = RocksDatabase.open(dbPath, { ...options, name: 'foo' });
 
 				await db.put('foo', 'bar');
 				await db2.put('foo2', 'baz');
@@ -417,7 +417,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {
 					db.putSync(key, `value ${key}`);
 				}
@@ -449,7 +449,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow('Invalid transaction');
 			} finally {
 				db?.close();
@@ -462,7 +462,7 @@ for (const { name, options, txnOptions } of testOptions) {
 			const dbPath = generateDBPath();
 
 			try {
-				db = await RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options);
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow('Transaction not found');
 			} finally {
 				db?.close();

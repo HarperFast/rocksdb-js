@@ -20,7 +20,7 @@ describe('Encoder', () => {
 		}
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoder: {
 					Encoder: CustomEncoder
 				}
@@ -40,7 +40,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoder: {
 					encode: (value: any) => Buffer.from(value)
 				}
@@ -60,7 +60,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: 'binary'
 			});
 
@@ -78,7 +78,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: 'ordered-binary'
 			});
 
@@ -96,7 +96,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: 'msgpack'
 			});
 
@@ -114,7 +114,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: 'binary',
 				encoder: {
 					encode: (value: any) => value
@@ -136,7 +136,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: false
 			});
 
@@ -154,7 +154,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: false
 			});
 
@@ -170,7 +170,7 @@ describe('Encoder', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, {
+			db = RocksDatabase.open(dbPath, {
 				encoding: false,
 				encoder: {
 					decode: null as any,

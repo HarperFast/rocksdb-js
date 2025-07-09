@@ -27,7 +27,7 @@ interface RocksDatabaseOptions extends StoreOptions {
  *
  * @example
  * ```ts
- * const db = await RocksDatabase.open('/path/to/database');
+ * const db = RocksDatabase.open('/path/to/database');
  * await db.put('key', 'value');
  * const value = await db.get('key');
  * db.close();
@@ -77,7 +77,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @example
 	 * ```ts
-	 * const db = await RocksDatabase.open('/path/to/database');
+	 * const db = RocksDatabase.open('/path/to/database');
 	 * db.close();
 	 * ```
 	 */
@@ -142,13 +142,52 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Initializes the encoder.
-
-	 * Note: ideally would go in the `Store` class, but the "structures"
-	 * functionality requires access to the high-level data functions.
+	 * Returns whether the database is open.
+	 *
+	 * @returns `true` if the database is open, `false` otherwise.
 	 */
-	#initEncoder() {
+	isOpen() {
+		return this.store.isOpen();
+	}
+
+	/**
+	 * Sugar method for opening a database.
+	 *
+	 * @param pathOrStore - The filesystem path to the database or a custom store.
+	 * @param options - The options for the database.
+	 * @returns A new RocksDatabase instance.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * ```
+	 */
+	static open(
+		pathOrStore: string | Store,
+		options?: RocksDatabaseOptions
+	): RocksDatabase {
+		return new RocksDatabase(pathOrStore, options).open();
+	}
+
+	/**
+	 * Opens the database. This function returns immediately if the database is
+	 * already open.
+	 *
+	 * @returns A new RocksDatabase instance.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = new RocksDatabase('/path/to/database');
+	 * db.open();
+	 * ```
+	 */
+	open(): RocksDatabase {
 		const { store } = this;
+
+		if (store.open()) {
+			// already open
+			return this;
+		}
 
 		/**
 		 * The encoder initialization precedence is:
@@ -239,50 +278,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			};
 			store.decoderCopies = true;
 		}
-	}
-
-	isOpen() {
-		return this.store.isOpen();
-	}
-
-	/**
-	 * Sugar method for opening a database.
-	 *
-	 * @param pathOrStore - The filesystem path to the database or a custom store.
-	 * @param options - The options for the database.
-	 * @returns A new RocksDatabase instance.
-	 *
-	 * @example
-	 * ```ts
-	 * const db = await RocksDatabase.open('/path/to/database');
-	 * ```
-	 */
-	static async open(
-		pathOrStore: string | Store,
-		options?: RocksDatabaseOptions
-	): Promise<RocksDatabase> {
-		return new RocksDatabase(pathOrStore, options).open();
-	}
-
-	/**
-	 * Opens the database. This function returns immediately if the database is
-	 * already open.
-	 *
-	 * @returns A new RocksDatabase instance.
-	 *
-	 * @example
-	 * ```ts
-	 * const db = new RocksDatabase('/path/to/database');
-	 * await db.open();
-	 * ```
-	 */
-	open(): RocksDatabase {
-		if (this.store.open()) {
-			// already open
-			return this;
-		}
-
-		this.#initEncoder();
 
 		return this;
 	}
@@ -295,7 +290,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @example
 	 * ```ts
-	 * const db = await RocksDatabase.open('/path/to/database');
+	 * const db = RocksDatabase.open('/path/to/database');
 	 * await db.transaction(async (txn) => {
 	 *   await txn.put('key', 'value');
 	 * });

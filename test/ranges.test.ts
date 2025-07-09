@@ -9,7 +9,7 @@ async function initTestDB(test: (db: RocksDatabase) => Promise<void>, name?: str
 	const dbPath = generateDBPath();
 
 	try {
-		db = await RocksDatabase.open(dbPath, { name });
+		db = RocksDatabase.open(dbPath, { name });
 		await test(db);
 	} finally {
 		db?.close();
