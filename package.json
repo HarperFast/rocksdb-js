@@ -42,7 +42,7 @@
   "dependencies": {
     "@harperdb/extended-iterable": "1.0.1",
     "msgpackr": "1.11.2",
-    "ordered-binary": "1.5.3"
+    "ordered-binary": "1.6.0"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.3",
