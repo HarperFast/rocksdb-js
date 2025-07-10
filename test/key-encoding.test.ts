@@ -11,7 +11,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoding: 'uint32'
 				});
 
@@ -34,7 +34,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoding: 'uint32'
 				});
 
@@ -67,7 +67,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoding: 'uint32'
 				});
 				await expect(db.put('foo', 'bar')).rejects.toThrow('Key is not a number');
@@ -84,7 +84,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoding: 'binary'
 				});
 				await db.put('foo', 'bar');
@@ -104,7 +104,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoding: 'ordered-binary'
 				});
 				await db.put('foo', 'bar');
@@ -124,7 +124,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoder: {
 						readKey(key: Buffer) {
 							return JSON.parse(key.toString('utf-8'));
@@ -150,7 +150,7 @@ describe('Key Encoding', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					keyEncoder: {
 						readKey: (_key: Buffer) => Buffer.from('foo'),
 						writeKey: (_key: Key, _target: Buffer, _start: number) => 0
@@ -167,9 +167,9 @@ describe('Key Encoding', () => {
 			const dbPath = generateDBPath();
 
 			try {
-				await expect(RocksDatabase.open(dbPath, {
+				expect(() => RocksDatabase.open(dbPath, {
 					keyEncoder: {}
-				})).rejects.toThrow('Custom key encoder must provide both readKey and writeKey');
+				})).toThrow('Custom key encoder must provide both readKey and writeKey');
 			} finally {
 				await rimraf(dbPath);
 			}
@@ -180,9 +180,9 @@ describe('Key Encoding', () => {
 
 	describe('Error handling', () => {
 		it('should error if key encoding is not supported', async () => {
-			await expect(RocksDatabase.open(generateDBPath(), {
+			expect(() => RocksDatabase.open(generateDBPath(), {
 				keyEncoding: 'foo'
-			} as any)).rejects.toThrow('Invalid key encoding: foo');
+			} as any)).toThrow('Invalid key encoding: foo');
 		});
 	});
 });

@@ -15,8 +15,8 @@ describe('Lifecycle', () => {
 
 			db.close(); // noop
 
-			await db.open();
-			await db.open(); // noop
+			db.open();
+			db.open(); // noop
 
 			expect(db.isOpen()).toBe(true);
 			expect(db.get('foo')).toBeUndefined();

@@ -190,7 +190,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
  *
  * @example
  * ```ts
- * const db = await NativeDatabase.open('path/to/db');
+ * const db = NativeDatabase.open('path/to/db');
  * const total = db.getCount();
  * const range = db.getCount({ start: 'a', end: 'z' });
  * ```

@@ -11,10 +11,10 @@ namespace rocksdb_js {
 
 /**
  * The `NativeDatabase` JavaScript class implementation.
- * 
+ *
  * @example
  * ```js
- * const db = new binding.NativeDatabase();
+ * const db = new RocksDatabase();
  * db.open('/tmp/testdb');
  * db.put('foo', 'bar');
  * ```
