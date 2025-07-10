@@ -111,6 +111,16 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	// flushed
 
+	/**
+	 * Returns a number representing a unix timestamp of the oldest unreleased
+	 * snapshot.
+	 *
+	 * @returns The oldest snapshot timestamp.
+	 */
+	getOldestSnapshotTimestamp() {
+		return this.store.db.getOldestSnapshotTimestamp();
+	}
+
 	getStats() {
 		return {
 			free: {},

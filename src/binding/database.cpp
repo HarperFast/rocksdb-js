@@ -244,6 +244,36 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Gets the oldest unreleased snapshot unix timestamp.
+ *
+ * @example
+ * ```ts
+ * const db = NativeDatabase.open('path/to/db');
+ * const oldestSnapshotTimestamp = db.getOldestSnapshotTimestamp();
+ * ```
+ */
+napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	uint64_t timestamp = 0;
+	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
+		(*dbHandle)->column.get(),
+		"rocksdb.oldest-snapshot-time",
+		&timestamp
+	);
+
+	if (!success) {
+		::napi_throw_error(env, nullptr, "Failed to get oldest snapshot timestamp");
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, timestamp, &result))
+	return result;
+}
+
+/**
  * Gets a value from the RocksDB database.
  *
  * @example
@@ -480,6 +510,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
