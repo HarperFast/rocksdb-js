@@ -9,7 +9,7 @@ describe('Block Cache', () => {
 		const dbPath = generateDBPath();
 
 		try {
-			db = await RocksDatabase.open(dbPath, { noBlockCache: true });
+			db = RocksDatabase.open(dbPath, { noBlockCache: true });
 			await db.put('foo', 'bar');
 			// note get() will find 'foo' in the memtable and return it synchronously
 			expect(db.get('foo')).toBe('bar');
@@ -25,7 +25,7 @@ describe('Block Cache', () => {
 
 		try {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
-			db = await RocksDatabase.open(dbPath);
+			db = RocksDatabase.open(dbPath);
 			await db.put('foo', 'bar');
 			expect(db.get('foo')).toBe('bar');
 		} finally {
@@ -41,7 +41,7 @@ describe('Block Cache', () => {
 		try {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
 
-			db = await RocksDatabase.open(dbPath);
+			db = RocksDatabase.open(dbPath);
 			await db.put('foo', 'bar');
 			expect(db.get('foo')).toBe('bar');
 

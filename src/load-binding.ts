@@ -48,6 +48,7 @@ export type NativeDatabase = {
 	close(): void;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
+	getOldestSnapshotTimestamp(): number;
 	getSync(key: Key, txnId?: number): Buffer;
 	opened: boolean;
 	open(

@@ -11,10 +11,10 @@ namespace rocksdb_js {
 
 /**
  * The `NativeDatabase` JavaScript class implementation.
- * 
+ *
  * @example
  * ```js
- * const db = new binding.NativeDatabase();
+ * const db = new RocksDatabase();
  * db.open('/tmp/testdb');
  * db.put('foo', 'bar');
  * ```
@@ -24,6 +24,7 @@ struct Database final {
 	static napi_value Close(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
+	static napi_value GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);

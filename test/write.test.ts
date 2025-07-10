@@ -10,7 +10,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await db.put('foo', 'bar1');
 				const value = await db.get('foo');
 				expect(value).toBe('bar1');
@@ -25,7 +25,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					name: 'foo'
 				});
 				await db.put('foo', 'bar2');
@@ -42,7 +42,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await expect((db.put as any)()).rejects.toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -55,7 +55,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await db.close();
 				await expect((db.put as any)()).rejects.toThrow('Database not open');
 			} finally {
@@ -71,7 +71,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				db.putSync('foo', 'bar1');
 				const value = await db.get('foo');
 				expect(value).toBe('bar1');
@@ -86,7 +86,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath, {
+				db = RocksDatabase.open(dbPath, {
 					name: 'foo'
 				});
 				db.putSync('foo', 'bar2');
@@ -103,7 +103,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				expect(() => (db!.putSync as any)()).toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -116,7 +116,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await db.close();
 				expect(() => (db!.putSync as any)()).toThrow('Database not open');
 			} finally {
@@ -132,7 +132,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await db.remove('baz');
 			} finally {
 				db?.close();
@@ -145,7 +145,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				let value = await db.get('foo');
 				expect(value).toBeUndefined();
 				await db.put('foo', 'bar3');
@@ -165,7 +165,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await expect((db.remove as any)()).rejects.toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -178,7 +178,7 @@ describe('Write operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await db.close();
 				await expect((db.remove as any)()).rejects.toThrow('Database not open');
 			} finally {

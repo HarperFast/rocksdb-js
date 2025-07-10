@@ -24,7 +24,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				const value = await db.get('baz');
 				expect(value).toBeUndefined();
 			} finally {
@@ -38,7 +38,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await expect((db.get as any)()).rejects.toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -51,7 +51,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				await db.put('foo', 'bar');
 				const value = await db.get('foo', { skipDecode: true });
 				expect(value).not.toBe('bar');
@@ -85,7 +85,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				const value = db.getSync('baz');
 				expect(value).toBeUndefined();
 			} finally {
@@ -99,7 +99,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				expect(() => (db!.getSync as any)()).toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -127,7 +127,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				const value = await db.getBinary('baz');
 				expect(value).toBeUndefined();
 			} finally {
@@ -141,7 +141,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				expect(() => (db!.getBinary as any)()).toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -169,7 +169,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				const value = db.getBinarySync('baz');
 				expect(value).toBeUndefined();
 			} finally {
@@ -183,7 +183,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				expect(() => (db!.getBinarySync as any)()).toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -211,7 +211,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				const value = await db.getBinaryFast('baz');
 				expect(value).toBeUndefined();
 			} finally {
@@ -225,7 +225,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				expect(() => (db!.getBinaryFast as any)()).toThrow('Key is required');
 			} finally {
 				db?.close();
@@ -253,7 +253,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				const value = db.getBinaryFastSync('baz');
 				expect(value).toBeUndefined();
 			} finally {
@@ -267,7 +267,7 @@ describe('Read Operations', () => {
 			let db: RocksDatabase | null = null;
 
 			try {
-				db = await RocksDatabase.open(dbPath);
+				db = RocksDatabase.open(dbPath);
 				expect(() => (db!.getBinaryFastSync as any)()).toThrow('Key is required');
 			} finally {
 				db?.close();

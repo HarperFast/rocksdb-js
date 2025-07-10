@@ -60,7 +60,7 @@ RocksDatabase.config({
 })
 ```
 
-### `db.open(): Promise<RocksDatabase>`
+### `db.open(): RocksDatabase`
 
 Opens the database at the given path. This must be called before performing
 any data operations.
@@ -69,13 +69,13 @@ any data operations.
 import { RocksDatabase } from '@harperdb/rocksdb-js';
 
 const db = new RocksDatabase('path/to/db');
-await db.open();
+db.open();
 ```
 
 There's also a static `open()` method for convenience that performs the same thing:
 
 ```typescript
-const db = await RocksDatabase.open('path/to/db');
+const db = RocksDatabase.open('path/to/db');
 ```
 
 ### `db.close()`
@@ -134,9 +134,37 @@ const total = db.getKeysCount();
 const range = db.getKeysCount({ start: 'a', end: 'z' });
 ```
 
+### `db.getOldestSnapshotTimestamp(): number`
+
+Returns a number representing a unix timestamp of the oldest unreleased
+snapshot.
+
+Snapshots are only created during transactions. When the database is opened in
+optimistic mode (the default), the snapshot will be created on the first
+read. When the database is opened in pessimistic mode, the snapshot will be
+created on the first read or write.
+
+```typescript
+console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
+
+const promise = db.transaction(async (txn) => {
+  // perform a write to create a snapshot
+  await txn.get('foo');
+  await setTimeout(100);
+});
+
+console.log(db.getOldestSnapshotTimestamp()); // returns `1752102248558`
+
+await promise;
+// transaction completes, snapshot released
+
+console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
+```
+
 ### `db.getRange(options?: IteratorOptions): ExtendedIterable`
 
-Retrieves a range of keys and their values. Supports both synchronous and asynchronous iteration.
+Retrieves a range of keys and their values. Supports both synchronous and
+asynchronous iteration.
 
 ```typescript
 // sync
@@ -269,7 +297,7 @@ class MyStore extends Store {
 }
 
 const myStore = new MyStore('path/to/db');
-const db = await RocksDatabase.open(myStore);
+const db = RocksDatabase.open(myStore);
 await db.put('foo', 'bar');
 console.log(await db.get('foo'));
 ```
@@ -371,4 +399,3 @@ To run the tests, run:
 ```bash
 pnpm coverage
 ```
-

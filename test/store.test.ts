@@ -23,7 +23,7 @@ describe('Custom Store', () => {
 
 		try {
 			const store = new CustomStore(dbPath);
-			db = await RocksDatabase.open(dbPath, { store });
+			db = RocksDatabase.open(dbPath, { store });
 			await db.put('foo', 'bar');
 			expect(await db.get('foo')).toBe('bar');
 		} finally {
