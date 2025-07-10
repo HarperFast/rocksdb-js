@@ -34,10 +34,6 @@ interface RocksDatabaseOptions extends StoreOptions {
  * ```
  */
 export class RocksDatabase extends DBI<DBITransactional> {
-	// #cache: boolean;
-	// #dupSort: boolean;
-	// #useVersions: boolean;
-
 	constructor(
 		pathOrStore: string | Store,
 		options?: RocksDatabaseOptions
@@ -49,22 +45,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		} else {
 			throw new TypeError('Invalid database path or store');
 		}
-
-		// this.#cache = options?.cache ?? false; // TODO: better name?
-		// this.#dupSort = options?.dupSort ?? false; // TODO: better name?
-		// this.#useVersions = options?.useVersions ?? false; // TODO: better name?
-
-		// if (this.#dupSort && (this.#cache || this.#useVersions)) {
-		// 	throw new Error('The dupSort flag can not be combined with versions or caching');
-		// }
 	}
 
 	/**
 	 * In memory lock mechanism for cache resolution.
 	 * @param key
-	 * @param version
 	 */
-	attemptLock(_key: Key, _version: number) {
+	attemptLock(_key: Key) {
 		//
 	}
 
@@ -132,22 +119,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
-	hasLock(_key: Key, _version: number): boolean {
+	hasLock(_key: Key): boolean {
 		return false;
 	}
 
 	async ifNoExists(_key: Key): Promise<void> {
-		//
-	}
-
-	async ifVersion(
-		_key: Key,
-		_version?: number | null,
-		_options?: {
-			allowNotFound?: boolean;
-			ifLessThan?: number;
-		}
-	): Promise<void> {
 		//
 	}
 
@@ -225,14 +201,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			const { sharedStructuresKey } = store;
 			if (sharedStructuresKey) {
 				opts.getStructures = (): any => {
-					// let lastVersion: number;
-					// if (this.useVersions) {
-					// 	lastVersion = getLastVersion();
-					// }
 					const buffer = this.getBinarySync(sharedStructuresKey);
-					// if (lastVersion) {
-					// 	setLastVersion(lastVersion);
-					// }
 					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
 				};
 				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
@@ -340,7 +309,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 	}
 
-	unlock(_key: Key, _version: number): boolean {
+	unlock(_key: Key): boolean {
 		return true;
 	}
 }

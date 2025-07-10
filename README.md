@@ -2,10 +2,34 @@
 
 A Node.js binding for the RocksDB library.
 
-## Installation
+## Features
 
-```bash
-npm i --save @harperdb/rocksdb-js
+- Supports optimistic and pessimistic transactions
+- Hybrid sync/async data retrieval
+- Range queries return an iterable with array-like methods and lazy evaluation
+- Custom stores provide ability to override default database interactions
+- Efficient binary key and value encoding
+- Designed for Node.js and Bun on Linux, macOS, and Windows
+
+## Example
+
+```typescript
+const db = RocksDatabase.open('/path/to/db');
+
+for (const key of ['a', 'b', 'c', 'd', 'e']) {
+  await db.put(key, `value ${key}`);
+}
+
+console.log(await db.get('b')); // `value b`
+
+for (const { key, value } of db.getRange({ start: 'b', end: 'd' })) {
+  console.log(`${key} = ${value}`);
+}
+
+await db.transaction(async (txn: Transaction) => {
+  await txn.put('f', 'value f');
+  await txn.remove('c');
+});
 ```
 
 ## Usage
@@ -91,7 +115,7 @@ Retrieves a value for the given key as an "entry" object.
 const { value } = await db.getEntry('foo');
 ```
 
-### `db.getKeys(options?: IteratorOptions): RangeIterable`
+### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves all keys within a range.
 
@@ -137,7 +161,7 @@ await promise;
 console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
 ```
 
-### `db.getRange(options?: IteratorOptions): RangeIterable`
+### `db.getRange(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves a range of keys and their values. Supports both synchronous and
 asynchronous iteration.
@@ -157,24 +181,6 @@ for await (const { key, value } of db.getRange()) {
 for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
   console.log({ key, value });
 }
-```
-
-### `db.getValues(key: Key, options?: IteratorOptions): RangeIterable`
-
-Retrieves all values for the given key.
-
-```typescript
-for (const { value } of db.getValues('a')) {
-  console.log({ value });
-}
-```
-
-### `db.getValuesCount(key: Key, options?: RangeOptions): number`
-
-Retrieves the number of values for the given key.
-
-```typescript
-const count = db.getValuesCount('a');
 ```
 
 ### `db.put(key, value, options?): Promise`
@@ -249,140 +255,6 @@ db.transactionSync((txn: Transaction) => {
 });
 ```
 
-### `class RangeIterable`
-
-An iterable that provides a rich set of methods for working with ranges of items.
-
-#### `.asArray: any[] | Promise<any[]>`
-
-Collects the iterator results in an array and returns it.
-
-```typescript
-const array = db.getRange().asArray;
-```
-
-If the iterable is asynchronous, then it will return a promise.
-
-```typescript
-const array = await db.getRange().asArray;
-```
-
-#### `.at(index: number): any`
-
-Returns the item at the given index.
-
-```typescript
-const item = db.getRange().at(0);
-```
-
-#### `.concat(iterable: Iterable): RangeIterable`
-
-Concatenates the iterable with another iterable.
-
-```typescript
-const concatenated = db.getRange().concat(db.getRange());
-```
-
-#### `.drop(limit: number): RangeIterable`
-
-Returns a new iterable with the first `limit` items removed.
-
-```typescript
-for (const { key, value } of db.getRange().drop(10)) {
-  console.log({ key, value });
-}
-```
-
-#### `.every(callback: (value, index) => boolean): boolean`
-
-Returns `true` if the callback returns `true` for every item of the iterable.
-
-```typescript
-const isAllValid = db.getRange().every(item => item.value.length > 0);
-```
-
-#### `.filter(callback: (value, index) => boolean): RangeIterable`
-
-Returns a new iterable containing only the values for which the callback returns `true`.
-
-```typescript
-const filtered = db.getRange().filter(item => item.value.length > 0);
-```
-
-#### `.find(callback: (value, index) => boolean): any`
-
-Returns the first item of the iterable for which the callback returns `true`.
-
-```typescript
-const found = db.getRange().find(item => item.value.length > 0);
-```
-
-#### `.flatMap(callback: (value, index) => any): RangeIterable`
-
-Returns a new iterable with the results of a callback function, then flattens the results.
-
-```typescript
-const flattened = db.getRange().flatMap(item => [item, item]);
-```
-
-#### `.forEach(callback: (value, index) => void): void`
-
-Calls a function for each item of the iterable.
-
-```typescript
-db.getRange().forEach(item => console.log(item));
-```
-
-#### `.map(callback: (value, index) => any): RangeIterable`
-
-Returns a new iterable with the results of calling a callback function.
-
-```typescript
-const mapped = db.getRange().map(item => item.value.length);
-```
-
-#### `.mapError(catchCallback: (error) => Error): RangeIterable`
-
-Catch errors thrown during iteration and allow iteration to continue.
-
-```typescript
-const mapped = db.getRange().mapError(error => new Error('Error: ' + error.message));
-```
-
-#### `.reduce(callback: (prev, current, index) => any): any`
-
-Reduces the iterable to a single value.
-
-```typescript
-const sum = db.getRange().reduce((acc, item) => acc + item.value.length, 0);
-```
-
-#### `.slice(start: number, end?: number): RangeIterable`
-
-Returns a new iterable with the items between the start and end indices.
-
-```typescript
-const sliced = db.getRange().slice(10, 20);
-```
-
-#### `.some(callback: (value, index) => boolean): boolean`
-
-Returns `true` if the callback returns `true` for any item of the iterable.
-
-```typescript
-const hasEven = db.getRange().some(item => item.value.length % 2 === 0);
-```
-
-#### `.take(limit: number): RangeIterable`
-
-Returns a new iterable with the first `limit` items.
-
-```typescript
-for (const { key, value } of db.getRange().take(10)) {
-  console.log({ key, value });
-}
-```
-
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`
@@ -401,7 +273,6 @@ The default `Store` contains the following methods which can be overridden:
 - `getCount(context, options?, txnId?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
-- `getValuesCount(context, key, options?)`
 - `isOpen()`
 - `open()`
 - `putSync(context, key, value, options?)`
@@ -528,4 +399,3 @@ To run the tests, run:
 ```bash
 pnpm coverage
 ```
-
