@@ -4,7 +4,30 @@ A Node.js binding for the RocksDB library.
 
 ## Features
 
-- ?
+- Supports optimistic and pessimistic transactions
+- Hybrid sync/async data retrieval
+- Range queries return an iterable with array-like methods and lazy evaluation
+- Custom stores provide ability to override default database interactions
+- Efficient binary key and value encoding
+- Designed for Node.js and Bun on Linux, macOS, and Windows
+
+## Example
+
+```typescript
+const db = RocksDatabase.open('/path/to/db');
+
+for (const key of ['a', 'b', 'c', 'd', 'e']) {
+  await db.put(key, `value ${key}`);
+}
+
+console.log(await db.get('b')); // `value b`
+
+for (const { key, value } of db.getRange({ start: 'b', end: 'd' })) {
+  console.log(`${key} = ${value}`);
+}
+
+await db.remove('c');
+```
 
 ## Usage
 
