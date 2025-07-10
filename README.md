@@ -26,7 +26,10 @@ for (const { key, value } of db.getRange({ start: 'b', end: 'd' })) {
   console.log(`${key} = ${value}`);
 }
 
-await db.remove('c');
+await db.transaction(async (txn: Transaction) => {
+	await txn.put('f', 'value f');
+  await txn.remove('c');
+});
 ```
 
 ## Usage
