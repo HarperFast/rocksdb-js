@@ -19,22 +19,6 @@
 				'src/binding/transaction.cpp',
 				'src/binding/util.cpp',
 			],
-			'link_settings': {
-				'conditions': [
-					['OS=="win"', {
-						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/rocksdb.lib',
-							'rpcrt4.lib',
-							'shell32.lib',
-							'shlwapi.lib'
-						]
-					}, {
-						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
-						]
-					}]
-				]
-			},
 			'cflags!': [ '-fno-exceptions' ],
 			'cflags_cc!': [ '-fno-exceptions' ],
 			'cflags_cc': [
@@ -42,18 +26,34 @@
 				'-fexceptions'
 			],
 			'conditions': [
-				['OS=="linux" or OS=="mac"', {
-					'cflags+': ['-fexceptions'],
-					'cflags_cc+': ['-fexceptions'],
-					'xcode_settings': {
-						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
-					}
-				}],
 				['OS=="win"', {
+					'link_settings': {
+						'libraries': [
+							'rpcrt4.lib',
+							'shell32.lib',
+							'shlwapi.lib'
+						]
+					},
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'ExceptionHandling': 1
+						},
+						'VCLinkerTool': {
+							'LinkTimeCodeGeneration': 1,
+							'LinkIncremental': 1
 						}
+					}
+				}],
+				['OS=="linux" or OS=="mac"', {
+					'cflags+': ['-fexceptions'],
+					'cflags_cc+': ['-fexceptions'],
+					'link_settings': {
+						'libraries': [
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+						]
+					},
+					'xcode_settings': {
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
 					}
 				}]
 			],
@@ -64,6 +64,14 @@
 							'RuntimeLibrary': 2,
 							'ExceptionHandling': 1,
 							'AdditionalOptions': ['/std:c++20']
+						},
+						'VCLinkerTool': {
+							'AdditionalLibraryDirectories': [
+								'<(module_root_dir)/deps/rocksdb/lib'
+							],
+							'AdditionalDependencies': [
+								'rocksdb.lib'
+							]
 						}
 					}
 				},
@@ -71,17 +79,25 @@
 					'cflags_cc+': ['-g', '--coverage'],
 					'defines': ['DEBUG'],
 					'ldflags': ['--coverage'],
-					'xcode_settings': {
-						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
-						'OTHER_CFLAGS': ['-g', '--coverage'],
-						'OTHER_LDFLAGS': ['--coverage']
-					},
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 3,
 							'ExceptionHandling': 1,
 							'AdditionalOptions': ['/std:c++20']
+						},
+						'VCLinkerTool': {
+							'AdditionalLibraryDirectories': [
+								'<(module_root_dir)/deps/rocksdb/debug/lib'
+							],
+							'AdditionalDependencies': [
+								'rocksdbd.lib'
+							]
 						}
+					},
+					'xcode_settings': {
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+						'OTHER_CFLAGS': ['-g', '--coverage'],
+						'OTHER_LDFLAGS': ['--coverage']
 					}
 				}
 			}
