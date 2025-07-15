@@ -4,9 +4,9 @@ import { Store, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import * as orderedBinary from 'ordered-binary';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
-import type { Key } from './encoding.js';
+import type { EncoderFunction, Key } from './encoding.js';
 
-interface RocksDatabaseOptions extends StoreOptions {
+export interface RocksDatabaseOptions extends StoreOptions {
 	/**
 	 * The column family name.
 	 *
@@ -183,8 +183,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		 * 4. encoding === `ordered-binary`
 		 * 5. encoder.writeKey()
 		 */
-		let EncoderClass = store.encoder?.Encoder;
-		if (store.encoding === false || typeof EncoderClass === 'function') {
+		let EncoderClass: EncoderFunction | undefined = store.encoder?.Encoder;
+		if (store.encoding === false) {
+			store.encoder = null;
+			EncoderClass = undefined;
+		} else if (typeof EncoderClass === 'function') {
 			store.encoder = null;
 		} else if (
 			typeof store.encoder?.encode !== 'function' &&
@@ -206,8 +209,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				};
 				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
 					this.transactionSync((txn: Transaction) => {
-						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-						const existingStructures = existingStructuresBuffer && store.decoder?.decode ? store.decoder.decode(existingStructuresBuffer) : undefined;
+						// note: we need to get a fresh copy of the shared structures,
+						// so we don't want to use the transaction's getBinarySync()
+						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
+						const existingStructures = existingStructuresBuffer && store.decoder?.decode
+							? store.decoder.decode(existingStructuresBuffer)
+							: undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
 								return false;
@@ -228,7 +235,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			if (!store.decoder) {
 				store.decoder = store.encoder;
 			}
-			store.decoderCopies = !store.encoder.needsStableBuffer;
 		} else if (store.encoding === 'ordered-binary') {
 			store.encoder = {
 				readKey: orderedBinary.readKey,
@@ -246,6 +252,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					return store.encodeBuffer.subarray(0, bytesWritten);
 				}
 			};
+			store.encoder.copyBuffers = true;
+		}
+
+		if (store.decoder?.needsStableBuffer !== true) {
+			store.decoderCopies = true;
 		}
 
 		if (store.decoder?.readKey && !store.decoder.decode) {
@@ -259,6 +270,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		return this;
+	}
+
+	get path() {
+		return this.store.path;
 	}
 
 	/**
@@ -275,7 +290,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction(callback: (txn: Transaction) => Promise<any>, options?: TransactionOptions) {
+	async transaction(callback: (txn: Transaction) => PromiseLike<any>, options?: TransactionOptions) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -292,7 +307,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 	}
 
-	transactionSync(callback: (txn: Transaction) => void, options?: TransactionOptions) {
+	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -301,6 +316,20 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		try {
 			const result = callback(txn);
+			let committed = false;
+
+			// despite being 'sync', we need to support async operations
+			if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
+				return result.then((value) => {
+					if (committed) {
+						throw new Error('Transaction already committed');
+					}
+					committed = true;
+					txn.commitSync();
+					return value as T;
+				});
+			}
+
 			txn.commitSync();
 			return result;
 		} catch (error) {

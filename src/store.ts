@@ -249,7 +249,7 @@ export class Store {
 	 * @param value - The value to encode.
 	 * @returns The encoded value.
 	 */
-	encodeValue(value: any): Buffer | Uint8Array {
+	encodeValue(value: any): BufferWithDataView | Uint8Array {
 		if (value && value['\x10binary-data\x02']) {
 			return value['\x10binary-data\x02'];
 		}
@@ -288,7 +288,12 @@ export class Store {
 		txnId?: number
 	) {
 		const keyBuffer = this.encodeKey(key);
-		return context.get(keyBuffer, resolve, reject, txnId);
+		return context.get(
+			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
+			resolve,
+			reject,
+			txnId
+		);
 	}
 
 	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions, txnId?: number) {
@@ -326,8 +331,9 @@ export class Store {
 	}
 
 	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
+		const keyBuffer = this.encodeKey(key);
 		return context.getSync(
-			this.encodeKey(key),
+			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
 			getTxnId(options)
 		);
 	}
@@ -363,28 +369,24 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
+		const keyBuffer = this.encodeKey(key);
+
 		context.putSync(
-			this.encodeKey(key),
+			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
 			this.encodeValue(value),
 			getTxnId(options)
 		);
 	}
 
-	removeSync(context: NativeDatabase | NativeTransaction, key: Key, value?: any, options?: DBITransactional) {
+	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional | undefined) {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
 
-		if (options === undefined && value?.transaction !== undefined) {
-			options = value;
-			value = undefined;
-		}
-
-		// Note: the default store does not support duplicate keys, so there's
-		// nothing to do with the `value parameter`
+		const keyBuffer = this.encodeKey(key);
 
 		context.removeSync(
-			this.encodeKey(key),
+			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
 			getTxnId(options)
 		);
 	}

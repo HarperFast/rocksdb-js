@@ -173,7 +173,17 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (this.store.decoderCopies) {
 			return when(
 				() => this.getBinaryFast(key, options),
-				result => result === undefined ? undefined : this.store.decodeValue(result as Buffer)
+				result => {
+					if (result === undefined) {
+						return undefined;
+					}
+
+					if (options?.skipDecode) {
+						return result;
+					}
+
+					return this.store.decodeValue(result as Buffer);
+				}
 			);
 		}
 
@@ -327,10 +337,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		return this.store.getSync(
 			this.#context,
-			this.store.encodeKey(key),
+			key,
 			options
 		);
-		// TODO: return UNMODIFIED if the value is not modified
 	}
 
 	/**
@@ -438,7 +447,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	async remove(key: Key, options?: T): Promise<void> {
-		return this.store.removeSync(this.#context, key, options);
+		return this.store.removeSync(this.#context, key, options as DBITransactional);
 	}
 
 	/**
@@ -455,6 +464,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	removeSync(key: Key, options?: T): void {
-		return this.store.removeSync(this.#context, key, options);
+		return this.store.removeSync(this.#context, key, options as DBITransactional);
 	}
 }

@@ -16,7 +16,7 @@
   "scripts": {
     "build": "pnpm build:bundle && pnpm rebuild",
     "build:bundle": "rimraf dist && rollup -c rollup.config.ts --configPlugin typescript && pnpm build:types",
-    "build:debug": "pnpm build:bundle && pnpm rebuild:debug",
+    "build:debug": "SKIP_MINIFY=1 pnpm build",
     "build:types": "pnpm build:types:temp && pnpm build:types:roll && pnpm build:types:check",
     "build:types:temp": "tsc --declaration --emitDeclarationOnly --outDir temp --project tsconfig.build.json",
     "build:types:roll": "rollup --config rollup.dts.config.ts --configPlugin typescript && rimraf temp",

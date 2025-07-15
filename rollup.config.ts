@@ -25,7 +25,7 @@ function generateConfig(format: 'es' | 'cjs') {
 			entryFileNames: format === 'es' ? 'index.js' : 'index.cjs'
 		},
 		plugins: [
-			esbuildMinifyPlugin({
+			process.env.SKIP_MINIFY ? null : esbuildMinifyPlugin({
 				minify: true,
 				minifySyntax: true
 			}),
