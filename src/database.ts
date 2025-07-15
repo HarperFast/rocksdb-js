@@ -280,7 +280,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Executes all operations in the callback as a single transaction.
 	 *
 	 * @param callback - A async function that receives the transaction as an argument.
-	 * @returns A promise that resolves when the transaction is committed or aborted.
+	 * @returns A promise that resolves the `callback` return value.
 	 *
 	 * @example
 	 * ```ts
@@ -307,6 +307,23 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 	}
 
+	/**
+	 * Executes all operations in the callback as a single transaction.
+	 *
+	 * @param callback - A function that receives the transaction as an
+	 * argument. If the callback return promise-like value, it is awaited
+	 * before committing the transaction. Otherwise, the callback is treated as
+	 * synchronous.
+	 * @returns The `callback` return value.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.transaction(async (txn) => {
+	 *   await txn.put('key', 'value');
+	 * });
+	 * ```
+	 */
 	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
