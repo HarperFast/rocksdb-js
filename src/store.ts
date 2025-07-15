@@ -296,8 +296,18 @@ export class Store {
 		);
 	}
 
-	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions, txnId?: number) {
-		return context.getCount(options, txnId);
+	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions) {
+		const startKey = options?.start ? this.encodeKey(options?.start) : undefined;
+		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+
+		const endKey = options?.end ? this.encodeKey(options.end) : undefined;
+		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
+
+		return context.getCount({
+			...options,
+			start,
+			end,
+		}, this.getTxnId(options));
 	}
 
 	getRange(
@@ -334,8 +344,23 @@ export class Store {
 		const keyBuffer = this.encodeKey(key);
 		return context.getSync(
 			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
-			getTxnId(options)
+			this.getTxnId(options)
 		);
+	}
+
+	/**
+	 * Checks if the data method options object contains a transaction ID and
+	 * returns it.
+	 */
+	getTxnId(options?: DBITransactional | unknown) {
+		let txnId: number | undefined;
+		if (options && typeof options === 'object' && 'transaction' in options) {
+			txnId = (options.transaction as Transaction)?.id;
+			if (txnId === undefined) {
+				throw new TypeError('Invalid transaction');
+			}
+		}
+		return txnId;
 	}
 
 	/**
@@ -374,7 +399,7 @@ export class Store {
 		context.putSync(
 			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
 			this.encodeValue(value),
-			getTxnId(options)
+			this.getTxnId(options)
 		);
 	}
 
@@ -387,24 +412,9 @@ export class Store {
 
 		context.removeSync(
 			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
-			getTxnId(options)
+			this.getTxnId(options)
 		);
 	}
-}
-
-/**
- * Checks if the data method options object contains a transaction ID and
- * returns it.
- */
-export function getTxnId(options?: DBITransactional | unknown) {
-	let txnId: number | undefined;
-	if (options && typeof options === 'object' && 'transaction' in options) {
-		txnId = (options.transaction as Transaction)?.id;
-		if (txnId === undefined) {
-			throw new TypeError('Invalid transaction');
-		}
-	}
-	return txnId;
 }
 
 export interface GetOptions {

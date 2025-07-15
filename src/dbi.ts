@@ -1,6 +1,6 @@
-import { getTxnId, type GetOptions, type PutOptions, type Store } from './store.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
+import type { GetOptions, PutOptions, Store } from './store.js';
 import type { Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
 
@@ -252,7 +252,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				error = err;
 				reject?.(err);
 			},
-			getTxnId(options)
+			this.store.getTxnId(options)
 		);
 
 		if (error) {
@@ -310,7 +310,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				error = err;
 				reject?.(err);
 			},
-			getTxnId(options)
+			this.store.getTxnId(options)
 		);
 
 		if (error) {
@@ -365,17 +365,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getKeysCount(options?: RangeOptions & T): number {
-		const startKey = options?.start ? this.store.encodeKey(options?.start) : undefined;
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
-
-		const endKey = options?.end ? this.store.encodeKey(options.end) : undefined;
-		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
-
-		return this.store.getCount(this.#context, {
-			...options,
-			start,
-			end,
-		}, getTxnId(options));
+		return this.store.getCount(this.#context, options);
 	}
 
 	/**
