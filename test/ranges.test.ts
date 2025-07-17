@@ -931,7 +931,6 @@ describe('Ranges', () => {
 
 				const iterable = db.getRange({ start: true });
 				const results = iterable.asArray;
-				console.log(results);
 				expect(results).toHaveLength(1);
 				expect(results[0].key).toEqual('foo');
 				expect(results[0].value).toEqual(data);

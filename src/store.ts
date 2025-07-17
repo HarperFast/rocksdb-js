@@ -287,9 +287,8 @@ export class Store {
 		reject: (err: unknown) => void,
 		txnId?: number
 	) {
-		const keyBuffer = this.encodeKey(key);
 		return context.get(
-			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
+			this.encodeKey(key),
 			resolve,
 			reject,
 			txnId
@@ -341,9 +340,8 @@ export class Store {
 	}
 
 	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
-		const keyBuffer = this.encodeKey(key);
 		return context.getSync(
-			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
+			this.encodeKey(key),
 			this.getTxnId(options)
 		);
 	}
@@ -394,11 +392,16 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.encodeKey(key);
+		// IMPORTANT!
+		// We MUST encode the value before the key because if the `sharedStructuresKey`
+		// is set, it will be used by `getStructures()` and `saveStructures()` which in
+		// turn will encode the `sharedStructuresKey` into the shared `keyBuffer`
+		// overwriting this method's encoded key!
+		const valueBuffer = this.encodeValue(value);
 
 		context.putSync(
-			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
-			this.encodeValue(value),
+			this.encodeKey(key),
+			valueBuffer,
 			this.getTxnId(options)
 		);
 	}
@@ -408,10 +411,8 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
-		const keyBuffer = this.encodeKey(key);
-
 		context.removeSync(
-			Buffer.from(keyBuffer.subarray(keyBuffer.start, keyBuffer.end)),
+			this.encodeKey(key),
 			this.getTxnId(options)
 		);
 	}
