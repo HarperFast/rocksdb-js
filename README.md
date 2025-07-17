@@ -302,6 +302,17 @@ await db.put('foo', 'bar');
 console.log(await db.get('foo'));
 ```
 
+> [!IMPORTANT]
+> If your custom store overrides `putSync()` without calling `super.putSync()`
+> and it performs its own `this.encodeKey(key)`, then you MUST encode the VALUE
+> before you encode the KEY.
+>
+> Keys are encoded into a shared buffer. If the database is opened with the
+> `sharedStructuresKey` option, encoding the value will load and save the
+> structures which encodes the `sharedStructuresKey` overwriting the encoded
+> key in the shared key buffer, so it's ultra important that you encode the
+> value first!
+
 ## Interfaces
 
 ### `RocksDBOptions`
