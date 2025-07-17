@@ -343,19 +343,19 @@ This package requires Node.js 18 or higher, pnpm, and a C++ compiler.
 > pnpm config set stream true
 > ```
 
-### Building the Native Binding
+### Building
 
-To compile everything including the native binding and the TypeScript source, run:
+There are two things being built: the native binding and the TypeScript code.
+Each of those can be built to be debug friendly.
 
-```bash
-pnpm build
-```
-
-To configure and compile only the native binding, run:
-
-```bash
-pnpm rebuild
-```
+| Description | Command |
+| --- | --- |
+| Production build (minified + native binding) | `pnpm build` |
+| TypeScript only (minified) | `pnpm build:bundle` |
+| TypeScript only (unminified) | `pnpm build:debug` |
+| Native binding only (prod) | `pnpm rebuild` |
+| Native binding only (with debug logging) | `pnpm rebuild:debug` |
+| Debug build everything | `pnpm build:debug && pnpm rebuild:debug` |
 
 When building the native binding, it will download the appropriate prebuilt
 RocksDB library for your platform and architecture from the
