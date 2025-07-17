@@ -8,11 +8,13 @@ export interface BufferWithDataView extends Buffer {
 	end: number;
 }
 
+export type EncoderFunction = new (options?: any) => Encoder;
+
 export interface Encoder {
 	copyBuffers?: boolean;
 	decode?: (buffer: Buffer) => any;
 	encode?: (value: any, mode?: number) => Buffer; // | string;
-	Encoder?: new (options?: any) => Encoder;
+	Encoder?: EncoderFunction;
 	freezeData?: boolean;
 	needsStableBuffer?: boolean;
 	randomAccessStructure?: boolean;
@@ -50,7 +52,7 @@ export function initKeyEncoder(
 	writeKey: WriteKeyFunction;
 } {
 	const keyEncoding: KeyEncoding = requestedKeyEncoding ?? 'ordered-binary';
-	
+
 	if (keyEncoder) {
 		const { readKey, writeKey } = keyEncoder;
 		if (!readKey || !writeKey) {
@@ -58,7 +60,7 @@ export function initKeyEncoder(
 		}
 		return { keyEncoding, readKey, writeKey };
 	}
-	
+
 	if (keyEncoding === 'binary') {
 		return {
 			keyEncoding,
@@ -72,7 +74,7 @@ export function initKeyEncoder(
 			},
 		};
 	}
-	
+
 	if (keyEncoding === 'uint32') {
 		return {
 			keyEncoding,
@@ -92,7 +94,7 @@ export function initKeyEncoder(
 			},
 		};
 	}
-	
+
 	if (keyEncoding === 'ordered-binary') {
 		return {
 			keyEncoding,
@@ -100,7 +102,7 @@ export function initKeyEncoder(
 			writeKey: orderedBinary.writeKey as WriteKeyFunction,
 		};
 	}
-	
+
 	throw new Error(`Invalid key encoding: ${keyEncoding}`);
 }
 

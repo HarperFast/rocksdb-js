@@ -62,22 +62,23 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 			}
 
 			DEBUG_LOG("%p DBRegistry::OpenDB Database %s already open\n", instance.get(), path.c_str())
+			DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family %s\n", instance.get(), name.c_str())
 
 			dbExists = true;
 
 			// manually copy the columns because we don't know which ones are valid
 			bool columnExists = false;
 			for (auto& column : descriptor->columns) {
-				std::shared_ptr<rocksdb::ColumnFamilyHandle> existingColumn = column.second;
-				if (existingColumn) {
-					columns[column.first] = existingColumn;
-					if (column.first == name) {
-						columnExists = true;
-					}
+				columns[column.first] = column.second;
+				if (column.first == name) {
+					DEBUG_LOG("%p DBRegistry::OpenDB Column family %s already exists\n", instance.get(), name.c_str())
+					columnExists = true;
 				}
 			}
 			if (!columnExists) {
+				DEBUG_LOG("DBRegistry::OpenDB Creating column family \"%s\"\n", name.c_str())
 				columns[name] = createColumn(descriptor->db, name);
+				descriptor->columns[name] = columns[name];
 			}
 		}
 	}

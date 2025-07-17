@@ -19,6 +19,7 @@ export default defineConfig({
 			}
 		},
 		reporters: ['verbose'],
+		silent: false,
 		watch: false
 	}
 });

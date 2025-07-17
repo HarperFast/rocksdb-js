@@ -249,7 +249,7 @@ export class Store {
 	 * @param value - The value to encode.
 	 * @returns The encoded value.
 	 */
-	encodeValue(value: any): Buffer | Uint8Array {
+	encodeValue(value: any): BufferWithDataView | Uint8Array {
 		if (value && value['\x10binary-data\x02']) {
 			return value['\x10binary-data\x02'];
 		}
@@ -287,12 +287,26 @@ export class Store {
 		reject: (err: unknown) => void,
 		txnId?: number
 	) {
-		const keyBuffer = this.encodeKey(key);
-		return context.get(keyBuffer, resolve, reject, txnId);
+		return context.get(
+			this.encodeKey(key),
+			resolve,
+			reject,
+			txnId
+		);
 	}
 
-	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions, txnId?: number) {
-		return context.getCount(options, txnId);
+	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions) {
+		const startKey = options?.start ? this.encodeKey(options?.start) : undefined;
+		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+
+		const endKey = options?.end ? this.encodeKey(options.end) : undefined;
+		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
+
+		return context.getCount({
+			...options,
+			start,
+			end,
+		}, this.getTxnId(options));
 	}
 
 	getRange(
@@ -328,8 +342,23 @@ export class Store {
 	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
 		return context.getSync(
 			this.encodeKey(key),
-			getTxnId(options)
+			this.getTxnId(options)
 		);
+	}
+
+	/**
+	 * Checks if the data method options object contains a transaction ID and
+	 * returns it.
+	 */
+	getTxnId(options?: DBITransactional | unknown) {
+		let txnId: number | undefined;
+		if (options && typeof options === 'object' && 'transaction' in options) {
+			txnId = (options.transaction as Transaction)?.id;
+			if (txnId === undefined) {
+				throw new TypeError('Invalid transaction');
+			}
+		}
+		return txnId;
 	}
 
 	/**
@@ -363,46 +392,30 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
+		// IMPORTANT!
+		// We MUST encode the value before the key because if the `sharedStructuresKey`
+		// is set, it will be used by `getStructures()` and `saveStructures()` which in
+		// turn will encode the `sharedStructuresKey` into the shared `keyBuffer`
+		// overwriting this method's encoded key!
+		const valueBuffer = this.encodeValue(value);
+
 		context.putSync(
 			this.encodeKey(key),
-			this.encodeValue(value),
-			getTxnId(options)
+			valueBuffer,
+			this.getTxnId(options)
 		);
 	}
 
-	removeSync(context: NativeDatabase | NativeTransaction, key: Key, value?: any, options?: DBITransactional) {
+	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional | undefined) {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
 
-		if (options === undefined && value?.transaction !== undefined) {
-			options = value;
-			value = undefined;
-		}
-
-		// Note: the default store does not support duplicate keys, so there's
-		// nothing to do with the `value parameter`
-
 		context.removeSync(
 			this.encodeKey(key),
-			getTxnId(options)
+			this.getTxnId(options)
 		);
 	}
-}
-
-/**
- * Checks if the data method options object contains a transaction ID and
- * returns it.
- */
-export function getTxnId(options?: DBITransactional | unknown) {
-	let txnId: number | undefined;
-	if (options && typeof options === 'object' && 'transaction' in options) {
-		txnId = (options.transaction as Transaction)?.id;
-		if (txnId === undefined) {
-			throw new TypeError('Invalid transaction');
-		}
-	}
-	return txnId;
 }
 
 export interface GetOptions {

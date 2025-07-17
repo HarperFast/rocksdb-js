@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
-import { RocksDatabase } from '../src/index.js';
+import { RocksDatabase, RocksDatabaseOptions } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import type { Key } from '../src/encoding.js';
 
-async function initTestDB(test: (db: RocksDatabase) => Promise<void>, name?: string) {
+async function initTestDB(test: (db: RocksDatabase) => Promise<void>, nameOrOptions?: string | RocksDatabaseOptions) {
 	let db: RocksDatabase | null = null;
 	const dbPath = generateDBPath();
 
 	try {
-		db = RocksDatabase.open(dbPath, { name });
+		db = RocksDatabase.open(dbPath, typeof nameOrOptions === 'string' ? { name: nameOrOptions } : nameOrOptions);
 		await test(db);
 	} finally {
 		db?.close();
@@ -916,6 +916,26 @@ describe('Ranges', () => {
 				const iterator = results[Symbol.iterator]();
 				expect(iterator.return?.()).toEqual({ done: true, value: undefined });
 				expect(() => iterator.next()).toThrow('Next failed: Iterator not initialized');
+			});
+		});
+
+		it('should get range with shared structures key', async () => {
+			await initTestDB(async db => {
+				db.putSync(Symbol.for('test'), 2);
+
+				const data = {
+					bar: 'baz'
+				};
+
+				db.putSync('foo', data);
+
+				const iterable = db.getRange({ start: true });
+				const results = iterable.asArray;
+				expect(results).toHaveLength(1);
+				expect(results[0].key).toEqual('foo');
+				expect(results[0].value).toEqual(data);
+			}, {
+				sharedStructuresKey: Symbol.for('structures'),
 			});
 		});
 	});

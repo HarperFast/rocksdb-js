@@ -1,6 +1,6 @@
-import { getTxnId, type GetOptions, type PutOptions, type Store } from './store.js';
 import { when, withResolvers, type MaybePromise } from './util.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
+import type { GetOptions, PutOptions, Store } from './store.js';
 import type { Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
 
@@ -173,7 +173,17 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (this.store.decoderCopies) {
 			return when(
 				() => this.getBinaryFast(key, options),
-				result => result === undefined ? undefined : this.store.decodeValue(result as Buffer)
+				result => {
+					if (result === undefined) {
+						return undefined;
+					}
+
+					if (options?.skipDecode) {
+						return result;
+					}
+
+					return this.store.decodeValue(result as Buffer);
+				}
 			);
 		}
 
@@ -242,7 +252,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				error = err;
 				reject?.(err);
 			},
-			getTxnId(options)
+			this.store.getTxnId(options)
 		);
 
 		if (error) {
@@ -300,7 +310,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				error = err;
 				reject?.(err);
 			},
-			getTxnId(options)
+			this.store.getTxnId(options)
 		);
 
 		if (error) {
@@ -327,10 +337,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		return this.store.getSync(
 			this.#context,
-			this.store.encodeKey(key),
+			key,
 			options
 		);
-		// TODO: return UNMODIFIED if the value is not modified
 	}
 
 	/**
@@ -356,17 +365,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getKeysCount(options?: RangeOptions & T): number {
-		const startKey = options?.start ? this.store.encodeKey(options?.start) : undefined;
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
-
-		const endKey = options?.end ? this.store.encodeKey(options.end) : undefined;
-		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
-
-		return this.store.getCount(this.#context, {
-			...options,
-			start,
-			end,
-		}, getTxnId(options));
+		return this.store.getCount(this.#context, options);
 	}
 
 	/**
@@ -438,7 +437,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	async remove(key: Key, options?: T): Promise<void> {
-		return this.store.removeSync(this.#context, key, options);
+		return this.store.removeSync(this.#context, key, options as DBITransactional);
 	}
 
 	/**
@@ -455,6 +454,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	removeSync(key: Key, options?: T): void {
-		return this.store.removeSync(this.#context, key, options);
+		return this.store.removeSync(this.#context, key, options as DBITransactional);
 	}
 }
