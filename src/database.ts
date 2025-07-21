@@ -302,6 +302,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const txn = new Transaction(this.store, options);
 
 		try {
+			this.emit('begin-transaction');
 			const result = await callback(txn);
 			await txn.commit();
 			return result;
@@ -336,6 +337,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const txn = new Transaction(this.store, options);
 
 		try {
+			this.emit('begin-transaction');
 			const result = callback(txn);
 			let committed = false;
 
