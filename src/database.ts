@@ -272,6 +272,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this;
 	}
 
+	get encoder() {
+		return this.store.encoder;
+	}
+
 	get path() {
 		return this.store.path;
 	}
