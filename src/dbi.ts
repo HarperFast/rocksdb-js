@@ -1,5 +1,6 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
+import { EventEmitter } from 'node:events';
 import type { GetOptions, PutOptions, Store } from './store.js';
 import type { Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -136,7 +137,7 @@ export interface DBITransactional {
  *
  * This class is not meant to be used directly.
  */
-export class DBI<T extends DBITransactional | unknown = unknown> {
+export class DBI<T extends DBITransactional | unknown = unknown> extends EventEmitter {
 	/**
 	 * The RocksDB context for `get()`, `put()`, and `remove()`.
 	 */
@@ -158,6 +159,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (new.target === DBI) {
 			throw new Error('DBI is an abstract class and cannot be instantiated directly');
 		}
+
+		super();
 
 		// this ideally should not be public, but JavaScript doesn't support
 		// protected properties

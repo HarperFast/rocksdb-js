@@ -3,6 +3,7 @@ import { version } from './load-binding.js';
 export { RocksDatabase } from './database.js';
 export { Store } from './store.js';
 export { DBIterator } from './dbi-iterator.js';
+export { Transaction } from './transaction.js';
 export type { RocksDatabaseOptions } from './database.js';
 
 export const versions = {
