@@ -296,17 +296,19 @@ export class Store {
 	}
 
 	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions) {
-		const startKey = options?.start ? this.encodeKey(options?.start) : undefined;
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+		options = { ...options };
 
-		const endKey = options?.end ? this.encodeKey(options.end) : undefined;
-		const end = endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
+		if (options?.start !== undefined) {
+			const start = this.encodeKey(options.start);
+			options.start = Buffer.from(start.subarray(start.start, start.end));
+		}
 
-		return context.getCount({
-			...options,
-			start,
-			end,
-		}, this.getTxnId(options));
+		if (options?.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			options.end = Buffer.from(end.subarray(end.start, end.end));
+		}
+
+		return context.getCount(options, this.getTxnId(options));
 	}
 
 	getRange(
@@ -317,22 +319,27 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
-		const unencodedStartKey = options?.key || options?.start;
-		const startKey = unencodedStartKey ? this.encodeKey(unencodedStartKey) : undefined;
-		const start = startKey ? Buffer.from(startKey.subarray(startKey.start, startKey.end)) : undefined;
+		options = { ...options };
 
-		const endKey = !options?.key && options?.end ? this.encodeKey(options.end) : undefined;
-		const end = options?.key ? start : endKey ? Buffer.from(endKey.subarray(endKey.start, endKey.end)) : undefined;
+		const unencodedStartKey = options.key ?? options.start;
+
+		if (unencodedStartKey !== undefined) {
+			const start = this.encodeKey(unencodedStartKey);
+			options.start = Buffer.from(start.subarray(start.start, start.end));
+		}
+
+		if (options.key !== undefined) {
+			options.end = options.start;
+			options.inclusiveEnd = true;
+		} else if (options.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			options.end = Buffer.from(end.subarray(end.start, end.end));
+		}
 
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
 			new DBIterator(
-				new NativeIterator(context, {
-					...options,
-					inclusiveEnd: options?.inclusiveEnd || !!options?.key,
-					start,
-					end
-				}) as Iterator<DBIteratorValue<any>>,
+				new NativeIterator(context, options) as Iterator<DBIteratorValue<any>>,
 				this,
 				options
 			)
