@@ -27,6 +27,14 @@ DBHandle::~DBHandle() {
  */
 void DBHandle::close() {
 	DEBUG_LOG("%p DBHandle::close() dbDescriptor=%p\n", this, this->descriptor.get())
+
+	// cancel all active async work before closing
+	this->cancelAllAsyncWork();
+
+	// wait for all async work to complete before closing
+	this->waitForAsyncWorkCompletion();
+
+	// decrement the reference count on the column and descriptor
 	if (this->column) {
 		this->column.reset();
 	}
@@ -42,7 +50,7 @@ void DBHandle::close() {
 /**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties
  * to this DBHandle.
- * 
+ *
  * @param path - The filesystem path to the database.
  * @param options - The options for the database.
  */

@@ -26,7 +26,7 @@ struct DBIteratorOptions;
  * This handle contains `get()`, `put()`, and `remove()` methods which are
  * shared between the `Database` and `Transaction` classes.
  */
-struct TransactionHandle final : Closable {
+struct TransactionHandle final : Closable, AsyncWorkHandle {
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 

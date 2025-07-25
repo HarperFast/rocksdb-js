@@ -4,6 +4,7 @@
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "rocksdb/status.h"
+#include "db_handle.h"
 #include "macros.h"
 #include "util.h"
 
@@ -35,37 +36,39 @@ struct Database final {
 };
 
 /**
- * State for the `Get` async work.
+ * State for the `Clear` async work.
+ */
+struct AsyncClearState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
+	AsyncClearState(
+		napi_env env,
+		std::shared_ptr<DBHandle> handle,
+		uint32_t batchSize
+	) :
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
+		batchSize(batchSize) {}
+
+	uint64_t deleted;
+	uint32_t batchSize;
+};
+
+/**
+ * State for the `Get` async work. This is used for both `DBHandle` and
+ * `TransactionHandle`.
  */
 template<typename T>
-struct GetState final {
-	GetState(
+struct AsyncGetState final : BaseAsyncState<T> {
+	AsyncGetState(
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
 		rocksdb::Slice& keySlice
 	) :
-		env(env),
-		asyncWork(nullptr),
-		resolveRef(nullptr),
-		rejectRef(nullptr),
-		handle(handle),
+		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
 		keySlice(keySlice) {}
 
-	~GetState() {
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
-	}
-
-	napi_env env;
-	napi_async_work asyncWork;
-	napi_ref resolveRef;
-	napi_ref rejectRef;
-	T handle;
 	rocksdb::ReadOptions readOptions;
 	rocksdb::Slice keySlice;
-	rocksdb::Status status;
 	std::string value;
 };
 
