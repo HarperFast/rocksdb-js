@@ -47,6 +47,16 @@ Creates a new database instance.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting until commit. Defaults to `false`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for more information.
 
+### `db.close()`
+
+Closes a database. This function can be called multiple times and will only
+close an opened database. A database instance can be reopened once its closed.
+
+```typescript
+const db = RocksDatabase.open('foo');
+db.close();
+```
+
 ### `db.config(options)`
 
 Sets global database settings.
@@ -78,11 +88,9 @@ There's also a static `open()` method for convenience that performs the same thi
 const db = RocksDatabase.open('path/to/db');
 ```
 
-### `db.close()`
+## Data Operations
 
-Closes a database. A database instance can be reopened once its closed.
-
-### `db.get(key, options?): MaybePromise<any>`
+### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
 Retreives the value for a given key. If the key does not exist, it will resolve
 `undefined`.
@@ -103,17 +111,9 @@ assert.equal(result, 'foo');
 
 Note that all errors are returned as rejected promises.
 
-### `db.getSync(key, options?): any`
+### `db.getSync(key: Key, options?: GetOptions): any`
 
 Synchronous version of `get()`.
-
-### `db.getEntry(key): MaybePromise`
-
-Retrieves a value for the given key as an "entry" object.
-
-```typescript
-const { value } = await db.getEntry('foo');
-```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
 
@@ -183,7 +183,7 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
-### `db.put(key, value, options?): Promise`
+### `db.put(key: Key, value: any, options?: PutOptions): Promise`
 
 Stores a value for a given key.
 
@@ -191,11 +191,11 @@ Stores a value for a given key.
 await db.put('foo', 'bar');
 ```
 
-### `db.putSync(key, value, options?): void`
+### `db.putSync(key: Key, value: any, options?: PutOptions): void`
 
 Synchronous version of `put()`.
 
-### `db.remove(key): Promise`
+### `db.remove(key: Key): Promise`
 
 Removes the value for a given key.
 
@@ -203,9 +203,11 @@ Removes the value for a given key.
 await db.remove('foo');
 ```
 
-### `db.removeSync(key): void`
+### `db.removeSync(key: Key): void`
 
 Synchronous version of `remove()`.
+
+## Transactions
 
 ### `db.transaction(async (txn: Transaction) => Promise<any>): Promise<any>`
 
@@ -255,11 +257,103 @@ db.transactionSync((txn: Transaction) => {
 });
 ```
 
+## Exclusive Locking
+
+`rocksdb-js` includes a handful of functions for executing thread-safe mutally
+exclusive functions.
+
+### `db.hasLock(key: Key): boolean`
+
+Returns `true` if the database has a lock for the given key, otherwise `false`.
+
+```typescript
+db.hasLock('foo'); // false
+db.tryLock('foo'); // true
+db.hasLock('foo'); // true
+```
+
+### `db.lock(key: Key, callback: () => void | Promise<void>): Promise<void>`
+
+Excecutes a function using a thread-safe lock to ensure mutual exclusion.
+
+```typescript
+await db.lock('key', async () => {
+  // do something exclusive
+  console.log(db.hasLock('key')); // true
+});
+```
+
+If there are more than one simultaneous lock requests, it will block them until
+the lock is available.
+
+```typescript
+await Promise.all([
+  db.lock('key', () => {
+    console.log('first lock blocking for 100ms');
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }),
+  db.lock('key', () => {
+    console.log('second lock blocking for 100ms');
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }),
+  db.lock('key', () => {
+    console.log('third lock acquired');
+  })
+]);
+```
+
+### `db.tryLock(key: Key, onUnlocked?: () => void): boolean`
+
+Attempts to acquire a lock for a given key. If the lock is available, the
+function returns `true` and the optional `onUnlocked` callback is never called.
+If the lock is not available, the function returns `false` and the `onUnlocked`
+callback is queued until the lock is released.
+
+```typescript
+db.tryLock('foo', () => {
+  console.log('never fired');
+}); // true, callback ignored
+
+db.tryLock('foo', () => {
+  console.log('hello world');
+}); // false, already locked, callback queued
+
+db.unlock('foo'); // fires second lock callback
+```
+
+The `onUnlocked` callback function can be used to signal to retry acquiring the
+lock:
+
+```typescript
+function doSomethingExclusively() {
+  // if lock is unavailable, queue up callback to recursively retry
+  if (db.tryLock('foo', () => doSomethingExclusively())) {
+
+    // lock acquired, do something exclusive
+
+    db.unlock('foo');
+  }
+}
+```
+
+### `db.unlock(key): boolean`
+
+Releases the lock on the given key and calls any queued `onUnlocked` callback
+handlers. Returns `true` if the lock was released or `false` if the lock did
+not exist.
+
+```typescript
+db.tryLock('foo');
+db.unlock('foo'); // true
+db.unlock('foo'); // false, already unlocked
+```
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`
 instance and the native RocksDB interface. It owns the native RocksDB instance
-along with various settings including encoding and the db name. It handles all interactions with the native RocksDB instance.
+along with various settings including encoding and the db name. It handles all
+interactions with the native RocksDB instance.
 
 The default `Store` contains the following methods which can be overridden:
 
@@ -273,10 +367,14 @@ The default `Store` contains the following methods which can be overridden:
 - `getCount(context, options?, txnId?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
+- `hasLock(key)`
 - `isOpen()`
+- `lock(key, callback?)`
 - `open()`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
+- `tryLock(key, onUnloacked?)`
+- `unlock(key)`
 
 To use it, extend the default `Store` and pass in an instance of your store
 into the `RocksDatabase` constructor.

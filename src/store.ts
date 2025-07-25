@@ -19,6 +19,7 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
+import { withResolvers } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -368,6 +369,10 @@ export class Store {
 		return txnId;
 	}
 
+	hasLock(key: Key): boolean {
+		return this.db.hasLock(this.encodeKey(key));
+	}
+
 	/**
 	 * Checks if the database is open.
 	 *
@@ -375,6 +380,30 @@ export class Store {
 	 */
 	isOpen() {
 		return this.db.opened;
+	}
+
+	async lock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+		if (typeof callback !== 'function') {
+			throw new TypeError('Callback must be a function');
+		}
+
+		const { resolve, reject, promise } = withResolvers<void>();
+
+		this.db.lock(
+			this.encodeKey(key),
+			async () => {
+				try {
+					await callback();
+					resolve();
+				} catch (error) {
+					reject(error);
+				} finally {
+					this.unlock(key);
+				}
+			}
+		);
+
+		return promise;
 	}
 
 	/**
@@ -423,6 +452,18 @@ export class Store {
 			this.getTxnId(options)
 		);
 	}
+
+	tryLock(key: Key, onUnlocked?: () => void): boolean {
+		if (onUnlocked !== undefined && typeof onUnlocked !== 'function') {
+			throw new TypeError('Callback must be a function');
+		}
+
+		return this.db.tryLock(this.encodeKey(key), onUnlocked);
+	}
+
+	unlock(key: Key): void {
+		return this.db.unlock(this.encodeKey(key));
+	}
 }
 
 export interface GetOptions {
@@ -432,9 +473,6 @@ export interface GetOptions {
 	 * @default false
 	 */
 	skipDecode?: boolean;
-
-	// ifNotTxnId?: number;
-	// currentThread?: boolean;
 }
 
 export interface PutOptions {

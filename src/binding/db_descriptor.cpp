@@ -23,7 +23,7 @@ DBDescriptor::DBDescriptor(
 /**
  * Destroy the database descriptor and any resources associated to it
  * (transactions, iterators, etc).
- */	
+ */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor() %ld closables\n", this, this->closables.size())
 

@@ -50,6 +50,8 @@ export type NativeDatabase = {
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
 	getSync(key: Key, txnId?: number): Buffer;
+	hasLock(key: Key): boolean;
+	lock(key: Key, callback: () => void): boolean;
 	opened: boolean;
 	open(
 		path: string,
@@ -57,6 +59,8 @@ export type NativeDatabase = {
 	): void;
 	putSync(key: Key, value: any, txnId?: number): void;
 	removeSync(key: Key, txnId?: number): void;
+	tryLock(key: Key, callback?: () => void): boolean;
+	unlock(key: Key): void;
 };
 
 export type RocksDatabaseConfig = {
