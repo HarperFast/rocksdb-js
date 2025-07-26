@@ -22,6 +22,8 @@ namespace rocksdb_js {
  */
 struct Database final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
+	static napi_value Clear(napi_env env, napi_callback_info info);
+	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);

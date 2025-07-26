@@ -2,8 +2,9 @@ import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
-import * as orderedBinary from 'ordered-binary';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
+import { withResolvers } from './util.js';
+import * as orderedBinary from 'ordered-binary';
 import type { EncoderFunction, Key } from './encoding.js';
 
 export interface RocksDatabaseOptions extends StoreOptions {
@@ -55,8 +56,52 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
-	async clear(): Promise<void> {
-		//
+	/**
+	 * Removes all data from the database asynchronously.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.clear(); // default batch size of 10000
+	 *
+	 * await db.clear(1000); // batch size of 1000
+	 * ```
+	 */
+	clear(batchSize?: number): Promise<number> {
+		if (!this.store.db.opened) {
+			return Promise.reject(new Error('Database not open'));
+		}
+
+		if (this.store.encoder?.structures !== undefined) {
+			this.store.encoder.structures = [];
+		}
+
+		const { resolve, reject, promise } = withResolvers<number>();
+		this.store.db.clear(resolve, reject, batchSize);
+		return promise;
+	}
+
+	/**
+	 * Removes all entries from the database synchronously.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.clearSync(); // default batch size of 10000
+	 *
+	 * db.clearSync(1000); // batch size of 1000
+	 * ```
+	 */
+	clearSync(batchSize?: number): number {
+		if (!this.store.db.opened) {
+			throw new Error('Database not open');
+		}
+
+		if (this.store.encoder?.structures !== undefined) {
+			this.store.encoder.structures = [];
+		}
+
+		return this.store.db.clearSync(batchSize);
 	}
 
 	/**
@@ -94,6 +139,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	dropSync() {
 		//
+	}
+
+	get encoder() {
+		return this.store.encoder;
 	}
 
 	// flushed
@@ -270,10 +319,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		return this;
-	}
-
-	get encoder() {
-		return this.store.encoder;
 	}
 
 	get path() {

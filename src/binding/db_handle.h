@@ -24,6 +24,7 @@ struct DBHandle final : Closable, AsyncWorkHandle {
 	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
 	~DBHandle();
 
+	rocksdb::Status clear(uint32_t batchSize, uint64_t& deleted);
 	void close();
 	napi_value get(
 		napi_env env,

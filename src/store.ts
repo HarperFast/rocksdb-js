@@ -19,6 +19,7 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
+import { withResolvers } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -432,9 +433,6 @@ export interface GetOptions {
 	 * @default false
 	 */
 	skipDecode?: boolean;
-
-	// ifNotTxnId?: number;
-	// currentThread?: boolean;
 }
 
 export interface PutOptions {
