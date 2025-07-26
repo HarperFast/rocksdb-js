@@ -137,7 +137,7 @@ describe('Lock', () => {
 					import { createRequire } from 'node:module';
 					import { register } from 'tsx/esm/api';
 					register();
-					import('./test/fixtures/lock-worker.ts');
+					import('./test/fixtures/lock-worker.mts');
 					`,
 					{
 						eval: true,
