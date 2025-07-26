@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <condition_variable>
 #include <mutex>
 #include <node_api.h>
 #include <optional>
