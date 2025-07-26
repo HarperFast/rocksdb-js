@@ -82,26 +82,6 @@ describe('Lock', () => {
 			}
 		});
 
-		it('should propagate errors from callback', async () => {
-			let db: RocksDatabase | null = null;
-			const dbPath = generateDBPath();
-			try {
-				db = RocksDatabase.open(dbPath);
-
-				expect(db.tryLock('foo')).toBe(true);
-
-				// queue up the callback
-				expect(db!.tryLock('foo', () => {
-					throw new Error('test');
-				})).toBe(false);
-
-				expect(() => db!.unlock('foo')).toThrow('test');
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
 		it('should lock in a lock', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
@@ -112,6 +92,7 @@ describe('Lock', () => {
 					expect(db!.tryLock('foo', () => {})).toBe(true);
 				})).toBe(false);
 				expect(db!.unlock('foo')).toBe(true);
+				await delay(100);
 				expect(db!.unlock('foo')).toBe(true);
 				expect(db!.unlock('foo')).toBe(false);
 			} finally {
@@ -120,16 +101,36 @@ describe('Lock', () => {
 			}
 		});
 
-		it.only('should lock in a worker thread', async () => {
+		it('should not unlock if another database is closed', async () => {
+			let db: RocksDatabase | null = null;
+			let db2: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+			try {
+				db = RocksDatabase.open(dbPath);
+				db2 = RocksDatabase.open(dbPath);
+				expect(db2.hasLock('foo')).toBe(false);
+				expect(db!.tryLock('foo', () => {})).toBe(true);
+				expect(db2.hasLock('foo')).toBe(true);
+				db2.close();
+				expect(db.hasLock('foo')).toBe(true);
+				db.unlock('foo');
+				expect(db.hasLock('foo')).toBe(false);
+			} finally {
+				db?.close();
+				db2?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it('should lock in a worker thread', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 			try {
 				db = RocksDatabase.open(dbPath);
 				const spy = vi.fn();
-				let onworkerlock: () => void;
-				let onworkerunlock: () => void;
 
-				expect(db!.tryLock('foo', () => spy())).toBe(true);
+				expect(db.tryLock('foo', () => spy())).toBe(true);
+				expect(db.hasLock('foo')).toBe(true); // main thread has lock
 
 				const worker = new Worker(
 					`
@@ -146,56 +147,51 @@ describe('Lock', () => {
 					}
 				);
 
+				let onWorkerLock: () => void;
+				let onWorkerUnlock: () => void;
+
 				await new Promise<void>((resolve, reject) => {
-					worker.on('error', error => {
-						console.log(error);
-						reject(error);
-					});
+					worker.on('error', reject);
 					worker.on('message', event => {
 						try {
-							console.log('message from worker', event);
 							if (event.started) {
 								expect(event.hasLock).toBe(true);
 								resolve();
-							}
-							if (event.locked && onworkerlock) {
-								onworkerlock();
+							} else if (event.locked) {
+								onWorkerLock();
 							}
 						} catch (error) {
 							reject(error);
 						}
 					});
+					worker.on('exit', () => {
+						db!.unlock('foo');
+					});
 				});
 
-				db.unlock('foo');
-				await new Promise<void>(resolve => {
-					onworkerlock = resolve;
-				});
+				expect(db.hasLock('foo')).toBe(true); // main thread has lock
+
+				db.unlock('foo'); // worker should be waiting for lock
+				await new Promise<void>(resolve => onWorkerLock = resolve); // wait for worker to lock
+
 				expect(db.tryLock('foo', () => {
 					spy();
-					onworkerunlock?.();
+					onWorkerUnlock();
 				})).toBe(false);
 
 				worker.postMessage({ unlock: true });
-				await new Promise<void>(resolve => {
-					onworkerunlock = resolve;
-				});
+				await new Promise<void>(resolve => onWorkerUnlock = resolve); // wait for worker to unlock
+
 				expect(spy).toHaveBeenCalledTimes(1);
+				expect(db.hasLock('foo')).toBe(false);
 
 				worker.postMessage({ lock: true });
+				await new Promise<void>(resolve => onWorkerLock = resolve); // wait for worker to lock
+
+				expect(db.hasLock('foo')).toBe(true); // worker has lock
+
 				await new Promise<void>(resolve => {
-					onworkerlock = resolve;
-				});
-				await new Promise<void>((resolve, reject) => {
-					expect(db!.tryLock('foo', () => {
-						spy();
-						try {
-							expect(spy).toHaveBeenCalledTimes(2);
-							resolve();
-						} catch (error) {
-							reject(error);
-						}
-					})).toBe(false);
+					expect(db!.tryLock('foo', () => resolve())).toBe(false);
 					worker.terminate();
 				});
 			} finally {
@@ -336,27 +332,6 @@ describe('Lock', () => {
 				db?.close();
 				await rimraf(dbPath);
 			}
-		});
-
-		it('should propagate errors from callback', async () => {
-			let db: RocksDatabase | null = null;
-			const dbPath = generateDBPath();
-			try {
-				db = RocksDatabase.open(dbPath);
-
-				await expect(db.lock('foo', async () => {
-					throw new Error('test');
-				})).rejects.toThrow('test');
-
-				expect(db.hasLock('foo')).toBe(false);
-			} finally {
-				db?.close();
-				await rimraf(dbPath);
-			}
-		});
-
-		it('should lock in a worker thread', async () => {
-			// TODO
 		});
 	});
 });

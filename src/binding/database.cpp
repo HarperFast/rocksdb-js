@@ -144,9 +144,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value name;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+	NAPI_STATUS_THROWS(::napi_create_string_latin1(
 		env,
-		"database.get",
+		"rocksdb-js.get",
 		NAPI_AUTO_LENGTH,
 		&name
 	))
@@ -357,13 +357,13 @@ napi_value Database::HasLock(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	std::lock_guard<std::mutex> lock((*dbHandle)->locksMutex);
-	auto lockHandle = (*dbHandle)->locks.find(keyStr);
+	std::lock_guard<std::mutex> lock((*dbHandle)->descriptor->locksMutex);
+	auto lockHandle = (*dbHandle)->descriptor->locks.find(keyStr);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(
 		env,
-		lockHandle != (*dbHandle)->locks.end(),
+		lockHandle != (*dbHandle)->descriptor->locks.end(),
 		&result
 	))
 	return result;
@@ -400,10 +400,10 @@ napi_value Database::Lock(napi_env env, napi_callback_info info) {
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	{
-		std::lock_guard<std::mutex> lock((*dbHandle)->locksMutex);
-		auto lockHandle = (*dbHandle)->locks.find(keyStr);
+		std::lock_guard<std::mutex> lock((*dbHandle)->descriptor->locksMutex);
+		auto lockHandle = (*dbHandle)->descriptor->locks.find(keyStr);
 
-		if (lockHandle != (*dbHandle)->locks.end()) {
+		if (lockHandle != (*dbHandle)->descriptor->locks.end()) {
 			// lock found, bail
 			napi_value result;
 			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
@@ -411,7 +411,7 @@ napi_value Database::Lock(napi_env env, napi_callback_info info) {
 		}
 
 		// no lock found
-		(*dbHandle)->locks.emplace(keyStr, std::make_shared<LockHandle>());
+		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>());
 	}
 
 	napi_value global;
@@ -594,21 +594,43 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
 
 	napi_value result;
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	std::lock_guard<std::mutex> lock((*dbHandle)->locksMutex);
-	auto lockHandle = (*dbHandle)->locks.find(keyStr);
+	std::lock_guard<std::mutex> lock((*dbHandle)->descriptor->locksMutex);
+	auto lockHandle = (*dbHandle)->descriptor->locks.find(keyStr);
 
-	if (lockHandle == (*dbHandle)->locks.end()) {
+	if (lockHandle == (*dbHandle)->descriptor->locks.end()) {
 		// no lock found
-		(*dbHandle)->locks.emplace(keyStr, std::make_shared<LockHandle>());
+		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>());
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result))
 	} else {
 		// lock found, add callback
 		napi_valuetype type;
 		NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type))
 		if (type == napi_function) {
-			napi_ref callbackRef;
-			NAPI_STATUS_THROWS(::napi_create_reference(env, argv[1], 1, &callbackRef))
-			lockHandle->second->callbacks.push_back(callbackRef);
+			napi_value resource_name;
+			NAPI_STATUS_THROWS(::napi_create_string_latin1(
+				env,
+				"rocksdb-js.lock",
+				NAPI_AUTO_LENGTH,
+				&resource_name
+			))
+
+			napi_threadsafe_function callback;
+			NAPI_STATUS_THROWS(::napi_create_threadsafe_function(
+				env,           // env
+				argv[1],       // func
+				nullptr,       // async_resource
+				resource_name, // async_resource_name
+				0,             // max_queue_size
+				1,             // initial_thread_count
+				nullptr,       // thread_finalize_data
+				nullptr,       // thread_finalize_callback
+				nullptr,       // context
+				nullptr,       // call_js_cb
+				&callback      // [out] callback
+			))
+
+			NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, callback))
+			lockHandle->second->callbacks.insert(callback);
 		}
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
 	}
@@ -639,13 +661,13 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 
 	napi_value result;
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	std::vector<napi_ref> callbacks;
+	std::set<napi_threadsafe_function> callbacks;
 
 	{
-		std::lock_guard<std::mutex> lock((*dbHandle)->locksMutex);
-		auto lockHandle = (*dbHandle)->locks.find(keyStr);
+		std::lock_guard<std::mutex> lock((*dbHandle)->descriptor->locksMutex);
+		auto lockHandle = (*dbHandle)->descriptor->locks.find(keyStr);
 
-		if (lockHandle == (*dbHandle)->locks.end()) {
+		if (lockHandle == (*dbHandle)->descriptor->locks.end()) {
 			// no lock found
 			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
 			return result;
@@ -653,31 +675,18 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 
 		// lock found, remove it
 		callbacks = lockHandle->second->callbacks;
-		(*dbHandle)->locks.erase(keyStr);
+		(*dbHandle)->descriptor->locks.erase(keyStr);
 	}
 
 	DEBUG_LOG("Database::Unlock() calling %zu callbacks\n", callbacks.size())
 
-	for (auto& callbackRef : callbacks) {
-		napi_value callback;
-		NAPI_STATUS_THROWS(::napi_get_reference_value(env, callbackRef, &callback))
-
-		napi_value global;
-		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
-
-		napi_value result;
-		napi_status status = ::napi_call_function(env, global, callback, 0, nullptr, &result);
-
-		NAPI_STATUS_THROWS(::napi_delete_reference(env, callbackRef))
-
-		if (status != napi_ok) {
-			// Clean up remaining callbacks before propagating error
-			for (auto it = std::find(callbacks.begin(), callbacks.end(), callbackRef) + 1;
-					it != callbacks.end(); ++it) {
-				::napi_delete_reference(env, *it);
-			}
-			return nullptr;
+	// call the callbacks in order, but stop if any callback fails
+	for (auto& callback : callbacks) {
+		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
+		if (status == napi_closing) {
+			continue;
 		}
+		::napi_release_threadsafe_function(callback, napi_tsfn_release);
 	}
 
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result))

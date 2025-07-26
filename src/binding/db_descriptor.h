@@ -16,6 +16,10 @@ namespace rocksdb_js {
 // forward declare TransactionHandle because of circular dependency
 struct TransactionHandle;
 
+struct LockHandle final {
+	std::set<napi_threadsafe_function> callbacks;
+};
+
 /**
  * Descriptor for a RocksDB database, its column families, and any in-flight
  * transactions. The DBRegistry uses this to track active databases.
@@ -43,6 +47,8 @@ struct DBDescriptor final {
 	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
 	std::mutex mutex;
 	std::set<Closable*> closables;
+	std::mutex locksMutex;
+	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
 };
 
 } // namespace rocksdb_js
