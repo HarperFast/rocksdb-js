@@ -82,6 +82,36 @@ const db = RocksDatabase.open('path/to/db');
 
 Closes a database. A database instance can be reopened once its closed.
 
+### `db.clear(batchSize?: number): Promise<number>`
+
+Asychronously removes all data in the current database. By default, `clear()`
+removes records in batches of 1,000 entries.
+
+Returns the number of entries that were removed.
+
+Note: This does not remove data from other column families within the same
+database path.
+
+```typescript
+for (let i = 0; i < 10; i++) {
+  db.putSync(`key${i}`, `value${i}`);
+}
+const entriesRemoved = await db.clear();
+console.log(entriesRemoved); // 10
+```
+
+### `db.clearSync(batchSize?: number): number`
+
+Synchronous version of `db.clear()`.
+
+```typescript
+for (let i = 0; i < 10; i++) {
+  db.putSync(`key${i}`, `value${i}`);
+}
+const entriesRemoved = db.clearSync();
+console.log(entriesRemoved); // 10
+```
+
 ### `db.get(key, options?): MaybePromise<any>`
 
 Retreives the value for a given key. If the key does not exist, it will resolve
