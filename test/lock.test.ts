@@ -132,13 +132,21 @@ describe('Lock', () => {
 				expect(db.tryLock('foo', () => spy())).toBe(true);
 				expect(db.hasLock('foo')).toBe(true); // main thread has lock
 
+				// Node.js 18 and older doesn't properly eval ESM code
+				const majorVersion = parseInt(process.versions.node.split('.')[0]);
+				const script = majorVersion < 20
+					?	`
+						const tsx = require('tsx/cjs/api');
+						tsx.require('./test/fixtures/lock-worker.mts', __dirname);
+						`
+					:	`
+						import { register } from 'tsx/esm/api';
+						register();
+						import('./test/fixtures/lock-worker.mts');
+						`;
+
 				const worker = new Worker(
-					`
-					import { createRequire } from 'node:module';
-					import { register } from 'tsx/esm/api';
-					register();
-					import('./test/fixtures/lock-worker.mts');
-					`,
+					script,
 					{
 						eval: true,
 						workerData: {
