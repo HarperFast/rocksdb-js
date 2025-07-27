@@ -19,6 +19,7 @@ DBHandle::DBHandle(std::shared_ptr<DBDescriptor> descriptor)
  * Close the DBHandle and destroy it.
  */
 DBHandle::~DBHandle() {
+	DEBUG_LOG("%p DBHandle::~DBHandle()\n", this)
 	this->close();
 }
 
@@ -27,6 +28,9 @@ DBHandle::~DBHandle() {
  */
 void DBHandle::close() {
 	DEBUG_LOG("%p DBHandle::close() dbDescriptor=%p\n", this, this->descriptor.get())
+
+	this->releaseLocks();
+
 	if (this->column) {
 		this->column.reset();
 	}
@@ -42,7 +46,7 @@ void DBHandle::close() {
 /**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties
  * to this DBHandle.
- * 
+ *
  * @param path - The filesystem path to the database.
  * @param options - The options for the database.
  */
@@ -51,6 +55,46 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
 	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed\n", this, handle.get())
+}
+
+/**
+ * Release all locks created by this handle.
+ */
+void DBHandle::releaseLocks() {
+	if (!this->descriptor) {
+		return;
+	}
+
+	std::set<napi_threadsafe_function> callbacks;
+
+	{
+		std::lock_guard<std::mutex> lock(this->descriptor->locksMutex);
+		DEBUG_LOG("%p DBHandle::close() checking %d locks if they are owned by this handle\n", this, this->descriptor->locks.size())
+		for (auto it = this->descriptor->locks.begin(); it != this->descriptor->locks.end();) {
+			auto owner = it->second->owner.lock();
+			if (!owner || owner.get() == this) {
+				DEBUG_LOG("%p DBHandle::close() found lock %p with %d callbacks\n", this, it->second.get(), it->second->callbacks.size())
+				callbacks.insert(it->second->callbacks.begin(), it->second->callbacks.end());
+				it = this->descriptor->locks.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+
+	DEBUG_LOG("%p DBHandle::close() calling %zu unlock callbacks\n", this, callbacks.size())
+	for (const auto& callback : callbacks) {
+		::napi_release_threadsafe_function(callback, napi_tsfn_release);
+	}
+
+	// call the callbacks in order, but stop if any callback fails
+	for (auto& callback : callbacks) {
+		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
+		if (status == napi_closing) {
+			continue;
+		}
+		::napi_release_threadsafe_function(callback, napi_tsfn_release);
+	}
 }
 
 /**

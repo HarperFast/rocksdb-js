@@ -34,6 +34,7 @@ struct DBHandle final : Closable {
 	);
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
+	void releaseLocks();
 
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;

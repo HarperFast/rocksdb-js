@@ -411,7 +411,7 @@ napi_value Database::Lock(napi_env env, napi_callback_info info) {
 		}
 
 		// no lock found
-		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>());
+		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>(*dbHandle));
 	}
 
 	napi_value global;
@@ -599,7 +599,7 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
 
 	if (lockHandle == (*dbHandle)->descriptor->locks.end()) {
 		// no lock found
-		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>());
+		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>(*dbHandle));
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result))
 	} else {
 		// lock found, add callback
@@ -678,7 +678,7 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 		(*dbHandle)->descriptor->locks.erase(keyStr);
 	}
 
-	DEBUG_LOG("Database::Unlock() calling %zu callbacks\n", callbacks.size())
+	DEBUG_LOG("Database::Unlock() calling %zu unlock callbacks\n", callbacks.size())
 
 	// call the callbacks in order, but stop if any callback fails
 	for (auto& callback : callbacks) {

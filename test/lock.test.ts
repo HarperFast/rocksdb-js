@@ -172,9 +172,6 @@ describe('Lock', () => {
 							reject(error);
 						}
 					});
-					worker.on('exit', () => {
-						db!.unlock('foo');
-					});
 				});
 
 				expect(db.hasLock('foo')).toBe(true); // main thread has lock

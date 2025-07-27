@@ -315,6 +315,8 @@ function returns `true` and the optional `onUnlocked` callback is never called.
 If the lock is not available, the function returns `false` and the `onUnlocked`
 callback is queued until the lock is released.
 
+When a database is closed, all locks associated to it will be unlocked.
+
 Regardless which thread the `db.tryLock()` call is made, the `callback` is
 always run on the main thread. Please see the note at the bottom of the
 `db.lock()` documentation.

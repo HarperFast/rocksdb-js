@@ -17,7 +17,10 @@ namespace rocksdb_js {
 struct TransactionHandle;
 
 struct LockHandle final {
+	LockHandle(std::weak_ptr<DBHandle> owner)
+		: owner(owner) {}
 	std::set<napi_threadsafe_function> callbacks;
+	std::weak_ptr<DBHandle> owner;
 };
 
 /**
