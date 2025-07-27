@@ -19,7 +19,6 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
-import { withResolvers } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -387,23 +386,21 @@ export class Store {
 			throw new TypeError('Callback must be a function');
 		}
 
-		const { resolve, reject, promise } = withResolvers<void>();
-
-		this.db.lock(
-			this.encodeKey(key),
-			async () => {
-				try {
-					await callback();
-					resolve();
-				} catch (error) {
-					reject(error);
-				} finally {
-					this.unlock(key);
+		return new Promise<void>((resolve, reject) => {
+			this.db.lock(
+				this.encodeKey(key),
+				async () => {
+					try {
+						await callback();
+						resolve();
+					} catch (error) {
+						reject(error);
+					} finally {
+						this.unlock(key);
+					}
 				}
-			}
-		);
-
-		return promise;
+			);
+		});
 	}
 
 	/**
