@@ -385,7 +385,7 @@ The default `Store` contains the following methods which can be overridden:
 - `open()`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
-- `tryLock(key, onUnloacked?)`
+- `tryLock(key, onUnlocked?)`
 - `unlock(key)`
 
 To use it, extend the default `Store` and pass in an instance of your store
