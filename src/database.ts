@@ -67,7 +67,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * await db.clear(1000); // batch size of 1000
 	 * ```
 	 */
-	clear(batchSize?: number): Promise<number> {
+	clear(options: { batchSize?: number }): Promise<number> {
 		if (!this.store.db.opened) {
 			return Promise.reject(new Error('Database not open'));
 		}
@@ -77,7 +77,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		const { resolve, reject, promise } = withResolvers<number>();
-		this.store.db.clear(resolve, reject, batchSize);
+		this.store.db.clear(resolve, reject, options?.batchSize);
 		return promise;
 	}
 
@@ -92,7 +92,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * db.clearSync(1000); // batch size of 1000
 	 * ```
 	 */
-	clearSync(batchSize?: number): number {
+	clearSync(options: { batchSize?: number }): number {
 		if (!this.store.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -101,7 +101,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			this.store.encoder.structures = [];
 		}
 
-		return this.store.db.clearSync(batchSize);
+		return this.store.db.clearSync(options?.batchSize);
 	}
 
 	/**

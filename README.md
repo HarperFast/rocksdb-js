@@ -82,10 +82,12 @@ const db = RocksDatabase.open('path/to/db');
 
 Closes a database. A database instance can be reopened once its closed.
 
-### `db.clear(batchSize?: number): Promise<number>`
+### `db.clear(options): Promise<number>`
 
-Asychronously removes all data in the current database. By default, `clear()`
-removes records in batches of 1,000 entries.
+Asychronously removes all data in the current database.
+
+- `options: object`
+  - `batchSize?: number` The number of records to remove at once. Defaults to `10000`.
 
 Returns the number of entries that were removed.
 
@@ -100,9 +102,12 @@ const entriesRemoved = await db.clear();
 console.log(entriesRemoved); // 10
 ```
 
-### `db.clearSync(batchSize?: number): number`
+### `db.clearSync(options): number`
 
 Synchronous version of `db.clear()`.
+
+- `options: object`
+  - `batchSize?: number` The number of records to remove at once. Defaults to `10000`.
 
 ```typescript
 for (let i = 0; i < 10; i++) {
