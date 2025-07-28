@@ -67,7 +67,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * await db.clear(1000); // batch size of 1000
 	 * ```
 	 */
-	clear(options: { batchSize?: number }): Promise<number> {
+	clear(options?: { batchSize?: number }): Promise<number> {
 		if (!this.store.db.opened) {
 			return Promise.reject(new Error('Database not open'));
 		}
@@ -92,7 +92,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * db.clearSync(1000); // batch size of 1000
 	 * ```
 	 */
-	clearSync(options: { batchSize?: number }): number {
+	clearSync(options?: { batchSize?: number }): number {
 		if (!this.store.db.opened) {
 			throw new Error('Database not open');
 		}

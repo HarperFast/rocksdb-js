@@ -82,7 +82,7 @@ const db = RocksDatabase.open('path/to/db');
 
 Closes a database. A database instance can be reopened once its closed.
 
-### `db.clear(options): Promise<number>`
+### `db.clear(options?): Promise<number>`
 
 Asychronously removes all data in the current database.
 
@@ -102,7 +102,7 @@ const entriesRemoved = await db.clear();
 console.log(entriesRemoved); // 10
 ```
 
-### `db.clearSync(options): number`
+### `db.clearSync(options?): number`
 
 Synchronous version of `db.clear()`.
 

@@ -54,7 +54,7 @@ describe('Clear', () => {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
 				expect(db.getSync('foo-0')).toBe('bar-0');
-				await expect(db.clear(100)).resolves.toBe(10);
+				await expect(db.clear({ batchSize: 100 })).resolves.toBe(10);
 				expect(db.getSync('foo-0')).toBeUndefined();
 			} finally {
 				db?.close();
@@ -71,7 +71,7 @@ describe('Clear', () => {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
 				expect(db.getSync('foo-0')).toBe('bar-0');
-				await expect(db.clear(100)).resolves.toBe(987);
+				await expect(db.clear({ batchSize: 100 })).resolves.toBe(987);
 				expect(db.getSync('foo-0')).toBeUndefined();
 			} finally {
 				db?.close();
@@ -87,7 +87,7 @@ describe('Clear', () => {
 				for (let i = 0; i < 10; ++i) {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
-				const promise = db.clear(100);
+				const promise = db.clear({ batchSize: 100 });
 				db.close();
 				await expect(promise).rejects.toThrow('Database closed during clear operation');
 			} finally {
@@ -147,7 +147,7 @@ describe('Clear', () => {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
 				expect(db.getSync('foo-0')).toBe('bar-0');
-				expect(db.clearSync(100)).toBe(10);
+				expect(db.clearSync({ batchSize: 100 })).toBe(10);
 				expect(db.getSync('foo-0')).toBeUndefined();
 			} finally {
 				db?.close();
@@ -164,7 +164,7 @@ describe('Clear', () => {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
 				expect(db.getSync('foo-0')).toBe('bar-0');
-				expect(db.clearSync(100)).toBe(987);
+				expect(db.clearSync({ batchSize: 100 })).toBe(987);
 				expect(db.getSync('foo-0')).toBeUndefined();
 			} finally {
 				db?.close();
