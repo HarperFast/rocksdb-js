@@ -144,25 +144,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Excecutes a function using a thread-safe lock to ensure mutual
-	 * exclusion.
-	 *
-	 * @param callback - A callback to call when the lock is acquired.
-	 * @returns A promise that resolves when the lock is acquired.
-	 *
-	 * @example
-	 * ```typescript
-	 * const db = RocksDatabase.open('/path/to/database');
-	 * await db.lock(async (waited) => {
-	 *   console.log('lock acquired', waited);
-	 * });
-	 * ```
-	 */
-	async lock(key: Key, callback: () => void | Promise<void>): Promise<void> {
-		return this.store.lock(key, callback);
-	}
-
-	/**
 	 * Sugar method for opening a database.
 	 *
 	 * @param pathOrStore - The filesystem path to the database or a custom store.
@@ -427,5 +408,24 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	unlock(key: Key): void {
 		return this.store.unlock(key);
+	}
+
+	/**
+	 * Excecutes a function using a thread-safe lock to ensure mutual
+	 * exclusion.
+	 *
+	 * @param callback - A callback to call when the lock is acquired.
+	 * @returns A promise that resolves when the lock is acquired.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.withLock(async (waited) => {
+	 *   console.log('lock acquired', waited);
+	 * });
+	 * ```
+	 */
+	async withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+		return this.store.withLock(key, callback);
 	}
 }

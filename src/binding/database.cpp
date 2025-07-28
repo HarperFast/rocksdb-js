@@ -382,47 +382,6 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Attempts to acquire a lock for the given key and only calls the callback if
- * the lock is acquired.
- */
-napi_value Database::Lock(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
-
-	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type))
-	if (type != napi_function) {
-		::napi_throw_error(env, nullptr, "Callback must be a function");
-		return nullptr;
-	}
-
-	std::string keyStr(key + keyStart, keyEnd - keyStart);
-
-	{
-		std::lock_guard<std::mutex> lock((*dbHandle)->descriptor->locksMutex);
-		auto lockHandle = (*dbHandle)->descriptor->locks.find(keyStr);
-
-		if (lockHandle != (*dbHandle)->descriptor->locks.end()) {
-			// lock found, bail
-			napi_value result;
-			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
-			return result;
-		}
-
-		// no lock found
-		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>(*dbHandle));
-	}
-
-	napi_value global;
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_global(env, &global))
-	NAPI_STATUS_THROWS(::napi_call_function(env, global, argv[1], 0, nullptr, nullptr))
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result))
-	return result;
-}
-
-/**
  * Opens the RocksDB database. This must be called before any data methods are called.
  */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
@@ -694,6 +653,47 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Attempts to acquire a lock for the given key and only calls the callback if
+ * the lock is acquired.
+ */
+napi_value Database::WithLock(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type))
+	if (type != napi_function) {
+		::napi_throw_error(env, nullptr, "Callback must be a function");
+		return nullptr;
+	}
+
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
+
+	{
+		std::lock_guard<std::mutex> lock((*dbHandle)->descriptor->locksMutex);
+		auto lockHandle = (*dbHandle)->descriptor->locks.find(keyStr);
+
+		if (lockHandle != (*dbHandle)->descriptor->locks.end()) {
+			// lock found, bail
+			napi_value result;
+			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
+			return result;
+		}
+
+		// no lock found
+		(*dbHandle)->descriptor->locks.emplace(keyStr, std::make_shared<LockHandle>(*dbHandle));
+	}
+
+	napi_value global;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global))
+	NAPI_STATUS_THROWS(::napi_call_function(env, global, argv[1], 0, nullptr, nullptr))
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result))
+	return result;
+}
+
+/**
  * Initializes the `NativeDatabase` JavaScript class.
  */
 void Database::Init(napi_env env, napi_value exports) {
@@ -704,7 +704,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "lock", nullptr, Lock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -256,13 +256,13 @@ describe('Lock', () => {
 		});
 	});
 
-	describe('lock()', () => {
+	describe('withLock()', () => {
 		it('should error if callback is not a function', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 			try {
 				db = RocksDatabase.open(dbPath);
-				await expect(db!.lock('foo', 'bar' as any)).rejects.toThrow('Callback must be a function');
+				await expect(db!.withLock('foo', 'bar' as any)).rejects.toThrow('Callback must be a function');
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
@@ -274,7 +274,7 @@ describe('Lock', () => {
 			const dbPath = generateDBPath();
 			try {
 				db = new RocksDatabase(dbPath);
-				await expect(() => db!.lock('foo', () => {})).rejects.toThrow('Database not open');
+				await expect(() => db!.withLock('foo', () => {})).rejects.toThrow('Database not open');
 			} finally {
 				await rimraf(dbPath);
 			}
@@ -287,15 +287,15 @@ describe('Lock', () => {
 				db = RocksDatabase.open(dbPath);
 				const spy = vi.fn();
 
-				await db.lock('foo', async () => {
+				await db.withLock('foo', async () => {
 					spy();
 
-					await db!.lock('bar', async () => {
+					await db!.withLock('bar', async () => {
 						// async
 						await delay(100);
 						spy();
 
-						await db!.lock('baz', () => {
+						await db!.withLock('baz', () => {
 							// sync
 							spy();
 						});
@@ -316,7 +316,7 @@ describe('Lock', () => {
 				db = RocksDatabase.open(dbPath);
 				const spy = vi.fn();
 
-				const promise = db.lock('foo', async () => {
+				const promise = db.withLock('foo', async () => {
 					spy();
 					expect(db!.hasLock('foo')).toBe(true);
 					await delay(100);
@@ -327,7 +327,7 @@ describe('Lock', () => {
 
 				await promise;
 
-				await db.lock('foo', async () => {
+				await db.withLock('foo', async () => {
 					spy();
 				});
 

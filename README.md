@@ -272,42 +272,6 @@ db.tryLock('foo'); // true
 db.hasLock('foo'); // true
 ```
 
-### `db.lock(key: Key, callback: () => void | Promise<void>): Promise<void>`
-
-Executes a function mutually exclusive across threads. Regardless which thread
-the `db.lock()` call is made, the `callback` is always run on the main thread.
-
-```typescript
-await db.lock('key', async () => {
-  // do something exclusive
-  console.log(db.hasLock('key')); // true
-});
-```
-
-If there are more than one simultaneous lock requests, it will block them until
-the lock is available.
-
-```typescript
-await Promise.all([
-  db.lock('key', () => {
-    console.log('first lock blocking for 100ms');
-    return new Promise(resolve => setTimeout(resolve, 100));
-  }),
-  db.lock('key', () => {
-    console.log('second lock blocking for 100ms');
-    return new Promise(resolve => setTimeout(resolve, 100));
-  }),
-  db.lock('key', () => {
-    console.log('third lock acquired');
-  })
-]);
-```
-
-Note: If the `callback` throws an error, Node.js suppress the error. Node.js
-18.3.0 introduced a `--force-node-api-uncaught-exceptions-policy` flag which
-will cause errors to emit the `'uncaughtException'` event. Future versions of
-enable this flag by default.
-
 ### `db.tryLock(key: Key, onUnlocked?: () => void): boolean`
 
 Attempts to acquire a lock for a given key. If the lock is available, the
@@ -319,7 +283,7 @@ When a database is closed, all locks associated to it will be unlocked.
 
 Regardless which thread the `db.tryLock()` call is made, the `callback` is
 always run on the main thread. Please see the note at the bottom of the
-`db.lock()` documentation.
+`db.withLock()` documentation.
 
 ```typescript
 db.tryLock('foo', () => {
@@ -359,6 +323,42 @@ db.tryLock('foo');
 db.unlock('foo'); // true
 db.unlock('foo'); // false, already unlocked
 ```
+
+### `db.withLock(key: Key, callback: () => void | Promise<void>): Promise<void>`
+
+Executes a function mutually exclusive across threads. Regardless which thread
+the `db.withLock()` call is made, the `callback` is always run on the main thread.
+
+```typescript
+await db.withLock('key', async () => {
+  // do something exclusive
+  console.log(db.hasLock('key')); // true
+});
+```
+
+If there are more than one simultaneous lock requests, it will block them until
+the lock is available.
+
+```typescript
+await Promise.all([
+  db.withLock('key', () => {
+    console.log('first lock blocking for 100ms');
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }),
+  db.withLock('key', () => {
+    console.log('second lock blocking for 100ms');
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }),
+  db.withLock('key', () => {
+    console.log('third lock acquired');
+  })
+]);
+```
+
+Note: If the `callback` throws an error, Node.js suppress the error. Node.js
+18.3.0 introduced a `--force-node-api-uncaught-exceptions-policy` flag which
+will cause errors to emit the `'uncaughtException'` event. Future versions of
+enable this flag by default.
 
 ## Custom Store
 

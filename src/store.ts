@@ -381,13 +381,13 @@ export class Store {
 		return this.db.opened;
 	}
 
-	async lock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+	async withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
 
 		return new Promise<void>((resolve, reject) => {
-			this.db.lock(
+			this.db.withLock(
 				this.encodeKey(key),
 				async () => {
 					try {
