@@ -1,0 +1,89 @@
+name: Update RocksDB
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [ new-rocksdb-prebuild ]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  check-for-new-release:
+    name: Check for new release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for new release
+        id: latest-release
+        run: |
+          CURRENT=$(cat package.json | jq -r '.rocksdb.version')
+          RELEASE=$(curl -s https://api.github.com/repos/harperdb/rocksdb-prebuilds/releases/latest)
+          LATEST=$(echo $RELEASE | jq -r '.tag_name | sub("^v"; "")')
+          RELEASE_URL=$(echo $RELEASE | jq -r '.html_url')
+          if [[ "$LATEST" != "$CURRENT" ]]; then
+            echo "should_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_update=false" >> $GITHUB_OUTPUT
+          fi
+          echo "latest=$LATEST" >> $GITHUB_ENV
+          echo "current=$CURRENT" >> $GITHUB_ENV
+          echo "release_url=$RELEASE_URL" >> $GITHUB_ENV
+
+      - name: Create branch
+        if: steps.latest-release.outputs.should_update == 'true'
+        run: |
+          git fetch origin
+          BRANCH_NAME="update-rocksdb"
+
+          # Check if there's an existing PR for this branch
+          if gh pr list --head $BRANCH_NAME --json number --jq '.[0].number' | grep -q .; then
+            PR_NUMBER=$(gh pr list --head $BRANCH_NAME --json number --jq '.[0].number')
+            echo "Closing existing PR #$PR_NUMBER"
+            gh pr close $PR_NUMBER --delete-branch
+          fi
+
+          # Delete local branch if it exists
+          if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
+            git branch -D $BRANCH_NAME
+          fi
+
+          # Delete remote branch if it exists
+          if git show-ref --verify --quiet refs/remotes/origin/$BRANCH_NAME; then
+            git push origin --delete $BRANCH_NAME || true
+          fi
+
+          # Create fresh branch from main
+          git checkout -b $BRANCH_NAME
+
+      - name: Update package.json
+        if: steps.latest-release.outputs.should_update == 'true'
+        run: |
+          jq ".rocksdb.version = \"${{ steps.latest-release.outputs.latest }}\"" package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Commit changes
+        if: steps.latest-release.outputs.should_update == 'true'
+        run: |
+          git add package.json
+          git commit -m "chore: update rocksdb to ${{ steps.latest-release.outputs.latest }}"
+
+      - name: Pull request
+        if: steps.latest-release.outputs.should_update == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          title: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
+          body: 'Bumps [RocksDB](${{ steps.latest-release.outputs.release_url }}) from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}.'
+          commit-message: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
+          commit-author: 'HarperDB <noreply@harperdb.io>'
+          commit-email: 'noreply@harperdb.io'
+          branch: update-rocksdb
+          labels: 'automated, dependencies'
