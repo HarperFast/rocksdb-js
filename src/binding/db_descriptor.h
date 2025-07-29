@@ -16,11 +16,28 @@ namespace rocksdb_js {
 // forward declare TransactionHandle because of circular dependency
 struct TransactionHandle;
 
+// Forward declaration
+struct DBDescriptor;
+
+struct CallbackCompletionData {
+	std::string key;
+	DBDescriptor* descriptor;
+	std::shared_ptr<std::atomic<bool>> valid;
+	
+	CallbackCompletionData(const std::string& k, DBDescriptor* d, std::shared_ptr<std::atomic<bool>> v) 
+		: key(k), descriptor(d), valid(v) {}
+};
+
 struct LockHandle final {
 	LockHandle(std::weak_ptr<DBHandle> owner)
-		: owner(owner) {}
+		: owner(owner), isRunning(false) {}
+
 	std::queue<napi_threadsafe_function> callbacks;
+	std::queue<napi_ref> js_callbacks;  // Original JS callback references
 	std::weak_ptr<DBHandle> owner;
+	std::atomic<bool> isRunning;  // Atomic flag to track execution state
+
+	// Remove fireNext method - it will be moved to DBDescriptor
 };
 
 /**
@@ -39,6 +56,12 @@ struct DBDescriptor final {
 	void attach(Closable* closable);
 	void detach(Closable* closable);
 
+	void lockCall(
+		napi_env env,
+		std::string key,
+		napi_value callback,
+		std::shared_ptr<DBHandle> owner
+	);
 	void lockEnqueueCallback(
 		napi_env env,
 		std::string key,
@@ -49,6 +72,9 @@ struct DBDescriptor final {
 	);
 	bool lockExists(std::string key);
 	bool lockRelease(std::string key);
+	void fireNextCallback(const std::string& key);
+	void fireNextCallbackImmediate(napi_env env, const std::string& key);
+	void onCallbackComplete(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
@@ -63,6 +89,7 @@ struct DBDescriptor final {
 	std::set<Closable*> closables;
 	std::mutex locksMutex;
 	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
+	std::shared_ptr<std::atomic<bool>> valid;
 };
 
 } // namespace rocksdb_js

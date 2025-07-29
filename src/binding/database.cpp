@@ -609,10 +609,7 @@ napi_value Database::WithLock(napi_env env, napi_callback_info info) {
 	}
 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	bool isNewLock = false;
-	(*dbHandle)->descriptor->lockEnqueueCallback(env, keyStr, argv[1], *dbHandle, &isNewLock, false);
-
-	// TODO: fire callbacks?
+	(*dbHandle)->descriptor->lockCall(env, keyStr, argv[1], *dbHandle);
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -628,13 +625,13 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	auto className = "Database";
