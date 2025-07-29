@@ -74,7 +74,11 @@ void DBHandle::releaseLocks() {
 			auto owner = it->second->owner.lock();
 			if (!owner || owner.get() == this) {
 				DEBUG_LOG("%p DBHandle::close() found lock %p with %d callbacks\n", this, it->second.get(), it->second->callbacks.size())
-				callbacks.insert(it->second->callbacks.begin(), it->second->callbacks.end());
+				// move all callbacks from the queue
+				while (!it->second->callbacks.empty()) {
+					callbacks.insert(it->second->callbacks.front());
+					it->second->callbacks.pop();
+				}
 				it = this->descriptor->locks.erase(it);
 			} else {
 				++it;
@@ -83,9 +87,6 @@ void DBHandle::releaseLocks() {
 	}
 
 	DEBUG_LOG("%p DBHandle::close() calling %zu unlock callbacks\n", this, callbacks.size())
-	for (const auto& callback : callbacks) {
-		::napi_release_threadsafe_function(callback, napi_tsfn_release);
-	}
 
 	// call the callbacks in order, but stop if any callback fails
 	for (auto& callback : callbacks) {

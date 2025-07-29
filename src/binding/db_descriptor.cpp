@@ -63,6 +63,111 @@ void DBDescriptor::detach(Closable* closable) {
 }
 
 /**
+ * Enqueues a callback to be called when a lock is acquired.
+ */
+void DBDescriptor::lockEnqueueCallback(
+	napi_env env,
+	std::string key,
+	napi_value callback,
+	std::shared_ptr<DBHandle> owner,
+	bool* isNewLock,
+	bool skipEnqueueIfExists
+) {
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	auto lockHandle = this->locks.find(key);
+
+	if (lockHandle == this->locks.end()) {
+		// no lock found
+		auto newLockHandle = std::make_shared<LockHandle>(owner);
+		this->locks.emplace(key, newLockHandle);
+		lockHandle = this->locks.find(key);
+		if (isNewLock != nullptr) {
+			*isNewLock = true;
+		}
+		if (skipEnqueueIfExists) {
+			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() skipping enqueue because lock already exists\n", this)
+			return;
+		}
+	}
+
+	// lock found
+	napi_valuetype type;
+	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, callback, &type))
+	if (type == napi_function) {
+		napi_value resource_name;
+		NAPI_STATUS_THROWS_VOID(::napi_create_string_latin1(
+			env,
+			"rocksdb-js.lock",
+			NAPI_AUTO_LENGTH,
+			&resource_name
+		))
+
+		napi_threadsafe_function threadsafeCallback;
+		NAPI_STATUS_THROWS_VOID(::napi_create_threadsafe_function(
+			env,           // env
+			callback,      // func
+			nullptr,       // async_resource
+			resource_name, // async_resource_name
+			0,             // max_queue_size
+			1,             // initial_thread_count
+			nullptr,       // thread_finalize_data
+			nullptr,       // thread_finalize_callback
+			nullptr,       // context
+			nullptr,       // call_js_cb
+			&threadsafeCallback // [out] callback
+		))
+
+		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() enqueuing onUnlocked callback\n", this)
+		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
+		lockHandle->second->callbacks.push(threadsafeCallback);
+	}
+}
+
+bool DBDescriptor::lockExists(std::string key) {
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	auto lockHandle = this->locks.find(key);
+	bool exists = lockHandle != this->locks.end();
+	DEBUG_LOG("%p DBDescriptor::lockExists() %s lock for key %s\n", this, exists ? "found" : "not found", key.c_str())
+	return exists;
+}
+
+bool DBDescriptor::lockRelease(std::string key) {
+	std::queue<napi_threadsafe_function> callbacks;
+
+	{
+		std::lock_guard<std::mutex> lock(this->locksMutex);
+		auto lockHandle = this->locks.find(key);
+
+		if (lockHandle == this->locks.end()) {
+			// no lock found
+			DEBUG_LOG("%p DBDescriptor::lockRelease() no lock found\n", this)
+			return false;
+		}
+
+		// lock found, remove it
+		callbacks = std::move(lockHandle->second->callbacks);
+		DEBUG_LOG("%p DBDescriptor::lockRelease() removing lock\n", this)
+		this->locks.erase(key);
+	}
+
+	DEBUG_LOG("%p DBDescriptor::lockRelease() calling %zu unlock callbacks\n", this, callbacks.size())
+
+	// call the callbacks in order, but stop if any callback fails
+	while (!callbacks.empty()) {
+		auto callback = callbacks.front();
+		callbacks.pop();
+		DEBUG_LOG("%p DBDescriptor::lockRelease() calling callback %p\n", this, callback)
+		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
+		if (status == napi_closing) {
+			continue;
+		}
+		::napi_release_threadsafe_function(callback, napi_tsfn_release);
+	}
+
+	return true;
+}
+
+/**
  * Adds a transaction to the registry.
  */
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {

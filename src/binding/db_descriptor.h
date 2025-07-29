@@ -19,7 +19,7 @@ struct TransactionHandle;
 struct LockHandle final {
 	LockHandle(std::weak_ptr<DBHandle> owner)
 		: owner(owner) {}
-	std::set<napi_threadsafe_function> callbacks;
+	std::queue<napi_threadsafe_function> callbacks;
 	std::weak_ptr<DBHandle> owner;
 };
 
@@ -38,6 +38,17 @@ struct DBDescriptor final {
 
 	void attach(Closable* closable);
 	void detach(Closable* closable);
+
+	void lockEnqueueCallback(
+		napi_env env,
+		std::string key,
+		napi_value callback,
+		std::shared_ptr<DBHandle> owner,
+		bool* isNewLock,
+		bool skipEnqueueIfExists
+	);
+	bool lockExists(std::string key);
+	bool lockRelease(std::string key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);

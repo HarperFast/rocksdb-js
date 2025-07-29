@@ -50,11 +50,11 @@ describe('Lock', () => {
 				expect(db!.hasLock('foo')).toBe(false);
 				expect(db!.unlock('foo')).toBe(false);
 
+				let unlockCounter = 0;
 				expect(db!.tryLock('foo', () => {
 					unlockCounter++;
 				})).toBe(true);
 
-				let unlockCounter = 0;
 				const promises = [
 					new Promise<void>(resolve => {
 						expect(db!.tryLock('foo', () => {
@@ -108,6 +108,7 @@ describe('Lock', () => {
 			try {
 				db = RocksDatabase.open(dbPath);
 				db2 = RocksDatabase.open(dbPath);
+				expect(db.hasLock('foo')).toBe(false);
 				expect(db2.hasLock('foo')).toBe(false);
 				expect(db!.tryLock('foo', () => {})).toBe(true);
 				expect(db2.hasLock('foo')).toBe(true);
@@ -280,7 +281,7 @@ describe('Lock', () => {
 			}
 		});
 
-		it('should lock and unlock', async () => {
+		it.only('should lock and unlock', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 			try {

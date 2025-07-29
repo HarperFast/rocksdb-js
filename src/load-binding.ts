@@ -60,7 +60,7 @@ export type NativeDatabase = {
 	removeSync(key: Key, txnId?: number): void;
 	tryLock(key: Key, callback?: () => void): boolean;
 	unlock(key: Key): void;
-	withLock(key: Key, callback: () => void): boolean;
+	withLock(key: Key, callback: () => void): void;
 };
 
 export type RocksDatabaseConfig = {
