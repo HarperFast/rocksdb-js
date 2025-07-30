@@ -399,7 +399,7 @@ bool DBDescriptor::lockExists(std::string key) {
 }
 
 bool DBDescriptor::lockRelease(std::string key) {
-	std::queue<napi_threadsafe_function> callbacks;
+	std::queue<napi_threadsafe_function> threadsafeCallbacks;
 	std::queue<napi_ref> jsCallbacks;
 
 	{
@@ -413,20 +413,20 @@ bool DBDescriptor::lockRelease(std::string key) {
 		}
 
 		// lock found, remove it
-		callbacks = std::move(lockHandle->second->threadsafeCallbacks);
+		threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
 		jsCallbacks = std::move(lockHandle->second->jsCallbacks);
 		DEBUG_LOG("%p DBDescriptor::lockRelease() removing lock\n", this)
 		this->locks.erase(key);
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockRelease() calling %zu unlock callbacks\n", this, callbacks.size())
+	DEBUG_LOG("%p DBDescriptor::lockRelease() calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
 
 	// call the callbacks in order, but stop if any callback fails
-	while (!callbacks.empty()) {
-		auto callback = callbacks.front();
-		callbacks.pop();
+	while (!threadsafeCallbacks.empty()) {
+		auto callback = threadsafeCallbacks.front();
+		threadsafeCallbacks.pop();
 		if (!jsCallbacks.empty()) {
-			jsCallbacks.pop(); // Remove corresponding JS callback reference
+			jsCallbacks.pop(); // remove corresponding JS callback reference
 		}
 		DEBUG_LOG("%p DBDescriptor::lockRelease() calling callback %p\n", this, callback)
 		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
