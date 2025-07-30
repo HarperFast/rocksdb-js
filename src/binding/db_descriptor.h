@@ -32,16 +32,31 @@ struct LockCallbackCompletionData final {
 };
 
 /**
- * Data for a lock handle.
+ * Tracks a lock's callbacks, owner, and execution state for a specific key.
  */
 struct LockHandle final {
-	LockHandle(std::weak_ptr<DBHandle> owner)
-		: owner(owner), isRunning(false) {}
+	LockHandle(std::weak_ptr<DBHandle> owner, napi_env env)
+		: owner(owner), isRunning(false), env(env) {}
+
+	~LockHandle() {
+		while (!threadsafeCallbacks.empty()) {
+			napi_threadsafe_function threadsafeCallback = threadsafeCallbacks.front();
+			threadsafeCallbacks.pop();
+			::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
+		}
+
+		while (!jsCallbacks.empty()) {
+			napi_ref jsCallbackRef = jsCallbacks.front();
+			jsCallbacks.pop();
+			::napi_delete_reference(env, jsCallbackRef);
+		}
+	}
 
 	std::queue<napi_threadsafe_function> threadsafeCallbacks;
 	std::queue<napi_ref> jsCallbacks;
 	std::weak_ptr<DBHandle> owner;
 	std::atomic<bool> isRunning;
+	napi_env env;
 };
 
 /**
@@ -75,10 +90,9 @@ struct DBDescriptor final {
 		bool skipEnqueueIfExists,
 		bool* isNewLock
 	);
-	bool lockExists(std::string key);
-	bool lockRelease(std::string key);
-	void fireNextCallback(const std::string& key);
-	void fireNextCallbackImmediate(napi_env env, const std::string& key);
+	bool lockExistsByKey(std::string key);
+	bool lockReleaseByKey(std::string key);
+	void lockReleaseByOwner(DBHandle* owner);
 	void onCallbackComplete(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);

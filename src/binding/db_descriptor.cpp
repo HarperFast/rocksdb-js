@@ -314,7 +314,69 @@ void DBDescriptor::lockCall(
 	if (isNewLock) {
 		// if this is a new lock, start executing immediately in this thread context
 		DEBUG_LOG("%p DBDescriptor::lockCall() firing next callback immediately for key \"%s\"\n", this, key.c_str())
-		this->fireNextCallbackImmediate(env, key);
+		std::unique_lock<std::mutex> lock(this->locksMutex);
+		auto lockHandle = this->locks.find(key);
+
+		if (lockHandle == this->locks.end()) {
+			DEBUG_LOG("%p DBDescriptor::lockCall() no lock found for key \"%s\"\n", this, key.c_str());
+			return;
+		}
+
+		auto& handle = lockHandle->second;
+
+		// Try to acquire the "lock" atomically
+		bool expected = false;
+		if (!handle->isRunning.compare_exchange_strong(expected, true)) {
+			// Another callback is already running
+			DEBUG_LOG("%p DBDescriptor::lockCall() another callback is already running for key \"%s\"\n", this, key.c_str())
+			return;
+		}
+
+		// We now "own" the execution for this key
+		if (handle->threadsafeCallbacks.empty()) {
+			handle->isRunning = false;
+			DEBUG_LOG("%p DBDescriptor::lockCall() no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
+			// Remove the empty lock handle from the map
+			this->locks.erase(key);
+			return;
+		}
+
+		napi_threadsafe_function threadsafeCallback = handle->threadsafeCallbacks.front();
+		handle->threadsafeCallbacks.pop();
+
+		// Get the corresponding JS callback reference
+		napi_ref jsCallbackRef = handle->jsCallbacks.front();
+		handle->jsCallbacks.pop();
+
+		// Release the mutex before calling the callback to avoid holding locks during callback execution
+		lock.unlock();
+
+		DEBUG_LOG("%p DBDescriptor::lockCall() calling callback immediately for key \"%s\"\n", this, key.c_str())
+
+		// Create callback data that includes the key for completion
+		auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
+
+		if (jsCallbackRef != nullptr) {
+			// Get the JS callback from the reference
+			napi_value jsCallback;
+			napi_status status = napi_get_reference_value(env, jsCallbackRef, &jsCallback);
+			if (status == napi_ok) {
+				// Call the JavaScript function directly using the current environment
+				callJsWithCompletion(env, jsCallback, nullptr, callbackData);
+			} else {
+				DEBUG_LOG("%p DBDescriptor::lockCall() failed to get JS callback from reference\n", this);
+				delete callbackData;
+				this->onCallbackComplete(key);
+			}
+			::napi_delete_reference(env, jsCallbackRef);
+		} else {
+			DEBUG_LOG("%p DBDescriptor::lockCall() no JS callback reference available\n", this);
+			delete callbackData;
+			this->onCallbackComplete(key);
+		}
+
+		// Release the threadsafe function
+		::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
 	} else {
 		DEBUG_LOG("%p DBDescriptor::lockCall() callback queued for key \"%s\"\n", this, key.c_str())
 	}
@@ -337,7 +399,7 @@ void DBDescriptor::lockEnqueueCallback(
 	if (lockHandle == this->locks.end()) {
 		// no lock found
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() no lock found for key \"%s\"\n", this, key.c_str())
-		auto newLockHandle = std::make_shared<LockHandle>(owner);
+		auto newLockHandle = std::make_shared<LockHandle>(owner, env);
 		this->locks.emplace(key, newLockHandle);
 		lockHandle = this->locks.find(key);
 		if (isNewLock != nullptr) {
@@ -378,7 +440,7 @@ void DBDescriptor::lockEnqueueCallback(
 			&threadsafeCallback   // [out] callback
 		))
 
-		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() enqueuing onUnlocked callback\n", this)
+		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() enqueuing callback %p\n", this, threadsafeCallback)
 		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
 
 		// create a reference to the original callback for immediate execution
@@ -390,7 +452,10 @@ void DBDescriptor::lockEnqueueCallback(
 	}
 }
 
-bool DBDescriptor::lockExists(std::string key) {
+/**
+ * Checks if a lock exists for the given key.
+ */
+bool DBDescriptor::lockExistsByKey(std::string key) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
 	bool exists = lockHandle != this->locks.end();
@@ -398,7 +463,10 @@ bool DBDescriptor::lockExists(std::string key) {
 	return exists;
 }
 
-bool DBDescriptor::lockRelease(std::string key) {
+/**
+ * Releases a lock by key. Called by `db.unlock()`.
+ */
+bool DBDescriptor::lockReleaseByKey(std::string key) {
 	std::queue<napi_threadsafe_function> threadsafeCallbacks;
 	std::queue<napi_ref> jsCallbacks;
 
@@ -408,27 +476,27 @@ bool DBDescriptor::lockRelease(std::string key) {
 
 		if (lockHandle == this->locks.end()) {
 			// no lock found
-			DEBUG_LOG("%p DBDescriptor::lockRelease() no lock found\n", this)
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByKey() no lock found\n", this)
 			return false;
 		}
 
 		// lock found, remove it
 		threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
 		jsCallbacks = std::move(lockHandle->second->jsCallbacks);
-		DEBUG_LOG("%p DBDescriptor::lockRelease() removing lock\n", this)
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey() removing lock\n", this)
 		this->locks.erase(key);
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockRelease() calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey() calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
 
 	// call the callbacks in order, but stop if any callback fails
 	while (!threadsafeCallbacks.empty()) {
 		auto callback = threadsafeCallbacks.front();
 		threadsafeCallbacks.pop();
 		if (!jsCallbacks.empty()) {
-			jsCallbacks.pop(); // remove corresponding JS callback reference
+			jsCallbacks.pop();
 		}
-		DEBUG_LOG("%p DBDescriptor::lockRelease() calling callback %p\n", this, callback)
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey() calling callback %p\n", this, callback)
 		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
 		if (status == napi_closing) {
 			continue;
@@ -437,6 +505,45 @@ bool DBDescriptor::lockRelease(std::string key) {
 	}
 
 	return true;
+}
+
+/**
+ * Releases all locks owned by the given handle. Called by `db.close()`.
+ */
+void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
+	std::set<napi_threadsafe_function> threadsafeCallbacks;
+	std::set<napi_ref> jsCallbacks;
+
+	{
+		std::lock_guard<std::mutex> lock(this->locksMutex);
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner() checking %d locks if they are owned handle %p\n", this, this->locks.size(), owner)
+		for (auto it = this->locks.begin(); it != this->locks.end();) {
+			auto lockOwner = it->second->owner.lock();
+			if (!lockOwner || lockOwner.get() == owner) {
+				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner() found lock %p with %d callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
+				// move all callbacks from the queue
+				while (!it->second->threadsafeCallbacks.empty()) {
+					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front());
+					it->second->threadsafeCallbacks.pop();
+				}
+				it = this->locks.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner() calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
+
+	// call the callbacks in order, but stop if any callback fails
+	for (auto& callback : threadsafeCallbacks) {
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner() calling callback %p\n", this, callback)
+		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
+		if (status == napi_closing) {
+			continue;
+		}
+		::napi_release_threadsafe_function(callback, napi_tsfn_release);
+	}
 }
 
 /**
@@ -465,131 +572,6 @@ void DBDescriptor::transactionRemove(uint32_t id) {
 	this->transactions.erase(id);
 }
 
-void DBDescriptor::fireNextCallback(const std::string& key) {
-	std::unique_lock<std::mutex> lock(this->locksMutex);
-	auto lockHandle = this->locks.find(key);
-
-	if (lockHandle == this->locks.end()) {
-		DEBUG_LOG("%p DBDescriptor::fireNextCallback() no lock found for key \"%s\"\n", this, key.c_str());
-		return;
-	}
-
-	auto& handle = lockHandle->second;
-
-	// Try to acquire the "lock" atomically
-	bool expected = false;
-	if (!handle->isRunning.compare_exchange_strong(expected, true)) {
-		// Another callback is already running
-		DEBUG_LOG("%p DBDescriptor::fireNextCallback() another callback is already running for key \"%s\"\n", this, key.c_str())
-		return;
-	}
-
-	// We now "own" the execution for this key
-	if (handle->threadsafeCallbacks.empty()) {
-		handle->isRunning = false;
-		DEBUG_LOG("%p DBDescriptor::fireNextCallback() no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
-		// Remove the empty lock handle from the map
-		this->locks.erase(key);
-		return;
-	}
-
-	auto callback = handle->threadsafeCallbacks.front();
-	handle->threadsafeCallbacks.pop();
-
-	// Also remove the corresponding JS callback reference
-	if (!handle->jsCallbacks.empty()) {
-		handle->jsCallbacks.pop();
-	}
-
-	// Release the mutex before calling the callback to avoid holding locks during callback execution
-	lock.unlock();
-
-	DEBUG_LOG("%p DBDescriptor::fireNextCallback() calling callback %p for key \"%s\"\n", this, callback, key.c_str())
-
-	// Create callback data that includes the key for completion
-	auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
-
-	// Call the callback with completion data - use blocking to execute immediately
-	napi_status status = ::napi_call_threadsafe_function(callback, callbackData, napi_tsfn_blocking);
-	if (status != napi_closing) {
-		::napi_release_threadsafe_function(callback, napi_tsfn_release);
-	} else {
-		// If the function is closing, clean up and continue with next callback
-		delete callbackData;
-		this->onCallbackComplete(key);
-	}
-}
-
-void DBDescriptor::fireNextCallbackImmediate(napi_env env, const std::string& key) {
-	std::unique_lock<std::mutex> lock(this->locksMutex);
-	auto lockHandle = this->locks.find(key);
-
-	if (lockHandle == this->locks.end()) {
-		DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() no lock found for key \"%s\"\n", this, key.c_str());
-		return;
-	}
-
-	auto& handle = lockHandle->second;
-
-	// Try to acquire the "lock" atomically
-	bool expected = false;
-	if (!handle->isRunning.compare_exchange_strong(expected, true)) {
-		// Another callback is already running
-		DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() another callback is already running for key \"%s\"\n", this, key.c_str())
-		return;
-	}
-
-	// We now "own" the execution for this key
-	if (handle->threadsafeCallbacks.empty()) {
-		handle->isRunning = false;
-		DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
-		// Remove the empty lock handle from the map
-		this->locks.erase(key);
-		return;
-	}
-
-	auto callback = handle->threadsafeCallbacks.front();
-	handle->threadsafeCallbacks.pop();
-
-	// Get the corresponding JS callback reference
-	napi_ref jsCallbackRef = nullptr;
-	if (!handle->jsCallbacks.empty()) {
-		jsCallbackRef = handle->jsCallbacks.front();
-		handle->jsCallbacks.pop();
-	}
-
-	// Release the mutex before calling the callback to avoid holding locks during callback execution
-	lock.unlock();
-
-	DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() calling callback immediately for key \"%s\"\n", this, key.c_str())
-
-	// Create callback data that includes the key for completion
-	auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
-
-	if (jsCallbackRef != nullptr) {
-		// Get the JS callback from the reference
-		napi_value jsCallback;
-		napi_status status = napi_get_reference_value(env, jsCallbackRef, &jsCallback);
-		if (status == napi_ok) {
-			// Call the JavaScript function directly using the current environment
-			callJsWithCompletion(env, jsCallback, nullptr, callbackData);
-		} else {
-			DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() failed to get JS callback from reference\n", this);
-			delete callbackData;
-			this->onCallbackComplete(key);
-		}
-		// Delete the reference
-		napi_delete_reference(env, jsCallbackRef);
-	} else {
-		DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() no JS callback reference available\n", this);
-		delete callbackData;
-		this->onCallbackComplete(key);
-	}
-
-	// Release the threadsafe function
-	::napi_release_threadsafe_function(callback, napi_tsfn_release);
-}
-
 void DBDescriptor::onCallbackComplete(const std::string& key) {
 	// Try to mark the current callback as complete and fire the next one
 	// Use a try-catch to handle the case where mutexes might be invalid
@@ -611,7 +593,58 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 	// Fire the next callback in the queue
 	DEBUG_LOG("%p DBDescriptor::onCallbackComplete() firing next callback for key \"%s\"\n", this, key.c_str());
 	try {
-		this->fireNextCallback(key);
+		std::unique_lock<std::mutex> lock(this->locksMutex);
+		auto lockHandle = this->locks.find(key);
+
+		if (lockHandle == this->locks.end()) {
+			DEBUG_LOG("%p DBDescriptor::onCallbackComplete() no lock found for key \"%s\"\n", this, key.c_str());
+			return;
+		}
+
+		auto& handle = lockHandle->second;
+
+		// Try to acquire the "lock" atomically
+		bool expected = false;
+		if (!handle->isRunning.compare_exchange_strong(expected, true)) {
+			// Another callback is already running
+			DEBUG_LOG("%p DBDescriptor::onCallbackComplete() another callback is already running for key \"%s\"\n", this, key.c_str())
+			return;
+		}
+
+		// We now "own" the execution for this key
+		if (handle->threadsafeCallbacks.empty()) {
+			handle->isRunning = false;
+			DEBUG_LOG("%p DBDescriptor::onCallbackComplete() no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
+			// Remove the empty lock handle from the map
+			this->locks.erase(key);
+			return;
+		}
+
+		auto callback = handle->threadsafeCallbacks.front();
+		handle->threadsafeCallbacks.pop();
+
+		// Also remove the corresponding JS callback reference
+		if (!handle->jsCallbacks.empty()) {
+			handle->jsCallbacks.pop();
+		}
+
+		// Release the mutex before calling the callback to avoid holding locks during callback execution
+		lock.unlock();
+
+		DEBUG_LOG("%p DBDescriptor::onCallbackComplete() calling callback %p for key \"%s\"\n", this, callback, key.c_str())
+
+		// Create callback data that includes the key for completion
+		auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
+
+		// Call the callback with completion data - use blocking to execute immediately
+		napi_status status = ::napi_call_threadsafe_function(callback, callbackData, napi_tsfn_blocking);
+		if (status != napi_closing) {
+			::napi_release_threadsafe_function(callback, napi_tsfn_release);
+		} else {
+			// If the function is closing, clean up and continue with next callback
+			delete callbackData;
+			this->onCallbackComplete(key);
+		}
 	} catch (const std::system_error& e) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete() failed to fire next callback for key \"%s\": %s\n", this, key.c_str(), e.what());
 	}

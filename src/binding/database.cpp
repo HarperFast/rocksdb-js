@@ -357,7 +357,7 @@ napi_value Database::HasLock(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	bool hasLock = (*dbHandle)->descriptor->lockExists(keyStr);
+	bool hasLock = (*dbHandle)->descriptor->lockExistsByKey(keyStr);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(
@@ -582,6 +582,7 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
  *   console.log('lock was released');
  * });
  * db.unlock('foo'); // calls the callback, returns `true`
+ * db.unlock('foo'); // returns `false` because the lock was already released
  * ```
  */
 napi_value Database::Unlock(napi_env env, napi_callback_info info) {
@@ -591,7 +592,7 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 
 	napi_value result;
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	bool unlocked = (*dbHandle)->descriptor->lockRelease(keyStr);
+	bool unlocked = (*dbHandle)->descriptor->lockReleaseByKey(keyStr);
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, unlocked, &result))
 	return result;
 }

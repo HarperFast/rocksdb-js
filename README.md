@@ -381,12 +381,12 @@ The default `Store` contains the following methods which can be overridden:
 - `getSync(context, key, options?)`
 - `hasLock(key)`
 - `isOpen()`
-- `lock(key, callback?)`
 - `open()`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
 - `tryLock(key, onUnlocked?)`
 - `unlock(key)`
+- `withLock(key, callback?)`
 
 To use it, extend the default `Store` and pass in an instance of your store
 into the `RocksDatabase` constructor.

@@ -3,7 +3,7 @@ import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Worker } from 'node:worker_threads';
+import { Worker, threadId } from 'node:worker_threads';
 
 describe('Lock', () => {
 	describe('tryLock()', () => {
@@ -138,12 +138,12 @@ describe('Lock', () => {
 				const script = majorVersion < 20
 					?	`
 						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/lock-worker.mts', __dirname);
+						tsx.require('./test/fixtures/try-lock-worker.mts', __dirname);
 						`
 					:	`
 						import { register } from 'tsx/esm/api';
 						register();
-						import('./test/fixtures/lock-worker.mts');
+						import('./test/fixtures/try-lock-worker.mts');
 						`;
 
 				const worker = new Worker(
@@ -339,5 +339,108 @@ describe('Lock', () => {
 				await rimraf(dbPath);
 			}
 		});
+
+		it.only('should lock in a worker thread', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+			try {
+				db = RocksDatabase.open(dbPath);
+				const spy = vi.fn();
+
+				// Node.js 18 and older doesn't properly eval ESM code
+				const majorVersion = parseInt(process.versions.node.split('.')[0]);
+				const script = majorVersion < 20
+					?	`
+						const tsx = require('tsx/cjs/api');
+						tsx.require('./test/fixtures/with-lock-worker.mts', __dirname);
+						`
+					:	`
+						import { register } from 'tsx/esm/api';
+						register();
+						import('./test/fixtures/with-lock-worker.mts');
+						`;
+
+				const worker = new Worker(
+					script,
+					{
+						eval: true,
+						workerData: {
+							path: dbPath,
+						}
+					}
+				);
+
+				let onWorkerUnlock: () => void;
+				let workerLocked = false;
+
+				await new Promise<void>((resolve, reject) => {
+					worker.on('error', reject);
+					worker.on('message', event => {
+						console.log(`main thread ${threadId} message`, event);
+						try {
+							if (event.started) {
+								expect(event.hasLock).toBe(true);
+								resolve();
+							} else if (event.locked) {
+								workerLocked = true;
+							} else if (event.unlocked) {
+								workerLocked = false;
+								onWorkerUnlock();
+							}
+						} catch (error) {
+							reject(error);
+						}
+					});
+				});
+
+				expect(workerLocked).toBe(true);
+				expect(db.hasLock('foo')).toBe(true); // worker thread has lock
+
+				await new Promise<void>(resolve => onWorkerUnlock = resolve); // wait for worker to unlock
+
+				const promise = Promise.all([
+					db.withLock('foo', async () => {
+						console.log(`main thread ${threadId} lock 1`);
+						spy();
+						expect(db!.hasLock('foo')).toBe(true);
+						expect(workerLocked).toBe(false);
+						console.log(`main thread ${threadId} unlock 1`);
+					}),
+					db.withLock('foo', async () => {
+						console.log(`main thread ${threadId} lock 2`);
+						spy();
+						expect(db!.hasLock('foo')).toBe(true);
+						worker.postMessage({ lock: true });
+						await delay(1000);
+						expect(workerLocked).toBe(false);
+						console.log(`main thread ${threadId} unlock 2`);
+					}),
+					(async () => {
+						console.log(`main thread ${threadId} locking in 100ms`);
+						await delay(100),
+						console.log(`main thread ${threadId} locking`);
+						await db!.withLock('foo', async () => {
+							console.log(`main thread ${threadId} lock 3`);
+							spy();
+							expect(db!.hasLock('foo')).toBe(true);
+							await delay(100);
+							expect(workerLocked).toBe(false);
+							console.log(`main thread ${threadId} unlock 3`);
+						})
+					})()
+				]);
+
+				await promise;
+				expect(workerLocked).toBe(false);
+				expect(spy).toHaveBeenCalledTimes(3);
+
+				worker.terminate();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		// thread id test?
 	});
 });

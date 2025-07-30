@@ -368,6 +368,11 @@ export class Store {
 		return txnId;
 	}
 
+	/**
+	 * Checks if a lock exists.
+	 * @param key The lock key.
+	 * @returns `true` if the lock exists, `false` otherwise
+	 */
 	hasLock(key: Key): boolean {
 		return this.db.hasLock(this.encodeKey(key));
 	}
@@ -379,34 +384,6 @@ export class Store {
 	 */
 	isOpen() {
 		return this.db.opened;
-	}
-
-	async withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
-		if (typeof callback !== 'function') {
-			throw new TypeError('Callback must be a function');
-		}
-
-		return new Promise<void>((resolve, reject) => {
-			this.db.withLock(
-				this.encodeKey(key),
-				() => {
-					try {
-						const result = callback();
-						if (result && typeof result.then === 'function') {
-							return result.then(
-								() => resolve(),
-								(error) => reject(error)
-							);
-						} else {
-							// Synchronous completion
-							resolve();
-						}
-					} catch (error) {
-						reject(error);
-					}
-				}
-			);
-		});
 	}
 
 	/**
@@ -466,6 +443,32 @@ export class Store {
 
 	unlock(key: Key): void {
 		return this.db.unlock(this.encodeKey(key));
+	}
+
+	async withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+		if (typeof callback !== 'function') {
+			throw new TypeError('Callback must be a function');
+		}
+
+		return new Promise<void>((resolve, reject) => {
+			this.db.withLock(
+				this.encodeKey(key),
+				() => {
+					try {
+						const result = callback();
+						if (result && typeof result.then === 'function') {
+							return result.then(
+								() => resolve(),
+								(error) => reject(error)
+							);
+						}
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				}
+			);
+		});
 	}
 }
 
