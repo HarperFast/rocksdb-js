@@ -82,7 +82,7 @@ jobs:
           title: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
           body: 'Bumps [RocksDB](${{ steps.latest-release.outputs.release_url }}) from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}.'
           commit-message: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
-          commit-author: 'HarperDB <noreply@harperdb.io>'
-          commit-email: 'noreply@harperdb.io'
+          committer: 'HarperDB <noreply@harperdb.io>'
           branch: update-rocksdb
+          delete-branch: true
           labels: 'automated, dependencies'
