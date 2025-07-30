@@ -1,15 +1,16 @@
 #include "db_descriptor.h"
 #include <algorithm>
+#include <memory>
 
 namespace rocksdb_js {
 
 // Custom callback wrapper for threadsafe function with completion support
-static void callJsWithCompletion(napi_env env, napi_value js_callback, void* context, void* data) {
-	if (env == nullptr || js_callback == nullptr) {
+static void callJsWithCompletion(napi_env env, napi_value jsCallback, void* context, void* data) {
+	if (env == nullptr || jsCallback == nullptr) {
 		return;
 	}
 
-	CallbackCompletionData* callbackData = static_cast<CallbackCompletionData*>(data);
+	LockCallbackCompletionData* callbackData = static_cast<LockCallbackCompletionData*>(data);
 	if (callbackData == nullptr) {
 		DEBUG_LOG("callJsWithCompletion() callbackData is nullptr - calling callback without completion\n")
 		// This is a tryLock callback - call it without completion callback
@@ -17,12 +18,15 @@ static void callJsWithCompletion(napi_env env, napi_value js_callback, void* con
 		napi_status status = ::napi_get_global(env, &global);
 		if (status == napi_ok) {
 			napi_value result;
-			::napi_call_function(env, global, js_callback, 0, nullptr, &result);
+			::napi_call_function(env, global, jsCallback, 0, nullptr, &result);
 		}
 		return;
 	}
 
 	DEBUG_LOG("callJsWithCompletion() callbackData is %p\n", callbackData)
+
+	// Create shared_ptr from raw pointer for RAII management
+	std::shared_ptr<LockCallbackCompletionData> callbackDataPtr(callbackData);
 
 	// Create a completion callback function
 	napi_value completionCallback;
@@ -37,7 +41,7 @@ static void callJsWithCompletion(napi_env env, napi_value js_callback, void* con
 			// Get the callback data from the function's data
 			void* data;
 			::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
-			CallbackCompletionData* callbackData = static_cast<CallbackCompletionData*>(data);
+			LockCallbackCompletionData* callbackData = static_cast<LockCallbackCompletionData*>(data);
 
 			if (callbackData) {
 				// Check if this callback is still valid
@@ -66,7 +70,7 @@ static void callJsWithCompletion(napi_env env, napi_value js_callback, void* con
 		return;
 	}
 
-	// Call the original callback with the completion function as parameter
+	// Call the original callback without any arguments
 	napi_value global;
 	status = ::napi_get_global(env, &global);
 	if (status != napi_ok) {
@@ -75,18 +79,150 @@ static void callJsWithCompletion(napi_env env, napi_value js_callback, void* con
 		return;
 	}
 
-	napi_value args[] = { completionCallback };
 	napi_value result;
-	DEBUG_LOG("callJsWithCompletion() calling completion callback\n")
-	status = ::napi_call_function(env, global, js_callback, 1, args, &result);
+	DEBUG_LOG("callJsWithCompletion() calling callback without arguments\n")
+	status = ::napi_call_function(env, global, jsCallback, 0, nullptr, &result);
 
 	if (status != napi_ok) {
 		DEBUG_LOG("callJsWithCompletion() napi_call_function() failed with status %d\n", status)
 		// If the call failed, clean up and complete the callback anyway
 		callbackData->descriptor->onCallbackComplete(callbackData->key);
 		delete callbackData;
+		return;
+	}
+
+	// Check if the result is a Promise
+	napi_value promise_constructor;
+	status = ::napi_get_named_property(env, global, "Promise", &promise_constructor);
+	if (status != napi_ok) {
+		DEBUG_LOG("callJsWithCompletion() failed to get Promise constructor\n")
+		// Not a promise environment, complete immediately
+		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+		return;
+	}
+
+	bool is_promise;
+	status = ::napi_instanceof(env, result, promise_constructor, &is_promise);
+	if (status != napi_ok) {
+		DEBUG_LOG("callJsWithCompletion() napi_instanceof failed\n")
+		// Assume not a promise, complete immediately
+		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+		return;
+	}
+
+	if (is_promise) {
+		DEBUG_LOG("callJsWithCompletion() result is a Promise, attaching .then() callback\n")
+
+		// Get the 'then' method from the promise
+		napi_value then_method;
+		status = ::napi_get_named_property(env, result, "then", &then_method);
+		if (status != napi_ok) {
+			DEBUG_LOG("callJsWithCompletion() failed to get .then() method\n")
+			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			return;
+		}
+
+		// Create resolve and reject callbacks that both complete the lock
+		// We need to store the shared_ptr in a way N-API callbacks can access it
+		auto* resolveDataPtr = new std::shared_ptr<LockCallbackCompletionData>(callbackDataPtr);
+
+		napi_value resolve_callback;
+		status = ::napi_create_function(
+			env,
+			"resolve",
+			NAPI_AUTO_LENGTH,
+			[](napi_env env, napi_callback_info info) -> napi_value {
+				napi_value result;
+				::napi_get_undefined(env, &result);
+
+				void* data;
+				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
+				auto* callbackDataPtr = static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
+
+				if (callbackDataPtr && *callbackDataPtr) {
+					auto& callbackData = **callbackDataPtr;
+					if (!callbackData.valid || !callbackData.valid->load()) {
+						DEBUG_LOG("callJsWithCompletion() promise resolve callback was invalidated\n");
+					} else if (callbackData.descriptor) {
+						DEBUG_LOG("callJsWithCompletion() promise resolved, calling onCallbackComplete for key \"%s\"\n", callbackData.key.c_str());
+						callbackData.descriptor->onCallbackComplete(callbackData.key);
+					}
+				}
+
+				// Clean up the shared_ptr wrapper
+				delete callbackDataPtr;
+				return result;
+			},
+			resolveDataPtr,
+			&resolve_callback
+		);
+
+		if (status != napi_ok) {
+			DEBUG_LOG("callJsWithCompletion() failed to create resolve callback\n")
+			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			delete resolveDataPtr;
+			return;
+		}
+
+		// Create reject callback - shared_ptr handles safe sharing between resolve/reject
+		auto* rejectDataPtr = new std::shared_ptr<LockCallbackCompletionData>(callbackDataPtr);
+
+		napi_value reject_callback;
+		status = ::napi_create_function(
+			env,
+			"reject",
+			NAPI_AUTO_LENGTH,
+			[](napi_env env, napi_callback_info info) -> napi_value {
+				napi_value result;
+				::napi_get_undefined(env, &result);
+
+				void* data;
+				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
+				auto* callbackDataPtr = static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
+
+				if (callbackDataPtr && *callbackDataPtr) {
+					auto& callbackData = **callbackDataPtr;
+					if (!callbackData.valid || !callbackData.valid->load()) {
+						DEBUG_LOG("callJsWithCompletion() promise reject callback was invalidated\n");
+					} else if (callbackData.descriptor) {
+						DEBUG_LOG("callJsWithCompletion() promise rejected, calling onCallbackComplete for key \"%s\"\n", callbackData.key.c_str());
+						callbackData.descriptor->onCallbackComplete(callbackData.key);
+					}
+				}
+
+				// Clean up the shared_ptr wrapper
+				delete callbackDataPtr;
+				return result;
+			},
+			rejectDataPtr,
+			&reject_callback
+		);
+
+		if (status != napi_ok) {
+			DEBUG_LOG("callJsWithCompletion() failed to create reject callback\n")
+			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			delete resolveDataPtr;
+			delete rejectDataPtr;
+			return;
+		}
+
+		// Call promise.then(resolve_callback, reject_callback)
+		napi_value then_args[] = { resolve_callback, reject_callback };
+		napi_value then_result;
+		status = ::napi_call_function(env, result, then_method, 2, then_args, &then_result);
+
+		if (status != napi_ok) {
+			DEBUG_LOG("callJsWithCompletion() failed to call .then()\n")
+			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			delete resolveDataPtr;
+			delete rejectDataPtr;
+		} else {
+			DEBUG_LOG("callJsWithCompletion() successfully attached .then() callbacks\n")
+		}
 	} else {
-		DEBUG_LOG("callJsWithCompletion() completion callback called successfully\n")
+		DEBUG_LOG("callJsWithCompletion() result is not a Promise, completing immediately\n")
+		// Not a promise, complete immediately
+		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
 	}
 }
 
@@ -154,6 +290,11 @@ void DBDescriptor::detach(Closable* closable) {
 	this->closables.erase(closable);
 }
 
+/**
+ * Adds the callback to a queue to be executed mutually exclusive and if the
+ * lock is available, executes it immediately followed by any newly queued
+ * callbacks.
+ */
 void DBDescriptor::lockCall(
 	napi_env env,
 	std::string key,
@@ -161,10 +302,17 @@ void DBDescriptor::lockCall(
 	std::shared_ptr<DBHandle> owner
 ) {
 	bool isNewLock = false;
-	this->lockEnqueueCallback(env, key, callback, owner, &isNewLock, false);
+	this->lockEnqueueCallback(
+		env,       // env
+		key,       // key
+		callback,  // callback
+		owner,     // owner
+		false,     // skipEnqueueIfExists
+		&isNewLock // [out] isNewLock
+	);
 
 	if (isNewLock) {
-		// If this is a new lock, start executing immediately in this thread context
+		// if this is a new lock, start executing immediately in this thread context
 		DEBUG_LOG("%p DBDescriptor::lockCall() firing next callback immediately for key \"%s\"\n", this, key.c_str())
 		this->fireNextCallbackImmediate(env, key);
 	} else {
@@ -180,8 +328,8 @@ void DBDescriptor::lockEnqueueCallback(
 	std::string key,
 	napi_value callback,
 	std::shared_ptr<DBHandle> owner,
-	bool* isNewLock,
-	bool skipEnqueueIfExists
+	bool skipEnqueueIfExists,
+	bool* isNewLock
 ) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
@@ -217,28 +365,28 @@ void DBDescriptor::lockEnqueueCallback(
 
 		napi_threadsafe_function threadsafeCallback;
 		NAPI_STATUS_THROWS_VOID(::napi_create_threadsafe_function(
-			env,           // env
-			callback,      // func
-			nullptr,       // async_resource
-			resource_name, // async_resource_name
-			0,             // max_queue_size
-			1,             // initial_thread_count
-			nullptr,       // thread_finalize_data
-			nullptr,       // thread_finalize_callback
-			nullptr,       // context
+			env,                  // env
+			callback,             // func
+			nullptr,              // async_resource
+			resource_name,        // async_resource_name
+			0,                    // max_queue_size
+			1,                    // initial_thread_count
+			nullptr,              // thread_finalize_data
+			nullptr,              // thread_finalize_callback
+			nullptr,              // context
 			callJsWithCompletion, // call_js_cb
-			&threadsafeCallback // [out] callback
+			&threadsafeCallback   // [out] callback
 		))
 
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() enqueuing onUnlocked callback\n", this)
 		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
 
-		// Create a reference to the original callback for immediate execution
-		napi_ref js_callback_ref;
-		NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, callback, 1, &js_callback_ref))
+		// create a reference to the original callback for immediate execution
+		napi_ref jsCallbackRef;
+		NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, callback, 1, &jsCallbackRef))
 
-		lockHandle->second->callbacks.push(threadsafeCallback);
-		lockHandle->second->js_callbacks.push(js_callback_ref);
+		lockHandle->second->threadsafeCallbacks.push(threadsafeCallback);
+		lockHandle->second->jsCallbacks.push(jsCallbackRef);
 	}
 }
 
@@ -246,13 +394,13 @@ bool DBDescriptor::lockExists(std::string key) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
 	bool exists = lockHandle != this->locks.end();
-	DEBUG_LOG("%p DBDescriptor::lockExists() %s lock for key \"%s\"\n", this, exists ? "found" : "not found", key.c_str())
+	DEBUG_LOG("%p DBDescriptor::hasLock() %s lock for key \"%s\"\n", this, exists ? "found" : "not found", key.c_str())
 	return exists;
 }
 
 bool DBDescriptor::lockRelease(std::string key) {
 	std::queue<napi_threadsafe_function> callbacks;
-	std::queue<napi_ref> js_callbacks;
+	std::queue<napi_ref> jsCallbacks;
 
 	{
 		std::lock_guard<std::mutex> lock(this->locksMutex);
@@ -265,8 +413,8 @@ bool DBDescriptor::lockRelease(std::string key) {
 		}
 
 		// lock found, remove it
-		callbacks = std::move(lockHandle->second->callbacks);
-		js_callbacks = std::move(lockHandle->second->js_callbacks);
+		callbacks = std::move(lockHandle->second->threadsafeCallbacks);
+		jsCallbacks = std::move(lockHandle->second->jsCallbacks);
 		DEBUG_LOG("%p DBDescriptor::lockRelease() removing lock\n", this)
 		this->locks.erase(key);
 	}
@@ -277,8 +425,8 @@ bool DBDescriptor::lockRelease(std::string key) {
 	while (!callbacks.empty()) {
 		auto callback = callbacks.front();
 		callbacks.pop();
-		if (!js_callbacks.empty()) {
-			js_callbacks.pop(); // Remove corresponding JS callback reference
+		if (!jsCallbacks.empty()) {
+			jsCallbacks.pop(); // Remove corresponding JS callback reference
 		}
 		DEBUG_LOG("%p DBDescriptor::lockRelease() calling callback %p\n", this, callback)
 		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
@@ -337,7 +485,7 @@ void DBDescriptor::fireNextCallback(const std::string& key) {
 	}
 
 	// We now "own" the execution for this key
-	if (handle->callbacks.empty()) {
+	if (handle->threadsafeCallbacks.empty()) {
 		handle->isRunning = false;
 		DEBUG_LOG("%p DBDescriptor::fireNextCallback() no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
 		// Remove the empty lock handle from the map
@@ -345,12 +493,12 @@ void DBDescriptor::fireNextCallback(const std::string& key) {
 		return;
 	}
 
-	auto callback = handle->callbacks.front();
-	handle->callbacks.pop();
+	auto callback = handle->threadsafeCallbacks.front();
+	handle->threadsafeCallbacks.pop();
 
 	// Also remove the corresponding JS callback reference
-	if (!handle->js_callbacks.empty()) {
-		handle->js_callbacks.pop();
+	if (!handle->jsCallbacks.empty()) {
+		handle->jsCallbacks.pop();
 	}
 
 	// Release the mutex before calling the callback to avoid holding locks during callback execution
@@ -359,7 +507,7 @@ void DBDescriptor::fireNextCallback(const std::string& key) {
 	DEBUG_LOG("%p DBDescriptor::fireNextCallback() calling callback %p for key \"%s\"\n", this, callback, key.c_str())
 
 	// Create callback data that includes the key for completion
-	auto* callbackData = new CallbackCompletionData(key, this, this->valid);
+	auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
 
 	// Call the callback with completion data - use blocking to execute immediately
 	napi_status status = ::napi_call_threadsafe_function(callback, callbackData, napi_tsfn_blocking);
@@ -392,7 +540,7 @@ void DBDescriptor::fireNextCallbackImmediate(napi_env env, const std::string& ke
 	}
 
 	// We now "own" the execution for this key
-	if (handle->callbacks.empty()) {
+	if (handle->threadsafeCallbacks.empty()) {
 		handle->isRunning = false;
 		DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
 		// Remove the empty lock handle from the map
@@ -400,14 +548,14 @@ void DBDescriptor::fireNextCallbackImmediate(napi_env env, const std::string& ke
 		return;
 	}
 
-	auto callback = handle->callbacks.front();
-	handle->callbacks.pop();
+	auto callback = handle->threadsafeCallbacks.front();
+	handle->threadsafeCallbacks.pop();
 
 	// Get the corresponding JS callback reference
-	napi_ref js_callback_ref = nullptr;
-	if (!handle->js_callbacks.empty()) {
-		js_callback_ref = handle->js_callbacks.front();
-		handle->js_callbacks.pop();
+	napi_ref jsCallbackRef = nullptr;
+	if (!handle->jsCallbacks.empty()) {
+		jsCallbackRef = handle->jsCallbacks.front();
+		handle->jsCallbacks.pop();
 	}
 
 	// Release the mutex before calling the callback to avoid holding locks during callback execution
@@ -416,22 +564,22 @@ void DBDescriptor::fireNextCallbackImmediate(napi_env env, const std::string& ke
 	DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() calling callback immediately for key \"%s\"\n", this, key.c_str())
 
 	// Create callback data that includes the key for completion
-	auto* callbackData = new CallbackCompletionData(key, this, this->valid);
+	auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
 
-	if (js_callback_ref != nullptr) {
+	if (jsCallbackRef != nullptr) {
 		// Get the JS callback from the reference
-		napi_value js_callback;
-		napi_status status = napi_get_reference_value(env, js_callback_ref, &js_callback);
+		napi_value jsCallback;
+		napi_status status = napi_get_reference_value(env, jsCallbackRef, &jsCallback);
 		if (status == napi_ok) {
 			// Call the JavaScript function directly using the current environment
-			callJsWithCompletion(env, js_callback, nullptr, callbackData);
+			callJsWithCompletion(env, jsCallback, nullptr, callbackData);
 		} else {
 			DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() failed to get JS callback from reference\n", this);
 			delete callbackData;
 			this->onCallbackComplete(key);
 		}
 		// Delete the reference
-		napi_delete_reference(env, js_callback_ref);
+		napi_delete_reference(env, jsCallbackRef);
 	} else {
 		DEBUG_LOG("%p DBDescriptor::fireNextCallbackImmediate() no JS callback reference available\n", this);
 		delete callbackData;

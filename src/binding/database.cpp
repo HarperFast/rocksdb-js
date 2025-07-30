@@ -553,13 +553,17 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
 	napi_value result;
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 	bool isNewLock = false;
-	(*dbHandle)->descriptor->lockEnqueueCallback(env, keyStr, argv[1], *dbHandle, &isNewLock, true);
 
-	if (isNewLock) {
-		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result))
-	} else {
-		NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result))
-	}
+	(*dbHandle)->descriptor->lockEnqueueCallback(
+		env,       // env
+		keyStr,    // key
+		argv[1],   // callback
+		*dbHandle, // owner
+		true,      // skipEnqueueIfExists
+		&isNewLock // [out] isNewLock
+	);
+
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, isNewLock, &result))
 	return result;
 }
 
@@ -593,8 +597,7 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Attempts to acquire a lock for the given key and only calls the callback if
- * the lock is acquired.
+ * Mutually exclusive execution of a function across threads for a given key.
  */
 napi_value Database::WithLock(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)

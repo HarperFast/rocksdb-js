@@ -73,11 +73,11 @@ void DBHandle::releaseLocks() {
 		for (auto it = this->descriptor->locks.begin(); it != this->descriptor->locks.end();) {
 			auto owner = it->second->owner.lock();
 			if (!owner || owner.get() == this) {
-				DEBUG_LOG("%p DBHandle::close() found lock %p with %d callbacks\n", this, it->second.get(), it->second->callbacks.size())
+				DEBUG_LOG("%p DBHandle::close() found lock %p with %d callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
 				// move all callbacks from the queue
-				while (!it->second->callbacks.empty()) {
-					callbacks.insert(it->second->callbacks.front());
-					it->second->callbacks.pop();
+				while (!it->second->threadsafeCallbacks.empty()) {
+					callbacks.insert(it->second->threadsafeCallbacks.front());
+					it->second->threadsafeCallbacks.pop();
 				}
 				it = this->descriptor->locks.erase(it);
 			} else {

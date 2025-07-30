@@ -318,30 +318,23 @@ describe('Lock', () => {
 				const spy = vi.fn();
 
 				const promise = db.withLock('foo', async () => {
-					process.stderr.write(`callback start, hasLock: ${db!.hasLock('foo')}\n`);
 					spy();
 					expect(db!.hasLock('foo')).toBe(true);
 					await delay(100);
-					process.stderr.write('callback end\n');
 				});
-
-				process.stderr.write(`waiting for callback, hasLock: ${db.hasLock('foo')}\n`);
 
 				expect(db.hasLock('foo')).toBe(true);
 				expect(spy).toHaveBeenCalledTimes(1);
 
-				process.stderr.write('waiting for callback\n');
 				await promise;
 
 				await db.withLock('foo', async () => {
-					process.stderr.write('callback 2 fired\n');
 					spy();
 				});
 
 				expect(db.hasLock('foo')).toBe(false);
 				expect(spy).toHaveBeenCalledTimes(2);
 			} finally {
-				process.stderr.write('finally\n');
 				db?.close();
 				await rimraf(dbPath);
 			}

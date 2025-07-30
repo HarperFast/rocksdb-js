@@ -19,30 +19,35 @@ struct TransactionHandle;
 // Forward declaration
 struct DBDescriptor;
 
-struct CallbackCompletionData {
+/**
+ * Data for a lock callback completion.
+ */
+struct LockCallbackCompletionData final {
 	std::string key;
 	DBDescriptor* descriptor;
 	std::shared_ptr<std::atomic<bool>> valid;
-	
-	CallbackCompletionData(const std::string& k, DBDescriptor* d, std::shared_ptr<std::atomic<bool>> v) 
+
+	LockCallbackCompletionData(const std::string& k, DBDescriptor* d, std::shared_ptr<std::atomic<bool>> v)
 		: key(k), descriptor(d), valid(v) {}
 };
 
+/**
+ * Data for a lock handle.
+ */
 struct LockHandle final {
 	LockHandle(std::weak_ptr<DBHandle> owner)
 		: owner(owner), isRunning(false) {}
 
-	std::queue<napi_threadsafe_function> callbacks;
-	std::queue<napi_ref> js_callbacks;  // Original JS callback references
+	std::queue<napi_threadsafe_function> threadsafeCallbacks;
+	std::queue<napi_ref> jsCallbacks;
 	std::weak_ptr<DBHandle> owner;
-	std::atomic<bool> isRunning;  // Atomic flag to track execution state
-
-	// Remove fireNext method - it will be moved to DBDescriptor
+	std::atomic<bool> isRunning;
 };
 
 /**
  * Descriptor for a RocksDB database, its column families, and any in-flight
- * transactions. The DBRegistry uses this to track active databases.
+ * transactions. The DBRegistry uses this to track active databases and reuse
+ * RocksDB instances.
  */
 struct DBDescriptor final {
 	DBDescriptor(
@@ -67,8 +72,8 @@ struct DBDescriptor final {
 		std::string key,
 		napi_value callback,
 		std::shared_ptr<DBHandle> owner,
-		bool* isNewLock,
-		bool skipEnqueueIfExists
+		bool skipEnqueueIfExists,
+		bool* isNewLock
 	);
 	bool lockExists(std::string key);
 	bool lockRelease(std::string key);

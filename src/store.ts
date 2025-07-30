@@ -389,15 +389,20 @@ export class Store {
 		return new Promise<void>((resolve, reject) => {
 			this.db.withLock(
 				this.encodeKey(key),
-				async (done: () => void) => {
+				() => {
 					try {
-						await callback();
-						resolve();
+						const result = callback();
+						if (result && typeof result.then === 'function') {
+							return result.then(
+								() => resolve(),
+								(error) => reject(error)
+							);
+						} else {
+							// Synchronous completion
+							resolve();
+						}
 					} catch (error) {
 						reject(error);
-					} finally {
-						// Call the completion callback to signal that this callback is done
-						done();
 					}
 				}
 			);
