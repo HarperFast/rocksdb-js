@@ -69,11 +69,10 @@ jobs:
           jq ".rocksdb.version = \"${{ steps.latest-release.outputs.latest }}\"" package.json > package.json.tmp
           mv package.json.tmp package.json
 
-      - name: Commit changes
+      - name: Stage changes
         if: steps.latest-release.outputs.should_update == 'true'
         run: |
           git add package.json
-          git commit -m "chore: update rocksdb to ${{ steps.latest-release.outputs.latest }}"
 
       - name: Pull request
         if: steps.latest-release.outputs.should_update == 'true'
