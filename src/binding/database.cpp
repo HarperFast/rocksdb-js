@@ -80,6 +80,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE()
 
 	if (*dbHandle) {
+		DEBUG_LOG("%p Database::Close() closing database\n", dbHandle->get())
 		(*dbHandle)->close();
 	}
 

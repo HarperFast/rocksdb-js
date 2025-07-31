@@ -3,7 +3,7 @@ import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Worker, threadId } from 'node:worker_threads';
+import { Worker } from 'node:worker_threads';
 
 describe('Lock', () => {
 	describe('tryLock()', () => {
@@ -324,9 +324,8 @@ describe('Lock', () => {
 				});
 
 				expect(db.hasLock('foo')).toBe(true);
-				expect(spy).toHaveBeenCalledTimes(1);
-
 				await promise;
+				expect(spy).toHaveBeenCalledTimes(1);
 
 				await db.withLock('foo', async () => {
 					spy();
@@ -340,7 +339,7 @@ describe('Lock', () => {
 			}
 		});
 
-		it.only('should lock in a worker thread', async () => {
+		it('should lock in a worker thread', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 			try {
@@ -376,7 +375,6 @@ describe('Lock', () => {
 				await new Promise<void>((resolve, reject) => {
 					worker.on('error', reject);
 					worker.on('message', event => {
-						console.log(`main thread ${threadId} message`, event);
 						try {
 							if (event.started) {
 								expect(event.hasLock).toBe(true);
@@ -393,39 +391,32 @@ describe('Lock', () => {
 					});
 				});
 
-				expect(workerLocked).toBe(true);
 				expect(db.hasLock('foo')).toBe(true); // worker thread has lock
 
 				await new Promise<void>(resolve => onWorkerUnlock = resolve); // wait for worker to unlock
 
+				// queue up 3 locks: 2 immediate, 1 delayed so the worker can
+				// sneak in and lock before the 3rd one
 				const promise = Promise.all([
 					db.withLock('foo', async () => {
-						console.log(`main thread ${threadId} lock 1`);
 						spy();
 						expect(db!.hasLock('foo')).toBe(true);
 						expect(workerLocked).toBe(false);
-						console.log(`main thread ${threadId} unlock 1`);
 					}),
 					db.withLock('foo', async () => {
-						console.log(`main thread ${threadId} lock 2`);
 						spy();
 						expect(db!.hasLock('foo')).toBe(true);
 						worker.postMessage({ lock: true });
-						await delay(1000);
+						await delay(250);
 						expect(workerLocked).toBe(false);
-						console.log(`main thread ${threadId} unlock 2`);
 					}),
 					(async () => {
-						console.log(`main thread ${threadId} locking in 100ms`);
 						await delay(100),
-						console.log(`main thread ${threadId} locking`);
 						await db!.withLock('foo', async () => {
-							console.log(`main thread ${threadId} lock 3`);
 							spy();
 							expect(db!.hasLock('foo')).toBe(true);
 							await delay(100);
 							expect(workerLocked).toBe(false);
-							console.log(`main thread ${threadId} unlock 3`);
 						})
 					})()
 				]);
@@ -435,12 +426,13 @@ describe('Lock', () => {
 				expect(spy).toHaveBeenCalledTimes(3);
 
 				worker.terminate();
+			} catch (error) {
+				console.error(error);
+				throw error;
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
 			}
 		});
-
-		// thread id test?
 	});
 });

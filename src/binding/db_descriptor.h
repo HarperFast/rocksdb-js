@@ -13,51 +13,10 @@
 
 namespace rocksdb_js {
 
-// forward declare TransactionHandle because of circular dependency
+// forward declarations
 struct TransactionHandle;
-
-// Forward declaration
 struct DBDescriptor;
-
-/**
- * Data for a lock callback completion.
- */
-struct LockCallbackCompletionData final {
-	std::string key;
-	DBDescriptor* descriptor;
-	std::shared_ptr<std::atomic<bool>> valid;
-
-	LockCallbackCompletionData(const std::string& k, DBDescriptor* d, std::shared_ptr<std::atomic<bool>> v)
-		: key(k), descriptor(d), valid(v) {}
-};
-
-/**
- * Tracks a lock's callbacks, owner, and execution state for a specific key.
- */
-struct LockHandle final {
-	LockHandle(std::weak_ptr<DBHandle> owner, napi_env env)
-		: owner(owner), isRunning(false), env(env) {}
-
-	~LockHandle() {
-		while (!threadsafeCallbacks.empty()) {
-			napi_threadsafe_function threadsafeCallback = threadsafeCallbacks.front();
-			threadsafeCallbacks.pop();
-			::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
-		}
-
-		while (!jsCallbacks.empty()) {
-			napi_ref jsCallbackRef = jsCallbacks.front();
-			jsCallbacks.pop();
-			::napi_delete_reference(env, jsCallbackRef);
-		}
-	}
-
-	std::queue<napi_threadsafe_function> threadsafeCallbacks;
-	std::queue<napi_ref> jsCallbacks;
-	std::weak_ptr<DBHandle> owner;
-	std::atomic<bool> isRunning;
-	napi_env env;
-};
+struct LockHandle;
 
 /**
  * Descriptor for a RocksDB database, its column families, and any in-flight
@@ -109,6 +68,71 @@ struct DBDescriptor final {
 	std::mutex locksMutex;
 	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
 	std::shared_ptr<std::atomic<bool>> valid;
+};
+
+/**
+ * State to pass into `napi_call_threadsafe_function()` for a lock callback.
+ */
+struct LockCallbackCompletionData final {
+	LockCallbackCompletionData(const std::string& k, DBDescriptor* d, std::shared_ptr<std::atomic<bool>> v)
+		: key(k), descriptor(d), valid(v) {}
+
+	/**
+	 * The key of the lock.
+	 */
+	std::string key;
+
+	/**
+	 * The descriptor of the database.
+	 */
+	DBDescriptor* descriptor;
+
+	/**
+	 * A flag indicating whether the DBDescriptor is still valid. The
+	 * DBDescriptor is valid until it is destroyed.
+	 */
+	std::shared_ptr<std::atomic<bool>> valid;
+};
+
+/**
+ * Tracks a queue of callbacks for a lock, the lock owner, and whether a
+ * callback is currently running to prevent multiple callbacks from being
+ * executed at the same time.
+ */
+struct LockHandle final {
+	LockHandle(std::weak_ptr<DBHandle> owner, napi_env env)
+		: owner(owner), isRunning(false), env(env) {}
+
+	~LockHandle() {
+		while (!threadsafeCallbacks.empty()) {
+			napi_threadsafe_function threadsafeCallback = threadsafeCallbacks.front();
+			threadsafeCallbacks.pop();
+			::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
+		}
+	}
+
+	/**
+	 * A queue of threadsafe callbacks to fire in sequence.
+	 */
+	std::queue<napi_threadsafe_function> threadsafeCallbacks;
+
+	/**
+	 * The owner of the lock. Used to release any locks owned by a database
+	 * instance that is being closed.
+	 */
+	std::weak_ptr<DBHandle> owner;
+
+	/**
+	 * Flag indicating whether the current callback is running. It's used when
+	 * a new callback is enqueued to determine if we should call the callback
+	 * immediately (false) or add it to the queue (true).
+	 */
+	std::atomic<bool> isRunning;
+
+	/**
+	 * The environment of the current callback.
+	 */
+	napi_env env;
 };
 
 } // namespace rocksdb_js
