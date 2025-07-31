@@ -42,10 +42,16 @@ Creates a new database instance.
   need to exist, but the parent directories do.
 - `options: object` [optional]
   - `name:string` The column family name. Defaults to `"default"`.
-  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by default and the cache is shared across all database instances.
-  - `parallelismThreads: number` The number of background threads to use for flush and compaction. Defaults to `1`.
-  - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting until commit. Defaults to `false`.
-  - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for more information.
+  - `noBlockCache: boolean` When `true`, disables the block cache. Block
+     caching is enabled by default and the cache is shared across all database
+     instances.
+  - `parallelismThreads: number` The number of background threads to use for
+    flush and compaction. Defaults to `1`.
+  - `pessimistic: boolean` When `true`, throws conflict errors when they occur
+    instead of waiting until commit. Defaults to `false`.
+  - `store: Store` A custom store that handles all interaction between the
+    `RocksDatabase` or `Transaction` instances and the native database
+    interface. See [Custom Store](#custom-store) for more information.
 
 ### `db.close()`
 
@@ -62,7 +68,10 @@ db.close();
 Sets global database settings.
 
 - `options: object`
-  - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks. Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `blockCacheSize: number` The amount of memory in bytes to use to cache
+    uncompressed blocks. Defaults to 32MB. Set to `0` (zero) disables block
+    cache for future opened databases. Existing block cache for any opened
+    databases is resized immediately. Negative values throw an error.
 
 ```typescript
 RocksDatabase.config({
@@ -82,7 +91,8 @@ const db = new RocksDatabase('path/to/db');
 db.open();
 ```
 
-There's also a static `open()` method for convenience that performs the same thing:
+There's also a static `open()` method for convenience that performs the same
+thing:
 
 ```typescript
 const db = RocksDatabase.open('path/to/db');
@@ -248,7 +258,8 @@ Executes a transaction callback and commits synchronously. Once the transaction
 callback returns, the commit is executed synchronously and blocks the current
 thread until finished.
 
-Inside a synchronous transaction, use `getSync()`, `putSync()`, and `removeSync()`.
+Inside a synchronous transaction, use `getSync()`, `putSync()`, and
+`removeSync()`.
 
 ```typescript
 import type { Transaction } from '@harperdb/rocksdb-js';
@@ -280,10 +291,6 @@ If the lock is not available, the function returns `false` and the `onUnlocked`
 callback is queued until the lock is released.
 
 When a database is closed, all locks associated to it will be unlocked.
-
-Regardless which thread the `db.tryLock()` call is made, the `callback` is
-always run on the main thread. Please see the note at the bottom of the
-`db.withLock()` documentation.
 
 ```typescript
 db.tryLock('foo', () => {
@@ -326,8 +333,7 @@ db.unlock('foo'); // false, already unlocked
 
 ### `db.withLock(key: Key, callback: () => void | Promise<void>): Promise<void>`
 
-Executes a function mutually exclusive across threads. Regardless which thread
-the `db.withLock()` call is made, the `callback` is always run on the main thread.
+Runs a function with guaranteed exclusive access across all threads.
 
 ```typescript
 await db.withLock('key', async () => {
@@ -428,31 +434,58 @@ console.log(await db.get('foo'));
 ### `RocksDBOptions`
 
 - `options: object`
-  - `adaptiveReadahead: boolean` When `true`, RocksDB will do some enhancements for prefetching the data. Defaults to `true`. Note that RocksDB defaults this to `false`.
-  - `asyncIO: boolean` When `true`, RocksDB will prefetch some data async and apply it if reads are sequential and its internal automatic prefetching. Defaults to `true`. Note that RocksDB defaults this to `false`.
-  - `autoReadaheadSize: boolean` When `true`, RocksDB will auto-tune the readahead size during scans internally based on the block cache data when block caching is enabled, an end key (e.g. upper bound) is set, and prefix is the same as the start key. Defaults to `true`.
-  - `backgroundPurgeOnIteratorCleanup: boolean` When `true`, after the iterator is closed, a background job is scheduled to flush the job queue and delete obsolete files. Defaults to `true`. Note that RocksDB defaults this to `false`.
-  - `fillCache: boolean` When `true`, the iterator will fill the block cache. Filling the block cache is not desirable for bulk scans and could impact eviction order. Defaults to `false`. Note that RocksDB defaults this to `true`.
-  - `readaheadSize: number` The RocksDB readahead size. RocksDB does auto-readahead for iterators when there is more than two reads for a table file. The readahead starts at 8KB and doubles on every additional read up to 256KB. This option can help if most of the range scans are large and if a larger readahead than that enabled by auto-readahead is needed. Using a large readahead size (> 2MB) can typically improve the performance of forward iteration on spinning disks. Defaults to `0`.
-  - `tailing: boolean` When `true`, creates a "tailing iterator" which is a special iterator that has a view of the complete database including newly added data and
-  is optimized for sequential reads. This will return records that were inserted into the database after the creation of the iterator. Defaults to `false`.
+  - `adaptiveReadahead: boolean` When `true`, RocksDB will do some enhancements
+    for prefetching the data. Defaults to `true`. Note that RocksDB defaults
+    this to `false`.
+  - `asyncIO: boolean` When `true`, RocksDB will prefetch some data async and
+    apply it if reads are sequential and its internal automatic prefetching.
+    Defaults to `true`. Note that RocksDB defaults this to `false`.
+  - `autoReadaheadSize: boolean` When `true`, RocksDB will auto-tune the
+    readahead size during scans internally based on the block cache data when
+    block caching is enabled, an end key (e.g. upper bound) is set, and prefix
+    is the same as the start key. Defaults to `true`.
+  - `backgroundPurgeOnIteratorCleanup: boolean` When `true`, after the iterator
+    is closed, a background job is scheduled to flush the job queue and delete
+    obsolete files. Defaults to `true`. Note that RocksDB defaults this to
+    `false`.
+  - `fillCache: boolean` When `true`, the iterator will fill the block cache.
+    Filling the block cache is not desirable for bulk scans and could impact
+    eviction order. Defaults to `false`. Note that RocksDB defaults this to
+    `true`.
+  - `readaheadSize: number` The RocksDB readahead size. RocksDB does
+    auto-readahead for iterators when there is more than two reads for a table
+    file. The readahead starts at 8KB and doubles on every additional read up
+    to 256KB. This option can help if most of the range scans are large and if a
+    larger readahead than that enabled by auto-readahead is needed. Using a
+    large readahead size (> 2MB) can typically improve the performance of
+    forward iteration on spinning disks. Defaults to `0`.
+  - `tailing: boolean` When `true`, creates a "tailing iterator" which is a
+    special iterator that has a view of the complete database including newly
+    added data and is optimized for sequential reads. This will return records
+    that were inserted into the database after the creation of the iterator.
+    Defaults to `false`.
 
 ### `RangeOptions`
 
 Extends `RocksDBOptions`.
 
 - `options: object`
-  - `end: Key | Uint8Array` The range end key, otherwise known as the "upper bound". Defaults to the last key in the database.
-  - `exclusiveStart: boolean` When `true`, the iterator will exclude the first key if it matches the start key. Defaults to `false`.
-  - `inclusiveEnd: boolean` When `true`, the iterator will include the last key if it matches the end key. Defaults to `false`.
-  - `start: Key | Uint8Array` The range start key, otherwise known as the "lower bound". Defaults to the first key in the database.
+  - `end: Key | Uint8Array` The range end key, otherwise known as the "upper
+    bound". Defaults to the last key in the database.
+  - `exclusiveStart: boolean` When `true`, the iterator will exclude the first
+    key if it matches the start key. Defaults to `false`.
+  - `inclusiveEnd: boolean` When `true`, the iterator will include the last key
+    if it matches the end key. Defaults to `false`.
+  - `start: Key | Uint8Array` The range start key, otherwise known as the "lower
+    bound". Defaults to the first key in the database.
 
 ### `IteratorOptions`
 
 Extends `RangeOptions`.
 
 - `options: object`
-  - `reverse: boolean` When `true`, the iterator will iterate in reverse order. Defaults to `false`.
+  - `reverse: boolean` When `true`, the iterator will iterate in reverse order.
+    Defaults to `false`.
 
 ## Development
 
