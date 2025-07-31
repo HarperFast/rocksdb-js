@@ -86,6 +86,12 @@ struct LockCallbackCompletionData final {
 	 * The descriptor of the database.
 	 */
 	std::weak_ptr<DBDescriptor> descriptor;
+
+	/**
+	 * Flag indicating resolve/reject callback has been called and prevent
+	 * the callback from being called again.
+	 */
+	std::atomic<bool> completed{false};
 };
 
 /**

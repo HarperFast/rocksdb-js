@@ -346,7 +346,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 			DEBUG_LOG("%p DBDescriptor::onCallbackComplete() lock already removed (key=\"%s\")\n", this, key.c_str());
 			return; // lock was already cleaned up, nothing to do
 		}
-	} catch (const std::system_error& e) {
+	} catch (const std::exception& e) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete() failed to acquire lock (key=\"%s\"): %s\n", this, key.c_str(), e.what());
 		return; // mutex is invalid, descriptor is likely being destroyed
 	}
@@ -402,7 +402,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 
 		// release the threadsafe function
 		::napi_release_threadsafe_function(callback, napi_tsfn_release);
-	} catch (const std::system_error& e) {
+	} catch (const std::exception& e) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete() failed to fire next callback (key=\"%s\"): %s\n", this, key.c_str(), e.what());
 	}
 }
@@ -587,11 +587,12 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 
 				if (callbackDataPtr && *callbackDataPtr) {
 					auto& callbackData = **callbackDataPtr;
-					if (auto desc = callbackData.descriptor.lock()) {
+					auto desc = callbackData.descriptor.lock();
+					if (!callbackData.completed.exchange(true) && desc) {
 						DEBUG_LOG("callJsCallback() promise resolved, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
 						desc->onCallbackComplete(callbackData.key);
 					} else {
-						DEBUG_LOG("callJsCallback() promise resolve callback was invalidated (key=\"%s\")\n", callbackData.key.c_str());
+						DEBUG_LOG("callJsCallback() promise resolve callback already completed (key=\"%s\")\n", callbackData.key.c_str());
 					}
 				}
 
