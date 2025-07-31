@@ -69,7 +69,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::set<Closable*> closables;
 	std::mutex locksMutex;
 	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
-	std::shared_ptr<std::atomic<bool>> valid;
 };
 
 /**

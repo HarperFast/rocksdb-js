@@ -18,8 +18,7 @@ DBDescriptor::DBDescriptor(
 ):
 	path(path),
 	mode(mode),
-	db(db),
-	valid(std::make_shared<std::atomic<bool>>(true))
+	db(db)
 {
 	for (auto& column : columns) {
 		this->columns[column.first] = column.second;
@@ -32,9 +31,6 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor() %ld closables\n", this, this->closables.size())
-
-	// Invalidate all pending completion callbacks first
-	this->valid->store(false);
 
 	if (this->closables.size()) {
 		while (!this->closables.empty()) {
