@@ -33,12 +33,14 @@ jobs:
           else
             echo "should_update=false" >> $GITHUB_OUTPUT
           fi
-          echo "latest=$LATEST" >> $GITHUB_ENV
-          echo "current=$CURRENT" >> $GITHUB_ENV
-          echo "release_url=$RELEASE_URL" >> $GITHUB_ENV
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "release_url=$RELEASE_URL" >> $GITHUB_OUTPUT
 
       - name: Create branch
         if: steps.latest-release.outputs.should_update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git fetch origin
           BRANCH_NAME="update-rocksdb"
