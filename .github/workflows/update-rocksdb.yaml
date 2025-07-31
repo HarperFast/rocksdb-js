@@ -37,7 +37,7 @@ jobs:
           echo "current=$CURRENT" >> $GITHUB_OUTPUT
           echo "release_url=$RELEASE_URL" >> $GITHUB_OUTPUT
 
-      - name: Create branch
+      - name: Cleanup existing PRs
         if: steps.latest-release.outputs.should_update == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
