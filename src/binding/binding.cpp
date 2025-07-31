@@ -22,7 +22,9 @@ NAPI_MODULE_INIT() {
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		rocksdb_js::DBRegistry::Purge();
+		DEBUG_LOG("Binding::Init env cleanup hook start\n");
+		rocksdb_js::DBRegistry::Purge(true);
+		DEBUG_LOG("Binding::Init env cleanup hook end\n");
 	}, nullptr));
 
 	// database

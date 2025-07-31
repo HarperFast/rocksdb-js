@@ -175,14 +175,14 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 /**
  * Purge expired database descriptors from the registry.
  */
-void DBRegistry::Purge() {
+void DBRegistry::Purge(bool all) {
 	if (instance) {
 		std::lock_guard<std::mutex> lock(instance->mutex);
 #ifdef DEBUG
 		size_t initialSize = instance->databases.size();
 #endif
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
-			if (it->second.expired()) {
+			if (all || it->second.expired()) {
 				it = instance->databases.erase(it);
 			} else {
 				++it;

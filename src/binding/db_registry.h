@@ -27,7 +27,7 @@ private:
 
 public:
 	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
-	static void Purge();
+	static void Purge(bool all = false);
 	static size_t Size();
 };
 
