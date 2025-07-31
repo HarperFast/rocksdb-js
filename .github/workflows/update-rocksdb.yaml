@@ -60,9 +60,6 @@ jobs:
             git push origin --delete $BRANCH_NAME || true
           fi
 
-          # Create fresh branch from main
-          git checkout -b $BRANCH_NAME
-
       - name: Update package.json
         if: steps.latest-release.outputs.should_update == 'true'
         run: |
