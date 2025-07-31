@@ -23,7 +23,7 @@ struct LockHandle;
  * transactions. The DBRegistry uses this to track active databases and reuse
  * RocksDB instances.
  */
-struct DBDescriptor final {
+struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	DBDescriptor(
 		std::string path,
 		DBMode mode,
@@ -74,8 +74,8 @@ struct DBDescriptor final {
  * State to pass into `napi_call_threadsafe_function()` for a lock callback.
  */
 struct LockCallbackCompletionData final {
-	LockCallbackCompletionData(const std::string& k, DBDescriptor* d, std::shared_ptr<std::atomic<bool>> v)
-		: key(k), descriptor(d), valid(v) {}
+	LockCallbackCompletionData(const std::string& k, std::weak_ptr<DBDescriptor> d)
+		: key(k), descriptor(d) {}
 
 	/**
 	 * The key of the lock.
@@ -85,13 +85,7 @@ struct LockCallbackCompletionData final {
 	/**
 	 * The descriptor of the database.
 	 */
-	DBDescriptor* descriptor;
-
-	/**
-	 * A flag indicating whether the DBDescriptor is still valid. The
-	 * DBDescriptor is valid until it is destroyed.
-	 */
-	std::shared_ptr<std::atomic<bool>> valid;
+	std::weak_ptr<DBDescriptor> descriptor;
 };
 
 /**

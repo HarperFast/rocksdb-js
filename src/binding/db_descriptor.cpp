@@ -134,7 +134,7 @@ void DBDescriptor::lockCall(
 	DEBUG_LOG("%p DBDescriptor::lockCall() calling callback for key \"%s\"\n", this, key.c_str())
 
 	// create callback data that includes the key for completion
-	auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
+	auto* callbackData = new LockCallbackCompletionData(key, weak_from_this());
 
 	// use threadsafe function instead of direct call
 	napi_status status = ::napi_call_threadsafe_function(threadsafeCallback, callbackData, napi_tsfn_blocking);
@@ -390,7 +390,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete() calling callback %p (key=\"%s\")\n", this, callback, key.c_str())
 
 		// create callback data that includes the key for completion
-		auto* callbackData = new LockCallbackCompletionData(key, this, this->valid);
+		auto* callbackData = new LockCallbackCompletionData(key, weak_from_this());
 
 		// use threadsafe function instead of direct call
 		napi_status status = ::napi_call_threadsafe_function(callback, callbackData, napi_tsfn_blocking);
@@ -483,18 +483,14 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 
 				if (callbackData) {
 					// check if this callback is still valid
-					if (!callbackData->valid || !callbackData->valid->load()) {
-						DEBUG_LOG("callJsCallback() completion callback was invalidated (key=\"%s\")\n", callbackData->key.c_str());
-						delete callbackData;
-					} else if (callbackData->descriptor) {
+					if (auto desc = callbackData->descriptor.lock()) {
 						// call the completion handler
 						DEBUG_LOG("callJsCallback() calling onCallbackComplete() (key=\"%s\")\n", callbackData->key.c_str());
-						callbackData->descriptor->onCallbackComplete(callbackData->key);
-						delete callbackData;
+						desc->onCallbackComplete(callbackData->key);
 					} else {
 						DEBUG_LOG("callJsCallback() completion callback has no descriptor (key=\"%s\")\n", callbackData->key.c_str());
-						delete callbackData;
 					}
+					delete callbackData;
 				}
 
 				NAPI_RETURN_UNDEFINED()
@@ -519,7 +515,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_call_function(env, global, jsCallback, 0, nullptr, &result),
 		{
-			callbackData->descriptor->onCallbackComplete(callbackData->key);
+			if (auto desc = callbackData->descriptor.lock()) {
+				desc->onCallbackComplete(callbackData->key);
+			}
 			delete callbackData;
 		},
 		"napi_call_function() failed"
@@ -530,7 +528,10 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_get_named_property(env, global, "Promise", &promiseCtor),
 		// not a promise environment, complete immediately
-		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key),
+		if (auto desc = callbackData->descriptor.lock()) {
+			desc->onCallbackComplete(callbackData->key);
+		}
+		delete callbackData,
 		"failed to get Promise constructor"
 	)
 
@@ -538,13 +539,18 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_instanceof(env, result, promiseCtor, &isPromise),
 		// assume not a promise, complete immediately
-		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key),
+		if (auto desc = callbackData->descriptor.lock()) {
+			desc->onCallbackComplete(callbackData->key);
+		}
+		delete callbackData,
 		"napi_instanceof() failed"
 	)
 
 	if (!isPromise) {
 		DEBUG_LOG("callJsCallback() result is not a Promise, completing immediately (key=\"%s\")\n", callbackData->key.c_str())
-		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+		if (auto desc = callbackData->descriptor.lock()) {
+			desc->onCallbackComplete(callbackData->key);
+		}
 		return;
 	}
 
@@ -554,7 +560,10 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	napi_value thenMethod;
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_get_named_property(env, result, "then", &thenMethod),
-		callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key),
+		if (auto desc = callbackData->descriptor.lock()) {
+			desc->onCallbackComplete(callbackData->key);
+		}
+		delete callbackData,
 		"failed to get .then() method"
 	)
 
@@ -578,11 +587,11 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 
 				if (callbackDataPtr && *callbackDataPtr) {
 					auto& callbackData = **callbackDataPtr;
-					if (!callbackData.valid || !callbackData.valid->load()) {
-						DEBUG_LOG("callJsCallback() promise resolve callback was invalidated (key=\"%s\")\n", callbackData.key.c_str());
-					} else if (callbackData.descriptor) {
+					if (auto desc = callbackData.descriptor.lock()) {
 						DEBUG_LOG("callJsCallback() promise resolved, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
-						callbackData.descriptor->onCallbackComplete(callbackData.key);
+						desc->onCallbackComplete(callbackData.key);
+					} else {
+						DEBUG_LOG("callJsCallback() promise resolve callback was invalidated (key=\"%s\")\n", callbackData.key.c_str());
 					}
 				}
 
@@ -594,7 +603,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 			&resolveCallback
 		),
 		/* cleanup */ {
-			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			if (auto desc = callbackData->descriptor.lock()) {
+				desc->onCallbackComplete(callbackData->key);
+			}
 			delete resolveDataPtr;
 		},
 		"failed to create resolve callback"
@@ -619,11 +630,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 
 				if (callbackDataPtr && *callbackDataPtr) {
 					auto& callbackData = **callbackDataPtr;
-					if (!callbackData.valid || !callbackData.valid->load()) {
-						DEBUG_LOG("callJsCallback() promise reject callback was invalidated (key=\"%s\")\n", callbackData.key.c_str());
-					} else if (callbackData.descriptor) {
+					if (auto desc = callbackData.descriptor.lock()) {
 						DEBUG_LOG("callJsCallback() promise rejected, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
-						callbackData.descriptor->onCallbackComplete(callbackData.key);
+						desc->onCallbackComplete(callbackData.key);
 					}
 				}
 
@@ -635,7 +644,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 			&rejectCallback
 		),
 		/* cleanup */ {
-			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			if (auto desc = callbackData->descriptor.lock()) {
+				desc->onCallbackComplete(callbackData->key);
+			}
 			delete rejectDataPtr;
 			delete resolveDataPtr;
 		},
@@ -648,7 +659,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_call_function(env, result, thenMethod, 2, thenArgs, &thenResult),
 		{
-			callbackDataPtr->descriptor->onCallbackComplete(callbackDataPtr->key);
+			if (auto desc = callbackData->descriptor.lock()) {
+				desc->onCallbackComplete(callbackData->key);
+			}
 			delete resolveDataPtr;
 			delete rejectDataPtr;
 		},
