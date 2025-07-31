@@ -3,6 +3,8 @@
 
 #include <memory>
 #include <node_api.h>
+#include <atomic>
+#include <queue>
 #include <set>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
