@@ -84,7 +84,7 @@ void DBDescriptor::lockCall(
 		key,       // key
 		callback,  // callback
 		owner,     // owner
-		false,     // skipEnqueueIfExists
+		false,     // skipEnqueueIfNewLock
 		&isNewLock // [out] isNewLock
 	);
 
@@ -153,7 +153,7 @@ void DBDescriptor::lockEnqueueCallback(
 	std::string key,
 	napi_value callback,
 	std::shared_ptr<DBHandle> owner,
-	bool skipEnqueueIfExists,
+	bool skipEnqueueIfNewLock,
 	bool* isNewLock
 ) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
@@ -168,7 +168,7 @@ void DBDescriptor::lockEnqueueCallback(
 		if (isNewLock != nullptr) {
 			*isNewLock = true;
 		}
-		if (skipEnqueueIfExists) {
+		if (skipEnqueueIfNewLock) {
 			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback() skipping enqueue because lock already exists\n", this)
 			return;
 		}
