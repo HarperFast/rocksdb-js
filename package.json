@@ -71,7 +71,7 @@
     "node": ">=18"
   },
   "rocksdb": {
-    "version": "10.2.1"
+    "version": "10.4.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
