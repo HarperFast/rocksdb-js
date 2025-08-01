@@ -249,15 +249,13 @@ struct AsyncWorkHandle {
 	std::set<napi_async_work> activeAsyncWork;
 
 	/**
-	 * A set of all async work tasks that have completed execution, but the
-	 * completion handler hasn't run on the main thread yet. This is used to
-	 * track which in-flight async work tasks have completed execution and its
-	 * safe to null out the async work's associated handle.
+	 * Counter of async work tasks that have completed execution, but the
+	 * completion handler hasn't run on the main thread yet.
 	 */
-	std::set<napi_async_work> executeCompletedWork;
+	size_t executeCompletedCount = 0;
 
 	/**
-	 * A mutex to protect the `activeAsyncWork` and `executeCompletedWork` sets.
+	 * A mutex to protect the `activeAsyncWork` set and `executeCompletedCount`.
 	 */
 	std::mutex asyncWorkMutex;
 
@@ -281,12 +279,12 @@ struct AsyncWorkHandle {
 	void unregisterAsyncWork(napi_async_work work) {
 		std::lock_guard<std::mutex> lock(this->asyncWorkMutex);
 		this->activeAsyncWork.erase(work);
-		this->executeCompletedWork.erase(work);
 
 		DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork() work=%p activeAsyncWork.size()=%zu\n", this, work, this->activeAsyncWork.size())
 
 		// notify if all work is complete
 		if (this->activeAsyncWork.empty()) {
+			this->executeCompletedCount = 0;
 			this->asyncWorkComplete.notify_all();
 		}
 	}
@@ -296,20 +294,12 @@ struct AsyncWorkHandle {
 	 */
 	void signalAsyncWorkExecuteCompleted(napi_async_work work) {
 		std::lock_guard<std::mutex> lock(this->asyncWorkMutex);
-		this->executeCompletedWork.insert(work);
+		this->executeCompletedCount++;
 
-		DEBUG_LOG("%p AsyncWorkHandle::signalAsyncWorkExecuteCompleted() work=%p executeCompletedWork.size()=%zu\n", this, work, this->executeCompletedWork.size())
+		DEBUG_LOG("%p AsyncWorkHandle::signalAsyncWorkExecuteCompleted() work=%p executeCompletedCount=%zu activeAsyncWork.size()=%zu\n", this, work, this->executeCompletedCount, this->activeAsyncWork.size())
 
 		// check if all active work has completed execution
-		bool allExecuteCompleted = true;
-		for (auto activeWork : this->activeAsyncWork) {
-			if (this->executeCompletedWork.find(activeWork) == this->executeCompletedWork.end()) {
-				allExecuteCompleted = false;
-				break;
-			}
-		}
-
-		if (allExecuteCompleted) {
+		if (this->executeCompletedCount >= this->activeAsyncWork.size()) {
 			this->asyncWorkComplete.notify_all();
 		}
 	}
@@ -368,12 +358,7 @@ struct AsyncWorkHandle {
 				}
 
 				// check if all active work has completed execution
-				for (auto activeWork : this->activeAsyncWork) {
-					if (this->executeCompletedWork.find(activeWork) == this->executeCompletedWork.end()) {
-						return false; // at least one execute handler still running
-					}
-				}
-				return true; // all execute handlers completed
+				return this->executeCompletedCount >= this->activeAsyncWork.size();
 			});
 
 			if (completed) {
