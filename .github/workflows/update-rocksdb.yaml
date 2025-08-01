@@ -33,12 +33,14 @@ jobs:
           else
             echo "should_update=false" >> $GITHUB_OUTPUT
           fi
-          echo "latest=$LATEST" >> $GITHUB_ENV
-          echo "current=$CURRENT" >> $GITHUB_ENV
-          echo "release_url=$RELEASE_URL" >> $GITHUB_ENV
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "release_url=$RELEASE_URL" >> $GITHUB_OUTPUT
 
-      - name: Create branch
+      - name: Cleanup existing PRs
         if: steps.latest-release.outputs.should_update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git fetch origin
           BRANCH_NAME="update-rocksdb"
@@ -60,20 +62,16 @@ jobs:
             git push origin --delete $BRANCH_NAME || true
           fi
 
-          # Create fresh branch from main
-          git checkout -b $BRANCH_NAME
-
       - name: Update package.json
         if: steps.latest-release.outputs.should_update == 'true'
         run: |
           jq ".rocksdb.version = \"${{ steps.latest-release.outputs.latest }}\"" package.json > package.json.tmp
           mv package.json.tmp package.json
 
-      - name: Commit changes
+      - name: Stage changes
         if: steps.latest-release.outputs.should_update == 'true'
         run: |
           git add package.json
-          git commit -m "chore: update rocksdb to ${{ steps.latest-release.outputs.latest }}"
 
       - name: Pull request
         if: steps.latest-release.outputs.should_update == 'true'
@@ -83,7 +81,7 @@ jobs:
           title: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
           body: 'Bumps [RocksDB](${{ steps.latest-release.outputs.release_url }}) from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}.'
           commit-message: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
-          commit-author: 'HarperDB <noreply@harperdb.io>'
-          commit-email: 'noreply@harperdb.io'
+          committer: 'HarperDB <noreply@harperdb.io>'
           branch: update-rocksdb
+          delete-branch: true
           labels: 'automated, dependencies'
