@@ -9,6 +9,7 @@
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
+#include "rocksdb/utilities/options_util.h"
 #include "db_options.h"
 #include "transaction_handle.h"
 #include "util.h"
@@ -19,6 +20,21 @@ namespace rocksdb_js {
 struct TransactionHandle;
 struct DBDescriptor;
 struct LockHandle;
+
+/**
+ * Custom deleter for RocksDB that calls WaitForCompact with close_db=true
+ * before destroying the database instance.
+ */
+struct DBDeleter {
+	void operator()(rocksdb::DB* db) const {
+		if (db) {
+			rocksdb::WaitForCompactOptions options;
+			options.close_db = true;
+			db->WaitForCompact(options);
+			delete db;
+		}
+	}
+};
 
 /**
  * Descriptor for a RocksDB database, its column families, and any in-flight

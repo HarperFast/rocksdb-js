@@ -140,14 +140,14 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 			if (!status.ok()) {
 				throw std::runtime_error(status.ToString().c_str());
 			}
-			db = std::shared_ptr<rocksdb::DB>(rdb);
+			db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 		} else {
 			rocksdb::OptimisticTransactionDB* rdb;
 			rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 			if (!status.ok()) {
 				throw std::runtime_error(status.ToString().c_str());
 			}
-			db = std::shared_ptr<rocksdb::DB>(rdb);
+			db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 		}
 
 		// figure out if desired column family exists and if not create it

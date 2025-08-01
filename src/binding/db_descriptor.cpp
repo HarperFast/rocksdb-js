@@ -41,13 +41,10 @@ DBDescriptor::~DBDescriptor() {
 		}
 	}
 
-	// Clear everything else after all closables are done
-	{
-		std::lock_guard<std::mutex> lock(this->mutex);
-		this->transactions.clear();
-		this->columns.clear();
-		this->db.reset();
-	}
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->transactions.clear();
+	this->columns.clear();
+	this->db.reset();
 }
 
 /**
