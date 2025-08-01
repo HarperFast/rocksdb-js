@@ -64,14 +64,14 @@
     "semver": "7.7.2",
     "tslib": "2.8.1",
     "tsx": "4.20.3",
-    "typescript": "5.8.3",
+    "typescript": "5.9.2",
     "vitest": "3.2.4"
   },
   "engines": {
     "node": ">=18"
   },
   "rocksdb": {
-    "version": "10.2.1"
+    "version": "10.4.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
