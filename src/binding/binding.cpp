@@ -13,7 +13,7 @@ namespace rocksdb_js {
 NAPI_MODULE_INIT() {
 #ifdef DEBUG
 	// disable buffering for stderr to ensure messages are written immediately
-	setvbuf(stderr, nullptr, _IONBF, 0);
+	::setvbuf(stderr, nullptr, _IONBF, 0);
 #endif
 
 	napi_value version;
@@ -22,7 +22,9 @@ NAPI_MODULE_INIT() {
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
+		DEBUG_LOG("Binding::Init() env cleanup start\n");
 		rocksdb_js::DBRegistry::Purge(true);
+		DEBUG_LOG("Binding::Init() env cleanup done\n");
 	}, nullptr));
 
 	// database

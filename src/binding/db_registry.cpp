@@ -109,10 +109,23 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		dbOptions.IncreaseParallelism(options.parallelismThreads);
 		dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
-		// prepare the column family stuff
-		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors = {
-			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
-		};
+		// prepare the column family stuff - first check if database exists
+		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
+		std::vector<std::string> columnFamilyNames;
+
+		// try to list existing column families
+		rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
+		if (listStatus.ok() && !columnFamilyNames.empty()) {
+			// Database exists, use existing column families
+			for (const auto& cfName : columnFamilyNames) {
+				cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
+			}
+		} else {
+			// database doesn't exist or no column families found, use default
+			cfDescriptors = {
+				rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
+			};
+		}
 		std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
 
 		std::shared_ptr<rocksdb::DB> db;
