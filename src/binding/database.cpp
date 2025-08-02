@@ -418,6 +418,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
 	} catch (const std::exception& e) {
+		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what())
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}

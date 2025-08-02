@@ -80,11 +80,15 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 				columns[name] = createColumn(descriptor->db, name);
 				descriptor->columns[name] = columns[name];
 			}
+		} else {
+			// the weak_ptr is expired, remove it and continue as if database doesn't exist
+			DEBUG_LOG("%p DBRegistry::OpenDB Database %s entry expired, removing\n", instance.get(), path.c_str())
+			instance->databases.erase(dbIterator);
 		}
 	}
 
 	if (!dbExists) {
-		DEBUG_LOG("%p DBRegistry::OpenDB Opening %s\n", instance.get(), path.c_str())
+		DEBUG_LOG("%p DBRegistry::OpenDB Opening %s (column family: %s)\n", instance.get(), path.c_str(), name.c_str())
 
 		// database doesn't exist, create it
 
@@ -168,7 +172,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 	}
 
 	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(descriptor);
-	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandle %p\n", instance.get(), handle.get())
+	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandle %p for %s\n", instance.get(), handle.get(), path.c_str())
 
 	// handle the column family
 	auto colIterator = columns.find(name);
@@ -196,6 +200,7 @@ void DBRegistry::Purge(bool all) {
 #endif
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 			if (all || it->second.expired()) {
+				DEBUG_LOG("%p DBRegistry::Purge() Purging %s\n", instance.get(), it->first.c_str())
 				it = instance->databases.erase(it);
 			} else {
 				++it;

@@ -28,7 +28,7 @@ struct LockHandle;
 struct DBDeleter {
 	void operator()(rocksdb::DB* db) const {
 		if (db) {
-			DEBUG_LOG("DBDeleter::operator() waiting for compact\n");
+			DEBUG_LOG("DBDeleter::operator() Compacting and closing database\n");
 			rocksdb::WaitForCompactOptions options;
 			options.close_db = true;
 			db->WaitForCompact(options);

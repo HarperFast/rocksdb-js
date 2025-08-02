@@ -30,7 +30,7 @@ DBDescriptor::DBDescriptor(
  * (transactions, iterators, etc).
  */
 DBDescriptor::~DBDescriptor() {
-	DEBUG_LOG("%p DBDescriptor::~DBDescriptor() %ld closables\n", this, this->closables.size())
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor() Closing %s (%ld closables)\n", this, this->path.c_str(), this->closables.size())
 
 	if (this->closables.size()) {
 		while (!this->closables.empty()) {
