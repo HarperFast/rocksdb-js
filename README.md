@@ -270,7 +270,7 @@ db.transactionSync((txn: Transaction) => {
 
 ## Exclusive Locking
 
-`rocksdb-js` includes a handful of functions for executing thread-safe mutally
+`rocksdb-js` includes a handful of functions for executing thread-safe mutually
 exclusive functions.
 
 ### `db.hasLock(key: Key): boolean`
