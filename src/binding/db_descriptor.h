@@ -128,9 +128,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
 
 	/**
-	 * Flag indicating the database is being closed. The `DBRegistry` uses this
-	 * indicate that this descriptor is being closed and should create a new
-	 * database instance.
+	 * A flag used by the `DBRegistry` to indicate the database is being closed,
+	 * this descriptor should not be used, and it should create a new
+	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
 };
