@@ -60,6 +60,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		napi_env env,
 		std::string key,
 		napi_value callback,
+		napi_deferred deferred,
 		std::shared_ptr<DBHandle> owner
 	);
 	void lockEnqueueCallback(
@@ -68,6 +69,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		napi_value callback,
 		std::shared_ptr<DBHandle> owner,
 		bool skipEnqueueIfExists,
+		napi_deferred deferred,
 		bool* isNewLock
 	);
 	bool lockExistsByKey(std::string key);
@@ -137,8 +139,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
  * State to pass into `napi_call_threadsafe_function()` for a lock callback.
  */
 struct LockCallbackCompletionData final {
-	LockCallbackCompletionData(const std::string& k, std::weak_ptr<DBDescriptor> d)
-		: key(k), descriptor(d) {}
+	LockCallbackCompletionData(const std::string& k, std::weak_ptr<DBDescriptor> d, napi_deferred def = nullptr)
+		: key(k), descriptor(d), deferred(def) {}
 
 	/**
 	 * The key of the lock.
@@ -151,10 +153,26 @@ struct LockCallbackCompletionData final {
 	std::weak_ptr<DBDescriptor> descriptor;
 
 	/**
+	 * Optional deferred promise to resolve when the lock is released (for withLock).
+	 */
+	napi_deferred deferred;
+
+	/**
 	 * Flag indicating resolve/reject callback has been called and prevent
 	 * the callback from being called again.
 	 */
 	std::atomic<bool> completed{false};
+};
+
+/**
+ * Holds a threadsafe callback and its associated deferred promise (if any).
+ */
+struct LockCallback final {
+	LockCallback(napi_threadsafe_function callback, napi_deferred deferred = nullptr)
+		: callback(callback), deferred(deferred) {}
+
+	napi_threadsafe_function callback;
+	napi_deferred deferred;
 };
 
 /**
@@ -168,16 +186,16 @@ struct LockHandle final {
 
 	~LockHandle() {
 		while (!threadsafeCallbacks.empty()) {
-			napi_threadsafe_function threadsafeCallback = threadsafeCallbacks.front();
+			LockCallback lockCallback = threadsafeCallbacks.front();
 			threadsafeCallbacks.pop();
-			::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
+			::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
 		}
 	}
 
 	/**
 	 * A queue of threadsafe callbacks to fire in sequence.
 	 */
-	std::queue<napi_threadsafe_function> threadsafeCallbacks;
+	std::queue<LockCallback> threadsafeCallbacks;
 
 	/**
 	 * The owner of the lock. Used to release any locks owned by a database

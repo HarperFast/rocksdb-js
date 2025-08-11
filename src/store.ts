@@ -450,25 +450,10 @@ export class Store {
 			return Promise.reject(new TypeError('Callback must be a function'));
 		}
 
-		return new Promise<void>((resolve, reject) => {
-			this.db.withLock(
-				this.encodeKey(key),
-				() => {
-					try {
-						const result = callback();
-						if (result && typeof result.then === 'function') {
-							return result.then(
-								() => resolve(),
-								(error) => reject(error)
-							);
-						}
-						resolve();
-					} catch (error) {
-						reject(error);
-					}
-				}
-			);
-		});
+		return this.db.withLock(
+			this.encodeKey(key),
+			callback
+		);
 	}
 }
 

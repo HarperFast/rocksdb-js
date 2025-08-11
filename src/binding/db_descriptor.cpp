@@ -74,6 +74,7 @@ void DBDescriptor::lockCall(
 	napi_env env,
 	std::string key,
 	napi_value callback,
+	napi_deferred deferred,
 	std::shared_ptr<DBHandle> owner
 ) {
 	bool isNewLock = false;
@@ -83,6 +84,7 @@ void DBDescriptor::lockCall(
 		callback,  // callback
 		owner,     // owner
 		false,     // skipEnqueueIfNewLock
+		deferred,  // deferred
 		&isNewLock // [out] isNewLock
 	);
 
@@ -92,7 +94,7 @@ void DBDescriptor::lockCall(
 	}
 
 	// lock found
-	std::unique_lock<std::mutex> lock(this->locksMutex);
+	std::unique_lock<std::mutex> locksMutex(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
 
 	if (lockHandle == this->locks.end()) {
@@ -119,16 +121,18 @@ void DBDescriptor::lockCall(
 		return;
 	}
 
-	napi_threadsafe_function threadsafeCallback = handle->threadsafeCallbacks.front();
+	LockCallback lockCallback = handle->threadsafeCallbacks.front();
 	handle->threadsafeCallbacks.pop();
+	napi_threadsafe_function threadsafeCallback = lockCallback.callback;
 
-	// release the mutex before calling the callback to avoid holding locks during callback execution
-	lock.unlock();
+	// release the mutex before calling the callback to avoid holding locks
+	// during callback execution
+	locksMutex.unlock();
 
 	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key \"%s\"\n", this, key.c_str())
 
-	// create callback data that includes the key for completion
-	auto* callbackData = new LockCallbackCompletionData(key, weak_from_this());
+	// create callback data that includes the key for completion and deferred promise
+	auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
 
 	// use threadsafe function instead of direct call
 	napi_status status = ::napi_call_threadsafe_function(threadsafeCallback, callbackData, napi_tsfn_blocking);
@@ -152,17 +156,18 @@ void DBDescriptor::lockEnqueueCallback(
 	napi_value callback,
 	std::shared_ptr<DBHandle> owner,
 	bool skipEnqueueIfNewLock,
+	napi_deferred deferred,
 	bool* isNewLock
 ) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
-	auto lockHandle = this->locks.find(key);
+	std::shared_ptr<LockHandle> lockHandle;
+	auto lockHandleIterator = this->locks.find(key);
 
-	if (lockHandle == this->locks.end()) {
+	if (lockHandleIterator == this->locks.end()) {
 		// no lock found
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key \"%s\"\n", this, key.c_str())
-		auto newLockHandle = std::make_shared<LockHandle>(owner, env);
-		this->locks.emplace(key, newLockHandle);
-		lockHandle = this->locks.find(key);
+		lockHandle = std::make_shared<LockHandle>(owner, env);
+		this->locks.emplace(key, lockHandle);
 		if (isNewLock != nullptr) {
 			*isNewLock = true;
 		}
@@ -172,6 +177,7 @@ void DBDescriptor::lockEnqueueCallback(
 		}
 	} else {
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback lock found for key %s\n", this, key.c_str())
+		lockHandle = lockHandleIterator->second;
 	}
 
 	// lock found
@@ -204,8 +210,8 @@ void DBDescriptor::lockEnqueueCallback(
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback enqueuing callback %p\n", this, threadsafeCallback)
 		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
 
-		// Remove jsCallbackRef creation and storage
-		lockHandle->second->threadsafeCallbacks.push(threadsafeCallback);
+		// Create LockCallback and add to queue
+		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred));
 	}
 }
 
@@ -224,7 +230,7 @@ bool DBDescriptor::lockExistsByKey(std::string key) {
  * Releases a lock by key. Called by `db.unlock()`.
  */
 bool DBDescriptor::lockReleaseByKey(std::string key) {
-	std::queue<napi_threadsafe_function> threadsafeCallbacks;
+	std::queue<LockCallback> threadsafeCallbacks;
 
 	{
 		std::lock_guard<std::mutex> lock(this->locksMutex);
@@ -246,14 +252,14 @@ bool DBDescriptor::lockReleaseByKey(std::string key) {
 
 	// call the callbacks in order, but stop if any callback fails
 	while (!threadsafeCallbacks.empty()) {
-		auto callback = threadsafeCallbacks.front();
+		auto lockCallback = threadsafeCallbacks.front();
 		threadsafeCallbacks.pop();
-		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling callback %p\n", this, callback)
-		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling callback %p\n", this, lockCallback.callback)
+		napi_status status = ::napi_call_threadsafe_function(lockCallback.callback, nullptr, napi_tsfn_blocking);
 		if (status == napi_closing) {
 			continue;
 		}
-		::napi_release_threadsafe_function(callback, napi_tsfn_release);
+		::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
 	}
 
 	return true;
@@ -274,7 +280,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %d callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
 				// move all callbacks from the queue
 				while (!it->second->threadsafeCallbacks.empty()) {
-					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front());
+					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
 					it->second->threadsafeCallbacks.pop();
 				}
 				it = this->locks.erase(it);
@@ -375,16 +381,17 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 			return;
 		}
 
-		auto callback = handle->threadsafeCallbacks.front();
+		LockCallback lockCallback = handle->threadsafeCallbacks.front();
 		handle->threadsafeCallbacks.pop();
+		auto callback = lockCallback.callback;
 
 		// release the mutex before calling the callback to avoid holding locks during callback execution
 		lock.unlock();
 
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete calling callback %p (key=\"%s\")\n", this, callback, key.c_str())
 
-		// create callback data that includes the key for completion
-		auto* callbackData = new LockCallbackCompletionData(key, weak_from_this());
+		// create callback data that includes the key for completion and deferred promise
+		auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
 
 		// use threadsafe function instead of direct call
 		napi_status status = ::napi_call_threadsafe_function(callback, callbackData, napi_tsfn_blocking);
@@ -542,6 +549,15 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 
 	if (!isPromise) {
 		DEBUG_LOG("callJsCallback result is not a Promise, completing immediately (key=\"%s\")\n", callbackData->key.c_str())
+
+		// If this is a withLock call with a deferred promise, resolve it
+		if (callbackData->deferred != nullptr) {
+			DEBUG_LOG("callJsCallback resolving deferred promise for synchronous withLock (key=\"%s\")\n", callbackData->key.c_str());
+			napi_value undefined;
+			napi_get_undefined(env, &undefined);
+			napi_resolve_deferred(env, callbackData->deferred, undefined);
+		}
+
 		if (auto desc = callbackData->descriptor.lock()) {
 			desc->onCallbackComplete(callbackData->key);
 		}
@@ -575,6 +591,8 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 				napi_value result;
 				::napi_get_undefined(env, &result);
 
+				DEBUG_LOG("callJsCallback promise resolve callback\n")
+
 				void* data;
 				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
 				auto* callbackDataPtr = static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
@@ -584,6 +602,15 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 					auto desc = callbackData.descriptor.lock();
 					if (!callbackData.completed.exchange(true) && desc) {
 						DEBUG_LOG("callJsCallback promise resolved, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
+
+						// If this is a withLock call with a deferred promise, resolve it
+						if (callbackData.deferred != nullptr) {
+							DEBUG_LOG("callJsCallback resolving deferred promise for withLock (key=\"%s\")\n", callbackData.key.c_str());
+							napi_value undefined;
+							napi_get_undefined(env, &undefined);
+							napi_resolve_deferred(env, callbackData.deferred, undefined);
+						}
+
 						desc->onCallbackComplete(callbackData.key);
 					} else {
 						DEBUG_LOG("callJsCallback promise resolve callback already completed (key=\"%s\")\n", callbackData.key.c_str());
@@ -627,6 +654,21 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 					auto& callbackData = **callbackDataPtr;
 					if (auto desc = callbackData.descriptor.lock()) {
 						DEBUG_LOG("callJsCallback promise rejected, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
+
+						// If this is a withLock call with a deferred promise, reject it
+						if (callbackData.deferred != nullptr) {
+							DEBUG_LOG("callJsCallback rejecting deferred promise for withLock (key=\"%s\")\n", callbackData.key.c_str());
+							// Get the error from the first argument of the reject callback
+							size_t argc = 1;
+							napi_value argv[1];
+							napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+							napi_value error = argc > 0 ? argv[0] : nullptr;
+							if (error == nullptr) {
+								napi_get_undefined(env, &error);
+							}
+							napi_reject_deferred(env, callbackData.deferred, error);
+						}
+
 						desc->onCallbackComplete(callbackData.key);
 					}
 				}

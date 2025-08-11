@@ -566,6 +566,7 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
 		argv[1],   // callback
 		*dbHandle, // owner
 		true,      // skipEnqueueIfExists
+		nullptr,   // deferred
 		&isNewLock // [out] isNewLock
 	);
 
@@ -609,19 +610,35 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 napi_value Database::WithLock(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	// Create a promise first, then check if database is open
+	napi_deferred deferred;
+	napi_value promise;
+	NAPI_STATUS_THROWS(::napi_create_promise(env, &deferred, &promise))
+
+	// Check if database is open
+	std::shared_ptr<DBHandle>* dbHandle = nullptr;
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) {
+		napi_value error;
+		napi_create_string_utf8(env, "Database not open", NAPI_AUTO_LENGTH, &error);
+		napi_reject_deferred(env, deferred, error);
+		return promise;
+	}
 
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type))
 	if (type != napi_function) {
-		::napi_throw_error(env, nullptr, "Callback must be a function");
-		return nullptr;
+		napi_value error;
+		napi_create_string_utf8(env, "Callback must be a function", NAPI_AUTO_LENGTH, &error);
+		napi_reject_deferred(env, deferred, error);
+		return promise;
 	}
 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	(*dbHandle)->descriptor->lockCall(env, keyStr, argv[1], *dbHandle);
+	(*dbHandle)->descriptor->lockCall(env, keyStr, argv[1], deferred, *dbHandle);
 
-	NAPI_RETURN_UNDEFINED()
+	return promise;
 }
 
 /**

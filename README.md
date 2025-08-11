@@ -553,3 +553,32 @@ To run the tests, run:
 ```bash
 pnpm coverage
 ```
+
+To run the tests without code coverage, run:
+
+```bash
+pnpm test
+```
+
+To run a specific test suite, for example `"ranges"`, run:
+
+```bash
+pnpm test ranges
+# or
+pnpm test test/ranges
+```
+
+To run a specific unit test, for example all tests that mention
+`"column family"`, run:
+
+```bash
+pnpm test -t "column family"
+```
+
+Vitest's terminal renderer will often overwrite the debug log output, so it's
+highly recommended to specify the `CI=1` environment variable to prevent Vitest
+from erasing log output:
+
+```bash
+CI=1 pnpm test
+```
