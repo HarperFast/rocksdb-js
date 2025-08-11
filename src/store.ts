@@ -433,6 +433,16 @@ export class Store {
 		);
 	}
 
+	/**
+	 * Attempts to acquire a lock for a given key. If the lock is available,
+	 * the function returns `true` and the optional callback is never called.
+	 * If the lock is not available, the function returns `false` and the
+	 * callback is queued until the lock is released.
+	 *
+	 * @param key - The key to lock.
+	 * @param onUnlocked - A callback to call when the lock is released.
+	 * @returns `true` if the lock was acquired, `false` otherwise.
+	 */
 	tryLock(key: Key, onUnlocked?: () => void): boolean {
 		if (onUnlocked !== undefined && typeof onUnlocked !== 'function') {
 			throw new TypeError('Callback must be a function');
@@ -441,10 +451,23 @@ export class Store {
 		return this.db.tryLock(this.encodeKey(key), onUnlocked);
 	}
 
+	/**
+	 * Releases the lock on the given key and calls any queued `onUnlocked`
+	 * callback handlers.
+	 *
+	 * @param key - The key to unlock.
+	 */
 	unlock(key: Key): void {
 		return this.db.unlock(this.encodeKey(key));
 	}
 
+	/**
+	 * Acquires a lock on the given key and calls the callback.
+	 *
+	 * @param key - The key to lock.
+	 * @param callback - The callback to call when the lock is acquired.
+	 * @returns A promise that resolves when the lock is acquired.
+	 */
 	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
 		if (typeof callback !== 'function') {
 			return Promise.reject(new TypeError('Callback must be a function'));

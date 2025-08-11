@@ -603,7 +603,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 					if (!callbackData.completed.exchange(true) && desc) {
 						DEBUG_LOG("callJsCallback promise resolved, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
 
-						// If this is a withLock call with a deferred promise, resolve it
+						// if this is a withLock call with a deferred promise, resolve it
 						if (callbackData.deferred != nullptr) {
 							DEBUG_LOG("callJsCallback resolving deferred promise for withLock (key=\"%s\")\n", callbackData.key.c_str());
 							napi_value undefined;
@@ -655,10 +655,10 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 					if (auto desc = callbackData.descriptor.lock()) {
 						DEBUG_LOG("callJsCallback promise rejected, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
 
-						// If this is a withLock call with a deferred promise, reject it
+						// if this is a withLock call with a deferred promise, reject it
 						if (callbackData.deferred != nullptr) {
 							DEBUG_LOG("callJsCallback rejecting deferred promise for withLock (key=\"%s\")\n", callbackData.key.c_str());
-							// Get the error from the first argument of the reject callback
+							// get the error from the first argument of the reject callback
 							size_t argc = 1;
 							napi_value argv[1];
 							napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);

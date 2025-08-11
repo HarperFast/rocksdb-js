@@ -123,7 +123,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		// try to list existing column families
 		rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 		if (listStatus.ok() && !columnFamilyNames.empty()) {
-			// Database exists, use existing column families
+			// database exists, use existing column families
 			for (const auto& cfName : columnFamilyNames) {
 				cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
 			}
@@ -233,7 +233,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 
 	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), descriptor.use_count())
 
-	// Re-acquire the mutex to check and potentially remove the descriptor
+	// re-acquire the mutex to check and potentially remove the descriptor
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		// since the registry itself always has a ref, we need to check for ref count 1
