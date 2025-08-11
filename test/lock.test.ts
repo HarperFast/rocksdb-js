@@ -275,7 +275,7 @@ describe('Lock', () => {
 			const dbPath = generateDBPath();
 			try {
 				db = new RocksDatabase(dbPath);
-				await expect(() => db!.withLock('foo', () => {})).rejects.toThrow('Database not open');
+				await expect(db!.withLock('foo', () => {})).rejects.toThrow('Database not open');
 			} finally {
 				await rimraf(dbPath);
 			}
@@ -326,9 +326,11 @@ describe('Lock', () => {
 				expect(db.hasLock('foo')).toBe(true);
 				await promise;
 				expect(spy).toHaveBeenCalledTimes(1);
+				expect(db.hasLock('foo')).toBe(false);
 
 				await db.withLock('foo', async () => {
 					spy();
+					expect(db!.hasLock('foo')).toBe(true);
 				});
 
 				expect(db.hasLock('foo')).toBe(false);

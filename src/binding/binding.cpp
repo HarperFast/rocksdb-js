@@ -30,8 +30,8 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	++moduleRefCount;
-	DEBUG_LOG("Binding::Init Module ref count: %d\n", moduleRefCount);
+	int refCount = ++moduleRefCount;
+	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {

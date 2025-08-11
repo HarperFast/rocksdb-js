@@ -425,7 +425,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
 		return this.store.withLock(key, callback);
 	}
 }
