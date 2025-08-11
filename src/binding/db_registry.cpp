@@ -93,7 +93,6 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		DEBUG_LOG("%p DBRegistry::OpenDB Registry already initialized\n", instance.get())
 	}
 
-	bool dbExists = false;
 	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -108,7 +107,6 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		// check if the database is being closed
 		if (descriptor->closing.load()) {
 			DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, treating as new\n", instance.get(), path.c_str())
-			dbExists = false;
 			descriptor.reset();
 		} else {
 			// check if the database is already open with a different mode
@@ -122,8 +120,6 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 
 			DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" already open\n", instance.get(), path.c_str())
 			DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str())
-
-			dbExists = true;
 
 			// manually copy the columns because we don't know which ones are valid
 			bool columnExists = false;
@@ -142,7 +138,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		}
 	}
 
-	if (!dbExists) {
+	if (!descriptor) {
 		DEBUG_LOG("%p DBRegistry::OpenDB Opening \"%s\" (column family: \"%s\")\n", instance.get(), path.c_str(), name.c_str())
 
 		// database doesn't exist, create it
