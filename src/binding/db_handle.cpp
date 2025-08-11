@@ -19,7 +19,7 @@ DBHandle::DBHandle(std::shared_ptr<DBDescriptor> descriptor)
  * Close the DBHandle and destroy it.
  */
 DBHandle::~DBHandle() {
-	DEBUG_LOG("%p DBHandle::~DBHandle()\n", this)
+	DEBUG_LOG("%p DBHandle::~DBHandle\n", this)
 	this->close();
 }
 
@@ -27,7 +27,7 @@ DBHandle::~DBHandle() {
  * Closes the DBHandle.
  */
 void DBHandle::close() {
-	DEBUG_LOG("%p DBHandle::close() dbDescriptor=%p\n", this, this->descriptor.get())
+	DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, this->descriptor.get(), this->descriptor.use_count())
 
 	if (this->column) {
 		this->column.reset();
@@ -38,8 +38,7 @@ void DBHandle::close() {
 		this->descriptor.reset();
 	}
 
-	// purge all weak references in the registry
-	DBRegistry::Purge();
+	DEBUG_LOG("%p DBHandle::close Handle closed\n", this)
 }
 
 /**
@@ -53,7 +52,8 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handle = DBRegistry::OpenDB(path, options);
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
-	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed\n", this, handle.get())
+	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
+	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed, moved DBDescriptor %p to this handle (ref count = %ld)\n", this, handle.get(), this->descriptor.get(), this->descriptor.use_count())
 }
 
 /**

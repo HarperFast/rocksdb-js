@@ -54,7 +54,7 @@ DBIteratorHandle::~DBIteratorHandle() {
 }
 
 void DBIteratorHandle::close() {
-	DEBUG_LOG("%p DBIteratorHandle::close() dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get())
+	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get())
 	if (this->iterator) {
 		if (this->dbHandle && this->dbHandle->descriptor) {
 			this->dbHandle->descriptor->detach(this);

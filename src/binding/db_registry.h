@@ -15,19 +15,31 @@ namespace rocksdb_js {
  */
 class DBRegistry final {
 private:
-	// private constructor
+	/**
+	 * Private constructor.
+	 */
 	DBRegistry() = default;
 
-	// map of database path to descriptor
-	// this needs to be a weak_ptr because the DBHandles own the descriptor
-	std::unordered_map<std::string, std::weak_ptr<DBDescriptor>> databases;
+	/**
+	 * Map of database path to descriptor. There can only be one RocksDB
+	 * database per path open at a time.
+	 */
+	std::unordered_map<std::string, std::shared_ptr<DBDescriptor>> databases;
 
+	/**
+	 * Mutex to protect the databases map.
+	 */
+	std::mutex databasesMutex;
+
+	/**
+	 * The singleton instance of the registry.
+	 */
 	static std::unique_ptr<DBRegistry> instance;
-	std::mutex mutex;
 
 public:
 	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
-	static void Purge(bool all = false);
+	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+	static void PurgeAll();
 	static size_t Size();
 };
 

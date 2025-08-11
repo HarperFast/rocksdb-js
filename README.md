@@ -363,8 +363,8 @@ await Promise.all([
 
 Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 18.3.0 introduced a `--force-node-api-uncaught-exceptions-policy` flag which
-will cause errors to emit the `'uncaughtException'` event. Future versions of
-enable this flag by default.
+will cause errors to emit the `'uncaughtException'` event. Future Node.js
+releases will enable this flag by default.
 
 ## Custom Store
 

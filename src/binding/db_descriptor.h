@@ -32,7 +32,9 @@ struct DBDeleter {
 			rocksdb::WaitForCompactOptions options;
 			options.close_db = true;
 			db->WaitForCompact(options);
+			DEBUG_LOG("DBDeleter::operator() Closed database, deleting\n");
 			delete db;
+			DEBUG_LOG("DBDeleter::operator() Deleted database\n");
 		}
 	}
 };
@@ -77,15 +79,58 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
 	void transactionRemove(uint32_t id);
 
+	/**
+	 * The path of the database.
+	 */
 	std::string path;
+
+	/**
+	 * The mode of the database: optimistic or pessimistic. `DBRegistry`
+	 * defaults this to `DBMode::Optimistic`.
+	 */
 	DBMode mode;
+
+	/**
+	 * The RocksDB database instance.
+	 */
 	std::shared_ptr<rocksdb::DB> db;
+
+	/**
+	 * Map of column family name to column family handle.
+	 */
 	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+
+	/**
+	 * Map of transaction id to transaction handle.
+	 */
 	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
+
+	/**
+	 * Mutex to protect the transactions map.
+	 */
 	std::mutex mutex;
+
+	/**
+	 * Set of closables to be closed when the descriptor is closed.
+	 */
 	std::set<Closable*> closables;
+
+	/**
+	 * Mutex to protect the locks map.
+	 */
 	std::mutex locksMutex;
+
+	/**
+	 * Map of lock key to lock handle.
+	 */
 	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
+
+	/**
+	 * Flag indicating the database is being closed. The `DBRegistry` uses this
+	 * indicate that this descriptor is being closed and should create a new
+	 * database instance.
+	 */
+	std::atomic<bool> closing{false};
 };
 
 /**

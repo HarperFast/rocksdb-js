@@ -5,6 +5,7 @@
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "db_iterator_handle.h"
+#include "db_registry.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
@@ -37,7 +38,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	// create shared_ptr on heap so it persists after function returns
 	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
 
-	DEBUG_LOG("%p Database::Constructor Creating NativeDatabase use_count=%zu\n", dbHandle->get(), dbHandle->use_count())
+	DEBUG_LOG("Database::Constructor Creating NativeDatabase DBHandle=%p\n", dbHandle->get())
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -48,7 +49,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("Database::Constructor NativeDatabase GC'd dbHandle=%p\n", data)
 				auto* dbHandle = static_cast<std::shared_ptr<DBHandle>*>(data);
 				if (*dbHandle) {
-					(*dbHandle).reset();
+					DBRegistry::CloseDB(*dbHandle);
 				}
 				delete dbHandle;
 			},
@@ -79,9 +80,12 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
 
-	if (*dbHandle) {
-		DEBUG_LOG("%p Database::Close() closing database\n", dbHandle->get())
-		(*dbHandle)->close();
+	if (*dbHandle && (*dbHandle)->descriptor) {
+		DEBUG_LOG("%p Database::Close closing database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str())
+		DBRegistry::CloseDB(*dbHandle);
+		DEBUG_LOG("%p Database::Close closed database\n", dbHandle->get())
+	} else {
+		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get())
 	}
 
 	NAPI_RETURN_UNDEFINED()
