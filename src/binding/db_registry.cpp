@@ -25,6 +25,58 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<
 }
 
 /**
+ * Close a RocksDB database handle.
+ */
+void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
+	if (!instance) {
+		DEBUG_LOG("%p DBRegistry::CloseDB Registry not initialized\n", instance.get())
+		return;
+	}
+
+	if (!handle) {
+		DEBUG_LOG("%p DBRegistry::CloseDB Invalid handle\n", instance.get())
+		return;
+	}
+
+	if (!handle->descriptor) {
+		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get())
+		return;
+	}
+
+	std::string path = handle->descriptor->path;
+	std::weak_ptr<DBDescriptor> descriptor;
+
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		auto dbIterator = instance->databases.find(path);
+		if (dbIterator != instance->databases.end()) {
+			descriptor = dbIterator->second;
+			dbIterator->second->closing.store(true);
+			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld), marked as closing\n", instance.get(), path.c_str(), descriptor.use_count())
+		} else {
+			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), path.c_str())
+		}
+	}
+
+	// close the handle, decrements the descriptor ref count
+	handle->close();
+
+	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), descriptor.use_count())
+
+	// re-acquire the mutex to check and potentially remove the descriptor
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		// since the registry itself always has a ref, we need to check for ref count 1
+		if (descriptor.use_count() <= 1) {
+			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str())
+			instance->databases.erase(path);
+		} else {
+			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor is still active (ref count = %ld)\n", instance.get(), descriptor.use_count())
+		}
+	}
+}
+
+/**
  * Open a RocksDB database with column family, caches it in the registry, and
  * return a handle to it.
  *
@@ -192,58 +244,6 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 	}
 
 	return handle;
-}
-
-/**
- * Close a RocksDB database handle.
- */
-void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
-	if (!instance) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Registry not initialized\n", instance.get())
-		return;
-	}
-
-	if (!handle) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Invalid handle\n", instance.get())
-		return;
-	}
-
-	if (!handle->descriptor) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get())
-		return;
-	}
-
-	std::string path = handle->descriptor->path;
-	std::weak_ptr<DBDescriptor> descriptor;
-
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		auto dbIterator = instance->databases.find(path);
-		if (dbIterator != instance->databases.end()) {
-			descriptor = dbIterator->second;
-			dbIterator->second->closing.store(true);
-			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld), marked as closing\n", instance.get(), path.c_str(), descriptor.use_count())
-		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), path.c_str())
-		}
-	}
-
-	// close the handle, decrements the descriptor ref count
-	handle->close();
-
-	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), descriptor.use_count())
-
-	// re-acquire the mutex to check and potentially remove the descriptor
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		// since the registry itself always has a ref, we need to check for ref count 1
-		if (descriptor.use_count() <= 1) {
-			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str())
-			instance->databases.erase(path);
-		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor is still active (ref count = %ld)\n", instance.get(), descriptor.use_count())
-		}
-	}
 }
 
 /**

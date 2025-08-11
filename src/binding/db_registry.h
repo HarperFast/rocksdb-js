@@ -37,8 +37,8 @@ private:
 	static std::unique_ptr<DBRegistry> instance;
 
 public:
-	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
 	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
 	static size_t Size();
 };
