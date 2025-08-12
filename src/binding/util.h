@@ -182,16 +182,14 @@ struct BaseAsyncState {
 		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
 		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
 
-		// unregister async work when state is destroyed
-		if (asyncWork && handle) {
-			handle->unregisterAsyncWork(asyncWork);
-		}
+		// decrement the active async work count
+		this->signalExecuteCompleted();
 	}
 
 	// Call this from the execute handler to signal completion
 	void signalExecuteCompleted() {
 		if (handle) {
-			handle->unregisterAsyncWork(asyncWork);
+			handle->unregisterAsyncWork();
 			handle = nullptr;
 		}
 	}
@@ -234,22 +232,12 @@ struct AsyncWorkHandle {
 	 */
 	std::atomic<bool> cancelled{false};
 
-	/**
-	 * A set of all active async work tasks that are not fully completed. This
-	 * means the async work is queued to be executed, currently executing,
-	 * or the completion handler to run on the main thread hasn't run yet.
-	 *
-	 * Whenever `napi_create_async_work()` is called, register the async work
-	 * reference using `registerAsyncWork()`. If `cancelAllAsyncWork()` is
-	 * called, it loops over this set and calls `::napi_cancel_async_work()` on
-	 * each async work task.
-	 */
-	std::set<napi_async_work> activeAsyncWork;
+	std::atomic<uint32_t> activeAsyncWorkCount{0};
 
 	/**
-	 * A mutex to protect the `activeAsyncWork` set.
+	 * A mutex used to wait for all async work to complete.
 	 */
-	std::mutex asyncWorkMutex;
+	std::mutex waitMutex;
 
 	/**
 	 * A flag which is set by an async worker after it finishes executing its
@@ -260,24 +248,20 @@ struct AsyncWorkHandle {
 	/**
 	 * Registers an async work task with this handle.
 	 */
-	void registerAsyncWork(napi_async_work work) {
-		std::lock_guard<std::mutex> lock(this->asyncWorkMutex);
-		this->activeAsyncWork.insert(work);
+	void registerAsyncWork() {
+		++this->activeAsyncWorkCount;
 	}
 
 	/**
 	 * Unregisters an async work task with this handle.
 	 */
-	void unregisterAsyncWork(napi_async_work work) {
-		std::lock_guard<std::mutex> lock(this->asyncWorkMutex);
-		this->activeAsyncWork.erase(work);
-
+	void unregisterAsyncWork() {
 		// notify if all work is complete
-		if (this->activeAsyncWork.empty()) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (work=%p activeAsyncWork.size()=%zu)\n", this, work, this->activeAsyncWork.size())
+		if (--this->activeAsyncWorkCount == 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount)
 			this->asyncWorkComplete.notify_one();
 		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (work=%p activeAsyncWork.size()=%zu)\n", this, work, this->activeAsyncWork.size())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount)
 		}
 	}
 
@@ -286,20 +270,7 @@ struct AsyncWorkHandle {
 	 * being closed.
 	 */
 	void cancelAllAsyncWork() {
-		// set the cancellation flag
 		this->cancelled.store(true);
-
-		// cancel all active async work
-		std::lock_guard<std::mutex> lock(this->asyncWorkMutex);
-		if (this->activeAsyncWork.empty()) {
-			DEBUG_LOG("%p AsyncWorkHandle::cancelAllAsyncWork() no active async work\n", this)
-			return;
-		}
-
-		DEBUG_LOG("%p AsyncWorkHandle::cancelAllAsyncWork() %d active async work\n", this, this->activeAsyncWork.size())
-		for (auto work : this->activeAsyncWork) {
-			::napi_cancel_async_work(nullptr, work);
-		}
 	}
 
 	/**
@@ -313,13 +284,12 @@ struct AsyncWorkHandle {
 	) {
 		auto start = std::chrono::steady_clock::now();
 		const auto pollInterval = std::chrono::milliseconds(10);
+		std::unique_lock<std::mutex> lock(this->waitMutex);
 
-		std::unique_lock<std::mutex> lock(this->asyncWorkMutex);
-
-		while (!this->activeAsyncWork.empty()) {
+		while (this->activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %zu items remaining\n", this, this->activeAsyncWork.size())
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount)
 				return;
 			}
 
@@ -332,7 +302,7 @@ struct AsyncWorkHandle {
 			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
 				// check if all active work has completed execution
 				// note: the mutex is already locked here
-				return this->activeAsyncWork.empty();
+				return this->activeAsyncWorkCount == 0;
 			});
 
 			if (completed) {
