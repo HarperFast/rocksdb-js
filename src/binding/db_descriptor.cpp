@@ -311,13 +311,9 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  */
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
 	uint32_t id = txnHandle->id;
-	DEBUG_LOG("%p DBDescriptor::transactionAdd Adding transaction handle %p: waiting for lock (id=%d)\n", this, txnHandle.get(), id)
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	DEBUG_LOG("%p DBDescriptor::transactionAdd Adding transaction handle %p: lock acquired (id=%d)\n", this, txnHandle.get(), id)
-	this->transactions[id] = txnHandle;
-	DEBUG_LOG("%p DBDescriptor::transactionAdd Added transaction handle %p: id=%d\n", this, txnHandle.get(), id)
+	this->transactions.emplace(id, txnHandle);
 	this->closables.insert(txnHandle.get());
-	DEBUG_LOG("%p DBDescriptor::transactionAdd Added transaction handle %p: closable inserted (id=%d)\n", this, txnHandle.get(), id)
 }
 
 /**
