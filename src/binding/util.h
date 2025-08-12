@@ -232,6 +232,9 @@ struct AsyncWorkHandle {
 	 */
 	std::atomic<bool> cancelled{false};
 
+	/**
+	 * Count of active async work tasks.
+	 */
 	std::atomic<uint32_t> activeAsyncWorkCount{0};
 
 	/**
