@@ -144,7 +144,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 	));
 
 	// Register the async work with the database handle
-	(*dbHandle)->registerAsyncWork(state->asyncWork);
+	(*dbHandle)->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 
