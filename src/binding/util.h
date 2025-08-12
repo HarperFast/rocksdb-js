@@ -275,7 +275,7 @@ struct AsyncWorkHandle {
 		// notify if all work is complete
 		if (this->activeAsyncWork.empty()) {
 			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (work=%p activeAsyncWork.size()=%zu)\n", this, work, this->activeAsyncWork.size())
-			this->asyncWorkComplete.notify_all();
+			this->asyncWorkComplete.notify_one();
 		} else {
 			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (work=%p activeAsyncWork.size()=%zu)\n", this, work, this->activeAsyncWork.size())
 		}
