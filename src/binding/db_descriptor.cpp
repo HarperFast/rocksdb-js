@@ -40,6 +40,7 @@ DBDescriptor::~DBDescriptor() {
 			DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing closable %p\n", this, handle)
 			this->closables.erase(handle);
 
+			// release the mutex before calling close() to avoid a deadlock
 			lock.unlock();
 			handle->close();
 			lock.lock();
