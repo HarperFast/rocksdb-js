@@ -108,9 +108,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
 
 	/**
-	 * Mutex to protect the transactions map.
+	 * Mutex to protect the transactions map and closables set.
 	 */
-	std::mutex mutex;
+	std::mutex txnsMutex;
 
 	/**
 	 * Set of closables to be closed when the descriptor is closed.

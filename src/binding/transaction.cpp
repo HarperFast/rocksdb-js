@@ -52,7 +52,19 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		txnHandle = new std::shared_ptr<TransactionHandle>(std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot));
+		if (!(*dbHandle)->descriptor) {
+			DEBUG_LOG("Transaction::Constructor Descriptor is null\n")
+			::napi_throw_error(env, nullptr, "Descriptor is null!");
+			return nullptr;
+		}
+		if ((*dbHandle)->descriptor->closing.load()) {
+			DEBUG_LOG("Transaction::Constructor Descriptor is closing\n")
+			::napi_throw_error(env, nullptr, "Database is closing!");
+			return nullptr;
+		}
+		DEBUG_LOG("Transaction::Constructor Adding transaction handle to descriptor\n")
 		(*dbHandle)->descriptor->transactionAdd(*txnHandle);
+		DEBUG_LOG("Transaction::Constructor Added transaction handle to descriptor\n")
 	} else {
 		DEBUG_LOG("Transaction::Constructor Using existing transaction handle\n")
 		napi_value transactionCtor;

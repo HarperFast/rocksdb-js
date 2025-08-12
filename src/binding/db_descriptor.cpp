@@ -32,14 +32,17 @@ DBDescriptor::DBDescriptor(
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (%ld closables)\n", this, this->path.c_str(), this->closables.size())
 
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::unique_lock<std::mutex> lock(this->txnsMutex);
 
 	if (this->closables.size()) {
 		while (!this->closables.empty()) {
 			Closable* handle = *this->closables.begin();
 			DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing closable %p\n", this, handle)
 			this->closables.erase(handle);
+
+			lock.unlock();
 			handle->close();
+			lock.lock();
 		}
 	}
 
@@ -52,7 +55,7 @@ DBDescriptor::~DBDescriptor() {
  * Registers a database resource to be closed when the descriptor is closed.
  */
 void DBDescriptor::attach(Closable* closable) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->closables.insert(closable);
 }
 
@@ -61,7 +64,7 @@ void DBDescriptor::attach(Closable* closable) {
  * closed.
  */
 void DBDescriptor::detach(Closable* closable) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->closables.erase(closable);
 }
 
@@ -308,16 +311,20 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  */
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
 	uint32_t id = txnHandle->id;
-	std::lock_guard<std::mutex> lock(this->mutex);
+	DEBUG_LOG("%p DBDescriptor::transactionAdd Adding transaction handle %p: waiting for lock (id=%d)\n", this, txnHandle.get(), id)
+	std::lock_guard<std::mutex> lock(this->txnsMutex);
+	DEBUG_LOG("%p DBDescriptor::transactionAdd Adding transaction handle %p: lock acquired (id=%d)\n", this, txnHandle.get(), id)
 	this->transactions[id] = txnHandle;
+	DEBUG_LOG("%p DBDescriptor::transactionAdd Added transaction handle %p: id=%d\n", this, txnHandle.get(), id)
 	this->closables.insert(txnHandle.get());
+	DEBUG_LOG("%p DBDescriptor::transactionAdd Added transaction handle %p: closable inserted (id=%d)\n", this, txnHandle.get(), id)
 }
 
 /**
  * Retrieves a transaction from the registry.
  */
 std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	return this->transactions[id];
 }
 
@@ -325,7 +332,7 @@ std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
  * Removes a transaction from the registry.
  */
 void DBDescriptor::transactionRemove(uint32_t id) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->transactions.erase(id);
 }
 

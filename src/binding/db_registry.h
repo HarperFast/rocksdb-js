@@ -1,13 +1,30 @@
 #ifndef __DB_REGISTRY_H__
 #define __DB_REGISTRY_H__
 
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include "db_descriptor.h"
 #include "db_handle.h"
 #include "transaction.h"
 
 namespace rocksdb_js {
+
+/**
+ * Entry in the database registry containing both the descriptor and a condition
+ * variable for coordinating access to that specific path.
+ */
+struct DBRegistryEntry final {
+	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<std::condition_variable> condition;
+
+	// Default constructor
+	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
+
+	DBRegistryEntry(std::shared_ptr<DBDescriptor> desc)
+		: descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
+};
 
 /**
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
@@ -21,10 +38,10 @@ private:
 	DBRegistry() = default;
 
 	/**
-	 * Map of database path to descriptor. There can only be one RocksDB
-	 * database per path open at a time.
+	 * Map of database path to registry entry containing both the descriptor
+	 * and condition variable for that path.
 	 */
-	std::unordered_map<std::string, std::shared_ptr<DBDescriptor>> databases;
+	std::unordered_map<std::string, DBRegistryEntry> databases;
 
 	/**
 	 * Mutex to protect the databases map.
