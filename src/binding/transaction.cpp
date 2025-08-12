@@ -190,8 +190,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		&state->asyncWork // -> result
 	));
 
-	// Register the async work with the transaction handle
-	(*txnHandle)->registerAsyncWork(state->asyncWork);
+	// register the async work with the transaction handle
+	(*txnHandle)->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 

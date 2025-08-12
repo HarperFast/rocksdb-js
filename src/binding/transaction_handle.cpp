@@ -144,8 +144,8 @@ napi_value TransactionHandle::get(
 		&state->asyncWork // -> result
 	));
 
-	// Register the async work with the transaction handle
-	this->registerAsyncWork(state->asyncWork);
+	// register the async work with the transaction handle
+	this->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 
