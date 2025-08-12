@@ -34,17 +34,15 @@ DBDescriptor::~DBDescriptor() {
 
 	std::unique_lock<std::mutex> lock(this->txnsMutex);
 
-	if (this->closables.size()) {
-		while (!this->closables.empty()) {
-			Closable* handle = *this->closables.begin();
-			DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing closable %p\n", this, handle)
-			this->closables.erase(handle);
+	while (!this->closables.empty()) {
+		Closable* handle = *this->closables.begin();
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing closable %p\n", this, handle)
+		this->closables.erase(handle);
 
-			// release the mutex before calling close() to avoid a deadlock
-			lock.unlock();
-			handle->close();
-			lock.lock();
-		}
+		// release the mutex before calling close() to avoid a deadlock
+		lock.unlock();
+		handle->close();
+		lock.lock();
 	}
 
 	this->transactions.clear();
