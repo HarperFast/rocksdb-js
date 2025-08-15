@@ -20,6 +20,7 @@ export interface Encoder {
 	randomAccessStructure?: boolean;
 	readKey?: (buffer: Buffer, start: number, end: number, inSequence?: boolean) => any;
 	structuredClone?: boolean;
+	structures?: any[];
 	useFloat32?: boolean;
 	writeKey?: (key: any, target: Buffer, position: number, inSequence?: boolean) => number;
 }

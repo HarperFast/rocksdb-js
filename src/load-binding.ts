@@ -43,10 +43,15 @@ export type NativeDatabaseOptions = {
 	mode?: NativeDatabaseMode;
 };
 
+type ResolveCallback<T> = (value: T) => void;
+type RejectCallback = (err: Error) => void;
+
 export type NativeDatabase = {
 	new(): NativeDatabase;
+	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
+	clearSync(batchSize?: number): number;
 	close(): void;
-	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void, txnId?: number): number;
+	get(key: Key, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
 	getSync(key: Key, txnId?: number): Buffer;

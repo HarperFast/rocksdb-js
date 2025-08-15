@@ -100,6 +100,41 @@ const db = RocksDatabase.open('path/to/db');
 
 ## Data Operations
 
+### `db.clear(options?): Promise<number>`
+
+Asychronously removes all data in the current database.
+
+- `options: object`
+  - `batchSize?: number` The number of records to remove at once. Defaults to `10000`.
+
+Returns the number of entries that were removed.
+
+Note: This does not remove data from other column families within the same
+database path.
+
+```typescript
+for (let i = 0; i < 10; i++) {
+  db.putSync(`key${i}`, `value${i}`);
+}
+const entriesRemoved = await db.clear();
+console.log(entriesRemoved); // 10
+```
+
+### `db.clearSync(options?): number`
+
+Synchronous version of `db.clear()`.
+
+- `options: object`
+  - `batchSize?: number` The number of records to remove at once. Defaults to `10000`.
+
+```typescript
+for (let i = 0; i < 10; i++) {
+  db.putSync(`key${i}`, `value${i}`);
+}
+const entriesRemoved = db.clearSync();
+console.log(entriesRemoved); // 10
+```
+
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
 Retreives the value for a given key. If the key does not exist, it will resolve
