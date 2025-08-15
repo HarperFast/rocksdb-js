@@ -123,17 +123,11 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 /**
  * State for the `Commit` async work.
  */
-struct TransactionCommitState final {
+struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	TransactionCommitState(napi_env env, std::shared_ptr<TransactionHandle> txnHandle)
-		: asyncWork(nullptr), resolveRef(nullptr), rejectRef(nullptr), txnHandle(txnHandle) {}
+		: BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, txnHandle), txnHandle(txnHandle) {}
 
-	~TransactionCommitState() = default;
-
-	napi_async_work asyncWork;
-	napi_ref resolveRef;
-	napi_ref rejectRef;
 	std::shared_ptr<TransactionHandle> txnHandle;
-	rocksdb::Status status;
 };
 
 /**
@@ -163,38 +157,47 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		name,      // async_resource_name
 		[](napi_env env, void* data) { // execute
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
-			state->status = state->txnHandle->txn->Commit();
+			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+			} else {
+				state->status = state->txnHandle->txn->Commit();
+			}
+			// signal that execute handler is complete
+			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
-			napi_value global;
-			NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+			// only process result if the work wasn't cancelled
+			if (status != napi_cancelled) {
+				napi_value global;
+				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
-			if (state->status.ok()) {
-				DEBUG_LOG("Transaction::Commit complete closing txnHandle=%p\n", state->txnHandle.get())
-				state->txnHandle->close();
+				if (state->status.ok()) {
+					DEBUG_LOG("Transaction::Commit complete closing txnHandle=%p\n", state->txnHandle.get())
+					state->txnHandle->close();
 
-				DEBUG_LOG("Transaction::Commit complete calling resolve\n")
-				napi_value resolve;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
-			} else {
-				napi_value reject;
-				napi_value error;
-				NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-				ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
-				NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+					DEBUG_LOG("Transaction::Commit complete calling resolve\n")
+					napi_value resolve;
+					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
+					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+				} else {
+					napi_value reject;
+					napi_value error;
+					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
+					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
+					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+				}
 			}
-
-			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->resolveRef))
-			NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, state->rejectRef))
 
 			delete state;
 		},
 		state,     // data
 		&state->asyncWork // -> result
 	));
+
+	// register the async work with the transaction handle
+	(*txnHandle)->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 

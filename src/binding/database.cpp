@@ -11,12 +11,12 @@
 #include "util.h"
 
 #define UNWRAP_DB_HANDLE() \
-    std::shared_ptr<DBHandle>* dbHandle = nullptr; \
-    NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
+	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
 
 #define UNWRAP_DB_HANDLE_AND_OPEN() \
-    UNWRAP_DB_HANDLE() \
-    if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+	UNWRAP_DB_HANDLE() \
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
 		::napi_throw_error(env, nullptr, "Database not open"); \
 		NAPI_RETURN_UNDEFINED() \
 	}
@@ -157,7 +157,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	))
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new GetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, keySlice);
+	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, keySlice);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -166,17 +166,28 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		nullptr,   // async_resource
 		name,      // async_resource_name
 		[](napi_env env, void* data) { // execute
-			auto state = reinterpret_cast<GetState<std::shared_ptr<DBHandle>>*>(data);
-			state->status = state->handle->descriptor->db->Get(
-				state->readOptions,
-				state->handle->column.get(),
-				state->keySlice,
-				&state->value
-			);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<DBHandle>>*>(data);
+			// check if database is still open before proceeding
+			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during get operation");
+			} else {
+				state->status = state->handle->descriptor->db->Get(
+					state->readOptions,
+					state->handle->column.get(),
+					state->keySlice,
+					&state->value
+				);
+			}
+			// signal that execute handler is complete
+			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<GetState<std::shared_ptr<DBHandle>>*>(data);
-			resolveGetResult(env, "Get failed", state->status, state->value, state->resolveRef, state->rejectRef);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<DBHandle>>*>(data);
+
+			if (status != napi_cancelled) {
+				resolveGetResult(env, "Get failed", state->status, state->value, state->resolveRef, state->rejectRef);
+			}
+
 			delete state;
 		},
 		state,     // data

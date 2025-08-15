@@ -29,6 +29,13 @@ DBHandle::~DBHandle() {
 void DBHandle::close() {
 	DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, this->descriptor.get(), this->descriptor.use_count())
 
+	// cancel all active async work before closing
+	this->cancelAllAsyncWork();
+
+	// wait for all async work to complete before closing
+	this->waitForAsyncWorkCompletion();
+
+	// decrement the reference count on the column and descriptor
 	if (this->column) {
 		this->column.reset();
 	}

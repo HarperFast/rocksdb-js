@@ -19,7 +19,7 @@ struct DBDescriptor;
  * This handle is for convenience since passing around a shared pointer is a
  * pain.
  */
-struct DBHandle final : Closable {
+struct DBHandle final : Closable, AsyncWorkHandle {
 	DBHandle();
 	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
 	~DBHandle();

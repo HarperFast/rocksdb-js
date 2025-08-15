@@ -111,7 +111,7 @@ napi_value TransactionHandle::get(
 	))
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new GetState<TransactionHandle*>(env, this, readOptions, key);
+	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, key);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -120,22 +120,32 @@ napi_value TransactionHandle::get(
 		nullptr,   // async_resource
 		name,      // async_resource_name
 		[](napi_env env, void* data) { // execute
-			auto state = reinterpret_cast<GetState<TransactionHandle*>*>(data);
-			state->status = state->handle->txn->Get(
-				state->readOptions,
-				state->handle->dbHandle->column.get(),
-				state->keySlice,
-				&state->value
-			);
+			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			// check if database is still open before proceeding
+			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
+			} else {
+				state->status = state->handle->txn->Get(
+					state->readOptions,
+					state->handle->dbHandle->column.get(),
+					state->keySlice,
+					&state->value
+				);
+			}
+			// signal that execute handler is complete
+			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<GetState<TransactionHandle*>*>(data);
+			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
 			resolveGetResult(env, "Transaction get failed", state->status, state->value, state->resolveRef, state->rejectRef);
 			delete state;
 		},
 		state,     // data
 		&state->asyncWork // -> result
 	));
+
+	// register the async work with the transaction handle
+	this->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
 

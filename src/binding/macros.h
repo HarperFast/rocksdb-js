@@ -95,8 +95,8 @@
 
 #define NAPI_EXPORT_FUNCTION(name) \
 	napi_value name##_fn; \
-    NAPI_STATUS_THROWS(::napi_create_function(env, NULL, 0, name, NULL, &name##_fn)) \
-    NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, #name, name##_fn))
+	NAPI_STATUS_THROWS(::napi_create_function(env, NULL, 0, name, NULL, &name##_fn)) \
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, #name, name##_fn))
 
 #define NAPI_CHECK_NEW_TARGET(className) \
 	{ \
@@ -155,7 +155,11 @@
 	std::string errorStr; \
 	{ \
 		std::stringstream ss; \
-		ss << msg << ": " << status.ToString(); \
+		if (status.code() == rocksdb::Status::Code::kAborted) { \
+			ss << status.ToString(); \
+		} else { \
+			ss << msg << ": " << status.ToString(); \
+		} \
 		errorStr = ss.str(); \
 		if (errorStr.size() > 2 && errorStr.compare(errorStr.size() - 2, 2, ": ") == 0) { \
 			errorStr.erase(errorStr.size() - 2); \

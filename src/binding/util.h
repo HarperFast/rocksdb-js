@@ -1,10 +1,15 @@
 #ifndef __UTIL_H__
 #define __UTIL_H__
 
+#include <atomic>
 #include <cstdint>
+#include <condition_variable>
+#include <mutex>
 #include <node_api.h>
 #include <optional>
+#include <set>
 #include <string>
+#include <thread>
 #include "binding.h"
 #include "macros.h"
 #include "rocksdb/status.h"
@@ -158,6 +163,163 @@ template <typename T>
 	return getValue(env, value, result);
 }
 
-}
+/**
+ * Base class for async state.
+ */
+template<typename T>
+struct BaseAsyncState {
+	BaseAsyncState(
+		napi_env env,
+		T handle
+	) :
+		env(env),
+		handle(handle),
+		asyncWork(nullptr),
+		resolveRef(nullptr),
+		rejectRef(nullptr) {}
+
+	virtual ~BaseAsyncState() {
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
+		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
+
+		// decrement the active async work count
+		this->signalExecuteCompleted();
+	}
+
+	// Call this from the execute handler to signal completion
+	void signalExecuteCompleted() {
+		if (handle) {
+			handle->unregisterAsyncWork();
+			handle = nullptr;
+		}
+	}
+
+	napi_env env;
+	T handle;
+	napi_async_work asyncWork;
+	napi_ref resolveRef;
+	napi_ref rejectRef;
+	rocksdb::Status status;
+};
+
+#define ASSERT_OPENED_AND_NOT_CANCELLED(handle, operation) \
+	if (!handle || !handle->opened() || handle->isCancelled()) { \
+		DEBUG_LOG("%p Database closed during %s operation\n", handle, operation) \
+		return rocksdb::Status::Aborted("Database closed during " operation " operation"); \
+	}
+
+/**
+ * Base class for managing async work tasks. All handles that are passed into
+ * async work tasks should inherit from this class.
+ *
+ * @example
+ * ```
+ * struct MyHandle : AsyncWorkHandle {
+ *     // ...
+ * };
+ *
+ * struct MyAsyncState : BaseAsyncState<MyHandle> {
+ *     MyAsyncState(napi_env env, MyHandle handle) : BaseAsyncState(env, handle) {}
+ *     // ...
+ * };
+ * ```
+ */
+struct AsyncWorkHandle {
+	/**
+	 * A flag set by the main thread to signal the async worker that it has
+	 * been cancelled. The async worker calls `handle->isCancelled()` to check
+	 * if it has been cancelled.
+	 */
+	std::atomic<bool> cancelled{false};
+
+	/**
+	 * Count of active async work tasks.
+	 */
+	std::atomic<uint32_t> activeAsyncWorkCount{0};
+
+	/**
+	 * A mutex used to wait for all async work to complete.
+	 */
+	std::mutex waitMutex;
+
+	/**
+	 * A flag which is set by an async worker after it finishes executing its
+	 * task and calls `unregisterAsyncWork()`.
+	 */
+	std::condition_variable asyncWorkComplete;
+
+	/**
+	 * Registers an async work task with this handle.
+	 */
+	void registerAsyncWork() {
+		++this->activeAsyncWorkCount;
+	}
+
+	/**
+	 * Unregisters an async work task with this handle.
+	 */
+	void unregisterAsyncWork() {
+		// notify if all work is complete
+		if (--this->activeAsyncWorkCount == 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount)
+			this->asyncWorkComplete.notify_one();
+		} else {
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount)
+		}
+	}
+
+	/**
+	 * Cancels all active async work tasks. This called when the database is
+	 * being closed.
+	 */
+	void cancelAllAsyncWork() {
+		this->cancelled.store(true);
+	}
+
+	/**
+	 * After calling `cancelAllAsyncWork()`, this function waits for all active
+	 * async work tasks to call `unregisterAsyncWork()`. Note that if any
+	 * in-flight async work tasks are cancelled, the async work complete handler
+	 * will not yet have been called.
+	 */
+	void waitForAsyncWorkCompletion(
+		std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)
+	) {
+		auto start = std::chrono::steady_clock::now();
+		const auto pollInterval = std::chrono::milliseconds(10);
+		std::unique_lock<std::mutex> lock(this->waitMutex);
+
+		while (this->activeAsyncWorkCount > 0) {
+			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+			if (elapsed >= timeout) {
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount)
+				return;
+			}
+
+			auto remainingTime = timeout - elapsed;
+			auto waitTime = std::min(pollInterval, remainingTime);
+
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %zu active work items\n", this, this->activeAsyncWork.size())
+
+			// wait for either all work to be unregistered OR all execute handlers to complete
+			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
+				// check if all active work has completed execution
+				// note: the mutex is already locked here
+				return this->activeAsyncWorkCount == 0;
+			});
+
+			if (completed) {
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion all async work execution completed\n", this)
+				return;
+			}
+		}
+	}
+
+	bool isCancelled() const {
+		return this->cancelled.load();
+	}
+};
+
+} // namespace rocksdb_js
 
 #endif
