@@ -5,6 +5,7 @@
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "db_iterator_handle.h"
+#include "db_registry.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
@@ -37,7 +38,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	// create shared_ptr on heap so it persists after function returns
 	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
 
-	DEBUG_LOG("%p Database::Constructor Creating NativeDatabase use_count=%zu\n", dbHandle->get(), dbHandle->use_count())
+	DEBUG_LOG("Database::Constructor Creating NativeDatabase DBHandle=%p\n", dbHandle->get())
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -48,7 +49,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("Database::Constructor NativeDatabase GC'd dbHandle=%p\n", data)
 				auto* dbHandle = static_cast<std::shared_ptr<DBHandle>*>(data);
 				if (*dbHandle) {
-					(*dbHandle).reset();
+					DBRegistry::CloseDB(*dbHandle);
 				}
 				delete dbHandle;
 			},
@@ -79,8 +80,12 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE()
 
-	if (*dbHandle) {
-		(*dbHandle)->close();
+	if (*dbHandle && (*dbHandle)->descriptor) {
+		DEBUG_LOG("%p Database::Close closing database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str())
+		DBRegistry::CloseDB(*dbHandle);
+		DEBUG_LOG("%p Database::Close closed database\n", dbHandle->get())
+	} else {
+		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get())
 	}
 
 	NAPI_RETURN_UNDEFINED()
@@ -144,9 +149,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value name;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+	NAPI_STATUS_THROWS(::napi_create_string_latin1(
 		env,
-		"database.get",
+		"rocksdb-js.get",
 		NAPI_AUTO_LENGTH,
 		&name
 	))
@@ -354,6 +359,32 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Checks if the database has a lock on the given key.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const hasLock = db.hasLock('foo');
+ * ```
+ */
+napi_value Database::HasLock(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
+	bool hasLock = (*dbHandle)->descriptor->lockExistsByKey(keyStr);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		hasLock,
+		&result
+	))
+	return result;
+}
+
+/**
  * Checks if the RocksDB database is open.
  */
 napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
@@ -402,6 +433,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
 	} catch (const std::exception& e) {
+		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what())
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
@@ -514,6 +546,113 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Tries to acquire a lock on the given key. If a callback is specified, queues
+ * the callback to be called when the lock is released.
+ *
+ * @param key - The key to lock.
+ * @param callback - The callback to call when the lock is released.
+ *
+ * @returns `true` if the lock was acquired, `false` otherwise.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const lockSuccess = db.tryLock('foo', () => {
+ *   console.log('lock was released');
+ * });
+ * ```
+ */
+napi_value Database::TryLock(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	napi_value result;
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
+	bool isNewLock = false;
+
+	(*dbHandle)->descriptor->lockEnqueueCallback(
+		env,       // env
+		keyStr,    // key
+		argv[1],   // callback
+		*dbHandle, // owner
+		true,      // skipEnqueueIfExists
+		nullptr,   // deferred
+		&isNewLock // [out] isNewLock
+	);
+
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, isNewLock, &result))
+	return result;
+}
+
+/**
+ * Releases a lock on the given key. If a callback was specified when the lock
+ * was acquired, calls the callback.
+ *
+ * @param key - The key to unlock.
+ *
+ * @returns `true` if the lock was released, `false` otherwise.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const lockSuccess = db.tryLock('foo', () => {
+ *   console.log('lock was released');
+ * });
+ * db.unlock('foo'); // calls the callback, returns `true`
+ * db.unlock('foo'); // returns `false` because the lock was already released
+ * ```
+ */
+napi_value Database::Unlock(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	napi_value result;
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
+	bool unlocked = (*dbHandle)->descriptor->lockReleaseByKey(keyStr);
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, unlocked, &result))
+	return result;
+}
+
+/**
+ * Mutually exclusive execution of a function across threads for a given key.
+ */
+napi_value Database::WithLock(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+
+	// Create a promise first, then check if database is open
+	napi_deferred deferred;
+	napi_value promise;
+	NAPI_STATUS_THROWS(::napi_create_promise(env, &deferred, &promise))
+
+	// Check if database is open
+	std::shared_ptr<DBHandle>* dbHandle = nullptr;
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) {
+		napi_value error;
+		napi_create_string_utf8(env, "Database not open", NAPI_AUTO_LENGTH, &error);
+		napi_reject_deferred(env, deferred, error);
+		return promise;
+	}
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type))
+	if (type != napi_function) {
+		napi_value error;
+		napi_create_string_utf8(env, "Callback must be a function", NAPI_AUTO_LENGTH, &error);
+		napi_reject_deferred(env, deferred, error);
+		return promise;
+	}
+
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
+	(*dbHandle)->descriptor->lockCall(env, keyStr, argv[1], deferred, *dbHandle);
+
+	return promise;
+}
+
+/**
  * Initializes the `NativeDatabase` JavaScript class.
  */
 void Database::Init(napi_env env, napi_value exports) {
@@ -523,10 +662,14 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	auto className = "Database";

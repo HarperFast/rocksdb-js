@@ -47,14 +47,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 	}
 
-	/**
-	 * In memory lock mechanism for cache resolution.
-	 * @param key
-	 */
-	attemptLock(_key: Key) {
-		//
-	}
-
 	async clear(): Promise<void> {
 		//
 	}
@@ -119,8 +111,23 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
-	hasLock(_key: Key): boolean {
-		return false;
+	/**
+	 * Returns whether the database has a lock for the given key.
+	 *
+	 * @param key - The key to check.
+	 * @returns `true` if the database has a lock for the given key, `false`
+	 * otherwise.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.hasLock('foo'); // false
+	 * db.tryLock('foo', () => {});
+	 * db.hasLock('foo'); // true
+	 * ```
+	 */
+	hasLock(key: Key): boolean {
+		return this.store.hasLock(key);
 	}
 
 	async ifNoExists(_key: Key): Promise<void> {
@@ -361,7 +368,64 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 	}
 
-	unlock(_key: Key): boolean {
-		return true;
+	/**
+	 * Attempts to acquire a lock for a given key. If the lock is available,
+	 * the function returns `true` and the optional callback is never called.
+	 * If the lock is not available, the function returns `false` and the
+	 * callback is queued until the lock is released.
+	 *
+	 * @param key - The key to lock.
+	 * @param onUnlocked - A callback to call when the lock is released.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.tryLock('foo', () => {
+	 *   console.log('lock acquired');
+	 * });
+	 * ```
+	 * @returns `true` if the lock was acquired, `false` otherwise.
+	 */
+	tryLock(key: Key, onUnlocked?: () => void): boolean {
+		return this.store.tryLock(key, onUnlocked);
+	}
+
+	/**
+	 * Releases the lock on the given key and calls any queued `onUnlocked`
+	 * callback handlers.
+	 *
+	 * @param key - The key to unlock.
+	 * @returns `true` if the lock was released or `false` if the lock did not
+	 * exist.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.tryLock('foo', () => {});
+	 * db.unlock('foo'); // returns `true`
+	 * db.unlock('foo'); // already unlocked, returns `false`
+	 * ```
+	 */
+	unlock(key: Key): void {
+		return this.store.unlock(key);
+	}
+
+	/**
+	 * Excecutes a function using a thread-safe lock to ensure mutual
+	 * exclusion.
+	 *
+	 * @param callback - A callback to call when the lock is acquired.
+	 * @returns A promise that resolves when the lock is acquired.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.withLock(async (waited) => {
+	 *   console.log('lock acquired', waited);
+	 * });
+	 * ```
+	 */
+	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+		return this.store.withLock(key, callback);
 	}
 }

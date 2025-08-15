@@ -42,17 +42,36 @@ Creates a new database instance.
   need to exist, but the parent directories do.
 - `options: object` [optional]
   - `name:string` The column family name. Defaults to `"default"`.
-  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by default and the cache is shared across all database instances.
-  - `parallelismThreads: number` The number of background threads to use for flush and compaction. Defaults to `1`.
-  - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting until commit. Defaults to `false`.
-  - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for more information.
+  - `noBlockCache: boolean` When `true`, disables the block cache. Block
+     caching is enabled by default and the cache is shared across all database
+     instances.
+  - `parallelismThreads: number` The number of background threads to use for
+    flush and compaction. Defaults to `1`.
+  - `pessimistic: boolean` When `true`, throws conflict errors when they occur
+    instead of waiting until commit. Defaults to `false`.
+  - `store: Store` A custom store that handles all interaction between the
+    `RocksDatabase` or `Transaction` instances and the native database
+    interface. See [Custom Store](#custom-store) for more information.
+
+### `db.close()`
+
+Closes a database. This function can be called multiple times and will only
+close an opened database. A database instance can be reopened once its closed.
+
+```typescript
+const db = RocksDatabase.open('foo');
+db.close();
+```
 
 ### `db.config(options)`
 
 Sets global database settings.
 
 - `options: object`
-  - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks. Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `blockCacheSize: number` The amount of memory in bytes to use to cache
+    uncompressed blocks. Defaults to 32MB. Set to `0` (zero) disables block
+    cache for future opened databases. Existing block cache for any opened
+    databases is resized immediately. Negative values throw an error.
 
 ```typescript
 RocksDatabase.config({
@@ -72,17 +91,16 @@ const db = new RocksDatabase('path/to/db');
 db.open();
 ```
 
-There's also a static `open()` method for convenience that performs the same thing:
+There's also a static `open()` method for convenience that performs the same
+thing:
 
 ```typescript
 const db = RocksDatabase.open('path/to/db');
 ```
 
-### `db.close()`
+## Data Operations
 
-Closes a database. A database instance can be reopened once its closed.
-
-### `db.get(key, options?): MaybePromise<any>`
+### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
 Retreives the value for a given key. If the key does not exist, it will resolve
 `undefined`.
@@ -103,17 +121,9 @@ assert.equal(result, 'foo');
 
 Note that all errors are returned as rejected promises.
 
-### `db.getSync(key, options?): any`
+### `db.getSync(key: Key, options?: GetOptions): any`
 
 Synchronous version of `get()`.
-
-### `db.getEntry(key): MaybePromise`
-
-Retrieves a value for the given key as an "entry" object.
-
-```typescript
-const { value } = await db.getEntry('foo');
-```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
 
@@ -183,7 +193,7 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
-### `db.put(key, value, options?): Promise`
+### `db.put(key: Key, value: any, options?: PutOptions): Promise`
 
 Stores a value for a given key.
 
@@ -191,11 +201,11 @@ Stores a value for a given key.
 await db.put('foo', 'bar');
 ```
 
-### `db.putSync(key, value, options?): void`
+### `db.putSync(key: Key, value: any, options?: PutOptions): void`
 
 Synchronous version of `put()`.
 
-### `db.remove(key): Promise`
+### `db.remove(key: Key): Promise`
 
 Removes the value for a given key.
 
@@ -203,9 +213,11 @@ Removes the value for a given key.
 await db.remove('foo');
 ```
 
-### `db.removeSync(key): void`
+### `db.removeSync(key: Key): void`
 
 Synchronous version of `remove()`.
+
+## Transactions
 
 ### `db.transaction(async (txn: Transaction) => Promise<any>): Promise<any>`
 
@@ -246,7 +258,8 @@ Executes a transaction callback and commits synchronously. Once the transaction
 callback returns, the commit is executed synchronously and blocks the current
 thread until finished.
 
-Inside a synchronous transaction, use `getSync()`, `putSync()`, and `removeSync()`.
+Inside a synchronous transaction, use `getSync()`, `putSync()`, and
+`removeSync()`.
 
 ```typescript
 import type { Transaction } from '@harperdb/rocksdb-js';
@@ -255,11 +268,110 @@ db.transactionSync((txn: Transaction) => {
 });
 ```
 
+## Exclusive Locking
+
+`rocksdb-js` includes a handful of functions for executing thread-safe mutually
+exclusive functions.
+
+### `db.hasLock(key: Key): boolean`
+
+Returns `true` if the database has a lock for the given key, otherwise `false`.
+
+```typescript
+db.hasLock('foo'); // false
+db.tryLock('foo'); // true
+db.hasLock('foo'); // true
+```
+
+### `db.tryLock(key: Key, onUnlocked?: () => void): boolean`
+
+Attempts to acquire a lock for a given key. If the lock is available, the
+function returns `true` and the optional `onUnlocked` callback is never called.
+If the lock is not available, the function returns `false` and the `onUnlocked`
+callback is queued until the lock is released.
+
+When a database is closed, all locks associated to it will be unlocked.
+
+```typescript
+db.tryLock('foo', () => {
+  console.log('never fired');
+}); // true, callback ignored
+
+db.tryLock('foo', () => {
+  console.log('hello world');
+}); // false, already locked, callback queued
+
+db.unlock('foo'); // fires second lock callback
+```
+
+The `onUnlocked` callback function can be used to signal to retry acquiring the
+lock:
+
+```typescript
+function doSomethingExclusively() {
+  // if lock is unavailable, queue up callback to recursively retry
+  if (db.tryLock('foo', () => doSomethingExclusively())) {
+
+    // lock acquired, do something exclusive
+
+    db.unlock('foo');
+  }
+}
+```
+
+### `db.unlock(key): boolean`
+
+Releases the lock on the given key and calls any queued `onUnlocked` callback
+handlers. Returns `true` if the lock was released or `false` if the lock did
+not exist.
+
+```typescript
+db.tryLock('foo');
+db.unlock('foo'); // true
+db.unlock('foo'); // false, already unlocked
+```
+
+### `db.withLock(key: Key, callback: () => void | Promise<void>): Promise<void>`
+
+Runs a function with guaranteed exclusive access across all threads.
+
+```typescript
+await db.withLock('key', async () => {
+  // do something exclusive
+  console.log(db.hasLock('key')); // true
+});
+```
+
+If there are more than one simultaneous lock requests, it will block them until
+the lock is available.
+
+```typescript
+await Promise.all([
+  db.withLock('key', () => {
+    console.log('first lock blocking for 100ms');
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }),
+  db.withLock('key', () => {
+    console.log('second lock blocking for 100ms');
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }),
+  db.withLock('key', () => {
+    console.log('third lock acquired');
+  })
+]);
+```
+
+Note: If the `callback` throws an error, Node.js suppress the error. Node.js
+18.3.0 introduced a `--force-node-api-uncaught-exceptions-policy` flag which
+will cause errors to emit the `'uncaughtException'` event. Future Node.js
+releases will enable this flag by default.
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`
 instance and the native RocksDB interface. It owns the native RocksDB instance
-along with various settings including encoding and the db name. It handles all interactions with the native RocksDB instance.
+along with various settings including encoding and the db name. It handles all
+interactions with the native RocksDB instance.
 
 The default `Store` contains the following methods which can be overridden:
 
@@ -273,10 +385,14 @@ The default `Store` contains the following methods which can be overridden:
 - `getCount(context, options?, txnId?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
+- `hasLock(key)`
 - `isOpen()`
 - `open()`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
+- `tryLock(key, onUnlocked?)`
+- `unlock(key)`
+- `withLock(key, callback?)`
 
 To use it, extend the default `Store` and pass in an instance of your store
 into the `RocksDatabase` constructor.
@@ -318,31 +434,58 @@ console.log(await db.get('foo'));
 ### `RocksDBOptions`
 
 - `options: object`
-  - `adaptiveReadahead: boolean` When `true`, RocksDB will do some enhancements for prefetching the data. Defaults to `true`. Note that RocksDB defaults this to `false`.
-  - `asyncIO: boolean` When `true`, RocksDB will prefetch some data async and apply it if reads are sequential and its internal automatic prefetching. Defaults to `true`. Note that RocksDB defaults this to `false`.
-  - `autoReadaheadSize: boolean` When `true`, RocksDB will auto-tune the readahead size during scans internally based on the block cache data when block caching is enabled, an end key (e.g. upper bound) is set, and prefix is the same as the start key. Defaults to `true`.
-  - `backgroundPurgeOnIteratorCleanup: boolean` When `true`, after the iterator is closed, a background job is scheduled to flush the job queue and delete obsolete files. Defaults to `true`. Note that RocksDB defaults this to `false`.
-  - `fillCache: boolean` When `true`, the iterator will fill the block cache. Filling the block cache is not desirable for bulk scans and could impact eviction order. Defaults to `false`. Note that RocksDB defaults this to `true`.
-  - `readaheadSize: number` The RocksDB readahead size. RocksDB does auto-readahead for iterators when there is more than two reads for a table file. The readahead starts at 8KB and doubles on every additional read up to 256KB. This option can help if most of the range scans are large and if a larger readahead than that enabled by auto-readahead is needed. Using a large readahead size (> 2MB) can typically improve the performance of forward iteration on spinning disks. Defaults to `0`.
-  - `tailing: boolean` When `true`, creates a "tailing iterator" which is a special iterator that has a view of the complete database including newly added data and
-  is optimized for sequential reads. This will return records that were inserted into the database after the creation of the iterator. Defaults to `false`.
+  - `adaptiveReadahead: boolean` When `true`, RocksDB will do some enhancements
+    for prefetching the data. Defaults to `true`. Note that RocksDB defaults
+    this to `false`.
+  - `asyncIO: boolean` When `true`, RocksDB will prefetch some data async and
+    apply it if reads are sequential and its internal automatic prefetching.
+    Defaults to `true`. Note that RocksDB defaults this to `false`.
+  - `autoReadaheadSize: boolean` When `true`, RocksDB will auto-tune the
+    readahead size during scans internally based on the block cache data when
+    block caching is enabled, an end key (e.g. upper bound) is set, and prefix
+    is the same as the start key. Defaults to `true`.
+  - `backgroundPurgeOnIteratorCleanup: boolean` When `true`, after the iterator
+    is closed, a background job is scheduled to flush the job queue and delete
+    obsolete files. Defaults to `true`. Note that RocksDB defaults this to
+    `false`.
+  - `fillCache: boolean` When `true`, the iterator will fill the block cache.
+    Filling the block cache is not desirable for bulk scans and could impact
+    eviction order. Defaults to `false`. Note that RocksDB defaults this to
+    `true`.
+  - `readaheadSize: number` The RocksDB readahead size. RocksDB does
+    auto-readahead for iterators when there is more than two reads for a table
+    file. The readahead starts at 8KB and doubles on every additional read up
+    to 256KB. This option can help if most of the range scans are large and if a
+    larger readahead than that enabled by auto-readahead is needed. Using a
+    large readahead size (> 2MB) can typically improve the performance of
+    forward iteration on spinning disks. Defaults to `0`.
+  - `tailing: boolean` When `true`, creates a "tailing iterator" which is a
+    special iterator that has a view of the complete database including newly
+    added data and is optimized for sequential reads. This will return records
+    that were inserted into the database after the creation of the iterator.
+    Defaults to `false`.
 
 ### `RangeOptions`
 
 Extends `RocksDBOptions`.
 
 - `options: object`
-  - `end: Key | Uint8Array` The range end key, otherwise known as the "upper bound". Defaults to the last key in the database.
-  - `exclusiveStart: boolean` When `true`, the iterator will exclude the first key if it matches the start key. Defaults to `false`.
-  - `inclusiveEnd: boolean` When `true`, the iterator will include the last key if it matches the end key. Defaults to `false`.
-  - `start: Key | Uint8Array` The range start key, otherwise known as the "lower bound". Defaults to the first key in the database.
+  - `end: Key | Uint8Array` The range end key, otherwise known as the "upper
+    bound". Defaults to the last key in the database.
+  - `exclusiveStart: boolean` When `true`, the iterator will exclude the first
+    key if it matches the start key. Defaults to `false`.
+  - `inclusiveEnd: boolean` When `true`, the iterator will include the last key
+    if it matches the end key. Defaults to `false`.
+  - `start: Key | Uint8Array` The range start key, otherwise known as the "lower
+    bound". Defaults to the first key in the database.
 
 ### `IteratorOptions`
 
 Extends `RangeOptions`.
 
 - `options: object`
-  - `reverse: boolean` When `true`, the iterator will iterate in reverse order. Defaults to `false`.
+  - `reverse: boolean` When `true`, the iterator will iterate in reverse order.
+    Defaults to `false`.
 
 ## Development
 
@@ -409,4 +552,33 @@ To run the tests, run:
 
 ```bash
 pnpm coverage
+```
+
+To run the tests without code coverage, run:
+
+```bash
+pnpm test
+```
+
+To run a specific test suite, for example `"ranges"`, run:
+
+```bash
+pnpm test ranges
+# or
+pnpm test test/ranges
+```
+
+To run a specific unit test, for example all tests that mention
+`"column family"`, run:
+
+```bash
+pnpm test -t "column family"
+```
+
+Vitest's terminal renderer will often overwrite the debug log output, so it's
+highly recommended to specify the `CI=1` environment variable to prevent Vitest
+from erasing log output:
+
+```bash
+CI=1 pnpm test
 ```

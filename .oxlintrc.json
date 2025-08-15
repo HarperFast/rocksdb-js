@@ -6,6 +6,7 @@
 		"mocha": true
 	},
 	"rules": {
-		"no-console": "off"
+		"no-console": "off",
+		"typescript/no-this-alias": "off"
 	}
 }
