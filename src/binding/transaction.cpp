@@ -52,6 +52,12 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		txnHandle = new std::shared_ptr<TransactionHandle>(std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot));
+
+		if ((*dbHandle)->descriptor->closing.load()) {
+			::napi_throw_error(env, nullptr, "Database is closing!");
+			return nullptr;
+		}
+
 		(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 	} else {
 		DEBUG_LOG("Transaction::Constructor Using existing transaction handle\n")

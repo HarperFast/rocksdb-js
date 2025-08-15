@@ -1,8 +1,10 @@
 #ifndef __DB_REGISTRY_H__
 #define __DB_REGISTRY_H__
 
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include "db_descriptor.h"
 #include "db_handle.h"
 #include "transaction.h"
@@ -10,24 +12,51 @@
 namespace rocksdb_js {
 
 /**
+ * Entry in the database registry containing both the descriptor and a condition
+ * variable for coordinating access to that specific path.
+ */
+struct DBRegistryEntry final {
+	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<std::condition_variable> condition;
+
+	// Default constructor
+	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
+
+	DBRegistryEntry(std::shared_ptr<DBDescriptor> desc)
+		: descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
+};
+
+/**
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
  * contains a weak reference to the database and column families.
  */
 class DBRegistry final {
 private:
-	// private constructor
+	/**
+	 * Private constructor.
+	 */
 	DBRegistry() = default;
 
-	// map of database path to descriptor
-	// this needs to be a weak_ptr because the DBHandles own the descriptor
-	std::unordered_map<std::string, std::weak_ptr<DBDescriptor>> databases;
+	/**
+	 * Map of database path to registry entry containing both the descriptor
+	 * and condition variable for that path.
+	 */
+	std::unordered_map<std::string, DBRegistryEntry> databases;
 
+	/**
+	 * Mutex to protect the databases map.
+	 */
+	std::mutex databasesMutex;
+
+	/**
+	 * The singleton instance of the registry.
+	 */
 	static std::unique_ptr<DBRegistry> instance;
-	std::mutex mutex;
 
 public:
+	static void CloseDB(const std::shared_ptr<DBHandle> handle);
 	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
-	static void Purge();
+	static void PurgeAll();
 	static size_t Size();
 };
 

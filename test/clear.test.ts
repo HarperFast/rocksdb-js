@@ -84,10 +84,12 @@ describe('Clear', () => {
 			const dbPath = generateDBPath();
 			try {
 				db = RocksDatabase.open(dbPath);
-				for (let i = 0; i < 10; ++i) {
+				// note: this test can be flaky because sometimes it can clear
+				// faster than the close
+				for (let i = 0; i < 100000; ++i) {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
-				const promise = db.clear({ batchSize: 100 });
+				const promise = db.clear({ batchSize: 1000 });
 				db.close();
 				await expect(promise).rejects.toThrow('Database closed during clear operation');
 			} finally {
