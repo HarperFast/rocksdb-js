@@ -483,6 +483,16 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Gets or creates a buffer that an be shared across worker threads.
+ */
+napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1]);
+}
+
+/**
  * Checks if the database has a lock on the given key.
  *
  * @example
@@ -788,6 +798,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },

@@ -198,6 +198,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		if (listStatus.ok() && !columnFamilyNames.empty()) {
 			// database exists, use existing column families
 			for (const auto& cfName : columnFamilyNames) {
+				DEBUG_LOG("DBRegistry::OpenDB Opening column family \"%s\"\n", cfName.c_str())
 				cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
 			}
 		} else {

@@ -156,8 +156,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		};
 	}
 
-	getUserSharedBuffer(_key: Key, _defaultBuffer?: Buffer) {
-		//
+	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer) {
+		return this.store.getUserSharedBuffer(key, defaultBuffer);
 	}
 
 	/**

@@ -368,6 +368,10 @@ export class Store {
 		return txnId;
 	}
 
+	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer) {
+		return this.db.getUserSharedBuffer(this.encodeKey(key), defaultBuffer);
+	}
+
 	/**
 	 * Checks if a lock exists.
 	 * @param key The lock key.

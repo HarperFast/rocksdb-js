@@ -89,7 +89,7 @@ describe('Clear', () => {
 				for (let i = 0; i < 100000; ++i) {
 					db.putSync(`foo-${i}`, `bar-${i}`);
 				}
-				const promise = db.clear({ batchSize: 1000 });
+				const promise = db.clear({ batchSize: 10 });
 				db.close();
 				await expect(promise).rejects.toThrow('Database closed during clear operation');
 			} finally {

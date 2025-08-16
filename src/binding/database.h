@@ -29,6 +29,7 @@ struct Database final {
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetSync(napi_env env, napi_callback_info info);
+	static napi_value GetUserSharedBuffer(napi_env env, napi_callback_info info);
 	static napi_value HasLock(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);

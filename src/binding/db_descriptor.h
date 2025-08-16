@@ -20,6 +20,7 @@ namespace rocksdb_js {
 struct TransactionHandle;
 struct DBDescriptor;
 struct LockHandle;
+struct UserSharedBufferHandle;
 
 /**
  * Custom deleter for RocksDB that calls WaitForCompact with close_db=true
@@ -81,6 +82,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
 	void transactionRemove(uint32_t id);
 
+	napi_value getUserSharedBuffer(napi_env env, std::string key, napi_value defaultBuffer);
+
 	/**
 	 * The path of the database.
 	 */
@@ -133,6 +136,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
+
+	std::unordered_map<std::string, UserSharedBufferHandle> userSharedBuffers;
+
+	std::mutex userSharedBuffersMutex;
 };
 
 /**
@@ -214,6 +221,38 @@ struct LockHandle final {
 	 * The environment of the current callback.
 	 */
 	napi_env env;
+};
+
+/**
+ * Contains the buffer and buffer size for a user shared buffer.
+ */
+struct UserSharedBufferHandle final {
+	UserSharedBufferHandle() : data(nullptr), size(0) {}
+
+	UserSharedBufferHandle(void* data, size_t size) : size(size) {
+		this->data = new char[size];
+		::memcpy(this->data, data, size);
+	}
+
+	// move constructor
+	UserSharedBufferHandle(UserSharedBufferHandle&& other) noexcept
+		: data(other.data), size(other.size) {
+		other.data = nullptr;
+		other.size = 0;
+	}
+
+	// delete copy constructor and copy assignment to prevent accidental copying
+	UserSharedBufferHandle(const UserSharedBufferHandle&) = delete;
+	UserSharedBufferHandle& operator=(const UserSharedBufferHandle&) = delete;
+
+	~UserSharedBufferHandle() {
+		if (this->data) {
+			delete[] this->data;
+		}
+	}
+
+	char* data;
+	size_t size;
 };
 
 } // namespace rocksdb_js

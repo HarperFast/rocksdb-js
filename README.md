@@ -228,6 +228,34 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
+### `db.getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer)`
+
+Creates a named buffer with the contents of `defaultBuffer` that can be shared
+across threads. This is useful for storing data such as flags, counters, or
+any ArrayBuffer-based data.
+
+```typescript
+const buffer = new Uint8Array(
+  db.getUserSharedBuffer('isDone', new ArrayBuffer(1))
+);
+done[0] = 0;
+
+if (!done[0] !== 1) {
+  done[1] = 1;
+}
+```
+
+```typescript
+const incrementer = new BigInt64Array(
+  db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+);
+incrementer[0] = 1n;
+
+function getNextId() {
+  return Atomics.add(incrementer, 0, 1n);
+}
+```
+
 ### `db.put(key: Key, value: any, options?: PutOptions): Promise`
 
 Stores a value for a given key.
@@ -420,6 +448,7 @@ The default `Store` contains the following methods which can be overridden:
 - `getCount(context, options?, txnId?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
+- `getUserSharedBuffer(key, defaultBuffer?)`
 - `hasLock(key)`
 - `isOpen()`
 - `open()`

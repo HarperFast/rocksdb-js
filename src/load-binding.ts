@@ -55,6 +55,7 @@ export type NativeDatabase = {
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
 	getSync(key: Key, txnId?: number): Buffer;
+	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer): ArrayBuffer;
 	hasLock(key: Key): boolean;
 	opened: boolean;
 	open(

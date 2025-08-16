@@ -708,4 +708,59 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	)
 }
 
+/**
+ * Creates a new user shared buffer or returns an existing one.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key of the user shared buffer.
+ * @param defaultBuffer The default buffer to use if the user shared buffer does not exist.
+ * @returns The user shared buffer.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * const userSharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
+ * ```
+ */
+napi_value DBDescriptor::getUserSharedBuffer(napi_env env, std::string key, napi_value defaultBuffer) {
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
+	if (!isArrayBuffer) {
+		::napi_throw_error(env, nullptr, "Default buffer must be an ArrayBuffer");
+		return nullptr;
+	}
+
+	std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
+
+	auto it = this->userSharedBuffers.find(key);
+	if (it == this->userSharedBuffers.end()) {
+		void* data;
+		size_t size;
+
+		NAPI_STATUS_THROWS(::napi_get_arraybuffer_info(
+			env,
+			defaultBuffer,
+			&data,
+			&size
+		))
+
+		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %ld\n", this, size)
+
+		it = this->userSharedBuffers.emplace(key, UserSharedBufferHandle(data, size)).first;
+	}
+
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external arraybuffer with size: %ld\n", this, it->second.size)
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
+		env,
+		it->second.data, // data
+		it->second.size, // size
+		nullptr,         // finalize_cb
+		nullptr,         // finalize_hint
+		&result          // [out] result
+	))
+	return result;
+}
+
 } // namespace rocksdb_js
