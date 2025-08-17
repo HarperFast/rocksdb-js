@@ -55,6 +55,15 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// trackMetrics?: boolean;
 }
 
+export type UserSharedBufferCallback = () => void;
+export type UserSharedBufferOptions = {
+	callback?: UserSharedBufferCallback;
+};
+export type ArrayBufferWithNotify = ArrayBuffer & {
+	cancel: () => void;
+	notify: () => void;
+};
+
 /**
  * A store wraps the `NativeDatabase` binding and database settings so that a
  * single database instance can be shared between the main `RocksDatabase`
@@ -192,6 +201,10 @@ export class Store {
 		this.writeKey = writeKey;
 	}
 
+	addEventListener(key: Key, callback: () => void): void {
+		this.db.addEventListener(this.encodeKey(key), callback);
+	}
+
 	/**
 	 * Closes the database.
 	 */
@@ -220,6 +233,10 @@ export class Store {
 			return this.decoder.decode(value);
 		}
 		return value;
+	}
+
+	emit(key: Key): boolean {
+		return this.db.emit(this.encodeKey(key));
 	}
 
 	/**
@@ -368,8 +385,46 @@ export class Store {
 		return txnId;
 	}
 
-	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer) {
-		return this.db.getUserSharedBuffer(this.encodeKey(key), defaultBuffer);
+	/**
+	 * Gets or creates a buffer that can be shared across worker threads.
+	 *
+	 * @param key - The key to get or create the buffer for.
+	 * @param defaultBuffer - The default buffer to copy and use if the buffer
+	 * does not exist.
+	 * @param [options] - The options for the buffer.
+	 * @param [options.callback] - A optional callback that receives
+	 * key-specific events.
+	 * @returns An `ArrayBuffer` that is internally backed by a rocksdb-js
+	 * managed buffer. The buffer also has `notify()` and `cancel()` methods
+	 * that can be used to notify the specified `options.callback`.
+	 */
+	getUserSharedBuffer(
+		key: Key,
+		defaultBuffer: ArrayBuffer,
+		options?: UserSharedBufferOptions
+	): ArrayBufferWithNotify {
+		const encodedKey = this.encodeKey(key);
+
+		if (options !== undefined && typeof options !== 'object') {
+			throw new TypeError('Options must be an object');
+		}
+
+		if (options?.callback) {
+			this.db.addEventListener(encodedKey, options.callback);
+		}
+
+		const buffer = this.db.getUserSharedBuffer(encodedKey, defaultBuffer) as ArrayBufferWithNotify;
+
+		// note: the notification methods need to re-encode the key because
+		// encodeKey() uses a shared key buffer
+		buffer.notify = () => this.db.emit(this.encodeKey(key));
+		buffer.cancel = () => {
+			if (options?.callback) {
+				this.db.removeEventListener(this.encodeKey(key), options.callback);
+			}
+		};
+
+		return buffer;
 	}
 
 	/**
@@ -424,6 +479,10 @@ export class Store {
 			valueBuffer,
 			this.getTxnId(options)
 		);
+	}
+
+	removeEventListener(key: Key, callback: () => void): boolean {
+		return this.db.removeEventListener(this.encodeKey(key), callback);
 	}
 
 	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional | undefined) {

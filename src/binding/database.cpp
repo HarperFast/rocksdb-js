@@ -66,6 +66,27 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Adds a listener.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * db.addEventListener('foo', () => {
+ *   console.log('foo');
+ * });
+ *
+ * db.emit('foo');
+ * ```
+ */
+napi_value Database::AddEventListener(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	(*dbHandle)->descriptor->addEventListener(env, key, argv[1]);
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
  * Removes all entries from the RocksDB database by dropping the column family
  * and recreating it.
  *
@@ -213,6 +234,27 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_RETURN_UNDEFINED()
+}
+
+/**
+ * Calls all listeners for a given key.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * db.addEventListener('foo', () => {
+ *   console.log('foo');
+ * });
+ *
+ * db.emit('foo'); // returns `true` if there were listeners
+ * db.emit('bar'); // returns `false` if there were no listeners
+ * ```
+ */
+napi_value Database::Emit(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	return (*dbHandle)->descriptor->emit(env, key);
 }
 
 /**
@@ -637,6 +679,13 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+napi_value Database::RemoveEventListener(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	return (*dbHandle)->descriptor->removeEventListener(env, key, argv[1]);
+}
+
 /**
  * Removes a key from the RocksDB database.
  */
@@ -791,9 +840,11 @@ napi_value Database::WithLock(napi_env env, napi_callback_info info) {
  */
 void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
+		{ "addEventListener", nullptr, AddEventListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "emit", nullptr, Emit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -803,6 +854,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "removeEventListener", nullptr, RemoveEventListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },

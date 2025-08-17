@@ -21,6 +21,7 @@ struct TransactionHandle;
 struct DBDescriptor;
 struct LockHandle;
 struct UserSharedBufferHandle;
+struct ListenerCallback;
 
 /**
  * Custom deleter for RocksDB that calls WaitForCompact with close_db=true
@@ -84,6 +85,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	napi_value getUserSharedBuffer(napi_env env, std::string key, napi_value defaultBuffer);
 
+	void addEventListener(napi_env env, std::string key, napi_value callback);
+	napi_value removeEventListener(napi_env env, std::string key, napi_value callback);
+	napi_value emit(napi_env env, std::string key);
+
 	/**
 	 * The path of the database.
 	 */
@@ -137,9 +142,25 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::atomic<bool> closing{false};
 
+	/**
+	 * Map of user shared buffers by key.
+	 */
 	std::unordered_map<std::string, UserSharedBufferHandle> userSharedBuffers;
 
+	/**
+	 * Mutex to protect the user shared buffers map.
+	 */
 	std::mutex userSharedBuffersMutex;
+
+	/**
+	 * Map of listeners by key.
+	 */
+	std::unordered_map<std::string, std::vector<ListenerCallback>> listeners;
+
+	/**
+	 * Mutex to protect the listeners map.
+	 */
+	std::mutex listenersMutex;
 };
 
 /**
@@ -253,6 +274,66 @@ struct UserSharedBufferHandle final {
 
 	char* data;
 	size_t size;
+};
+
+/**
+ * A wrapper for a listener callback that holds the threadsafe callback, env,
+ * and callback reference. The callback reference is used to remove the listener
+ * callback and the env is used for cleanup.
+ */
+struct ListenerCallback final {
+    ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef)
+        : env(env), threadsafeCallback(tsfn), callbackRef(callbackRef) {}
+
+	// move constructor
+	ListenerCallback(ListenerCallback&& other) noexcept
+		: env(other.env), threadsafeCallback(other.threadsafeCallback), callbackRef(other.callbackRef) {
+		other.env = nullptr;
+		other.threadsafeCallback = nullptr;
+		other.callbackRef = 0;
+	}
+
+	// move assignment operator
+	ListenerCallback& operator=(ListenerCallback&& other) noexcept {
+		if (this != &other) {
+			// Clean up current resources first
+			if (callbackRef != nullptr) {
+				::napi_delete_reference(this->env, this->callbackRef);
+			}
+			if (threadsafeCallback != nullptr) {
+				::napi_release_threadsafe_function(this->threadsafeCallback, napi_tsfn_release);
+			}
+
+			// Transfer ownership
+			env = other.env;
+			threadsafeCallback = other.threadsafeCallback;
+			callbackRef = other.callbackRef;
+
+			// Invalidate source
+			other.env = nullptr;
+			other.threadsafeCallback = nullptr;
+			other.callbackRef = nullptr;
+			DEBUG_LOG("%p DBDescriptor::ListenerCallback move-assigned from %p\n", this, &other)
+		}
+		return *this;
+	}
+
+	// delete copy constructor and copy assignment to prevent accidental copying
+	ListenerCallback(const ListenerCallback&) = delete;
+	ListenerCallback& operator=(const ListenerCallback&) = delete;
+
+	~ListenerCallback() {
+		if (this->callbackRef) {
+			::napi_delete_reference(this->env, this->callbackRef);
+		}
+		if (this->threadsafeCallback) {
+			::napi_release_threadsafe_function(this->threadsafeCallback, napi_tsfn_release);
+		}
+	}
+
+	napi_env env;
+    napi_threadsafe_function threadsafeCallback;
+	napi_ref callbackRef;
 };
 
 } // namespace rocksdb_js

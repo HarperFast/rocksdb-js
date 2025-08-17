@@ -763,4 +763,133 @@ napi_value DBDescriptor::getUserSharedBuffer(napi_env env, std::string key, napi
 	return result;
 }
 
+/**
+ * Adds an event listener to the database descriptor.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key of the event.
+ * @param callback The callback to call when the event is emitted.
+ */
+void DBDescriptor::addEventListener(napi_env env, std::string key, napi_value callback) {
+	napi_valuetype type;
+	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, callback, &type))
+	if (type != napi_function) {
+		::napi_throw_error(env, nullptr, "Callback must be a function");
+		return;
+	}
+
+	napi_value resource_name;
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_latin1(
+		env,
+		"rocksdb-js.event.listener",
+		NAPI_AUTO_LENGTH,
+		&resource_name
+	))
+
+	napi_threadsafe_function threadsafeCallback;
+	NAPI_STATUS_THROWS_VOID(::napi_create_threadsafe_function(
+		env,                // env
+		callback,           // func
+		nullptr,            // async_resource
+		resource_name,      // async_resource_name
+		0,                  // max_queue_size
+		1,                  // initial_thread_count
+		nullptr,            // thread_finalize_data
+		nullptr,            // thread_finalize_callback
+		nullptr,            // context
+		nullptr,            // call_js_cb
+		&threadsafeCallback // [out] callback
+	))
+
+	NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
+
+	std::lock_guard<std::mutex> lock(this->listenersMutex);
+	auto it = this->listeners.find(key);
+	if (it == this->listeners.end()) {
+		it = this->listeners.emplace(key, std::vector<ListenerCallback>()).first;
+	}
+
+	napi_ref callbackRef;
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, callback, 1, &callbackRef))
+
+	DEBUG_LOG("%p DBDescriptor::addEventListener adding listener for key \"%s\"\n", this, key.c_str())
+	it->second.emplace_back(env, threadsafeCallback, callbackRef);
+}
+
+/**
+ * Removes an event listener from the database descriptor.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key of the event.
+ * @param callback The callback to remove.
+ */
+napi_value DBDescriptor::removeEventListener(napi_env env, std::string key, napi_value callback) {
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
+	if (type != napi_function) {
+		::napi_throw_error(env, nullptr, "Callback must be a function");
+		return nullptr;
+	}
+
+	bool found = false;
+	std::lock_guard<std::mutex> lock(this->listenersMutex);
+	auto it = this->listeners.find(key);
+
+	if (it != this->listeners.end()) {
+		for (auto listener = it->second.begin(); listener != it->second.end();) {
+			napi_value fn;
+			NAPI_STATUS_THROWS(::napi_get_reference_value(listener->env, listener->callbackRef, &fn))
+			bool isEqual = false;
+			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual))
+			if (isEqual) {
+				DEBUG_LOG("%p DBDescriptor::removeEventListener removing listener\n", this)
+				listener = it->second.erase(listener);
+				found = true;
+				break;
+			}
+			++listener;
+		}
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, found, &result));
+	return result;
+}
+
+/**
+ * Emits an event from the database descriptor.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key of the event.
+ * @returns `true` if there were at least one listener, `false` otherwise.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * db.addEventListener('foo', () => {
+ *   console.log('foo');
+ * });
+ *
+ * db.emit('foo'); // returns `true` if there were listeners
+ * db.emit('bar'); // returns `false` if there were no listeners
+ * ```
+ */
+napi_value DBDescriptor::emit(napi_env env, std::string key) {
+	bool found = false;
+	std::lock_guard<std::mutex> lock(this->listenersMutex);
+	auto it = this->listeners.find(key);
+
+	if (it != this->listeners.end()) {
+		found = true;
+		DEBUG_LOG("%p DBDescriptor::emit calling %zu listener%s for key \"%s\"\n", this, it->second.size(), it->second.size() == 1 ? "" : "s", key.c_str())
+		for (auto& listener : it->second) {
+			::napi_call_threadsafe_function(listener.threadsafeCallback, nullptr, napi_tsfn_blocking);
+		}
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, found, &result));
+	return result;
+}
+
 } // namespace rocksdb_js

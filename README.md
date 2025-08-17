@@ -331,6 +331,27 @@ db.transactionSync((txn: Transaction) => {
 });
 ```
 
+## Threadsafe Event Emitting
+
+`rocksdb-js` provides a threadsafe event emitter-like API that lets you emit
+events to one or more synchronous callback listeners.
+
+```typescript
+const callback = () => console.log('hi from foo');
+db.addEventListener('foo', callback);
+db.emit('foo');
+db.removeEventListener('foo', callback);
+```
+
+### `addEventListener(key, callback): void`
+
+### `removeEventListener(key, callback): boolean`
+
+### `emit(key): boolean`
+
+Call all callback listeners for the given key. Returns `true` if one or more
+callbacks were called, otherwise `false`.
+
 ## Exclusive Locking
 
 `rocksdb-js` includes a handful of functions for executing thread-safe mutually

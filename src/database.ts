@@ -1,6 +1,6 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
-import { Store, type StoreOptions } from './store.js';
+import { Store, type ArrayBufferWithNotify, type StoreOptions, type UserSharedBufferCallback } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
@@ -46,6 +46,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		} else {
 			throw new TypeError('Invalid database path or store');
 		}
+	}
+
+	addEventListener(key: Key, callback: () => void): void {
+		this.store.addEventListener(key, callback);
 	}
 
 	/**
@@ -133,6 +137,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
+	emit(key: Key): boolean {
+		return this.store.emit(key);
+	}
+
 	get encoder() {
 		return this.store.encoder;
 	}
@@ -156,8 +164,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		};
 	}
 
-	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer) {
-		return this.store.getUserSharedBuffer(key, defaultBuffer);
+	/**
+	 * Gets or creates a buffer that can be shared across worker threads.
+	 *
+	 * @param key - The key to get or create the buffer for.
+	 * @param defaultBuffer - The default buffer to copy and use if the buffer
+	 * does not exist.
+	 * @param [options] - The options for the buffer.
+	 * @param [options.callback] - A optional callback that receives
+	 * key-specific events.
+	 * @returns An `ArrayBuffer` that is internally backed by a rocksdb-js
+	 * managed buffer. The buffer also has `notify()` and `cancel()` methods
+	 * that can be used to notify the specified `options.callback`.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const buffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
+	 */
+	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?: { callback?: UserSharedBufferCallback }): ArrayBufferWithNotify {
+		return this.store.getUserSharedBuffer(key, defaultBuffer, options);
 	}
 
 	/**
@@ -330,6 +356,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	get path() {
 		return this.store.path;
+	}
+
+	removeEventListener(key: Key, callback: () => void): boolean {
+		return this.store.removeEventListener(key, callback);
 	}
 
 	/**
