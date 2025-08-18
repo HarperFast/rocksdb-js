@@ -763,14 +763,73 @@ napi_value DBDescriptor::getUserSharedBuffer(napi_env env, std::string key, napi
 	return result;
 }
 
+#define NAPI_STATUS_THROWS_FREE_DATA(call) \
+	{ \
+		napi_status status = (call); \
+		if (status != napi_ok) { \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+			::napi_throw_error(env, nullptr, errorStr.c_str()); \
+			DEBUG_LOG("NAPI_STATUS_THROWS_FREE_DATA error: %s\n", errorStr.c_str()) \
+			if (listenerData) { \
+				delete listenerData; \
+			} \
+			return; \
+		} \
+	}
+
 /**
- * Adds an event listener to the database descriptor.
+ * Custom wrapper used by `napi_call_threadsafe_function()` to call user-
+ * defined event listener callback functions.
+ *
+ * When args is an array, each element of the array becomes a separate argument
+ * to the JavaScript callback function instead of passing the array as a single argument.
+ */
+static void callListenerCallback(napi_env env, napi_value jsCallback, void* context, void* data) {
+	if (env == nullptr || jsCallback == nullptr) {
+		return;
+	}
+
+	ListenerData* listenerData = static_cast<ListenerData*>(data);
+	uint32_t argc = 0;
+	napi_value* argv = nullptr;
+	napi_value global;
+
+	NAPI_STATUS_THROWS_FREE_DATA(::napi_get_global(env, &global))
+
+	if (listenerData) {
+		napi_value json;
+		napi_value parse;
+		napi_value jsonString;
+		napi_value arrayArgs;
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, global, "JSON", &json))
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, json, "parse", &parse))
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_create_string_utf8(env, listenerData->args.c_str(), listenerData->args.length(), &jsonString))
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, json, parse, 1, &jsonString, &arrayArgs))
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_array_length(env, arrayArgs, &argc))
+
+		argv = new napi_value[argc];
+		for (uint32_t i = 0; i < argc; i++) {
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_element(env, arrayArgs, i, &argv[i]))
+		}
+
+		if (listenerData) {
+			delete listenerData;
+			listenerData = nullptr;
+		}
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, global, jsCallback, argc, argv, &result))
+}
+
+/**
+ * Adds an listener to the database descriptor.
  *
  * @param env The environment of the current callback.
- * @param key The key of the event.
+ * @param key The key.
  * @param callback The callback to call when the event is emitted.
  */
-void DBDescriptor::addEventListener(napi_env env, std::string key, napi_value callback) {
+void DBDescriptor::addListener(napi_env env, std::string key, napi_value callback) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, callback, &type))
 	if (type != napi_function) {
@@ -781,7 +840,7 @@ void DBDescriptor::addEventListener(napi_env env, std::string key, napi_value ca
 	napi_value resource_name;
 	NAPI_STATUS_THROWS_VOID(::napi_create_string_latin1(
 		env,
-		"rocksdb-js.event.listener",
+		"rocksdb-js.listener",
 		NAPI_AUTO_LENGTH,
 		&resource_name
 	))
@@ -797,8 +856,8 @@ void DBDescriptor::addEventListener(napi_env env, std::string key, napi_value ca
 		nullptr,            // thread_finalize_data
 		nullptr,            // thread_finalize_callback
 		nullptr,            // context
-		nullptr,            // call_js_cb
-		&threadsafeCallback // [out] callback
+		callListenerCallback,  // call_js_cb
+		&threadsafeCallback         // [out] callback
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
@@ -812,18 +871,18 @@ void DBDescriptor::addEventListener(napi_env env, std::string key, napi_value ca
 	napi_ref callbackRef;
 	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, callback, 1, &callbackRef))
 
-	DEBUG_LOG("%p DBDescriptor::addEventListener adding listener for key \"%s\"\n", this, key.c_str())
+	DEBUG_LOG("%p DBDescriptor::addListener adding listener\n", this)
 	it->second.emplace_back(env, threadsafeCallback, callbackRef);
 }
 
 /**
- * Removes an event listener from the database descriptor.
+ * Removes an listener from the database descriptor.
  *
  * @param env The environment of the current callback.
- * @param key The key of the event.
+ * @param key The key.
  * @param callback The callback to remove.
  */
-napi_value DBDescriptor::removeEventListener(napi_env env, std::string key, napi_value callback) {
+napi_value DBDescriptor::removeListener(napi_env env, std::string key, napi_value callback) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
 	if (type != napi_function) {
@@ -842,7 +901,7 @@ napi_value DBDescriptor::removeEventListener(napi_env env, std::string key, napi
 			bool isEqual = false;
 			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual))
 			if (isEqual) {
-				DEBUG_LOG("%p DBDescriptor::removeEventListener removing listener\n", this)
+				DEBUG_LOG("%p DBDescriptor::removeListener removing listener\n", this)
 				listener = it->second.erase(listener);
 				found = true;
 				break;
@@ -860,13 +919,13 @@ napi_value DBDescriptor::removeEventListener(napi_env env, std::string key, napi
  * Emits an event from the database descriptor.
  *
  * @param env The environment of the current callback.
- * @param key The key of the event.
+ * @param key The key.
  * @returns `true` if there were at least one listener, `false` otherwise.
  *
  * @example
  * ```ts
  * const db = new NativeDatabase();
- * db.addEventListener('foo', () => {
+ * db.addListener('foo', () => {
  *   console.log('foo');
  * });
  *
@@ -874,16 +933,39 @@ napi_value DBDescriptor::removeEventListener(napi_env env, std::string key, napi
  * db.emit('bar'); // returns `false` if there were no listeners
  * ```
  */
-napi_value DBDescriptor::emit(napi_env env, std::string key) {
+napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
 	bool found = false;
 	std::lock_guard<std::mutex> lock(this->listenersMutex);
 	auto it = this->listeners.find(key);
 
+	ListenerData* data = nullptr;
+
+	bool isArray = false;
+	NAPI_STATUS_THROWS(::napi_is_array(env, args, &isArray))
+	if (isArray) {
+		uint32_t argc = 0;
+		NAPI_STATUS_THROWS(::napi_get_array_length(env, args, &argc))
+		if (argc > 0) {
+			napi_value global;
+			napi_value json;
+			napi_value stringify;
+			napi_value jsonString;
+			size_t len;
+			NAPI_STATUS_THROWS(::napi_get_global(env, &global));
+			NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
+			NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
+			NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &args, &jsonString));
+			NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
+			data = new ListenerData(len);
+			NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &data->args[0], len + 1, nullptr));
+		}
+	}
+
 	if (it != this->listeners.end()) {
 		found = true;
-		DEBUG_LOG("%p DBDescriptor::emit calling %zu listener%s for key \"%s\"\n", this, it->second.size(), it->second.size() == 1 ? "" : "s", key.c_str())
+		DEBUG_LOG("%p DBDescriptor::emit calling %zu listener%s\n", this, it->second.size(), it->second.size() == 1 ? "" : "s")
 		for (auto& listener : it->second) {
-			::napi_call_threadsafe_function(listener.threadsafeCallback, nullptr, napi_tsfn_blocking);
+			::napi_call_threadsafe_function(listener.threadsafeCallback, data, napi_tsfn_blocking);
 		}
 	}
 

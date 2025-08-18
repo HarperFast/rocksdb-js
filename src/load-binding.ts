@@ -48,11 +48,11 @@ type RejectCallback = (err: Error) => void;
 
 export type NativeDatabase = {
 	new(): NativeDatabase;
-	addEventListener(key: BufferWithDataView, callback: () => void): void;
+	addListener(key: BufferWithDataView, callback: (...args: any[]) => void): void;
 	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
 	clearSync(batchSize?: number): number;
 	close(): void;
-	emit(key: BufferWithDataView): boolean;
+	emit(key: BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
@@ -65,7 +65,7 @@ export type NativeDatabase = {
 		options?: NativeDatabaseOptions
 	): void;
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
-	removeEventListener(key: BufferWithDataView, callback: () => void): boolean;
+	removeListener(key: BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;

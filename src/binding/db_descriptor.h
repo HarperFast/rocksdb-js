@@ -85,9 +85,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	napi_value getUserSharedBuffer(napi_env env, std::string key, napi_value defaultBuffer);
 
-	void addEventListener(napi_env env, std::string key, napi_value callback);
-	napi_value removeEventListener(napi_env env, std::string key, napi_value callback);
-	napi_value emit(napi_env env, std::string key);
+	void addListener(napi_env env, std::string key, napi_value callback);
+	napi_value removeListener(napi_env env, std::string key, napi_value callback);
+	napi_value emit(napi_env env, std::string key, napi_value args);
 
 	/**
 	 * The path of the database.
@@ -274,6 +274,12 @@ struct UserSharedBufferHandle final {
 
 	char* data;
 	size_t size;
+};
+
+struct ListenerData final {
+	std::string args;
+
+	ListenerData(size_t size) : args(size, '\0') {}
 };
 
 /**

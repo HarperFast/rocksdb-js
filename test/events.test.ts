@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import { setTimeout as delay } from 'node:timers/promises';
 import { withResolvers } from '../src/util.js';
 
 describe('Events', () => {
@@ -21,9 +20,9 @@ describe('Events', () => {
 				withResolvers(),
 			];
 
-			db.addEventListener('foo', () => {
+			db.addListener('foo', value => {
 				spy();
-				resolvers[0].resolve();
+				resolvers[0].resolve(value);
 			});
 
 			expect(db.emit('foo')).toBe(true);
@@ -40,7 +39,7 @@ describe('Events', () => {
 				spy2();
 				resolvers[1].resolve();
 			};
-			db.addEventListener('foo', callback2);
+			db.addListener('foo', callback2);
 
 			expect(db.emit('foo')).toBe(true);
 			await Promise.all(resolvers.map(r => r.promise));
@@ -48,13 +47,13 @@ describe('Events', () => {
 			expect(spy2).toHaveBeenCalledTimes(1);
 
 			// remove listener
-			expect(db.removeEventListener('foo', callback2)).toBe(true);
+			expect(db.removeListener('foo', callback2)).toBe(true);
 
 			resolvers = [
 				withResolvers(),
 			];
-			expect(db.emit('foo')).toBe(true);
-			await Promise.all(resolvers.map(r => r.promise));
+			expect(db.emit('foo', 'bar')).toBe(true);
+			await expect(Promise.all(resolvers.map(r => r.promise))).resolves.toEqual(['bar']);
 			expect(spy).toHaveBeenCalledTimes(3);
 			expect(spy2).toHaveBeenCalledTimes(1);
 		} finally {
@@ -69,9 +68,9 @@ describe('Events', () => {
 
 		try {
 			db = new RocksDatabase(dbPath);
-			expect(() => db!.addEventListener('foo', () => {})).toThrow('Database not open');
+			expect(() => db!.addListener('foo', () => {})).toThrow('Database not open');
 			expect(() => db!.emit('foo')).toThrow('Database not open');
-			expect(() => db!.removeEventListener('foo', () => {})).toThrow('Database not open');
+			expect(() => db!.removeListener('foo', () => {})).toThrow('Database not open');
 		} finally {
 			db?.close();
 			await rimraf(dbPath);
@@ -84,13 +83,15 @@ describe('Events', () => {
 
 		try {
 			db = RocksDatabase.open(dbPath);
-			expect(() => db!.addEventListener('foo', 'foo' as any))
+			expect(() => db!.addListener('foo', 'foo' as any))
 				.toThrow('Callback must be a function');
-			expect(() => db!.removeEventListener('foo', 'foo' as any))
+			expect(() => db!.removeListener('foo', 'foo' as any))
 				.toThrow('Callback must be a function');
 		} finally {
 			db?.close();
 			await rimraf(dbPath);
 		}
 	});
+
+	// worker test
 });

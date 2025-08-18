@@ -1,6 +1,6 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
-import { Store, type ArrayBufferWithNotify, type StoreOptions, type UserSharedBufferCallback } from './store.js';
+import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
@@ -46,10 +46,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		} else {
 			throw new TypeError('Invalid database path or store');
 		}
-	}
-
-	addEventListener(key: Key, callback: () => void): void {
-		this.store.addEventListener(key, callback);
 	}
 
 	/**
@@ -137,10 +133,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
-	emit(key: Key): boolean {
-		return this.store.emit(key);
-	}
-
 	get encoder() {
 		return this.store.encoder;
 	}
@@ -182,7 +174,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const buffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
 	 */
-	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?: { callback?: UserSharedBufferCallback }): ArrayBufferWithNotify {
+	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?: UserSharedBufferOptions): ArrayBufferWithNotify {
 		return this.store.getUserSharedBuffer(key, defaultBuffer, options);
 	}
 
@@ -356,10 +348,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	get path() {
 		return this.store.path;
-	}
-
-	removeEventListener(key: Key, callback: () => void): boolean {
-		return this.store.removeEventListener(key, callback);
 	}
 
 	/**

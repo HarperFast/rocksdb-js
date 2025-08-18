@@ -1,6 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
-import { EventEmitter } from 'node:events';
 import type { GetOptions, PutOptions, Store } from './store.js';
 import type { Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -137,7 +136,7 @@ export interface DBITransactional {
  *
  * This class is not meant to be used directly.
  */
-export class DBI<T extends DBITransactional | unknown = unknown> extends EventEmitter {
+export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * The RocksDB context for `get()`, `put()`, and `remove()`.
 	 */
@@ -159,8 +158,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> extends EventEm
 		if (new.target === DBI) {
 			throw new Error('DBI is an abstract class and cannot be instantiated directly');
 		}
-
-		super();
 
 		// this ideally should not be public, but JavaScript doesn't support
 		// protected properties
@@ -458,5 +455,33 @@ export class DBI<T extends DBITransactional | unknown = unknown> extends EventEm
 	 */
 	removeSync(key: Key, options?: T): void {
 		return this.store.removeSync(this.#context, key, options as DBITransactional);
+	}
+
+	addListener(key: Key, callback: (...args: any[]) => void): void {
+		this.store.addListener(key, callback);
+	}
+
+	off(key: Key, callback: (...args: any[]) => void): void {
+		this.store.removeListener(key, callback);
+	}
+
+	on(key: Key, callback: (...args: any[]) => void): void {
+		this.store.addListener(key, callback);
+	}
+
+	once(key: Key, callback: (...args: any[]) => void): void {
+		const wrapper = (...args: any[]) => {
+			this.removeListener(key, wrapper);
+			callback(...args);
+		};
+		this.store.addListener(key, wrapper);
+	}
+
+	emit(key: Key, ...args: any[]): boolean {
+		return this.store.emit(key, ...args);
+	}
+
+	removeListener(key: Key, callback: () => void): boolean {
+		return this.store.removeListener(key, callback);
 	}
 }

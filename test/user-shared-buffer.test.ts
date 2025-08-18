@@ -85,6 +85,8 @@ describe('User Shared Buffer', () => {
 			}
 		});
 
+		// TODO: test GC
+
 		it('should throw an error if the default buffer is not an ArrayBuffer', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();

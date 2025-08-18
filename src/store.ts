@@ -201,8 +201,8 @@ export class Store {
 		this.writeKey = writeKey;
 	}
 
-	addEventListener(key: Key, callback: () => void): void {
-		this.db.addEventListener(this.encodeKey(key), callback);
+	addListener(key: Key, callback: (...args: any[]) => void): void {
+		this.db.addListener(this.encodeKey(key), callback);
 	}
 
 	/**
@@ -235,8 +235,8 @@ export class Store {
 		return value;
 	}
 
-	emit(key: Key): boolean {
-		return this.db.emit(this.encodeKey(key));
+	emit(key: Key, ...args: any[]): boolean {
+		return this.db.emit(this.encodeKey(key), args);
 	}
 
 	/**
@@ -410,19 +410,21 @@ export class Store {
 		}
 
 		if (options?.callback) {
-			this.db.addEventListener(encodedKey, options.callback);
+			this.db.addListener(encodedKey, options.callback);
 		}
 
 		const buffer = this.db.getUserSharedBuffer(encodedKey, defaultBuffer) as ArrayBufferWithNotify;
 
 		// note: the notification methods need to re-encode the key because
 		// encodeKey() uses a shared key buffer
-		buffer.notify = () => this.db.emit(this.encodeKey(key));
+		buffer.notify = (...args: any[]) => this.db.emit(this.encodeKey(key), args);
 		buffer.cancel = () => {
 			if (options?.callback) {
-				this.db.removeEventListener(this.encodeKey(key), options.callback);
+				this.db.removeListener(this.encodeKey(key), options.callback);
 			}
 		};
+
+		// TODO: if buffer is gc'd, remove the listener
 
 		return buffer;
 	}
@@ -481,8 +483,8 @@ export class Store {
 		);
 	}
 
-	removeEventListener(key: Key, callback: () => void): boolean {
-		return this.db.removeEventListener(this.encodeKey(key), callback);
+	removeListener(key: Key, callback: () => void): boolean {
+		return this.db.removeListener(this.encodeKey(key), callback);
 	}
 
 	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional | undefined) {

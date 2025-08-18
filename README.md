@@ -315,6 +315,16 @@ const isBar = await db.transaction(async (txn: Transaction) => {
 console.log(isBar ? 'Foo is bar' : 'Foo is not bar');
 ```
 
+Just before the transaction function is executed, the database emits a
+`'begin-transaction'` event:
+
+```typescript
+db.on('begin-transaction', () => console.log('Calling transaction function'));
+await db.transaction(async (txn: Transaction) => {
+	console.log('begin-transaction was just emitted');
+});
+```
+
 ### `db.transactionSync((txn: Transaction) => any): any`
 
 Executes a transaction callback and commits synchronously. Once the transaction
@@ -337,15 +347,16 @@ db.transactionSync((txn: Transaction) => {
 events to one or more synchronous callback listeners.
 
 ```typescript
-const callback = () => console.log('hi from foo');
-db.addEventListener('foo', callback);
+const callback = (name) => console.log(`Hi from ${name}`);
+db.addListener('foo', callback);
 db.emit('foo');
-db.removeEventListener('foo', callback);
+db.emit('foo', 'bar');
+db.removeListener('foo', callback);
 ```
 
-### `addEventListener(key, callback): void`
+### `addListener(key, callback): void`
 
-### `removeEventListener(key, callback): boolean`
+### `removeListener(key, callback): boolean`
 
 ### `emit(key): boolean`
 
