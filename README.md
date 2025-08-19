@@ -228,11 +228,24 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
-### `db.getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer)`
+### `db.getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?)`
 
-Creates a named buffer with the contents of `defaultBuffer` that can be shared
+Creates a new buffer with the contents of `defaultBuffer` that can be accessed
 across threads. This is useful for storing data such as flags, counters, or
 any ArrayBuffer-based data.
+
+- `options?: object`
+  - `callback?: () => void` A optional callback is called when `notify()`
+	 * on the returned buffer is called.
+
+Returns a new `ArrayBuffer` with two additional methods:
+
+- `notify()` - Invokes the `options.callback`, if specified.
+- `cancel()` - Removes the `options.callback` making future `notify()` calls a
+  no op.
+
+If the returned buffer goes out of scope and is garbage collected, the
+underlying memory and notify callback is freed.
 
 ```typescript
 const buffer = new Uint8Array(

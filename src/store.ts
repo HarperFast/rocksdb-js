@@ -405,8 +405,8 @@ export class Store {
 	 * @param defaultBuffer - The default buffer to copy and use if the buffer
 	 * does not exist.
 	 * @param [options] - The options for the buffer.
-	 * @param [options.callback] - A optional callback that receives
-	 * key-specific events.
+	 * @param [options.callback] - A optional callback is called when `notify()`
+	 * on the returned buffer is called.
 	 * @returns An `ArrayBuffer` that is internally backed by a rocksdb-js
 	 * managed buffer. The buffer also has `notify()` and `cancel()` methods
 	 * that can be used to notify the specified `options.callback`.
