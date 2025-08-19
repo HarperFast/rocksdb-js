@@ -201,6 +201,12 @@ export class Store {
 		this.writeKey = writeKey;
 	}
 
+	/**
+	 * Adds a listener for the given key.
+	 *
+	 * @param key - The key to add the listener for.
+	 * @param callback - The callback to add.
+	 */
 	addListener(key: Key, callback: (...args: any[]) => void): void {
 		this.db.addListener(this.encodeKey(key), callback);
 	}
@@ -235,6 +241,13 @@ export class Store {
 		return value;
 	}
 
+	/**
+	 * Emits an event for the given key.
+	 *
+	 * @param key - The key to emit the event for.
+	 * @param args - The arguments to emit.
+	 * @returns `true` if there were listeners, `false` otherwise.
+	 */
 	emit(key: Key, ...args: any[]): boolean {
 		return this.db.emit(this.encodeKey(key), args);
 	}
@@ -448,6 +461,16 @@ export class Store {
 	}
 
 	/**
+	 * Gets the number of listeners for the given key.
+	 *
+	 * @param key - The key to get the listeners for.
+	 * @returns The number of listeners for the given key.
+	 */
+	listeners(key: Key): number {
+		return this.db.listeners(this.encodeKey(key));
+	}
+
+	/**
 	 * Opens the database. This must be called before any database operations
 	 * are performed.
 	 */
@@ -483,6 +506,13 @@ export class Store {
 		);
 	}
 
+	/**
+	 * Removes an event listener. You must specify the exact same callback that was
+	 * used in `addListener()`.
+	 *
+	 * @param key - The key to remove the listener for.
+	 * @param callback - The callback to remove.
+	 */
 	removeListener(key: Key, callback: () => void): boolean {
 		return this.db.removeListener(this.encodeKey(key), callback);
 	}

@@ -15,6 +15,7 @@ describe('Events', () => {
 			const spy = vi.fn();
 			const spy2 = vi.fn();
 
+			expect(db.listeners('foo')).toBe(0);
 			expect(db.emit('foo')).toBe(false); // noop
 
 			let resolvers = [
@@ -26,6 +27,7 @@ describe('Events', () => {
 				resolvers[0].resolve(value);
 			});
 
+			expect(db.listeners('foo')).toBe(1);
 			expect(db.emit('foo')).toBe(true);
 			await Promise.all(resolvers.map(r => r.promise));
 			expect(spy).toHaveBeenCalledTimes(1);
@@ -42,6 +44,7 @@ describe('Events', () => {
 			};
 			db.addListener('foo', callback2);
 
+			expect(db.listeners('foo')).toBe(2);
 			expect(db.emit('foo')).toBe(true);
 			await Promise.all(resolvers.map(r => r.promise));
 			expect(spy).toHaveBeenCalledTimes(2);
@@ -49,6 +52,7 @@ describe('Events', () => {
 
 			// remove listener
 			expect(db.removeListener('foo', callback2)).toBe(true);
+			expect(db.listeners('foo')).toBe(1);
 
 			resolvers = [
 				withResolvers(),
@@ -185,12 +189,10 @@ describe('Events', () => {
 
 			const callback = () => {
 				spy();
-				process.stderr.write('callback\n');
 				resolvers[0].resolve();
 			};
 			const callback2 = () => {
 				spy2();
-				process.stderr.write('callback2\n');
 				resolvers[1].resolve();
 			};
 
@@ -254,6 +256,7 @@ describe('Events', () => {
 			db = new RocksDatabase(dbPath);
 			expect(() => db!.addListener('foo', () => {})).toThrow('Database not open');
 			expect(() => db!.emit('foo')).toThrow('Database not open');
+			expect(() => db!.listeners('foo')).toThrow('Database not open');
 			expect(() => db!.removeListener('foo', () => {})).toThrow('Database not open');
 		} finally {
 			db?.close();

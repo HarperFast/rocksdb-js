@@ -32,14 +32,14 @@ struct DBHandle final : Closable, AsyncWorkHandle {
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
 	/**
-	 * Map of listeners by key.
+	 * Map of listener callbacks by key.
 	 */
-	std::unordered_map<std::string, std::vector<ListenerCallback>> listeners;
+	std::unordered_map<std::string, std::vector<ListenerCallback>> listenerCallbacks;
 
 	/**
-	 * Mutex to protect the listeners map.
+	 * Mutex to protect the listener callbacks map.
 	 */
-	std::mutex listenersMutex;
+	std::mutex listenerCallbacksMutex;
 
 	DBHandle();
 	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
@@ -58,8 +58,9 @@ struct DBHandle final : Closable, AsyncWorkHandle {
 	bool opened() const;
 
 	void addListener(napi_env env, std::string key, napi_value callback);
-	napi_value removeListener(napi_env env, std::string key, napi_value callback);
 	napi_value emit(napi_env env, std::string key, napi_value args);
+	napi_value listeners(napi_env env, std::string key);
+	napi_value removeListener(napi_env env, std::string key, napi_value callback);
 };
 
 /**

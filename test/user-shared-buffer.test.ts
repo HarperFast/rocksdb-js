@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -85,7 +86,38 @@ describe('User Shared Buffer', () => {
 			}
 		});
 
-		// TODO: test GC
+		(globalThis.gc ? it : it.skip)('should cleanup callbacks on GC', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath);
+
+				const sharedNumber = new Float64Array(1);
+				await new Promise<void>((resolve) => {
+					expect(db!.listeners('with-callback')).toBe(0);
+					const sharedBuffer = db!.getUserSharedBuffer(
+						'with-callback',
+						sharedNumber.buffer,
+						{
+							callback() {
+								// wait so notify() returns true
+								setImmediate(() => resolve());
+							},
+						},
+					);
+					expect(sharedBuffer.notify()).toBe(true);
+					expect(db!.listeners('with-callback')).toBe(1);
+				});
+
+				globalThis.gc?.();
+				await delay(1000);
+				expect(db!.listeners('with-callback')).toBe(0);
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
 
 		it('should throw an error if the default buffer is not an ArrayBuffer', async () => {
 			let db: RocksDatabase | null = null;

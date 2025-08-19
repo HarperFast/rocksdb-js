@@ -226,10 +226,10 @@ void DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
 
 	NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
 
-	std::lock_guard<std::mutex> lock(this->listenersMutex);
-	auto it = this->listeners.find(key);
-	if (it == this->listeners.end()) {
-		it = this->listeners.emplace(key, std::vector<ListenerCallback>()).first;
+	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+	auto it = this->listenerCallbacks.find(key);
+	if (it == this->listenerCallbacks.end()) {
+		it = this->listenerCallbacks.emplace(key, std::vector<ListenerCallback>()).first;
 	}
 
 	napi_ref callbackRef;
@@ -269,8 +269,8 @@ void DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
 napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 	napi_value result;
 	ListenerData* data = nullptr;
-	std::lock_guard<std::mutex> lock(this->listenersMutex);
-	auto it = this->listeners.find(key);
+	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+	auto it = this->listenerCallbacks.find(key);
 
 	bool isArray = false;
 	NAPI_STATUS_THROWS(::napi_is_array(env, args, &isArray))
@@ -293,7 +293,7 @@ napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 		}
 	}
 
-	if (it == this->listeners.end()) {
+	if (it == this->listenerCallbacks.end()) {
 		DEBUG_LOG("%p DBHandle::emit key has no listeners:", this)
 		DEBUG_LOG_KEY(key)
 		DEBUG_LOG("\n")
@@ -320,6 +320,20 @@ napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 	return result;
 }
 
+napi_value DBHandle::listeners(napi_env env, std::string key) {
+	size_t count = 0;
+	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+	auto it = this->listenerCallbacks.find(key);
+
+	if (it != this->listenerCallbacks.end()) {
+		count = it->second.size();
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(count), &result));
+	return result;
+}
+
 /**
  * Removes an listener from the database descriptor.
  *
@@ -336,10 +350,10 @@ napi_value DBHandle::removeListener(napi_env env, std::string key, napi_value ca
 	}
 
 	bool found = false;
-	std::lock_guard<std::mutex> lock(this->listenersMutex);
-	auto it = this->listeners.find(key);
+	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+	auto it = this->listenerCallbacks.find(key);
 
-	if (it != this->listeners.end()) {
+	if (it != this->listenerCallbacks.end()) {
 		for (auto listener = it->second.begin(); listener != it->second.end();) {
 			if (env != listener->env) {
 				++listener;

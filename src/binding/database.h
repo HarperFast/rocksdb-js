@@ -34,6 +34,7 @@ struct Database final {
 	static napi_value GetUserSharedBuffer(napi_env env, napi_callback_info info);
 	static napi_value HasLock(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
+	static napi_value Listeners(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);

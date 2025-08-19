@@ -59,6 +59,7 @@ export type NativeDatabase = {
 	getSync(key: BufferWithDataView, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
+	listeners(key: BufferWithDataView): number;
 	opened: boolean;
 	open(
 		path: string,

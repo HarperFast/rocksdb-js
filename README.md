@@ -373,11 +373,42 @@ db.addListener(1234, (...args) => {
 });
 ```
 
+### `listeners(key): number`
+
+Gets the number of listeners for the given key.
+
+```typescript
+db.listeners('foo'); // 0
+db.addListener('foo', () => {});
+db.listeners('foo'); // 1
+```
+
 ### `on(key, callback): void`
 
 Alias for `addListener()`.
 
+### `once(key, callback): void`
+
+Adds a one-time listener, then automatically removes it.
+
+```typescript
+db.once('foo', () => {
+  console.log('This will only ever be called once');
+});
+```
+
 ### `removeListener(key, callback): boolean`
+
+Removes an event listener. You must specify the exact same callback that was
+used in `addListener()`.
+
+```typescript
+const callback = () => {};
+db.addListener('foo', callback);
+
+db.removeListener('foo', callback); // return `true`
+db.removeListener('foo', callback); // return `false`, callback not found
+```
 
 ### `off(key, callback): boolean`
 
