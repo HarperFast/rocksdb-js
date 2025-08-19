@@ -344,12 +344,12 @@ db.transactionSync((txn: Transaction) => {
 ## Events
 
 `rocksdb-js` provides a EventEmitter-like API that lets you emit events to one
-or more synchronous callback listeners. Instead of event names, it uses the same
-encoded key mechanism as the data operation methods.
+or more synchronous callback listeners. Instead of specifying a string-based
+"event name", you may use any data type that is supported by the key encoding
+configuration just like the data operation methods.
 
-Events are constrained to the database instance. You could have two or more
-database instances open in different workers, but the events are bound to the
-database instance for which they were created.
+Events are scoped to their database instances. You cannot emit an event to
+another database instance.
 
 ```typescript
 const callback = (name) => console.log(`Hi from ${name}`);
@@ -361,6 +361,18 @@ db.removeListener('foo', callback);
 
 ### `addListener(key, callback): void`
 
+Adds a callback listener for the specific key.
+
+```typescript
+db.addListener('foo', () => {
+  // this callback will be executed asynchronously
+});
+
+db.addListener(1234, (...args) => {
+  console.log(args);
+});
+```
+
 ### `on(key, callback): void`
 
 Alias for `addListener()`.
@@ -371,10 +383,23 @@ Alias for `addListener()`.
 
 Alias for `removeListener()`.
 
-### `emit(key): boolean`
+### `emit(key, ...args?): boolean`
 
-Call all callback listeners for the given key. Returns `true` if one or more
-callbacks were called, otherwise `false`.
+Call all listeners for the given key. Returns `true` if any callbacks were
+found, otherwise `false`.
+
+Events are emitted asynchronously in the same order that the listeners were
+added.
+
+You can optionally emit one or more arguments. Note that the arguments must be
+serializable. In other words, `undefined`, `null`, strings, booleans, numbers,
+arrays, and objects are supported.
+
+```typescript
+db.emit('foo');
+db.emit(1234);
+db.emit({ key: 'bar' }, { value: 'baz' });
+```
 
 ## Exclusive Locking
 

@@ -146,9 +146,6 @@ bool DBHandle::opened() const {
 /**
  * Custom wrapper used by `napi_call_threadsafe_function()` to call user-
  * defined event listener callback functions.
- *
- * When args is an array, each element of the array becomes a separate argument
- * to the JavaScript callback function instead of passing the array as a single argument.
  */
 static void callListenerCallback(napi_env env, napi_value jsCallback, void* context, void* data) {
 	if (env == nullptr || jsCallback == nullptr) {
@@ -163,6 +160,7 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 	NAPI_STATUS_THROWS_FREE_DATA(::napi_get_global(env, &global))
 
 	if (listenerData) {
+		// only deserialize the emitted data if it exists
 		napi_value json;
 		napi_value parse;
 		napi_value jsonString;
@@ -173,17 +171,17 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 		NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, json, parse, 1, &jsonString, &arrayArgs))
 		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_array_length(env, arrayArgs, &argc))
 
+		// need to convert from a js array to an array of napi values
 		argv = new napi_value[argc];
 		for (uint32_t i = 0; i < argc; i++) {
 			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_element(env, arrayArgs, i, &argv[i]))
 		}
 
-		if (listenerData) {
-			delete listenerData;
-			listenerData = nullptr;
-		}
+		delete listenerData;
+		listenerData = nullptr;
 	}
 
+	// call the listener
 	napi_value result;
 	NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, global, jsCallback, argc, argv, &result))
 }
@@ -269,11 +267,10 @@ void DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
  * ```
  */
 napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
-	bool found = false;
+	napi_value result;
+	ListenerData* data = nullptr;
 	std::lock_guard<std::mutex> lock(this->listenersMutex);
 	auto it = this->listeners.find(key);
-
-	ListenerData* data = nullptr;
 
 	bool isArray = false;
 	NAPI_STATUS_THROWS(::napi_is_array(env, args, &isArray))
@@ -297,37 +294,29 @@ napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 	}
 
 	if (it == this->listeners.end()) {
-#ifdef DEBUG
-		::fprintf(stderr, "[%04zu] %p DBHandle::emit key has no listeners:",
-			std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000,
-			this
-		);
-		for (size_t i = 0; i < key.size(); i++) {
-			::fprintf(stderr, " %02x", (unsigned char)key.data()[i]);
-		}
-		::fprintf(stderr, "\n");
-#endif
-	} else {
-		found = true;
-#ifdef DEBUG
-		::fprintf(stderr, "[%04zu] %p DBHandle::emit calling %zu listener%s for key:",
-			std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000,
-			this,
-			it->second.size(),
-			it->second.size() == 1 ? "" : "s"
-		);
-		for (size_t i = 0; i < key.size(); i++) {
-			::fprintf(stderr, " %02x", (unsigned char)key.data()[i]);
-		}
-		::fprintf(stderr, "\n");
-#endif
-		for (auto& listener : it->second) {
-			::napi_call_threadsafe_function(listener.threadsafeCallback, data, napi_tsfn_blocking);
-		}
+		DEBUG_LOG("%p DBHandle::emit key has no listeners:", this)
+		DEBUG_LOG_KEY(key)
+		DEBUG_LOG("\n")
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result));
+		return result;
 	}
 
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, found, &result));
+	DEBUG_LOG("%p DBHandle::emit calling %zu listener%s for key:", this, it->second.size(), it->second.size() == 1 ? "" : "s")
+	DEBUG_LOG_KEY(key)
+	DEBUG_LOG("\n")
+
+	for (auto& listener : it->second) {
+		// create a separate copy of data for each listener to avoid double-delete
+		ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
+		::napi_call_threadsafe_function(listener.threadsafeCallback, listenerData, napi_tsfn_blocking);
+	}
+
+	// clean up the original data since we made copies
+	if (data) {
+		delete data;
+	}
+
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result));
 	return result;
 }
 
@@ -362,7 +351,6 @@ napi_value DBHandle::removeListener(napi_env env, std::string key, napi_value ca
 			bool isEqual = false;
 			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual))
 			if (isEqual) {
-				listener->release();
 				listener = it->second.erase(listener);
 #ifdef DEBUG
 				::fprintf(stderr, "[%04zu] %p DBHandle::removeListener removed listener for key:",

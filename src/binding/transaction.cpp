@@ -325,18 +325,13 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
-#ifdef DEBUG
-	fprintf(stderr, "[%04zu] Transaction::PutSync() Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < keySlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)keySlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-	fprintf(stderr, "[%04zu] Transaction::PutSync() Value:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < valueSlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)valueSlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-#endif
+	DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get())
+	DEBUG_LOG_KEY(keySlice)
+	DEBUG_LOG("\n")
+
+	DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get())
+	DEBUG_LOG_KEY(valueSlice)
+	DEBUG_LOG("\n")
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->putSync(keySlice, valueSlice), "Transaction put failed")
 

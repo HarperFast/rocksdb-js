@@ -21,26 +21,6 @@ struct ListenerCallback;
  * pain.
  */
 struct DBHandle final : Closable, AsyncWorkHandle {
-	DBHandle();
-	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
-	~DBHandle();
-
-	rocksdb::Status clear(uint32_t batchSize, uint64_t& deleted);
-	void close();
-	napi_value get(
-		napi_env env,
-		rocksdb::Slice& key,
-		napi_value resolve,
-		napi_value reject,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
-	);
-	void open(const std::string& path, const DBOptions& options);
-	bool opened() const;
-
-	void addListener(napi_env env, std::string key, napi_value callback);
-	napi_value removeListener(napi_env env, std::string key, napi_value callback);
-	napi_value emit(napi_env env, std::string key, napi_value args);
-
 	/**
 	 * The RocksDB database descriptor
 	 */
@@ -60,6 +40,26 @@ struct DBHandle final : Closable, AsyncWorkHandle {
 	 * Mutex to protect the listeners map.
 	 */
 	std::mutex listenersMutex;
+
+	DBHandle();
+	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
+	~DBHandle();
+
+	rocksdb::Status clear(uint32_t batchSize, uint64_t& deleted);
+	void close();
+	napi_value get(
+		napi_env env,
+		rocksdb::Slice& key,
+		napi_value resolve,
+		napi_value reject,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+	void open(const std::string& path, const DBOptions& options);
+	bool opened() const;
+
+	void addListener(napi_env env, std::string key, napi_value callback);
+	napi_value removeListener(napi_env env, std::string key, napi_value callback);
+	napi_value emit(napi_env env, std::string key, napi_value args);
 };
 
 /**
@@ -69,6 +69,7 @@ struct ListenerData final {
 	std::string args;
 
 	ListenerData(size_t size) : args(size, '\0') {}
+	ListenerData(const ListenerData& other) : args(other.args) {}
 };
 
 /**
@@ -77,6 +78,23 @@ struct ListenerData final {
  * callback and the env is used for cleanup.
  */
 struct ListenerCallback final {
+	/**
+	 * The environment of the current callback.
+	 */
+	napi_env env;
+
+	/**
+	 * The threadsafe function of the current callback. This is what is
+	 * actually called when the event is emitted.
+	 */
+	napi_threadsafe_function threadsafeCallback;
+
+	/**
+	 * The callback reference of the current callback. This is used to remove
+	 * the listener callback.
+	 */
+	napi_ref callbackRef;
+
     ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef)
         : env(env), threadsafeCallback(tsfn), callbackRef(callbackRef) {}
 
@@ -91,8 +109,8 @@ struct ListenerCallback final {
 	// move assignment operator
 	ListenerCallback& operator=(ListenerCallback&& other) noexcept {
 		if (this != &other) {
-			// Clean up current resources first
-			release();
+			// clean up current resources first
+			this->release();
 
 			// transfer ownership
 			env = other.env;
@@ -111,32 +129,21 @@ struct ListenerCallback final {
 	ListenerCallback(const ListenerCallback&) = delete;
 	ListenerCallback& operator=(const ListenerCallback&) = delete;
 
+	~ListenerCallback() {
+		release();
+	}
+
 	void release() {
-		DEBUG_LOG("%p ListenerCallback::release 1\n", this)
 		if (this->callbackRef && this->env) {
 			::napi_delete_reference(this->env, this->callbackRef);
 			this->callbackRef = nullptr;
 		}
-		DEBUG_LOG("%p ListenerCallback::release 2\n", this)
+
 		if (this->threadsafeCallback) {
-			DEBUG_LOG("%p ListenerCallback::release Releasing threadsafe callback %p\n", this, this->threadsafeCallback)
-			napi_status status = ::napi_release_threadsafe_function(this->threadsafeCallback, napi_tsfn_release);
-			if (status != napi_ok) {
-				DEBUG_LOG("%p ListenerCallback::release failed to release threadsafe function (status=%d)\n", this, status);
-			}
+			// ::napi_release_threadsafe_function(this->threadsafeCallback, napi_tsfn_release);
 			this->threadsafeCallback = nullptr;
 		}
-		DEBUG_LOG("%p ListenerCallback::release 3\n", this)
 	}
-
-	~ListenerCallback() {
-		DEBUG_LOG("%p ListenerCallback::~ListenerCallback\n", this)
-		release();
-	}
-
-	napi_env env;
-    napi_threadsafe_function threadsafeCallback;
-	napi_ref callbackRef;
 };
 
 } // namespace rocksdb_js

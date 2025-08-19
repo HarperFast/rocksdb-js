@@ -1,6 +1,5 @@
 #include <node_api.h>
 #include <sstream>
-#include <thread>
 #include "database.h"
 #include "db_handle.h"
 #include "db_iterator.h"
@@ -634,18 +633,13 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
-#ifdef DEBUG
-	fprintf(stderr, "[%04zu] Database::PutSync() Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < keySlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)keySlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-	fprintf(stderr, "[%04zu] Database::PutSync() Value:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < valueSlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)valueSlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-#endif
+	DEBUG_LOG("%p Database::PutSync key:", dbHandle->get())
+	DEBUG_LOG_KEY(keySlice)
+	DEBUG_LOG("\n")
+
+	DEBUG_LOG("%p Database::PutSync value:", dbHandle->get())
+	DEBUG_LOG_KEY(valueSlice)
+	DEBUG_LOG("\n")
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;

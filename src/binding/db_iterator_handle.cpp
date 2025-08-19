@@ -69,15 +69,11 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		this->startKey = rocksdb::Slice(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
 		options.readOptions.iterate_lower_bound = &this->startKey;
 
-#ifdef DEBUG
-		fprintf(stderr, "[%04zu] DBIteratorHandle::init() Start Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-		for (size_t i = 0; i < this->startKey.size(); i++) {
-			fprintf(stderr, " %02x", (unsigned char)this->startKey.data()[i]);
-		}
-		fprintf(stderr, "\n");
+		DEBUG_LOG("%p DBIteratorHandle::init Start key:", this)
+		DEBUG_LOG_KEY(this->startKey)
+		DEBUG_LOG("\n")
 	} else {
-		DEBUG_LOG("No start key\n");
-#endif
+		DEBUG_LOG("%p DBIteratorHandle::init No start key\n", this)
 	}
 
 	if (options.endKeyStr != nullptr) {
@@ -88,15 +84,11 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		this->endKey = rocksdb::Slice(this->endKeyStr);
 		options.readOptions.iterate_upper_bound = &this->endKey;
 
-#ifdef DEBUG
-		fprintf(stderr, "[%04zu] DBIteratorHandle::init()   End Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-		for (size_t i = 0; i < this->endKey.size(); i++) {
-			fprintf(stderr, " %02x", (unsigned char)this->endKey.data()[i]);
-		}
-		fprintf(stderr, "\n");
+		DEBUG_LOG("%p DBIteratorHandle::init End key:", this)
+		DEBUG_LOG_KEY(this->endKey)
+		DEBUG_LOG("\n")
 	} else {
-		DEBUG_LOG("No end key\n");
-#endif
+		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this)
 	}
 
 	this->dbHandle->descriptor->attach(this);

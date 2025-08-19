@@ -3,6 +3,7 @@ import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import { withResolvers } from '../src/util.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 describe('Events', () => {
 	it('should emit to listeners', async () => {
@@ -62,7 +63,110 @@ describe('Events', () => {
 		}
 	});
 
-	it.only('should bound events to database instance', async () => {
+	it('should support different key types', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = RocksDatabase.open(dbPath);
+
+			let resolver = withResolvers();
+			db.addListener('foo', (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit('foo');
+			await expect(resolver.promise).resolves.toEqual([]);
+
+			resolver = withResolvers();
+			db.addListener(1234, (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit(1234);
+			await expect(resolver.promise).resolves.toEqual([]);
+
+			resolver = withResolvers();
+			db.addListener(true, (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit(true);
+			await expect(resolver.promise).resolves.toEqual([]);
+
+			resolver = withResolvers();
+			db.addListener(false, (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit(false);
+			await expect(resolver.promise).resolves.toEqual([]);
+
+			resolver = withResolvers();
+			db.addListener(null, (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit(null);
+			await expect(resolver.promise).resolves.toEqual([]);
+
+			resolver = withResolvers();
+			db.addListener(Buffer.from('bar'), (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit(Buffer.from('bar'));
+			await expect(resolver.promise).resolves.toEqual([]);
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
+	});
+
+	it('should emit with arguments', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = RocksDatabase.open(dbPath);
+
+			let resolver = withResolvers();
+			db.addListener('foo', (...args) => {
+				resolver.resolve(args);
+			});
+			db.emit('foo', 'bar');
+			await expect(resolver.promise).resolves.toEqual(['bar']);
+
+			resolver = withResolvers();
+			db.emit('foo', 1234);
+			await expect(resolver.promise).resolves.toEqual([1234]);
+
+			resolver = withResolvers();
+			db.emit('foo', true);
+			await expect(resolver.promise).resolves.toEqual([true]);
+
+			resolver = withResolvers();
+			db.emit('foo', false);
+			await expect(resolver.promise).resolves.toEqual([false]);
+
+			resolver = withResolvers();
+			db.emit('foo', null);
+			await expect(resolver.promise).resolves.toEqual([null]);
+
+			resolver = withResolvers();
+			db.emit('foo', [1, 2, 3]);
+			await expect(resolver.promise).resolves.toEqual([[1, 2, 3]]);
+
+			resolver = withResolvers();
+			db.emit('foo', { foo: 'bar' });
+			await expect(resolver.promise).resolves.toEqual([{ foo: 'bar' }]);
+
+			resolver = withResolvers();
+			db.emit('foo', 'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' });
+			await expect(resolver.promise).resolves.toEqual([
+				'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' }
+			]);
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
+	});
+
+	it('should bound events to database instance', async () => {
 		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
@@ -74,18 +178,67 @@ describe('Events', () => {
 			const spy = vi.fn();
 			const spy2 = vi.fn();
 
-			db.addListener('foo', () => spy());
-			db2.addListener('foo', () => spy2());
+			let resolvers = [
+				withResolvers(),
+				withResolvers(),
+			];
 
-			// db.emit('foo');
+			const callback = () => {
+				spy();
+				process.stderr.write('callback\n');
+				resolvers[0].resolve();
+			};
+			const callback2 = () => {
+				spy2();
+				process.stderr.write('callback2\n');
+				resolvers[1].resolve();
+			};
 
-			// expect(spy).toHaveBeenCalledTimes(1);
-			// expect(spy2).toHaveBeenCalledTimes(0);
+			db.addListener('foo', callback);
+			db2.addListener('foo', callback2);
 
-			// db2.emit('foo');
+			db.emit('foo');
+			await Promise.race(resolvers.map(r => r.promise));
+			expect(spy).toHaveBeenCalledTimes(1);
+			expect(spy2).toHaveBeenCalledTimes(0);
 
-			// expect(spy).toHaveBeenCalledTimes(1);
-			// expect(spy2).toHaveBeenCalledTimes(1);
+			resolvers = [
+				withResolvers(),
+				withResolvers(),
+			];
+			db.emit('foo');
+			await Promise.race(resolvers.map(r => r.promise));
+			expect(spy).toHaveBeenCalledTimes(2);
+			expect(spy2).toHaveBeenCalledTimes(0);
+
+			resolvers = [
+				withResolvers(),
+				withResolvers(),
+			];
+			db2.emit('foo');
+			await Promise.race(resolvers.map(r => r.promise));
+			expect(spy).toHaveBeenCalledTimes(2);
+			expect(spy2).toHaveBeenCalledTimes(1);
+
+			db.removeListener('foo', callback);
+			db2.removeListener('foo', callback2);
+
+			resolvers = [
+				withResolvers(),
+				withResolvers(),
+			];
+			db2.emit('foo');
+			db2.emit('foo');
+
+			await Promise.race([
+				...resolvers.map(r => r.promise.then(() => {
+					throw new Error('Expected listeners to not be called');
+				})),
+				delay(250),
+			]);
+
+			expect(spy).toHaveBeenCalledTimes(2);
+			expect(spy2).toHaveBeenCalledTimes(1);
 		} finally {
 			db?.close();
 			db2?.close();
