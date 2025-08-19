@@ -341,10 +341,15 @@ db.transactionSync((txn: Transaction) => {
 });
 ```
 
-## Threadsafe Event Emitting
+## Events
 
-`rocksdb-js` provides a threadsafe event emitter-like API that lets you emit
-events to one or more synchronous callback listeners.
+`rocksdb-js` provides a EventEmitter-like API that lets you emit events to one
+or more synchronous callback listeners. Instead of event names, it uses the same
+encoded key mechanism as the data operation methods.
+
+Events are constrained to the database instance. You could have two or more
+database instances open in different workers, but the events are bound to the
+database instance for which they were created.
 
 ```typescript
 const callback = (name) => console.log(`Hi from ${name}`);
@@ -356,7 +361,15 @@ db.removeListener('foo', callback);
 
 ### `addListener(key, callback): void`
 
+### `on(key, callback): void`
+
+Alias for `addListener()`.
+
 ### `removeListener(key, callback): boolean`
+
+### `off(key, callback): boolean`
+
+Alias for `removeListener()`.
 
 ### `emit(key): boolean`
 

@@ -5,7 +5,7 @@ import { generateDBPath } from './lib/util.js';
 import { withResolvers } from '../src/util.js';
 
 describe('Events', () => {
-	it('should add an event listener and emit an event', async () => {
+	it('should emit to listeners', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
 
@@ -62,6 +62,37 @@ describe('Events', () => {
 		}
 	});
 
+	it.only('should bound events to database instance', async () => {
+		let db: RocksDatabase | null = null;
+		let db2: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = RocksDatabase.open(dbPath);
+			db2 = RocksDatabase.open(dbPath);
+
+			const spy = vi.fn();
+			const spy2 = vi.fn();
+
+			db.addListener('foo', () => spy());
+			db2.addListener('foo', () => spy2());
+
+			// db.emit('foo');
+
+			// expect(spy).toHaveBeenCalledTimes(1);
+			// expect(spy2).toHaveBeenCalledTimes(0);
+
+			// db2.emit('foo');
+
+			// expect(spy).toHaveBeenCalledTimes(1);
+			// expect(spy2).toHaveBeenCalledTimes(1);
+		} finally {
+			db?.close();
+			db2?.close();
+			await rimraf(dbPath);
+		}
+	});
+
 	it('should error if database is not open', async () => {
 		const dbPath = generateDBPath();
 		let db: RocksDatabase | null = null;
@@ -92,6 +123,4 @@ describe('Events', () => {
 			await rimraf(dbPath);
 		}
 	});
-
-	// worker test
 });

@@ -82,7 +82,7 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	(*dbHandle)->descriptor->addListener(env, key, argv[1]);
+	(*dbHandle)->addListener(env, key, argv[1]);
 	NAPI_RETURN_UNDEFINED()
 }
 
@@ -254,7 +254,7 @@ napi_value Database::Emit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->emit(env, key, argv[1]);
+	return (*dbHandle)->emit(env, key, argv[1]);
 }
 
 /**
@@ -683,7 +683,7 @@ napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->removeListener(env, key, argv[1]);
+	return (*dbHandle)->removeListener(env, key, argv[1]);
 }
 
 /**
