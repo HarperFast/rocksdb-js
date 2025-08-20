@@ -81,7 +81,7 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	(*dbHandle)->descriptor->addListener(env, key, argv[1]);
+	(*dbHandle)->addListener(env, key, argv[1]);
 	NAPI_RETURN_UNDEFINED()
 }
 
@@ -253,7 +253,7 @@ napi_value Database::Emit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->emit(env, key, argv[1]);
+	return (*dbHandle)->emit(env, key, argv[1]);
 }
 
 /**
@@ -530,7 +530,20 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_METHOD_ARGV(3)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1], argv[2]);
+
+	napi_ref callbackRef = nullptr;
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
+	if (type != napi_undefined) {
+		if (type == napi_function) {
+			callbackRef = (*dbHandle)->addListener(env, key, argv[2]);
+		} else {
+			::napi_throw_error(env, nullptr, "Callback must be a function");
+			return nullptr;
+		}
+	}
+
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1], callbackRef);
 }
 
 /**
@@ -578,7 +591,7 @@ napi_value Database::Listeners(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->listeners(env, key);
+	return (*dbHandle)->listeners(env, key);
 }
 
 /**
@@ -687,7 +700,7 @@ napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->removeListener(env, key, argv[1]);
+	return (*dbHandle)->removeListener(env, key, argv[1]);
 }
 
 /**
