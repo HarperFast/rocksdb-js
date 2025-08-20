@@ -531,6 +531,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
+	// if we have a callback, add it as a listener
 	napi_ref callbackRef = nullptr;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
@@ -543,7 +544,8 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 		}
 	}
 
-	// Create a finalize lambda that captures the DBHandle to call removeListener
+	// create finalize lambda that removes the listener when the shared buffer
+	// is garbage collected
 	auto finalize = [dbHandleWeak = std::weak_ptr<DBHandle>(*dbHandle), env, key, callbackRef]() {
 		if (auto handle = dbHandleWeak.lock()) {
 			if (callbackRef != nullptr) {

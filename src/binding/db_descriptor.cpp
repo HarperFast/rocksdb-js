@@ -710,10 +710,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 }
 
 /**
- * Finalize callback for user shared buffer ArrayBuffers. This is called by
- * the JavaScript garbage collector when an external ArrayBuffer created by
- * getUserSharedBuffer is no longer reachable. It removes the corresponding
- * entry from the userSharedBuffers map to prevent memory leaks.
+ * Finalize callback for when the user shared ArrayBuffer is garbage collected.
+ * It removes the corresponding entry from the `userSharedBuffers` map to and
+ * calls the finalize function, which removes the event listener, if applicable.
  */
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
@@ -797,11 +796,11 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
 		env,
-		it->second.data,         // data
-		it->second.size,         // size
+		it->second.data,          // data
+		it->second.size,          // size
 		userSharedBufferFinalize, // finalize_cb
-		finalizeData,            // finalize_hint
-		&result                  // [out] result
+		finalizeData,             // finalize_hint
+		&result                   // [out] result
 	))
 	return result;
 }
