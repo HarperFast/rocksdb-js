@@ -81,7 +81,7 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	(*dbHandle)->addListener(env, key, argv[1]);
+	(*dbHandle)->descriptor->addListener(env, key, argv[1]);
 	NAPI_RETURN_UNDEFINED()
 }
 
@@ -253,7 +253,7 @@ napi_value Database::Emit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->emit(env, key, argv[1]);
+	return (*dbHandle)->descriptor->emit(env, key, argv[1]);
 }
 
 /**
@@ -527,10 +527,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
  * Gets or creates a buffer that an be shared across worker threads.
  */
 napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(3)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1]);
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1], argv[2]);
 }
 
 /**
@@ -578,7 +578,7 @@ napi_value Database::Listeners(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->listeners(env, key);
+	return (*dbHandle)->descriptor->listeners(env, key);
 }
 
 /**
@@ -687,7 +687,7 @@ napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->removeListener(env, key, argv[1]);
+	return (*dbHandle)->descriptor->removeListener(env, key, argv[1]);
 }
 
 /**

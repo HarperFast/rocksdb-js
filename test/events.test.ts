@@ -170,7 +170,7 @@ describe('Events', () => {
 		}
 	});
 
-	it('should bound events to database instance', async () => {
+	it('should bound events to database', async () => {
 		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
 		const dbPath = generateDBPath();

@@ -46,6 +46,8 @@ export type NativeDatabaseOptions = {
 type ResolveCallback<T> = (value: T) => void;
 type RejectCallback = (err: Error) => void;
 
+export type UserSharedBufferCallback = () => void;
+
 export type NativeDatabase = {
 	new(): NativeDatabase;
 	addListener(key: BufferWithDataView, callback: (...args: any[]) => void): void;
@@ -57,7 +59,7 @@ export type NativeDatabase = {
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
 	getSync(key: BufferWithDataView, txnId?: number): Buffer;
-	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer): ArrayBuffer;
+	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(key: BufferWithDataView): number;
 	opened: boolean;

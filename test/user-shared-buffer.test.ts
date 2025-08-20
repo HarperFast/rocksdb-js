@@ -111,7 +111,7 @@ describe('User Shared Buffer', () => {
 				});
 
 				globalThis.gc?.();
-				await delay(1000);
+				await delay(100);
 				expect(db!.listeners('with-callback')).toBe(0);
 			} finally {
 				db?.close();

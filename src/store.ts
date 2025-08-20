@@ -2,6 +2,7 @@ import {
 	NativeDatabase,
 	NativeIterator,
 	NativeTransaction,
+	type UserSharedBufferCallback,
 	type NativeDatabaseOptions,
 } from './load-binding.js';
 import {
@@ -55,7 +56,6 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// trackMetrics?: boolean;
 }
 
-export type UserSharedBufferCallback = () => void;
 export type UserSharedBufferOptions = {
 	callback?: UserSharedBufferCallback;
 };
@@ -422,11 +422,11 @@ export class Store {
 			throw new TypeError('Options must be an object');
 		}
 
-		if (options?.callback) {
-			this.db.addListener(encodedKey, options.callback);
-		}
-
-		const buffer = this.db.getUserSharedBuffer(encodedKey, defaultBuffer) as ArrayBufferWithNotify;
+		const buffer = this.db.getUserSharedBuffer(
+			encodedKey,
+			defaultBuffer,
+			options?.callback
+		) as ArrayBufferWithNotify;
 
 		// note: the notification methods need to re-encode the key because
 		// encodeKey() uses a shared key buffer
