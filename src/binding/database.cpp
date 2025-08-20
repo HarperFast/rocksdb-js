@@ -543,7 +543,19 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 		}
 	}
 
-	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1], callbackRef);
+	// Create a finalize lambda that captures the DBHandle to call removeListener
+	auto finalize = [dbHandleWeak = std::weak_ptr<DBHandle>(*dbHandle), env, key, callbackRef]() {
+		if (auto handle = dbHandleWeak.lock()) {
+			if (callbackRef != nullptr) {
+				napi_value callback;
+				if (::napi_get_reference_value(env, callbackRef, &callback) == napi_ok) {
+					handle->removeListener(env, key, callback);
+				}
+			}
+		}
+	};
+
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1], finalize);
 }
 
 /**

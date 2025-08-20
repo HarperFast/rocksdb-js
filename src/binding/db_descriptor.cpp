@@ -724,10 +724,8 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 			descriptor->userSharedBuffers.erase(finalizeData->key);
 		}
 
-		if (finalizeData->callbackRef != nullptr) {
-			napi_value callback;
-			NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, finalizeData->callbackRef, &callback))
-			// removeListener(env, finalizeData->key, callback);
+		if (finalizeData->finalizeFn) {
+			finalizeData->finalizeFn();
 		}
 
 		DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key: %s\n",
@@ -761,7 +759,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	napi_env env,
 	std::string key,
 	napi_value defaultBuffer,
-	napi_ref callbackRef
+	std::function<void()> finalizeFn
 ) {
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
@@ -794,7 +792,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	// create finalize data that holds the key and a weak reference to this
 	// descriptor allowing the finalize callback to remove the buffer from the
 	// map when the returned `ArrayBuffer` is garbage collected
-	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), callbackRef);
+	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), finalizeFn);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(

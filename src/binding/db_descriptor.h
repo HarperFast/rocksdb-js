@@ -6,6 +6,7 @@
 #include <atomic>
 #include <queue>
 #include <set>
+#include <functional>
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
@@ -87,7 +88,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		napi_env env,
 		std::string key,
 		napi_value defaultBuffer,
-		napi_ref callbackRef
+		std::function<void()> finalizeFn = nullptr
 	);
 
 	/**
@@ -272,12 +273,12 @@ struct UserSharedBufferHandle final {
  * when the ArrayBuffer is garbage collected.
  */
 struct UserSharedBufferFinalizeData final {
-	UserSharedBufferFinalizeData(const std::string& k, std::weak_ptr<DBDescriptor> d, napi_ref c)
-		: key(k), descriptor(d), callbackRef(c) {}
+	UserSharedBufferFinalizeData(const std::string& k, std::weak_ptr<DBDescriptor> d, std::function<void()> fn = nullptr)
+		: key(k), descriptor(d), finalizeFn(fn) {}
 
 	std::string key;
 	std::weak_ptr<DBDescriptor> descriptor;
-	napi_ref callbackRef;
+	std::function<void()> finalizeFn;
 };
 
 } // namespace rocksdb_js
