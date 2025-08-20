@@ -3,6 +3,8 @@ import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
+import { withResolvers } from '../src/util.js';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -113,6 +115,79 @@ describe('User Shared Buffer', () => {
 				globalThis.gc?.();
 				await delay(100);
 				expect(db!.listeners('with-callback')).toBe(0);
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it.only('should share buffer across threads', async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath);
+
+				const incrementer = new BigInt64Array(
+					db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+				);
+				incrementer[0] = 1n;
+
+				const getNextId = () => Atomics.add(incrementer, 0, 1n);
+
+				// Node.js 18 and older doesn't properly eval ESM code
+				const majorVersion = parseInt(process.versions.node.split('.')[0]);
+				const script = majorVersion < 20
+					?	`
+						const tsx = require('tsx/cjs/api');
+						tsx.require('./test/fixtures/user-shared-buffer-worker.mts', __dirname);
+						`
+					:	`
+						import { register } from 'tsx/esm/api';
+						register();
+						import('./test/fixtures/user-shared-buffer-worker.mts');
+						`;
+
+				const worker = new Worker(
+					script,
+					{
+						eval: true,
+						workerData: {
+							path: dbPath,
+						}
+					}
+				);
+
+				let resolver = withResolvers();
+
+				await new Promise<void>((resolve, reject) => {
+					worker.on('error', reject);
+					worker.on('message', event => {
+						try {
+							if (event.started) {
+								resolve();
+							} else if (event.nextId) {
+								resolver.resolve(event.nextId);
+							}
+						} catch (error) {
+							reject(error);
+						}
+					});
+					worker.on('exit', () => resolver.resolve());
+				});
+
+				expect(getNextId()).toBe(1n);
+				expect(getNextId()).toBe(2n);
+
+				worker.postMessage({ increment: true });
+				await expect(resolver.promise).resolves.toBe(3n);
+				expect(getNextId()).toBe(4n);
+
+				resolver = withResolvers();
+				worker.postMessage({ close: true });
+				await resolver.promise;
+
+				expect(getNextId()).toBe(5n);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
