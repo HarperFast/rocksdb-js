@@ -744,8 +744,8 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
  * @param key The key of the user shared buffer.
  * @param defaultBuffer The default buffer to use if the user shared buffer does
  * not exist.
- * @param callback An optional callback to call when the returned buffer's
- * `notify()` is called.
+ * @param finalizeFn An optional lambda to call when the returned ArrayBuffer is
+ * garbage collected.
  * @returns The user shared buffer.
  *
  * @example
@@ -771,6 +771,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 
 	auto it = this->userSharedBuffers.find(key);
 	if (it == this->userSharedBuffers.end()) {
+		// shared buffer does not exist, create it
 		void* data;
 		size_t size;
 
@@ -782,11 +783,10 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		))
 
 		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %ld\n", this, size)
-
 		it = this->userSharedBuffers.emplace(key, UserSharedBufferHandle(data, size)).first;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external arraybuffer with size: %ld\n", this, it->second.size)
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size: %ld\n", this, it->second.size)
 
 	// create finalize data that holds the key and a weak reference to this
 	// descriptor allowing the finalize callback to remove the buffer from the

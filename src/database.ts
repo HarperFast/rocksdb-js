@@ -165,9 +165,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @param [options] - The options for the buffer.
 	 * @param [options.callback] - A optional callback that receives
 	 * key-specific events.
-	 * @returns An `ArrayBuffer` that is internally backed by a rocksdb-js
-	 * managed buffer. The buffer also has `notify()` and `cancel()` methods
-	 * that can be used to notify the specified `options.callback`.
+	 * @returns An `ArrayBuffer` that is internally backed by a shared block of
+	 * memory. The buffer also has `notify()` and `cancel()` methods that can be
+	 * used to notify the specified `options.callback`.
 	 *
 	 * @example
 	 * ```ts

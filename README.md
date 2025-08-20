@@ -236,16 +236,15 @@ any ArrayBuffer-based data.
 
 - `options?: object`
   - `callback?: () => void` A optional callback is called when `notify()`
-	 * on the returned buffer is called.
+	  on the returned buffer is called.
 
 Returns a new `ArrayBuffer` with two additional methods:
 
 - `notify()` - Invokes the `options.callback`, if specified.
-- `cancel()` - Removes the `options.callback` making future `notify()` calls a
-  no op.
+- `cancel()` - Removes the callback; future `notify()` calls do nothing
 
-If the returned buffer goes out of scope and is garbage collected, the
-underlying memory and notify callback is freed.
+If the returned buffer goes out of scope, the underlying memory and notify
+callback will be freed during garbage collection.
 
 ```typescript
 const buffer = new Uint8Array(
@@ -253,7 +252,7 @@ const buffer = new Uint8Array(
 );
 done[0] = 0;
 
-if (!done[0] !== 1) {
+if (done[0] !== 1) {
   done[1] = 1;
 }
 ```
