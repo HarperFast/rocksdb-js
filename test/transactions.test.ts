@@ -1,4 +1,4 @@
-import { assert, describe, expect, it, vi } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
