@@ -1,4 +1,4 @@
-import { assert, describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
@@ -60,14 +60,32 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} async should set a value`, async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
+			const afterCommit = vi.fn();
+			const beforeCommit = vi.fn();
+			const beginTransaction = vi.fn();
+			// const committed = vi.fn();
 
 			try {
-				db = RocksDatabase.open(dbPath, options);
+				db = RocksDatabase.open(dbPath, options)
+					.on('begin-transaction', () => beginTransaction())
+					.on('beforecommit', () => beforeCommit())
+					.on('aftercommit', (result) => afterCommit(result));
+					// .on('committed', committed);
+
 				await db.transaction(async (txn: Transaction) => {
 					await txn.put('foo', 'bar2');
 				}, txnOptions);
 				const value = await db.get('foo');
 				expect(value).toBe('bar2');
+
+				expect(beginTransaction).toHaveBeenCalledTimes(1);
+				expect(beforeCommit).toHaveBeenCalledTimes(1);
+				expect(afterCommit).toHaveBeenCalledWith({
+					next: null,
+					last: null,
+					txnId: expect.any(Number)
+				});
+				// expect(committed).toHaveBeenCalledTimes(1);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

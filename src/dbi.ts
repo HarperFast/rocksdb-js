@@ -463,8 +463,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param key - The key to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	addListener(key: Key, callback: (...args: any[]) => void): void {
+	addListener(key: Key, callback: (...args: any[]) => void) {
 		this.store.addListener(key, callback);
+		return this;
 	}
 
 	/**
@@ -473,8 +474,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param key - The key to remove the listener for.
 	 * @param callback - The callback to remove.
 	 */
-	off(key: Key, callback: (...args: any[]) => void): void {
+	off(key: Key, callback: (...args: any[]) => void) {
 		this.store.removeListener(key, callback);
+		return this;
 	}
 
 	/**
@@ -483,8 +485,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param key - The key to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	on(key: Key, callback: (...args: any[]) => void): void {
+	on(key: Key, callback: (...args: any[]) => void) {
 		this.store.addListener(key, callback);
+		return this;
 	}
 
 	/**
@@ -493,12 +496,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param key - The key to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	once(key: Key, callback: (...args: any[]) => void): void {
+	once(key: Key, callback: (...args: any[]) => void) {
 		const wrapper = (...args: any[]) => {
 			this.removeListener(key, wrapper);
 			callback(...args);
 		};
 		this.store.addListener(key, wrapper);
+		return this;
 	}
 
 	/**

@@ -329,16 +329,6 @@ const isBar = await db.transaction(async (txn: Transaction) => {
 console.log(isBar ? 'Foo is bar' : 'Foo is not bar');
 ```
 
-Just before the transaction function is executed, the database emits a
-`'begin-transaction'` event:
-
-```typescript
-db.on('begin-transaction', () => console.log('Calling transaction function'));
-await db.transaction(async (txn: Transaction) => {
-	console.log('begin-transaction was just emitted');
-});
-```
-
 ### `db.transactionSync((txn: Transaction) => any): any`
 
 Executes a transaction callback and commits synchronously. Once the transaction
@@ -356,6 +346,35 @@ db.transactionSync((txn: Transaction) => {
 ```
 
 ## Events
+
+### Event: `'aftercommit'`
+
+The `'aftercommit'` event is emitted after a transaction has been committed and
+the transaction has completed including waiting for the async worker thread to
+finish.
+
+ - `result: object`
+   - `next: null`
+   - `last: null`
+   - `txnId: number` The id of the transaction that was just committed.
+
+### Event: `'beforecommit'`
+
+The `'beforecommit'` event is emitted before a transaction is about to be
+committed.
+
+### Event: `'begin-transaction'`
+
+The `'begin-transaction'` event is emitted right before the transaction function
+is executed.
+
+### Event: `'committed'`
+
+The `'committed'` event is emitted after the transaction has been written. When
+this event is emitted, the transaction is still cleaning up. If you need to know
+when the transaction is fully complete, use the `'aftercommit'` event.
+
+## Event API
 
 `rocksdb-js` provides a EventEmitter-like API that lets you emit events to one
 or more synchronous callback listeners. Instead of specifying a string-based
