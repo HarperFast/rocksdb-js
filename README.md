@@ -243,8 +243,10 @@ Returns a new `ArrayBuffer` with two additional methods:
 - `notify()` - Invokes the `options.callback`, if specified.
 - `cancel()` - Removes the callback; future `notify()` calls do nothing
 
-If the returned buffer goes out of scope, the underlying memory and notify
-callback will be freed during garbage collection.
+Note: If a shared buffer already exists for the given `key`, the returned
+`ArrayBuffer` will reference this existing shared buffer. Once all
+`ArrayBuffer` instances have gone out of scope and garbage collected, the
+underlying memory and notify callback will be freed.
 
 ```typescript
 const buffer = new Uint8Array(
