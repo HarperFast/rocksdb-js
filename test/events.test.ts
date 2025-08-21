@@ -120,16 +120,21 @@ describe('Events', () => {
 	it('should bound events to database', async () => {
 		let db: RocksDatabase | null = null;
 		let db2: RocksDatabase | null = null;
+		let db3: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
+		const dbPath3 = generateDBPath();
 
 		try {
 			db = RocksDatabase.open(dbPath);
-			db2 = RocksDatabase.open(dbPath);
+			db2 = RocksDatabase.open(dbPath, { name: 'db2' });
+			db3 = RocksDatabase.open(dbPath3);
 
 			const spy = vi.fn();
 			const spy2 = vi.fn();
+			const spy3 = vi.fn();
 
 			let resolvers = [
+				withResolvers(),
 				withResolvers(),
 				withResolvers(),
 			];
@@ -142,37 +147,64 @@ describe('Events', () => {
 				spy2();
 				resolvers[1].resolve();
 			};
+			const callback3 = () => {
+				// this callback should never be called
+				spy3();
+				resolvers[2].resolve();
+			};
 
 			db.addListener('foo', callback);
 			db2.addListener('foo', callback2);
+			db3.addListener('foo', callback3);
 
 			db.emit('foo');
-			await Promise.race(resolvers.map(r => r.promise));
+			await resolvers[0].promise;
+			await resolvers[1].promise;
+			await Promise.race([
+				resolvers[2].promise,
+				delay(100),
+			]);
 			expect(spy).toHaveBeenCalledTimes(1);
-			expect(spy2).toHaveBeenCalledTimes(0);
+			expect(spy2).toHaveBeenCalledTimes(1);
+			expect(spy3).toHaveBeenCalledTimes(0);
 
 			resolvers = [
+				withResolvers(),
 				withResolvers(),
 				withResolvers(),
 			];
 			db.emit('foo');
-			await Promise.race(resolvers.map(r => r.promise));
+			await resolvers[0].promise;
+			await resolvers[1].promise;
+			await Promise.race([
+				resolvers[2].promise,
+				delay(100),
+			]);
 			expect(spy).toHaveBeenCalledTimes(2);
-			expect(spy2).toHaveBeenCalledTimes(0);
+			expect(spy2).toHaveBeenCalledTimes(2);
+			expect(spy3).toHaveBeenCalledTimes(0);
 
 			resolvers = [
+				withResolvers(),
 				withResolvers(),
 				withResolvers(),
 			];
 			db2.emit('foo');
-			await Promise.race(resolvers.map(r => r.promise));
-			expect(spy).toHaveBeenCalledTimes(2);
-			expect(spy2).toHaveBeenCalledTimes(1);
+			await resolvers[0].promise;
+			await resolvers[1].promise;
+			await Promise.race([
+				resolvers[2].promise,
+				delay(100),
+			]);
+			expect(spy).toHaveBeenCalledTimes(3);
+			expect(spy2).toHaveBeenCalledTimes(3);
+			expect(spy3).toHaveBeenCalledTimes(0);
 
 			db.removeListener('foo', callback);
 			db2.removeListener('foo', callback2);
 
 			resolvers = [
+				withResolvers(),
 				withResolvers(),
 				withResolvers(),
 			];
@@ -186,8 +218,9 @@ describe('Events', () => {
 				delay(250),
 			]);
 
-			expect(spy).toHaveBeenCalledTimes(2);
-			expect(spy2).toHaveBeenCalledTimes(1);
+			expect(spy).toHaveBeenCalledTimes(3);
+			expect(spy2).toHaveBeenCalledTimes(3);
+			expect(spy3).toHaveBeenCalledTimes(0);
 		} finally {
 			db?.close();
 			db2?.close();
@@ -195,7 +228,7 @@ describe('Events', () => {
 		}
 	});
 
-	it.skip('should emit events from worker threads', async () => {
+	it('should emit events from worker threads', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
 
@@ -230,7 +263,6 @@ describe('Events', () => {
 			await new Promise<void>((resolve, reject) => {
 				worker.on('error', reject);
 				worker.on('message', event => {
-					console.log('parent', event);
 					try {
 						if (event.started) {
 							resolve();
@@ -245,16 +277,13 @@ describe('Events', () => {
 			});
 
 			resolver = withResolvers();
-			db.addListener('worker-event', value => {
-				console.log('parent worker-event listener', value);
-				resolver.resolve(value);
-			});
+			db.addListener('worker-event', value => resolver.resolve(value));
 			worker.postMessage({ emit: true });
 			await expect(resolver.promise).resolves.toBe('foo');
 
-			// resolver = withResolvers();
-			// db.emit('parent-event', 'bar');
-			// await expect(resolver.promise).resolves.toBe('bar');
+			resolver = withResolvers();
+			db.emit('parent-event', 'bar');
+			await expect(resolver.promise).resolves.toBe('bar');
 
 			resolver = withResolvers();
 			worker.postMessage({ close: true });

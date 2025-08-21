@@ -8,7 +8,6 @@ db.addListener('parent-event', value => {
 });
 
 parentPort?.on('message', event => {
-	console.log('worker', event);
 	if (event.emit) {
 		db.emit('worker-event', 'foo');
 	} else if (event.close) {

@@ -9,17 +9,6 @@
 #include "transaction.h"
 #include "util.h"
 
-#define UNWRAP_DB_HANDLE() \
-	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
-
-#define UNWRAP_DB_HANDLE_AND_OPEN() \
-	UNWRAP_DB_HANDLE() \
-	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-		::napi_throw_error(env, nullptr, "Database not open"); \
-		NAPI_RETURN_UNDEFINED() \
-	}
-
 namespace rocksdb_js {
 
 /**
@@ -62,27 +51,6 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
-}
-
-/**
- * Adds a listener.
- *
- * @example
- * ```ts
- * const db = new NativeDatabase();
- * db.addEventListener('foo', () => {
- *   console.log('foo');
- * });
- *
- * db.emit('foo');
- * ```
- */
-napi_value Database::AddListener(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
-	(*dbHandle)->addListener(env, key, argv[1]);
-	NAPI_RETURN_UNDEFINED()
 }
 
 /**
@@ -233,27 +201,6 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_RETURN_UNDEFINED()
-}
-
-/**
- * Calls all listeners for a given key.
- *
- * @example
- * ```ts
- * const db = new NativeDatabase();
- * db.addEventListener('foo', () => {
- *   console.log('foo');
- * });
- *
- * db.emit('foo'); // returns `true` if there were listeners
- * db.emit('bar'); // returns `false` if there were no listeners
- * ```
- */
-napi_value Database::Emit(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->emit(env, key, argv[1]);
 }
 
 /**
@@ -537,7 +484,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
 	if (type != napi_undefined) {
 		if (type == napi_function) {
-			callbackRef = (*dbHandle)->addListener(env, std::string(key, keyStart, keyEnd - keyStart), argv[2]);
+			callbackRef = (*dbHandle)->descriptor->addListener(env, std::string(key, keyStart, keyEnd - keyStart), argv[2]);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;
@@ -551,7 +498,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 			if (callbackRef != nullptr) {
 				napi_value callback;
 				if (::napi_get_reference_value(env, callbackRef, &callback) == napi_ok) {
-					handle->removeListener(env, key, callback);
+					handle->descriptor->removeListener(env, key, callback);
 				}
 			}
 		}
@@ -596,16 +543,6 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*dbHandle)->opened(), &result))
 	return result;
-}
-
-/**
- * Gets the number of listeners for the given key.
- */
-napi_value Database::Listeners(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->listeners(env, key);
 }
 
 /**
@@ -706,13 +643,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_RETURN_UNDEFINED()
-}
-
-napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->removeListener(env, key, argv[1]);
 }
 
 /**

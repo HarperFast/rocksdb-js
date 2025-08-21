@@ -10,6 +10,17 @@
 
 namespace rocksdb_js {
 
+#define UNWRAP_DB_HANDLE() \
+	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
+
+#define UNWRAP_DB_HANDLE_AND_OPEN() \
+	UNWRAP_DB_HANDLE() \
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+		::napi_throw_error(env, nullptr, "Database not open"); \
+		NAPI_RETURN_UNDEFINED() \
+	}
+
 /**
  * The `NativeDatabase` JavaScript class implementation.
  *

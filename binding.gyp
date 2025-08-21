@@ -9,6 +9,7 @@
 			'sources': [
 				'src/binding/binding.cpp',
 				'src/binding/database.cpp',
+				'src/binding/database_events.cpp',
 				'src/binding/db_descriptor.cpp',
 				'src/binding/db_handle.cpp',
 				'src/binding/db_iterator.cpp',
