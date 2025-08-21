@@ -732,7 +732,7 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 
 		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get())
 		DEBUG_LOG_KEY(finalizeData->key)
-		DEBUG_LOG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
+		DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
 
 		std::string key = finalizeData->key;
 		std::weak_ptr<DBDescriptor> weakDesc = descriptor;

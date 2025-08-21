@@ -460,80 +460,80 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * Adds a listener for the given key.
 	 *
-	 * @param key - The key to add the listener for.
+	 * @param event - The event name to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	addListener(key: Key, callback: (...args: any[]) => void) {
-		this.store.addListener(key, callback);
+	addListener(event: string, callback: (...args: any[]) => void) {
+		this.store.db.addListener(event, callback);
 		return this;
 	}
 
 	/**
 	 * Alias for `removeListener()`.
 	 *
-	 * @param key - The key to remove the listener for.
+	 * @param event - The event name to remove the listener for.
 	 * @param callback - The callback to remove.
 	 */
-	off(key: Key, callback: (...args: any[]) => void) {
-		this.store.removeListener(key, callback);
+	off(event: string, callback: (...args: any[]) => void) {
+		this.store.db.removeListener(event, callback);
 		return this;
 	}
 
 	/**
 	 * Alias for `addListener()`.
 	 *
-	 * @param key - The key to add the listener for.
+	 * @param event - The event name to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	on(key: Key, callback: (...args: any[]) => void) {
-		this.store.addListener(key, callback);
+	on(event: string, callback: (...args: any[]) => void) {
+		this.store.db.addListener(event, callback);
 		return this;
 	}
 
 	/**
 	 * Adds a one-time listener, then automatically removes it.
 	 *
-	 * @param key - The key to add the listener for.
+	 * @param event - The event name to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	once(key: Key, callback: (...args: any[]) => void) {
+	once(event: string, callback: (...args: any[]) => void) {
 		const wrapper = (...args: any[]) => {
-			this.removeListener(key, wrapper);
+			this.removeListener(event, wrapper);
 			callback(...args);
 		};
-		this.store.addListener(key, wrapper);
+		this.store.db.addListener(event, wrapper);
 		return this;
 	}
 
 	/**
 	 * Emits an event for the given key.
 	 *
-	 * @param key - The key to emit the event for.
+	 * @param event - The event name to emit the event for.
 	 * @param args - The arguments to emit.
 	 * @returns `true` if there were listeners, `false` otherwise.
 	 */
-	emit(key: Key, ...args: any[]): boolean {
-		return this.store.emit(key, ...args);
+	emit(event: string, ...args: any[]): boolean {
+		return this.store.db.emit(event, args);
 	}
 
 	/**
 	 * Gets the number of listeners for the given key.
 	 *
-	 * @param key - The key to get the listeners for.
+	 	* @param event - The event name to get the listeners for.
 	 * @returns The number of listeners for the given key.
 	 */
-	listeners(key: Key): number {
-		return this.store.listeners(key);
+	listeners(event: string): number {
+		return this.store.db.listeners(event);
 	}
 
 	/**
 	 * Removes an event listener. You must specify the exact same callback that was
 	 * used in `addListener()`.
 	 *
-	 * @param key - The key to remove the listener for.
+	 * @param event - The event name to remove the listener for.
 	 * @param callback - The callback to remove.
 	 */
-	removeListener(key: Key, callback: () => void): boolean {
-		return this.store.removeListener(key, callback);
+	removeListener(event: string, callback: () => void): boolean {
+		return this.store.db.removeListener(event, callback);
 	}
 }

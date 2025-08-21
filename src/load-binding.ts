@@ -50,25 +50,25 @@ export type UserSharedBufferCallback = () => void;
 
 export type NativeDatabase = {
 	new(): NativeDatabase;
-	addListener(key: BufferWithDataView, callback: (...args: any[]) => void): void;
+	addListener(event: string, callback: (...args: any[]) => void): void;
 	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
 	clearSync(batchSize?: number): number;
 	close(): void;
-	emit(key: BufferWithDataView, args?: any[]): boolean;
+	emit(event: string | BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
 	getSync(key: BufferWithDataView, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
-	listeners(key: BufferWithDataView): number;
+	listeners(event: string): number;
 	opened: boolean;
 	open(
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
-	removeListener(key: BufferWithDataView, callback: () => void): boolean;
+	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;

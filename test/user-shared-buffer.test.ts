@@ -76,7 +76,7 @@ describe('User Shared Buffer', () => {
 						{
 							callback() {
 								// wait so notify() returns true
-								setImmediate(() => resolve());
+								setTimeout(() => resolve(), 100);
 							},
 						},
 					);
@@ -129,7 +129,7 @@ describe('User Shared Buffer', () => {
 				db = RocksDatabase.open(dbPath);
 
 				const incrementer = new BigInt64Array(
-					db.getUserSharedBuffer('next.id', new BigInt64Array(1).buffer)
+					db.getUserSharedBuffer('next-id-worker', new BigInt64Array(1).buffer)
 				);
 				incrementer[0] = 1n;
 

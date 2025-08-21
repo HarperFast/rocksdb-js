@@ -377,12 +377,11 @@ when the transaction is fully complete, use the `'aftercommit'` event.
 ## Event API
 
 `rocksdb-js` provides a EventEmitter-like API that lets you emit events to one
-or more synchronous callback listeners. Instead of specifying a string-based
-"event name", you may use any data type that is supported by the key encoding
-configuration just like the data operation methods.
+or more synchronous callback listeners. Events are scoped to their database
+instances. You cannot emit an event to another database instance.
 
-Events are scoped to their database instances. You cannot emit an event to
-another database instance.
+Unlike `EventEmitter`, events are emitted asynchronously, but in the same order
+that the listeners were added.
 
 ```typescript
 const callback = (name) => console.log(`Hi from ${name}`);
@@ -392,7 +391,7 @@ db.emit('foo', 'bar');
 db.removeListener('foo', callback);
 ```
 
-### `addListener(key, callback): void`
+### `addListener(event: string, callback: () => void): void`
 
 Adds a callback listener for the specific key.
 
@@ -406,7 +405,7 @@ db.addListener(1234, (...args) => {
 });
 ```
 
-### `listeners(key): number`
+### `listeners(event: string): number`
 
 Gets the number of listeners for the given key.
 
@@ -416,11 +415,11 @@ db.addListener('foo', () => {});
 db.listeners('foo'); // 1
 ```
 
-### `on(key, callback): void`
+### `on(event: string, callback: () => void): void`
 
 Alias for `addListener()`.
 
-### `once(key, callback): void`
+### `once(event: string, callback: () => void): void`
 
 Adds a one-time listener, then automatically removes it.
 
@@ -430,7 +429,7 @@ db.once('foo', () => {
 });
 ```
 
-### `removeListener(key, callback): boolean`
+### `removeListener(event: string, callback: () => void): boolean`
 
 Removes an event listener. You must specify the exact same callback that was
 used in `addListener()`.
@@ -443,17 +442,17 @@ db.removeListener('foo', callback); // return `true`
 db.removeListener('foo', callback); // return `false`, callback not found
 ```
 
-### `off(key, callback): boolean`
+### `off(event: string, callback: () => void): boolean`
 
 Alias for `removeListener()`.
 
-### `emit(key, ...args?): boolean`
+### `emit(event: string, ...args?): boolean`
 
 Call all listeners for the given key. Returns `true` if any callbacks were
 found, otherwise `false`.
 
-Events are emitted asynchronously in the same order that the listeners were
-added.
+Unlike `EventEmitter`, events are emitted asynchronously, but in the same order
+that the listeners were added.
 
 You can optionally emit one or more arguments. Note that the arguments must be
 serializable. In other words, `undefined`, `null`, strings, booleans, numbers,

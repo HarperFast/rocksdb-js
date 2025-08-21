@@ -67,60 +67,6 @@ describe('Events', () => {
 		}
 	});
 
-	it('should support different key types', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath);
-
-			let resolver = withResolvers();
-			db.addListener('foo', (...args) => {
-				resolver.resolve(args);
-			});
-			db.emit('foo');
-			await expect(resolver.promise).resolves.toEqual([]);
-
-			resolver = withResolvers();
-			db.addListener(1234, (...args) => {
-				resolver.resolve(args);
-			});
-			db.emit(1234);
-			await expect(resolver.promise).resolves.toEqual([]);
-
-			resolver = withResolvers();
-			db.addListener(true, (...args) => {
-				resolver.resolve(args);
-			});
-			db.emit(true);
-			await expect(resolver.promise).resolves.toEqual([]);
-
-			resolver = withResolvers();
-			db.addListener(false, (...args) => {
-				resolver.resolve(args);
-			});
-			db.emit(false);
-			await expect(resolver.promise).resolves.toEqual([]);
-
-			resolver = withResolvers();
-			db.addListener(null, (...args) => {
-				resolver.resolve(args);
-			});
-			db.emit(null);
-			await expect(resolver.promise).resolves.toEqual([]);
-
-			resolver = withResolvers();
-			db.addListener(Buffer.from('bar'), (...args) => {
-				resolver.resolve(args);
-			});
-			db.emit(Buffer.from('bar'));
-			await expect(resolver.promise).resolves.toEqual([]);
-		} finally {
-			db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
 	it('should emit with arguments', async () => {
 		let db: RocksDatabase | null = null;
 		const dbPath = generateDBPath();
@@ -258,6 +204,21 @@ describe('Events', () => {
 			expect(() => db!.emit('foo')).toThrow('Database not open');
 			expect(() => db!.listeners('foo')).toThrow('Database not open');
 			expect(() => db!.removeListener('foo', () => {})).toThrow('Database not open');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
+	});
+
+	it('should error if event is not a string', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+		try {
+			db = RocksDatabase.open(dbPath);
+			expect(() => db!.addListener(123 as any, () => {})).toThrow('Event is required');
+			expect(() => db!.emit(123 as any)).toThrow('Event is required');
+			expect(() => db!.listeners(123 as any)).toThrow('Event is required');
+			expect(() => db!.removeListener(123 as any, () => {})).toThrow('Event is required');
 		} finally {
 			db?.close();
 			await rimraf(dbPath);

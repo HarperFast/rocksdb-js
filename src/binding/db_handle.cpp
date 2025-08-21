@@ -239,7 +239,7 @@ napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callbac
 
 	DEBUG_LOG("%p DBHandle::addListener added listener for key:", this)
 	DEBUG_LOG_KEY(key);
-	DEBUG_LOG(" (listeners=%zu)\n", it->second.size())
+	DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size())
 
 	return callbackRef;
 }
@@ -267,25 +267,27 @@ napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 	ListenerData* data = nullptr;
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
+	uint32_t argc = 0;
 
-	bool isArray = false;
-	NAPI_STATUS_THROWS(::napi_is_array(env, args, &isArray))
-	if (isArray) {
-		uint32_t argc = 0;
-		NAPI_STATUS_THROWS(::napi_get_array_length(env, args, &argc))
-		if (argc > 0) {
-			napi_value global;
-			napi_value json;
-			napi_value stringify;
-			napi_value jsonString;
-			size_t len;
-			NAPI_STATUS_THROWS(::napi_get_global(env, &global));
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
-			NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
-			NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &args, &jsonString));
-			NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
-			data = new ListenerData(len);
-			NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &data->args[0], len + 1, nullptr));
+	if (args) {
+		bool isArray = false;
+		NAPI_STATUS_THROWS(::napi_is_array(env, args, &isArray))
+		if (isArray) {
+			NAPI_STATUS_THROWS(::napi_get_array_length(env, args, &argc))
+			if (argc > 0) {
+				napi_value global;
+				napi_value json;
+				napi_value stringify;
+				napi_value jsonString;
+				size_t len;
+				NAPI_STATUS_THROWS(::napi_get_global(env, &global));
+				NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
+				NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
+				NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &args, &jsonString));
+				NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
+				data = new ListenerData(len);
+				NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &data->args[0], len + 1, nullptr));
+			}
 		}
 	}
 
@@ -296,7 +298,8 @@ napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 		return result;
 	}
 
-	DEBUG_LOG("%p DBHandle::emit calling %zu listener%s for key:", this, it->second.size(), it->second.size() == 1 ? "" : "s")
+	DEBUG_LOG("%p DBHandle::emit calling %zu listener%s with %zu arg%s for key:",
+		this, it->second.size(), it->second.size() == 1 ? "" : "s", argc, argc == 1 ? "" : "s")
 	DEBUG_LOG_KEY_LN(key)
 
 	for (auto& listener : it->second) {
@@ -362,7 +365,7 @@ napi_value DBHandle::removeListener(napi_env env, std::string key, napi_value ca
 				listener = it->second.erase(listener);
 				DEBUG_LOG("%p DBHandle::removeListener removed listener for key:", this)
 				DEBUG_LOG_KEY(key);
-				DEBUG_LOG(" (listeners=%zu)\n", it->second.size())
+				DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size())
 				found = true;
 				break;
 			}

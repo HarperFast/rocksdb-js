@@ -79,7 +79,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
  */
 napi_value Database::AddListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_GET_STRING(argv[0], key, "Event is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 	(*dbHandle)->addListener(env, key, argv[1]);
 	NAPI_RETURN_UNDEFINED()
@@ -251,7 +251,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
  */
 napi_value Database::Emit(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_GET_STRING(argv[0], key, "Event is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 	return (*dbHandle)->emit(env, key, argv[1]);
 }
@@ -537,7 +537,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
 	if (type != napi_undefined) {
 		if (type == napi_function) {
-			callbackRef = (*dbHandle)->addListener(env, key, argv[2]);
+			callbackRef = (*dbHandle)->addListener(env, std::string(key, keyStart, keyEnd - keyStart), argv[2]);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;
@@ -603,7 +603,7 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
  */
 napi_value Database::Listeners(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_GET_STRING(argv[0], key, "Event is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 	return (*dbHandle)->listeners(env, key);
 }
@@ -710,7 +710,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 
 napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_GET_STRING(argv[0], key, "Event is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
 	return (*dbHandle)->removeListener(env, key, argv[1]);
 }

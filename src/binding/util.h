@@ -23,6 +23,13 @@
 
 namespace rocksdb_js {
 
+#define RANGE_CHECK(condition, errorMsg, rval) \
+	if (condition) { \
+		std::stringstream ss; \
+		ss << errorMsg; \
+		::napi_throw_range_error(env, nullptr, ss.str().c_str()); \
+		return rval; \
+	}
 struct Closable {
 	virtual ~Closable() = default;
 	virtual void close() = 0;
@@ -30,7 +37,7 @@ struct Closable {
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
-void debugLog(const char* msg, ...);
+void debugLog(const bool showThreadId, const char* msg, ...);
 
 void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent = 0, bool isObject = false);
 
@@ -60,6 +67,7 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	NAPI_STATUS_RETURN(::napi_typeof(env, from, &type));
 
 	if (type == napi_string) {
+		DEBUG_LOG("getString isString\n")
 		size_t length = 0;
 		NAPI_STATUS_RETURN(::napi_get_value_string_utf8(env, from, nullptr, 0, &length));
 		to.resize(length, '\0');
@@ -68,14 +76,50 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 		bool isBuffer;
 		NAPI_STATUS_RETURN(::napi_is_buffer(env, from, &isBuffer));
 
+		DEBUG_LOG("getString isBuffer=%d\n", isBuffer)
+
 		if (isBuffer) {
 			char* buf = nullptr;
+			uint32_t start = 0;
+			uint32_t end = 0;
 			size_t length = 0;
 			NAPI_STATUS_RETURN(::napi_get_buffer_info(env, from, reinterpret_cast<void**>(&buf), &length));
-			to.assign(buf, length);
-		} else {
-			return napi_invalid_arg;
+
+			if (buf == nullptr) {
+				// data is null because the buffer is empty
+				to.assign("");
+				return napi_ok;
+			}
+
+			bool hasStart;
+			napi_value startValue;
+			NAPI_STATUS_RETURN(::napi_has_named_property(env, from, "start", &hasStart));
+			if (hasStart) {
+				NAPI_STATUS_RETURN(::napi_get_named_property(env, from, "start", &startValue));
+				NAPI_STATUS_RETURN(::napi_get_value_uint32(env, startValue, &start));
+			}
+
+			bool hasEnd;
+			napi_value endValue;
+			NAPI_STATUS_RETURN(::napi_has_named_property(env, from, "end", &hasEnd));
+			if (hasEnd) {
+				NAPI_STATUS_RETURN(::napi_get_named_property(env, from, "end", &endValue));
+				NAPI_STATUS_RETURN(::napi_get_value_uint32(env, endValue, &end));
+			} else {
+				end = length;
+			}
+
+			DEBUG_LOG("getString length=%zu start=%u end=%u\n", length, start, end)
+
+			RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", napi_invalid_arg)
+			RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", napi_invalid_arg)
+			RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", napi_invalid_arg)
+
+			to.assign(buf + start, end - start);
+			return napi_ok;
 		}
+
+		return napi_invalid_arg;
 	}
 
 	return napi_ok;

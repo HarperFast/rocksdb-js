@@ -3,6 +3,7 @@ import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import type { Transaction } from '../src/transaction.js';
+import { withResolvers } from '../src/util.js';
 
 const testOptions = [
 	{
@@ -60,17 +61,17 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} async should set a value`, async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
-			const afterCommit = vi.fn();
-			const beforeCommit = vi.fn();
-			const beginTransaction = vi.fn();
-			// const committed = vi.fn();
+			const afterCommit = withResolvers();
+			const beforeCommit = withResolvers();
+			const beginTransaction = withResolvers();
+			const committed = withResolvers();
 
 			try {
 				db = RocksDatabase.open(dbPath, options)
-					.on('begin-transaction', () => beginTransaction())
-					.on('beforecommit', () => beforeCommit())
-					.on('aftercommit', (result) => afterCommit(result));
-					// .on('committed', committed);
+					.on('aftercommit', (result) => afterCommit.resolve(result))
+					.on('beforecommit', () => beforeCommit.resolve())
+					.on('begin-transaction', () => beginTransaction.resolve())
+					.on('committed', () => committed.resolve());
 
 				await db.transaction(async (txn: Transaction) => {
 					await txn.put('foo', 'bar2');
@@ -78,14 +79,21 @@ for (const { name, options, txnOptions } of testOptions) {
 				const value = await db.get('foo');
 				expect(value).toBe('bar2');
 
-				expect(beginTransaction).toHaveBeenCalledTimes(1);
-				expect(beforeCommit).toHaveBeenCalledTimes(1);
-				expect(afterCommit).toHaveBeenCalledWith({
-					next: null,
-					last: null,
-					txnId: expect.any(Number)
-				});
-				// expect(committed).toHaveBeenCalledTimes(1);
+				await expect(Promise.all([
+					beginTransaction.promise,
+					beforeCommit.promise,
+					afterCommit.promise,
+					committed.promise,
+				])).resolves.toEqual([
+					undefined,
+					undefined,
+					{
+						next: null,
+						last: null,
+						txnId: expect.any(Number)
+					},
+					undefined,
+				]);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
