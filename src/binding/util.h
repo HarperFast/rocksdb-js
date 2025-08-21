@@ -9,6 +9,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <sstream>
 #include <thread>
 #include "binding.h"
 #include "macros.h"
