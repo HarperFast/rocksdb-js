@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { rimraf } from 'rimraf';
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+import { Worker } from 'node:worker_threads';
 import { withResolvers } from '../src/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -190,6 +191,76 @@ describe('Events', () => {
 		} finally {
 			db?.close();
 			db2?.close();
+			await rimraf(dbPath);
+		}
+	});
+
+	it.skip('should emit events from worker threads', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = RocksDatabase.open(dbPath);
+
+			// Node.js 18 and older doesn't properly eval ESM code
+			const majorVersion = parseInt(process.versions.node.split('.')[0]);
+			const script = majorVersion < 20
+				?	`
+					const tsx = require('tsx/cjs/api');
+					tsx.require('./test/fixtures/events-worker.mts', __dirname);
+					`
+				:	`
+					import { register } from 'tsx/esm/api';
+					register();
+					import('./test/fixtures/events-worker.mts');
+					`;
+
+			const worker = new Worker(
+				script,
+				{
+					eval: true,
+					workerData: {
+						path: dbPath,
+					}
+				}
+			);
+
+			let resolver = withResolvers();
+
+			await new Promise<void>((resolve, reject) => {
+				worker.on('error', reject);
+				worker.on('message', event => {
+					console.log('parent', event);
+					try {
+						if (event.started) {
+							resolve();
+						} else if (event.parentEvent) {
+							resolver.resolve(event.parentEvent);
+						}
+					} catch (error) {
+						reject(error);
+					}
+				});
+				worker.on('exit', () => resolver.resolve());
+			});
+
+			resolver = withResolvers();
+			db.addListener('worker-event', value => {
+				console.log('parent worker-event listener', value);
+				resolver.resolve(value);
+			});
+			worker.postMessage({ emit: true });
+			await expect(resolver.promise).resolves.toBe('foo');
+
+			// resolver = withResolvers();
+			// db.emit('parent-event', 'bar');
+			// await expect(resolver.promise).resolves.toBe('bar');
+
+			resolver = withResolvers();
+			worker.postMessage({ close: true });
+			await resolver.promise;
+		} finally {
+			db?.close();
 			await rimraf(dbPath);
 		}
 	});

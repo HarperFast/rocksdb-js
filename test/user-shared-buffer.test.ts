@@ -112,8 +112,12 @@ describe('User Shared Buffer', () => {
 					expect(db!.listeners('with-callback2')).toBe(1);
 				});
 
+				// this can be flakey, especially when running all tests
 				globalThis.gc?.();
-				await delay(100);
+				globalThis.gc?.();
+				for (let i = 0; i < 10 && db!.listeners('with-callback2') > 0; i++) {
+					await delay(250);
+				}
 				expect(db!.listeners('with-callback2')).toBe(0);
 			} finally {
 				db?.close();
@@ -121,7 +125,7 @@ describe('User Shared Buffer', () => {
 			}
 		});
 
-		it('should share buffer across threads', async () => {
+		it('should share buffer across worker threads', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 

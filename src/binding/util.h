@@ -68,7 +68,6 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	NAPI_STATUS_RETURN(::napi_typeof(env, from, &type));
 
 	if (type == napi_string) {
-		DEBUG_LOG("getString isString\n")
 		size_t length = 0;
 		NAPI_STATUS_RETURN(::napi_get_value_string_utf8(env, from, nullptr, 0, &length));
 		to.resize(length, '\0');
@@ -76,8 +75,6 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	} else {
 		bool isBuffer;
 		NAPI_STATUS_RETURN(::napi_is_buffer(env, from, &isBuffer));
-
-		DEBUG_LOG("getString isBuffer=%d\n", isBuffer)
 
 		if (isBuffer) {
 			char* buf = nullptr;
@@ -109,8 +106,6 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 			} else {
 				end = length;
 			}
-
-			DEBUG_LOG("getString length=%zu start=%u end=%u\n", length, start, end)
 
 			RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", napi_invalid_arg)
 			RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", napi_invalid_arg)
