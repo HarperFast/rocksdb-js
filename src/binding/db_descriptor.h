@@ -21,7 +21,7 @@ namespace rocksdb_js {
 struct DBDescriptor;
 struct LockHandle;
 struct TransactionHandle;
-struct UserSharedBufferHandle;
+struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
 /**
@@ -147,7 +147,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Map of user shared buffers by key.
 	 */
-	std::unordered_map<std::string, UserSharedBufferHandle> userSharedBuffers;
+	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
 
 	/**
 	 * Mutex to protect the user shared buffers map.
@@ -239,30 +239,19 @@ struct LockHandle final {
 /**
  * Contains the buffer and buffer size for a user shared buffer.
  */
-struct UserSharedBufferHandle final {
-	UserSharedBufferHandle() : data(nullptr), size(0) {}
-
-	UserSharedBufferHandle(void* data, size_t size) : size(size) {
+struct UserSharedBufferData final {
+	UserSharedBufferData(void* sourceData, size_t size) : size(size) {
 		this->data = new char[size];
-		::memcpy(this->data, data, size);
+		::memcpy(this->data, sourceData, size);
 	}
 
-	// move constructor
-	UserSharedBufferHandle(UserSharedBufferHandle&& other) noexcept
-		: data(other.data), size(other.size) {
-		other.data = nullptr;
-		other.size = 0;
+	~UserSharedBufferData() {
+		delete[] this->data;
 	}
 
 	// delete copy constructor and copy assignment to prevent accidental copying
-	UserSharedBufferHandle(const UserSharedBufferHandle&) = delete;
-	UserSharedBufferHandle& operator=(const UserSharedBufferHandle&) = delete;
-
-	~UserSharedBufferHandle() {
-		if (this->data) {
-			delete[] this->data;
-		}
-	}
+	UserSharedBufferData(const UserSharedBufferData&) = delete;
+	UserSharedBufferData& operator=(const UserSharedBufferData&) = delete;
 
 	char* data;
 	size_t size;
@@ -273,11 +262,16 @@ struct UserSharedBufferHandle final {
  * when the ArrayBuffer is garbage collected.
  */
 struct UserSharedBufferFinalizeData final {
-	UserSharedBufferFinalizeData(const std::string& k, std::weak_ptr<DBDescriptor> d, std::function<void()> fn = nullptr)
-		: key(k), descriptor(d), finalizeFn(fn) {}
+	UserSharedBufferFinalizeData(
+		const std::string& k,
+		std::weak_ptr<DBDescriptor> d,
+		std::shared_ptr<UserSharedBufferData> data,
+		std::function<void()> fn = nullptr
+	) : key(k), descriptor(d), sharedData(data), finalizeFn(fn) {}
 
 	std::string key;
 	std::weak_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<UserSharedBufferData> sharedData;
 	std::function<void()> finalizeFn;
 };
 

@@ -92,7 +92,8 @@ void DBDescriptor::lockCall(
 	);
 
 	if (!isNewLock) {
-		DEBUG_LOG("%p DBDescriptor::lockCall callback queued for key \"%s\"\n", this, key.c_str())
+		DEBUG_LOG("%p DBDescriptor::lockCall callback queued for key:", this)
+		DEBUG_LOG_KEY_LN(key)
 		return;
 	}
 
@@ -101,7 +102,8 @@ void DBDescriptor::lockCall(
 	auto lockHandle = this->locks.find(key);
 
 	if (lockHandle == this->locks.end()) {
-		DEBUG_LOG("%p DBDescriptor::lockCall no lock found for key \"%s\"\n", this, key.c_str());
+		DEBUG_LOG("%p DBDescriptor::lockCall no lock found for key:", this)
+		DEBUG_LOG_KEY_LN(key)
 		return;
 	}
 
@@ -111,14 +113,16 @@ void DBDescriptor::lockCall(
 	bool expected = false;
 	if (!handle->isRunning.compare_exchange_strong(expected, true)) {
 		// another callback is already running
-		DEBUG_LOG("%p DBDescriptor::lockCall another callback is already running for key \"%s\"\n", this, key.c_str())
+		DEBUG_LOG("%p DBDescriptor::lockCall another callback is already running for key:", this)
+		DEBUG_LOG_KEY_LN(key)
 		return;
 	}
 
 	// we now "own" the execution for this key
 	if (handle->threadsafeCallbacks.empty()) {
 		handle->isRunning = false;
-		DEBUG_LOG("%p DBDescriptor::lockCall no callbacks left for key \"%s\", removing lock\n", this, key.c_str())
+		DEBUG_LOG("%p DBDescriptor::lockCall no callbacks left, removing lock for key:", this)
+		DEBUG_LOG_KEY_LN(key)
 		// remove the empty lock handle from the map
 		this->locks.erase(key);
 		return;
@@ -132,7 +136,8 @@ void DBDescriptor::lockCall(
 	// during callback execution
 	locksMutex.unlock();
 
-	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key \"%s\"\n", this, key.c_str())
+	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key:", this)
+	DEBUG_LOG_KEY_LN(key)
 
 	// create callback data that includes the key for completion and deferred promise
 	auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
@@ -168,7 +173,8 @@ void DBDescriptor::lockEnqueueCallback(
 
 	if (lockHandleIterator == this->locks.end()) {
 		// no lock found
-		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key \"%s\"\n", this, key.c_str())
+		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key:", this)
+		DEBUG_LOG_KEY_LN(key)
 		lockHandle = std::make_shared<LockHandle>(owner, env);
 		this->locks.emplace(key, lockHandle);
 		if (isNewLock != nullptr) {
@@ -718,20 +724,33 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
 
 	if (auto descriptor = finalizeData->descriptor.lock()) {
-		{
-			std::lock_guard<std::mutex> lock(descriptor->userSharedBuffersMutex);
-			descriptor->userSharedBuffers.erase(finalizeData->key);
-		}
-
+		// run the finalize function, if any
+		// used by getUserSharedBuffer() to remove the listener
 		if (finalizeData->finalizeFn) {
 			finalizeData->finalizeFn();
 		}
 
-		DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key: %s\n",
-				  descriptor.get(), finalizeData->key.c_str());
+		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get())
+		DEBUG_LOG_KEY(finalizeData->key)
+		DEBUG_LOG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
+
+		std::string key = finalizeData->key;
+		std::weak_ptr<DBDescriptor> weakDesc = descriptor;
+
+		std::lock_guard<std::mutex> lock(descriptor->userSharedBuffersMutex);
+		auto it = descriptor->userSharedBuffers.find(key);
+		if (it != descriptor->userSharedBuffers.end() && it->second == finalizeData->sharedData) {
+			// check if this shared_ptr is about to become the last reference
+			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
+			if (finalizeData->sharedData.use_count() <= 2) {
+				descriptor->userSharedBuffers.erase(key);
+				DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key:", descriptor.get())
+				DEBUG_LOG_KEY_LN(key)
+			}
+		}
 	} else {
-		DEBUG_LOG("userSharedBufferFinalize descriptor was already destroyed for key: %s\n",
-				  finalizeData->key.c_str());
+		DEBUG_LOG("userSharedBufferFinalize descriptor was already destroyed for key:")
+		DEBUG_LOG_KEY_LN(finalizeData->key)
 	}
 
 	delete finalizeData;
@@ -783,21 +802,20 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		))
 
 		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %ld\n", this, size)
-		it = this->userSharedBuffers.emplace(key, UserSharedBufferHandle(data, size)).first;
+		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size: %ld\n", this, it->second.size)
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size: %ld\n", this, it->second->size)
 
-	// create finalize data that holds the key and a weak reference to this
-	// descriptor allowing the finalize callback to remove the buffer from the
-	// map when the returned `ArrayBuffer` is garbage collected
-	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), finalizeFn);
+	// create finalize data that holds the key, a weak reference to this
+	// descriptor, and a shared_ptr to keep the data alive
+	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), it->second, finalizeFn);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
 		env,
-		it->second.data,          // data
-		it->second.size,          // size
+		it->second->data,         // data
+		it->second->size,         // size
 		userSharedBufferFinalize, // finalize_cb
 		finalizeData,             // finalize_hint
 		&result                   // [out] result

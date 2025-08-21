@@ -99,7 +99,7 @@ describe('User Shared Buffer', () => {
 				await new Promise<void>((resolve) => {
 					expect(db!.listeners('with-callback')).toBe(0);
 					const sharedBuffer = db!.getUserSharedBuffer(
-						'with-callback',
+						'with-callback2',
 						sharedNumber.buffer,
 						{
 							callback() {
@@ -109,19 +109,19 @@ describe('User Shared Buffer', () => {
 						},
 					);
 					expect(sharedBuffer.notify()).toBe(true);
-					expect(db!.listeners('with-callback')).toBe(1);
+					expect(db!.listeners('with-callback2')).toBe(1);
 				});
 
 				globalThis.gc?.();
 				await delay(100);
-				expect(db!.listeners('with-callback')).toBe(0);
+				expect(db!.listeners('with-callback2')).toBe(0);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);
 			}
 		});
 
-		it.only('should share buffer across threads', async () => {
+		it('should share buffer across threads', async () => {
 			let db: RocksDatabase | null = null;
 			const dbPath = generateDBPath();
 
@@ -129,7 +129,7 @@ describe('User Shared Buffer', () => {
 				db = RocksDatabase.open(dbPath);
 
 				const incrementer = new BigInt64Array(
-					db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+					db.getUserSharedBuffer('next.id', new BigInt64Array(1).buffer)
 				);
 				incrementer[0] = 1n;
 

@@ -326,12 +326,10 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
 	DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get())
-	DEBUG_LOG_KEY(keySlice)
-	DEBUG_LOG("\n")
+	DEBUG_LOG_KEY_LN(keySlice)
 
 	DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get())
-	DEBUG_LOG_KEY(valueSlice)
-	DEBUG_LOG("\n")
+	DEBUG_LOG_KEY_LN(valueSlice)
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->putSync(keySlice, valueSlice), "Transaction put failed")
 

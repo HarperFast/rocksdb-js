@@ -291,15 +291,13 @@ napi_value DBHandle::emit(napi_env env, std::string key, napi_value args) {
 
 	if (it == this->listenerCallbacks.end()) {
 		DEBUG_LOG("%p DBHandle::emit key has no listeners:", this)
-		DEBUG_LOG_KEY(key)
-		DEBUG_LOG("\n")
+		DEBUG_LOG_KEY_LN(key)
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result));
 		return result;
 	}
 
 	DEBUG_LOG("%p DBHandle::emit calling %zu listener%s for key:", this, it->second.size(), it->second.size() == 1 ? "" : "s")
-	DEBUG_LOG_KEY(key)
-	DEBUG_LOG("\n")
+	DEBUG_LOG_KEY_LN(key)
 
 	for (auto& listener : it->second) {
 		// create a separate copy of data for each listener to avoid double-delete

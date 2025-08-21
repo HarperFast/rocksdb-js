@@ -671,12 +671,10 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
 	DEBUG_LOG("%p Database::PutSync key:", dbHandle->get())
-	DEBUG_LOG_KEY(keySlice)
-	DEBUG_LOG("\n")
+	DEBUG_LOG_KEY_LN(keySlice)
 
 	DEBUG_LOG("%p Database::PutSync value:", dbHandle->get())
-	DEBUG_LOG_KEY(valueSlice)
-	DEBUG_LOG("\n")
+	DEBUG_LOG_KEY_LN(valueSlice)
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;

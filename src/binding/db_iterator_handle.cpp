@@ -70,8 +70,7 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		options.readOptions.iterate_lower_bound = &this->startKey;
 
 		DEBUG_LOG("%p DBIteratorHandle::init Start key:", this)
-		DEBUG_LOG_KEY(this->startKey)
-		DEBUG_LOG("\n")
+		DEBUG_LOG_KEY_LN(this->startKey)
 	} else {
 		DEBUG_LOG("%p DBIteratorHandle::init No start key\n", this)
 	}
@@ -85,8 +84,7 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		options.readOptions.iterate_upper_bound = &this->endKey;
 
 		DEBUG_LOG("%p DBIteratorHandle::init End key:", this)
-		DEBUG_LOG_KEY(this->endKey)
-		DEBUG_LOG("\n")
+		DEBUG_LOG_KEY_LN(this->endKey)
 	} else {
 		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this)
 	}

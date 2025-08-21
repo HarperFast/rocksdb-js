@@ -4,7 +4,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 const db = RocksDatabase.open(workerData.path);
 
 const incrementer = new BigInt64Array(
-	db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+	db.getUserSharedBuffer('next.id', new BigInt64Array(1).buffer)
 );
 
 const getNextId = () => Atomics.add(incrementer, 0, 1n);
