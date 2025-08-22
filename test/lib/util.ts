@@ -91,6 +91,7 @@ export async function dbRunner(
 					await delay(150);
 					// try again
 				} else {
+					// eslint-disable-next-line no-unsafe-finally
 					throw e;
 				}
 			}
