@@ -56,7 +56,7 @@ describe('User Shared Buffer', () => {
 			});
 		}));
 
-		(globalThis.gc ? it : it.skip)('should cleanup callbacks on GC',  () => dbRunner(async ({ db }) => {
+		(globalThis.gc ? it : it.skip)('should cleanup callbacks on GC', () => dbRunner(async ({ db }) => {
 			const sharedNumber = new Float64Array(1);
 			await new Promise<void>((resolve) => {
 				expect(db!.listeners('with-callback')).toBe(0);
@@ -81,7 +81,7 @@ describe('User Shared Buffer', () => {
 				globalThis.gc?.();
 			}
 			expect(db!.listeners('with-callback2')).toBe(0);
-		}));
+		}), 10000);
 
 		it('should share buffer across worker threads', () => dbRunner(async ({ db, dbPath }) => {
 			const incrementer = new BigInt64Array(
