@@ -42,7 +42,7 @@ describe('User Shared Buffer', () => {
 		it('should notify callbacks', () => dbRunner(async ({ db }) => {
 			const sharedNumber = new Float64Array(1);
 			await new Promise<void>((resolve) => {
-				const sharedBuffer = db!.getUserSharedBuffer(
+				const sharedBuffer = db.getUserSharedBuffer(
 					'with-callback',
 					sharedNumber.buffer,
 					{
@@ -61,8 +61,8 @@ describe('User Shared Buffer', () => {
 			let weakRef;
 
 			await new Promise<void>((resolve) => {
-				expect(db!.listeners('with-callback')).toBe(0);
-				const sharedBuffer = db!.getUserSharedBuffer(
+				expect(db.listeners('with-callback')).toBe(0);
+				const sharedBuffer = db.getUserSharedBuffer(
 					'with-callback2',
 					sharedNumber.buffer,
 					{
@@ -74,14 +74,14 @@ describe('User Shared Buffer', () => {
 				);
 				weakRef = new WeakRef(sharedBuffer);
 				expect(sharedBuffer.notify()).toBe(true);
-				expect(db!.listeners('with-callback2')).toBe(1);
+				expect(db.listeners('with-callback2')).toBe(1);
 				process.stderr.write(`End of block, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
 			});
 
 			// this can be flaky, especially when running all tests
 			globalThis.gc?.();
 			process.stderr.write(`After 1st GC, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
-			for (let i = 0; i < 20 && db!.listeners('with-callback2') > 0; i++) {
+			for (let i = 0; i < 20 && db.listeners('with-callback2') > 0; i++) {
 				globalThis.gc?.();
 				await delay(250);
 				process.stderr.write(`After GC ${i + 2}, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
@@ -89,7 +89,10 @@ describe('User Shared Buffer', () => {
 
 			process.stderr.write(`Final check, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
 			expect(weakRef.deref()).toBeUndefined();
-			expect(db!.listeners('with-callback2')).toBe(0);
+			const listenerCount = db.listeners('with-callback2');
+			if (listenerCount > 0) {
+				throw new Error(`${listenerCount} listener${listenerCount === 1 ? '' : 's'} still present!`);
+			}
 		}), 20000);
 
 		it('should share buffer across worker threads', () => dbRunner(async ({ db, dbPath }) => {
@@ -156,25 +159,25 @@ describe('User Shared Buffer', () => {
 		}), 10000);
 
 		it('should throw an error if the default buffer is not an ArrayBuffer', () => dbRunner(async ({ db }) => {
-			expect(() => db!.getUserSharedBuffer('incrementer-test', undefined as any))
+			expect(() => db.getUserSharedBuffer('incrementer-test', undefined as any))
 				.toThrow('Default buffer must be an ArrayBuffer');
-			expect(() => db!.getUserSharedBuffer('incrementer-test', 'hello' as any))
+			expect(() => db.getUserSharedBuffer('incrementer-test', 'hello' as any))
 				.toThrow('Default buffer must be an ArrayBuffer');
 		}));
 
 		it('should error if database is not open', () => dbRunner({
 			skipOpen: true
 		}, async ({ db }) => {
-			expect(() => db!.getUserSharedBuffer('foo', new ArrayBuffer(1))).toThrow('Database not open');
+			expect(() => db.getUserSharedBuffer('foo', new ArrayBuffer(1))).toThrow('Database not open');
 		}));
 
 		it('should error if options are invalid', () => dbRunner(async ({ db }) => {
-			expect(() => db!.getUserSharedBuffer('foo', new ArrayBuffer(1), 'foo' as any))
+			expect(() => db.getUserSharedBuffer('foo', new ArrayBuffer(1), 'foo' as any))
 				.toThrow('Options must be an object');
 		}));
 
 		it('should error if callback is not a function', () => dbRunner(async ({ db }) => {
-			expect(() => db!.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any }))
+			expect(() => db.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any }))
 				.toThrow('Callback must be a function');
 		}));
 	});
