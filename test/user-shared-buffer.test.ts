@@ -81,7 +81,7 @@ describe('User Shared Buffer', () => {
 			// this can be flaky, especially when running all tests
 			globalThis.gc?.();
 			process.stderr.write(`After 1st GC, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
-			for (let i = 0; i < 20 && db!.listeners('with-callback2') > 0 && weakRef.deref(); i++) {
+			for (let i = 0; i < 20 && db!.listeners('with-callback2') > 0; i++) {
 				globalThis.gc?.();
 				await delay(250);
 				process.stderr.write(`After GC ${i + 2}, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);

@@ -1032,6 +1032,9 @@ napi_value DBDescriptor::listeners(napi_env env, std::string key) {
 		count = it->second.size();
 	}
 
+	DEBUG_LOG("%p DBDescriptor::listeners key has %zu listener%s:", this, count, count == 1 ? "" : "s")
+	DEBUG_LOG_KEY_LN(key)
+
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(count), &result));
 	return result;

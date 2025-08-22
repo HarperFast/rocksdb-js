@@ -359,16 +359,19 @@ struct ListenerCallback final {
 	ListenerCallback& operator=(const ListenerCallback&) = delete;
 
 	~ListenerCallback() {
-		release();
+		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p, threadsafeCallback=%p\n", this, this->callbackRef, this->threadsafeCallback)
+		this->release();
 	}
 
 	void release() {
+		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p, threadsafeCallback=%p\n", this, this->callbackRef, this->threadsafeCallback)
 		if (this->callbackRef && this->env) {
 			::napi_delete_reference(this->env, this->callbackRef);
 			this->callbackRef = nullptr;
 		}
 
 		if (this->threadsafeCallback) {
+			// releasing the threadsafe function causes Node.js to crash :(
 			// ::napi_release_threadsafe_function(this->threadsafeCallback, napi_tsfn_release);
 			this->threadsafeCallback = nullptr;
 		}
