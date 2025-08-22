@@ -58,6 +58,8 @@ describe('User Shared Buffer', () => {
 
 		(globalThis.gc ? it : it.skip)('should cleanup callbacks on GC', () => dbRunner(async ({ db }) => {
 			const sharedNumber = new Float64Array(1);
+			let weakRef;
+
 			await new Promise<void>((resolve) => {
 				expect(db!.listeners('with-callback')).toBe(0);
 				const sharedBuffer = db!.getUserSharedBuffer(
@@ -70,18 +72,25 @@ describe('User Shared Buffer', () => {
 						},
 					},
 				);
+				weakRef = new WeakRef(sharedBuffer);
 				expect(sharedBuffer.notify()).toBe(true);
 				expect(db!.listeners('with-callback2')).toBe(1);
+				process.stderr.write(`End of block, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
 			});
 
 			// this can be flaky, especially when running all tests
 			globalThis.gc?.();
-			for (let i = 0; i < 20 && db!.listeners('with-callback2') > 0; i++) {
-				await delay(250);
+			process.stderr.write(`After 1st GC, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
+			for (let i = 0; i < 20 && db!.listeners('with-callback2') > 0 && weakRef.deref(); i++) {
 				globalThis.gc?.();
+				await delay(250);
+				process.stderr.write(`After GC ${i + 2}, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
 			}
+
+			process.stderr.write(`Final check, weakRef=${weakRef.deref() ? 'defined' : 'undefined'}\n`);
+			expect(weakRef.deref()).toBeUndefined();
 			expect(db!.listeners('with-callback2')).toBe(0);
-		}), 10000);
+		}), 20000);
 
 		it('should share buffer across worker threads', () => dbRunner(async ({ db, dbPath }) => {
 			const incrementer = new BigInt64Array(
