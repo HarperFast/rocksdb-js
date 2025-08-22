@@ -310,7 +310,7 @@ describe('Lock', () => {
 			expect(workerLocked).toBe(false);
 			expect(spy).toHaveBeenCalledTimes(3);
 
-			worker.terminate();
+			worker.postMessage({ close: true });
 		}));
 	});
 });
