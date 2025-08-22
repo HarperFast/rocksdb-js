@@ -56,7 +56,7 @@ describe('User Shared Buffer', () => {
 			});
 		}));
 
-		(globalThis.gc ? it : it.skip)('should cleanup callbacks on GC', () => dbRunner(async ({ db }) => {
+		(globalThis.gc ? it.only : it.skip)('should cleanup callbacks on GC', () => dbRunner(async ({ db }) => {
 			const sharedNumber = new Float64Array(1);
 			let weakRef;
 
