@@ -1078,6 +1078,12 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string key, napi_valu
 
 			++listener;
 		}
+
+		if (it->second.empty()) {
+			DEBUG_LOG("%p DBDescriptor::removeListener All listeners removed, removing key:", this)
+			DEBUG_LOG_KEY_LN(key);
+			this->listenerCallbacks.erase(it);
+		}
 	} else {
 		DEBUG_LOG("%p DBDescriptor::removeListener No listeners found for key:", this)
 		DEBUG_LOG_KEY_LN(key)
