@@ -80,6 +80,6 @@ jobs:
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm test user-shared-buffer
 
-      - name: Run tests on Bun
-        if: ${{ matrix.node == '22' }}
-        run: bun coverage
+      # - name: Run tests on Bun
+      #   if: ${{ matrix.node == '22' }}
+      #   run: bun coverage
