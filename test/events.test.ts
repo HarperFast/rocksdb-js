@@ -97,6 +97,59 @@ describe('Events', () => {
 		]);
 	}));
 
+	it('should emit once', () => dbRunner(async ({ db }) => {
+		const { promise, resolve } = withResolvers();
+		let callCount = 0;
+
+		db.once('foo', () => {
+			callCount++;
+			resolve();
+		});
+
+		db.emit('foo');
+		await promise; // Wait for first callback
+		expect(callCount).toBe(1);
+
+		db.emit('foo');
+		// Give time for potential second callback (shouldn't happen)
+		await new Promise(resolve => setTimeout(resolve, 50));
+		expect(callCount).toBe(1);
+	}));
+
+	it('should remove listeners after emit', () => dbRunner(async ({ db }) => {
+		const spy1 = vi.fn();
+		const spy2 = vi.fn();
+
+		const { promise, resolve } = withResolvers();
+
+		const callback1 = () => {
+			spy1();
+			db.removeListener('foo', callback1);
+			db.removeListener('foo', callback2);
+			resolve();
+		};
+		const callback2 = () => {
+			spy2();
+		};
+
+		db.addListener('foo', callback1);
+		db.addListener('foo', callback2);
+
+		expect(db.listeners('foo')).toBe(2);
+
+		db.emit('foo');
+		await promise;
+		expect(spy1).toHaveBeenCalledTimes(1);
+		expect(spy2.mock.calls.length).toBeLessThanOrEqual(1);
+		expect(db.listeners('foo')).toBe(0);
+
+		db.emit('foo');
+		await delay(250); // we have nothing to await, so we wait for 250ms
+		expect(spy1).toHaveBeenCalledTimes(1);
+		expect(spy2.mock.calls.length).toBeLessThanOrEqual(1);
+		expect(db.listeners('foo')).toBe(0);
+	}));
+
 	it('should bound events to database', () => dbRunner({
 		dbOptions: [
 			{},

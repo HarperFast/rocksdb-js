@@ -377,7 +377,7 @@ when the transaction is fully complete, use the `'aftercommit'` event.
 ## Event API
 
 `rocksdb-js` provides a EventEmitter-like API that lets you emit events to one
-or more synchronous callback listeners. Events are scoped to their database
+or more synchronous listener callbacks. Events are scoped to their database
 instances. You cannot emit an event to another database instance.
 
 Unlike `EventEmitter`, events are emitted asynchronously, but in the same order
@@ -393,7 +393,7 @@ db.removeListener('foo', callback);
 
 ### `addListener(event: string, callback: () => void): void`
 
-Adds a callback listener for the specific key.
+Adds a listener callback for the specific key.
 
 ```typescript
 db.addListener('foo', () => {

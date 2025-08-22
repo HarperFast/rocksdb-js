@@ -163,7 +163,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Map of listener callbacks by key.
 	 */
-	std::unordered_map<std::string, std::vector<ListenerCallback>> listenerCallbacks;
+	std::unordered_map<std::string, std::vector<std::shared_ptr<ListenerCallback>>> listenerCallbacks;
 
 	/**
 	 * Mutex to protect the listener callbacks map.

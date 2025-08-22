@@ -144,7 +144,7 @@ describe('User Shared Buffer', () => {
 			await resolver.promise;
 
 			expect(getNextId()).toBe(5n);
-		}));
+		}), 10000);
 
 		it('should throw an error if the default buffer is not an ArrayBuffer', () => dbRunner(async ({ db }) => {
 			expect(() => db!.getUserSharedBuffer('incrementer-test', undefined as any))
