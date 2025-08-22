@@ -153,7 +153,9 @@ describe('User Shared Buffer', () => {
 				.toThrow('Default buffer must be an ArrayBuffer');
 		}));
 
-		it('should error if database is not open', () => dbRunner({ skipOpen: true }, async ({ db }) => {
+		it('should error if database is not open', () => dbRunner({
+			skipOpen: true
+		}, async ({ db }) => {
 			expect(() => db!.getUserSharedBuffer('foo', new ArrayBuffer(1))).toThrow('Database not open');
 		}));
 

@@ -44,7 +44,10 @@ type TestFn = (...databases: TestDB[]) => void | Promise<void>;
  *     {}, // use defaults
  *     { path: generateDBPath(), name: 'db2' },
  *   ],
+ *   skipOpen: true,
  * }, async ({ db }, { db: db2 }) => {
+ *   db.open();
+ *   db2.open();
  * 	 await db.put('foo', 'bar');
  * 	 await db2.put('foo', 'bar');
  * }));
@@ -82,14 +85,14 @@ export async function dbRunner(
 			db?.close();
 		}
 
-		for (let i = 0; i < 12; i++) {
+		for (let i = 0; i < 3; i++) {
 			try {
 				await rimraf(dbPath);
 				break;
 			} catch (e) {
 				if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
 					await delay(150);
-					// try again
+					// try again, but skip after 3 attempts
 				} else {
 					// eslint-disable-next-line no-unsafe-finally
 					throw e;

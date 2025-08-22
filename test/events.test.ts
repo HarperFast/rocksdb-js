@@ -254,7 +254,9 @@ describe('Events', () => {
 		await resolver.promise;
 	}));
 
-	it('should error if database is not open', () => dbRunner({ skipOpen: true }, async ({ db }) => {
+	it('should error if database is not open', () => dbRunner({
+		skipOpen: true
+	}, async ({ db }) => {
 		expect(() => db!.addListener('foo', () => {})).toThrow('Database not open');
 		expect(() => db!.emit('foo')).toThrow('Database not open');
 		expect(() => db!.listeners('foo')).toThrow('Database not open');
