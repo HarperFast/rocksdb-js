@@ -76,9 +76,9 @@ describe('User Shared Buffer', () => {
 
 			// this can be flaky, especially when running all tests
 			globalThis.gc?.();
-			globalThis.gc?.();
-			for (let i = 0; i < 10 && db!.listeners('with-callback2') > 0; i++) {
+			for (let i = 0; i < 20 && db!.listeners('with-callback2') > 0; i++) {
 				await delay(250);
+				globalThis.gc?.();
 			}
 			expect(db!.listeners('with-callback2')).toBe(0);
 		}));
