@@ -136,6 +136,12 @@ void DBDescriptor::lockCall(
 	// during callback execution
 	locksMutex.unlock();
 
+	if (!threadsafeCallback) {
+		DEBUG_LOG("%p DBDescriptor::lockCall threadsafe lock callback is null for key:", this)
+		DEBUG_LOG_KEY_LN(key)
+		return;
+	}
+
 	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key:", this)
 	DEBUG_LOG_KEY_LN(key)
 
@@ -1010,7 +1016,9 @@ napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
 		if (auto listener = weakListener.lock()) {
 			// create a separate copy of data for each listener to avoid double-delete
 			ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
-			::napi_call_threadsafe_function(listener->threadsafeCallback, listenerData, napi_tsfn_blocking);
+			if (listener->threadsafeCallback) {
+				::napi_call_threadsafe_function(listener->threadsafeCallback, listenerData, napi_tsfn_blocking);
+			}
 		}
 	}
 

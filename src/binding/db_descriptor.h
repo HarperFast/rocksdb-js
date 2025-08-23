@@ -371,8 +371,10 @@ struct ListenerCallback final {
 		}
 
 		if (this->threadsafeCallback) {
-			// releasing the threadsafe function causes Node.js to crash :(
-			::napi_release_threadsafe_function(this->threadsafeCallback, napi_tsfn_release);
+			// don't explicitly release the threadsafe function - let Node.js
+			// clean it up when the environment shuts down to avoid crashes from
+			// pending calls
+			DEBUG_LOG("%p ListenerCallback::release NOT releasing threadsafeCallback to avoid crash\n", this)
 			this->threadsafeCallback = nullptr;
 		}
 	}
