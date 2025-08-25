@@ -730,10 +730,11 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
 
 	if (auto descriptor = finalizeData->descriptor.lock()) {
-		// run the finalize function, if any
-		// used by getUserSharedBuffer() to remove the listener
-		if (finalizeData->finalizeFn) {
-			finalizeData->finalizeFn();
+		if (finalizeData->callbackRef) {
+			napi_value callback;
+			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
+				descriptor->removeListener(env, finalizeData->key, callback);
+			}
 		}
 
 		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get())
@@ -769,8 +770,8 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
  * @param key The key of the user shared buffer.
  * @param defaultBuffer The default buffer to use if the user shared buffer does
  * not exist.
- * @param finalizeFn An optional lambda to call when the returned ArrayBuffer is
- * garbage collected.
+ * @param callbackRef An optional callback reference to remove the listener when
+ * the user shared buffer is garbage collected.
  * @returns The user shared buffer.
  *
  * @example
@@ -783,7 +784,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	napi_env env,
 	std::string key,
 	napi_value defaultBuffer,
-	std::function<void()> finalizeFn
+	napi_ref callbackRef
 ) {
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
@@ -815,7 +816,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 
 	// create finalize data that holds the key, a weak reference to this
 	// descriptor, and a shared_ptr to keep the data alive
-	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), it->second, finalizeFn);
+	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), it->second, callbackRef);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
@@ -1007,7 +1008,7 @@ napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
 			listenersToCall.push_back(std::weak_ptr<ListenerCallback>(listener));
 		}
 
-		DEBUG_LOG("%p DBDescriptor::emit calling %zu listener%s with %zu arg%s for key:",
+		DEBUG_LOG("%p DBDescriptor::emit calling %zu listener%s with %d arg%s for key:",
 			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s", argc, argc == 1 ? "" : "s")
 		DEBUG_LOG_KEY_LN(key)
 	}

@@ -89,7 +89,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		napi_env env,
 		std::string key,
 		napi_value defaultBuffer,
-		std::function<void()> finalizeFn = nullptr
+		napi_ref callbackRef = nullptr
 	);
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback);
@@ -282,13 +282,13 @@ struct UserSharedBufferFinalizeData final {
 		const std::string& k,
 		std::weak_ptr<DBDescriptor> d,
 		std::shared_ptr<UserSharedBufferData> data,
-		std::function<void()> fn = nullptr
-	) : key(k), descriptor(d), sharedData(data), finalizeFn(fn) {}
+		napi_ref callbackRef = nullptr
+	) : key(k), descriptor(d), sharedData(data), callbackRef(callbackRef) {}
 
 	std::string key;
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<UserSharedBufferData> sharedData;
-	std::function<void()> finalizeFn;
+	napi_ref callbackRef;
 };
 
 /**
@@ -359,12 +359,15 @@ struct ListenerCallback final {
 	ListenerCallback& operator=(const ListenerCallback&) = delete;
 
 	~ListenerCallback() {
-		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p, threadsafeCallback=%p\n", this, this->callbackRef, this->threadsafeCallback)
+		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p, threadsafeCallback=%p\n",
+			this, this->callbackRef, this->threadsafeCallback)
 		this->release();
 	}
 
 	void release() {
-		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p, threadsafeCallback=%p\n", this, this->callbackRef, this->threadsafeCallback)
+		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p, threadsafeCallback=%p\n",
+			this, this->callbackRef, this->threadsafeCallback)
+
 		if (this->callbackRef && this->env) {
 			::napi_delete_reference(this->env, this->callbackRef);
 			this->callbackRef = nullptr;
@@ -374,7 +377,6 @@ struct ListenerCallback final {
 			// don't explicitly release the threadsafe function - let Node.js
 			// clean it up when the environment shuts down to avoid crashes from
 			// pending calls
-			DEBUG_LOG("%p ListenerCallback::release NOT releasing threadsafeCallback to avoid crash\n", this)
 			this->threadsafeCallback = nullptr;
 		}
 	}
