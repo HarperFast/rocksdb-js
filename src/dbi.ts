@@ -1,7 +1,7 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
 import { NativeDatabase, NativeTransaction } from './load-binding.js';
 import type { GetOptions, PutOptions, Store } from './store.js';
-import type { Key } from './encoding.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
 
 export interface RocksDBOptions {
@@ -522,7 +522,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 	* @param event - The event name to get the listeners for.
 	 * @returns The number of listeners for the given key.
 	 */
-	listeners(event: string): number {
+	listeners(event: string | BufferWithDataView): number {
 		return this.store.db.listeners(event);
 	}
 

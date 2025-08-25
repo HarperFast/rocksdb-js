@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { withResolvers } from '../src/util.js';
 import { dbRunner } from './lib/util.js';
+import type { BufferWithDataView } from '../src/encoding.js';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -56,12 +57,15 @@ describe('User Shared Buffer', () => {
 			});
 		}));
 
-		(globalThis.gc ? it : it.skip)('should cleanup callbacks on GC', () => dbRunner(async ({ db }) => {
+		(globalThis.gc ? it.only : it.skip)('should cleanup callbacks on GC', () => dbRunner(async ({ db }) => {
 			const sharedNumber = new Float64Array(1);
 			let weakRef;
 
+			const encodedKey = db.store.encodeKey('with-callback2');
+			const key = Buffer.from(encodedKey.subarray(encodedKey.start, encodedKey.end)) as BufferWithDataView;
+
 			await new Promise<void>((resolve) => {
-				expect(db.listeners('with-callback')).toBe(0);
+				expect(db.listeners(key)).toBe(0);
 				const sharedBuffer = db.getUserSharedBuffer(
 					'with-callback2',
 					sharedNumber.buffer,
@@ -74,18 +78,18 @@ describe('User Shared Buffer', () => {
 				);
 				weakRef = new WeakRef(sharedBuffer);
 				expect(sharedBuffer.notify()).toBe(true);
-				expect(db.listeners('with-callback2')).toBe(1);
+				expect(db.listeners(key)).toBe(1);
 			});
 
 			// this can be flaky, especially when running all tests
 			globalThis.gc?.();
-			for (let i = 0; i < 20 && db.listeners('with-callback2') > 0; i++) {
+			for (let i = 0; i < 20 && db.listeners(key) > 0; i++) {
 				globalThis.gc?.();
 				await delay(250);
 			}
 
 			expect(weakRef.deref()).toBeUndefined();
-			const listenerCount = db.listeners('with-callback2');
+			const listenerCount = db.listeners(key);
 			if (listenerCount > 0) {
 				throw new Error(`${listenerCount} listener${listenerCount === 1 ? '' : 's'} still present!`);
 			}

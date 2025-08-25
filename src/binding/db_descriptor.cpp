@@ -730,16 +730,17 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
 
 	if (auto descriptor = finalizeData->descriptor.lock()) {
-		if (finalizeData->callbackRef) {
-			napi_value callback;
-			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
-				descriptor->removeListener(env, finalizeData->key, callback);
-			}
-		}
-
 		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get())
 		DEBUG_LOG_KEY(finalizeData->key)
 		DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
+
+		if (finalizeData->callbackRef) {
+			napi_value callback;
+			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
+				DEBUG_LOG("%p userSharedBufferFinalize removing listener", descriptor.get())
+				descriptor->removeListener(env, finalizeData->key, callback);
+			}
+		}
 
 		std::string key = finalizeData->key;
 		std::weak_ptr<DBDescriptor> weakDesc = descriptor;
@@ -812,7 +813,8 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size: %ld\n", this, it->second->size)
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %ld for key:", this, it->second->size)
+	DEBUG_LOG_KEY_LN(key)
 
 	// create finalize data that holds the key, a weak reference to this
 	// descriptor, and a shared_ptr to keep the data alive

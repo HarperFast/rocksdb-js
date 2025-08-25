@@ -476,6 +476,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
 	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
 	// if we have a callback, add it as a listener
@@ -484,14 +485,16 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
 	if (type != napi_undefined) {
 		if (type == napi_function) {
-			callbackRef = (*dbHandle)->descriptor->addListener(env, std::string(key, keyStart, keyEnd - keyStart), argv[2]);
+			DEBUG_LOG("Database::GetUserSharedBuffer key start=%d end=%d:\n", keyStart, keyEnd)
+			DEBUG_LOG_KEY_LN(keyStr)
+			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2]);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;
 		}
 	}
 
-	return (*dbHandle)->descriptor->getUserSharedBuffer(env, key, argv[1], callbackRef);
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, argv[1], callbackRef);
 }
 
 /**
