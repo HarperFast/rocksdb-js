@@ -487,7 +487,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 		if (type == napi_function) {
 			DEBUG_LOG("Database::GetUserSharedBuffer key start=%d end=%d:\n", keyStart, keyEnd)
 			DEBUG_LOG_KEY_LN(keyStr)
-			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2]);
+			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;

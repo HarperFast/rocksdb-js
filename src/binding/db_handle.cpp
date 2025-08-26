@@ -1,5 +1,7 @@
 #include "db_handle.h"
+#include "db_descriptor.h"
 #include "db_registry.h"
+#include <algorithm>
 
 namespace rocksdb_js {
 
@@ -97,12 +99,27 @@ void DBHandle::close() {
 	}
 
 	if (this->descriptor) {
+		// clean up listeners owned by this handle before releasing locks
+		this->descriptor->removeListenersByOwner(this);
+
 		this->descriptor->lockReleaseByOwner(this);
 		this->descriptor.reset();
 	}
 
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this)
 }
+
+/**
+ * Adds an listener to the database descriptor.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key.
+ * @param callback The callback to call when the event is emitted.
+ */
+napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
+	return this->descriptor->addListener(env, key, callback, weak_from_this());
+}
+
 
 /**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties

@@ -1,4 +1,5 @@
 #include "db_iterator_handle.h"
+#include "db_descriptor.h"
 #include <thread>
 
 namespace rocksdb_js {

@@ -2,9 +2,12 @@
 #define __DB_HANDLE_H__
 
 #include <memory>
+#include <vector>
+#include <utility>
+#include <string>
 #include <node_api.h>
 #include "rocksdb/db.h"
-#include "db_descriptor.h"
+#include "db_options.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -18,7 +21,7 @@ struct DBDescriptor;
  * This handle is for convenience since passing around a shared pointer is a
  * pain.
  */
-struct DBHandle final : Closable, AsyncWorkHandle {
+struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_from_this<DBHandle> {
 	/**
 	 * The RocksDB database descriptor
 	 */
@@ -29,9 +32,12 @@ struct DBHandle final : Closable, AsyncWorkHandle {
 	 */
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
+
 	DBHandle();
 	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
 	~DBHandle();
+
+	napi_ref addListener(napi_env env, std::string key, napi_value callback);
 
 	rocksdb::Status clear(uint32_t batchSize, uint64_t& deleted);
 	void close();

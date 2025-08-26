@@ -1,6 +1,7 @@
 #include <sstream>
 #include <thread>
 #include "database.h"
+#include "db_descriptor.h"
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "macros.h"

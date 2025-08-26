@@ -898,7 +898,12 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
  * @param key The key.
  * @param callback The callback to call when the event is emitted.
  */
-napi_ref DBDescriptor::addListener(napi_env env, std::string key, napi_value callback) {
+napi_ref DBDescriptor::addListener(
+	napi_env env,
+	std::string key,
+	napi_value callback,
+	std::weak_ptr<DBHandle> owner
+) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
 	if (type != napi_function) {
@@ -939,8 +944,7 @@ napi_ref DBDescriptor::addListener(napi_env env, std::string key, napi_value cal
 
 	napi_ref callbackRef;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef))
-
-	it->second.emplace_back(std::make_shared<ListenerCallback>(env, threadsafeCallback, callbackRef));
+	it->second.emplace_back(std::make_shared<ListenerCallback>(env, threadsafeCallback, callbackRef, owner));
 
 	DEBUG_LOG("%p DBDescriptor::addListener added listener for key:", this)
 	DEBUG_LOG_KEY(key);
@@ -1108,6 +1112,44 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string key, napi_valu
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, found, &result));
 	return result;
+}
+
+/**
+ * Removes all listeners owned by the specified DBHandle.
+ *
+ * @param owner The DBHandle that owns the listeners to remove.
+ */
+void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
+	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+
+	DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listeners for owner %p\n", this, owner)
+
+	for (auto keyIt = this->listenerCallbacks.begin(); keyIt != this->listenerCallbacks.end(); ) {
+		auto& listeners = keyIt->second;
+
+		// remove listeners owned by this handle
+		listeners.erase(
+			std::remove_if(listeners.begin(), listeners.end(),
+				[owner](const std::shared_ptr<ListenerCallback>& callback) {
+					auto sharedOwner = callback->owner.lock();
+					bool shouldRemove = (sharedOwner.get() == owner) || callback->owner.expired();
+					if (shouldRemove) {
+						DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener", owner)
+						// note: can't safely log key here as we're in iterator
+					}
+					return shouldRemove;
+				}),
+			listeners.end()
+		);
+
+		// remove the key entirely if no listeners remain
+		if (listeners.empty()) {
+			DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing empty key\n", this)
+			keyIt = this->listenerCallbacks.erase(keyIt);
+		} else {
+			++keyIt;
+		}
+	}
 }
 
 } // namespace rocksdb_js

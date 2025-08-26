@@ -92,10 +92,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		napi_ref callbackRef = nullptr
 	);
 
-	napi_ref addListener(napi_env env, std::string key, napi_value callback);
+	napi_ref addListener(napi_env env, std::string key, napi_value callback, std::weak_ptr<DBHandle> owner);
 	napi_value emit(napi_env env, std::string key, napi_value args);
 	napi_value listeners(napi_env env, std::string key);
 	napi_value removeListener(napi_env env, std::string key, napi_value callback);
+	void removeListenersByOwner(DBHandle* owner);
 
 	/**
 	 * The path of the database.
@@ -324,12 +325,17 @@ struct ListenerCallback final {
 	 */
 	napi_ref callbackRef;
 
-    ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef)
-        : env(env), threadsafeCallback(tsfn), callbackRef(callbackRef) {}
+	/**
+	 * The DBHandle that owns this listener (weak reference to avoid cycles).
+	 */
+	std::weak_ptr<DBHandle> owner;
+
+    ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef, std::weak_ptr<DBHandle> owner = {})
+        : env(env), threadsafeCallback(tsfn), callbackRef(callbackRef), owner(owner) {}
 
 	// move constructor
 	ListenerCallback(ListenerCallback&& other) noexcept
-		: env(other.env), threadsafeCallback(other.threadsafeCallback), callbackRef(other.callbackRef) {
+		: env(other.env), threadsafeCallback(other.threadsafeCallback), callbackRef(other.callbackRef), owner(std::move(other.owner)) {
 		other.env = nullptr;
 		other.threadsafeCallback = nullptr;
 		other.callbackRef = 0;
@@ -345,6 +351,7 @@ struct ListenerCallback final {
 			env = other.env;
 			threadsafeCallback = other.threadsafeCallback;
 			callbackRef = other.callbackRef;
+			owner = std::move(other.owner);
 
 			// invalidate source
 			other.env = nullptr;
