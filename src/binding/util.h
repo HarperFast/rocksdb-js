@@ -31,6 +31,7 @@ namespace rocksdb_js {
 		::napi_throw_range_error(env, nullptr, ss.str().c_str()); \
 		return rval; \
 	}
+
 struct Closable {
 	virtual ~Closable() = default;
 	virtual void close() = 0;

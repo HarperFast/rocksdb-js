@@ -4,6 +4,7 @@ import { Worker } from 'node:worker_threads';
 import { withResolvers } from '../src/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { dbRunner } from './lib/util.js';
+import EventEmitter, { once } from 'node:events';
 
 describe('Events', () => {
 	it('should emit to listeners', () => dbRunner(async ({ db }) => {
@@ -114,6 +115,12 @@ describe('Events', () => {
 		// Give time for potential second callback (shouldn't happen)
 		await new Promise(resolve => setTimeout(resolve, 50));
 		expect(callCount).toBe(1);
+	}));
+
+	it('should work with Node\'s once()', () => dbRunner(async ({ db }) => {
+		const promise = once(db as unknown as EventEmitter, 'foo');
+		db.emit('foo', 'bar', 'baz');
+		await expect(promise).resolves.toEqual(['bar', 'baz']);
 	}));
 
 	it('should remove listeners after emit', () => dbRunner(async ({ db }) => {

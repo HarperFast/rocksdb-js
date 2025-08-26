@@ -1046,6 +1046,13 @@ napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
 	return result;
 }
 
+/**
+ * Gets the number of listeners for the given key.
+ *
+ * @param env The Node environment of the current callback.
+ * @param key The key.
+ * @returns The number of listeners.
+ */
 napi_value DBDescriptor::listeners(napi_env env, std::string key) {
 	size_t count = 0;
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
