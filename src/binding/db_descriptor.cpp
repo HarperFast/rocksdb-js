@@ -361,7 +361,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 			DEBUG_LOG("%p DBDescriptor::onCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
 			return; // lock was already cleaned up, nothing to do
 		}
-	} catch (const std::exception& e) {
+	} catch (const std::exception& [[maybe_unused]] e) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to acquire lock (key=\"%s\"): %s\n", this, key.c_str(), e.what());
 		return; // mutex is invalid, descriptor is likely being destroyed
 	}
@@ -418,7 +418,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 
 		// release the threadsafe function
 		::napi_release_threadsafe_function(callback, napi_tsfn_release);
-	} catch (const std::exception& e) {
+	} catch (const std::exception& [[maybe_unused]] e) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to fire next callback (key=\"%s\"): %s\n", this, key.c_str(), e.what());
 	}
 }

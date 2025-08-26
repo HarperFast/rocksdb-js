@@ -20,8 +20,8 @@
 				'src/binding/transaction.cpp',
 				'src/binding/util.cpp',
 			],
-			'cflags!': [ '-fno-exceptions' ],
-			'cflags_cc!': [ '-fno-exceptions' ],
+			'cflags!': [ '-fno-exceptions', '-std=c++17' ],
+			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],
 			'cflags_cc': [
 				'-std=c++20',
 				'-fexceptions'
@@ -37,7 +37,9 @@
 					},
 					'msvs_settings': {
 						'VCCLCompilerTool': {
-							'ExceptionHandling': 1
+							'ExceptionHandling': 1,
+							'AdditionalOptions!': ['/Zc:__cplusplus', '-std:c++17'],
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 						},
 						'VCLinkerTool': {
 							'LinkTimeCodeGeneration': 1,
@@ -64,7 +66,8 @@
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 2,
 							'ExceptionHandling': 1,
-							'AdditionalOptions': ['/std:c++20']
+							'AdditionalOptions!': [],
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 						},
 						'VCLinkerTool': {
 							'AdditionalLibraryDirectories': [
@@ -84,7 +87,8 @@
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 3,
 							'ExceptionHandling': 1,
-							'AdditionalOptions': ['/std:c++20']
+							'AdditionalOptions!': [],
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 						},
 						'VCLinkerTool': {
 							'AdditionalLibraryDirectories': [

@@ -159,7 +159,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 			}
 		}
 		if (!columnExists) {
-			DEBUG_LOG("DBRegistry::OpenDB Creating column family \"%s\"\n", name.c_str())
+			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str())
 			columns[name] = createColumn(descriptor->db, name);
 			descriptor->columns[name] = columns[name];
 		}
@@ -194,6 +194,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		std::vector<std::string> columnFamilyNames;
 
 		// try to list existing column families
+		DEBUG_LOG("DBRegistry::OpenDB Listing column families for \"%s\"\n", path.c_str())
 		rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 		if (listStatus.ok() && !columnFamilyNames.empty()) {
 			// database exists, use existing column families
@@ -203,6 +204,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 			}
 		} else {
 			// database doesn't exist or no column families found, use default
+			DEBUG_LOG("DBRegistry::OpenDB Database doesn't exist or no column families found, using default\n")
 			cfDescriptors = {
 				rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
 			};
@@ -217,17 +219,23 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 			txndbOptions.transaction_lock_timeout = 10000;
 
 			rocksdb::TransactionDB* rdb;
+			DEBUG_LOG("DBRegistry::OpenDB Opening pessimistic transaction db for \"%s\"\n", path.c_str())
 			rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
 			if (!status.ok()) {
+				DEBUG_LOG("DBRegistry::OpenDB Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
 				throw std::runtime_error(status.ToString().c_str());
 			}
+			DEBUG_LOG("DBRegistry::OpenDB Opened pessimistic transaction db for \"%s\"\n", path.c_str())
 			db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 		} else {
 			rocksdb::OptimisticTransactionDB* rdb;
+			DEBUG_LOG("DBRegistry::OpenDB Opening optimistic transaction db for \"%s\"\n", path.c_str())
 			rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 			if (!status.ok()) {
+				DEBUG_LOG("DBRegistry::OpenDB Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
 				throw std::runtime_error(status.ToString().c_str());
 			}
+			DEBUG_LOG("DBRegistry::OpenDB Opened optimistic transaction db for \"%s\"\n", path.c_str())
 			db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 		}
 
@@ -244,6 +252,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		}
 
 		// create the descriptor and store it in the existing entry
+		DEBUG_LOG("%p DBRegistry::OpenDB Creating DBDescriptor for \"%s\"\n", instance.get(), path.c_str())
 		descriptor = std::make_shared<DBDescriptor>(path, options.mode, db, columns);
 		DEBUG_LOG("%p DBRegistry::OpenDB Created DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), descriptor.get(), path.c_str(), descriptor.use_count())
 
