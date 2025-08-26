@@ -21,6 +21,7 @@ type TestOptions = {
 	dbOptions?: (RocksDatabaseOptions & { path?: string })[];
 	skipOpen?: boolean;
 };
+
 type TestFn = (...databases: TestDB[]) => void | Promise<void>;
 
 /**

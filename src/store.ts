@@ -56,9 +56,16 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// trackMetrics?: boolean;
 }
 
+/**
+ * Options for the `getUserSharedBuffer()` method.
+ */
 export type UserSharedBufferOptions = {
 	callback?: UserSharedBufferCallback;
 };
+
+/**
+ * The return type of `getUserSharedBuffer()`.
+ */
 export type ArrayBufferWithNotify = ArrayBuffer & {
 	cancel: () => void;
 	notify: () => void;
