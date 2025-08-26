@@ -62,6 +62,7 @@
 			],
 			'configurations': {
 				'Release': {
+					# 'defines': ['DEBUG'],
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 2,

@@ -81,7 +81,7 @@ export async function dbRunner(
 		}
 		await testFn(...databases);
 	} finally {
-		for (const { db } of databases) {
+		for (const { db } of databases.reverse()) {
 			db?.close();
 		}
 
