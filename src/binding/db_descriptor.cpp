@@ -362,6 +362,9 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 			return; // lock was already cleaned up, nothing to do
 		}
 	} catch (const std::exception& e) {
+		// the Visual C++ compiler complains that `e` is unused in release
+		// builds, so we need to use the `maybe_unused` attribute and this will
+		// be optimized out in release builds
 		[[maybe_unused]] auto msg = e.what();
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to acquire lock (key=\"%s\"): %s\n", this, key.c_str(), msg)
 		return; // mutex is invalid, descriptor is likely being destroyed
@@ -420,6 +423,9 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		// release the threadsafe function
 		::napi_release_threadsafe_function(callback, napi_tsfn_release);
 	} catch (const std::exception& e) {
+		// the Visual C++ compiler complains that `e` is unused in release
+		// builds, so we need to use the `maybe_unused` attribute and this will
+		// be optimized out in release builds
 		[[maybe_unused]] auto msg = e.what();
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to fire next callback (key=\"%s\"): %s\n", this, key.c_str(), msg)
 	}

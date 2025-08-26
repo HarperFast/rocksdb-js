@@ -47,6 +47,18 @@ napi_value Database::Emit(napi_env env, napi_callback_info info) {
 
 /**
  * Gets the number of listeners for the given key.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * db.listeners('foo'); // returns 0
+ *
+ * db.addEventListener('foo', () => {});
+ * db.listeners('foo'); // returns 1
+ *
+ * db.addEventListener('foo', () => {});
+ * db.listeners('foo'); // returns 2
+ * ```
  */
 napi_value Database::Listeners(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
@@ -55,6 +67,17 @@ napi_value Database::Listeners(napi_env env, napi_callback_info info) {
 	return (*dbHandle)->descriptor->listeners(env, key);
 }
 
+/**
+ * Removes a listener.
+ *
+ * @example
+ * ```ts
+ * const db = new NativeDatabase();
+ * db.addEventListener('foo', () => {});
+ * db.removeEventListener('foo', () => {});
+ * db.listeners('foo'); // returns 0
+ * ```
+ */
 napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key, "Event is required")
