@@ -46,8 +46,8 @@ importers:
         specifier: 1.12.3
         version: 1.12.3
       node-gyp:
-        specifier: 11.4.1
-        version: 11.4.1
+        specifier: 11.4.2
+        version: 11.4.2
       oxlint:
         specifier: 1.13.0
         version: 1.13.0(oxlint-tsgolint@0.0.4)
@@ -1206,8 +1206,8 @@ packages:
     resolution: {integrity: sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==}
     hasBin: true
 
-  node-gyp@11.4.1:
-    resolution: {integrity: sha512-GiVxQ1e4TdZSSVmFDYUn6uUsrEUP68pa8C/xBzCfL/FcLHa4reWrxxTP7tRGhNdviYrNsL5kRolBL5LNYEutCw==}
+  node-gyp@11.4.2:
+    resolution: {integrity: sha512-3gD+6zsrLQH7DyYOUIutaauuXrcyxeTPyQuZQCQoNPZMHMMS5m4y0xclNpvYzoK3VNzuyxT6eF4mkIL4WSZ1eQ==}
     engines: {node: ^18.17.0 || >=20.5.0}
     hasBin: true
 
@@ -2540,7 +2540,7 @@ snapshots:
       detect-libc: 2.0.4
     optional: true
 
-  node-gyp@11.4.1:
+  node-gyp@11.4.2:
     dependencies:
       env-paths: 2.2.1
       exponential-backoff: 3.1.2
