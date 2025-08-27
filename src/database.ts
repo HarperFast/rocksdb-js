@@ -273,7 +273,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		if (EncoderClass) {
 			const opts: Record<string, any> = {
-				copyBuffers: true
+				copyBuffers: true,
+				freezeData: store.freezeData,
+				randomAccessStructure: store.randomAccessStructure,
 			};
 			const { sharedStructuresKey } = store;
 			if (sharedStructuresKey) {

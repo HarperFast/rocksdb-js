@@ -35,6 +35,7 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
+	freezeData?: boolean;
 	keyEncoder?: {
 		readKey?: ReadKeyFunction<Key>;
 		writeKey?: WriteKeyFunction;
@@ -51,6 +52,12 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// overlappingSync?: boolean;
 	// pageSize?: number;
 	pessimistic?: boolean;
+
+	/**
+	 * If `true`, the encoder will use a random access structure.
+	 */
+	randomAccessStructure?: boolean;
+
 	// readOnly?: boolean;
 	sharedStructuresKey?: symbol;
 	// trackMetrics?: boolean;
@@ -113,6 +120,11 @@ export class Store {
 	encoding: Encoding | null;
 
 	/**
+	 * Encoder specific option used to signal that the data should be frozen.
+	 */
+	freezeData: boolean;
+
+	/**
 	 * Reusable buffer for encoding keys.
 	 */
 	keyBuffer: BufferWithDataView;
@@ -156,6 +168,12 @@ export class Store {
 	pessimistic: boolean;
 
 	/**
+	 * Encoder specific flag used to signal that the encoder should use a random
+	 * access structure.
+	 */
+	randomAccessStructure: boolean;
+
+	/**
 	 * The function used to encode keys.
 	 */
 	readKey: ReadKeyFunction<Key>;
@@ -195,6 +213,7 @@ export class Store {
 		this.encodeBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
+		this.freezeData = options?.freezeData ?? false;
 		this.keyBuffer = createFixedBuffer(KEY_BUFFER_SIZE);
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
@@ -203,6 +222,7 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
+		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
 		this.writeKey = writeKey;
