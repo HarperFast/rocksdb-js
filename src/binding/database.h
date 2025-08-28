@@ -37,7 +37,6 @@ struct Database final {
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
-	static napi_value Emit(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info);
@@ -46,6 +45,7 @@ struct Database final {
 	static napi_value HasLock(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Listeners(napi_env env, napi_callback_info info);
+	static napi_value Notify(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);

@@ -164,7 +164,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = state->txnHandle->txn->Commit();
 				if (state->status.ok()) {
 					DEBUG_LOG("Transaction::Commit emitted committed event\n")
-					state->txnHandle->dbHandle->descriptor->emit(env, "committed", nullptr);
+					state->txnHandle->dbHandle->descriptor->notify(env, "committed", nullptr);
 				}
 			}
 			// signal that execute handler is complete
@@ -219,7 +219,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
 		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
-		(*txnHandle)->dbHandle->descriptor->emit(env, "committed", nullptr);
+		(*txnHandle)->dbHandle->descriptor->notify(env, "committed", nullptr);
 
 		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())
 		(*txnHandle)->close();

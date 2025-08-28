@@ -33,11 +33,11 @@ export class Transaction extends DBI {
 	async commit(): Promise<void> {
 		try {
 			await new Promise<void>((resolve, reject) => {
-				this.emit('beforecommit');
+				this.notify('beforecommit');
 				this.#txn.commit(resolve, reject);
 			});
 		} finally {
-			this.emit('aftercommit', {
+			this.notify('aftercommit', {
 				next: null,
 				last: null,
 				txnId: this.#txn.id
@@ -47,10 +47,10 @@ export class Transaction extends DBI {
 
 	commitSync(): void {
 		try {
-			this.emit('beforecommit');
+			this.notify('beforecommit');
 			this.#txn.commitSync();
 		} finally {
-			this.emit('aftercommit', {
+			this.notify('aftercommit', {
 				next: null,
 				last: null,
 				txnId: this.#txn.id

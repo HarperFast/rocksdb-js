@@ -376,9 +376,9 @@ when the transaction is fully complete, use the `'aftercommit'` event.
 
 ## Event API
 
-`rocksdb-js` provides a EventEmitter-like API that lets you emit events to one
-or more synchronous listener callbacks. Events are scoped to their database
-instances. You cannot emit an event to another database instance.
+`rocksdb-js` provides a EventEmitter-like API that lets you asynchronously
+notify events to one or more synchronous listener callbacks. Events are scoped
+by database path.
 
 Unlike `EventEmitter`, events are emitted asynchronously, but in the same order
 that the listeners were added.
@@ -386,8 +386,8 @@ that the listeners were added.
 ```typescript
 const callback = (name) => console.log(`Hi from ${name}`);
 db.addListener('foo', callback);
-db.emit('foo');
-db.emit('foo', 'bar');
+db.notify('foo');
+db.notify('foo', 'bar');
 db.removeListener('foo', callback);
 ```
 
@@ -446,7 +446,7 @@ db.removeListener('foo', callback); // return `false`, callback not found
 
 Alias for `removeListener()`.
 
-### `emit(event: string, ...args?): boolean`
+### `notify(event: string, ...args?): boolean`
 
 Call all listeners for the given key. Returns `true` if any callbacks were
 found, otherwise `false`.
@@ -459,9 +459,9 @@ serializable. In other words, `undefined`, `null`, strings, booleans, numbers,
 arrays, and objects are supported.
 
 ```typescript
-db.emit('foo');
-db.emit(1234);
-db.emit({ key: 'bar' }, { value: 'baz' });
+db.notify('foo');
+db.notify(1234);
+db.notify({ key: 'bar' }, { value: 'baz' });
 ```
 
 ## Exclusive Locking

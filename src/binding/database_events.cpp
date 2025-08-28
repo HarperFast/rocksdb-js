@@ -13,7 +13,7 @@ namespace rocksdb_js {
  *   console.log('foo');
  * });
  *
- * db.emit('foo');
+ * db.notify('foo');
  * ```
  */
 napi_value Database::AddListener(napi_env env, napi_callback_info info) {
@@ -34,15 +34,15 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
  *   console.log('foo');
  * });
  *
- * db.emit('foo'); // returns `true` if there were listeners
- * db.emit('bar'); // returns `false` if there were no listeners
+ * db.notify('foo'); // returns `true` if there were listeners
+ * db.notify('bar'); // returns `false` if there were no listeners
  * ```
  */
-napi_value Database::Emit(napi_env env, napi_callback_info info) {
+napi_value Database::Notify(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	NAPI_GET_STRING(argv[0], key, "Event is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->emit(env, key, argv[1]);
+	return (*dbHandle)->descriptor->notify(env, key, argv[1]);
 }
 
 /**

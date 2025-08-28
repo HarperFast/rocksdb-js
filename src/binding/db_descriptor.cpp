@@ -973,11 +973,11 @@ napi_ref DBDescriptor::addListener(
  *   console.log('foo');
  * });
  *
- * db.emit('foo'); // returns `true` if there were listeners
- * db.emit('bar'); // returns `false` if there were no listeners
+ * db.notify('foo'); // returns `true` if there were listeners
+ * db.notify('bar'); // returns `false` if there were no listeners
  * ```
  */
-napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
+napi_value DBDescriptor::notify(napi_env env, std::string key, napi_value args) {
 	napi_value result;
 	ListenerData* data = nullptr;
 	std::vector<std::weak_ptr<ListenerCallback>> listenersToCall;
@@ -988,7 +988,7 @@ napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
 		auto it = this->listenerCallbacks.find(key);
 
 		if (it == this->listenerCallbacks.end()) {
-			DEBUG_LOG("%p DBDescriptor::emit key has no listeners:", this)
+			DEBUG_LOG("%p DBDescriptor::notify key has no listeners:", this)
 			DEBUG_LOG_KEY_LN(key)
 			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result));
 			return result;
@@ -1022,7 +1022,7 @@ napi_value DBDescriptor::emit(napi_env env, std::string key, napi_value args) {
 			listenersToCall.push_back(std::weak_ptr<ListenerCallback>(listener));
 		}
 
-		DEBUG_LOG("%p DBDescriptor::emit calling %zu listener%s with %d arg%s for key:",
+		DEBUG_LOG("%p DBDescriptor::notify calling %zu listener%s with %d arg%s for key:",
 			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s", argc, argc == 1 ? "" : "s")
 		DEBUG_LOG_KEY_LN(key)
 	}

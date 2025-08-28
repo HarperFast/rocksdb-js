@@ -28,6 +28,8 @@ const REUSE_BUFFER_MODE = 512;
 const SAVE_BUFFER_SIZE = 8192;
 // const WRITE_BUFFER_SIZE = 65536;
 
+export type Context = NativeDatabase | NativeTransaction;
+
 /**
  * Options for the `Store` class.
  */
@@ -437,7 +439,7 @@ export class Store {
 		// note: the notification methods need to re-encode the key because
 		// encodeKey() uses a shared key buffer
 		buffer.notify = (...args: any[]) => {
-			return this.db.emit(this.encodeKey(key), args);
+			return this.db.notify(this.encodeKey(key), args);
 		};
 		buffer.cancel = () => {
 			if (options?.callback) {

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { Context } from './store.js';
 
 export type TransactionOptions = {
 	/**
@@ -28,7 +29,7 @@ export type NativeTransaction = {
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
-	constructor(context: NativeDatabase | NativeTransaction, options: IteratorOptions);
+	constructor(context: Context, options: IteratorOptions);
 	next(): IteratorResult<T>;
 	return(): IteratorResult<T>;
 	throw(): IteratorResult<T>;
@@ -54,7 +55,7 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
 	clearSync(batchSize?: number): number;
 	close(): void;
-	emit(event: string | BufferWithDataView, args?: any[]): boolean;
+	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;

@@ -93,7 +93,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	);
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback, std::weak_ptr<DBHandle> owner);
-	napi_value emit(napi_env env, std::string key, napi_value args);
+	napi_value notify(napi_env env, std::string key, napi_value args);
 	napi_value listeners(napi_env env, std::string key);
 	napi_value removeListener(napi_env env, std::string key, napi_value callback);
 	void removeListenersByOwner(DBHandle* owner);

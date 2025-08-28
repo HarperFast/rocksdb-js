@@ -1,6 +1,6 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { NativeDatabase, NativeTransaction } from './load-binding.js';
-import type { GetOptions, PutOptions, Store } from './store.js';
+import { NativeTransaction } from './load-binding.js';
+import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
 
@@ -140,7 +140,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * The RocksDB context for `get()`, `put()`, and `remove()`.
 	 */
-	#context: NativeDatabase | NativeTransaction;
+	#context: Context;
 
 	/**
 	 * The database store instance. The store instance is tied to the database
@@ -506,14 +506,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Emits an event for the given key.
+	 * Notifies an event for the given key.
 	 *
 	 * @param event - The event name to emit the event for.
 	 * @param args - The arguments to emit.
 	 * @returns `true` if there were listeners, `false` otherwise.
 	 */
-	emit(event: string, ...args: any[]): boolean {
-		return this.store.db.emit(event, args);
+	notify(event: string, ...args: any[]): boolean {
+		return this.store.db.notify(event, args);
 	}
 
 	/**

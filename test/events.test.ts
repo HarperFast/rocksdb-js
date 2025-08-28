@@ -7,12 +7,12 @@ import { dbRunner } from './lib/util.js';
 import EventEmitter, { once } from 'node:events';
 
 describe('Events', () => {
-	it('should emit to listeners', () => dbRunner(async ({ db }) => {
+	it('should notify to listeners', () => dbRunner(async ({ db }) => {
 		const spy = vi.fn();
 		const spy2 = vi.fn();
 
 		expect(db.listeners('foo')).toBe(0);
-		expect(db.emit('foo')).toBe(false); // noop
+		expect(db.notify('foo')).toBe(false); // noop
 
 		let resolvers = [
 			withResolvers(),
@@ -24,7 +24,7 @@ describe('Events', () => {
 		});
 
 		expect(db.listeners('foo')).toBe(1);
-		expect(db.emit('foo')).toBe(true);
+		expect(db.notify('foo')).toBe(true);
 		await Promise.all(resolvers.map(r => r.promise));
 		expect(spy).toHaveBeenCalledTimes(1);
 
@@ -41,7 +41,7 @@ describe('Events', () => {
 		db.addListener('foo', callback2);
 
 		expect(db.listeners('foo')).toBe(2);
-		expect(db.emit('foo')).toBe(true);
+		expect(db.notify('foo')).toBe(true);
 		await Promise.all(resolvers.map(r => r.promise));
 		expect(spy).toHaveBeenCalledTimes(2);
 		expect(spy2).toHaveBeenCalledTimes(1);
@@ -53,52 +53,52 @@ describe('Events', () => {
 		resolvers = [
 			withResolvers(),
 		];
-		expect(db.emit('foo', 'bar')).toBe(true);
+		expect(db.notify('foo', 'bar')).toBe(true);
 		await expect(Promise.all(resolvers.map(r => r.promise))).resolves.toEqual(['bar']);
 		expect(spy).toHaveBeenCalledTimes(3);
 		expect(spy2).toHaveBeenCalledTimes(1);
 	}));
 
-	it('should emit with arguments', () => dbRunner(async ({ db }) => {
+	it('should notify with arguments', () => dbRunner(async ({ db }) => {
 		let resolver = withResolvers();
 		db.addListener('foo', (...args) => {
 			resolver.resolve(args);
 		});
-		db.emit('foo', 'bar');
+		db.notify('foo', 'bar');
 		await expect(resolver.promise).resolves.toEqual(['bar']);
 
 		resolver = withResolvers();
-		db.emit('foo', 1234);
+		db.notify('foo', 1234);
 		await expect(resolver.promise).resolves.toEqual([1234]);
 
 		resolver = withResolvers();
-		db.emit('foo', true);
+		db.notify('foo', true);
 		await expect(resolver.promise).resolves.toEqual([true]);
 
 		resolver = withResolvers();
-		db.emit('foo', false);
+		db.notify('foo', false);
 		await expect(resolver.promise).resolves.toEqual([false]);
 
 		resolver = withResolvers();
-		db.emit('foo', null);
+		db.notify('foo', null);
 		await expect(resolver.promise).resolves.toEqual([null]);
 
 		resolver = withResolvers();
-		db.emit('foo', [1, 2, 3]);
+		db.notify('foo', [1, 2, 3]);
 		await expect(resolver.promise).resolves.toEqual([[1, 2, 3]]);
 
 		resolver = withResolvers();
-		db.emit('foo', { foo: 'bar' });
+		db.notify('foo', { foo: 'bar' });
 		await expect(resolver.promise).resolves.toEqual([{ foo: 'bar' }]);
 
 		resolver = withResolvers();
-		db.emit('foo', 'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' });
+		db.notify('foo', 'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' });
 		await expect(resolver.promise).resolves.toEqual([
 			'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' }
 		]);
 	}));
 
-	it('should emit once', () => dbRunner(async ({ db }) => {
+	it('should notify once', () => dbRunner(async ({ db }) => {
 		const { promise, resolve } = withResolvers();
 		let callCount = 0;
 
@@ -107,11 +107,11 @@ describe('Events', () => {
 			resolve();
 		});
 
-		db.emit('foo');
+		db.notify('foo');
 		await promise; // Wait for first callback
 		expect(callCount).toBe(1);
 
-		db.emit('foo');
+		db.notify('foo');
 		// Give time for potential second callback (shouldn't happen)
 		await new Promise(resolve => setTimeout(resolve, 50));
 		expect(callCount).toBe(1);
@@ -119,11 +119,11 @@ describe('Events', () => {
 
 	it('should work with Node\'s once()', () => dbRunner(async ({ db }) => {
 		const promise = once(db as unknown as EventEmitter, 'foo');
-		db.emit('foo', 'bar', 'baz');
+		db.notify('foo', 'bar', 'baz');
 		await expect(promise).resolves.toEqual(['bar', 'baz']);
 	}));
 
-	it('should remove listeners after emit', () => dbRunner(async ({ db }) => {
+	it('should remove listeners after notify', () => dbRunner(async ({ db }) => {
 		const spy1 = vi.fn();
 		const spy2 = vi.fn();
 
@@ -144,13 +144,13 @@ describe('Events', () => {
 
 		expect(db.listeners('foo')).toBe(2);
 
-		db.emit('foo');
+		db.notify('foo');
 		await promise;
 		expect(spy1).toHaveBeenCalledTimes(1);
 		expect(spy2.mock.calls.length).toBeLessThanOrEqual(1);
 		expect(db.listeners('foo')).toBe(0);
 
-		db.emit('foo');
+		db.notify('foo');
 		await delay(250); // we have nothing to await, so we wait for 250ms
 		expect(spy1).toHaveBeenCalledTimes(1);
 		expect(spy2.mock.calls.length).toBeLessThanOrEqual(1);
@@ -192,7 +192,7 @@ describe('Events', () => {
 		db2.addListener('foo', callback2);
 		db3.addListener('foo', callback3);
 
-		db.emit('foo');
+		db.notify('foo');
 		await resolvers[0].promise;
 		await resolvers[1].promise;
 		await Promise.race([
@@ -208,7 +208,7 @@ describe('Events', () => {
 			withResolvers(),
 			withResolvers(),
 		];
-		db.emit('foo');
+		db.notify('foo');
 		await resolvers[0].promise;
 		await resolvers[1].promise;
 		await Promise.race([
@@ -224,7 +224,7 @@ describe('Events', () => {
 			withResolvers(),
 			withResolvers(),
 		];
-		db2.emit('foo');
+		db2.notify('foo');
 		await resolvers[0].promise;
 		await resolvers[1].promise;
 		await Promise.race([
@@ -243,8 +243,8 @@ describe('Events', () => {
 			withResolvers(),
 			withResolvers(),
 		];
-		db2.emit('foo');
-		db2.emit('foo');
+		db2.notify('foo');
+		db2.notify('foo');
 
 		await Promise.race([
 			...resolvers.map(r => r.promise.then(() => {
@@ -258,7 +258,7 @@ describe('Events', () => {
 		expect(spy3).toHaveBeenCalledTimes(0);
 	}));
 
-	it('should emit events from worker threads', () => dbRunner(async ({ db, dbPath }) => {
+	it('should notify events from worker threads', () => dbRunner(async ({ db, dbPath }) => {
 		// Node.js 18 and older doesn't properly eval ESM code
 		const majorVersion = parseInt(process.versions.node.split('.')[0]);
 		const script = majorVersion < 20
@@ -302,11 +302,11 @@ describe('Events', () => {
 
 		resolver = withResolvers();
 		db.addListener('worker-event', value => resolver.resolve(value));
-		worker.postMessage({ emit: true });
+		worker.postMessage({ notify: true });
 		await expect(resolver.promise).resolves.toBe('foo');
 
 		resolver = withResolvers();
-		db.emit('parent-event', 'bar');
+		db.notify('parent-event', 'bar');
 		await expect(resolver.promise).resolves.toBe('bar');
 
 		resolver = withResolvers();
@@ -318,14 +318,14 @@ describe('Events', () => {
 		skipOpen: true
 	}, async ({ db }) => {
 		expect(() => db!.addListener('foo', () => {})).toThrow('Database not open');
-		expect(() => db!.emit('foo')).toThrow('Database not open');
+		expect(() => db!.notify('foo')).toThrow('Database not open');
 		expect(() => db!.listeners('foo')).toThrow('Database not open');
 		expect(() => db!.removeListener('foo', () => {})).toThrow('Database not open');
 	}));
 
 	it('should error if event is not a string', () => dbRunner(async ({ db }) => {
 		expect(() => db!.addListener(123 as any, () => {})).toThrow('Event is required');
-		expect(() => db!.emit(123 as any)).toThrow('Event is required');
+		expect(() => db!.notify(123 as any)).toThrow('Event is required');
 		expect(() => db!.listeners(123 as any)).toThrow('Event is required');
 		expect(() => db!.removeListener(123 as any, () => {})).toThrow('Event is required');
 	}));
