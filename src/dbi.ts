@@ -1,8 +1,7 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { NativeDatabase, NativeTransaction } from './load-binding.js';
-import { EventEmitter } from 'node:events';
-import type { GetOptions, PutOptions, Store } from './store.js';
-import type { Key } from './encoding.js';
+import { NativeTransaction } from './load-binding.js';
+import type { Context, GetOptions, PutOptions, Store } from './store.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
 
 export interface RocksDBOptions {
@@ -137,11 +136,11 @@ export interface DBITransactional {
  *
  * This class is not meant to be used directly.
  */
-export class DBI<T extends DBITransactional | unknown = unknown> extends EventEmitter {
+export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * The RocksDB context for `get()`, `put()`, and `remove()`.
 	 */
-	#context: NativeDatabase | NativeTransaction;
+	#context: Context;
 
 	/**
 	 * The database store instance. The store instance is tied to the database
@@ -159,8 +158,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> extends EventEm
 		if (new.target === DBI) {
 			throw new Error('DBI is an abstract class and cannot be instantiated directly');
 		}
-
-		super();
 
 		// this ideally should not be public, but JavaScript doesn't support
 		// protected properties
@@ -458,5 +455,85 @@ export class DBI<T extends DBITransactional | unknown = unknown> extends EventEm
 	 */
 	removeSync(key: Key, options?: T): void {
 		return this.store.removeSync(this.#context, key, options as DBITransactional);
+	}
+
+	/**
+	 * Adds a listener for the given key.
+	 *
+	 * @param event - The event name to add the listener for.
+	 * @param callback - The callback to add.
+	 */
+	addListener(event: string, callback: (...args: any[]) => void) {
+		this.store.db.addListener(event, callback);
+		return this;
+	}
+
+	/**
+	 * Alias for `removeListener()`.
+	 *
+	 * @param event - The event name to remove the listener for.
+	 * @param callback - The callback to remove.
+	 */
+	off(event: string, callback: (...args: any[]) => void) {
+		this.store.db.removeListener(event, callback);
+		return this;
+	}
+
+	/**
+	 * Alias for `addListener()`.
+	 *
+	 * @param event - The event name to add the listener for.
+	 * @param callback - The callback to add.
+	 */
+	on(event: string, callback: (...args: any[]) => void) {
+		this.store.db.addListener(event, callback);
+		return this;
+	}
+
+	/**
+	 * Adds a one-time listener, then automatically removes it.
+	 *
+	 * @param event - The event name to add the listener for.
+	 * @param callback - The callback to add.
+	 */
+	once(event: string, callback: (...args: any[]) => void) {
+		const wrapper = (...args: any[]) => {
+			this.removeListener(event, wrapper);
+			callback(...args);
+		};
+		this.store.db.addListener(event, wrapper);
+		return this;
+	}
+
+	/**
+	 * Notifies an event for the given key.
+	 *
+	 * @param event - The event name to emit the event for.
+	 * @param args - The arguments to emit.
+	 * @returns `true` if there were listeners, `false` otherwise.
+	 */
+	notify(event: string, ...args: any[]): boolean {
+		return this.store.db.notify(event, args);
+	}
+
+	/**
+	 * Gets the number of listeners for the given key.
+	 *
+	 	* @param event - The event name to get the listeners for.
+	 * @returns The number of listeners for the given key.
+	 */
+	listeners(event: string | BufferWithDataView): number {
+		return this.store.db.listeners(event);
+	}
+
+	/**
+	 * Removes an event listener. You must specify the exact same callback that was
+	 * used in `addListener()`.
+	 *
+	 * @param event - The event name to remove the listener for.
+	 * @param callback - The callback to remove.
+	 */
+	removeListener(event: string, callback: () => void): boolean {
+		return this.store.db.removeListener(event, callback);
 	}
 }

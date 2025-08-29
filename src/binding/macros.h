@@ -8,12 +8,35 @@
 
 #ifdef DEBUG
 	#define DEBUG_LOG(msg, ...) \
-		rocksdb_js::debugLog(msg, ##__VA_ARGS__);
+		rocksdb_js::debugLog(true, msg, ##__VA_ARGS__);
+	#define DEBUG_LOG_KEY(key) \
+		{ \
+			bool isPrintable = true; \
+			for (size_t i = 0; i < key.size() && isPrintable; i++) { \
+				unsigned char c = key.data()[i]; \
+				isPrintable = (c >= 32 && c <= 126); \
+			} \
+			if (isPrintable && key.size() > 0) { \
+				::fprintf(stderr, " \"%.*s\"", (int)key.size(), key.data()); \
+			} else { \
+				for (size_t i = 0; i < key.size(); i++) { \
+					::fprintf(stderr, " %02x", (unsigned char)key.data()[i]); \
+				} \
+			} \
+		}
+	#define DEBUG_LOG_KEY_LN(key) \
+		DEBUG_LOG_KEY(key) \
+		::fprintf(stderr, "\n");
+	#define DEBUG_LOG_MSG(msg, ...) \
+		rocksdb_js::debugLog(false, msg, ##__VA_ARGS__);
 	#define DEBUG_LOG_NAPI_VALUE(value) \
 		rocksdb_js::debugLogNapiValue(env, value);
 #else
 	// release builds debug logging is a no-op
 	#define DEBUG_LOG(msg, ...)
+	#define DEBUG_LOG_KEY(key)
+	#define DEBUG_LOG_KEY_LN(key)
+	#define DEBUG_LOG_MSG(msg, ...)
 	#define DEBUG_LOG_NAPI_VALUE(value)
 #endif
 

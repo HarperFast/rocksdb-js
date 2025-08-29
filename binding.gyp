@@ -9,6 +9,7 @@
 			'sources': [
 				'src/binding/binding.cpp',
 				'src/binding/database.cpp',
+				'src/binding/database_events.cpp',
 				'src/binding/db_descriptor.cpp',
 				'src/binding/db_handle.cpp',
 				'src/binding/db_iterator.cpp',
@@ -19,8 +20,8 @@
 				'src/binding/transaction.cpp',
 				'src/binding/util.cpp',
 			],
-			'cflags!': [ '-fno-exceptions' ],
-			'cflags_cc!': [ '-fno-exceptions' ],
+			'cflags!': [ '-fno-exceptions', '-std=c++17' ],
+			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],
 			'cflags_cc': [
 				'-std=c++20',
 				'-fexceptions'
@@ -36,7 +37,9 @@
 					},
 					'msvs_settings': {
 						'VCCLCompilerTool': {
-							'ExceptionHandling': 1
+							'ExceptionHandling': 1,
+							'AdditionalOptions!': ['/Zc:__cplusplus', '-std:c++17'],
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 						},
 						'VCLinkerTool': {
 							'LinkTimeCodeGeneration': 1,
@@ -59,11 +62,13 @@
 			],
 			'configurations': {
 				'Release': {
+					# 'defines': ['DEBUG'],
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 2,
 							'ExceptionHandling': 1,
-							'AdditionalOptions': ['/std:c++20']
+							'AdditionalOptions!': [],
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 						},
 						'VCLinkerTool': {
 							'AdditionalLibraryDirectories': [
@@ -81,16 +86,21 @@
 					'ldflags': ['--coverage'],
 					'msvs_settings': {
 						'VCCLCompilerTool': {
-							'RuntimeLibrary': 3,
+							# 'RuntimeLibrary': 3,
+							'RuntimeLibrary': 2,
 							'ExceptionHandling': 1,
-							'AdditionalOptions': ['/std:c++20']
+							'AdditionalOptions!': [],
+							# 'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20', '/U_DEBUG']
 						},
 						'VCLinkerTool': {
 							'AdditionalLibraryDirectories': [
-								'<(module_root_dir)/deps/rocksdb/debug/lib'
+								# '<(module_root_dir)/deps/rocksdb/debug/lib'
+								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdbd.lib'
+								# 'rocksdbd.lib'
+								'rocksdb.lib'
 							]
 						}
 					},

@@ -228,6 +228,48 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
+### `db.getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?)`
+
+Creates a new buffer with the contents of `defaultBuffer` that can be accessed
+across threads. This is useful for storing data such as flags, counters, or
+any ArrayBuffer-based data.
+
+- `options?: object`
+  - `callback?: () => void` A optional callback is called when `notify()`
+	  on the returned buffer is called.
+
+Returns a new `ArrayBuffer` with two additional methods:
+
+- `notify()` - Invokes the `options.callback`, if specified.
+- `cancel()` - Removes the callback; future `notify()` calls do nothing
+
+Note: If a shared buffer already exists for the given `key`, the returned
+`ArrayBuffer` will reference this existing shared buffer. Once all
+`ArrayBuffer` instances have gone out of scope and garbage collected, the
+underlying memory and notify callback will be freed.
+
+```typescript
+const buffer = new Uint8Array(
+  db.getUserSharedBuffer('isDone', new ArrayBuffer(1))
+);
+done[0] = 0;
+
+if (done[0] !== 1) {
+  done[1] = 1;
+}
+```
+
+```typescript
+const incrementer = new BigInt64Array(
+  db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+);
+incrementer[0] = 1n;
+
+function getNextId() {
+  return Atomics.add(incrementer, 0, 1n);
+}
+```
+
 ### `db.put(key: Key, value: any, options?: PutOptions): Promise`
 
 Stores a value for a given key.
@@ -301,6 +343,125 @@ import type { Transaction } from '@harperdb/rocksdb-js';
 db.transactionSync((txn: Transaction) => {
 	txn.putSync('foo', 'baz');
 });
+```
+
+## Events
+
+### Event: `'aftercommit'`
+
+The `'aftercommit'` event is emitted after a transaction has been committed and
+the transaction has completed including waiting for the async worker thread to
+finish.
+
+ - `result: object`
+   - `next: null`
+   - `last: null`
+   - `txnId: number` The id of the transaction that was just committed.
+
+### Event: `'beforecommit'`
+
+The `'beforecommit'` event is emitted before a transaction is about to be
+committed.
+
+### Event: `'begin-transaction'`
+
+The `'begin-transaction'` event is emitted right before the transaction function
+is executed.
+
+### Event: `'committed'`
+
+The `'committed'` event is emitted after the transaction has been written. When
+this event is emitted, the transaction is still cleaning up. If you need to know
+when the transaction is fully complete, use the `'aftercommit'` event.
+
+## Event API
+
+`rocksdb-js` provides a EventEmitter-like API that lets you asynchronously
+notify events to one or more synchronous listener callbacks. Events are scoped
+by database path.
+
+Unlike `EventEmitter`, events are emitted asynchronously, but in the same order
+that the listeners were added.
+
+```typescript
+const callback = (name) => console.log(`Hi from ${name}`);
+db.addListener('foo', callback);
+db.notify('foo');
+db.notify('foo', 'bar');
+db.removeListener('foo', callback);
+```
+
+### `addListener(event: string, callback: () => void): void`
+
+Adds a listener callback for the specific key.
+
+```typescript
+db.addListener('foo', () => {
+  // this callback will be executed asynchronously
+});
+
+db.addListener(1234, (...args) => {
+  console.log(args);
+});
+```
+
+### `listeners(event: string): number`
+
+Gets the number of listeners for the given key.
+
+```typescript
+db.listeners('foo'); // 0
+db.addListener('foo', () => {});
+db.listeners('foo'); // 1
+```
+
+### `on(event: string, callback: () => void): void`
+
+Alias for `addListener()`.
+
+### `once(event: string, callback: () => void): void`
+
+Adds a one-time listener, then automatically removes it.
+
+```typescript
+db.once('foo', () => {
+  console.log('This will only ever be called once');
+});
+```
+
+### `removeListener(event: string, callback: () => void): boolean`
+
+Removes an event listener. You must specify the exact same callback that was
+used in `addListener()`.
+
+```typescript
+const callback = () => {};
+db.addListener('foo', callback);
+
+db.removeListener('foo', callback); // return `true`
+db.removeListener('foo', callback); // return `false`, callback not found
+```
+
+### `off(event: string, callback: () => void): boolean`
+
+Alias for `removeListener()`.
+
+### `notify(event: string, ...args?): boolean`
+
+Call all listeners for the given key. Returns `true` if any callbacks were
+found, otherwise `false`.
+
+Unlike `EventEmitter`, events are emitted asynchronously, but in the same order
+that the listeners were added.
+
+You can optionally emit one or more arguments. Note that the arguments must be
+serializable. In other words, `undefined`, `null`, strings, booleans, numbers,
+arrays, and objects are supported.
+
+```typescript
+db.notify('foo');
+db.notify(1234);
+db.notify({ key: 'bar' }, { value: 'baz' });
 ```
 
 ## Exclusive Locking
@@ -420,6 +581,7 @@ The default `Store` contains the following methods which can be overridden:
 - `getCount(context, options?, txnId?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
+- `getUserSharedBuffer(key, defaultBuffer?)`
 - `hasLock(key)`
 - `isOpen()`
 - `open()`

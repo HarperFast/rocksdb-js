@@ -12,10 +12,12 @@ namespace rocksdb_js {
 /**
  * Logs a debug message to stderr prefixed with the current thread id.
  */
-void debugLog(const char* msg, ...) {
+void debugLog(const bool showThreadId, const char* msg, ...) {
 	va_list args;
 	va_start(args, msg);
-	fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+	if (showThreadId) {
+		fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+	}
 	vfprintf(stderr, msg, args);
 	va_end(args);
 	fflush(stderr);
@@ -359,10 +361,9 @@ const char* getNapiBufferFromArg(
 		end = length;
 	}
 
-	if (start > end) {
-		::napi_throw_error(env, nullptr, "Invalid buffer value start and end");
-		return nullptr;
-	}
+	RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", nullptr)
+	RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", nullptr)
+	RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", nullptr)
 
 	if (data == nullptr) {
 		// data is null because the buffer is empty

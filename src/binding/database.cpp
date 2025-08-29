@@ -1,6 +1,5 @@
 #include <node_api.h>
 #include <sstream>
-#include <thread>
 #include "database.h"
 #include "db_handle.h"
 #include "db_iterator.h"
@@ -9,17 +8,6 @@
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
-
-#define UNWRAP_DB_HANDLE() \
-	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
-
-#define UNWRAP_DB_HANDLE_AND_OPEN() \
-	UNWRAP_DB_HANDLE() \
-	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-		::napi_throw_error(env, nullptr, "Database not open"); \
-		NAPI_RETURN_UNDEFINED() \
-	}
 
 namespace rocksdb_js {
 
@@ -483,6 +471,33 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Gets or creates a buffer that an be shared across worker threads.
+ */
+napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(3)
+	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	// if we have a callback, add it as a listener
+	napi_ref callbackRef = nullptr;
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
+	if (type != napi_undefined) {
+		if (type == napi_function) {
+			DEBUG_LOG("Database::GetUserSharedBuffer key start=%d end=%d:\n", keyStart, keyEnd)
+			DEBUG_LOG_KEY_LN(keyStr)
+			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
+		} else {
+			::napi_throw_error(env, nullptr, "Callback must be a function");
+			return nullptr;
+		}
+	}
+
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, argv[1], callbackRef);
+}
+
+/**
  * Checks if the database has a lock on the given key.
  *
  * @example
@@ -582,18 +597,11 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
-#ifdef DEBUG
-	fprintf(stderr, "[%04zu] Database::PutSync() Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < keySlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)keySlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-	fprintf(stderr, "[%04zu] Database::PutSync() Value:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < valueSlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)valueSlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-#endif
+	DEBUG_LOG("%p Database::PutSync key:", dbHandle->get())
+	DEBUG_LOG_KEY_LN(keySlice)
+
+	DEBUG_LOG("%p Database::PutSync value:", dbHandle->get())
+	DEBUG_LOG_KEY_LN(valueSlice)
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
@@ -781,6 +789,7 @@ napi_value Database::WithLock(napi_env env, napi_callback_info info) {
  */
 void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
+		{ "addListener", nullptr, AddListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -788,10 +797,14 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },

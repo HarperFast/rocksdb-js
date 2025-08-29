@@ -17,6 +17,9 @@ getLock();
 parentPort?.on('message', event => {
 	if (event.lock) {
 		getLock();
+	} else if (event.close) {
+		db.close();
+		process.exit(0);
 	}
 });
 

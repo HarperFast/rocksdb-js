@@ -1,6 +1,7 @@
 #include <sstream>
 #include <thread>
 #include "database.h"
+#include "db_descriptor.h"
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "macros.h"
@@ -161,6 +162,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				state->status = state->txnHandle->txn->Commit();
+				if (state->status.ok()) {
+					DEBUG_LOG("Transaction::Commit emitted committed event\n")
+					state->txnHandle->dbHandle->descriptor->notify(env, "committed", nullptr);
+				}
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -213,6 +218,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
+		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
+		(*txnHandle)->dbHandle->descriptor->notify(env, "committed", nullptr);
+
 		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())
 		(*txnHandle)->close();
 	} else {
@@ -325,18 +333,11 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
-#ifdef DEBUG
-	fprintf(stderr, "[%04zu] Transaction::PutSync() Key:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < keySlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)keySlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-	fprintf(stderr, "[%04zu] Transaction::PutSync() Value:", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-	for (size_t i = 0; i < valueSlice.size(); i++) {
-		fprintf(stderr, " %02x", (unsigned char)valueSlice.data()[i]);
-	}
-	fprintf(stderr, "\n");
-#endif
+	DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get())
+	DEBUG_LOG_KEY_LN(keySlice)
+
+	DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get())
+	DEBUG_LOG_KEY_LN(valueSlice)
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->putSync(keySlice, valueSlice), "Transaction put failed")
 

@@ -10,6 +10,17 @@
 
 namespace rocksdb_js {
 
+#define UNWRAP_DB_HANDLE() \
+	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
+
+#define UNWRAP_DB_HANDLE_AND_OPEN() \
+	UNWRAP_DB_HANDLE() \
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+		::napi_throw_error(env, nullptr, "Database not open"); \
+		NAPI_RETURN_UNDEFINED() \
+	}
+
 /**
  * The `NativeDatabase` JavaScript class implementation.
  *
@@ -22,6 +33,7 @@ namespace rocksdb_js {
  */
 struct Database final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
+	static napi_value AddListener(napi_env env, napi_callback_info info);
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
@@ -29,10 +41,14 @@ struct Database final {
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetSync(napi_env env, napi_callback_info info);
+	static napi_value GetUserSharedBuffer(napi_env env, napi_callback_info info);
 	static napi_value HasLock(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
+	static napi_value Listeners(napi_env env, napi_callback_info info);
+	static napi_value Notify(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
+	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);

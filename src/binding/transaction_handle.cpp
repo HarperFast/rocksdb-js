@@ -1,5 +1,6 @@
 #include <sstream>
 #include "database.h"
+#include "db_descriptor.h"
 #include "db_iterator_handle.h"
 #include "transaction_handle.h"
 #include "macros.h"

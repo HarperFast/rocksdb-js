@@ -1,10 +1,10 @@
 import { version } from './load-binding.js';
 
-export { RocksDatabase } from './database.js';
-export { Store } from './store.js';
+export { RocksDatabase, type RocksDatabaseOptions } from './database.js';
+export { Store, type Context } from './store.js';
 export { DBIterator } from './dbi-iterator.js';
 export { Transaction } from './transaction.js';
-export type { RocksDatabaseOptions } from './database.js';
+export type { Key } from './encoding.js';
 
 export const versions = {
 	'rocksdb': version,

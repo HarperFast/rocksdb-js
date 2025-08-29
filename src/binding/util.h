@@ -9,6 +9,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <sstream>
 #include <thread>
 #include "binding.h"
 #include "macros.h"
@@ -23,6 +24,14 @@
 
 namespace rocksdb_js {
 
+#define RANGE_CHECK(condition, errorMsg, rval) \
+	if (condition) { \
+		std::stringstream ss; \
+		ss << errorMsg; \
+		::napi_throw_range_error(env, nullptr, ss.str().c_str()); \
+		return rval; \
+	}
+
 struct Closable {
 	virtual ~Closable() = default;
 	virtual void close() = 0;
@@ -30,7 +39,7 @@ struct Closable {
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
-void debugLog(const char* msg, ...);
+void debugLog(const bool showThreadId, const char* msg, ...);
 
 void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent = 0, bool isObject = false);
 
@@ -70,12 +79,44 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 
 		if (isBuffer) {
 			char* buf = nullptr;
+			uint32_t start = 0;
+			uint32_t end = 0;
 			size_t length = 0;
 			NAPI_STATUS_RETURN(::napi_get_buffer_info(env, from, reinterpret_cast<void**>(&buf), &length));
-			to.assign(buf, length);
-		} else {
-			return napi_invalid_arg;
+
+			if (buf == nullptr) {
+				// data is null because the buffer is empty
+				to.assign("");
+				return napi_ok;
+			}
+
+			bool hasStart;
+			napi_value startValue;
+			NAPI_STATUS_RETURN(::napi_has_named_property(env, from, "start", &hasStart));
+			if (hasStart) {
+				NAPI_STATUS_RETURN(::napi_get_named_property(env, from, "start", &startValue));
+				NAPI_STATUS_RETURN(::napi_get_value_uint32(env, startValue, &start));
+			}
+
+			bool hasEnd;
+			napi_value endValue;
+			NAPI_STATUS_RETURN(::napi_has_named_property(env, from, "end", &hasEnd));
+			if (hasEnd) {
+				NAPI_STATUS_RETURN(::napi_get_named_property(env, from, "end", &endValue));
+				NAPI_STATUS_RETURN(::napi_get_value_uint32(env, endValue, &end));
+			} else {
+				end = length;
+			}
+
+			RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", napi_invalid_arg)
+			RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", napi_invalid_arg)
+			RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", napi_invalid_arg)
+
+			to.assign(buf + start, end - start);
+			return napi_ok;
 		}
+
+		return napi_invalid_arg;
 	}
 
 	return napi_ok;
@@ -261,10 +302,10 @@ struct AsyncWorkHandle {
 	void unregisterAsyncWork() {
 		// notify if all work is complete
 		if (--this->activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount)
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
 			this->asyncWorkComplete.notify_one();
 		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount)
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
 		}
 	}
 
@@ -292,14 +333,14 @@ struct AsyncWorkHandle {
 		while (this->activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount)
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount.load())
 				return;
 			}
 
 			auto remainingTime = timeout - elapsed;
 			auto waitTime = std::min(pollInterval, remainingTime);
 
-			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %zu active work items\n", this, this->activeAsyncWork.size())
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %zu active work items\n", this, this->activeAsyncWorkCount.load())
 
 			// wait for either all work to be unregistered OR all execute handlers to complete
 			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {

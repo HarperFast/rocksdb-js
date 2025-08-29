@@ -2,6 +2,7 @@ import {
 	NativeDatabase,
 	NativeIterator,
 	NativeTransaction,
+	type UserSharedBufferCallback,
 	type NativeDatabaseOptions,
 } from './load-binding.js';
 import {
@@ -27,6 +28,8 @@ const REUSE_BUFFER_MODE = 512;
 const SAVE_BUFFER_SIZE = 8192;
 // const WRITE_BUFFER_SIZE = 65536;
 
+export type Context = NativeDatabase | NativeTransaction;
+
 /**
  * Options for the `Store` class.
  */
@@ -34,6 +37,7 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
+	freezeData?: boolean;
 	keyEncoder?: {
 		readKey?: ReadKeyFunction<Key>;
 		writeKey?: WriteKeyFunction;
@@ -50,10 +54,31 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	// overlappingSync?: boolean;
 	// pageSize?: number;
 	pessimistic?: boolean;
+
+	/**
+	 * If `true`, the encoder will use a random access structure.
+	 */
+	randomAccessStructure?: boolean;
+
 	// readOnly?: boolean;
 	sharedStructuresKey?: symbol;
 	// trackMetrics?: boolean;
 }
+
+/**
+ * Options for the `getUserSharedBuffer()` method.
+ */
+export type UserSharedBufferOptions = {
+	callback?: UserSharedBufferCallback;
+};
+
+/**
+ * The return type of `getUserSharedBuffer()`.
+ */
+export type ArrayBufferWithNotify = ArrayBuffer & {
+	cancel: () => void;
+	notify: () => void;
+};
 
 /**
  * A store wraps the `NativeDatabase` binding and database settings so that a
@@ -95,6 +120,11 @@ export class Store {
 	 * `RocksDatabase.open()`.
 	 */
 	encoding: Encoding | null;
+
+	/**
+	 * Encoder specific option used to signal that the data should be frozen.
+	 */
+	freezeData: boolean;
 
 	/**
 	 * Reusable buffer for encoding keys.
@@ -140,6 +170,12 @@ export class Store {
 	pessimistic: boolean;
 
 	/**
+	 * Encoder specific flag used to signal that the encoder should use a random
+	 * access structure.
+	 */
+	randomAccessStructure: boolean;
+
+	/**
 	 * The function used to encode keys.
 	 */
 	readKey: ReadKeyFunction<Key>;
@@ -179,6 +215,7 @@ export class Store {
 		this.encodeBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
+		this.freezeData = options?.freezeData ?? false;
 		this.keyBuffer = createFixedBuffer(KEY_BUFFER_SIZE);
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
@@ -187,6 +224,7 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
+		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
 		this.writeKey = writeKey;
@@ -366,6 +404,49 @@ export class Store {
 			}
 		}
 		return txnId;
+	}
+
+	/**
+	 * Gets or creates a buffer that can be shared across worker threads.
+	 *
+	 * @param key - The key to get or create the buffer for.
+	 * @param defaultBuffer - The default buffer to copy and use if the buffer
+	 * does not exist.
+	 * @param [options] - The options for the buffer.
+	 * @param [options.callback] - A optional callback is called when `notify()`
+	 * on the returned buffer is called.
+	 * @returns An `ArrayBuffer` that is internally backed by a rocksdb-js
+	 * managed buffer. The buffer also has `notify()` and `cancel()` methods
+	 * that can be used to notify the specified `options.callback`.
+	 */
+	getUserSharedBuffer(
+		key: Key,
+		defaultBuffer: ArrayBuffer,
+		options?: UserSharedBufferOptions
+	): ArrayBufferWithNotify {
+		const encodedKey = this.encodeKey(key);
+
+		if (options !== undefined && typeof options !== 'object') {
+			throw new TypeError('Options must be an object');
+		}
+
+		const buffer = this.db.getUserSharedBuffer(
+			encodedKey,
+			defaultBuffer,
+			options?.callback
+		) as ArrayBufferWithNotify;
+
+		// note: the notification methods need to re-encode the key because
+		// encodeKey() uses a shared key buffer
+		buffer.notify = (...args: any[]) => {
+			return this.db.notify(this.encodeKey(key), args);
+		};
+		buffer.cancel = () => {
+			if (options?.callback) {
+				this.db.removeListener(this.encodeKey(key), options.callback);
+			}
+		};
+		return buffer;
 	}
 
 	/**

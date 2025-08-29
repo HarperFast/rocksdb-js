@@ -2,8 +2,9 @@ import { dirname, join, resolve } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import type { Key } from './encoding.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { Context } from './store.js';
 
 export type TransactionOptions = {
 	/**
@@ -28,7 +29,7 @@ export type NativeTransaction = {
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
-	constructor(context: NativeDatabase | NativeTransaction, options: IteratorOptions);
+	constructor(context: Context, options: IteratorOptions);
 	next(): IteratorResult<T>;
 	return(): IteratorResult<T>;
 	throw(): IteratorResult<T>;
@@ -46,26 +47,33 @@ export type NativeDatabaseOptions = {
 type ResolveCallback<T> = (value: T) => void;
 type RejectCallback = (err: Error) => void;
 
+export type UserSharedBufferCallback = () => void;
+
 export type NativeDatabase = {
 	new(): NativeDatabase;
+	addListener(event: string, callback: (...args: any[]) => void): void;
 	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
 	clearSync(batchSize?: number): number;
 	close(): void;
-	get(key: Key, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	notify(event: string | BufferWithDataView, args?: any[]): boolean;
+	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: Key, txnId?: number): Buffer;
-	hasLock(key: Key): boolean;
+	getSync(key: BufferWithDataView, txnId?: number): Buffer;
+	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
+	hasLock(key: BufferWithDataView): boolean;
+	listeners(event: string | BufferWithDataView): number;
 	opened: boolean;
 	open(
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
-	putSync(key: Key, value: any, txnId?: number): void;
-	removeSync(key: Key, txnId?: number): void;
-	tryLock(key: Key, callback?: () => void): boolean;
-	unlock(key: Key): void;
-	withLock(key: Key, callback: () => void | Promise<void>): Promise<void>;
+	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
+	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
+	removeSync(key: BufferWithDataView, txnId?: number): void;
+	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
+	unlock(key: BufferWithDataView): void;
+	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
 export type RocksDatabaseConfig = {

@@ -30,14 +30,32 @@ export class Transaction extends DBI {
 	/**
 	 * Commit the transaction.
 	 */
-	commit(): Promise<void> {
-		return new Promise<void>((resolve, reject) => {
-			this.#txn.commit(resolve, reject);
-		});
+	async commit(): Promise<void> {
+		try {
+			await new Promise<void>((resolve, reject) => {
+				this.notify('beforecommit');
+				this.#txn.commit(resolve, reject);
+			});
+		} finally {
+			this.notify('aftercommit', {
+				next: null,
+				last: null,
+				txnId: this.#txn.id
+			});
+		}
 	}
 
 	commitSync(): void {
-		this.#txn.commitSync();
+		try {
+			this.notify('beforecommit');
+			this.#txn.commitSync();
+		} finally {
+			this.notify('aftercommit', {
+				next: null,
+				last: null,
+				txnId: this.#txn.id
+			});
+		}
 	}
 
 	/**

@@ -1,6 +1,6 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
-import { Store, type StoreOptions } from './store.js';
+import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
 import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
@@ -14,11 +14,6 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	 * @default 'default'
 	 */
 	name?: string;
-
-	/**
-	 * A custom store.
-	 */
-	store?: Store;
 };
 
 /**
@@ -156,8 +151,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		};
 	}
 
-	getUserSharedBuffer(_key: Key, _defaultBuffer?: Buffer) {
-		//
+	/**
+	 * Gets or creates a buffer that can be shared across worker threads.
+	 *
+	 * @param key - The key to get or create the buffer for.
+	 * @param defaultBuffer - The default buffer to copy and use if the buffer
+	 * does not exist.
+	 * @param [options] - The options for the buffer.
+	 * @param [options.callback] - A optional callback that receives
+	 * key-specific events.
+	 * @returns An `ArrayBuffer` that is internally backed by a shared block of
+	 * memory. The buffer also has `notify()` and `cancel()` methods that can be
+	 * used to notify the specified `options.callback`.
+	 *
+	 * @example
+	 * ```ts
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const buffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
+	 */
+	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?: UserSharedBufferOptions): ArrayBufferWithNotify {
+		return this.store.getUserSharedBuffer(key, defaultBuffer, options);
 	}
 
 	/**
@@ -255,7 +268,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		if (EncoderClass) {
 			const opts: Record<string, any> = {
-				copyBuffers: true
+				copyBuffers: true,
+				freezeData: store.freezeData,
+				randomAccessStructure: store.randomAccessStructure,
 			};
 			const { sharedStructuresKey } = store;
 			if (sharedStructuresKey) {
@@ -354,7 +369,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const txn = new Transaction(this.store, options);
 
 		try {
-			this.emit('begin-transaction');
+			this.notify('begin-transaction');
 			const result = await callback(txn);
 			await txn.commit();
 			return result;
@@ -389,7 +404,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const txn = new Transaction(this.store, options);
 
 		try {
-			this.emit('begin-transaction');
+			this.notify('begin-transaction');
 			const result = callback(txn);
 			let committed = false;
 
