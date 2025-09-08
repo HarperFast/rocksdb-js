@@ -361,7 +361,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction(callback: (txn: Transaction) => PromiseLike<any>, options?: TransactionOptions) {
+	async transaction(callback: (txn: Transaction) => void | PromiseLike<any>, options?: TransactionOptions) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
