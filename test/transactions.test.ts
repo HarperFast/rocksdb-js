@@ -210,11 +210,16 @@ for (const { name, options, txnOptions } of testOptions) {
 					} catch (error: unknown | Error & { code: string }) {
 						expect(error).toBeInstanceOf(Error);
 						if (error instanceof Error) {
-							expect(error.message).toBe(`Transaction ${
-								options?.pessimistic ? 'put' : 'commit'
-							} failed: Resource busy`);
-							if ('code' in error) {
-								expect(error.code).toBe('ERR_BUSY');
+							if (options?.pessimistic) {
+								expect(error.message).toBe('Transaction put failed: Resource busy');
+								if ('code' in error) {
+									expect(error.code).toBe('ERR_BUSY');
+								}
+							} else {
+								expect(error.message).toBe('Transaction has already been committed');
+								if ('code' in error) {
+									expect(error.code).toBe('ERR_ALREADY_COMMITTED');
+								}
 							}
 						}
 					}
@@ -404,6 +409,23 @@ for (const { name, options, txnOptions } of testOptions) {
 
 				const value = await db.get('foo');
 				expect(value).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should abort once`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await db.put('foo', 'bar');
+
+				db!.transactionSync((txn: Transaction) => {
+					txn.abort();
+				}, txnOptions);
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

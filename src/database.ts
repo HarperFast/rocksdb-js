@@ -406,25 +406,30 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		try {
 			this.notify('begin-transaction');
 			const result = callback(txn);
-			let committed = false;
 
 			// despite being 'sync', we need to support async operations
 			if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
 				return result.then((value) => {
-					if (committed) {
-						throw new Error('Transaction already committed');
+					try {
+						txn.commitSync();
+						return value as T;
+					} catch (err) {
+						if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+							return undefined as T;
+						}
+						throw err;
 					}
-					committed = true;
-					txn.commitSync();
-					return value as T;
 				});
 			}
 
 			txn.commitSync();
 			return result;
-		} catch (error) {
+		} catch (err) {
+			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+				return undefined as T;
+			}
 			txn.abort();
-			throw error;
+			throw err;
 		}
 	}
 

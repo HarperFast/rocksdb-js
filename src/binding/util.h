@@ -37,6 +37,8 @@ struct Closable {
 	virtual void close() = 0;
 };
 
+void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
+
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
 void debugLog(const bool showThreadId, const char* msg, ...);

@@ -1,0 +1,96 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: [self-hosted, linux, benchmark]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: benchmark-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            benchmark-pnpm-store-
+
+      - name: Setup RocksDB cache
+        uses: actions/cache@v4
+        with:
+          path: deps/rocksdb
+          key: benchmark-rocksdb-${{ hashFiles('package.json') }}
+          restore-keys: |
+            benchmark-rocksdb-
+
+      - name: Install dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
+      - name: Run benchmarks
+        run: pnpm bench
+
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            // Check if benchmark results file exists
+            if (fs.existsSync('benchmark-results.json')) {
+              const results = JSON.parse(fs.readFileSync('benchmark-results.json', 'utf8'));
+
+              const comment = `## 📊 Benchmark Results
+
+              \`\`\`
+              ${JSON.stringify(results, null, 2)}
+              \`\`\`
+
+              *Results from commit ${context.sha.substring(0, 7)}*`;
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }

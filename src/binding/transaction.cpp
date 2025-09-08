@@ -17,6 +17,12 @@
 		return nullptr; \
 	} \
 
+#define NAPI_THROW_JS_ERROR(code, message) \
+	napi_value error; \
+	rocksdb_js::createJSError(env, code, message, error); \
+	::napi_throw(env, error); \
+	return nullptr;
+
 namespace rocksdb_js {
 
 /**
@@ -114,6 +120,16 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("Abort")
 
+	TransactionState txnState = (*txnHandle)->getState();
+	if (txnState == TransactionState::Aborted) {
+		// already aborted
+		return nullptr;
+	}
+	if (txnState != TransactionState::Pending) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed")
+	}
+	(*txnHandle)->setState(TransactionState::Aborted);
+
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed")
 	DEBUG_LOG("Transaction::Abort closing txnHandle=%p\n", (*txnHandle).get())
 	(*txnHandle)->close();
@@ -139,6 +155,15 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit")
+
+	TransactionState txnState = (*txnHandle)->getState();
+	if (txnState == TransactionState::Aborted) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
+	}
+	if (txnState != TransactionState::Pending) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed")
+	}
+	(*txnHandle)->setState(TransactionState::Committing);
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -215,6 +240,15 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("CommitSync")
+
+	TransactionState txnState = (*txnHandle)->getState();
+	if (txnState == TransactionState::Aborted) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
+	}
+	if (txnState != TransactionState::Pending) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed")
+	}
+	(*txnHandle)->setState(TransactionState::Committing);
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {

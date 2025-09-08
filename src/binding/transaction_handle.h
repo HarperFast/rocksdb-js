@@ -17,6 +17,16 @@ struct DBHandle;
 struct DBIteratorOptions;
 
 /**
+ * Transaction state enumeration
+ */
+enum class TransactionState {
+	Pending,    // Transaction is active and can accept operations
+	Committing, // Transaction is in the process of committing (async only)
+	Committed,  // Transaction has been successfully committed
+	Aborted     // Transaction has been aborted/rolled back
+};
+
+/**
  * A handle to a RocksDB transaction. This is used to keep the transaction
  * alive until the transaction is committed or aborted.
  *
@@ -72,12 +82,30 @@ struct TransactionHandle final : Closable, AsyncWorkHandle {
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
 
+	/**
+	 * Get the current state of the transaction
+	 */
+	TransactionState getState() const;
+
+	/**
+	 * Set the transaction state (thread-safe)
+	 */
+	void setState(TransactionState newState);
+
+	/**
+	 * Check if the transaction is in a state that allows operations
+	 */
+	bool canPerformOperations() const;
+
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;
 	bool disableSnapshot;
 	bool snapshotSet;
-	std::mutex commitMutex;
+	mutable std::mutex stateMutex; // Renamed from commitMutex, used for state management and commit synchronization
 	uint32_t id;
+
+private:
+	TransactionState state;
 };
 
 } // namespace rocksdb_js
