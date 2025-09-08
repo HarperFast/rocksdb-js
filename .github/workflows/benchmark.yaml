@@ -77,13 +77,73 @@ jobs:
             if (fs.existsSync('benchmark-results.json')) {
               const results = JSON.parse(fs.readFileSync('benchmark-results.json', 'utf8'));
 
-              const comment = `## 📊 Benchmark Results
+              function formatNumber(num) {
+                if (num === undefined || num === null) return 'N/A';
+                if (num < 0.001) return num.toExponential(2);
+                if (num < 1) return num.toFixed(3);
+                if (num < 100) return num.toFixed(2);
+                return num.toLocaleString();
+              }
 
-              \`\`\`
-              ${JSON.stringify(results, null, 2)}
-              \`\`\`
+              function formatHz(hz) {
+                if (hz === undefined || hz === null) return 'N/A';
+                if (hz >= 1000000) return (hz / 1000000).toFixed(2) + 'M ops/sec';
+                if (hz >= 1000) return (hz / 1000).toFixed(2) + 'K ops/sec';
+                return hz.toFixed(2) + ' ops/sec';
+              }
 
-              *Results from commit ${context.sha.substring(0, 7)}*`;
+              function generateBenchmarkTable(group) {
+                if (!group.benchmarks || group.benchmarks.length === 0) {
+                  return '_No benchmark results_\n';
+                }
+
+                let table = '| Implementation | Rank | Operations/sec | Mean (ms) | Min (ms) | Max (ms) | RME (%) | Samples |\n';
+                table += '|---------------|------|--------------|-----------|----------|----------|---------|----------|\n';
+
+                // Sort by rank
+                const sortedBenchmarks = [...group.benchmarks].sort((a, b) => a.rank - b.rank);
+
+                for (const benchmark of sortedBenchmarks) {
+                  const rankEmoji = benchmark.rank === 1 ? '🥇' : benchmark.rank === 2 ? '🥈' : benchmark.rank === 3 ? '🥉' : '';
+                  const name = `${rankEmoji} ${benchmark.name}`;
+                  const rank = benchmark.rank;
+                  const opsPerSec = formatHz(benchmark.hz);
+                  const mean = formatNumber(benchmark.mean * 1000); // Convert to ms
+                  const min = formatNumber(benchmark.min * 1000);   // Convert to ms
+                  const max = formatNumber(benchmark.max * 1000);   // Convert to ms
+                  const rme = formatNumber(benchmark.rme);
+                  const samples = benchmark.sampleCount || 'N/A';
+
+                  table += `| ${name} | ${rank} | ${opsPerSec} | ${mean} | ${min} | ${max} | ${rme} | ${samples} |\n`;
+                }
+
+                return table + '\n';
+              }
+
+              let comment = '## 📊 Benchmark Results\n\n';
+
+              if (!results.files || results.files.length === 0) {
+                comment += '_No benchmark files found_\n';
+              } else {
+                for (const file of results.files) {
+                  const filename = file.filepath.split('/').pop();
+                  comment += `### ${filename}\n\n`;
+
+                  if (!file.groups || file.groups.length === 0) {
+                    comment += '_No benchmark groups found_\n\n';
+                    continue;
+                  }
+
+                  for (const group of file.groups) {
+                    // Extract test name from fullName (remove file path prefix)
+                    const testName = group.fullName.replace(/^[^>]+>\s*/, '');
+                    comment += `#### ${testName}\n\n`;
+                    comment += generateBenchmarkTable(group);
+                  }
+                }
+              }
+
+              comment += `\n---\n*Results from commit ${context.sha.substring(0, 7)}*`;
 
               github.rest.issues.createComment({
                 issue_number: context.issue.number,
