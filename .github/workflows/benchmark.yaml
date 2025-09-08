@@ -145,10 +145,33 @@ jobs:
 
               comment += `\n---\n*Results from commit ${context.sha.substring(0, 7)}*`;
 
-              github.rest.issues.createComment({
+              // Find existing benchmark comment
+              const comments = await github.rest.issues.listComments({
                 issue_number: context.issue.number,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                body: comment
               });
+
+              const benchmarkComment = comments.data.find(comment =>
+                comment.user.login === 'github-actions[bot]' &&
+                comment.body.includes('## 📊 Benchmark Results')
+              );
+
+              if (benchmarkComment) {
+                // Update existing comment
+                await github.rest.issues.updateComment({
+                  comment_id: benchmarkComment.id,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              } else {
+                // Create new comment
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              }
             }

@@ -3,7 +3,7 @@ import { benchmark, generateTestData } from './setup.js'
 import { ABORT } from 'lmdb';
 
 describe.skip('transaction', () => {
-	const SMALL_DATASET = 100;
+	const SMALL_DATASET = 1;
 	const smallDataset = generateTestData(SMALL_DATASET, 20, 100);
 
 	describe('optimistic', () => {
