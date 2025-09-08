@@ -24,7 +24,10 @@
 			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],
 			'cflags_cc': [
 				'-std=c++20',
-				'-fexceptions'
+				'-fexceptions',
+				'-D_POSIX_C_SOURCE=200809L',  # Lock to POSIX.1-2008
+				'-D_DEFAULT_SOURCE',          # Enable default glibc extensions
+				'-U_ISOC23_SOURCE'            # Explicitly disable C23 features
 			],
 			'conditions': [
 				['OS=="win"', {
@@ -49,10 +52,7 @@
 				}],
 				['OS=="linux" or OS=="mac"', {
 					'cflags+': ['-fexceptions'],
-					'cflags_cc+': [
-						'-fexceptions',
-						'-D_GLIBCXX_USE_CXX17_ABI=1'
-					],
+					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
