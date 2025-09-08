@@ -66,6 +66,14 @@ jobs:
       - name: Run benchmarks
         run: pnpm bench
 
+      - name: Upload benchmark results as artifact
+        if: always() && hashFiles('benchmark-results.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark-results.json
+          retention-days: 90
+
       - name: Comment PR with benchmark results
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v8
@@ -112,7 +120,7 @@ jobs:
                   const min = formatNumber(benchmark.min * 1000);   // Convert to ms
                   const max = formatNumber(benchmark.max * 1000);   // Convert to ms
                   const rme = formatNumber(benchmark.rme);
-                  const samples = benchmark.sampleCount || 'N/A';
+                  const samples = benchmark.sampleCount !== undefined ? formatNumber(benchmark.sampleCount) : 'N/A';
 
                   table += `| ${name} | ${rank} | ${opsPerSec} | ${mean} | ${min} | ${max} | ${rme} | ${samples} |\n`;
                 }
