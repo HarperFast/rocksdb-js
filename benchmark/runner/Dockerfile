@@ -1,18 +1,17 @@
-FROM node:24
+FROM ubuntu:24.04
 
 RUN apt update && apt install -y \
   ca-certificates \
   curl \
   git \
   sudo \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g pnpm
-
-RUN useradd -m -s /bin/bash runner \
+  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+  && apt install -y nodejs \
+  && npm install -g pnpm \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd -m -s /bin/bash runner \
   && usermod -aG sudo runner \
   && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
 
 USER runner
 WORKDIR /home/runner
