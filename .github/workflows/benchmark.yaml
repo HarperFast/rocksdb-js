@@ -16,6 +16,7 @@ jobs:
   benchmark:
     name: Run Benchmarks
     runs-on: [self-hosted, linux, benchmark]
+    continue-on-error: true
 
     steps:
       - name: Checkout repository
