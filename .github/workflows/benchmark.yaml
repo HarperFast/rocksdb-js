@@ -58,9 +58,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Lint
-        run: pnpm lint
-
       - name: Build
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
