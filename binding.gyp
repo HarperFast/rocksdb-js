@@ -49,7 +49,10 @@
 				}],
 				['OS=="linux" or OS=="mac"', {
 					'cflags+': ['-fexceptions'],
-					'cflags_cc+': ['-fexceptions'],
+					'cflags_cc+': [
+						'-fexceptions',
+						'-D_GLIBCXX_USE_CXX17_ABI=1'
+					],
 					'link_settings': {
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
