@@ -246,7 +246,7 @@ struct BaseAsyncState {
 };
 
 #define ASSERT_OPENED_AND_NOT_CANCELLED(handle, operation) \
-	if (!handle || !handle->opened() || handle->isCancelled()) { \
+	if (!handle->opened() || handle->isCancelled()) { \
 		DEBUG_LOG("%p Database closed during %s operation\n", handle, operation) \
 		return rocksdb::Status::Aborted("Database closed during " operation " operation"); \
 	}
