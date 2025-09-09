@@ -142,9 +142,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
  */
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	TransactionCommitState(napi_env env, std::shared_ptr<TransactionHandle> txnHandle)
-		: BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, txnHandle), txnHandle(txnHandle) {}
-
-	std::shared_ptr<TransactionHandle> txnHandle;
+		: BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, txnHandle) {}
 };
 
 /**
@@ -186,10 +184,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
-				state->status = state->txnHandle->txn->Commit();
+				state->status = state->handle->txn->Commit();
 				if (state->status.ok()) {
 					DEBUG_LOG("Transaction::Commit emitted committed event\n")
-					state->txnHandle->dbHandle->descriptor->notify(env, "committed", nullptr);
+					state->handle->dbHandle->descriptor->notify(env, "committed", nullptr);
 				}
 			}
 			// signal that execute handler is complete
@@ -204,8 +202,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 				if (state->status.ok()) {
-					DEBUG_LOG("Transaction::Commit complete closing txnHandle=%p\n", state->txnHandle.get())
-					state->txnHandle->close();
+					DEBUG_LOG("Transaction::Commit complete closing handle=%p\n", state->handle.get())
+
+					// BUG!
+					if (state->handle) {
+						state->handle->close();
+					} else {
+						DEBUG_LOG("Transaction::Commit complete, but handle is null!\n")
+					}
 
 					DEBUG_LOG("Transaction::Commit complete calling resolve\n")
 					napi_value resolve;

@@ -83,7 +83,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
-	void transactionRemove(uint32_t id);
+	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
 
 	napi_value getUserSharedBuffer(
 		napi_env env,

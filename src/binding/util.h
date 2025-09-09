@@ -229,11 +229,12 @@ struct BaseAsyncState {
 		this->signalExecuteCompleted();
 	}
 
-	// Call this from the execute handler to signal completion
 	void signalExecuteCompleted() {
-		if (handle) {
-			handle->unregisterAsyncWork();
-			handle = nullptr;
+		if (!this->completed.load()) {
+			if (this->handle) {
+				this->handle->unregisterAsyncWork();
+			}
+			this->completed.store(true);
 		}
 	}
 
@@ -243,6 +244,15 @@ struct BaseAsyncState {
 	napi_ref resolveRef;
 	napi_ref rejectRef;
 	rocksdb::Status status;
+
+	/**
+	 * A flag set by the execute handler to signal that the async work has been
+	 * completed. Note that we can't set `handle` to `nullptr` and use it as a
+	 * a flag because that would cause the shared pointer to the handle (e.g.
+	 * `TransactionHandle`) to destroy the handle before the async work complete
+	 * handler has a chance to close the handle.
+	 */
+	std::atomic<bool> completed{false};
 };
 
 #define ASSERT_OPENED_AND_NOT_CANCELLED(handle, operation) \

@@ -145,4 +145,28 @@ describe('getSync()', () => {
 			}
 		});
 	});
+
+	describe('get same key multiple times', () => {
+		function setup(ctx) {
+			ctx.db.putSync('test-key', 'test-value');
+		}
+
+		benchmark('rocksdb', {
+			setup,
+			bench({ db }) {
+				for (let i = 0; i < 1000; i++) {
+					db.getSync('test-key');
+				}
+			}
+		});
+
+		benchmark('lmdb', {
+			setup,
+			bench({ db }) {
+				for (let i = 0; i < 1000; i++) {
+					db.get('test-key');
+				}
+			}
+		});
+	});
 });

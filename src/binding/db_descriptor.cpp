@@ -339,9 +339,14 @@ std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
 /**
  * Removes a transaction from the registry.
  */
-void DBDescriptor::transactionRemove(uint32_t id) {
+void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandle) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	this->transactions.erase(id);
+	this->closables.erase(txnHandle.get());
+
+	auto it = this->transactions.find(txnHandle->id);
+	if (it != this->transactions.end()) {
+		this->transactions.erase(it);
+	}
 }
 
 /**

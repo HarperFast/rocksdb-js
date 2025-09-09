@@ -88,7 +88,7 @@ void TransactionHandle::close() {
 
 	// unregister this transaction handle from the descriptor
 	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(this->id);
+		this->dbHandle->descriptor->transactionRemove(shared_from_this());
 	}
 
 	this->dbHandle.reset();
