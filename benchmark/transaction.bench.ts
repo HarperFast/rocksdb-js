@@ -123,7 +123,7 @@ describe('transaction', () => {
 			});
 		});
 
-		describe.skip('rollback operations (100 records)', () => {
+		describe('rollback operations (100 records)', () => {
 			function setup(ctx) {
 				ctx.data = smallDataset;
 			}

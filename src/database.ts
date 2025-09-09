@@ -373,9 +373,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			const result = await callback(txn);
 			await txn.commit();
 			return result;
-		} catch (error) {
+		} catch (err) {
+			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+				return;
+			}
 			txn.abort();
-			throw error;
+			throw err;
 		}
 	}
 
