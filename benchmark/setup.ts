@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rimraf } from 'rimraf';
 import * as lmdb from 'lmdb';
-import { bench as vitestBench, describe } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { parentPort, Worker, workerData } from 'node:worker_threads';
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
+
+const vitestBench = workerData.benchmarkWorker ? () => {
+	console.log('vitest bench worker');
+} : (await import('vitest')).bench;
 
 type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
@@ -40,9 +43,9 @@ export function benchmark(type: string, options: any): void {
 		throws: true,
 		setup() {
 			if (type === 'rocksdb') {
-				ctx = { data: null, db: RocksDatabase.open(path, dbOptions) };
+				ctx = { db: RocksDatabase.open(path, dbOptions) };
 			} else {
-				ctx = { data: null, db: lmdb.open({ path, compression: true, ...dbOptions }) };
+				ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }) };
 			}
 			if (typeof setup === 'function') {
 				return setup(ctx);
@@ -101,13 +104,13 @@ interface WorkerDescribeOptions {
 	numWorkers?: number;
 }
 
-export function workerDescribe(name: string, fn: () => void, options?: WorkerDescribeOptions) {
-	return describe(name, fn);
+function describeShim(name: string, fn: () => void) {
+	// TODO: we need to call fn() and find all sub-describes and benchmark() calls
 }
 
-workerDescribe.only = describe.only;
-workerDescribe.skip = describe.skip;
-workerDescribe.todo = describe.todo;
+export const workerDescribe = workerData.benchmarkWorker
+	? Object.assign(describeShim, { only: () => {}, skip: () => {}, todo: () => {} })
+	: (await import('vitest')).describe;
 
 export function workerBenchmark(type: 'rocksdb', options: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>): void;
 export function workerBenchmark(type: 'lmdb', options: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>): void;
@@ -120,14 +123,75 @@ export function workerBenchmark(type: string, options: any): void {
 		return;
 	}
 
+	console.log('workerBenchmark', type, options, {
+		parentPort: !!parentPort,
+		isMainThread,
+		workerData,
+	});
+
 	const { bench, setup, teardown, dbOptions, name } = options;
 	const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
-	let ctx: BenchmarkContext<any>;
+	let ctx: Record<string, any> = {};
 
-	if (parentPort) {
-		//
+	if (workerData.benchmarkWorker) {
+		parentPort?.on('message', event => {
+			console.log(event);
+			if (event.setup) {
+				console.log('doing worker setup');
+				ctx.worker.send({ setupDone: true });
+			} else if (event.bench) {
+				console.log('doing worker bench');
+				ctx.worker.send({ benchDone: true });
+			} else if (event.teardown) {
+				console.log('doing worker teardown');
+				ctx.worker.send({ teardownDone: true });
+				process.exit(0);
+			}
+		});
 	} else {
-		console.log('main thread');
+		vitestBench(name || type, async () => {
+			console.log('doing parent bench');
+			const promise = new Promise<void>((resolve, reject) => {
+				ctx.worker.on('error', reject);
+				ctx.worker.on('message', event => {
+					console.log('parent bench - worker message', event);
+					if (event.benchDone) {
+						resolve();
+					}
+				});
+			});
+			ctx.worker.send({ bench: true });
+			await promise;
+		}, {
+			throws: true,
+			setup() {
+				return new Promise<void>((resolve, reject) => {
+					console.log('parent setup - starting worker')
+					ctx.worker = workerLaunch();
+					ctx.worker.on('error', reject);
+					ctx.worker.on('message', event => {
+						console.log('parent setup - worker message', event);
+						if (event.setupDone) {
+							resolve();
+						}
+					});
+				});
+			},
+			async teardown() {
+				console.log('doing parent teardown');
+				const promise = new Promise<void>((resolve, reject) => {
+					ctx.worker.on('error', reject);
+					ctx.worker.on('message', event => {
+						console.log('parent bench - worker message', event);
+						if (event.teardownDone) {
+							resolve();
+						}
+					});
+				});
+				ctx.worker.send({ teardown: true });
+				await promise;
+			}
+		});
 	}
 }
 
@@ -137,19 +201,23 @@ export function workerLaunch(workerData: Record<string, any> = {}) {
 	const script = majorVersion < 20
 		?	`
 			const tsx = require('tsx/cjs/api');
-			tsx.require('./benchmark/worker.mts', __dirname);
+			tsx.require('./benchmark/worker.bench.ts', __dirname);
 			`
 		:	`
 			import { register } from 'tsx/esm/api';
 			register();
-			import('./benchmark/worker.mts');
+			import('./benchmark/worker.bench.ts');
 			`;
 
+	console.log('launching worker', script);
 	const worker = new Worker(
 		script,
 		{
 			eval: true,
-			workerData,
+			workerData: {
+				...workerData,
+				benchmarkWorker: true
+			},
 		}
 	);
 
