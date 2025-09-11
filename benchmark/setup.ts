@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rimraf } from 'rimraf';
 import * as lmdb from 'lmdb';
-import { bench as vitestBench } from 'vitest';
+import { bench as vitestBench, describe } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { parentPort, Worker, workerData } from 'node:worker_threads';
 
 type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
@@ -93,4 +94,64 @@ export function generateSequentialKeys(count: number, prefix: string = 'key'): s
 
 export function generateRandomKeys(count: number, keySize: number = 20): string[] {
 	return Array.from({ length: count }, () => randomString(keySize));
+}
+
+
+interface WorkerDescribeOptions {
+	numWorkers?: number;
+}
+
+export function workerDescribe(name: string, fn: () => void, options?: WorkerDescribeOptions) {
+	return describe(name, fn);
+}
+
+workerDescribe.only = describe.only;
+workerDescribe.skip = describe.skip;
+workerDescribe.todo = describe.todo;
+
+export function workerBenchmark(type: 'rocksdb', options: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>): void;
+export function workerBenchmark(type: 'lmdb', options: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>): void;
+export function workerBenchmark(type: string, options: any): void {
+	if (type !== 'rocksdb' && type !== 'lmdb') {
+		throw new Error(`Unsupported benchmark type: ${type}`);
+	}
+
+	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb')) {
+		return;
+	}
+
+	const { bench, setup, teardown, dbOptions, name } = options;
+	const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	let ctx: BenchmarkContext<any>;
+
+	if (parentPort) {
+		//
+	} else {
+		console.log('main thread');
+	}
+}
+
+export function workerLaunch(workerData: Record<string, any> = {}) {
+	// Node.js 18 and older doesn't properly eval ESM code
+	const majorVersion = parseInt(process.versions.node.split('.')[0]);
+	const script = majorVersion < 20
+		?	`
+			const tsx = require('tsx/cjs/api');
+			tsx.require('./benchmark/worker.mts', __dirname);
+			`
+		:	`
+			import { register } from 'tsx/esm/api';
+			register();
+			import('./benchmark/worker.mts');
+			`;
+
+	const worker = new Worker(
+		script,
+		{
+			eval: true,
+			workerData,
+		}
+	);
+
+	return worker;
 }

@@ -1,4 +1,4 @@
-import { describe } from 'vitest'
+import { describe } from 'vitest';
 import { benchmark, generateTestData } from './setup.js'
 import { ABORT } from 'lmdb';
 

@@ -101,7 +101,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	rocksdb::Transaction* txn;
 	bool disableSnapshot;
 	bool snapshotSet;
-	mutable std::mutex stateMutex; // Renamed from commitMutex, used for state management and commit synchronization
+	mutable std::mutex stateMutex;
 	uint32_t id;
 
 private:
