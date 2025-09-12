@@ -15,7 +15,7 @@
 	if (!txnHandle || !(*txnHandle)) { \
 		::napi_throw_error(env, nullptr, fnName " failed: Transaction has already been closed"); \
 		return nullptr; \
-	} \
+	}
 
 #define NAPI_THROW_JS_ERROR(code, message) \
 	napi_value error; \
