@@ -62,4 +62,33 @@ describe('Worker', () => {
 			}
 		});
 	});
+
+	describe('random keys - small key size (100 records, 10 workers)', () => {
+		function setup(ctx) {
+			ctx.data = generateRandomKeys(SMALL_DATASET);
+			for (const key of ctx.data) {
+				ctx.db.putSync(key, 'test-value');
+			}
+		}
+
+		benchmark('rocksdb', {
+			numWorkers: 10,
+			setup,
+			bench({ data, db }) {
+				for (const key of data) {
+					db.getSync(key);
+				}
+			}
+		});
+
+		benchmark('lmdb', {
+			numWorkers: 10,
+			setup,
+			bench({ data, db }) {
+				for (const key of data) {
+					db.get(key);
+				}
+			}
+		});
+	});
 });

@@ -21,6 +21,7 @@ type BenchmarkOptions<T, U> = {
 	dbOptions?: U,
 	name?: string,
 	setup?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
+	timeout?: number,
 	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>
 };
 
@@ -39,7 +40,22 @@ export function benchmark(type: string, options: any): void {
 	const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	let ctx: BenchmarkContext<any>;
 
-	vitestBench(name || type, () => bench(ctx), {
+	vitestBench(name || type, () => {
+		let timer: NodeJS.Timeout | undefined;
+		return Promise.race([
+			(async () => {
+				await bench(ctx);
+				if (timer) {
+					clearTimeout(timer);
+				}
+			})(),
+			new Promise<void>((_resolve, reject) => {
+				timer = setTimeout(() => {
+					reject(new Error('Benchmark timed out'));
+				}, options.timeout || 60_000);
+			})
+		]);
+	}, {
 		throws: true,
 		setup(_task, _mode) {
 			if (type === 'rocksdb') {
@@ -274,6 +290,13 @@ export function workerBenchmark(type: string, options: any): void {
 		return;
 	}
 
+	// get the current benchmark file
+	const originalPrepareStackTrace = Error.prepareStackTrace;
+	Error.prepareStackTrace = (_, stack) => stack;
+	const stack = new Error().stack as any;
+	Error.prepareStackTrace = originalPrepareStackTrace;
+	const benchmarkFile = stack.map(frame => frame.getFileName()).find(frame => frame.endsWith('.bench.ts'));
+
 	let { bench, dbOptions, name, numWorkers, setup, teardown } = options;
 	numWorkers = Math.max(numWorkers || 1, 1);
 	const benchmarkName = name || type;
@@ -313,8 +336,9 @@ export function workerBenchmark(type: string, options: any): void {
 				return new Promise<void>((resolve, reject) => {
 					const worker = workerLaunch({
 						...workerPayload,
-						mode,
+						benchmarkFile,
 						benchmarkWorkerId: i + 1,
+						mode,
 						path
 					});
 					// important! these promises need to be referenced as
@@ -328,6 +352,8 @@ export function workerBenchmark(type: string, options: any): void {
 					workerState[i] = state;
 					worker.on('error', reject);
 					worker.on('exit', () => {
+						state.benchPromise.resolve();
+						state.teardownPromise.resolve();
 						state.exitPromise.resolve();
 					});
 					worker.on('message', event => {
@@ -338,6 +364,9 @@ export function workerBenchmark(type: string, options: any): void {
 							state.benchPromise.resolve();
 						} else if (event.teardownDone) {
 							state.teardownPromise.resolve();
+						} else if (event.timeout) {
+							state.teardownPromise.resolve();
+							state.benchPromise.reject(new Error('Benchmark timed out'));
 						}
 					});
 				});
@@ -369,7 +398,7 @@ export async function workerInit() {
 		throw new Error('Failed to initialize worker: parentPort is not available');
 	}
 
-	const { path } = workerData;
+	const { benchmarkWorkerId, path, timeout } = workerData;
 	let ctx: BenchmarkContext<any>;
 	const { bench, dbOptions, setup, teardown, type } = workerFindBenchmark();
 
@@ -378,8 +407,13 @@ export async function workerInit() {
 	parentPort.on('message', async (event: any) => {
 		// console.log('worker:', event);
 		if (event.bench) {
+			const timer = setTimeout(() => {
+				parentPort!.postMessage({ timeout: true, benchmarkWorkerId });
+				process.exit(1);
+			}, timeout || 60_000); // 1 minute
 			await bench(ctx);
-			parentPort!.postMessage({ benchDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
+			clearTimeout(timer);
+			parentPort!.postMessage({ benchDone: true, benchmarkWorkerId });
 		} else if (event.teardown) {
 			if (typeof teardown === 'function') {
 				await teardown(ctx);
@@ -393,7 +427,7 @@ export async function workerInit() {
 					// ignore cleanup errors in benchmarks
 				}
 			}
-			parentPort!.postMessage({ teardownDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
+			parentPort!.postMessage({ teardownDone: true, benchmarkWorkerId });
 			process.exit(0);
 		}
 	});
@@ -406,7 +440,7 @@ export async function workerInit() {
 	if (typeof setup === 'function') {
 		await setup(ctx);
 	}
-	parentPort.postMessage({ setupDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
+	parentPort.postMessage({ setupDone: true, benchmarkWorkerId });
 }
 
 /**
@@ -440,14 +474,14 @@ export function workerLaunch(workerData: Record<string, any> = {}) {
 	const script = majorVersion < 20
 		?	`
 			const tsx = require('tsx/cjs/api');
-			tsx.require('./benchmark/worker.bench.ts', __dirname);
+			tsx.require(${JSON.stringify(workerData.benchmarkFile)}, __dirname);
 			const { workerInit } = tsx.require('./benchmark/setup.ts', __dirname);
 			workerInit();
 			`
 		:	`
 			import { register } from 'tsx/esm/api';
 			register();
-			import('./benchmark/worker.bench.ts')
+			import(${JSON.stringify(workerData.benchmarkFile)})
 				.then(() => import('./benchmark/setup.ts'))
 				.then(module => module.workerInit());
 			`;
