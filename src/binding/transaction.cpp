@@ -120,7 +120,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("Abort")
 
-	TransactionState txnState = (*txnHandle)->getState();
+	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		// already aborted
 		return nullptr;
@@ -128,7 +128,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed")
 	}
-	(*txnHandle)->setState(TransactionState::Aborted);
+	(*txnHandle)->state = TransactionState::Aborted;
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed")
 	DEBUG_LOG("Transaction::Abort closing txnHandle=%p\n", (*txnHandle).get())
@@ -155,7 +155,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
-	TransactionState txnState = (*txnHandle)->getState();
+	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
 	}
@@ -167,7 +167,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		delete state;
 		return nullptr;
 	}
-	(*txnHandle)->setState(TransactionState::Committing);
+	(*txnHandle)->state = TransactionState::Committing;
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -189,7 +189,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = state->handle->txn->Commit();
 				if (state->status.ok()) {
 					DEBUG_LOG("Transaction::Commit emitted committed event\n")
-					state->handle->setState(TransactionState::Committed);
+					state->handle->state = TransactionState::Committed;
 					state->handle->dbHandle->descriptor->notify(env, "committed", nullptr);
 				}
 			}
@@ -248,19 +248,19 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("CommitSync")
 
-	TransactionState txnState = (*txnHandle)->getState();
+	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_RETURN_UNDEFINED()
 	}
-	(*txnHandle)->setState(TransactionState::Committing);
+	(*txnHandle)->state = TransactionState::Committing;
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
 		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
-		(*txnHandle)->setState(TransactionState::Committed);
+		(*txnHandle)->state = TransactionState::Committed;
 		(*txnHandle)->dbHandle->descriptor->notify(env, "committed", nullptr);
 
 		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())

@@ -82,30 +82,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
 
-	/**
-	 * Get the current state of the transaction
-	 */
-	TransactionState getState() const;
-
-	/**
-	 * Set the transaction state (thread-safe)
-	 */
-	void setState(TransactionState newState);
-
-	/**
-	 * Check if the transaction is in a state that allows operations
-	 */
-	bool canPerformOperations() const;
-
 	std::shared_ptr<DBHandle> dbHandle;
 	rocksdb::Transaction* txn;
 	bool disableSnapshot;
 	bool snapshotSet;
-	mutable std::mutex stateMutex;
-	uint32_t id;
-
-private:
 	TransactionState state;
+	uint32_t id;
 };
 
 } // namespace rocksdb_js
