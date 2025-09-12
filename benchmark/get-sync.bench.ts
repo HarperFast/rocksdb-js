@@ -10,7 +10,7 @@ import {
 const SMALL_DATASET = 100;
 
 describe('getSync()', () => {
-	describe('random keys - small key size (100 records)', () => {
+	describe.only('random keys - small key size (100 records)', () => {
 		function setup(ctx) {
 			ctx.data = generateRandomKeys(SMALL_DATASET);
 			for (const key of ctx.data) {

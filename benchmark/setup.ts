@@ -6,8 +6,8 @@ import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { parentPort, Worker, workerData } from 'node:worker_threads';
 
-const vitestBench = workerData.benchmarkWorker ? () => {
-	console.log('vitest bench worker');
+const vitestBench = workerData.benchmarkWorkerId ? () => {
+	throw new Error('Workers should not be directly calling vitest\'s bench()');
 } : (await import('vitest')).bench;
 
 type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
@@ -41,7 +41,7 @@ export function benchmark(type: string, options: any): void {
 
 	vitestBench(name || type, () => bench(ctx), {
 		throws: true,
-		setup() {
+		setup(_task, _mode) {
 			if (type === 'rocksdb') {
 				ctx = { db: RocksDatabase.open(path, dbOptions) };
 			} else {
@@ -101,6 +101,53 @@ export function generateRandomKeys(count: number, keySize: number = 20): string[
 
 /**
  * Worker Benchmark API
+ *
+ * To write a benchmark that uses workers, you need to use the exported
+ * `workerDescribe()` and `workerBenchmark()` functions.
+ *
+ * ```ts
+ * import {
+ *   workerDescribe as describe,
+ *   workerBenchmark as benchmark
+ * } from './setup.ts';
+ *
+ * describe('My suite', () => {
+ *   benchmark('some title', {
+ *     numWorkers: 2,
+ *     setup(ctx) {
+ *       ctx.data = generateRandomKeys(100);
+ *       for (const key of ctx.data) {
+ *         ctx.db.putSync(key, 'test-value');
+ *       }
+ *     },
+ * 	   bench({ db, data }) {
+ *       for (const key of data) {
+ *         db.getSync(key);
+ *       }
+ *     }
+ *   });
+ * });
+ *
+ * On the main thread, `workerDescribe()` wraps `vitest.describe()` and records
+ * all nested `describe()` calls and groups them into suites.
+ * `workerBenchmark()` wraps our `vitestBench()` function and also records all
+ * benchmarks for the current suite.
+ *
+ * Note that Vitest can only be run on the main thread. That's why this file
+ * carefully lazy loads Vitest only on the main thread.
+ *
+ * When Vitest runs a benchmark, `setup()` on the main thread will create the
+ * worker threads and wait for them to initialize. Each worker thread needs
+ * to discover all `describe()` and `benchmark()` calls. The worker will also
+ * open the database. Once initialized, the worker notifies the main thread and
+ * signals Vitest to call `bench()`.
+ *
+ * Vitest will call `bench()` on the main thread which tells the worker to run
+ * the benchmark. When the worker finishes, it notifies the main thread and the
+ * benchmark completion promise is reset.
+ *
+ * Lastly Vitest calls `teardown()` on the main thread which tells the worker to
+ * close the database and gracefully exit.
  */
 
 interface WorkerBenchmark {
@@ -121,7 +168,7 @@ interface WorkerSuite {
 interface WorkerState {
 	worker: Worker;
 	benchPromise: ReturnType<typeof withResolvers<void>>;
-	setupPromise: ReturnType<typeof withResolvers<void>>;
+	exitPromise: ReturnType<typeof withResolvers<void>>;
 	teardownPromise: ReturnType<typeof withResolvers<void>>;
 }
 
@@ -132,6 +179,10 @@ interface WorkerBenchmarkOptions extends BenchmarkOptions<any, any> {
 const workerSuites: Record<string, WorkerSuite> = {};
 let workerCurrentSuites: WorkerSuite[] = [];
 
+/**
+ * Runs on the main thread and the worker thread. It discovers nested
+ * `describe()` calls and groups them into suites.
+ */
 function describeShim(name: string, fn: () => void) {
 	const suites = workerCurrentSuites.length > 0
 		? workerCurrentSuites[workerCurrentSuites.length - 1].suites
@@ -152,31 +203,66 @@ function describeShim(name: string, fn: () => void) {
 	workerCurrentSuites.pop();
 }
 
-async function getVitestDescribe() {
-	if (workerData.benchmarkWorker) {
-		return Object.assign(describeShim, { only: () => {}, skip: () => {}, todo: () => {} });
+/**
+ * This is the main `workerDescribe()` function that is exported. It has two
+ * code paths:
+ *
+ * 1. The main thread, which does discovery and calls `vitest.describe()`
+ * 2. The worker thread, which does discovery only
+ */
+export const workerDescribe = await (async () => {
+	if (workerData.benchmarkWorkerId) {
+		return Object.assign(describeShim, {
+			only(name: string, fn: () => void) {
+				describeShim(name, fn);
+			},
+			skip() {
+				throw new Error('skip not supported in worker');
+			},
+			todo() {
+				throw new Error('todo not supported in worker');
+			}
+		});
 	}
 
+	// main thread
 	const { describe } = await import('vitest');
 	return Object.assign((name: string, fn: () => void) => {
 		describeShim(name, () => {
+			// snapshot the worker current suites in the closure because vitest
+			// fires callbacks once all describes()'s have been discovered
 			const state = [...workerCurrentSuites];
 			describe(name, () => {
-				const previous = workerCurrentSuites;
+				// now that all describes()'s have been discovered,
+				// `workerCurrentSuites` can be clobbered
 				workerCurrentSuites = state;
 				fn();
-				workerCurrentSuites = previous;
 			});
 		});
 	}, {
-		only: describe.only,
+		only(name: string, fn: () => void) {
+			describeShim(name, () => {
+				const state = [...workerCurrentSuites];
+				describe.only(name, () => {
+					workerCurrentSuites = state;
+					fn();
+				});
+			});
+		},
 		skip: describe.skip,
 		todo: describe.todo,
 	});
-}
+})();
 
-export const workerDescribe = await getVitestDescribe();
-
+/**
+ * Defines a benchmark. This is called on both the main thread and the worker.
+ * Both paths record the benchmark in the current suite.
+ *
+ * The main thread continues by registering the benchmark with Vitest. Note that
+ * the benchmark `setup()`, `bench()`, and `teardown()` functions are not called
+ * on the main thread. Instead, Vitest is wired up to send messages to the worker
+ * to call the benchmark functions.
+ */
 export function workerBenchmark(type: 'rocksdb', options: WorkerBenchmarkOptions): void;
 export function workerBenchmark(type: 'lmdb', options: WorkerBenchmarkOptions): void;
 export function workerBenchmark(type: string, options: any): void {
@@ -196,7 +282,8 @@ export function workerBenchmark(type: string, options: any): void {
 		suite.benchmarks.push({ bench, dbOptions, name: benchmarkName, numWorkers, setup, teardown, type });
 	}
 
-	if (workerData.benchmarkWorker) {
+	if (workerData.benchmarkWorkerId) {
+		// worker thread only needs to discover the benchmarks
 		return;
 	}
 
@@ -207,49 +294,73 @@ export function workerBenchmark(type: string, options: any): void {
 	};
 
 	vitestBench(benchmarkName, async () => {
-		for (let i = 0; i < numWorkers; i++) {
+		await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
 			const state = workerState[i];
-			if (!state) {
-				throw new Error(`Worker ${i} not found`);
-			}
 			state.worker.postMessage({ bench: true });
-			await state.benchPromise.promise;
+			return state.benchPromise.promise;
+		}));
+
+		for (let i = 0; i < numWorkers; i++) {
+			workerState[i].benchPromise = withResolvers<void>();
 		}
 	}, {
 		throws: true,
-		async setup() {
-			await Promise.all(Array.from({ length: numWorkers }, () => new Promise<void>((resolve, reject) => {
-				const benchPromise = withResolvers<void>();
-				const setupPromise = withResolvers<void>();
-				const teardownPromise = withResolvers<void>();
-				const worker = workerLaunch(workerPayload);
-				workerState.push({ worker, benchPromise, setupPromise, teardownPromise });
-				worker.on('error', reject);
-				worker.on('message', event => {
-					if (event.setupDone) {
-						setupPromise.resolve();
-						resolve();
-					} else if (event.benchDone) {
-						benchPromise.resolve();
-					} else if (event.teardownDone) {
-						teardownPromise.resolve();
-					}
+		async setup(_task, mode) {
+			// launch all workers and wait for them to initialize
+			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
+				return new Promise<void>((resolve, reject) => {
+					const worker = workerLaunch({
+						...workerPayload,
+						mode,
+						benchmarkWorkerId: i + 1
+					});
+					// important! these promises need to be referenced as
+					// properties of `state` because they are reset by reference
+					const state = {
+						worker,
+						benchPromise: withResolvers<void>(),
+						exitPromise: withResolvers<void>(),
+						teardownPromise: withResolvers<void>()
+					};
+					workerState[i] = state;
+					worker.on('error', reject);
+					worker.on('exit', () => {
+						state.exitPromise.resolve();
+					});
+					worker.on('message', event => {
+						// console.log('parent:', event);
+						if (event.setupDone) {
+							resolve();
+						} else if (event.benchDone) {
+							state.benchPromise.resolve();
+						} else if (event.teardownDone) {
+							state.teardownPromise.resolve();
+						}
+					});
 				});
-			})));
+			}));
 		},
-		async teardown() {
-			for (let i = 0; i < numWorkers; i++) {
+		async teardown(_task, mode) {
+			// tell all workers to teardown and wait
+			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
 				const state = workerState[i];
-				if (!state) {
-					throw new Error(`Worker ${i} not found`);
-				}
-				state.worker.postMessage({ teardown: true });
-				await state.teardownPromise.promise;
-			}
+				state.worker.postMessage({ teardown: true, mode });
+				return state.teardownPromise.promise;
+			}));
+
+			// wait for all workers to exit
+			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
+				workerState[i].teardownPromise = withResolvers<void>();
+				return workerState[i].exitPromise.promise;
+			}));
 		}
 	});
 }
 
+/**
+ * Runs on the worker thread, opens the database and wires up the message
+ * listeners.
+ */
 export async function workerInit() {
 	if (!parentPort) {
 		throw new Error('Failed to initialize worker: parentPort is not available');
@@ -259,10 +370,11 @@ export async function workerInit() {
 	let ctx: BenchmarkContext<any>;
 
 	parentPort.on('message', async (event: any) => {
+		// console.log('worker:', event);
 		if (event.bench) {
 			const { bench } = workerFindBenchmark();
 			await bench(ctx);
-			parentPort?.postMessage({ benchDone: true });
+			parentPort!.postMessage({ benchDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
 		} else if (event.teardown) {
 			const { teardown } = workerFindBenchmark();
 			if (typeof teardown === 'function') {
@@ -277,7 +389,7 @@ export async function workerInit() {
 					// ignore cleanup errors in benchmarks
 				}
 			}
-			parentPort?.postMessage({ teardownDone: true });
+			parentPort!.postMessage({ teardownDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
 			process.exit(0);
 		}
 	});
@@ -291,12 +403,16 @@ export async function workerInit() {
 	if (typeof setup === 'function') {
 		await setup(ctx);
 	}
-	parentPort.postMessage({ setupDone: true });
+	parentPort.postMessage({ setupDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
 }
 
+/**
+ * Runs on the worker thread and attempts to find the requested benchmark.
+ */
 function workerFindBenchmark() {
 	let suite: WorkerSuite | undefined;
 	let suites: Record<string, WorkerSuite> | undefined = workerSuites;
+
 	for (const suiteName of workerData.suites as string[]) {
 		suite = suites[suiteName];
 		if (!suite) {
@@ -304,6 +420,7 @@ function workerFindBenchmark() {
 		}
 		suites = suite.suites;
 	}
+
 	const options = suite?.benchmarks.find(bm => bm.name === workerData.benchmark);
 	if (!options) {
 		throw new Error(`Unknown benchmark: ${workerData.benchmark}`);
@@ -311,6 +428,9 @@ function workerFindBenchmark() {
 	return options;
 }
 
+/**
+ * Runs on the main thread and launches a worker thread.
+ */
 export function workerLaunch(workerData: Record<string, any> = {}) {
 	// Node.js 18 and older doesn't properly eval ESM code
 	const majorVersion = parseInt(process.versions.node.split('.')[0]);
@@ -333,10 +453,7 @@ export function workerLaunch(workerData: Record<string, any> = {}) {
 		script,
 		{
 			eval: true,
-			workerData: {
-				...workerData,
-				benchmarkWorker: true
-			},
+			workerData,
 		}
 	);
 }
