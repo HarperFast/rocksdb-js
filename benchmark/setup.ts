@@ -306,13 +306,16 @@ export function workerBenchmark(type: string, options: any): void {
 	}, {
 		throws: true,
 		async setup(_task, mode) {
+			const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+
 			// launch all workers and wait for them to initialize
 			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
 				return new Promise<void>((resolve, reject) => {
 					const worker = workerLaunch({
 						...workerPayload,
 						mode,
-						benchmarkWorkerId: i + 1
+						benchmarkWorkerId: i + 1,
+						path
 					});
 					// important! these promises need to be referenced as
 					// properties of `state` because they are reset by reference
@@ -366,22 +369,23 @@ export async function workerInit() {
 		throw new Error('Failed to initialize worker: parentPort is not available');
 	}
 
-	const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	const { path } = workerData;
 	let ctx: BenchmarkContext<any>;
+	const { bench, dbOptions, setup, teardown, type } = workerFindBenchmark();
+
+	// console.log('workerInit', workerData.benchmarkWorkerId, workerData.mode, type, path);
 
 	parentPort.on('message', async (event: any) => {
 		// console.log('worker:', event);
 		if (event.bench) {
-			const { bench } = workerFindBenchmark();
 			await bench(ctx);
 			parentPort!.postMessage({ benchDone: true, benchmarkWorkerId: workerData.benchmarkWorkerId });
 		} else if (event.teardown) {
-			const { teardown } = workerFindBenchmark();
 			if (typeof teardown === 'function') {
 				await teardown(ctx);
 			}
 			if (ctx.db) {
-				const path = ctx.db.path;
+				// console.log('workerTeardown', workerData.benchmarkWorkerId, workerData.mode, type, path);
 				await ctx.db.close();
 				try {
 					await rimraf(path);
@@ -394,7 +398,6 @@ export async function workerInit() {
 		}
 	});
 
-	const { setup, dbOptions, type } = workerFindBenchmark();
 	if (type === 'rocksdb') {
 		ctx = { db: RocksDatabase.open(path, dbOptions) };
 	} else {
