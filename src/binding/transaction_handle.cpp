@@ -15,7 +15,8 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	dbHandle(dbHandle),
 	txn(nullptr),
 	disableSnapshot(disableSnapshot),
-	snapshotSet(false)
+	snapshotSet(false),
+	state(TransactionState::Pending)
 {
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
@@ -48,6 +49,11 @@ void TransactionHandle::close() {
 		return;
 	}
 
+	// update state to aborted if not already committed
+	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
+		this->state = TransactionState::Aborted;
+	}
+
 	// destroy the RocksDB transaction
 	this->txn->ClearSnapshot();
 	delete this->txn;
@@ -55,7 +61,7 @@ void TransactionHandle::close() {
 
 	// unregister this transaction handle from the descriptor
 	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(this->id);
+		this->dbHandle->descriptor->transactionRemove(shared_from_this());
 	}
 
 	this->dbHandle.reset();
@@ -73,6 +79,11 @@ napi_value TransactionHandle::get(
 ) {
 	if (!this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+
+	if (this->state != TransactionState::Pending) {
+		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
 
@@ -188,6 +199,10 @@ rocksdb::Status TransactionHandle::getSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
+	if (this->state != TransactionState::Pending) {
+		return rocksdb::Status::Aborted("Transaction is not in pending state");
+	}
+
 	if (!this->disableSnapshot && !this->snapshotSet) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
@@ -217,6 +232,10 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
+	if (this->state != TransactionState::Pending) {
+		return rocksdb::Status::Aborted("Transaction is not in pending state");
+	}
+
 	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
@@ -236,6 +255,10 @@ rocksdb::Status TransactionHandle::removeSync(
 ) {
 	if (!this->txn) {
 		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+
+	if (this->state != TransactionState::Pending) {
+		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
 	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {

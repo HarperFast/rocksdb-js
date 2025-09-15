@@ -296,7 +296,7 @@ Synchronous version of `remove()`.
 
 ## Transactions
 
-### `db.transaction(async (txn: Transaction) => Promise<any>): Promise<any>`
+### `db.transaction(async (txn: Transaction) => void | Promise<any>): Promise<any>`
 
 Executes all database operations within the specified callback within a single
 transaction. If the callback completes without error, the database operations

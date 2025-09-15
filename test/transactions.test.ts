@@ -316,6 +316,166 @@ for (const { name, options, txnOptions } of testOptions) {
 				await rimraf(dbPath);
 			}
 		});
+
+		it(`${name} async should commit in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					await txn.commit();
+				});
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should commit twice in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					await txn.commit();
+					await txn.commit();
+				});
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should commit, then throw in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					await txn.commit();
+					throw new Error('test');
+				})).rejects.toThrow('test');
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should commit, then error when aborting in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					await txn.commit();
+					txn.abort();
+				})).rejects.toThrow('Transaction has already been committed');
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should commit, then abort in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					await txn.commit();
+					txn.abort();
+				})).rejects.toThrow('Transaction has already been committed');
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should abort in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					txn.abort();
+				});
+				await expect(db.get('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should abort twice in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					txn.abort();
+					txn.abort();
+				});
+				await expect(db.get('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should abort, then throw in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					txn.abort();
+					throw new Error('test');
+				})).rejects.toThrow('test');
+				await expect(db.get('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} async should abort, then error when aborting in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transaction(async (txn: Transaction) => {
+					await txn.put('foo', 'bar');
+					txn.abort();
+					await txn.commit();
+				})).rejects.toThrow('Transaction has already been aborted');
+				await expect(db.get('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
 	});
 
 	describe(`transactionSync() (${name})`, () => {
@@ -410,6 +570,23 @@ for (const { name, options, txnOptions } of testOptions) {
 			}
 		});
 
+		it(`${name} sync should abort once`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await db.put('foo', 'bar');
+
+				db!.transactionSync((txn: Transaction) => {
+					txn.abort();
+				}, txnOptions);
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
 		it(`${name} sync should allow transactions across column families`, async () => {
 			let db: RocksDatabase | null = null;
 			let db2: RocksDatabase | null = null;
@@ -462,6 +639,166 @@ for (const { name, options, txnOptions } of testOptions) {
 				}, txnOptions)).toThrow('test');
 
 				expect(() => db!.getSync('a', { transaction: txn })).toThrow('Transaction not found');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should commit in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				db.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.commitSync();
+				});
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should commit twice in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				db.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.commitSync();
+					txn.commitSync();
+				});
+				await expect(db.get('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should commit, then throw in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				expect(() => db!.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.commitSync();
+					throw new Error('test');
+				})).toThrow('test');
+				expect(db.getSync('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should commit, then error when aborting in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				expect(() => db!.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.commitSync();
+					txn.abort();
+				})).toThrow('Transaction has already been committed');
+				expect(db.getSync('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should commit, then abort in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				expect(() => db!.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.commitSync();
+					txn.abort();
+				})).toThrow('Transaction has already been committed');
+				expect(db.getSync('foo')).toBe('bar');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should abort in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				db.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.abort();
+				});
+				expect(db.getSync('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should abort twice in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				db.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.abort();
+					txn.abort();
+				});
+				expect(db.getSync('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should abort, then throw in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				expect(() => db!.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.abort();
+					throw new Error('test');
+				})).toThrow('test');
+				expect(db.getSync('foo')).toBeUndefined();
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should abort, then error when aborting in the callback`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				expect(() => db!.transactionSync((txn: Transaction) => {
+					txn.putSync('foo', 'bar');
+					txn.abort();
+					txn.commitSync();
+				})).toThrow('Transaction has already been aborted');
+				expect(db.getSync('foo')).toBeUndefined();
 			} finally {
 				db?.close();
 				await rimraf(dbPath);

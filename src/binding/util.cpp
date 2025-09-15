@@ -316,6 +316,33 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 }
 
 /**
+ * Creates a new JavaScript error object with custom code and message.
+ */
+void createJSError(napi_env env, const char* code, const char* message, napi_value& error) {
+	napi_value global;
+	napi_value objectCtor;
+	napi_value objectCreateFn;
+	napi_value errorCtor;
+	napi_value errorProto;
+	napi_value errorCode;
+	napi_value errorMsg;
+
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor))
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn))
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor))
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto))
+
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &errorCode))
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &errorMsg))
+
+	napi_value createArgs[1] = { errorProto };
+	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg))
+}
+
+/**
  * Gets a buffer from a JavaScript function argument. Additionally, it sets
  * the `start` and `end` based on the `start` and `end` properties of the
  * buffer, otherwise it will set them based on the length of the buffer.

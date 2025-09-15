@@ -361,21 +361,40 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction(callback: (txn: Transaction) => PromiseLike<any>, options?: TransactionOptions) {
+	async transaction<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions) {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
 
 		const txn = new Transaction(this.store, options);
+		let result: T | PromiseLike<T>;
 
 		try {
 			this.notify('begin-transaction');
-			const result = await callback(txn);
+			result = await callback(txn);
+		} catch (err) {
+			// either a user error or a already aborted/committed error
+			try {
+				// in the event of a user error, we need to abort the transaction
+				txn.abort();
+			} catch (err) {
+				// if the transaction was already aborted/committed, we can just return
+				if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+					return;
+				}
+			}
+			// rethrow the user error
+			throw err;
+		}
+
+		try {
 			await txn.commit();
 			return result;
-		} catch (error) {
-			txn.abort();
-			throw error;
+		} catch (err) {
+			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+				return;
+			}
+			throw err;
 		}
 	}
 
@@ -402,29 +421,47 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		const txn = new Transaction(this.store, options);
-
+		let result: T | PromiseLike<T>;
 		try {
 			this.notify('begin-transaction');
-			const result = callback(txn);
-			let committed = false;
+			result = callback(txn);
+		} catch (err) {
+			// either a user error or a already aborted/committed error
+			try {
+				// in the event of a user error, we need to abort the transaction
+				txn.abort();
+			} catch (err) {
+				if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+					return undefined as T;
+				}
+			}
+			throw err;
+		}
 
-			// despite being 'sync', we need to support async operations
-			if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
-				return result.then((value) => {
-					if (committed) {
-						throw new Error('Transaction already committed');
-					}
-					committed = true;
+		// despite being 'sync', we need to support async operations
+		if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
+			return result.then((value) => {
+				try {
 					txn.commitSync();
 					return value as T;
-				});
-			}
+				} catch (err) {
+					if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+						return undefined as T;
+					}
+					throw err;
+				}
+			});
+		}
 
+		try {
 			txn.commitSync();
 			return result;
-		} catch (error) {
+		} catch (err) {
+			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+				return undefined as T;
+			}
 			txn.abort();
-			throw error;
+			throw err;
 		}
 	}
 

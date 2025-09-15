@@ -1,0 +1,185 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: [self-hosted, linux, benchmark]
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: benchmark-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            benchmark-pnpm-store-
+
+      - name: Setup RocksDB cache
+        uses: actions/cache@v4
+        with:
+          path: deps/rocksdb
+          key: benchmark-rocksdb-${{ hashFiles('package.json') }}
+          restore-keys: |
+            benchmark-rocksdb-
+
+      - name: Install dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
+      - name: Run benchmarks
+        run: pnpm bench
+
+      - name: Upload benchmark results as artifact
+        if: always() && hashFiles('benchmark-results.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark-results.json
+          retention-days: 90
+
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            // Check if benchmark results file exists
+            if (fs.existsSync('benchmark-results.json')) {
+              const results = JSON.parse(fs.readFileSync('benchmark-results.json', 'utf8'));
+
+              function formatNumber(num) {
+                if (num === undefined || num === null) return 'N/A';
+                if (num < 0.001) return num.toExponential(2);
+                if (num < 1) return num.toFixed(3);
+                if (num < 100) return num.toFixed(2);
+                return num.toLocaleString();
+              }
+
+              function formatHz(hz) {
+                if (hz === undefined || hz === null) return 'N/A';
+                if (hz >= 1000000) return (hz / 1000000).toFixed(2) + 'M ops/sec';
+                if (hz >= 1000) return (hz / 1000).toFixed(2) + 'K ops/sec';
+                return hz.toFixed(2) + ' ops/sec';
+              }
+
+              function generateBenchmarkTable(group) {
+                if (!group.benchmarks || group.benchmarks.length === 0) {
+                  return '_No benchmark results_\n';
+                }
+
+                let table = '| Implementation | Rank | Operations/sec | Mean (ms) | Min (ms) | Max (ms) | RME (%) | Samples |\n';
+                table += '|---------------|------|--------------|-----------|----------|----------|---------|----------|\n';
+
+                // Sort by rank
+                const sortedBenchmarks = [...group.benchmarks].sort((a, b) => a.rank - b.rank);
+
+                for (const benchmark of sortedBenchmarks) {
+                  const rankEmoji = benchmark.rank === 1 ? '🥇' : benchmark.rank === 2 ? '🥈' : benchmark.rank === 3 ? '🥉' : '';
+                  const name = `${rankEmoji} ${benchmark.name}`;
+                  const rank = benchmark.rank;
+                  const opsPerSec = formatHz(benchmark.hz);
+                  const mean = formatNumber(benchmark.mean * 1000); // Convert to ms
+                  const min = formatNumber(benchmark.min * 1000);   // Convert to ms
+                  const max = formatNumber(benchmark.max * 1000);   // Convert to ms
+                  const rme = formatNumber(benchmark.rme);
+                  const samples = benchmark.sampleCount !== undefined ? formatNumber(benchmark.sampleCount) : 'N/A';
+
+                  table += `| ${name} | ${rank} | ${opsPerSec} | ${mean} | ${min} | ${max} | ${rme} | ${samples} |\n`;
+                }
+
+                return table + '\n';
+              }
+
+              let comment = '## 📊 Benchmark Results\n\n';
+
+              if (!results.files || results.files.length === 0) {
+                comment += '_No benchmark files found_\n';
+              } else {
+                for (const file of results.files) {
+                  const filename = file.filepath.split('/').pop();
+                  comment += `### ${filename}\n\n`;
+
+                  if (!file.groups || file.groups.length === 0) {
+                    comment += '_No benchmark groups found_\n\n';
+                    continue;
+                  }
+
+                  for (const group of file.groups) {
+                    // Extract test name from fullName (remove file path prefix)
+                    const testName = group.fullName.replace(/^[^>]+>\s*/, '');
+                    comment += `#### ${testName}\n\n`;
+                    comment += generateBenchmarkTable(group);
+                  }
+                }
+              }
+
+              comment += `\n---\n*Results from commit ${context.sha.substring(0, 7)}*`;
+
+              // Find existing benchmark comment
+              const comments = await github.rest.issues.listComments({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+
+              const benchmarkComment = comments.data.find(comment =>
+                comment.user.login === 'github-actions[bot]' &&
+                comment.body.includes('## 📊 Benchmark Results')
+              );
+
+              if (benchmarkComment) {
+                // Update existing comment
+                await github.rest.issues.updateComment({
+                  comment_id: benchmarkComment.id,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              } else {
+                // Create new comment
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              }
+            }
