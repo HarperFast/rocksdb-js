@@ -20,6 +20,7 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
+import { TransactionLog } from './transaction-log.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -61,7 +62,14 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	randomAccessStructure?: boolean;
 
 	// readOnly?: boolean;
+
 	sharedStructuresKey?: symbol;
+
+	/**
+	 * If `true`, the store will use the default transaction log.
+	 */
+	transactionLog?: TransactionLog | boolean;
+
 	// trackMetrics?: boolean;
 }
 
@@ -186,6 +194,11 @@ export class Store {
 	sharedStructuresKey?: symbol;
 
 	/**
+	 * The transaction log to use for the store.
+	 */
+	#transactionLog?: TransactionLog | null;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -227,7 +240,14 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.#transactionLog = null;
 		this.writeKey = writeKey;
+
+		if (options?.transactionLog === true) {
+			this.#transactionLog = new TransactionLog(this.db);
+		} else if (options?.transactionLog instanceof TransactionLog) {
+			this.#transactionLog = options.transactionLog;
+		}
 	}
 
 	/**
@@ -389,6 +409,14 @@ export class Store {
 			this.encodeKey(key),
 			this.getTxnId(options)
 		);
+	}
+
+	/**
+	 * Gets the transaction log for the store.
+	 * @returns The transaction log for the store.
+	 */
+	getTransactionLog() {
+		return this.#transactionLog;
 	}
 
 	/**

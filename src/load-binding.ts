@@ -28,6 +28,11 @@ export type NativeTransaction = {
 	removeSync(key: Key): void;
 };
 
+export type NativeTransactionLog = {
+	new(context: NativeDatabase): NativeTransactionLog;
+	commit(resolve: () => void, reject: (err: Error) => void): void;
+};
+
 export declare class NativeIteratorCls<T> implements Iterator<T> {
 	constructor(context: Context, options: IteratorOptions);
 	next(): IteratorResult<T>;
@@ -132,4 +137,5 @@ export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
+export const NativeTransactionLog: NativeTransactionLog = binding.TransactionLog;
 export const version = binding.version;
