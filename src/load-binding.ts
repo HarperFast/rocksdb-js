@@ -43,10 +43,11 @@ export declare class NativeIteratorCls<T> implements Iterator<T> {
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
+	disableWAL?: boolean;
+	mode?: NativeDatabaseMode;
 	name?: string;
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
-	mode?: NativeDatabaseMode;
 };
 
 type ResolveCallback<T> = (value: T) => void;

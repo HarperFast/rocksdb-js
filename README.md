@@ -41,7 +41,8 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not
   need to exist, but the parent directories do.
 - `options: object` [optional]
-  - `name:string` The column family name. Defaults to `"default"`.
+  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log.
+  - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block
      caching is enabled by default and the cache is shared across all database
      instances.

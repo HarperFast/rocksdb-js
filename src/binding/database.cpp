@@ -550,24 +550,27 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], path, "Database path is required")
 	const napi_value options = argv[1];
 
+	bool disableWAL = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", disableWAL));
+
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
 
 	bool noBlockCache = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", noBlockCache));
 
-	int parallelismThreads = std::max<int>(1, std::thread::hardware_concurrency() / 2);
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
-
 	std::string modeName;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "mode", modeName));
+
+	int parallelismThreads = std::max<int>(1, std::thread::hardware_concurrency() / 2);
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
 
 	DBMode mode = DBMode::Optimistic;
 	if (modeName == "pessimistic") {
 		mode = DBMode::Pessimistic;
 	}
 
-	DBOptions dbHandleOptions { mode, name, noBlockCache, parallelismThreads };
+	DBOptions dbHandleOptions { disableWAL, mode, name, noBlockCache, parallelismThreads };
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
@@ -618,8 +621,10 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
+		rocksdb::WriteOptions writeOptions;
+		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		status = (*dbHandle)->descriptor->db->Put(
-			rocksdb::WriteOptions(),
+			writeOptions,
 			(*dbHandle)->column.get(),
 			keySlice,
 			valueSlice
@@ -661,8 +666,10 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
+		rocksdb::WriteOptions writeOptions;
+		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		status = (*dbHandle)->descriptor->db->Delete(
-			rocksdb::WriteOptions(),
+			writeOptions,
 			(*dbHandle)->column.get(),
 			keySlice
 		);

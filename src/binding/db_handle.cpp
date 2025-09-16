@@ -14,8 +14,11 @@ DBHandle::DBHandle()
 /**
  * Creates a new DBHandle from a DBDescriptor.
  */
-DBHandle::DBHandle(std::shared_ptr<DBDescriptor> descriptor)
-	: descriptor(descriptor) {}
+DBHandle::DBHandle(
+	std::shared_ptr<DBDescriptor> descriptor,
+	const DBOptions& options
+) : descriptor(descriptor),
+	disableWAL(options.disableWAL) {}
 
 /**
  * Close the DBHandle and destroy it.
@@ -60,7 +63,10 @@ rocksdb::Status DBHandle::clear(uint32_t batchSize, uint64_t& deleted) {
 			ASSERT_OPENED_AND_NOT_CANCELLED(this, "clear")
 			DEBUG_LOG("%p DBHandle::Clear Writing batch with %zu keys\n", this, batch.Count())
 
-			status = this->descriptor->db->Write(rocksdb::WriteOptions(), &batch);
+			rocksdb::WriteOptions writeOptions;
+			writeOptions.disableWAL = this->disableWAL;
+
+			status = this->descriptor->db->Write(writeOptions, &batch);
 			if (!status.ok()) {
 				return status;
 			}

@@ -14,6 +14,7 @@ namespace rocksdb_js {
 
 // forward declarations
 struct DBDescriptor;
+
 /**
  * Handle for a RocksDB database and the selected column family. This handle is
  * returned by the Registry and is used by the `Database` class.
@@ -32,9 +33,13 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
+	/**
+	 * Whether to disable WAL.
+	 */
+	bool disableWAL;
 
 	DBHandle();
-	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
+	DBHandle(std::shared_ptr<DBDescriptor> descriptor, const DBOptions& options);
 	~DBHandle();
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback);

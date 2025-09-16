@@ -18,6 +18,7 @@ enum class DBMode {
  * values passed in from public `open()` method.
  */
 struct DBOptions final {
+	bool disableWAL;
 	DBMode mode;
 	std::string name;
 	bool noBlockCache;

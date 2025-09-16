@@ -262,7 +262,7 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), descriptor.get(), path.c_str(), descriptor.use_count())
 	}
 
-	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(descriptor);
+	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(descriptor, options);
 	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandle %p for \"%s\"\n", instance.get(), handle.get(), path.c_str())
 
 	// handle the column family

@@ -18,14 +18,17 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	snapshotSet(false),
 	state(TransactionState::Pending)
 {
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = dbHandle->disableWAL;
+
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
-		this->txn = tdb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
 	} else if (dbHandle->descriptor->mode == DBMode::Optimistic) {
 		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::OptimisticTransactionOptions txnOptions;
-		this->txn = odb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
