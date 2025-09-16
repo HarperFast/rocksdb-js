@@ -4,7 +4,7 @@ import { benchmark, generateRandomKeys, generateSequentialKeys, randomString } f
 describe('putSync()', () => {
 	const SMALL_DATASET = 100;
 
-	describe('random keys - small key size (100 records)', () => {
+	describe('random keys - insert - small key size (100 records)', () => {
 		benchmark('rocksdb', {
 			setup(ctx) {
 				ctx.data = generateRandomKeys(SMALL_DATASET);
@@ -28,7 +28,35 @@ describe('putSync()', () => {
 		});
 	});
 
-	describe('random keys - max 1978 lmdb key size (100 records)', () => {
+	describe('random keys - update - small key size (100 records)', () => {
+		function setup(ctx) {
+			const data = generateRandomKeys(SMALL_DATASET);
+			for (const key of data) {
+				ctx.db.putSync(key, 'test-value');
+			}
+			ctx.data = data.sort(() => Math.random() - 0.5);
+		}
+
+		benchmark('rocksdb', {
+			setup,
+			bench({ data, db }) {
+				for (const key of data) {
+					db.putSync(key, 'test-value-updated');
+				}
+			}
+		});
+
+		benchmark('lmdb', {
+			setup,
+			bench({ data, db }) {
+				for (const key of data) {
+					db.putSync(key, 'test-value-updated');
+				}
+			}
+		});
+	});
+
+	describe('random keys - insert - max 1978 lmdb key size (100 records)', () => {
 		benchmark('rocksdb', {
 			setup(ctx) {
 				ctx.data = generateRandomKeys(SMALL_DATASET, 1978);
@@ -52,14 +80,45 @@ describe('putSync()', () => {
 		});
 	});
 
-	describe('sequential keys (100 records)', () => {
+	describe('random keys - update - max 1978 lmdb key size (100 records)', () => {
+		function setup(ctx) {
+			const data = generateRandomKeys(SMALL_DATASET, 1978);
+			for (const key of data) {
+				ctx.db.putSync(key, 'test-value');
+			}
+			ctx.data = data.sort(() => Math.random() - 0.5);
+		}
+
+		benchmark('rocksdb', {
+			setup,
+			bench({ data, db }) {
+				for (const key of data) {
+					db.putSync(key, 'test-value-updated');
+				}
+			}
+		});
+
+		benchmark('lmdb', {
+			setup,
+			bench({ data, db }) {
+				for (const key of data) {
+					db.putSync(key, 'test-value-updated');
+				}
+			}
+		});
+	});
+
+	describe('sequential keys - insert (100 records)', () => {
 		benchmark('rocksdb', {
 			setup(ctx) {
 				ctx.data = generateSequentialKeys(SMALL_DATASET);
+				for (const key of ctx.data) {
+					ctx.db.putSync(key, 'test-value');
+				}
 			},
 			bench({ data, db }) {
 				for (const key of data) {
-					db.putSync(key, 'test-value');
+					db.putSync(key, 'test-value-updated');
 				}
 			}
 		});
@@ -67,10 +126,13 @@ describe('putSync()', () => {
 		benchmark('lmdb', {
 			setup(ctx) {
 				ctx.data = generateSequentialKeys(SMALL_DATASET);
+				for (const key of ctx.data) {
+					ctx.db.putSync(key, 'test-value');
+				}
 			},
 			bench({ data, db }) {
 				for (const key of data) {
-					db.putSync(key, 'test-value');
+					db.putSync(key, 'test-value-updated');
 				}
 			}
 		});
