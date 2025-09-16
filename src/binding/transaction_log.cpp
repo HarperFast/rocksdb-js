@@ -4,6 +4,11 @@
 
 namespace rocksdb_js {
 
+napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
+	NAPI_CONSTRUCTOR("TransactionLog")
+	return nullptr;
+}
+
 /**
  * Commits the transaction log.
  */

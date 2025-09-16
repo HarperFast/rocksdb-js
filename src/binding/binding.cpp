@@ -6,6 +6,7 @@
 #include "macros.h"
 #include "rocksdb/db.h"
 #include "transaction.h"
+#include "transaction_log.h"
 #include "util.h"
 #include <atomic>
 
@@ -55,6 +56,9 @@ NAPI_MODULE_INIT() {
 
 	// transaction
 	rocksdb_js::Transaction::Init(env, exports);
+
+	// transaction log
+	rocksdb_js::TransactionLog::Init(env, exports);
 
 	// db iterator
 	rocksdb_js::DBIterator::Init(env, exports);
