@@ -19,8 +19,8 @@ export type NativeTransaction = {
 	id: number;
 	new(context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
 	abort(): void;
-	commit(resolve: () => void, reject: (err: Error) => void): void;
-	commitSync(): void;
+	commit(resolve: (timestamp: number) => void, reject: (err: Error) => void): void;
+	commitSync(): number;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
 	getCount(options?: RangeOptions): number;
 	getSync(key: Key): Buffer;

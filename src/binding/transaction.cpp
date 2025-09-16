@@ -1,3 +1,4 @@
+#include <chrono>
 #include <sstream>
 #include <thread>
 #include "database.h"
@@ -140,7 +141,12 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 /**
  * State for the `Commit` async work.
  */
-typedef BaseAsyncState<std::shared_ptr<TransactionHandle>> TransactionCommitState;
+struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
+	TransactionCommitState(napi_env env, std::shared_ptr<TransactionHandle> txnHandle)
+		: BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, txnHandle), timestamp(0) {}
+
+	uint64_t timestamp;
+};
 
 /**
  * Commits the transaction.
@@ -186,8 +192,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
+				// set current timestamp before committing
+				auto now = std::chrono::system_clock::now();
+				auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+				state->handle->txn->SetCommitTimestamp(timestamp);
+
 				state->status = state->handle->txn->Commit();
 				if (state->status.ok()) {
+					state->timestamp = timestamp;
 					DEBUG_LOG("Transaction::Commit emitted committed event\n")
 					state->handle->state = TransactionState::Committed;
 					state->handle->dbHandle->descriptor->notify(env, "committed", nullptr);
@@ -207,17 +219,20 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				if (state->status.ok()) {
 					DEBUG_LOG("Transaction::Commit complete closing handle=%p\n", state->handle.get())
 
-					// BUG!
 					if (state->handle) {
 						state->handle->close();
 					} else {
 						DEBUG_LOG("Transaction::Commit complete, but handle is null!\n")
 					}
 
+					napi_value result;
+					double milliseconds = static_cast<double>(state->timestamp) / 1000.0;
+					NAPI_STATUS_THROWS_VOID(::napi_create_double(env, milliseconds, &result))
+
 					DEBUG_LOG("Transaction::Commit complete calling resolve\n")
 					napi_value resolve;
 					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
 				} else {
 					napi_value reject;
 					napi_value error;
@@ -257,6 +272,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
+	// set current timestamp before committing
+	auto now = std::chrono::system_clock::now();
+	auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+	(*txnHandle)->txn->SetCommitTimestamp(timestamp);
+
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
 		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
@@ -265,13 +285,18 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())
 		(*txnHandle)->close();
-	} else {
-		napi_value error;
-		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed")
-		NAPI_STATUS_THROWS(::napi_throw(env, error))
+
+		// Return the timestamp as milliseconds (convert from microseconds)
+		napi_value result;
+		double milliseconds = static_cast<double>(timestamp) / 1000.0;
+		NAPI_STATUS_THROWS(::napi_create_double(env, milliseconds, &result))
+		return result;
 	}
 
-	NAPI_RETURN_UNDEFINED()
+	napi_value error;
+	ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed")
+	NAPI_STATUS_THROWS(::napi_throw(env, error))
+	return nullptr;
 }
 
 /**
