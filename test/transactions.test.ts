@@ -1,8 +1,7 @@
 import { assert, describe, expect, it } from 'vitest';
 import { rimraf } from 'rimraf';
-import { RocksDatabase } from '../src/index.js';
+import { RocksDatabase, Transaction } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import type { Transaction } from '../src/transaction.js';
 import { withResolvers } from '../src/util.js';
 
 const testOptions = [
@@ -476,6 +475,21 @@ for (const { name, options, txnOptions } of testOptions) {
 				await rimraf(dbPath);
 			}
 		});
+
+		it(`${name} async should return the callback's value`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transaction(async (_txn: Transaction) => {
+					return 'foo'
+				}, txnOptions)).resolves.toBe('foo');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
 	});
 
 	describe(`transactionSync() (${name})`, () => {
@@ -804,6 +818,36 @@ for (const { name, options, txnOptions } of testOptions) {
 				await rimraf(dbPath);
 			}
 		});
+
+		it(`${name} sync should return the callback's value`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				expect(db.transactionSync((_txn: Transaction) => {
+					return 'foo'
+				}, txnOptions)).toBe('foo');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
+
+		it(`${name} sync should return the callback's promise`, async () => {
+			let db: RocksDatabase | null = null;
+			const dbPath = generateDBPath();
+
+			try {
+				db = RocksDatabase.open(dbPath, options);
+				await expect(db.transactionSync(async (_txn: Transaction) => {
+					return 'foo'
+				}, txnOptions)).resolves.toBe('foo');
+			} finally {
+				db?.close();
+				await rimraf(dbPath);
+			}
+		});
 	});
 
 	describe(`Error handling (${name})`, () => {
@@ -834,3 +878,43 @@ for (const { name, options, txnOptions } of testOptions) {
 		});
 	});
 }
+
+describe('Transaction', () => {
+	it('should return the commit timestamp sync', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = RocksDatabase.open(dbPath);
+			const start = Date.now();
+			const txn = new Transaction(db.store);
+			txn.putSync('foo', 'bar');
+			const ts = txn.commitSync();
+			expect(ts).toBeGreaterThan(start);
+			expect(ts).toBeLessThanOrEqual(Date.now() + 1);
+			expect(db.getSync('foo')).toBe('bar');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
+	});
+
+	it('should resolve the commit timestamp async', async () => {
+		let db: RocksDatabase | null = null;
+		const dbPath = generateDBPath();
+
+		try {
+			db = RocksDatabase.open(dbPath);
+			const start = Date.now();
+			const txn = new Transaction(db.store);
+			txn.putSync('foo', 'bar');
+			const ts = await txn.commit();
+			expect(ts).toBeGreaterThan(start);
+			expect(ts).toBeLessThanOrEqual(Date.now() + 1);
+			expect(db.getSync('foo')).toBe('bar');
+		} finally {
+			db?.close();
+			await rimraf(dbPath);
+		}
+	});
+});
