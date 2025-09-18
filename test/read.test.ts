@@ -1,6 +1,13 @@
+declare module 'msgpackr/pack' {
+  export const REUSE_BUFFER_MODE: number;
+  export const RESET_BUFFER_MODE: number;
+}
+
 import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
-import { Encoder, RESET_BUFFER_MODE, REUSE_BUFFER_MODE } from 'msgpackr';
+import { Encoder } from 'msgpackr';
+import { RESET_BUFFER_MODE, REUSE_BUFFER_MODE } from 'msgpackr/pack';
+import type { BufferWithDataView } from '../src/encoding.js';
 
 describe('Read Operations', () => {
 	describe('get()', () => {
@@ -25,7 +32,8 @@ describe('Read Operations', () => {
 			expect(value).not.toBe('bar');
 
 			const encoder = new Encoder({ copyBuffers: true });
-			const expected = encoder.encode('bar', REUSE_BUFFER_MODE | RESET_BUFFER_MODE);
+			const encoded = encoder.encode('bar', REUSE_BUFFER_MODE | RESET_BUFFER_MODE) as unknown as BufferWithDataView;
+			const expected = encoded.subarray(encoded.start, encoded.end);
 			expect(value.equals(expected)).toBe(true);
 		}));
 	});

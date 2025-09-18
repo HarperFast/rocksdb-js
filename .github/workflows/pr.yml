@@ -83,5 +83,17 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Run tests on Bun
+        id: bun-test
         continue-on-error: true
         run: bun --bun test
+
+      - name: Cancel workflow if Bun tests failed
+        if: steps.bun-test.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId
+            });
