@@ -6,37 +6,37 @@ import { dbRunner } from './lib/util.js';
 describe('Lock', () => {
 	describe('tryLock()', () => {
 		it('should error attempting to lock if key is not specified', () => dbRunner(async ({ db }) => {
-			expect(() => (db!.tryLock as any)()).toThrow('Key is required');
+			expect(() => (db.tryLock as any)()).toThrow('Key is required');
 		}));
 
 		it('should error if callback is not a function', () => dbRunner(async ({ db }) => {
-			expect(() => db!.tryLock('foo', 'bar' as any)).toThrow('Callback must be a function');
+			expect(() => db.tryLock('foo', 'bar' as any)).toThrow('Callback must be a function');
 		}));
 
 		it('should error attempting to lock if database is not open', () => dbRunner({
 			skipOpen: true
 		}, async ({ db }) => {
-			expect(() => db!.tryLock('foo')).toThrow('Database not open');
+			expect(() => db.tryLock('foo')).toThrow('Database not open');
 		}));
 
 		it('should lock and unlock', () => dbRunner(async ({ db }) => {
-			expect(db!.hasLock('foo')).toBe(false);
-			expect(db!.unlock('foo')).toBe(false);
+			expect(db.hasLock('foo')).toBe(false);
+			expect(db.unlock('foo')).toBe(false);
 
 			let unlockCounter = 0;
-			expect(db!.tryLock('foo', () => {
+			expect(db.tryLock('foo', () => {
 				unlockCounter++;
 			})).toBe(true);
 
 			const promises = [
 				new Promise<void>(resolve => {
-					expect(db!.tryLock('foo', () => {
+					expect(db.tryLock('foo', () => {
 						unlockCounter++;
 						resolve();
 					})).toBe(false);
 				}),
 				new Promise<void>(resolve => {
-					expect(db!.tryLock('foo', () => {
+					expect(db.tryLock('foo', () => {
 						unlockCounter++;
 						resolve();
 					})).toBe(false);
@@ -44,28 +44,28 @@ describe('Lock', () => {
 			];
 
 			expect(unlockCounter).toBe(0);
-			expect(db!.hasLock('foo')).toBe(true);
-			expect(db!.unlock('foo')).toBe(true);
-			expect(db!.hasLock('foo')).toBe(false);
+			expect(db.hasLock('foo')).toBe(true);
+			expect(db.unlock('foo')).toBe(true);
+			expect(db.hasLock('foo')).toBe(false);
 			await Promise.all(promises);
 			expect(unlockCounter).toBe(2);
 		}));
 
 		it('should lock in a lock', () => dbRunner(async ({ db }) => {
-			expect(db!.tryLock('foo', () => {})).toBe(true);
-			expect(db!.tryLock('foo', () => {
-				expect(db!.tryLock('foo', () => {})).toBe(true);
+			expect(db.tryLock('foo', () => {})).toBe(true);
+			expect(db.tryLock('foo', () => {
+				expect(db.tryLock('foo', () => {})).toBe(true);
 			})).toBe(false);
-			expect(db!.unlock('foo')).toBe(true);
+			expect(db.unlock('foo')).toBe(true);
 			await delay(100);
-			expect(db!.unlock('foo')).toBe(true);
-			expect(db!.unlock('foo')).toBe(false);
+			expect(db.unlock('foo')).toBe(true);
+			expect(db.unlock('foo')).toBe(false);
 		}));
 
 		it('should not unlock if another database is closed', () => dbRunner(async ({ db }, { db: db2 }) => {
 			expect(db.hasLock('foo')).toBe(false);
 			expect(db2.hasLock('foo')).toBe(false);
-			expect(db!.tryLock('foo', () => {})).toBe(true);
+			expect(db.tryLock('foo', () => {})).toBe(true);
 			expect(db2.hasLock('foo')).toBe(true);
 			db2.close();
 			expect(db.hasLock('foo')).toBe(true);
@@ -143,7 +143,7 @@ describe('Lock', () => {
 			expect(db.hasLock('foo')).toBe(true); // worker has lock
 
 			await new Promise<void>(resolve => {
-				expect(db!.tryLock('foo', () => resolve())).toBe(false);
+				expect(db.tryLock('foo', () => resolve())).toBe(false);
 				worker.terminate();
 			});
 		}));
@@ -151,37 +151,37 @@ describe('Lock', () => {
 
 	describe('unlock()', () => {
 		it('should error attempting to unlock if key is not specified', () => dbRunner(async ({ db }) => {
-			expect(() => (db!.unlock as any)()).toThrow('Key is required');
+			expect(() => (db.unlock as any)()).toThrow('Key is required');
 		}));
 
 		it('should error attempting to unlock if database is not open', () => dbRunner({
 			skipOpen: true
 		}, async ({ db }) => {
-			expect(() => db!.unlock('foo')).toThrow('Database not open');
+			expect(() => db.unlock('foo')).toThrow('Database not open');
 		}));
 	});
 
 	describe('hasLock()', () => {
 		it('should error attempting to unlock if key is not specified', () => dbRunner(async ({ db }) => {
-			expect(() => (db!.hasLock as any)()).toThrow('Key is required');
+			expect(() => (db.hasLock as any)()).toThrow('Key is required');
 		}));
 
 		it('should error attempting to unlock if database is not open', () => dbRunner({
 			skipOpen: true
 		}, async ({ db }) => {
-			expect(() => db!.hasLock('foo')).toThrow('Database not open');
+			expect(() => db.hasLock('foo')).toThrow('Database not open');
 		}));
 	});
 
 	describe('withLock()', () => {
 		it('should error if callback is not a function', () => dbRunner(async ({ db }) => {
-			await expect(db!.withLock('foo', 'bar' as any)).rejects.toThrow('Callback must be a function');
+			await expect(db.withLock('foo', 'bar' as any)).rejects.toThrow('Callback must be a function');
 		}));
 
 		it('should error if database is not open', () => dbRunner({
 			skipOpen: true
 		}, async ({ db }) => {
-			await expect(db!.withLock('foo', () => {})).rejects.toThrow('Database not open');
+			await expect(db.withLock('foo', () => {})).rejects.toThrow('Database not open');
 		}));
 
 		it('should lock and unlock', () => dbRunner(async ({ db }) => {
@@ -190,12 +190,12 @@ describe('Lock', () => {
 			await db.withLock('foo', async () => {
 				spy();
 
-				await db!.withLock('bar', async () => {
+				await db.withLock('bar', async () => {
 					// async
 					await delay(100);
 					spy();
 
-					await db!.withLock('baz', () => {
+					await db.withLock('baz', () => {
 						// sync
 						spy();
 					});
@@ -210,7 +210,7 @@ describe('Lock', () => {
 
 			const promise = db.withLock('foo', async () => {
 				spy();
-				expect(db!.hasLock('foo')).toBe(true);
+				expect(db.hasLock('foo')).toBe(true);
 				await delay(100);
 			});
 
@@ -221,7 +221,7 @@ describe('Lock', () => {
 
 			await db.withLock('foo', async () => {
 				spy();
-				expect(db!.hasLock('foo')).toBe(true);
+				expect(db.hasLock('foo')).toBe(true);
 			});
 
 			expect(db.hasLock('foo')).toBe(false);
@@ -285,21 +285,21 @@ describe('Lock', () => {
 			const promise = Promise.all([
 				db.withLock('foo', async () => {
 					spy();
-					expect(db!.hasLock('foo')).toBe(true);
+					expect(db.hasLock('foo')).toBe(true);
 					expect(workerLocked).toBe(false);
 				}),
 				db.withLock('foo', async () => {
 					spy();
-					expect(db!.hasLock('foo')).toBe(true);
+					expect(db.hasLock('foo')).toBe(true);
 					worker.postMessage({ lock: true });
 					await delay(250);
 					expect(workerLocked).toBe(false);
 				}),
 				(async () => {
 					await delay(100),
-					await db!.withLock('foo', async () => {
+					await db.withLock('foo', async () => {
 						spy();
-						expect(db!.hasLock('foo')).toBe(true);
+						expect(db.hasLock('foo')).toBe(true);
 						await delay(100);
 						expect(workerLocked).toBe(false);
 					})

@@ -64,4 +64,8 @@ export class Transaction extends DBI {
 	get id() {
 		return this.#txn.id;
 	}
+
+	useLog(name: string) {
+		return this.#txn.useLog(name);
+	}
 }

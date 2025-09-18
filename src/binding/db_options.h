@@ -23,6 +23,7 @@ struct DBOptions final {
 	std::string name;
 	bool noBlockCache;
 	int parallelismThreads;
+	int transactionLogRetentionMs;
 };
 
 } // namespace rocksdb_js

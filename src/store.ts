@@ -20,7 +20,8 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
-import { TransactionLog } from './transaction-log.js';
+// import { TransactionLog } from './transaction-log.js';
+import { parseDuration } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -34,7 +35,10 @@ export type Context = NativeDatabase | NativeTransaction;
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
+export interface StoreOptions extends Omit<NativeDatabaseOptions,
+	| 'mode'
+	| 'transactionLogRetentionMs'
+> {
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
@@ -66,9 +70,12 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	sharedStructuresKey?: symbol;
 
 	/**
-	 * If `true`, the store will use the default transaction log.
+	 * A string containing the amount of time or the number of milliseconds to
+	 * retain transaction logs before purging.
+	 *
+	 * @default '3d' (3 days)
 	 */
-	transactionLog?: TransactionLog | boolean;
+	transactionLogRetention?: number | string;
 
 	// trackMetrics?: boolean;
 }
@@ -111,6 +118,11 @@ export class Store {
 	 * Whether the decoder copies the buffer when encoding values.
 	 */
 	decoderCopies: boolean = false;
+
+	/**
+	 * Whether to disable the write ahead log.
+	 */
+	disableWAL: boolean;
 
 	/**
 	 * Reusable buffer for encoding values using `writeKey()` when the custom
@@ -189,14 +201,17 @@ export class Store {
 	readKey: ReadKeyFunction<Key>;
 
 	/**
+	 * A string containing the amount of time or the number of milliseconds to
+	 * retain transaction logs before purging.
+	 *
+	 * @default '3d' (3 days)
+	 */
+	transactionLogRetention?: number | string;
+
+	/**
 	 * The key used to store shared structures.
 	 */
 	sharedStructuresKey?: symbol;
-
-	/**
-	 * The transaction log to use for the store.
-	 */
-	#transactionLog?: TransactionLog | null;
 
 	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
@@ -225,6 +240,7 @@ export class Store {
 
 		this.db = new NativeDatabase();
 		this.decoder = options?.decoder ?? null;
+		this.disableWAL = options?.disableWAL ?? false;
 		this.encodeBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
@@ -240,14 +256,8 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
-		this.#transactionLog = null;
+		this.transactionLogRetention = options?.transactionLogRetention;
 		this.writeKey = writeKey;
-
-		if (options?.transactionLog === true) {
-			this.#transactionLog = new TransactionLog(this.db);
-		} else if (options?.transactionLog instanceof TransactionLog) {
-			this.#transactionLog = options.transactionLog;
-		}
 	}
 
 	/**
@@ -412,14 +422,6 @@ export class Store {
 	}
 
 	/**
-	 * Gets the transaction log for the store.
-	 * @returns The transaction log for the store.
-	 */
-	getTransactionLog() {
-		return this.#transactionLog;
-	}
-
-	/**
 	 * Checks if the data method options object contains a transaction ID and
 	 * returns it.
 	 */
@@ -505,10 +507,14 @@ export class Store {
 		}
 
 		this.db.open(this.path, {
+			disableWAL: this.disableWAL,
+			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
-			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
+			transactionLogRetentionMs: this.transactionLogRetention
+				? parseDuration(this.transactionLogRetention)
+				: undefined
 		});
 	}
 

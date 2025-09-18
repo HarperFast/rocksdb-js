@@ -83,11 +83,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 
 	std::shared_ptr<DBHandle> dbHandle;
-	rocksdb::Transaction* txn;
 	bool disableSnapshot;
-	bool snapshotSet;
-	TransactionState state;
 	uint32_t id;
+	bool snapshotSet;
+	double startTimestamp;
+	TransactionState state;
+	rocksdb::Transaction* txn;
 };
 
 } // namespace rocksdb_js

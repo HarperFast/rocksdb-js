@@ -13,10 +13,10 @@ namespace rocksdb_js {
  */
 TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
-	txn(nullptr),
 	disableSnapshot(disableSnapshot),
 	snapshotSet(false),
-	state(TransactionState::Pending)
+	state(TransactionState::Pending),
+	txn(nullptr)
 {
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;

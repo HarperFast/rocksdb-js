@@ -565,12 +565,15 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	int parallelismThreads = std::max<int>(1, std::thread::hardware_concurrency() / 2);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
 
+	int transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", transactionLogRetentionMs));
+
 	DBMode mode = DBMode::Optimistic;
 	if (modeName == "pessimistic") {
 		mode = DBMode::Pessimistic;
 	}
 
-	DBOptions dbHandleOptions { disableWAL, mode, name, noBlockCache, parallelismThreads };
+	DBOptions dbHandleOptions { disableWAL, mode, name, noBlockCache, parallelismThreads, transactionLogRetentionMs };
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);

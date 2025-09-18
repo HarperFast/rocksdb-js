@@ -53,6 +53,8 @@ Creates a new database instance.
   - `store: Store` A custom store that handles all interaction between the
     `RocksDatabase` or `Transaction` instances and the native database
     interface. See [Custom Store](#custom-store) for more information.
+  - `transactionLogRetention: string | number` The number of minutes to retain
+    transaction logs before purging. Defaults to `'3d'` (3 days).
 
 ### `db.close()`
 
