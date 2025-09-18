@@ -198,34 +198,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Synchronously retrieves the value for the given key, then returns the
-	 * decoded value.
-	 */
-	getSync(key: Key, options?: GetOptions & T) {
-		if (this.store.decoderCopies) {
-			const bytes = this.getBinaryFastSync(key, options);
-			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
-		}
-
-		if (this.store.encoding === 'binary') {
-			return this.getBinarySync(key, options);
-		}
-
-		if (this.store.decoder) {
-			const result = this.getBinarySync(key, options);
-			return result ? this.store.decodeValue(result) : undefined;
-		}
-
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		return this.store.decodeValue(
-			this.store.getSync(this.#context, key, options)
-		);
-	}
-
-	/**
 	 * Retrieves the binary data for the given key. This is just like `get()`,
 	 * but bypasses the decoder.
 	 *
@@ -387,6 +359,34 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 */
 	getRange(options?: IteratorOptions & T) {
 		return this.store.getRange(this.#context, options);
+	}
+
+	/**
+	 * Synchronously retrieves the value for the given key, then returns the
+	 * decoded value.
+	 */
+	getSync(key: Key, options?: GetOptions & T) {
+		if (this.store.decoderCopies) {
+			const bytes = this.getBinaryFastSync(key, options);
+		// 	return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+		}
+
+		// if (this.store.encoding === 'binary') {
+		// 	return this.getBinarySync(key, options);
+		// }
+
+		// if (this.store.decoder) {
+		// 	const result = this.getBinarySync(key, options);
+		// 	return result ? this.store.decodeValue(result) : undefined;
+		// }
+
+		// if (!this.store.isOpen()) {
+		// 	throw new Error('Database not open');
+		// }
+
+		// return this.store.decodeValue(
+		// 	this.store.getSync(this.#context, key, options)
+		// );
 	}
 
 	/**
