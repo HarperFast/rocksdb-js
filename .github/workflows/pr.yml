@@ -21,8 +21,10 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup pnpm
-        uses: ./.github/actions/setup-pnpm
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Check
         run: pnpm check
@@ -45,7 +47,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Setup project dependencies
+      - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
           gh-token: ${{ secrets.GH_TOKEN }}
@@ -76,7 +78,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup project dependencies
+      - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
           gh-token: ${{ secrets.GH_TOKEN }}
