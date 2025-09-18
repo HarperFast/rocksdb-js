@@ -368,25 +368,25 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getSync(key: Key, options?: GetOptions & T) {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
-		// 	return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
 		}
 
-		// if (this.store.encoding === 'binary') {
-		// 	return this.getBinarySync(key, options);
-		// }
+		if (this.store.encoding === 'binary') {
+			return this.getBinarySync(key, options);
+		}
 
-		// if (this.store.decoder) {
-		// 	const result = this.getBinarySync(key, options);
-		// 	return result ? this.store.decodeValue(result) : undefined;
-		// }
+		if (this.store.decoder) {
+			const result = this.getBinarySync(key, options);
+			return result ? this.store.decodeValue(result) : undefined;
+		}
 
-		// if (!this.store.isOpen()) {
-		// 	throw new Error('Database not open');
-		// }
+		if (!this.store.isOpen()) {
+			throw new Error('Database not open');
+		}
 
-		// return this.store.decodeValue(
-		// 	this.store.getSync(this.#context, key, options)
-		// );
+		return this.store.decodeValue(
+			this.store.getSync(this.#context, key, options)
+		);
 	}
 
 	/**
