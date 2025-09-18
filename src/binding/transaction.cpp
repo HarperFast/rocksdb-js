@@ -181,17 +181,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		env,       // node_env
 		nullptr,   // async_resource
 		name,      // async_resource_name
-		[](napi_env env, void* data) { // execute
+		[](napi_env doNotUse, void* data) { // execute
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				state->status = state->handle->txn->Commit();
-				if (state->status.ok()) {
-					DEBUG_LOG("Transaction::Commit emitted committed event\n")
-					state->handle->state = TransactionState::Committed;
-					state->handle->dbHandle->descriptor->notify(env, "committed", nullptr);
-				}
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -205,6 +200,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 				if (state->status.ok()) {
+					state->handle->state = TransactionState::Committed;
+					state->handle->dbHandle->descriptor->notify("committed", nullptr);
+
 					DEBUG_LOG("Transaction::Commit complete closing handle=%p\n", state->handle.get())
 
 					// BUG!
@@ -261,7 +259,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (status.ok()) {
 		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
 		(*txnHandle)->state = TransactionState::Committed;
-		(*txnHandle)->dbHandle->descriptor->notify(env, "committed", nullptr);
+		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
 		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())
 		(*txnHandle)->close();

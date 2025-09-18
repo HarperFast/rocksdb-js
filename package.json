@@ -31,6 +31,7 @@
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
     "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:bun": "bun --bun test",
     "type-check": "tsc --noEmit"
   },
   "files": [

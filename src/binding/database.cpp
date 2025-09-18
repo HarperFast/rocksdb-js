@@ -94,7 +94,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 		env,       // node_env
 		nullptr,   // async_resource
 		name,      // async_resource_name
-		[](napi_env env, void* data) { // execute
+		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncClearState*>(data);
 			// check if database is still open before proceeding
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
@@ -277,7 +277,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		env,       // node_env
 		nullptr,   // async_resource
 		name,      // async_resource_name
-		[](napi_env env, void* data) { // execute
+		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<DBHandle>>*>(data);
 			// check if database is still open before proceeding
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
