@@ -42,6 +42,8 @@ jobs:
 
       - name: Setup project dependencies
         uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
         env:
@@ -71,6 +73,8 @@ jobs:
 
       - name: Setup project dependencies
         uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Run tests on Bun
         run: bun --bun coverage

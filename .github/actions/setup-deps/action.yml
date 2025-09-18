@@ -1,6 +1,11 @@
 name: 'Setup Dependencies'
 description: 'Setup pnpm, RocksDB cache, and install dependencies'
 
+inputs:
+  gh-token:
+    description: 'GitHub token for authentication'
+    required: true
+
 runs:
   using: 'composite'
   steps:
@@ -18,5 +23,5 @@ runs:
     - name: Install dependencies
       shell: bash
       env:
-        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        GH_TOKEN: ${{ inputs.gh-token }}
       run: pnpm install --ignore-scripts
