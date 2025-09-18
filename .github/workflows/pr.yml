@@ -84,4 +84,4 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Run tests on Bun
-        run: bun --bun coverage
+        run: bun --bun test
