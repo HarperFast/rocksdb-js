@@ -84,9 +84,4 @@ jobs:
 
       - name: Run tests on Bun
         continue-on-error: true
-        run: |
-          if bun --bun test; then
-            echo "✅ Bun tests passed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ Bun tests failed" >> $GITHUB_STEP_SUMMARY
-          fi
+        run: bun --bun test
