@@ -32,6 +32,7 @@
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
     "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "test:bun": "bun --bun test",
+    "test:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
     "type-check": "tsc --noEmit"
   },
   "files": [

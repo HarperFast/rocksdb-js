@@ -88,4 +88,34 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Bun
-        run: bun --bun test
+        run: pnpm test:bun
+
+  deno-test:
+    name: Test on Deno
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: latest
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
+      - name: Run tests on Deno
+        run: pnpm test:deno
