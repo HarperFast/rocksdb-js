@@ -9,8 +9,28 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  checks:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
+
+      - name: Check
+        run: pnpm check
+
   test:
-    name: Test on Node.js ${{ matrix.node }}${{ matrix.node == '22' && ', Bun,' || '' }} and ${{ matrix.os }}
+    name: Test on Node.js ${{ matrix.node }} and ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,45 +47,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Install Bun
-        if: ${{ matrix.node == '22' }}
-        uses: oven-sh/setup-bun@v2
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
         with:
-          bun-version: latest
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Setup RocksDB cache
-        uses: actions/cache@v4
-        with:
-          path: deps/rocksdb
-          key: ${{ runner.os }}-rocksdb-${{ hashFiles('package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-rocksdb-
-
-      - name: Install dependencies
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm install --ignore-scripts
-
-      - name: Lint
-        run: pnpm lint
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
         env:
@@ -75,6 +60,62 @@ jobs:
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage
 
+  bun-test:
+    name: Test on Bun
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
       - name: Run tests on Bun
-        if: ${{ matrix.node == '22' }}
-        run: bun coverage
+        run: pnpm test:bun
+
+  deno-test:
+    name: Test on Deno
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: latest
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
+      - name: Run tests on Deno
+        run: pnpm test:deno
