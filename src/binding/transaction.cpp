@@ -67,7 +67,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 
 		(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 	} else {
-		DEBUG_LOG("Transaction::Constructor Using existing transaction handle\n")
+		DEBUG_LOG("Transaction::Constructor Using existing transaction handle (txnHandle=%p, txnId=%d)\n", txnHandle, (*txnHandle)->id)
 		napi_value transactionCtor;
 		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor))
 
@@ -75,7 +75,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], transactionCtor, &isTransaction))
 
 		if (isTransaction) {
-			DEBUG_LOG("Transaction::Constructor Received Transaction instance\n")
+			DEBUG_LOG("Transaction::Constructor Received Transaction instance (txnHandle=%p, txnId=%d)\n", txnHandle, (*txnHandle)->id)
 			NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&txnHandle)))
 		} else {
 			napi_valuetype type;
@@ -86,7 +86,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	DEBUG_LOG("Transaction::Constructor txnHandle=%p *txnHandle=%p dbHandle use_count=%zu\n", txnHandle, (*txnHandle).get(), (*txnHandle)->dbHandle.use_count())
+	DEBUG_LOG("Transaction::Constructor txnHandle=%p *txnHandle=%p txnId=%d dbHandle use_count=%zu\n", txnHandle, (*txnHandle).get(), (*txnHandle)->id, (*txnHandle)->dbHandle.use_count())
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -97,9 +97,12 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("Transaction::Constructor NativeTransaction GC'd txnHandle=%p\n", data)
 				auto* txnHandle = static_cast<std::shared_ptr<TransactionHandle>*>(data);
 				if (*txnHandle) {
+					DEBUG_LOG("Transaction::Constructor NativeTransaction GC resetting shared_ptr txnHandle=%p txnId=%d\n", data, (*txnHandle)->id)
 					(*txnHandle).reset();
 				}
+				DEBUG_LOG("Transaction::Constructor NativeTransaction GC deleting txnHandle=%p txnId=%d\n", data, (*txnHandle)->id)
 				delete txnHandle;
+				DEBUG_LOG("Transaction::Constructor NativeTransaction GC done txnHandle=%p txnId=%d\n", data, (*txnHandle)->id)
 			},
 			nullptr, // finalize_hint
 			nullptr  // result
@@ -120,7 +123,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("Abort")
 
-	TransactionState txnState = (*txnHandle)->state;
+	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		// already aborted
 		return nullptr;
@@ -128,10 +131,14 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed")
 	}
-	(*txnHandle)->state = TransactionState::Aborted;
+	(*txnHandle)->state.store(TransactionState::Aborted);
+
+	// remove the transaction from the registry immediately when aborting
+	DEBUG_LOG("Transaction::Abort removing from registry during abort txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
+	(*txnHandle)->dbHandle->descriptor->transactionRemove(*txnHandle);
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed")
-	DEBUG_LOG("Transaction::Abort closing txnHandle=%p\n", (*txnHandle).get())
+	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
 	(*txnHandle)->close();
 
 	NAPI_RETURN_UNDEFINED()
@@ -151,23 +158,28 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit")
 
+	DEBUG_LOG("Transaction::Commit 1 txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
+
 	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
-	TransactionState txnState = (*txnHandle)->state;
-	if (txnState == TransactionState::Aborted) {
-		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
+	TransactionState expected = TransactionState::Pending;
+	if (!(*txnHandle)->state.compare_exchange_strong(expected, TransactionState::Committing)) {
+		if (expected == TransactionState::Aborted) {
+			NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
+		}
+		if (expected == TransactionState::Committing || expected == TransactionState::Committed) {
+			// already committed
+			napi_value global;
+			NAPI_STATUS_THROWS(::napi_get_global(env, &global))
+			NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+			delete state;
+			return nullptr;
+		}
 	}
-	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
-		// already committed
-		napi_value global;
-		NAPI_STATUS_THROWS(::napi_get_global(env, &global))
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
-		delete state;
-		return nullptr;
-	}
-	(*txnHandle)->state = TransactionState::Committing;
+
+	DEBUG_LOG("Transaction::Commit 2 txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -183,9 +195,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
-			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
+			DEBUG_LOG("Transaction::Commit 5 txnHandle=%p txnId=%d\n", state->handle.get(), state->handle->id)
+			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled() || !state->handle->txn) {
+				DEBUG_LOG("Transaction::Commit 5.1 txnHandle=%p\n", state->handle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
+				DEBUG_LOG("Transaction::Commit 5.2 txnHandle=%p txnId=%d\n", state->handle.get(), state->handle->id)
 				state->status = state->handle->txn->Commit();
 				if (state->status.ok()) {
 					DEBUG_LOG("Transaction::Commit emitted committed event\n")
@@ -193,11 +208,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					state->handle->dbHandle->descriptor->notify("committed", nullptr);
 				}
 			}
+			DEBUG_LOG("Transaction::Commit 5.3 txnHandle=%p txnId=%d\n", state->handle.get(), state->handle->id)
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
+			DEBUG_LOG("Transaction::Commit 5.4 txnHandle=%p txnId=%d\n", state->handle.get(), state->handle->id)
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
+			DEBUG_LOG("Transaction::Commit 6 txnHandle=%p txnId=%d\n", state->handle.get(), state->handle->id)
 
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
@@ -205,14 +223,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 				if (state->status.ok()) {
-					DEBUG_LOG("Transaction::Commit complete closing handle=%p\n", state->handle.get())
-
-					if (state->handle) {
-						state->handle->close();
-					} else {
-						DEBUG_LOG("Transaction::Commit complete, but handle is null!\n")
-					}
-
 					DEBUG_LOG("Transaction::Commit complete calling resolve\n")
 					napi_value resolve;
 					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
@@ -232,10 +242,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		&state->asyncWork // -> result
 	));
 
+	DEBUG_LOG("Transaction::Commit 3 txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
+
 	// register the async work with the transaction handle
 	(*txnHandle)->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+
+	DEBUG_LOG("Transaction::Commit 4 txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -247,22 +261,22 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("CommitSync")
 
-	TransactionState txnState = (*txnHandle)->state;
+	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted")
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_RETURN_UNDEFINED()
 	}
-	(*txnHandle)->state = TransactionState::Committing;
+	(*txnHandle)->state.store(TransactionState::Committing);
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
-		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
-		(*txnHandle)->state = TransactionState::Committed;
+		DEBUG_LOG("Transaction::CommitSync emitted committed event txnId=%d\n", (*txnHandle)->id)
+		(*txnHandle)->state.store(TransactionState::Committed);
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
-		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())
+		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p txnId=%d\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->close();
 	} else {
 		napi_value error;

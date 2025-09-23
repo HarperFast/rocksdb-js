@@ -46,6 +46,8 @@ DBDescriptor::~DBDescriptor() {
 		lock.lock();
 	}
 
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor transactions=%zu columns=%zu\n", this, this->transactions.size(), this->columns.size())
+
 	this->transactions.clear();
 	this->columns.clear();
 	this->db.reset();
@@ -333,7 +335,15 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
  */
 std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	return this->transactions[id];
+	auto it = this->transactions.find(id);
+	if (it != this->transactions.end()) {
+		auto txnHandle = it->second;
+		// check if the transaction is still usable
+		if (txnHandle && txnHandle->txn && txnHandle->state.load() == TransactionState::Pending) {
+			return txnHandle;
+		}
+	}
+	return nullptr;
 }
 
 /**
@@ -341,11 +351,17 @@ std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
  */
 void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandle) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
+
+	// remove from closables set
 	this->closables.erase(txnHandle.get());
 
+	// remove from transactions map
 	auto it = this->transactions.find(txnHandle->id);
-	if (it != this->transactions.end()) {
+	if (it != this->transactions.end() && it->second == txnHandle) {
 		this->transactions.erase(it);
+		DEBUG_LOG("%p DBDescriptor::transactionRemove removed transaction %d\n", this, txnHandle->id)
+	} else {
+		DEBUG_LOG("%p DBDescriptor::transactionRemove transaction %d already removed or different handle\n", this, txnHandle->id)
 	}
 }
 

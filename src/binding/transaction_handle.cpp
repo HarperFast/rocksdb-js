@@ -52,9 +52,16 @@ void TransactionHandle::close() {
 		return;
 	}
 
+	// cancel all active async work before closing
+	this->cancelAllAsyncWork();
+
+	// wait for all async work to complete before closing
+	this->waitForAsyncWorkCompletion();
+
 	// update state to aborted if not already committed
-	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
-		this->state = TransactionState::Aborted;
+	TransactionState currentState = this->state.load();
+	if (currentState == TransactionState::Pending || currentState == TransactionState::Committing) {
+		this->state.store(TransactionState::Aborted);
 	}
 
 	// destroy the RocksDB transaction
@@ -62,10 +69,9 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	// unregister this transaction handle from the descriptor
-	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(shared_from_this());
-	}
+	// The transaction should already be removed from the registry when committing/aborting
+	// so we don't need to call transactionRemove here to avoid race conditions and bad_weak_ptr errors
+	DEBUG_LOG("%p TransactionHandle::close transaction should already be removed from registry\n", this)
 
 	this->dbHandle.reset();
 }
@@ -85,7 +91,7 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	if (this->state != TransactionState::Pending) {
+	if (this->state.load() != TransactionState::Pending) {
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
@@ -202,7 +208,7 @@ rocksdb::Status TransactionHandle::getSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state != TransactionState::Pending) {
+	if (this->state.load() != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -235,7 +241,7 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state != TransactionState::Pending) {
+	if (this->state.load() != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -260,7 +266,7 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state != TransactionState::Pending) {
+	if (this->state.load() != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 

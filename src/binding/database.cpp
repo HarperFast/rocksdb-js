@@ -237,7 +237,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Get failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
@@ -342,7 +343,8 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Get count failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		txnHandle->getCount(itOptions, count, *dbHandle);
@@ -435,7 +437,8 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->getSync(keySlice, value, *dbHandle);
@@ -615,7 +618,8 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Put sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->putSync(
@@ -664,7 +668,8 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
