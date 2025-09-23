@@ -105,16 +105,21 @@ describe('User Shared Buffer', () => {
 
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
-			const script = majorVersion < 20
+			const script = process.versions.deno || process.versions.bun
 				?	`
-					const tsx = require('tsx/cjs/api');
-					tsx.require('./test/fixtures/user-shared-buffer-worker.mts', __dirname);
+					import { pathToFileURL } from 'node:url';
+					import(pathToFileURL('./test/fixtures/user-shared-buffer-worker.mts'));
 					`
-				:	`
-					import { register } from 'tsx/esm/api';
-					register();
-					import('./test/fixtures/user-shared-buffer-worker.mts');
-					`;
+				:	majorVersion < 20
+					?	`
+						const tsx = require('tsx/cjs/api');
+						tsx.require('./test/fixtures/user-shared-buffer-worker.mts', __dirname);
+						`
+					:	`
+						import { register } from 'tsx/esm/api';
+						register();
+						import('./test/fixtures/user-shared-buffer-worker.mts');
+						`;
 
 			const worker = new Worker(
 				script,
@@ -153,6 +158,14 @@ describe('User Shared Buffer', () => {
 
 			resolver = withResolvers();
 			worker.postMessage({ close: true });
+
+			if (process.versions.deno) {
+				// deno doesn't emit an `exit` event when the worker quits, but
+				// `terminate()` will trigger the `exit` event
+				await delay(100);
+				worker.terminate();
+			}
+
 			await resolver.promise;
 
 			expect(getNextId()).toBe(5n);

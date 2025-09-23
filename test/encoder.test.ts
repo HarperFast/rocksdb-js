@@ -1,189 +1,115 @@
 import { describe, it } from 'vitest';
-import { RocksDatabase } from '../src/database.js';
-import { generateDBPath } from './lib/util.js';
 import { expect } from 'vitest';
-import { rimraf } from 'rimraf';
+import { dbRunner } from './lib/util.js';
 
 describe('Encoder', () => {
-	it('should support custom encoder class', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
+	class CustomEncoder {
+		encode(value: any) {
+			return Buffer.from(value);
+		}
 
-		class CustomEncoder {
-			encode(value: any) {
-				return Buffer.from(value);
+		decode(value: Buffer) {
+			return value.toString();
+		}
+	}
+
+	it('should support custom encoder class', () => dbRunner({
+		dbOptions: [ {
+			encoder: {
+				Encoder: CustomEncoder
 			}
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value = await db.get('foo');
+		expect(value).toBe('bar');
+	}));
 
-			decode(value: Buffer) {
-				return value.toString();
+	it('should support custom encode function', () => dbRunner({
+		dbOptions: [ {
+			encoder: {
+				encode: (value: any) => Buffer.from(value)
 			}
-		}
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value: Buffer = await db.get('foo');
+		expect(value.equals(Buffer.from('bar'))).toBe(true);
+	}));
 
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoder: {
-					Encoder: CustomEncoder
-				}
-			});
+	it('should encode using binary encoding', () => dbRunner({
+		dbOptions: [ {
+			encoding: 'binary'
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value: Buffer = await db.get('foo');
+		expect(value.equals(Buffer.from('bar'))).toBe(true);
+	}));
 
-			await db.put('foo', 'bar');
-			const value = await db.get('foo');
-			expect(value).toBe('bar');
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
+	it('should encode using ordered-binary encoding', () => dbRunner({
+		dbOptions: [ {
+			encoding: 'ordered-binary'
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value = await db.get('foo');
+		expect(value).toBe('bar');
+	}));
 
-	it('should support custom encode function', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
+	it('should encode using msgpack encoding', () => dbRunner({
+		dbOptions: [ {
+			encoding: 'msgpack'
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value = await db.get('foo');
+		expect(value).toBe('bar');
+	}));
 
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoder: {
-					encode: (value: any) => Buffer.from(value)
-				}
-			});
+	it('should ensure encoded values are buffers', () => dbRunner({
+		dbOptions: [ {
+			encoding: 'binary',
+			encoder: {
+				encode: (value: any) => value
+			}
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value = await db.get('foo');
+		expect(value).toBeInstanceOf(Buffer);
+		expect(value.equals(Buffer.from('bar'))).toBe(true);
+	}));
 
-			await db.put('foo', 'bar');
-			const value: Buffer = await db.get('foo');
-			expect(value.equals(Buffer.from('bar'))).toBe(true);
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
+	it('should disable encoding', () => dbRunner({
+		dbOptions: [ {
+			encoding: false
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', Buffer.from('bar'));
+		const value: Buffer = await db.get('foo');
+		expect(value.equals(Buffer.from('bar'))).toBe(true);
+	}));
 
-	it('should encode using binary encoding', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
+	it('should error encoding an unsupported value', () => dbRunner({
+		dbOptions: [ {
+			encoding: false
+		} ]
+	}, async ({ db }) => {
+		await expect(db.put('foo', () => {})).rejects.toThrow('Invalid value put in database (function), consider using an encoder');
+	}));
 
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: 'binary'
-			});
-
-			await db.put('foo', 'bar');
-			const value: Buffer = await db.get('foo');
-			expect(value.equals(Buffer.from('bar'))).toBe(true);
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should encode using ordered-binary encoding', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: 'ordered-binary'
-			});
-
-			await db.put('foo', 'bar');
-			const value = await db.get('foo');
-			expect(value).toBe('bar');
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should encode using msgpack encoding', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: 'msgpack'
-			});
-
-			await db.put('foo', 'bar');
-			const value = await db.get('foo');
-			expect(value).toBe('bar');
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should ensure encoded values are buffers', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: 'binary',
-				encoder: {
-					encode: (value: any) => value
-				}
-			});
-
-			await db.put('foo', 'bar');
-			const value = await db.get('foo');
-			expect(value).toBeInstanceOf(Buffer);
-			expect(value.equals(Buffer.from('bar'))).toBe(true);
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should disable encoding', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: false
-			});
-
-			await db.put('foo', Buffer.from('bar'));
-			const value: Buffer = await db.get('foo');
-			expect(value.equals(Buffer.from('bar'))).toBe(true);
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should error encoding an unsupported value', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: false
-			});
-
-			await expect(db.put('foo', () => {})).rejects.toThrow('Invalid value put in database (function), consider using an encoder');
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should decode using readKey', async () => {
-		let db: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, {
-				encoding: false,
-				encoder: {
-					decode: null as any,
-					readKey: (buffer: Buffer, start: number, end?: number) => buffer.subarray(start, end)
-				}
-			});
-
-			await db.put('foo', 'bar');
-			const value = await db.get('foo');
-			expect(value.equals(Buffer.from('bar'))).toBe(true);
-		} finally {
-			await db?.close();
-			await rimraf(dbPath);
-		}
-	});
+	it('should decode using readKey', () => dbRunner({
+		dbOptions: [ {
+			encoding: false,
+			encoder: {
+				decode: null as any,
+				readKey: (buffer: Buffer, start: number, end?: number) => buffer.subarray(start, end)
+			}
+		} ]
+	}, async ({ db }) => {
+		await db.put('foo', 'bar');
+		const value = await db.get('foo');
+		expect(value.equals(Buffer.from('bar'))).toBe(true);
+	}));
 });

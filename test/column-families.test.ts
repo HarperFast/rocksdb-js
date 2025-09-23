@@ -1,46 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { rimraf } from 'rimraf';
-import { RocksDatabase } from '../src/index.js';
-import { generateDBPath } from './lib/util.js';
+import { dbRunner } from './lib/util.js';
 
 describe('Column Families', () => {
-	it('should open multiple column families', async () => {
-		let db: RocksDatabase | null = null;
-		let db2: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
+	it('should open multiple column families', () => dbRunner({
+		dbOptions: [ {}, { name: 'foo' } ],
+	}, async ({ db }, { db: db2 }) => {
+		await db.put('foo', 'bar');
+		await db2.put('foo', 'bar2');
+		expect(db.get('foo')).toBe('bar');
+		expect(db2.get('foo')).toBe('bar2');
+	}));
 
-		try {
-			db = RocksDatabase.open(dbPath);
-			await db.put('foo', 'bar');
-
-			db2 = RocksDatabase.open(dbPath, { name: 'foo' });
-			await db2.put('foo', 'bar2');
-
-			expect(db.get('foo')).toBe('bar');
-			expect(db2.get('foo')).toBe('bar2');
-		} finally {
-			db?.close();
-			db2?.close();
-			await rimraf(dbPath);
-		}
-	});
-
-	it('should reuse same instance for same column family', async () => {
-		let db: RocksDatabase | null = null;
-		let db2: RocksDatabase | null = null;
-		const dbPath = generateDBPath();
-
-		try {
-			db = RocksDatabase.open(dbPath, { name: 'foo' });
-			await db.put('foo', 'bar');
-			expect(db.get('foo')).toBe('bar');
-
-			db2 = RocksDatabase.open(dbPath, { name: 'foo' });
-			expect(db2.get('foo')).toBe('bar');
-		} finally {
-			db?.close();
-			db2?.close();
-			await rimraf(dbPath);
-		}
-	});
+	it('should reuse same instance for same column family', () => dbRunner({
+		dbOptions: [ { name: 'foo' }, { name: 'foo' } ],
+	}, async ({ db }, { db: db2 }) => {
+		await db.put('foo', 'bar');
+		expect(db.get('foo')).toBe('bar');
+		expect(db2.get('foo')).toBe('bar');
+	}));
 });
