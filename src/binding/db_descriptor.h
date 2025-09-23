@@ -20,6 +20,7 @@ namespace rocksdb_js {
 // forward declarations
 struct DBDescriptor;
 struct ListenerCallback;
+struct ListenerData;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -93,7 +94,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	);
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback, std::weak_ptr<DBHandle> owner);
-	napi_value notify(napi_env env, std::string key, napi_value args);
+	bool notify(std::string key, ListenerData* data);
 	napi_value listeners(napi_env env, std::string key);
 	napi_value removeListener(napi_env env, std::string key, napi_value callback);
 	void removeListenersByOwner(DBHandle* owner);
