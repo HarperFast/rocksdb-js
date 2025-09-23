@@ -1,37 +1,51 @@
-import { type NativeDatabase, NativeTransactionLog } from './load-binding';
-import type { BufferWithDataView } from './encoding.js';
+import { type NativeDatabase, NativeTransactionLog, type LogBuffer } from './load-binding';
+import { readdirSync, statSync } from 'node:fs';
+
+type TransactionEntry = {
+	timestamp: number;
+	data: Buffer;
+}
 
 const BLOCK_SIZE_BITS = 12;
 const BLOCK_SIZE = 2**BLOCK_SIZE_BITS; // 4kb
 const MAX_LOG_FILE_SIZE = 2**24; // 16mb maximum size of a log file
-type LogBuffer = Buffer & {
-	dataView: DataView;
-	logId: string|number;
-}
 export class TransactionLog {
 	#log: NativeTransactionLog;
-	#currentLogBuffer?: LogBuffer;
-	#logBuffers = new Map<string|number, LogBuffer>();
+	#currentLogBuffer?: LogBuffer; // current log buffer that we are reading from
+	// cache of log buffers
+	#logBuffers = new Map<number, LogBuffer>();
 
 	constructor(context: NativeDatabase) {
 		this.#log = new NativeTransactionLog(context);
 	}
 
-	#getMemoryMappedBuffer(logFile: string) {
-		// get a memory mapped buffer for the given log file
-		//return this.#log.getMemoryMappedBuffer();
-		// if no memory map has been created for this log file, the native code should create one:
-		// mmap(0,
-	}
-
-	getRange(start: number, end: number) {
+	/**
+	 * Returns an iterator for transaction entries within the specified range of timestamps
+	 * @param start
+	 * @param end
+	 */
+	getRange(start: number, end: number): Iterator<TransactionEntry> {
 		//
-		let logBuffer: LogBuffer = this.#currentLogBuffer!// ?? getNextLogFile() as LogBuffer;
+		const transactionLog = this;
+		let logBuffer: LogBuffer | undefined = this.#currentLogBuffer ?? getNextLogFile();
+		if (!logBuffer) {
+			return [][Symbol.iterator]();
+		}
 
-		let dataView: DataView = logBuffer?.dataView;
-		const firstTimestamp = this.#currentLogBuffer?.dataView.getFloat64(0)!;
-		if (firstTimestamp > start) {
-			// find earlier log file
+		let dataView: DataView = logBuffer.dataView;
+		let firstTimestamp = dataView.getFloat64(0);
+		while (firstTimestamp > start) {
+			// if we have an earlier timestamp than available in this log file, find an earlier log file
+			const logId = logBuffer.logId - 1;
+			logBuffer = this.#logBuffers.get(logId);
+			if (!logBuffer) {
+				logBuffer = getLogFile(logId);
+				if (!logBuffer) {
+					return [][Symbol.iterator]();
+				}
+			}
+			dataView = logBuffer.dataView;
+			firstTimestamp = dataView.getFloat64(0);
 		}
 		// Now do a binary search in the log buffer to find the first block that contains the start timestamp
 		const size: number = 0;// = statSync(this.#currentLogFile);
@@ -60,7 +74,7 @@ export class TransactionLog {
 					// advance to the next entry, reading the timestamp and the data
 					timestamp = dataView.getFloat64(position);
 					if (timestamp > end) {
-						return { done: true };
+						return { done: true, value: undefined };
 					}
 				} while (timestamp < start || timestamp > end);
 
@@ -100,6 +114,30 @@ export class TransactionLog {
 			}
 		};
 		function getNextLogFile() {
+			let logId = 0;
+			if (transactionLog.#currentLogBuffer) {
+				logId = transactionLog.#currentLogBuffer.logId + 1;
+			} else {
+				for (let entry of readdirSync('transaction-log-path')) {
+					const logIndex = +entry.split('.')[0];
+					if (logIndex > logId) {
+						logId = logIndex;
+					}
+				}
+			}
+			const logBuffer = getLogFile(logId);
+			if (logBuffer) {
+				transactionLog.#currentLogBuffer = logBuffer;
+			}
+			return logBuffer;
+		}
+		function getLogFile(logId: number) {
+			const logBuffer = transactionLog.#log.getMemoryMapOfFile(logId.toString());
+			if (!logBuffer) return;
+			logBuffer.logId = logId;
+			logBuffer.dataView = new DataView(logBuffer.buffer);
+			transactionLog.#logBuffers.set(logId, logBuffer); // add to cache
+			return logBuffer;
 		}
 	}
 }

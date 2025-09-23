@@ -28,9 +28,14 @@ export type NativeTransaction = {
 	removeSync(key: Key): void;
 	useLog(name: string): NativeTransactionLog;
 };
+export type LogBuffer = Buffer & {
+	dataView: DataView;
+	logId: number;
+}
 
 export type NativeTransactionLog = {
 	new(context: NativeDatabase): NativeTransactionLog;
+	getMemoryMapOfFile(name: string): LogBuffer;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
