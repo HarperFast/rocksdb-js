@@ -18,7 +18,7 @@ type TestDB = {
 };
 
 type TestOptions = {
-	dbOptions?: (RocksDatabaseOptions & { path?: string })[];
+	dbOptions?: (RocksDatabaseOptions & { path?: string } | undefined)[];
 	skipOpen?: boolean;
 };
 
@@ -69,11 +69,13 @@ export async function dbRunner(
 	}
 
 	const dbPath = generateDBPath();
+	const dbPaths = new Set<string>([dbPath]);
 	const databases: TestDB[] = [];
 
 	try {
 		for (let i = 0; i < testFn.length; i++) {
 			const path = options.dbOptions?.[i]?.path ?? dbPath;
+			dbPaths.add(path);
 			const db = new RocksDatabase(path, options.dbOptions?.[i]);
 			if (options.skipOpen !== true) {
 				db.open();
@@ -86,17 +88,21 @@ export async function dbRunner(
 			db?.close();
 		}
 
-		for (let i = 0; i < 3; i++) {
-			try {
-				await rimraf(dbPath);
-				break;
-			} catch (e) {
-				if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
-					await delay(150);
-					// try again, but skip after 3 attempts
-				} else {
-					// eslint-disable-next-line no-unsafe-finally
-					throw e;
+		const retries = 3;
+		for (let i = 0; i < retries && dbPaths.size > 0; i++) {
+			for (const dbPath of dbPaths) {
+				try {
+					await rimraf(dbPath);
+					dbPaths.delete(dbPath);
+					break;
+				} catch (e) {
+					if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
+						await delay(150);
+						// try again, but skip after 3 attempts
+					} else {
+						// eslint-disable-next-line no-unsafe-finally
+						throw e;
+					}
 				}
 			}
 		}

@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { generateDBPath } from './lib/util.js';
+import { generateDBPath, dbRunner } from './lib/util.js';
 import { Worker } from 'node:worker_threads';
 import { withResolvers } from '../src/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { dbRunner } from './lib/util.js';
 import EventEmitter, { once } from 'node:events';
 
 describe('Events', () => {
@@ -261,16 +260,21 @@ describe('Events', () => {
 	it('should notify events from worker threads', () => dbRunner(async ({ db, dbPath }) => {
 		// Node.js 18 and older doesn't properly eval ESM code
 		const majorVersion = parseInt(process.versions.node.split('.')[0]);
-		const script = majorVersion < 20
+		const script = process.versions.deno || process.versions.bun
 			?	`
-				const tsx = require('tsx/cjs/api');
-				tsx.require('./test/fixtures/events-worker.mts', __dirname);
+				import { pathToFileURL } from 'node:url';
+				import(pathToFileURL('./test/fixtures/events-worker.mts'));
 				`
-			:	`
-				import { register } from 'tsx/esm/api';
-				register();
-				import('./test/fixtures/events-worker.mts');
-				`;
+			:	majorVersion < 20
+				?	`
+					const tsx = require('tsx/cjs/api');
+					tsx.require('./test/fixtures/events-worker.mts', __dirname);
+					`
+				:	`
+					import { register } from 'tsx/esm/api';
+					register();
+					import('./test/fixtures/events-worker.mts');
+					`;
 
 		const worker = new Worker(
 			script,
@@ -311,29 +315,37 @@ describe('Events', () => {
 
 		resolver = withResolvers();
 		worker.postMessage({ close: true });
+
+		if (process.versions.deno) {
+			// deno doesn't emit an `exit` event when the worker quits, but
+			// `terminate()` will trigger the `exit` event
+			await delay(100);
+			worker.terminate();
+		}
+
 		await resolver.promise;
 	}));
 
 	it('should error if database is not open', () => dbRunner({
 		skipOpen: true
 	}, async ({ db }) => {
-		expect(() => db!.addListener('foo', () => {})).toThrow('Database not open');
-		expect(() => db!.notify('foo')).toThrow('Database not open');
-		expect(() => db!.listeners('foo')).toThrow('Database not open');
-		expect(() => db!.removeListener('foo', () => {})).toThrow('Database not open');
+		expect(() => db.addListener('foo', () => {})).toThrow('Database not open');
+		expect(() => db.notify('foo')).toThrow('Database not open');
+		expect(() => db.listeners('foo')).toThrow('Database not open');
+		expect(() => db.removeListener('foo', () => {})).toThrow('Database not open');
 	}));
 
 	it('should error if event is not a string', () => dbRunner(async ({ db }) => {
-		expect(() => db!.addListener(123 as any, () => {})).toThrow('Event is required');
-		expect(() => db!.notify(123 as any)).toThrow('Event is required');
-		expect(() => db!.listeners(123 as any)).toThrow('Event is required');
-		expect(() => db!.removeListener(123 as any, () => {})).toThrow('Event is required');
+		expect(() => db.addListener(123 as any, () => {})).toThrow('Event is required');
+		expect(() => db.notify(123 as any)).toThrow('Event is required');
+		expect(() => db.listeners(123 as any)).toThrow('Event is required');
+		expect(() => db.removeListener(123 as any, () => {})).toThrow('Event is required');
 	}));
 
 	it('should error if callback is not a function', () => dbRunner(async ({ db }) => {
-		expect(() => db!.addListener('foo', 'foo' as any))
+		expect(() => db.addListener('foo', 'foo' as any))
 			.toThrow('Callback must be a function');
-		expect(() => db!.removeListener('foo', 'foo' as any))
+		expect(() => db.removeListener('foo', 'foo' as any))
 			.toThrow('Callback must be a function');
 	}));
 });

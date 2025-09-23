@@ -15,9 +15,11 @@ parentPort?.on('message', event => {
 	if (event.unlock) {
 		db.unlock('foo');
 		parentPort?.postMessage({ unlocked: true });
-	}
-	if (event.lock) {
+	} else if (event.lock) {
 		getLock();
+	} else if (event.close) {
+		db.close();
+		process.exit(0);
 	}
 });
 
