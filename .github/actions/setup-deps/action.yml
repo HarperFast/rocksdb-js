@@ -1,0 +1,27 @@
+name: 'Setup Dependencies'
+description: 'Setup pnpm, RocksDB cache, and install dependencies'
+
+inputs:
+  gh-token:
+    description: 'GitHub token for authentication'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup pnpm
+      uses: ./.github/actions/setup-pnpm
+
+    - name: Setup RocksDB cache
+      uses: actions/cache@v4
+      with:
+        path: deps/rocksdb
+        key: ${{ runner.os }}-rocksdb-${{ hashFiles('package.json') }}
+        restore-keys: |
+          ${{ runner.os }}-rocksdb-
+
+    - name: Install dependencies
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+      run: pnpm install --ignore-scripts

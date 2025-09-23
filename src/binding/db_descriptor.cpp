@@ -875,7 +875,7 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 
 	NAPI_STATUS_THROWS_FREE_DATA(::napi_get_global(env, &global))
 
-	if (listenerData) {
+	if (listenerData != nullptr) {
 		// only deserialize the emitted data if it exists
 		napi_value json;
 		napi_value parse;
@@ -982,11 +982,8 @@ napi_ref DBDescriptor::addListener(
  * db.notify('bar'); // returns `false` if there were no listeners
  * ```
  */
-napi_value DBDescriptor::notify(napi_env env, std::string key, napi_value args) {
-	napi_value result;
-	ListenerData* data = nullptr;
+bool DBDescriptor::notify(std::string key, ListenerData* data) {
 	std::vector<std::weak_ptr<ListenerCallback>> listenersToCall;
-	uint32_t argc = 0;
 
 	{
 		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
@@ -995,30 +992,7 @@ napi_value DBDescriptor::notify(napi_env env, std::string key, napi_value args) 
 		if (it == this->listenerCallbacks.end()) {
 			DEBUG_LOG("%p DBDescriptor::notify key has no listeners:", this)
 			DEBUG_LOG_KEY_LN(key)
-			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &result));
-			return result;
-		}
-
-		if (args) {
-			bool isArray = false;
-			NAPI_STATUS_THROWS(::napi_is_array(env, args, &isArray))
-			if (isArray) {
-				NAPI_STATUS_THROWS(::napi_get_array_length(env, args, &argc))
-				if (argc > 0) {
-					napi_value global;
-					napi_value json;
-					napi_value stringify;
-					napi_value jsonString;
-					size_t len;
-					NAPI_STATUS_THROWS(::napi_get_global(env, &global));
-					NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
-					NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
-					NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &args, &jsonString));
-					NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
-					data = new ListenerData(len);
-					NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &data->args[0], len + 1, nullptr));
-				}
-			}
+			return false;
 		}
 
 		// copy weak pointers to avoid holding the mutex during callback execution
@@ -1027,8 +1001,8 @@ napi_value DBDescriptor::notify(napi_env env, std::string key, napi_value args) 
 			listenersToCall.push_back(std::weak_ptr<ListenerCallback>(listener));
 		}
 
-		DEBUG_LOG("%p DBDescriptor::notify calling %zu listener%s with %d arg%s for key:",
-			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s", argc, argc == 1 ? "" : "s")
+		DEBUG_LOG("%p DBDescriptor::notify calling %zu listener%s for key:",
+			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s")
 		DEBUG_LOG_KEY_LN(key)
 	}
 
@@ -1047,8 +1021,7 @@ napi_value DBDescriptor::notify(napi_env env, std::string key, napi_value args) 
 		delete data;
 	}
 
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &result));
-	return result;
+	return true;
 }
 
 /**

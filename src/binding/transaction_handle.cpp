@@ -131,7 +131,7 @@ napi_value TransactionHandle::get(
 		env,       // node_env
 		nullptr,   // async_resource
 		name,      // async_resource_name
-		[](napi_env env, void* data) { // execute
+		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
 			// check if database is still open before proceeding
 			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
