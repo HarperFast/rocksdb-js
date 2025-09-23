@@ -15,6 +15,8 @@
   "gypfile": true,
   "scripts": {
     "bench": "vitest bench --outputJson benchmark-results.json",
+    "bench:bun": "bun --bun bench",
+    "bench:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
     "build": "pnpm build:bundle && pnpm rebuild",
     "build:bundle": "rimraf dist && rollup -c rollup.config.ts --configPlugin typescript && pnpm build:types",
     "build:debug": "SKIP_MINIFY=1 pnpm build:bundle",
@@ -31,6 +33,8 @@
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
     "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:bun": "bun --bun test",
+    "test:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
     "type-check": "tsc --noEmit"
   },
   "files": [
