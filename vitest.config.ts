@@ -27,7 +27,7 @@ export default defineConfig({
 			reporter: ['html', 'lcov', 'text']
 		},
 		environment: 'node',
-		exclude: ['test/stress/**/*.test.ts'],
+		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
 		include: ['test/**/*.test.ts'],
 		pool: 'threads',
