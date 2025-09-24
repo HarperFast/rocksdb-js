@@ -64,4 +64,4 @@ jobs:
         run: pnpm build
 
       - name: Run stress tests
-        run: pnpm stress
+        run: pnpm test:stress
