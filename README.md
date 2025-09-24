@@ -318,8 +318,8 @@ await db.transaction(async (transaction: Transaction) => {
 });
 ```
 
-Note that `db.transaction()` resolves whatever value the transaction callback
-resolves:
+Note that `db.transaction()` returns whatever value the transaction callback
+returns:
 
 ```typescript
 const isBar = await db.transaction(async (txn: Transaction) => {
@@ -344,6 +344,41 @@ db.transactionSync((txn: Transaction) => {
 	txn.putSync('foo', 'baz');
 });
 ```
+
+### Class: `Transaction`
+
+The transaction callback is passed in a `Transaction` instance which contains
+all of the same data operations methods as the `RocksDatabase` instance plus:
+
+- `txn.abort()`
+- `txn.commit()`
+- `txn.commitSync()`
+- `txn.id`
+
+#### `txn.abort(): void`
+
+Rolls back and closes the transaction. This method is automatically called after
+the transaction callback returns, so you shouldn't need to call it, but it's ok
+to do so. Once called, no further transaction operations are permitted.
+
+#### `txn.commit(): Promise<void>`
+
+Commits and closes the transaction. This is a non-blocking operation and runs on
+a background thread. Once called, no further transaction operations are
+permitted.
+
+#### `txn.commitSync(): void`
+
+Synchronously commits and closes the transaction. This is a blocking operation
+on the main thread. Once called, no further transaction operations are
+permitted.
+
+#### `txn.id`
+
+Type: `number`
+
+The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are
+unique to the RocksDB database path, regardless the database name/column family.
 
 ## Events
 

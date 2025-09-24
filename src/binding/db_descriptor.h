@@ -85,6 +85,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
+	uint32_t transactionGetNextId();
 
 	napi_value getUserSharedBuffer(
 		napi_env env,
@@ -124,6 +125,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of transaction id to transaction handle.
 	 */
 	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
+
+	/**
+	 * Atomic counter for generating unique transaction IDs for this RocksDB
+	 * instance. Sadly we cannot use RocksDB's transaction IDs because they are
+	 * implementation-dependent and are assigned lazily with a default of 0
+	 * causing collisions in the transactions map.
+	 */
+	std::atomic<uint32_t> nextTransactionId{1};
 
 	/**
 	 * Mutex to protect the transactions map and closables set.

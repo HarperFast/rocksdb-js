@@ -30,7 +30,7 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 		throw std::runtime_error("Invalid database");
 	}
 
-	this->id = this->txn->GetId() & 0xffffffff;
+	this->id = this->dbHandle->descriptor->transactionGetNextId();
 }
 
 /**
@@ -53,6 +53,12 @@ void TransactionHandle::close() {
 	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
 		this->state = TransactionState::Aborted;
 	}
+
+	// cancel all active async work before closing
+	this->cancelAllAsyncWork();
+
+	// wait for all async work to complete before closing
+	this->waitForAsyncWorkCompletion();
 
 	// destroy the RocksDB transaction
 	this->txn->ClearSnapshot();
@@ -83,6 +89,7 @@ napi_value TransactionHandle::get(
 	}
 
 	if (this->state != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::get Transaction is not in pending state (state=%d)\n", this, this->state)
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
@@ -200,6 +207,7 @@ rocksdb::Status TransactionHandle::getSync(
 	}
 
 	if (this->state != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::getSync Transaction is not in pending state (state=%d)\n", this, this->state)
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -233,6 +241,7 @@ rocksdb::Status TransactionHandle::putSync(
 	}
 
 	if (this->state != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, this->state)
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -258,6 +267,7 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	if (this->state != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, this->state)
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 

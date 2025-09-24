@@ -46,6 +46,8 @@ DBDescriptor::~DBDescriptor() {
 		lock.lock();
 	}
 
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor transactions=%zu columns=%zu\n", this, this->transactions.size(), this->columns.size())
+
 	this->transactions.clear();
 	this->columns.clear();
 	this->db.reset();
@@ -322,7 +324,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  * Adds a transaction to the registry.
  */
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
-	uint32_t id = txnHandle->id;
+	auto id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->transactions.emplace(id, txnHandle);
 	this->closables.insert(txnHandle.get());
@@ -333,7 +335,14 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
  */
 std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	return this->transactions[id];
+	auto it = this->transactions.find(id);
+	if (it != this->transactions.end()) {
+		auto txnHandle = it->second;
+		if (txnHandle && txnHandle->txn) {
+			return txnHandle;
+		}
+	}
+	return nullptr;
 }
 
 /**
@@ -345,8 +354,18 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
+		if (it->second != txnHandle) {
+			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %d mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get())
+		}
 		this->transactions.erase(it);
 	}
+}
+
+/**
+ * Generates the next unique transaction ID for this database.
+ */
+uint32_t DBDescriptor::transactionGetNextId() {
+	return this->nextTransactionId.fetch_add(1);
 }
 
 /**
