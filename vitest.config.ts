@@ -27,9 +27,9 @@ export default defineConfig({
 			reporter: ['html', 'lcov', 'text']
 		},
 		environment: 'node',
+		exclude: ['test/stress/**/*.test.ts'],
 		globals: false,
 		include: ['test/**/*.test.ts'],
-		exclude: ['test/stress/**/*.test.ts'],
 		pool: 'threads',
 		poolOptions: {
 			threads: {
@@ -40,6 +40,7 @@ export default defineConfig({
 		},
 		reporters: ['verbose'],
 		silent: false,
+		testTimeout: 30 * 1000,
 		watch: false
 	}
 });

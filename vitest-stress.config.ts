@@ -18,14 +18,6 @@ console.log(`${runtime} (${machine}) rocksdb-js/${version} RocksDB/${rocksdbVers
 export default defineConfig({
 	test: {
 		allowOnly: true,
-		benchmark: {
-			include: ['benchmark/**/*.bench.ts'],
-			reporters: ['verbose']
-		},
-		coverage: {
-			include: ['src/**/*.ts'],
-			reporter: ['html', 'lcov', 'text']
-		},
 		environment: 'node',
 		globals: false,
 		include: ['stress-test/**/*.test.ts'],
@@ -39,6 +31,7 @@ export default defineConfig({
 		},
 		reporters: ['verbose'],
 		silent: false,
+		testTimeout: 5 * 60 * 1000, // 5 minutes
 		watch: false
 	}
 });

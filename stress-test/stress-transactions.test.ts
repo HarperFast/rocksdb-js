@@ -51,5 +51,5 @@ describe('Stress Transactions', () => {
 		}
 
 		await Promise.all(promises);
-	}), 5 * 60 * 1000); // 5 minutes
+	}));
 });
