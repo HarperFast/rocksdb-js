@@ -20,7 +20,7 @@ export default defineConfig({
 		allowOnly: true,
 		environment: 'node',
 		globals: false,
-		include: ['stress-test/**/*.test.ts'],
+		include: ['stress-test/**/*.stress.test.ts'],
 		pool: 'threads',
 		poolOptions: {
 			threads: {
