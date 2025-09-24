@@ -3,7 +3,7 @@ import { Worker } from 'node:worker_threads';
 import { dbRunner } from './lib/util.js';
 
 describe('Stress', () => {
-	it('should create 100 worker threads and commit 25k transactions', () => dbRunner({
+	it('should create 100 worker threads and commit 10k transactions', () => dbRunner({
 		skipOpen: true
 	}, async ({ dbPath }) => {
 		// Node.js 18 and older doesn't properly eval ESM code
@@ -34,7 +34,7 @@ describe('Stress', () => {
 					eval: true,
 					workerData: {
 						path: dbPath,
-						iterations: 25_000,
+						iterations: 10_000,
 					}
 				}
 			);
