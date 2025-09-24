@@ -1009,8 +1009,14 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 		auto it = this->listenerCallbacks.find(key);
 
 		if (it == this->listenerCallbacks.end()) {
+			// clean up the original data since we made copies
+			if (data) {
+				delete data;
+			}
+
 			DEBUG_LOG("%p DBDescriptor::notify key has no listeners:", this)
 			DEBUG_LOG_KEY_LN(key)
+
 			return false;
 		}
 

@@ -778,6 +778,30 @@ echo "ROCKSDB_PATH=/path/to/rocksdb" >> .env
 pnpm rebuild
 ```
 
+### Debugging
+
+It is often helpful to do a debug build and see the internal debug logging of
+the native binding. You can do a debug build by running:
+
+```bash
+pnpm rebuild:debug
+```
+
+Each debug log message is prefixed with the thread id. Most debug log messages
+include the instance address making it easier to trace through the log output.
+
+#### Debugging on macOS
+
+In the event Node.js crashes, re-run Node.js in `lldb`:
+
+```bash
+lldb node
+# Then in lldb:
+# (lldb) run your-program.js
+# When the crash occurs, print the stack trace:
+# (lldb) bt
+```
+
 ### Testing
 
 To run the tests, run:

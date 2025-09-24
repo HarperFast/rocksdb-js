@@ -195,14 +195,17 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
-			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
+			auto txnHandle = state->handle;
+			if (!txnHandle || !txnHandle->dbHandle || !txnHandle->dbHandle->opened() || txnHandle->dbHandle->isCancelled()) {
+				DEBUG_LOG("%p Transaction::Commit called with nullptr txnHandle or dbHandle or dbHandle not opened or dbHandle cancelled\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
-				state->status = state->handle->txn->Commit();
+				auto descriptor = txnHandle->dbHandle->descriptor;
+				state->status = txnHandle->txn->Commit();
 				if (state->status.ok()) {
-					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%ld\n", state->handle.get(), state->handle->id)
-					state->handle->state = TransactionState::Committed;
-					state->handle->dbHandle->descriptor->notify("committed", nullptr);
+					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%ld\n", txnHandle.get(), txnHandle->id)
+					txnHandle->state = TransactionState::Committed;
+					descriptor->notify("committed", nullptr);
 				}
 			}
 			// signal that execute handler is complete
