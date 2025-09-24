@@ -1,8 +1,8 @@
 import { describe, it } from 'vitest';
 import { Worker } from 'node:worker_threads';
-import { dbRunner } from './lib/util.js';
+import { dbRunner } from '../test/lib/util.js';
 
-describe('Stress', () => {
+describe('Stress Transactions', () => {
 	it('should create 100 worker threads and commit 10k transactions', () => dbRunner({
 		skipOpen: true
 	}, async ({ dbPath }) => {
@@ -11,17 +11,17 @@ describe('Stress', () => {
 		const script = process.versions.deno || process.versions.bun
 			?	`
 				import { pathToFileURL } from 'node:url';
-				import(pathToFileURL('./test/fixtures/stress-transaction-put-worker.mts'));
+				import(pathToFileURL('./stress-test/fixtures/stress-transaction-put-worker.mts'));
 				`
 			:	majorVersion < 20
 				?	`
 					const tsx = require('tsx/cjs/api');
-					tsx.require('./test/fixtures/stress-transaction-put-worker.mts', __dirname);
+					tsx.require('./stress-test/fixtures/stress-transaction-put-worker.mts', __dirname);
 					`
 				:	`
 					import { register } from 'tsx/esm/api';
 					register();
-					import('./test/fixtures/stress-transaction-put-worker.mts');
+					import('./stress-test/fixtures/stress-transaction-put-worker.mts');
 					`;
 
 		const promises: Promise<void>[] = [];

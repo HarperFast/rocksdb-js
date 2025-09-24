@@ -28,8 +28,7 @@ export default defineConfig({
 		},
 		environment: 'node',
 		globals: false,
-		include: ['test/**/*.test.ts'],
-		exclude: ['test/stress/**/*.test.ts'],
+		include: ['stress-test/**/*.test.ts'],
 		pool: 'threads',
 		poolOptions: {
 			threads: {
