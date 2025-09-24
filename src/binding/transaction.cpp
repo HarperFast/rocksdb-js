@@ -67,7 +67,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 
 		(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 	} else {
-		DEBUG_LOG("Transaction::Constructor Using existing transaction handle\n")
+		DEBUG_LOG("Transaction::Constructor Using existing transaction handle (txnHandle=%p, txnId=%ld)\n", (*txnHandle).get(), (*txnHandle)->id)
 		napi_value transactionCtor;
 		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor))
 
@@ -75,7 +75,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], transactionCtor, &isTransaction))
 
 		if (isTransaction) {
-			DEBUG_LOG("Transaction::Constructor Received Transaction instance\n")
+			DEBUG_LOG("Transaction::Constructor Received Transaction instance (txnHandle=%p, txnId=%ld)\n", txnHandle, (*txnHandle)->id)
 			NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&txnHandle)))
 		} else {
 			napi_valuetype type;
@@ -86,7 +86,14 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	DEBUG_LOG("Transaction::Constructor txnHandle=%p *txnHandle=%p dbHandle use_count=%zu\n", txnHandle, (*txnHandle).get(), (*txnHandle)->dbHandle.use_count())
+	DEBUG_LOG(
+		"Transaction::Constructor txnHandle=%p txnId=%ld dbHandle=%p dbDescriptor=%p use_count=%zu\n",
+		(*txnHandle).get(),
+		(*txnHandle)->id,
+		(*txnHandle)->dbHandle.get(),
+		(*txnHandle)->dbHandle->descriptor.get(),
+		(*txnHandle)->dbHandle.use_count()
+	)
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -96,10 +103,14 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			[](napi_env env, void* data, void* hint) {
 				DEBUG_LOG("Transaction::Constructor NativeTransaction GC'd txnHandle=%p\n", data)
 				auto* txnHandle = static_cast<std::shared_ptr<TransactionHandle>*>(data);
+				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
+					DEBUG_LOG("Transaction::Constructor NativeTransaction GC resetting shared_ptr txnHandle=%p txnId=%ld\n", data, id) // TEMP
 					(*txnHandle).reset();
 				}
+				DEBUG_LOG("Transaction::Constructor NativeTransaction GC deleting txnHandle=%p txnId=%ld\n", data, id) // TEMP
 				delete txnHandle;
+				DEBUG_LOG("Transaction::Constructor NativeTransaction GC deleted txnHandle=%p txnId=%ld\n", data, id) // TEMP
 			},
 			nullptr, // finalize_hint
 			nullptr  // result
@@ -131,7 +142,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	(*txnHandle)->state = TransactionState::Aborted;
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed")
-	DEBUG_LOG("Transaction::Abort closing txnHandle=%p\n", (*txnHandle).get())
+	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%ld\n", (*txnHandle).get(), (*txnHandle)->id)
 	(*txnHandle)->close();
 
 	NAPI_RETURN_UNDEFINED()
@@ -167,6 +178,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		delete state;
 		return nullptr;
 	}
+	DEBUG_LOG("%p Transaction::Commit setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id)
 	(*txnHandle)->state = TransactionState::Committing;
 
 	napi_value name;
@@ -188,7 +200,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			} else {
 				state->status = state->handle->txn->Commit();
 				if (state->status.ok()) {
-					DEBUG_LOG("Transaction::Commit emitted committed event\n")
+					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%ld\n", state->handle.get(), state->handle->id)
 					state->handle->state = TransactionState::Committed;
 					state->handle->dbHandle->descriptor->notify("committed", nullptr);
 				}
@@ -205,15 +217,15 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 				if (state->status.ok()) {
-					DEBUG_LOG("Transaction::Commit complete closing handle=%p\n", state->handle.get())
+					DEBUG_LOG("%p Transaction::Commit complete closing txnId=%ld\n", state->handle.get(), state->handle->id)
 
 					if (state->handle) {
 						state->handle->close();
 					} else {
-						DEBUG_LOG("Transaction::Commit complete, but handle is null!\n")
+						DEBUG_LOG("%p Transaction::Commit complete, but handle is null! txnId=%ld\n", state->handle.get(), state->handle->id)
 					}
 
-					DEBUG_LOG("Transaction::Commit complete calling resolve\n")
+					DEBUG_LOG("%p Transaction::Commit complete calling resolve txnId=%ld\n", state->handle.get(), state->handle->id)
 					napi_value resolve;
 					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
 					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
@@ -258,11 +270,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
-		DEBUG_LOG("Transaction::CommitSync emitted committed event\n")
+		DEBUG_LOG("%p Transaction::CommitSync emitted committed event txnId=%ld\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->state = TransactionState::Committed;
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
-		DEBUG_LOG("Transaction::CommitSync closing txnHandle=%p\n", (*txnHandle).get())
+		DEBUG_LOG("%p Transaction::CommitSync closing txnId=%ld\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->close();
 	} else {
 		napi_value error;
