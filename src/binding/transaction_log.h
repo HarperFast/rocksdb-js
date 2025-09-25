@@ -11,7 +11,7 @@ namespace rocksdb_js {
 struct TransactionLog final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value Commit(napi_env env, napi_callback_info info);
-	static napi_value GetRange(napi_env env, napi_callback_info info);
+	static napi_value getMemoryMapOfFile(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
 };
