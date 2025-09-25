@@ -33,11 +33,8 @@ NAPI_MODULE_INIT() {
 	[[maybe_unused]] int refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
-	// initialize the DBRegistry singleton early to avoid race conditions
-	if (!DBRegistry::instance) {
-		DBRegistry::instance = std::unique_ptr<DBRegistry>(new DBRegistry());
-		DEBUG_LOG("%p Binding::Init Initialized DBRegistry\n", DBRegistry::instance.get());
-	}
+	// initialize the registry
+	DBRegistry::Init();
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
