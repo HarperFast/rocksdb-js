@@ -95,12 +95,12 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
  * column family handle.
  */
 std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
+	// registry should already be initialized by module init
 	if (!instance) {
-		instance = std::unique_ptr<DBRegistry>(new DBRegistry());
-		DEBUG_LOG("%p DBRegistry::OpenDB Initializing registry\n", instance.get())
-	} else {
-		DEBUG_LOG("%p DBRegistry::OpenDB Registry already initialized\n", instance.get())
+		throw std::runtime_error("DBRegistry not initialized!");
 	}
+
+	DEBUG_LOG("%p DBRegistry::OpenDB Using registry\n", instance.get());
 
 	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
