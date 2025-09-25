@@ -33,6 +33,9 @@ NAPI_MODULE_INIT() {
 	[[maybe_unused]] int refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
+	// initialize the registry
+	DBRegistry::Init();
+
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		int newRefCount = --moduleRefCount;

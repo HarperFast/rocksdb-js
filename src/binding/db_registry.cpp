@@ -86,6 +86,16 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 }
 
 /**
+ * Initialize the singleton instance of the registry.
+ */
+ void DBRegistry::Init() {
+	if (!instance) {
+		instance = std::unique_ptr<DBRegistry>(new DBRegistry());
+		DEBUG_LOG("%p DBRegistry::Initialize Initialized DBRegistry\n", instance.get());
+	}
+}
+
+/**
  * Open a RocksDB database with column family, caches it in the registry, and
  * return a handle to it.
  *
@@ -95,12 +105,13 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
  * column family handle.
  */
 std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
+	// ensure the registry has already been initialized
 	if (!instance) {
-		instance = std::unique_ptr<DBRegistry>(new DBRegistry());
-		DEBUG_LOG("%p DBRegistry::OpenDB Initializing registry\n", instance.get())
-	} else {
-		DEBUG_LOG("%p DBRegistry::OpenDB Registry already initialized\n", instance.get())
+		DEBUG_LOG("DBRegistry::OpenDB Registry not initialized!\n")
+		throw std::runtime_error("DBRegistry not initialized!");
 	}
+
+	DEBUG_LOG("%p DBRegistry::OpenDB Using registry\n", instance.get());
 
 	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
