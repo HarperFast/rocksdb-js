@@ -18,18 +18,9 @@ console.log(`${runtime} (${machine}) rocksdb-js/${version} RocksDB/${rocksdbVers
 export default defineConfig({
 	test: {
 		allowOnly: true,
-		benchmark: {
-			include: ['benchmark/**/*.bench.ts'],
-			reporters: ['verbose']
-		},
-		coverage: {
-			include: ['src/**/*.ts'],
-			reporter: ['html', 'lcov', 'text']
-		},
 		environment: 'node',
-		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
-		include: ['test/**/*.test.ts'],
+		include: ['stress-test/**/*.stress.test.ts'],
 		pool: 'threads',
 		poolOptions: {
 			threads: {
@@ -40,7 +31,7 @@ export default defineConfig({
 		},
 		reporters: ['verbose'],
 		silent: false,
-		testTimeout: 30 * 1000,
+		testTimeout: 5 * 60 * 1000, // 5 minutes
 		watch: false
 	}
 });

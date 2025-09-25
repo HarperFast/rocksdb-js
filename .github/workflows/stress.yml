@@ -1,0 +1,67 @@
+name: Stress Test
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  stress:
+    name: Run Stress Tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: stress-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            stress-pnpm-store-
+
+      - name: Setup RocksDB cache
+        uses: actions/cache@v4
+        with:
+          path: deps/rocksdb
+          key: stress-rocksdb-${{ hashFiles('package.json') }}
+          restore-keys: |
+            stress-rocksdb-
+
+      - name: Install dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
+      - name: Run stress tests
+        run: pnpm test:stress
