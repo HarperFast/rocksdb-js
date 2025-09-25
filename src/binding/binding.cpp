@@ -34,21 +34,21 @@ NAPI_MODULE_INIT() {
 	[[maybe_unused]] int refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
+	// initialize the registry
+	DBRegistry::Init();
+
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		DEBUG_LOG("Binding::Init env cleanup start\n");
-
-		int newCount = --moduleRefCount;
-		DEBUG_LOG("Binding::Init Module ref count after cleanup: %d\n", newCount);
-
-		if (newCount == 0) {
-			DEBUG_LOG("Binding::Init Last module cleaned up, purging all databases\n");
+		int newRefCount = --moduleRefCount;
+		if (newRefCount == 0) {
+			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
-		} else if (newCount < 0) {
-			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
+			DEBUG_LOG("Binding::Init env cleanup done\n")
+		} else if (newRefCount < 0) {
+			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n")
+		} else {
+			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount)
 		}
-
-		DEBUG_LOG("Binding::Init env cleanup done\n");
 	}, nullptr));
 
 	// database
