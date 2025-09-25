@@ -52,16 +52,9 @@ void TransactionHandle::close() {
 		return;
 	}
 
-	// cancel all active async work before closing
-	this->cancelAllAsyncWork();
-
-	// wait for all async work to complete before closing
-	this->waitForAsyncWorkCompletion();
-
 	// update state to aborted if not already committed
-	TransactionState currentState = this->state.load();
-	if (currentState == TransactionState::Pending || currentState == TransactionState::Committing) {
-		this->state.store(TransactionState::Aborted);
+	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
+		this->state = TransactionState::Aborted;
 	}
 
 	// destroy the RocksDB transaction
@@ -91,7 +84,7 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	if (this->state.load() != TransactionState::Pending) {
+	if (this->state != TransactionState::Pending) {
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
@@ -208,7 +201,7 @@ rocksdb::Status TransactionHandle::getSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state.load() != TransactionState::Pending) {
+	if (this->state != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -241,7 +234,7 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state.load() != TransactionState::Pending) {
+	if (this->state != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -266,7 +259,7 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state.load() != TransactionState::Pending) {
+	if (this->state != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 

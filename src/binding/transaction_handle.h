@@ -3,7 +3,6 @@
 
 #include <memory>
 #include <mutex>
-#include <atomic>
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "rocksdb/options.h"
@@ -88,7 +87,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	uint32_t id;
 	bool snapshotSet;
 	double startTimestamp;
-	std::atomic<TransactionState> state;
+	TransactionState state;
 	rocksdb::Transaction* txn;
 };
 
