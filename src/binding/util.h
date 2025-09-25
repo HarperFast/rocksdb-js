@@ -314,10 +314,10 @@ struct AsyncWorkHandle {
 	void unregisterAsyncWork() {
 		// notify if all work is complete
 		if (--this->activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 			this->asyncWorkComplete.notify_one();
 		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 		}
 	}
 
@@ -345,7 +345,7 @@ struct AsyncWorkHandle {
 		while (this->activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount.load())
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, this->activeAsyncWorkCount.load())
 				return;
 			}
 

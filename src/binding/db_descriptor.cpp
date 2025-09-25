@@ -31,7 +31,7 @@ DBDescriptor::DBDescriptor(
  * (transactions, iterators, etc).
  */
 DBDescriptor::~DBDescriptor() {
-	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (%ld closables)\n", this, this->path.c_str(), this->closables.size())
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (%zu closables)\n", this, this->path.c_str(), this->closables.size())
 
 	std::unique_lock<std::mutex> lock(this->txnsMutex);
 
@@ -290,11 +290,11 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 
 	{
 		std::lock_guard<std::mutex> lock(this->locksMutex);
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %d locks if they are owned handle %p\n", this, this->locks.size(), owner)
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner)
 		for (auto it = this->locks.begin(); it != this->locks.end();) {
 			auto lockOwner = it->second->owner.lock();
 			if (!lockOwner || lockOwner.get() == owner) {
-				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %d callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
+				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
 				// move all callbacks from the queue
 				while (!it->second->threadsafeCallbacks.empty()) {
 					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
@@ -307,7 +307,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 		}
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling %ld unlock callbacks\n", this, threadsafeCallbacks.size())
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
 
 	// call the callbacks in order, but stop if any callback fails
 	for (auto& callback : threadsafeCallbacks) {
@@ -355,7 +355,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
 		if (it->second != txnHandle) {
-			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %d mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get())
+			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %u mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get())
 		}
 		this->transactions.erase(it);
 	}
@@ -841,11 +841,11 @@ napi_value DBDescriptor::getUserSharedBuffer(
 			&size
 		))
 
-		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %ld\n", this, size)
+		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size)
 		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %ld for key:", this, it->second->size)
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size)
 	DEBUG_LOG_KEY_LN(key)
 
 	// create finalize data that holds the key, a weak reference to this

@@ -19,7 +19,7 @@ namespace rocksdb_js {
  * (main thread + worker threads) and we only want to cleanup after the last
  * instance exits.
  */
-static std::atomic<int> moduleRefCount{0};
+static std::atomic<uint32_t> moduleRefCount{0};
 
 NAPI_MODULE_INIT() {
 #ifdef DEBUG
@@ -31,15 +31,15 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	[[maybe_unused]] int refCount = ++moduleRefCount;
-	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
+	[[maybe_unused]] uint32_t refCount = ++moduleRefCount;
+	DEBUG_LOG("Binding::Init Module ref count: %u\n", refCount);
 
 	// initialize the registry
 	DBRegistry::Init();
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		int newRefCount = --moduleRefCount;
+		uint32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
@@ -47,7 +47,7 @@ NAPI_MODULE_INIT() {
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n")
 		} else {
-			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount)
+			DEBUG_LOG("Binding::Init Skipping cleanup, %u remaining instances\n", newRefCount)
 		}
 	}, nullptr));
 

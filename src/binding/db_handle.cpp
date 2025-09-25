@@ -139,7 +139,8 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
 	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
-	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed, moved DBDescriptor %p to this handle (ref count = %ld)\n", this, handle.get(), this->descriptor.get(), this->descriptor.use_count())
+	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed, moved DBDescriptor %p to this handle (ref count = %ld)\n",
+		this, handle.get(), this->descriptor.get(), this->descriptor.use_count())
 }
 
 /**
