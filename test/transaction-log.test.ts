@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 

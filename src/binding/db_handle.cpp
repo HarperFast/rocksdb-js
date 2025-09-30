@@ -153,4 +153,11 @@ bool DBHandle::opened() const {
 	return false;
 }
 
+/**
+ * Get or create a transaction log.
+ */
+napi_value DBHandle::useLog(napi_env env, std::string& name) {
+	NAPI_RETURN_UNDEFINED()
+}
+
 } // namespace rocksdb_js

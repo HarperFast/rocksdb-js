@@ -4,6 +4,7 @@ import {
 	NativeTransaction,
 	type UserSharedBufferCallback,
 	type NativeDatabaseOptions,
+	type NativeTransactionLog,
 } from './load-binding.js';
 import {
 	Encoding,
@@ -20,10 +21,8 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
-import { join, parse } from 'node:path';
+import { join } from 'node:path';
 import { parseDuration } from './util.js';
-import { TransactionLog } from './transaction-log.js';
-import { readdirSync, statSync } from 'node:fs';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -226,12 +225,6 @@ export class Store {
 	writeKey: WriteKeyFunction;
 
 	/**
-	 * Cache of TransactionLog instances by name for this store instance.
-	 * This ensures each Store (and thus each thread) has its own cache.
-	 */
-	transactionLogCache = new Map<string, TransactionLog>();
-
-	/**
 	 * Initializes the store with a new `NativeDatabase` instance.
 	 *
 	 * @param path - The path to the database.
@@ -278,7 +271,6 @@ export class Store {
 	 * Closes the database and cleans up cached resources.
 	 */
 	close() {
-		this.transactionLogCache.clear();
 		this.db.close();
 	}
 
@@ -607,17 +599,8 @@ export class Store {
 	 * @param name - The name of the transaction log.
 	 * @returns The transaction log.
 	 */
-	useLog(name: string | number): TransactionLog {
-		const logName = String(name);
-
-		const cachedLog = this.transactionLogCache.get(logName);
-		if (cachedLog) {
-			return cachedLog;
-		}
-
-		const transactionLog = new TransactionLog(join(this.transactionLogsPath, `${logName}.txnlog`));
-		this.transactionLogCache.set(logName, transactionLog);
-		return transactionLog;
+	useLog(name: string | number): NativeTransactionLog {
+		return this.db.useLog(String(name));
 	}
 
 	/**

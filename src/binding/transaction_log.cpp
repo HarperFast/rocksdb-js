@@ -8,11 +8,11 @@ namespace rocksdb_js {
 napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV("TransactionLog", 1)
 
-	std::string path;
-	size_t pathLength = 0;
-	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, args[0], path.data(), path.size(), &pathLength))
+	std::string name;
+	size_t nameLength = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, args[0], name.data(), name.size(), &nameLength))
 
-	auto* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(std::make_shared<TransactionLogHandle>(std::filesystem::path(path)));
+	auto* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(std::make_shared<TransactionLogHandle>(name));
 
 	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get())
 

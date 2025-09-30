@@ -43,7 +43,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	~DBHandle();
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback);
-
 	rocksdb::Status clear(uint32_t batchSize, uint64_t& deleted);
 	void close();
 	napi_value get(
@@ -55,6 +54,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	);
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
+	napi_value useLog(napi_env env, std::string& name);
 };
 
 } // namespace rocksdb_js

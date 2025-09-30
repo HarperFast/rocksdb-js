@@ -783,6 +783,16 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Get or create a transaction log.
+ */
+napi_value Database::UseLog(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], name, "Name is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	return (*dbHandle)->useLog(env, name);
+}
+
+/**
  * Mutually exclusive execution of a function across threads for a given key.
  */
 napi_value Database::WithLock(napi_env env, napi_callback_info info) {
@@ -844,6 +854,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 

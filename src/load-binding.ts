@@ -84,6 +84,7 @@ export type NativeDatabase = {
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
+	useLog(name: string): NativeTransactionLog;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
