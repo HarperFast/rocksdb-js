@@ -26,11 +26,13 @@ export type NativeTransaction = {
 	getSync(key: Key): Buffer;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
-	useLog(name: string): NativeTransactionLog;
 };
 
 export type NativeTransactionLog = {
-	new(context: NativeDatabase): NativeTransactionLog;
+	new(name: string): NativeTransactionLog;
+	add(): void;
+	commit(): void;
+	query(): void;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {

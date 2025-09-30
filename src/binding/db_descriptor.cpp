@@ -1,4 +1,5 @@
 #include "db_descriptor.h"
+#include "db_settings.h"
 #include <algorithm>
 #include <memory>
 
@@ -9,22 +10,19 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
 
 /**
- * Creates a new database descriptor.
+ * Creates a new database descriptor. This constructor is private. To create a
+ * new DBDescriptor, use `DBDescriptor::open()`.
  */
 DBDescriptor::DBDescriptor(
-	std::string path,
+	const std::string& path,
 	DBMode mode,
 	std::shared_ptr<rocksdb::DB> db,
-	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
+	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
 ):
 	path(path),
 	mode(mode),
-	db(db)
-{
-	for (auto& column : columns) {
-		this->columns[column.first] = column.second;
-	}
-}
+	db(db),
+	columns(std::move(columns)) {}
 
 /**
  * Destroy the database descriptor and any resources associated to it
@@ -77,7 +75,7 @@ void DBDescriptor::detach(Closable* closable) {
  */
 void DBDescriptor::lockCall(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value callback,
 	napi_deferred deferred,
 	std::shared_ptr<DBHandle> owner
@@ -168,7 +166,7 @@ void DBDescriptor::lockCall(
  */
 void DBDescriptor::lockEnqueueCallback(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value callback,
 	std::shared_ptr<DBHandle> owner,
 	bool skipEnqueueIfNewLock,
@@ -235,7 +233,7 @@ void DBDescriptor::lockEnqueueCallback(
 /**
  * Checks if a lock exists for the given key. Called by `db.hasLock()`.
  */
-bool DBDescriptor::lockExistsByKey(std::string key) {
+bool DBDescriptor::lockExistsByKey(std::string& key) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
 	bool exists = lockHandle != this->locks.end();
@@ -246,7 +244,7 @@ bool DBDescriptor::lockExistsByKey(std::string key) {
 /**
  * Releases a lock by key. Called by `db.unlock()`.
  */
-bool DBDescriptor::lockReleaseByKey(std::string key) {
+bool DBDescriptor::lockReleaseByKey(std::string& key) {
 	std::queue<LockCallback> threadsafeCallbacks;
 
 	{
@@ -318,6 +316,101 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 		}
 		::napi_release_threadsafe_function(callback, napi_tsfn_release);
 	}
+}
+
+/**
+ * Creates a new DBDescriptor.
+ */
+std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
+	std::string name = options.name.empty() ? "default" : options.name;
+	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\")\n", path.c_str(), name.c_str())
+
+	// set or disable the block cache
+	rocksdb::BlockBasedTableOptions tableOptions;
+	if (options.noBlockCache) {
+		tableOptions.no_block_cache = true;
+	} else {
+		DBSettings& settings = DBSettings::getInstance();
+		tableOptions.block_cache = settings.getBlockCache();
+	}
+
+	// set the database options
+	rocksdb::Options dbOptions;
+	dbOptions.comparator = rocksdb::BytewiseComparator();
+	dbOptions.create_if_missing = true;
+	dbOptions.create_missing_column_families = true;
+	dbOptions.enable_blob_files = true;
+	dbOptions.enable_blob_garbage_collection = true;
+	dbOptions.min_blob_size = 1024;
+	dbOptions.persist_user_defined_timestamps = true;
+	dbOptions.IncreaseParallelism(options.parallelismThreads);
+	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+
+	// prepare the column family stuff - first check if database exists
+	std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
+	std::vector<std::string> columnFamilyNames;
+
+	// try to list existing column families
+	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str())
+	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
+	if (listStatus.ok() && !columnFamilyNames.empty()) {
+		// database exists, use existing column families
+		for (const auto& cfName : columnFamilyNames) {
+			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str())
+			cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
+		}
+	} else {
+		// database doesn't exist or no column families found, use default
+		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n")
+		cfDescriptors = {
+			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
+		};
+	}
+
+	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
+	std::shared_ptr<rocksdb::DB> db;
+	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+
+	if (options.mode == DBMode::Pessimistic) {
+		rocksdb::TransactionDBOptions txndbOptions;
+		txndbOptions.default_lock_timeout = 10000;
+		txndbOptions.transaction_lock_timeout = 10000;
+
+		rocksdb::TransactionDB* rdb;
+		DEBUG_LOG("DBDescriptor::open Opening pessimistic transaction db for \"%s\"\n", path.c_str())
+		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
+			throw std::runtime_error(status.ToString().c_str());
+		}
+		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str())
+		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
+	} else {
+		rocksdb::OptimisticTransactionDB* rdb;
+		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str())
+		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
+			throw std::runtime_error(status.ToString().c_str());
+		}
+		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str())
+		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
+	}
+
+	// figure out if desired column family exists and if not create it
+	bool columnExists = false;
+	for (size_t n = 0; n < cfHandles.size(); ++n) {
+		columns[cfDescriptors[n].name] = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
+		if (cfDescriptors[n].name == options.name) {
+			columnExists = true;
+		}
+	}
+	if (!columnExists) {
+		columns[options.name] = rocksdb_js::createRocksDBColumnFamily(db, options.name);
+	}
+
+	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str())
+	return std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options.mode, db, std::move(columns)));
 }
 
 /**
@@ -815,7 +908,7 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
  */
 napi_value DBDescriptor::getUserSharedBuffer(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value defaultBuffer,
 	napi_ref callbackRef
 ) {
@@ -930,7 +1023,7 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
  */
 napi_ref DBDescriptor::addListener(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value callback,
 	std::weak_ptr<DBHandle> owner
 ) {
@@ -1056,7 +1149,7 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
  * @param key The key.
  * @returns The number of listeners.
  */
-napi_value DBDescriptor::listeners(napi_env env, std::string key) {
+napi_value DBDescriptor::listeners(napi_env env, std::string& key) {
 	size_t count = 0;
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
@@ -1080,7 +1173,7 @@ napi_value DBDescriptor::listeners(napi_env env, std::string key) {
  * @param key The key.
  * @param callback The callback to remove.
  */
-napi_value DBDescriptor::removeListener(napi_env env, std::string key, napi_value callback) {
+napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_value callback) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
 	if (type != napi_function) {

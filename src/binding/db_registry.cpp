@@ -1,5 +1,4 @@
 #include "db_registry.h"
-#include "db_settings.h"
 #include "macros.h"
 #include "util.h"
 #include "rocksdb/table.h"
@@ -8,21 +7,6 @@ namespace rocksdb_js {
 
 // Initialize the static instance
 std::unique_ptr<DBRegistry> DBRegistry::instance;
-
-/**
- * Helper function to create a column family.
- *
- * @param db - The RocksDB database instance.
- * @param name - The name of the column family.
- */
-std::shared_ptr<rocksdb::ColumnFamilyHandle> createColumn(const std::shared_ptr<rocksdb::DB> db, const std::string& name) {
-	rocksdb::ColumnFamilyHandle* cfHandle;
-	rocksdb::Status status = db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
-	if (!status.ok()) {
-		throw std::runtime_error(status.ToString().c_str());
-	}
-	return std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandle);
-}
 
 /**
  * Close a RocksDB database handle.
@@ -171,105 +155,13 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		}
 		if (!columnExists) {
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str())
-			columns[name] = createColumn(descriptor->db, name);
+			columns[name] = rocksdb_js::createRocksDBColumnFamily(descriptor->db, name);
 			descriptor->columns[name] = columns[name];
 		}
 	} else {
-		DEBUG_LOG("%p DBRegistry::OpenDB Opening \"%s\" (column family: \"%s\")\n", instance.get(), path.c_str(), name.c_str())
-
-		// database doesn't exist, create it
-
-		// set or disable the block cache
-		rocksdb::BlockBasedTableOptions tableOptions;
-		if (options.noBlockCache) {
-			tableOptions.no_block_cache = true;
-		} else {
-			DBSettings& settings = DBSettings::getInstance();
-			tableOptions.block_cache = settings.getBlockCache();
-		}
-
-		// set the database options
-		rocksdb::Options dbOptions;
-		dbOptions.comparator = rocksdb::BytewiseComparator();
-		dbOptions.create_if_missing = true;
-		dbOptions.create_missing_column_families = true;
-		dbOptions.enable_blob_files = true;
-		dbOptions.enable_blob_garbage_collection = true;
-		dbOptions.min_blob_size = 1024;
-		dbOptions.persist_user_defined_timestamps = true;
-		dbOptions.IncreaseParallelism(options.parallelismThreads);
-		dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
-
-		// prepare the column family stuff - first check if database exists
-		std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
-		std::vector<std::string> columnFamilyNames;
-
-		// try to list existing column families
-		DEBUG_LOG("DBRegistry::OpenDB Listing column families for \"%s\"\n", path.c_str())
-		rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
-		if (listStatus.ok() && !columnFamilyNames.empty()) {
-			// database exists, use existing column families
-			for (const auto& cfName : columnFamilyNames) {
-				DEBUG_LOG("DBRegistry::OpenDB Opening column family \"%s\"\n", cfName.c_str())
-				cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
-			}
-		} else {
-			// database doesn't exist or no column families found, use default
-			DEBUG_LOG("DBRegistry::OpenDB Database doesn't exist or no column families found, using default\n")
-			cfDescriptors = {
-				rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
-			};
-		}
-		std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
-
-		std::shared_ptr<rocksdb::DB> db;
-
-		if (options.mode == DBMode::Pessimistic) {
-			rocksdb::TransactionDBOptions txndbOptions;
-			txndbOptions.default_lock_timeout = 10000;
-			txndbOptions.transaction_lock_timeout = 10000;
-
-			rocksdb::TransactionDB* rdb;
-			DEBUG_LOG("DBRegistry::OpenDB Opening pessimistic transaction db for \"%s\"\n", path.c_str())
-			rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
-			if (!status.ok()) {
-				DEBUG_LOG("DBRegistry::OpenDB Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
-				throw std::runtime_error(status.ToString().c_str());
-			}
-			DEBUG_LOG("DBRegistry::OpenDB Opened pessimistic transaction db for \"%s\"\n", path.c_str())
-			db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
-		} else {
-			rocksdb::OptimisticTransactionDB* rdb;
-			DEBUG_LOG("DBRegistry::OpenDB Opening optimistic transaction db for \"%s\"\n", path.c_str())
-			rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
-			if (!status.ok()) {
-				DEBUG_LOG("DBRegistry::OpenDB Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
-				throw std::runtime_error(status.ToString().c_str());
-			}
-			DEBUG_LOG("DBRegistry::OpenDB Opened optimistic transaction db for \"%s\"\n", path.c_str())
-			db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
-		}
-
-		// figure out if desired column family exists and if not create it
-		bool columnExists = false;
-		for (size_t n = 0; n < cfHandles.size(); ++n) {
-			columns[cfDescriptors[n].name] = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
-			if (cfDescriptors[n].name == name) {
-				columnExists = true;
-			}
-		}
-		if (!columnExists) {
-			columns[name] = createColumn(db, name);
-		}
-
-		// create the descriptor and store it in the existing entry
-		DEBUG_LOG("%p DBRegistry::OpenDB Creating DBDescriptor for \"%s\"\n", instance.get(), path.c_str())
-		descriptor = std::make_shared<DBDescriptor>(path, options.mode, db, columns);
-		DEBUG_LOG("%p DBRegistry::OpenDB Created DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), descriptor.get(), path.c_str(), descriptor.use_count())
-
-		// store the descriptor in the existing entry
+		descriptor = DBDescriptor::open(path, options);	// store the descriptor in the existing entry
 		entry.descriptor = descriptor;
-
+		columns = descriptor->columns;
 		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), descriptor.get(), path.c_str(), descriptor.use_count())
 	}
 

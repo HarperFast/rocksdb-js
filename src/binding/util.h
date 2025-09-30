@@ -13,7 +13,7 @@
 #include <thread>
 #include "binding.h"
 #include "macros.h"
-#include "rocksdb/status.h"
+#include "rocksdb/db.h"
 
 /**
  * This file contains various napi helper functions.
@@ -38,6 +38,8 @@ struct Closable {
 };
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
+
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name);
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 

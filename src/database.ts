@@ -206,15 +206,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Lists all transaction logs for the database.
-	 *
-	 * @returns A promise that resolves to an array of transaction logs.
-	 */
-	async listTransactionLogs() {
-		return [];
-	}
-
-	/**
 	 * Sugar method for opening a database.
 	 *
 	 * @param pathOrStore - The filesystem path to the database or a custom store.

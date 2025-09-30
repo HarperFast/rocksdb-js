@@ -20,8 +20,10 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
-// import { TransactionLog } from './transaction-log.js';
+import { join, parse } from 'node:path';
 import { parseDuration } from './util.js';
+import { TransactionLog } from './transaction-log.js';
+import { readdirSync, statSync } from 'node:fs';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -201,6 +203,11 @@ export class Store {
 	readKey: ReadKeyFunction<Key>;
 
 	/**
+	 * The path to the transaction logs directory..
+	 */
+	transactionLogsPath: string;
+
+	/**
 	 * A string containing the amount of time or the number of milliseconds to
 	 * retain transaction logs before purging.
 	 *
@@ -217,6 +224,12 @@ export class Store {
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
+
+	/**
+	 * Cache of TransactionLog instances by name for this store instance.
+	 * This ensures each Store (and thus each thread) has its own cache.
+	 */
+	transactionLogCache = new Map<string, TransactionLog>();
 
 	/**
 	 * Initializes the store with a new `NativeDatabase` instance.
@@ -256,14 +269,16 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.transactionLogsPath = join(path, 'transaction_logs');
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.writeKey = writeKey;
 	}
 
 	/**
-	 * Closes the database.
+	 * Closes the database and cleans up cached resources.
 	 */
 	close() {
+		this.transactionLogCache.clear();
 		this.db.close();
 	}
 
@@ -498,6 +513,15 @@ export class Store {
 	}
 
 	/**
+	 * Lists all transaction log names.
+	 *
+	 * @returns an array of transaction log names.
+	 */
+	listLogs() {
+		return Array.from(this.transactionLogCache.keys());
+	}
+
+	/**
 	 * Opens the database. This must be called before any database operations
 	 * are performed.
 	 */
@@ -516,6 +540,14 @@ export class Store {
 				? parseDuration(this.transactionLogRetention)
 				: undefined
 		});
+
+		for (const filename of readdirSync(this.transactionLogsPath)) {
+			const file = join(this.transactionLogsPath, filename);
+			const { ext, name } = parse(file);
+			if (ext === '.txnlog' && statSync(file).isFile()) {
+				this.transactionLogCache.set(name, new TransactionLog(file));
+			}
+		}
 	}
 
 	putSync(context: NativeDatabase | NativeTransaction, key: Key, value: any, options?: PutOptions & DBITransactional) {
@@ -574,6 +606,25 @@ export class Store {
 	 */
 	unlock(key: Key): void {
 		return this.db.unlock(this.encodeKey(key));
+	}
+
+	/**
+	 * Gets or creates a transaction log instance.
+	 *
+	 * @param name - The name of the transaction log.
+	 * @returns The transaction log.
+	 */
+	useLog(name: string | number): TransactionLog {
+		const logName = String(name);
+
+		const cachedLog = this.transactionLogCache.get(logName);
+		if (cachedLog) {
+			return cachedLog;
+		}
+
+		const transactionLog = new TransactionLog(join(this.transactionLogsPath, `${logName}.txnlog`));
+		this.transactionLogCache.set(logName, transactionLog);
+		return transactionLog;
 	}
 
 	/**

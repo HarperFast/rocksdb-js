@@ -247,6 +247,21 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	return std::string(errorStr);
 }
 
+/**
+ * Helper function to create a column family.
+ *
+ * @param db - The RocksDB database instance.
+ * @param name - The name of the column family.
+ */
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name) {
+	rocksdb::ColumnFamilyHandle* cfHandle;
+	rocksdb::Status status = db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
+	if (!status.ok()) {
+		throw std::runtime_error(status.ToString().c_str());
+	}
+	return std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandle);
+}
+
 static const char* errorCodeStrings[] = {
 	"ERR_UNKNOWN",
 	"ERR_NOT_FOUND",

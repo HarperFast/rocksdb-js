@@ -105,12 +105,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 				auto* txnHandle = static_cast<std::shared_ptr<TransactionHandle>*>(data);
 				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
-					DEBUG_LOG("Transaction::Constructor NativeTransaction GC resetting shared_ptr txnHandle=%p txnId=%u\n", data, id) // TEMP
 					(*txnHandle).reset();
 				}
-				DEBUG_LOG("Transaction::Constructor NativeTransaction GC deleting txnHandle=%p txnId=%u\n", data, id) // TEMP
 				delete txnHandle;
-				DEBUG_LOG("Transaction::Constructor NativeTransaction GC deleted txnHandle=%p txnId=%u\n", data, id) // TEMP
 			},
 			nullptr, // finalize_hint
 			nullptr  // result
@@ -427,7 +424,6 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
-		// merge?
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};

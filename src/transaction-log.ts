@@ -1,13 +1,22 @@
-import { type NativeDatabase, NativeTransactionLog } from './load-binding';
+import { NativeTransactionLog } from './load-binding';
 
 export class TransactionLog {
 	#log: NativeTransactionLog;
 
-	constructor(context: NativeDatabase) {
-		this.#log = new NativeTransactionLog(context);
+	constructor(path: string) {
+		this.#log = new NativeTransactionLog(path);
 	}
 
-	getRange() {
-		//
+	add() {
+		// add an entry to the transaction log
+	}
+
+	commit() {
+		// do we need this?
+		// what does this do?
+	}
+
+	query() {
+		// this is basically getRange()
 	}
 }
