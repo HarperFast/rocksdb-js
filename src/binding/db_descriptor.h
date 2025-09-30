@@ -13,6 +13,7 @@
 #include "rocksdb/utilities/options_util.h"
 #include "db_options.h"
 #include "transaction_handle.h"
+#include "transaction_log_handle.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -104,6 +105,12 @@ public:
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
 	void removeListenersByOwner(DBHandle* owner);
 
+	napi_value listLogs(napi_env env);
+
+private:
+	void discoverTransactionLogs(const std::string& transactionLogsPath);
+
+public:
 	/**
 	 * The path of the database.
 	 */
@@ -184,6 +191,16 @@ public:
 	 * Mutex to protect the listener callbacks map.
 	 */
 	std::mutex listenerCallbacksMutex;
+
+	/**
+	 * Map of transaction logs by name.
+	 */
+	std::unordered_map<std::string, std::shared_ptr<TransactionLogHandle>> transactionLogs;
+
+	/**
+	 * Mutex to protect the transaction logs map.
+	 */
+	std::mutex transactionLogsMutex;
 };
 
 /**

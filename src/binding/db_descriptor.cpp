@@ -410,7 +410,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str())
-	return std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options.mode, db, std::move(columns)));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options.mode, db, std::move(columns)));
+	descriptor->discoverTransactionLogs(options.transactionLogsPath);
+	return descriptor;
 }
 
 /**
@@ -1259,6 +1261,46 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 			++keyIt;
 		}
 	}
+}
+
+/**
+ * Discovers all transaction logs in the database directory.
+ */
+void DBDescriptor::discoverTransactionLogs(const std::string& transactionLogsPath) {
+	if (transactionLogsPath.empty() || !std::filesystem::exists(transactionLogsPath)) {
+		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogs No transaction logs path set or directory does not exist\n", this)
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(this->transactionLogsMutex);
+	for (const auto& entry : std::filesystem::directory_iterator(transactionLogsPath)) {
+		auto file = entry.path();
+		if (entry.is_regular_file() && file.extension() == ".txnlog") {
+			DEBUG_LOG("%p DBDescriptor::discoverTransactionLogs Found transaction log: %s\n", this, file.string().c_str())
+			this->transactionLogs.emplace(file.stem().string(), std::make_shared<TransactionLogHandle>(file));
+		}
+	}
+}
+
+/**
+ * Lists all transaction logs in the database.
+ *
+ * @param env The environment of the current callback.
+ */
+napi_value DBDescriptor::listLogs(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->transactionLogsMutex);
+	napi_value result;
+	size_t i = 0;
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogs.size(), &result));
+
+	DEBUG_LOG("%p DBDescriptor::listLogs Returning %u transaction log names\n", this, this->transactionLogs.size())
+	for (auto& log : this->transactionLogs) {
+		napi_value name;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, log.second->name.c_str(), log.second->name.length(), &name));
+		NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, name));
+	}
+
+	return result;
 }
 
 } // namespace rocksdb_js

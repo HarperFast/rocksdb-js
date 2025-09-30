@@ -539,6 +539,15 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Lists all transaction logs in the database.
+ */
+napi_value Database::ListLogs(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	return (*dbHandle)->descriptor->listLogs(env);
+}
+
+/**
  * Opens the RocksDB database. This must be called before any data methods are called.
  */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
@@ -571,12 +580,23 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	int transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", transactionLogRetentionMs));
 
+	std::string transactionLogsPath;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
+
 	DBMode mode = DBMode::Optimistic;
 	if (modeName == "pessimistic") {
 		mode = DBMode::Pessimistic;
 	}
 
-	DBOptions dbHandleOptions { disableWAL, mode, name, noBlockCache, parallelismThreads, transactionLogRetentionMs };
+	DBOptions dbHandleOptions {
+		disableWAL,
+		mode,
+		name,
+		noBlockCache,
+		parallelismThreads,
+		transactionLogRetentionMs,
+		transactionLogsPath
+	};
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
@@ -814,7 +834,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },\
+		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },

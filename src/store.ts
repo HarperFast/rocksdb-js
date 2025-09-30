@@ -518,7 +518,7 @@ export class Store {
 	 * @returns an array of transaction log names.
 	 */
 	listLogs() {
-		return Array.from(this.transactionLogCache.keys());
+		return this.db.listLogs();
 	}
 
 	/**
@@ -538,16 +538,9 @@ export class Store {
 			parallelismThreads: this.parallelismThreads,
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
-				: undefined
+				: undefined,
+			transactionLogsPath: join(this.path, 'transaction_logs')
 		});
-
-		for (const filename of readdirSync(this.transactionLogsPath)) {
-			const file = join(this.transactionLogsPath, filename);
-			const { ext, name } = parse(file);
-			if (ext === '.txnlog' && statSync(file).isFile()) {
-				this.transactionLogCache.set(name, new TransactionLog(file));
-			}
-		}
 	}
 
 	putSync(context: NativeDatabase | NativeTransaction, key: Key, value: any, options?: PutOptions & DBITransactional) {

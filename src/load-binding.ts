@@ -51,6 +51,7 @@ export type NativeDatabaseOptions = {
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
 	transactionLogRetentionMs?: number;
+	transactionLogsPath?: string;
 };
 
 type ResolveCallback<T> = (value: T) => void;
@@ -72,6 +73,7 @@ export type NativeDatabase = {
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
+	listLogs(): string[];
 	opened: boolean;
 	open(
 		path: string,
