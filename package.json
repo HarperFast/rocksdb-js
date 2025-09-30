@@ -62,7 +62,7 @@
     "lefthook": "1.13.5",
     "lmdb": "3.4.2",
     "node-gyp": "11.4.2",
-    "oxlint": "1.18.0",
+    "oxlint": "1.19.0",
     "prebuildify": "6.0.1",
     "rimraf": "6.0.1",
     "rollup": "4.52.3",
