@@ -13,7 +13,7 @@
 #include "rocksdb/utilities/options_util.h"
 #include "db_options.h"
 #include "transaction_handle.h"
-#include "transaction_log_handle.h"
+#include "transaction_log_store.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -54,7 +54,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 private:
     DBDescriptor(
         const std::string& path,
-        DBMode mode,
+        const DBOptions& options,
         std::shared_ptr<rocksdb::DB> db,
         std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
     );
@@ -105,10 +105,11 @@ public:
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
 	void removeListenersByOwner(DBHandle* owner);
 
-	napi_value listLogs(napi_env env);
+	napi_value listTransactionLogStores(napi_env env);
+	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 
 private:
-	void discoverTransactionLogs(const std::string& transactionLogsPath);
+	void discoverTransactionLogStores();
 
 public:
 	/**
@@ -193,14 +194,19 @@ public:
 	std::mutex listenerCallbacksMutex;
 
 	/**
+	 * The path to the transaction logs.
+	 */
+	std::string transactionLogsPath;
+
+	/**
 	 * Map of transaction logs by name.
 	 */
-	std::unordered_map<std::string, std::shared_ptr<TransactionLogHandle>> transactionLogs;
+	std::unordered_map<std::string, std::shared_ptr<TransactionLogStore>> transactionLogStores;
 
 	/**
 	 * Mutex to protect the transaction logs map.
 	 */
-	std::mutex transactionLogsMutex;
+	std::mutex transactionLogMutex;
 };
 
 /**

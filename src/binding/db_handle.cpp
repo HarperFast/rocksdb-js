@@ -2,23 +2,15 @@
 #include "db_descriptor.h"
 #include "db_registry.h"
 #include <algorithm>
+#include "transaction_log.h"
 
 namespace rocksdb_js {
 
 /**
  * Creates a new DBHandle.
  */
-DBHandle::DBHandle()
-	: descriptor(nullptr) {}
-
-/**
- * Creates a new DBHandle from a DBDescriptor.
- */
-DBHandle::DBHandle(
-	std::shared_ptr<DBDescriptor> descriptor,
-	const DBOptions& options
-) : descriptor(descriptor),
-	disableWAL(options.disableWAL) {}
+DBHandle::DBHandle(napi_ref exportsRef)
+	: descriptor(nullptr), exportsRef(exportsRef) {}
 
 /**
  * Close the DBHandle and destroy it.
@@ -138,6 +130,8 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handle = DBRegistry::OpenDB(path, options);
 	this->column = std::move(handle->column);
 	this->descriptor = std::move(handle->descriptor);
+	this->disableWAL = options.disableWAL;
+
 	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
 	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed, moved DBDescriptor %p to this handle (ref count = %ld)\n",
 		this, handle.get(), this->descriptor.get(), this->descriptor.use_count())
@@ -156,8 +150,22 @@ bool DBHandle::opened() const {
 /**
  * Get or create a transaction log.
  */
-napi_value DBHandle::useLog(napi_env env, std::string& name) {
-	NAPI_RETURN_UNDEFINED()
+napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& name) {
+	napi_value exports;
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, this->exportsRef, &exports))
+
+	napi_value args[2];
+	args[0] = jsDatabase;
+
+	napi_value transactionLogCtor;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor))
+
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]))
+
+	napi_value instance;
+	NAPI_STATUS_THROWS(::napi_new_instance(env, transactionLogCtor, 2, args, &instance))
+
+	return instance;
 }
 
 } // namespace rocksdb_js

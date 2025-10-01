@@ -38,8 +38,12 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	bool disableWAL;
 
-	DBHandle();
-	DBHandle(std::shared_ptr<DBDescriptor> descriptor, const DBOptions& options);
+	/**
+	 * A reference to the main `rocksdb_js` exports object.
+	 */
+	napi_ref exportsRef;
+
+	DBHandle(napi_ref exportsRef);
 	~DBHandle();
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback);
@@ -54,7 +58,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	);
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
-	napi_value useLog(napi_env env, std::string& name);
+	napi_value useLog(napi_env env, napi_value jsDatabase, std::string& name);
 };
 
 } // namespace rocksdb_js

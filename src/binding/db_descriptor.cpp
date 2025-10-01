@@ -15,14 +15,16 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
  */
 DBDescriptor::DBDescriptor(
 	const std::string& path,
-	DBMode mode,
+	const DBOptions& options,
 	std::shared_ptr<rocksdb::DB> db,
 	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
 ):
 	path(path),
-	mode(mode),
+	mode(options.mode),
 	db(db),
-	columns(std::move(columns)) {}
+	columns(std::move(columns)),
+	transactionLogsPath(options.transactionLogsPath)
+{}
 
 /**
  * Destroy the database descriptor and any resources associated to it
@@ -410,8 +412,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str())
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options.mode, db, std::move(columns)));
-	descriptor->discoverTransactionLogs(options.transactionLogsPath);
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns)));
+	descriptor->discoverTransactionLogStores();
 	return descriptor;
 }
 
@@ -1264,20 +1266,74 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 }
 
 /**
- * Discovers all transaction logs in the database directory.
+ * Discovers all transaction logs in the database directory and stores the
+ * handles in a map.
  */
-void DBDescriptor::discoverTransactionLogs(const std::string& transactionLogsPath) {
-	if (transactionLogsPath.empty() || !std::filesystem::exists(transactionLogsPath)) {
-		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogs No transaction logs path set or directory does not exist\n", this)
+void DBDescriptor::discoverTransactionLogStores() {
+	if (this->transactionLogsPath.empty() || !std::filesystem::exists(this->transactionLogsPath)) {
+		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogStores No transaction logs path set or directory does not exist\n", this)
 		return;
 	}
 
-	std::lock_guard<std::mutex> lock(this->transactionLogsMutex);
-	for (const auto& entry : std::filesystem::directory_iterator(transactionLogsPath)) {
-		auto file = entry.path();
-		if (entry.is_regular_file() && file.extension() == ".txnlog") {
-			DEBUG_LOG("%p DBDescriptor::discoverTransactionLogs Found transaction log: %s\n", this, file.string().c_str())
-			this->transactionLogs.emplace(file.stem().string(), std::make_shared<TransactionLogHandle>(file));
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+
+	// collect all `.txnlog` files and group by name
+	std::map<std::string, std::vector<std::pair<uint32_t, std::filesystem::path>>> logStoreGroups;
+
+	for (const auto& entry : std::filesystem::directory_iterator(this->transactionLogsPath)) {
+		if (entry.is_regular_file()) {
+			auto path = entry.path();
+			auto filename = path.filename().string();
+
+			// parse filename: {name}.{sequenceNumber}.txnlog
+			size_t lastDot = filename.find_last_of('.');
+			if (lastDot == std::string::npos || filename.substr(lastDot + 1) != "txnlog") {
+				// no extension or not a transaction log file
+				continue;
+			}
+
+			size_t secondLastDot = filename.find_last_of('.', lastDot - 1);
+			if (secondLastDot == std::string::npos) {
+				// no sequence number
+				continue;
+			}
+
+			try {
+				std::string name = filename.substr(0, secondLastDot);
+				std::string sequenceNumberStr = filename.substr(secondLastDot + 1, lastDot - secondLastDot - 1);
+				uint32_t sequenceNumber = std::stoul(sequenceNumberStr);
+				logStoreGroups[name].emplace_back(sequenceNumber, path);
+
+				DEBUG_LOG(
+					"%p DBDescriptor::discoverTransactionLogStores Found log file: name=%s, seq=%u\n",
+					this, name.c_str(), sequenceNumber
+				)
+			} catch (const std::exception& e) {
+				DEBUG_LOG(
+					"%p DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
+					this, filename.c_str()
+				)
+			}
+		}
+	}
+
+	// create `TransactionLogHandle` instances for each unique name
+	for (const auto& [logName, sequenceFiles] : logStoreGroups) {
+		// only create if we don't already have a handle for this name
+		if (this->transactionLogStores.find(logName) == this->transactionLogStores.end()) {
+			auto txnLogStore = std::make_shared<TransactionLogStore>(logName, this->transactionLogsPath);
+
+			// Add all discovered sequence files to the handle
+			for (const auto& [sequenceNumber, path] : sequenceFiles) {
+				txnLogStore->addSequenceFile(sequenceNumber, path);
+			}
+
+			this->transactionLogStores.emplace(logName, txnLogStore);
+
+			DEBUG_LOG(
+				"%p DBDescriptor::discoverTransactionLogStores Created TransactionLogHandle for '%s' with %zu sequence files\n",
+				this, logName.c_str(), sequenceFiles.size()
+			)
 		}
 	}
 }
@@ -1287,20 +1343,41 @@ void DBDescriptor::discoverTransactionLogs(const std::string& transactionLogsPat
  *
  * @param env The environment of the current callback.
  */
-napi_value DBDescriptor::listLogs(napi_env env) {
-	std::lock_guard<std::mutex> lock(this->transactionLogsMutex);
+napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 	napi_value result;
 	size_t i = 0;
-	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogs.size(), &result));
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogStores.size(), &result));
 
-	DEBUG_LOG("%p DBDescriptor::listLogs Returning %u transaction log names\n", this, this->transactionLogs.size())
-	for (auto& log : this->transactionLogs) {
+	DEBUG_LOG("%p DBDescriptor::listTransactionLogStores Returning %u transaction log store names\n", this, this->transactionLogStores.size())
+	for (auto& log : this->transactionLogStores) {
 		napi_value name;
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, log.second->name.c_str(), log.second->name.length(), &name));
 		NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, name));
 	}
 
 	return result;
+}
+
+/**
+ * Finds or creates a transaction log store by name.
+ *
+ * @param name The name of the transaction log store.
+ * @returns The transaction log store.
+ */
+std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+	auto it = this->transactionLogStores.find(name);
+	if (it != this->transactionLogStores.end()) {
+		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store: %s\n", this, name.c_str())
+		return it->second;
+	}
+
+	auto path = std::filesystem::path(this->transactionLogsPath) / (name + ".txnlog");
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s\n", this, path.string().c_str())
+	auto txnLogStore = std::make_shared<TransactionLogStore>(name, path);
+	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
+	return txnLogStore;
 }
 
 } // namespace rocksdb_js

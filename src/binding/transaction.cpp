@@ -437,13 +437,13 @@ void Transaction::Init(napi_env env, napi_value exports) {
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,         // className
-		len,               // length of class name
-		Constructor,       // constructor
-		(void*)exportsRef, // constructor arg
+		className,                // className
+		len,                      // length of class name
+		Transaction::Constructor, // constructor
+		(void*)exportsRef,        // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
-		properties,        // properties array
-		&ctor              // [out] constructor
+		properties,               // properties array
+		&ctor                     // [out] constructor
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))

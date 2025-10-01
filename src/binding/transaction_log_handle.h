@@ -1,17 +1,21 @@
 #ifndef __TRANSACTION_LOG_HANDLE_H__
 #define __TRANSACTION_LOG_HANDLE_H__
 
+#include <memory>
 #include <string>
-#include <filesystem>
+#include "db_handle.h"
+#include "transaction_log_store.h"
 
 namespace rocksdb_js {
 
-struct TransactionLogHandle final {
-	TransactionLogHandle(const std::filesystem::path& path);
-	~TransactionLogHandle();
+struct TransactionLogHandle final : Closable {
+    TransactionLogHandle(const std::shared_ptr<DBHandle>& dbHandle, const std::string& logName);
+    ~TransactionLogHandle();
 
-	std::string path;
-	std::string name;
+    std::shared_ptr<DBHandle> dbHandle;
+    std::shared_ptr<TransactionLogStore> store;
+
+    void close() {}
 };
 
 } // namespace rocksdb_js

@@ -21,10 +21,11 @@ namespace rocksdb_js {
  * ```
  */
 napi_value Database::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR("Database")
+	NAPI_CONSTRUCTOR_WITH_DATA("Database")
 
 	// create shared_ptr on heap so it persists after function returns
-	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
+	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
+	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>(exportsRef));
 
 	DEBUG_LOG("Database::Constructor Creating NativeDatabase DBHandle=%p\n", dbHandle->get())
 
@@ -544,7 +545,7 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 napi_value Database::ListLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->descriptor->listLogs(env);
+	return (*dbHandle)->descriptor->listTransactionLogStores(env);
 }
 
 /**
@@ -789,7 +790,7 @@ napi_value Database::UseLog(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	NAPI_GET_STRING(argv[0], name, "Name is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	return (*dbHandle)->useLog(env, name);
+	return (*dbHandle)->useLog(env, jsThis, name);
 }
 
 /**
@@ -861,16 +862,19 @@ void Database::Init(napi_env env, napi_value exports) {
 	auto className = "Database";
 	constexpr size_t len = sizeof("Database") - 1;
 
+	napi_ref exportsRef;
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef))
+
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,    // className
-		len,          // length of class name
-		Constructor,  // constructor
-		nullptr,      // constructor arg
+		className,                           // className
+		len,                                 // length of class name
+		Database::Constructor,               // constructor
+		reinterpret_cast<void*>(exportsRef), // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
-		properties,   // properties array
-		&ctor         // [out] constructor
+		properties,                          // properties array
+		&ctor                                // [out] constructor
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))

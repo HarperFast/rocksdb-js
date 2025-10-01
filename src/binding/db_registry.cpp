@@ -88,7 +88,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
  * @return A handle to the RocksDB database including the transaction db and
  * column family handle.
  */
-std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
+std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
 	// ensure the registry has already been initialized
 	if (!instance) {
 		DEBUG_LOG("DBRegistry::OpenDB Registry not initialized!\n")
@@ -165,21 +165,21 @@ std::unique_ptr<DBHandle> DBRegistry::OpenDB(const std::string& path, const DBOp
 		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), descriptor.get(), path.c_str(), descriptor.use_count())
 	}
 
-	std::unique_ptr<DBHandle> handle = std::make_unique<DBHandle>(descriptor, options);
-	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandle %p for \"%s\"\n", instance.get(), handle.get(), path.c_str())
-
 	// handle the column family
+	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 	auto colIterator = columns.find(name);
 	if (colIterator != columns.end()) {
 		// column family already exists
 		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" found\n", instance.get(), name.c_str())
-		handle->column = colIterator->second;
+		column = colIterator->second;
 	} else {
 		// use the default column family
 		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" not found, using \"default\"\n", instance.get(), name.c_str())
-		handle->column = columns[rocksdb::kDefaultColumnFamilyName];
+		column = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
+	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(descriptor, column);
+	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandleParams %p for \"%s\"\n", instance.get(), handle.get(), path.c_str())
 	return handle;
 }
 
