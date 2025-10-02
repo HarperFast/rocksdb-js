@@ -66,6 +66,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 			DEBUG_LOG("TransactionLog::Constructor NativeTransactionLog GC'd txnLogHandle=%p\n", data)
 			auto* txnLogHandle = static_cast<std::shared_ptr<TransactionLogHandle>*>(data);
 			if (txnLogHandle) {
+				(*txnLogHandle)->close();
 				txnLogHandle->reset();
 				delete txnLogHandle;
 			}

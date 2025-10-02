@@ -201,7 +201,7 @@ public:
 	/**
 	 * Map of transaction logs by name.
 	 */
-	std::unordered_map<std::string, std::shared_ptr<TransactionLogStore>> transactionLogStores;
+	std::map<std::string, std::shared_ptr<TransactionLogStore>> transactionLogStores;
 
 	/**
 	 * Mutex to protect the transaction logs map.

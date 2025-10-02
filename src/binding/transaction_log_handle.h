@@ -15,7 +15,7 @@ struct TransactionLogHandle final : Closable {
     std::shared_ptr<DBHandle> dbHandle;
     std::shared_ptr<TransactionLogStore> store;
 
-    void close() {}
+    void close();
 };
 
 } // namespace rocksdb_js

@@ -25,7 +25,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 
 	// create shared_ptr on heap so it persists after function returns
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
-	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>(exportsRef));
+	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>(env, exportsRef));
 
 	DEBUG_LOG("Database::Constructor Creating NativeDatabase DBHandle=%p\n", dbHandle->get())
 
