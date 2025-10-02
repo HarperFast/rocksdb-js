@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { NativeTransactionLog } from '../src/load-binding.js';
 
 describe('Transaction Log', () => {
-	it.skip('should detect existing transaction logs', () => dbRunner({
+	it('should detect existing transaction logs', () => dbRunner({
 		skipOpen: true
 	}, async ({ db, dbPath }) => {
 		console.log(dbPath);
@@ -41,11 +41,16 @@ describe('Transaction Log', () => {
 		assert(weakRef);
 		assert(globalThis.gc);
 
+		// this is flaky
 		const until = Date.now() + 3000;
-		while (weakRef.deref() && Date.now() < until) {
-			console.log('GCing');
+		while (Date.now() < until) {
 			globalThis.gc();
 			await delay(250);
+			globalThis.gc();
+			await delay(250);
+			if (!weakRef.deref()) {
+				break;
+			}
 		}
 
 		expect(weakRef.deref()).toBeUndefined();
