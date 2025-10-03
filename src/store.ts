@@ -202,9 +202,15 @@ export class Store {
 	readKey: ReadKeyFunction<Key>;
 
 	/**
-	 * The path to the transaction logs directory..
+	 * The key used to store shared structures.
 	 */
-	transactionLogsPath: string;
+	sharedStructuresKey?: symbol;
+
+	/**
+	 * The maximum size of a transaction log before it is rotated to the next
+	 * sequence number.
+	 */
+	transactionLogMaxSize?: number;
 
 	/**
 	 * A string containing the amount of time or the number of milliseconds to
@@ -215,9 +221,9 @@ export class Store {
 	transactionLogRetention?: number | string;
 
 	/**
-	 * The key used to store shared structures.
+	 * The path to the transaction logs directory..
 	 */
-	sharedStructuresKey?: symbol;
+	transactionLogsPath: string;
 
 	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
@@ -262,8 +268,9 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
-		this.transactionLogsPath = join(path, 'transaction_logs');
+		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
+		this.transactionLogsPath = join(path, 'transaction_logs');
 		this.writeKey = writeKey;
 	}
 
@@ -528,6 +535,7 @@ export class Store {
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			transactionLogMaxSize: this.transactionLogMaxSize,
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,

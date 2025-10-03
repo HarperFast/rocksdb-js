@@ -194,6 +194,12 @@ public:
 	std::mutex listenerCallbacksMutex;
 
 	/**
+	 * The maximum size of a transaction log before it is rotated to the next
+	 * sequence number.
+	 */
+	uint32_t transactionLogMaxSize;
+
+	/**
 	 * The path to the transaction logs.
 	 */
 	std::string transactionLogsPath;

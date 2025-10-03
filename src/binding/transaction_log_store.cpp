@@ -6,8 +6,9 @@ namespace rocksdb_js {
 
 TransactionLogStore::TransactionLogStore(
 	const std::string& name,
-	const std::filesystem::path& logsDirectory
-): name(name), logsDirectory(logsDirectory), nextSequenceNumber(0) {
+	const std::filesystem::path& logsDirectory,
+	const uint32_t maxSize
+): name(name), logsDirectory(logsDirectory), maxSize(maxSize), nextSequenceNumber(0) {
 	//
 }
 

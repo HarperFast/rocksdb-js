@@ -21,10 +21,15 @@ struct SequenceFile final {
 struct TransactionLogStore final {
 	std::string name;
     std::filesystem::path logsDirectory;
-    std::map<uint32_t, std::unique_ptr<SequenceFile>> sequenceFiles;
+    uint32_t maxSize;
     uint32_t nextSequenceNumber;
+    std::map<uint32_t, std::unique_ptr<SequenceFile>> sequenceFiles;
 
-    TransactionLogStore(const std::string& name, const std::filesystem::path& logsDirectory);
+    TransactionLogStore(
+        const std::string& name,
+        const std::filesystem::path& logsDirectory,
+        const uint32_t maxSize
+    );
 
     void addSequenceFile(uint32_t sequenceNumber, const std::filesystem::path& path);
 

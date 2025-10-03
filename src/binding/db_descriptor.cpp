@@ -23,6 +23,7 @@ DBDescriptor::DBDescriptor(
 	mode(options.mode),
 	db(db),
 	columns(std::move(columns)),
+	transactionLogMaxSize(options.transactionLogMaxSize),
 	transactionLogsPath(options.transactionLogsPath)
 {}
 
@@ -1321,7 +1322,11 @@ void DBDescriptor::discoverTransactionLogStores() {
 	for (const auto& [logName, sequenceFiles] : logStoreGroups) {
 		// only create if we don't already have a handle for this name
 		if (this->transactionLogStores.find(logName) == this->transactionLogStores.end()) {
-			auto txnLogStore = std::make_shared<TransactionLogStore>(logName, this->transactionLogsPath);
+			auto txnLogStore = std::make_shared<TransactionLogStore>(
+				logName,
+				this->transactionLogsPath,
+				this->transactionLogMaxSize
+			);
 
 			// Add all discovered sequence files to the handle
 			for (const auto& [sequenceNumber, path] : sequenceFiles) {
@@ -1375,7 +1380,7 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 
 	auto path = std::filesystem::path(this->transactionLogsPath) / (name + ".txnlog");
 	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s\n", this, path.string().c_str())
-	auto txnLogStore = std::make_shared<TransactionLogStore>(name, path);
+	auto txnLogStore = std::make_shared<TransactionLogStore>(name, path, this->transactionLogMaxSize);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
 }

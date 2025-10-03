@@ -575,14 +575,17 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	std::string modeName;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "mode", modeName));
 
-	int parallelismThreads = std::max<int>(1, std::thread::hardware_concurrency() / 2);
+	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
 
-	int transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
+	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", transactionLogRetentionMs));
 
 	std::string transactionLogsPath;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
+
+	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", transactionLogMaxSize));
 
 	DBMode mode = DBMode::Optimistic;
 	if (modeName == "pessimistic") {
@@ -595,6 +598,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		name,
 		noBlockCache,
 		parallelismThreads,
+		transactionLogMaxSize,
 		transactionLogRetentionMs,
 		transactionLogsPath
 	};
