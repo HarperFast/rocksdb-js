@@ -57,6 +57,8 @@ Creates a new database instance.
     it is rotated to the next sequence number. Defaults to 16 MB.
   - `transactionLogRetention: string | number` The number of minutes to retain
     transaction logs before purging. Defaults to `'3d'` (3 days).
+  - `transactionLogsPath: string` The path to store transaction logs. Defaults
+    to `"${db.path}/transaction_logs"`.
 
 ### `db.close()`
 
