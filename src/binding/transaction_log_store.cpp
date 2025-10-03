@@ -8,16 +8,34 @@ TransactionLogStore::TransactionLogStore(
 	const std::string& name,
 	const std::filesystem::path& logsDirectory,
 	const uint32_t maxSize
-): name(name), logsDirectory(logsDirectory), maxSize(maxSize), nextSequenceNumber(0) {
+) :
+    name(name),
+    logsDirectory(logsDirectory),
+    maxSize(maxSize),
+    currentSequenceNumber(1),
+    nextSequenceNumber(2)
+{
 	//
+}
+
+void TransactionLogStore::addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength) {
+	// TODO:
+    // 1. Determine if we a store for the current sequence number exists
+    // 2. If not, create a new store
+    // 3. If the store is full, rotate to the next sequence number
+    // 4. Add the entry to the store
 }
 
 void TransactionLogStore::addSequenceFile(uint32_t sequenceNumber, const std::filesystem::path& path) {
     auto sequenceFile = std::make_unique<SequenceFile>(path, sequenceNumber);
     this->sequenceFiles[sequenceNumber] = std::move(sequenceFile);
 
+    if (sequenceNumber > this->currentSequenceNumber) {
+        this->currentSequenceNumber = sequenceNumber;
+    }
+
     // Update next sequence number to be one higher than the highest existing
-    if (sequenceNumber >= this->nextSequenceNumber) {
+    if (sequenceNumber > this->nextSequenceNumber) {
         this->nextSequenceNumber = sequenceNumber + 1;
     }
 

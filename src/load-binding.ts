@@ -30,7 +30,7 @@ export type NativeTransaction = {
 
 export type NativeTransactionLog = {
 	new(name: string): NativeTransactionLog;
-	add(): void;
+	addEntry(commitTimestamp: number, logEntry: Buffer | Uint8Array, options?: any): void;
 	commit(): void;
 	query(): void;
 };

@@ -1278,53 +1278,72 @@ void DBDescriptor::discoverTransactionLogStores() {
 
 	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 
-	// collect all `.txnlog` files and group by name
+	// collect all `.txnlog` files from subdirectories and group by name
 	std::map<std::string, std::vector<std::pair<uint32_t, std::filesystem::path>>> logStoreGroups;
 
 	for (const auto& entry : std::filesystem::directory_iterator(this->transactionLogsPath)) {
-		if (entry.is_regular_file()) {
-			auto path = entry.path();
-			auto filename = path.filename().string();
+		if (entry.is_directory()) {
+			auto dirPath = entry.path();
+			auto dirName = dirPath.filename().string();
 
-			// parse filename: {name}.{sequenceNumber}.txnlog
-			size_t lastDot = filename.find_last_of('.');
-			if (lastDot == std::string::npos || filename.substr(lastDot + 1) != "txnlog") {
-				// no extension or not a transaction log file
+			// Skip directories that start with "."
+			if (dirName.empty() || dirName[0] == '.') {
 				continue;
 			}
 
-			size_t secondLastDot = filename.find_last_of('.', lastDot - 1);
-			if (secondLastDot == std::string::npos) {
-				// no sequence number
-				continue;
-			}
+			// Look for .txnlog files in this directory
+			for (const auto& fileEntry : std::filesystem::directory_iterator(dirPath)) {
+				if (fileEntry.is_regular_file()) {
+					auto filePath = fileEntry.path();
+					auto filename = filePath.filename().string();
 
-			try {
-				std::string name = filename.substr(0, secondLastDot);
-				std::string sequenceNumberStr = filename.substr(secondLastDot + 1, lastDot - secondLastDot - 1);
-				uint32_t sequenceNumber = std::stoul(sequenceNumberStr);
-				logStoreGroups[name].emplace_back(sequenceNumber, path);
+					// Check if it's a .txnlog file
+					size_t lastDot = filename.find_last_of('.');
+					if (lastDot == std::string::npos || filename.substr(lastDot + 1) != "txnlog") {
+						continue;
+					}
 
-				DEBUG_LOG(
-					"%p DBDescriptor::discoverTransactionLogStores Found log file: name=%s, seq=%u\n",
-					this, name.c_str(), sequenceNumber
-				)
-			} catch (const std::exception& e) {
-				DEBUG_LOG(
-					"%p DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
-					this, filename.c_str()
-				)
+					// Check if the filename starts with the directory name
+					std::string expectedPrefix = dirName + ".";
+					if (filename.substr(0, expectedPrefix.length()) != expectedPrefix) {
+						continue;
+					}
+
+					// Parse sequence number: {dirName}.{sequenceNumber}.txnlog
+					size_t secondLastDot = filename.find_last_of('.', lastDot - 1);
+					if (secondLastDot == std::string::npos) {
+						// no sequence number
+						continue;
+					}
+
+					try {
+						std::string sequenceNumberStr = filename.substr(secondLastDot + 1, lastDot - secondLastDot - 1);
+						uint32_t sequenceNumber = std::stoul(sequenceNumberStr);
+						logStoreGroups[dirName].emplace_back(sequenceNumber, filePath);
+
+						DEBUG_LOG(
+							"%p DBDescriptor::discoverTransactionLogStores Found log file: name=%s, seq=%u, path=%s\n",
+							this, dirName.c_str(), sequenceNumber, filePath.string().c_str()
+						)
+					} catch (const std::exception& e) {
+						DEBUG_LOG(
+							"%p DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
+							this, filename.c_str()
+						)
+					}
+				}
 			}
 		}
 	}
 
-	// create `TransactionLogHandle` instances for each unique name
+	// create `TransactionLogStore` instances for each unique name
 	for (const auto& [logName, sequenceFiles] : logStoreGroups) {
 		// only create if we don't already have a handle for this name
 		if (this->transactionLogStores.find(logName) == this->transactionLogStores.end()) {
+			auto logDirectory = std::filesystem::path(this->transactionLogsPath) / logName;
 			auto txnLogStore = std::make_shared<TransactionLogStore>(
 				logName,
-				this->transactionLogsPath,
+				logDirectory,
 				this->transactionLogMaxSize
 			);
 
@@ -1336,7 +1355,7 @@ void DBDescriptor::discoverTransactionLogStores() {
 			this->transactionLogStores.emplace(logName, txnLogStore);
 
 			DEBUG_LOG(
-				"%p DBDescriptor::discoverTransactionLogStores Created TransactionLogHandle for '%s' with %zu sequence files\n",
+				"%p DBDescriptor::discoverTransactionLogStores Created TransactionLogStore for '%s' with %zu sequence files\n",
 				this, logName.c_str(), sequenceFiles.size()
 			)
 		}
@@ -1378,9 +1397,13 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 		return it->second;
 	}
 
-	auto path = std::filesystem::path(this->transactionLogsPath) / (name + ".txnlog");
-	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s\n", this, path.string().c_str())
-	auto txnLogStore = std::make_shared<TransactionLogStore>(name, path, this->transactionLogMaxSize);
+	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s\n", this, logDirectory.string().c_str())
+
+	// Ensure the directory exists
+	std::filesystem::create_directories(logDirectory);
+
+	auto txnLogStore = std::make_shared<TransactionLogStore>(name, logDirectory, this->transactionLogMaxSize);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
 }

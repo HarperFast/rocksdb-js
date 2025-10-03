@@ -22,6 +22,7 @@ struct TransactionLogStore final {
 	std::string name;
     std::filesystem::path logsDirectory;
     uint32_t maxSize;
+    uint32_t currentSequenceNumber;
     uint32_t nextSequenceNumber;
     std::map<uint32_t, std::unique_ptr<SequenceFile>> sequenceFiles;
 
@@ -30,6 +31,8 @@ struct TransactionLogStore final {
         const std::filesystem::path& logsDirectory,
         const uint32_t maxSize
     );
+
+    void addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength);
 
     void addSequenceFile(uint32_t sequenceNumber, const std::filesystem::path& path);
 

@@ -81,14 +81,52 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 /**
  * Adds an entry to the transaction log.
  */
-napi_value TransactionLog::Add(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("Add")
+napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(3)
+	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
 
-	// Now you can use (*txnLogHandle) to access the TransactionLogHandle
-	// TODO: Implement the actual add functionality
+	// timestamp
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
+	if (type != napi_number) {
+		::napi_throw_error(env, nullptr, "Invalid timestamp, expected a number");
+		return nullptr;
+	}
+	uint64_t timestamp;
+    NAPI_STATUS_THROWS(rocksdb_js::getValue(env, argv[0], timestamp));
 
-	return nullptr;
+	// log entry
+	bool isBuffer;
+	NAPI_STATUS_THROWS(::napi_is_buffer(env, argv[1], &isBuffer));
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, argv[1], &isArrayBuffer));
+	if (!isBuffer && !isArrayBuffer) {
+		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+		return nullptr;
+	}
+	char* logEntry = nullptr;
+	size_t logEntryLength = 0;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&logEntry), &logEntryLength));
+	if (logEntry == nullptr) {
+		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+		return nullptr;
+	}
+
+	// options
+	napi_valuetype optionsType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &optionsType));
+	if (optionsType != napi_undefined && optionsType != napi_null) {
+		if (optionsType != napi_object) {
+			::napi_throw_error(env, nullptr, "Invalid options, expected an object");
+			return nullptr;
+		}
+
+		// TODO: handle `options.transaction`
+	}
+
+	(*txnLogHandle)->addEntry(timestamp, logEntry, logEntryLength);
+
+	NAPI_RETURN_UNDEFINED()
 }
 
 /**
@@ -101,7 +139,7 @@ napi_value TransactionLog::Commit(napi_env env, napi_callback_info info) {
 	// Now you can use (*txnLogHandle) to access the TransactionLogHandle
 	// TODO: Implement the actual commit functionality
 
-	return nullptr;
+	NAPI_RETURN_UNDEFINED()
 }
 
 /**
@@ -114,7 +152,7 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 	// Now you can use (*txnLogHandle) to access the TransactionLogHandle
 	// TODO: Implement the actual query functionality
 
-	return nullptr;
+	NAPI_RETURN_UNDEFINED()
 }
 
 
@@ -123,7 +161,7 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
  */
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
-		{ "add", nullptr, Add, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
