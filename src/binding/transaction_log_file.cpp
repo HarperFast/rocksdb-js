@@ -172,7 +172,7 @@ void TransactionLogFile::open() {
 #endif
 }
 
-ssize_t TransactionLogFile::read(void* buffer, size_t size, off_t offset) {
+ssize_t TransactionLogFile::readBytes(void* buffer, size_t size, off_t offset) {
 #ifdef PLATFORM_WINDOWS
 	if (!FILE_IS_VALID(this->fileHandle)) {
 		this->open();
@@ -186,7 +186,7 @@ ssize_t TransactionLogFile::read(void* buffer, size_t size, off_t offset) {
 #endif
 }
 
-ssize_t TransactionLogFile::write(const void* buffer, size_t size, off_t offset) {
+ssize_t TransactionLogFile::writeBytes(const void* buffer, size_t size, off_t offset) {
 #ifdef PLATFORM_WINDOWS
 	if (!FILE_IS_VALID(this->fileHandle)) {
 		this->open();

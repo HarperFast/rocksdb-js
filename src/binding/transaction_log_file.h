@@ -54,8 +54,8 @@ struct TransactionLogFile final {
 
 	void close();
 	void open();
-	ssize_t read(void* buffer, size_t size, off_t offset = -1);
-	ssize_t write(const void* buffer, size_t size, off_t offset = -1);
+	ssize_t readBytes(void* buffer, size_t size, off_t offset = -1);
+	ssize_t writeBytes(const void* buffer, size_t size, off_t offset = -1);
 };
 
 } // namespace rocksdb_js
