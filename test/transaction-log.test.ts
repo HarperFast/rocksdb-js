@@ -8,7 +8,6 @@ describe('Transaction Log', () => {
 	it('should detect existing transaction logs', () => dbRunner({
 		skipOpen: true
 	}, async ({ db, dbPath }) => {
-		console.log(dbPath);
 		await mkdir(`${dbPath}/transaction_logs/foo`, { recursive: true });
 		await writeFile(`${dbPath}/transaction_logs/foo/foo.1.txnlog`, '');
 
@@ -56,7 +55,7 @@ describe('Transaction Log', () => {
 		expect(weakRef.deref()).toBeUndefined();
 	}), 10000);
 
-	it.only('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
+	it('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 		const log = db.useLog('foo');
 
 		// TODO: Add just over 16 MB worth of entries

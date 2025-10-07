@@ -2,23 +2,49 @@
 #define __TRANSACTION_LOG_FILE_H__
 
 #include <filesystem>
-#include <sys/mman.h>
-#include <fcntl.h>
+
+// Platform detection
+#ifdef _WIN32
+	#define PLATFORM_WINDOWS
+#else
+	#define PLATFORM_POSIX
+#endif
+
+// Platform-specific includes
+#ifdef PLATFORM_WINDOWS
+	#include <windows.h>
+	#include <io.h>
+#else
+	#include <sys/mman.h>
+	#include <fcntl.h>
+	#include <unistd.h>
+#endif
 #include <sys/stat.h>
-#include <unistd.h>
 
 namespace rocksdb_js {
 
 struct TransactionLogFile final {
 	std::filesystem::path path;
 	uint32_t sequenceNumber;
+
+#ifdef PLATFORM_WINDOWS
+	HANDLE fileHandle;
+	HANDLE mappingHandle;
+#else
 	int fd;
+#endif
+
 	char* mappedData;
 	size_t mappedSize;
 
 	TransactionLogFile(const std::filesystem::path& p, uint32_t seq)
 		: path(p), sequenceNumber(seq),
-		  fd(-1), mappedData(nullptr), mappedSize(0) {} // Remove: isOpen(false)
+#ifdef PLATFORM_WINDOWS
+		  fileHandle(INVALID_HANDLE_VALUE), mappingHandle(nullptr),
+#else
+		  fd(-1),
+#endif
+		  mappedData(nullptr), mappedSize(0) {}
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;
