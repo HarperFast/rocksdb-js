@@ -3,16 +3,14 @@
 
 #include <filesystem>
 
-// Platform detection
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
 #else
 	#define PLATFORM_POSIX
 #endif
 
-// Platform-specific includes
 #ifdef PLATFORM_WINDOWS
-	// Prevent Windows macros from interfering with our function names
+	// prevent Windows macros from interfering with our function names
 	#ifndef NOMINMAX
 		#define NOMINMAX
 	#endif
@@ -21,12 +19,18 @@
 	#endif
 	#include <windows.h>
 	#include <io.h>
-	// Undefine Windows macros that might conflict with our function names
+	// undefine Windows macros that might conflict with our function names
 	#ifdef read
 		#undef read
 	#endif
 	#ifdef write
 		#undef write
+	#endif
+	#ifdef near
+		#undef near
+	#endif
+	#ifdef far
+		#undef far
 	#endif
 #else
 	#include <sys/mman.h>
