@@ -124,7 +124,12 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		// TODO: handle `options.transaction`
 	}
 
-	(*txnLogHandle)->addEntry(timestamp, logEntry, logEntryLength);
+	try {
+		(*txnLogHandle)->addEntry(timestamp, logEntry, logEntryLength);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED()
 }

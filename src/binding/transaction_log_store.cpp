@@ -70,8 +70,8 @@ TransactionLogFile* TransactionLogStore::openLogFile(uint32_t sequenceNumber) {
 	auto logFile = this->getLogFile(sequenceNumber);
 	if (!logFile) {
 		std::ostringstream oss;
-		oss << this->logsDirectory << "/" << this->name << "." << sequenceNumber << ".txnlog";
-		logFile = new TransactionLogFile(oss.str(), sequenceNumber);
+		oss << this->logsDirectory.string() << "/" << this->name << "." << sequenceNumber << ".txnlog";
+		logFile = new TransactionLogFile(std::filesystem::path(oss.str()), sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
 	}
 
