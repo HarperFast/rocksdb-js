@@ -138,7 +138,7 @@ void TransactionLogFile::open() {
 	// open file for both reading and writing
 	this->fileHandle = CreateFileW(this->path.c_str(), GENERIC_READ | GENERIC_WRITE,
 		FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)
+		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
 	if (!FILE_IS_VALID(this->fileHandle)) {
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
@@ -175,12 +175,12 @@ void TransactionLogFile::open() {
 ssize_t TransactionLogFile::read(void* buffer, size_t size, off_t offset) {
 #ifdef PLATFORM_WINDOWS
 	if (!FILE_IS_VALID(this->fileHandle)) {
-		open();
+		this->open();
 	}
 	return FILE_READ(this->fileHandle, buffer, size, offset);
 #else
 	if (!FILE_IS_VALID(this->fd)) {
-		open();
+		this->open();
 	}
 	return FILE_READ(this->fd, buffer, size, offset);
 #endif
@@ -189,12 +189,12 @@ ssize_t TransactionLogFile::read(void* buffer, size_t size, off_t offset) {
 ssize_t TransactionLogFile::write(const void* buffer, size_t size, off_t offset) {
 #ifdef PLATFORM_WINDOWS
 	if (!FILE_IS_VALID(this->fileHandle)) {
-		open();
+		this->open();
 	}
 	return FILE_WRITE(this->fileHandle, buffer, size, offset);
 #else
 	if (!FILE_IS_VALID(this->fd)) {
-		open();
+		this->open();
 	}
 	return FILE_WRITE(this->fd, buffer, size, offset);
 #endif
