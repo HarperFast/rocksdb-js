@@ -16,12 +16,11 @@ void TransactionLogFile::close() {
 	if (this->fd >= 0) {
 		::close(this->fd);
 		this->fd = -1;
-		this->isOpen = false;
 	}
 }
 
 void TransactionLogFile::open() {
-	if (this->isOpen) {
+	if (this->fd >= 0) {
 		return;
 	}
 
@@ -30,8 +29,6 @@ void TransactionLogFile::open() {
 	if (this->fd < 0) {
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
 	}
-
-	this->isOpen = true;
 
 	struct stat st;
 	if (::fstat(this->fd, &st) < 0) {
@@ -56,7 +53,7 @@ void TransactionLogFile::open() {
 }
 
 ssize_t TransactionLogFile::read(void* buffer, size_t size, off_t offset) {
-	if (!this->isOpen) {
+	if (this->fd < 0) {
 		open();
 	}
 
@@ -70,7 +67,7 @@ ssize_t TransactionLogFile::read(void* buffer, size_t size, off_t offset) {
 }
 
 ssize_t TransactionLogFile::write(const void* buffer, size_t size, off_t offset) {
-	if (!this->isOpen) {
+	if (this->fd < 0) {
 		open();
 	}
 

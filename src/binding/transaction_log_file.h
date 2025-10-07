@@ -18,11 +18,10 @@ struct TransactionLogFile final {
 	int fd;
 	char* mappedData;
 	size_t mappedSize;
-	bool isOpen;
 
 	TransactionLogFile(const std::filesystem::path& p, uint32_t seq)
 		: path(p), sequenceNumber(seq),
-		  fd(-1), mappedData(nullptr), mappedSize(0), isOpen(false) {}
+		  fd(-1), mappedData(nullptr), mappedSize(0) {} // Remove: isOpen(false)
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;
