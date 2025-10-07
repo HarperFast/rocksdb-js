@@ -4,11 +4,6 @@
 #include <string>
 #include <filesystem>
 #include <map>
-#include <vector>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include "transaction_log_file.h"
 
 namespace rocksdb_js {
