@@ -11,27 +11,11 @@
 
 #ifdef PLATFORM_WINDOWS
 	// prevent Windows macros from interfering with our function names
-	#ifndef NOMINMAX
-		#define NOMINMAX
-	#endif
-	#ifndef WIN32_LEAN_AND_MEAN
-		#define WIN32_LEAN_AND_MEAN
-	#endif
+	#define WIN32_LEAN_AND_MEAN
+	#define NOMINMAX
 	#include <windows.h>
+	#undef NOMINMAX
 	#include <io.h>
-	// undefine Windows macros that might conflict with our function names
-	#ifdef read
-		#undef read
-	#endif
-	#ifdef write
-		#undef write
-	#endif
-	#ifdef near
-		#undef near
-	#endif
-	#ifdef far
-		#undef far
-	#endif
 #else
 	#include <sys/mman.h>
 	#include <fcntl.h>
@@ -72,8 +56,8 @@ struct TransactionLogFile final {
 
 	void close();
 	void open();
-	ssize_t read(void* buffer, size_t size, off_t offset = -1);
-	ssize_t write(const void* buffer, size_t size, off_t offset = -1);
+	ssize_t readData(void* buffer, size_t size, off_t offset = -1);
+	ssize_t writeData(const void* buffer, size_t size, off_t offset = -1);
 };
 
 } // namespace rocksdb_js
