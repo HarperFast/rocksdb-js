@@ -16,6 +16,12 @@
 	#include <windows.h>
 	#include <io.h>
 	// undefine any Windows macros that might conflict
+	#ifdef readFromFile
+		#undef readFromFile
+	#endif
+	#ifdef writeToFile
+		#undef writeToFile
+	#endif
 	#ifdef readBytes
 		#undef readBytes
 	#endif
@@ -74,8 +80,8 @@ struct TransactionLogFile final {
 
 	void close();
 	void open();
-	ssize_t readBytes(void* buffer, size_t size, off_t offset = -1);
-	ssize_t writeBytes(const void* buffer, size_t size, off_t offset = -1);
+	ssize_t readFromFile(void* buffer, size_t size, off_t offset = -1);
+	ssize_t writeToFile(const void* buffer, size_t size, off_t offset = -1);
 };
 
 } // namespace rocksdb_js
