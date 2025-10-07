@@ -19,6 +19,7 @@
 				'src/binding/transaction_handle.cpp',
 				'src/binding/transaction.cpp',
 				'src/binding/transaction_log.cpp',
+				'src/binding/transaction_log_file.cpp',
 				'src/binding/transaction_log_handle.cpp',
 				'src/binding/transaction_log_store.cpp',
 				'src/binding/util.cpp',

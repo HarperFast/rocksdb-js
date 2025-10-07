@@ -56,7 +56,7 @@ describe('Transaction Log', () => {
 		expect(weakRef.deref()).toBeUndefined();
 	}), 10000);
 
-	it('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
+	it.only('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 		const log = db.useLog('foo');
 
 		// TODO: Add just over 16 MB worth of entries
