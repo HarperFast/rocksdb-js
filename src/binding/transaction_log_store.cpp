@@ -1,5 +1,6 @@
-#include "transaction_log_store.h"
+#include <sstream>
 #include "macros.h"
+#include "transaction_log_store.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -18,7 +19,9 @@ TransactionLogStore::TransactionLogStore(
 
 void TransactionLogStore::addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength) {
 	DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store: %s (seq=%u)\n",
-			 this, this->name.c_str(), this->currentSequenceNumber)
+		this, this->name.c_str(), this->currentSequenceNumber)
+
+	auto logFile = this->openLogFile(this->currentSequenceNumber);
 
 	// TODO:
 	// 1. Determine if we a store for the current sequence number exists
@@ -44,9 +47,36 @@ void TransactionLogStore::registerLogFile(uint32_t sequenceNumber, const std::fi
 		this, path.string().c_str(), sequenceNumber)
 }
 
+/**
+ * Gets a log file for the given sequence number or returns nullptr if the log
+ * file does not exist.
+ *
+ * @param sequenceNumber The sequence number of the log file to get.
+ * @returns The log file or nullptr if the log file does not exist.
+ */
 TransactionLogFile* TransactionLogStore::getLogFile(uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	return (it != this->sequenceFiles.end()) ? it->second.get() : nullptr;
+}
+
+/**
+ * Opens a log file for the given sequence number. If the log file does not
+ * exist, it will be created.
+ *
+ * @param sequenceNumber The sequence number of the log file to open.
+ * @returns The log file.
+ */
+TransactionLogFile* TransactionLogStore::openLogFile(uint32_t sequenceNumber) {
+	auto logFile = this->getLogFile(sequenceNumber);
+	if (!logFile) {
+		std::ostringstream oss;
+		oss << this->logsDirectory << "/" << this->name << "." << sequenceNumber << ".txnlog";
+		logFile = new TransactionLogFile(oss.str(), sequenceNumber);
+		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
+	}
+
+	logFile->open();
+	return logFile;
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(const std::filesystem::path& path, const uint32_t maxSize) {
@@ -98,6 +128,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(const std::filesy
 
 	return store;
 }
+
 
 // SequenceFile* TransactionLogHandle::getCurrentSequenceFile() {
 //     if (this->sequenceFiles.empty()) {

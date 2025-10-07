@@ -25,6 +25,7 @@ struct TransactionLogStore final {
     void addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength);
     void registerLogFile(uint32_t sequenceNumber, const std::filesystem::path& path);
     TransactionLogFile* getLogFile(uint32_t sequenceNumber);
+    TransactionLogFile* openLogFile(uint32_t sequenceNumber);
 
     static std::shared_ptr<TransactionLogStore> load(const std::filesystem::path& path, const uint32_t maxSize);
 };
