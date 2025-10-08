@@ -30,21 +30,16 @@ void TransactionLogStore::addEntry(uint64_t timestamp, char* logEntry, size_t lo
 	// 4. Add the entry to the store
 }
 
-void TransactionLogStore::registerLogFile(uint32_t sequenceNumber, const std::filesystem::path& path) {
-	auto sequenceFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
-	this->sequenceFiles[sequenceNumber] = std::move(sequenceFile);
+/**
+ * Closes the transaction log store and all associated log files.
+ */
+void TransactionLogStore::close() {
+	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store: %s\n", this, this->name.c_str())
 
-	if (sequenceNumber > this->currentSequenceNumber) {
-		this->currentSequenceNumber = sequenceNumber;
+	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
+		DEBUG_LOG("%p TransactionLogStore::close Closing log file: %s\n", this, logFile->path.string().c_str())
+		logFile->close();
 	}
-
-	// update next sequence number to be one higher than the highest existing
-	if (sequenceNumber > this->nextSequenceNumber) {
-		this->nextSequenceNumber = sequenceNumber + 1;
-	}
-
-	DEBUG_LOG("%p TransactionLogStore::registerSequenceFile Added sequence file: %s (seq=%u)\n",
-		this, path.string().c_str(), sequenceNumber)
 }
 
 /**
@@ -78,6 +73,31 @@ TransactionLogFile* TransactionLogStore::openLogFile(uint32_t sequenceNumber) {
 	logFile->open();
 	return logFile;
 }
+
+/**
+ * Registers a log file for the given sequence number.
+ *
+ * @param sequenceNumber The sequence number of the log file to register.
+ * @param path The path to the log file to register.
+ */
+void TransactionLogStore::registerLogFile(uint32_t sequenceNumber, const std::filesystem::path& path) {
+	auto sequenceFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
+	this->sequenceFiles[sequenceNumber] = std::move(sequenceFile);
+
+	if (sequenceNumber > this->currentSequenceNumber) {
+		this->currentSequenceNumber = sequenceNumber;
+	}
+
+	// update next sequence number to be one higher than the highest existing
+	if (sequenceNumber > this->nextSequenceNumber) {
+		this->nextSequenceNumber = sequenceNumber + 1;
+	}
+
+	DEBUG_LOG("%p TransactionLogStore::registerSequenceFile Added sequence file: %s (seq=%u)\n",
+		this, path.string().c_str(), sequenceNumber)
+}
+
+
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(const std::filesystem::path& path, const uint32_t maxSize) {
 	auto dirName = path.filename().string();

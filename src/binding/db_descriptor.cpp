@@ -32,9 +32,10 @@ DBDescriptor::DBDescriptor(
  * (transactions, iterators, etc).
  */
 DBDescriptor::~DBDescriptor() {
-	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (%zu closables)\n", this, this->path.c_str(), this->closables.size())
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
+		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size())
 
-	std::unique_lock<std::mutex> lock(this->txnsMutex);
+	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
 	while (!this->closables.empty()) {
 		Closable* handle = *this->closables.begin();
@@ -42,13 +43,18 @@ DBDescriptor::~DBDescriptor() {
 		this->closables.erase(handle);
 
 		// release the mutex before calling close() to avoid a deadlock
-		lock.unlock();
+		txnsLock.unlock();
 		handle->close();
-		lock.lock();
+		txnsLock.lock();
 	}
 
-	DEBUG_LOG("%p DBDescriptor::~DBDescriptor transactions=%zu columns=%zu\n", this, this->transactions.size(), this->columns.size())
+	std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
+	for (auto& [name, transactionLogStore] : this->transactionLogStores) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing transaction log store %s\n", this, name.c_str())
+		transactionLogStore->close();
+	}
 
+	this->transactionLogStores.clear();
 	this->transactions.clear();
 	this->columns.clear();
 	this->db.reset();
