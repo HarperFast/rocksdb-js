@@ -12,6 +12,7 @@
 #ifdef PLATFORM_WINDOWS
 	// prevent Windows macros from interfering with our function names
 	#define WIN32_LEAN_AND_MEAN
+	#define NOMINMAX
 	#include <windows.h>
 	#include <io.h>
 #else
