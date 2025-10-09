@@ -7,10 +7,13 @@
 namespace rocksdb_js {
 
 void TransactionLogFile::close() {
-	if (this->mappedData) {
-		::munmap(this->mappedData, this->mappedSize);
-		this->mappedData = nullptr;
-	}
+	std::unique_lock<std::mutex> lock(this->closeMutex);
+
+	// Wait for all active operations to complete
+	closeCondition.wait(lock, [this] {
+		return this->activeOperations.load() == 0;
+	});
+
 	if (this->fd >= 0) {
 		::close(this->fd);
 		this->fd = -1;
@@ -28,50 +31,78 @@ void TransactionLogFile::open() {
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
 	}
 
-	// Get file size
+	// get file size
 	struct stat st;
 	if (::fstat(this->fd, &st) < 0) {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
-	this->mappedSize = st.st_size;
+	this->size.store(st.st_size);
 
-	if (this->mappedSize > 0) {
-		// map file into memory for reading
-		this->mappedData = static_cast<char*>(::mmap(nullptr, this->mappedSize, PROT_READ, MAP_SHARED, this->fd, 0));
-
-		if (this->mappedData == MAP_FAILED) {
-			throw std::runtime_error("Failed to mmap sequence file: " + this->path.string());
-		}
-
-		// advise OS about access pattern
-		::madvise(this->mappedData, this->mappedSize, MADV_SEQUENTIAL);
-	}
-
-	// Fix: Store the path string in a local variable to avoid temporary object issues
 	std::string pathStr = this->path.string();
-	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d)\n", pathStr.c_str(), this->fd);
+	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, size=%zu)\n", pathStr.c_str(), this->fd, this->size.load());
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
+	this->activeOperations.fetch_add(1);
+
 	if (this->fd < 0) {
 		this->open();
 	}
 
+	int64_t result;
 	if (offset >= 0) {
-		return static_cast<int64_t>(::pread(this->fd, buffer, size, offset));
+		result = static_cast<int64_t>(::pread(this->fd, buffer, size, offset));
+	} else {
+		result = static_cast<int64_t>(::read(this->fd, buffer, size));
 	}
-	return static_cast<int64_t>(::read(this->fd, buffer, size));
+
+	this->activeOperations.fetch_sub(1);
+
+	// notify if this was the last operation
+	if (this->activeOperations.load() == 0) {
+		closeCondition.notify_one();
+	}
+
+	return result;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t offset) {
+	this->activeOperations.fetch_add(1);
+
 	if (this->fd < 0) {
 		this->open();
 	}
 
+	int64_t bytesWritten;
 	if (offset >= 0) {
-		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
+		bytesWritten = static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
+	} else {
+		bytesWritten = static_cast<int64_t>(::write(this->fd, buffer, size));
 	}
-	return static_cast<int64_t>(::write(this->fd, buffer, size));
+
+	// update size if write was successful
+	if (bytesWritten > 0) {
+		if (offset >= 0) {
+			// for writes at specific offset, update size if we wrote beyond current end
+			size_t newEnd = static_cast<size_t>(offset) + static_cast<size_t>(bytesWritten);
+			size_t currentSize = this->size.load();
+			while (newEnd > currentSize && !this->size.compare_exchange_weak(currentSize, newEnd)) {
+				// retry if compare_exchange_weak failed due to concurrent modification
+			}
+		} else {
+			// for append writes, add to current size
+			this->size.fetch_add(static_cast<size_t>(bytesWritten));
+		}
+	}
+
+	this->activeOperations.fetch_sub(1);
+
+	// notify if this was the last operation
+	if (this->activeOperations.load() == 0) {
+		closeCondition.notify_one();
+	}
+
+	return bytesWritten;
 }
 
 } // namespace rocksdb_js

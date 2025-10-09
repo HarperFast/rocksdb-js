@@ -22,12 +22,14 @@ void TransactionLogStore::addEntry(uint64_t timestamp, char* logEntry, size_t lo
 		this, this->name.c_str(), this->currentSequenceNumber)
 
 	auto logFile = this->openLogFile(this->currentSequenceNumber);
+	if (logFile->size >= this->maxSize) {
+		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
+			this, this->nextSequenceNumber)
+		this->currentSequenceNumber = this->nextSequenceNumber++;
+		logFile = this->openLogFile(this->currentSequenceNumber);
+	}
 
-	// TODO:
-	// 1. Determine if we a store for the current sequence number exists
-	// 2. If not, create a new store
-	// 3. If the store is full, rotate to the next sequence number
-	// 4. Add the entry to the store
+	logFile->writeToFile(logEntry, logEntryLength);
 }
 
 /**
@@ -72,6 +74,19 @@ TransactionLogFile* TransactionLogStore::openLogFile(uint32_t sequenceNumber) {
 
 	logFile->open();
 	return logFile;
+}
+
+/**
+ * Queries the transaction log store.
+ */
+void TransactionLogStore::query() {
+	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store: %s\n", this, this->name.c_str())
+
+	// TODO: Implement
+	// 1. Determine files to iterate over
+	// 2. Open each file with a memory map
+	// 3. Iterate over the data in the memory map and copy to the supplied buffer
+	// 4. Close the memory mapped files
 }
 
 /**

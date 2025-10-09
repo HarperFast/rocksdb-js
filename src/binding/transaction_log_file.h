@@ -2,6 +2,9 @@
 #define __TRANSACTION_LOG_FILE_H__
 
 #include <filesystem>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -16,7 +19,6 @@
 	#include <windows.h>
 	#include <io.h>
 #else
-	#include <sys/mman.h>
 	#include <fcntl.h>
 	#include <unistd.h>
 #endif
@@ -30,22 +32,23 @@ struct TransactionLogFile final {
 
 #ifdef PLATFORM_WINDOWS
 	HANDLE fileHandle;
-	HANDLE mappingHandle;
 #else
 	int fd;
 #endif
 
-	char* mappedData;
-	size_t mappedSize;
+	std::atomic<size_t> size;
+	std::atomic<int> activeOperations;
+	std::mutex closeMutex;
+	std::condition_variable closeCondition;
 
 	TransactionLogFile(const std::filesystem::path& p, uint32_t seq)
 		: path(p), sequenceNumber(seq),
 #ifdef PLATFORM_WINDOWS
-		  fileHandle(INVALID_HANDLE_VALUE), mappingHandle(nullptr),
+		  fileHandle(INVALID_HANDLE_VALUE),
 #else
 		  fd(-1),
 #endif
-		  mappedData(nullptr), mappedSize(0) {}
+		  size(0), activeOperations(0) {}
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;

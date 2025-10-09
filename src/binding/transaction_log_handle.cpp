@@ -28,4 +28,8 @@ void TransactionLogHandle::close() {
 	this->dbHandle->unrefLog(this->store->name);
 }
 
+void TransactionLogHandle::query() {
+	this->store->query();
+}
+
 } // namespace rocksdb_js

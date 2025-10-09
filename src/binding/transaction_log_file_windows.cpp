@@ -7,14 +7,13 @@
 namespace rocksdb_js {
 
 void TransactionLogFile::close() {
-	if (this->mappedData) {
-		::UnmapViewOfFile(this->mappedData);
-		this->mappedData = nullptr;
-	}
-	if (this->mappingHandle) {
-		::CloseHandle(this->mappingHandle);
-		this->mappingHandle = nullptr;
-	}
+	std::unique_lock<std::mutex> lock(this->closeMutex);
+
+	// Wait for all active operations to complete
+	closeCondition.wait(lock, [this] {
+		return this->activeOperations.load() == 0;
+	});
+
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		::CloseHandle(this->fileHandle);
 		this->fileHandle = INVALID_HANDLE_VALUE;
@@ -40,61 +39,85 @@ void TransactionLogFile::open() {
 	if (!GetFileSizeEx(this->fileHandle, &fileSize)) {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
-	this->mappedSize = static_cast<size_t>(fileSize.QuadPart);
+	this->size.store(static_cast<size_t>(fileSize.QuadPart));
 
-	if (this->mappedSize > 0) {
-		// Create file mapping
-		this->mappingHandle = ::CreateFileMappingW(this->fileHandle, nullptr, PAGE_READONLY, 0, 0, nullptr);
-		if (!this->mappingHandle) {
-			throw std::runtime_error("Failed to create file mapping: " + this->path.string());
-		}
-
-		// Map view of file
-		this->mappedData = static_cast<char*>(::MapViewOfFile(this->mappingHandle, FILE_MAP_READ, 0, 0, 0));
-		if (!this->mappedData) {
-			::CloseHandle(this->mappingHandle);
-			this->mappingHandle = nullptr;
-			throw std::runtime_error("Failed to map view of file: " + this->path.string());
-		}
-	}
-
-	DEBUG_LOG("TransactionLogFile::open Opened %s (handle=%p)\n", this->path.string().c_str(), this->fileHandle);
+	DEBUG_LOG("TransactionLogFile::open Opened %s (handle=%p, size=%zu)\n",
+		this->path.string().c_str(), this->fileHandle, this->size.load());
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
+	// Increment active operations counter
+	this->activeOperations.fetch_add(1);
+
+	// Ensure file is open
 	if (this->fileHandle == INVALID_HANDLE_VALUE) {
 		this->open();
 	}
 
 	if (offset >= 0) {
 		if (::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+			this->activeOperations.fetch_sub(1);
 			return -1;
 		}
 	}
 
 	DWORD bytesRead;
-	if (::ReadFile(this->fileHandle, buffer, size, &bytesRead, nullptr)) {
-		return static_cast<int64_t>(bytesRead);
+	bool success = ::ReadFile(this->fileHandle, buffer, size, &bytesRead, nullptr);
+
+	// Decrement active operations counter
+	this->activeOperations.fetch_sub(1);
+
+	// Notify if this was the last operation
+	if (this->activeOperations.load() == 0) {
+		closeCondition.notify_all();
 	}
-	return -1;
+
+	return success ? static_cast<int64_t>(bytesRead) : -1;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t offset) {
+	// Increment active operations counter
+	this->activeOperations.fetch_add(1);
+
+	// Ensure file is open
 	if (this->fileHandle == INVALID_HANDLE_VALUE) {
 		this->open();
 	}
 
 	if (offset >= 0) {
 		if (::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+			this->activeOperations.fetch_sub(1);
 			return -1;
 		}
 	}
 
 	DWORD bytesWritten;
-	if (::WriteFile(this->fileHandle, buffer, size, &bytesWritten, nullptr)) {
-		return static_cast<int64_t>(bytesWritten);
+	bool success = ::WriteFile(this->fileHandle, buffer, size, &bytesWritten, nullptr);
+
+	if (success && bytesWritten > 0) {
+		// Update size if write was successful
+		if (offset >= 0) {
+			// For writes at specific offset, update size if we wrote beyond current end
+			size_t newEnd = static_cast<size_t>(offset) + static_cast<size_t>(bytesWritten);
+			size_t currentSize = this->size.load();
+			while (newEnd > currentSize && !this->size.compare_exchange_weak(currentSize, newEnd)) {
+				// Retry if compare_exchange_weak failed due to concurrent modification
+			}
+		} else {
+			// For append writes, add to current size
+			this->size.fetch_add(static_cast<size_t>(bytesWritten));
+		}
 	}
-	return -1;
+
+	// Decrement active operations counter
+	this->activeOperations.fetch_sub(1);
+
+	// Notify if this was the last operation
+	if (this->activeOperations.load() == 0) {
+		closeCondition.notify_all();
+	}
+
+	return success ? static_cast<int64_t>(bytesWritten) : -1;
 }
 
 } // namespace rocksdb_js

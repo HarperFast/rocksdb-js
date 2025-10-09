@@ -16,8 +16,8 @@ struct TransactionLogHandle final : Closable {
     std::shared_ptr<TransactionLogStore> store;
 
     void addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength);
-
     void close();
+    void query();
 };
 
 } // namespace rocksdb_js

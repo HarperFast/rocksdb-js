@@ -154,8 +154,16 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_LOG_HANDLE("Query")
 
-	// Now you can use (*txnLogHandle) to access the TransactionLogHandle
-	// TODO: Implement the actual query functionality
+	// TODO:
+	// - create a buffer for query() to populate
+	// - bind the buffer to napi_create_external_buffer()
+
+	try {
+		(*txnLogHandle)->query();
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED()
 }
