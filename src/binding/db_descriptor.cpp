@@ -1287,7 +1287,7 @@ void DBDescriptor::discoverTransactionLogStores() {
 
 	for (const auto& entry : std::filesystem::directory_iterator(this->transactionLogsPath)) {
 		if (entry.is_directory()) {
-			auto store = TransactionLogStore::load(entry.path(), this->transactionLogMaxSize);
+			auto store = TransactionLogStore::load(entry.path(), this->transactionLogMaxSize, this->transactionLogRetentionMs);
 			if (store) {
 				this->transactionLogStores.emplace(store->name, store);
 			}
@@ -1320,8 +1320,8 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
  * Purges transaction logs.
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
-	bool all = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "all", all))
+	bool destroy = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy))
 
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name))
@@ -1330,6 +1330,9 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 	NAPI_STATUS_THROWS(::napi_create_array(env, &removed))
 
 	size_t i = 0;
+	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+
 	for (auto& entry : this->transactionLogStores) {
 		auto store = entry.second;
 		if (name.empty() || store->name == name) {
@@ -1338,8 +1341,28 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 				auto path = filePath.string();
 				NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
 				NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-			}, all, std::chrono::milliseconds(this->transactionLogRetentionMs));
+			}, destroy);
+
+			if (destroy) {
+				storesToRemove.push_back(store);
+			}
 		}
+	}
+
+	for (auto& store : storesToRemove) {
+		store->close();
+
+		// wait for all active operations to complete before removing the directory
+		// this ensures that no other threads are still using the store
+		for (const auto& [sequenceNumber, logFile] : store->sequenceFiles) {
+			std::unique_lock<std::mutex> lock(logFile->closeMutex);
+			logFile->closeCondition.wait(lock, [&logFile] {
+				return logFile->activeOperations.load() == 0;
+			});
+		}
+
+		std::filesystem::remove_all(store->logsDirectory);
+		this->transactionLogStores.erase(store->name);
 	}
 
 	return removed;
@@ -1360,12 +1383,18 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	}
 
 	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
-	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s (maxSize=%u)\n", this, logDirectory.string().c_str(), this->transactionLogMaxSize)
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s (maxSize=%u)\n",
+		this, logDirectory.string().c_str(), this->transactionLogMaxSize)
 
 	// Ensure the directory exists
 	std::filesystem::create_directories(logDirectory);
 
-	auto txnLogStore = std::make_shared<TransactionLogStore>(name, logDirectory, this->transactionLogMaxSize);
+	auto txnLogStore = std::make_shared<TransactionLogStore>(
+		name,
+		logDirectory,
+		this->transactionLogMaxSize,
+		this->transactionLogRetentionMs
+	);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
 }

@@ -18,8 +18,8 @@ TransactionLogHandle::~TransactionLogHandle() {
 	this->close();
 }
 
-void TransactionLogHandle::addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength) {
-	this->store->addEntry(timestamp, logEntry, logEntryLength);
+void TransactionLogHandle::addEntry(uint64_t timestamp, char* data, size_t size) {
+	this->store->addEntry(timestamp, data, size);
 }
 
 void TransactionLogHandle::close() {

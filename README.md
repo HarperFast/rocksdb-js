@@ -604,6 +604,100 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 will cause errors to emit the `'uncaughtException'` event. Future Node.js
 releases will enable this flag by default.
 
+## Transaction Log
+
+A user controlled API for logging transactions. This API is designed to be
+generic so that you can log gets, puts, and deletes, but also arbitrary entries.
+
+### `db.listLogs(): string[]`
+
+Returns an array of log store names.
+
+```typescript
+const names = db.listLogs();
+```
+
+### `db.purgeLogs(options?): string[]`
+
+Deletes transaction log files older than the `transactionLogRetention` (defaults
+to 3 days).
+
+- `options: object`
+  - `destroy?: boolean` When `true`, deletes transaction log stores including
+    all log sequence files on disk.
+  - `name?: string` The name of a store to limit the purging to.
+
+Returns an array with the full path of each log file deleted.
+
+```typescript
+const removed = db.purgeLogs();
+console.log(`Removed ${removed.length} log files`);
+```
+
+### `db.useLog(name): TransactionLog`
+
+Gets or creates a `TransactionLog` instance. Internally, the `TransactionLog`
+interfaces with a shared transaction log store that is used by all threads.
+Multiple worker threads can use the same log at the same time.
+
+- `name: string | number` The name of the log. Numeric log names are converted
+  to a string.
+
+```typescript
+const log1 = db.useLog('foo');
+const log2 = db.useLog('foo'); // gets the exist instance (e.g. log1 === log2)
+const log3 = db.useLog(123);
+```
+
+### Class: `TransactionLog`
+
+The transaction callback is passed in a `Transaction` instance which contains
+all of the same data operations methods as the `RocksDatabase` instance plus:
+
+- `log.addEntry()`
+- `log.commit()`
+- `log.query()`
+
+#### `log.addEntry(timestamp, data, options?): void`
+
+Adds an entry to the log.
+
+- `timestamp: number` A numeric timestamp in the form as the number of
+  milliseconds elapsed since the epoch.
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `options?: LogEntryOptions` An optional object containing log settings.
+  - `transaction?: Transaction` A related transaction used to group entries
+    together.
+
+```typescript
+const log = db.useLog('foo');
+log.addEntry(Date.now(), Buffer.from('hello'));
+```
+
+#### `log.commit()`
+
+Writes the queued entries to disk.
+
+```typescript
+const log = db.useLog('foo');
+log.addEntry(Date.now(), Buffer.from('hello'), { transaction });
+log.addEntry(Date.now(), Buffer.from('world'), { transaction });
+log.commit();
+```
+
+#### `log.query()`
+
+Returns an iterator that retreives all entries for the given filter.
+
+```typescript
+const log = db.useLog('foo');
+const iter = log.query();
+for (const entry of iter) {
+  console.log(entry);
+}
+```
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`

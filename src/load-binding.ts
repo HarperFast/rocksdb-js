@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
 import type { Context } from './store.js';
+import type { Transaction } from './transaction.js';
 
 export type TransactionOptions = {
 	/**
@@ -28,9 +29,13 @@ export type NativeTransaction = {
 	removeSync(key: Key): void;
 };
 
-export type NativeTransactionLog = {
-	new(name: string): NativeTransactionLog;
-	addEntry(commitTimestamp: number, logEntry: Buffer | Uint8Array, options?: any): void;
+export type LogEntryOptions = {
+	transaction?: Transaction;
+};
+
+export type TransactionLog = {
+	new(name: string): TransactionLog;
+	addEntry(commitTimestamp: number, data: Buffer | Uint8Array, options?: LogEntryOptions): void;
 	commit(): void;
 	query(): void;
 };
@@ -61,7 +66,7 @@ type RejectCallback = (err: Error) => void;
 export type UserSharedBufferCallback = () => void;
 
 export type PurgeLogsOptions = {
-	all?: boolean;
+	destroy?: boolean;
 	name?: string;
 };
 
@@ -91,7 +96,7 @@ export type NativeDatabase = {
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
-	useLog(name: string): NativeTransactionLog;
+	useLog(name: string): TransactionLog;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
@@ -151,5 +156,5 @@ export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
-export const NativeTransactionLog: NativeTransactionLog = binding.TransactionLog;
+export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const version = binding.version;

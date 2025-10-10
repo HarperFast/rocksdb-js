@@ -104,11 +104,11 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
 		return nullptr;
 	}
-	char* logEntry = nullptr;
-	size_t logEntryLength = 0;
-	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&logEntry), &logEntryLength));
-	if (logEntry == nullptr) {
-		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+	char* data = nullptr;
+	size_t size = 0;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&data), &size));
+	if (data == nullptr) {
+		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
 		return nullptr;
 	}
 
@@ -125,7 +125,7 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	}
 
 	try {
-		(*txnLogHandle)->addEntry(timestamp, logEntry, logEntryLength);
+		(*txnLogHandle)->addEntry(timestamp, data, size);
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;

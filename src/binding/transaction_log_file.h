@@ -41,14 +41,7 @@ struct TransactionLogFile final {
 	std::mutex closeMutex;
 	std::condition_variable closeCondition;
 
-	TransactionLogFile(const std::filesystem::path& p, uint32_t seq)
-		: path(p), sequenceNumber(seq),
-#ifdef PLATFORM_WINDOWS
-		  fileHandle(INVALID_HANDLE_VALUE),
-#else
-		  fd(-1),
-#endif
-		  size(0), activeOperations(0) {}
+	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;

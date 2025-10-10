@@ -306,13 +306,13 @@ describe('Lock', () => {
 					expect(workerLocked).toBe(false);
 				}),
 				(async () => {
-					await delay(100),
+					await delay(100);
 					await db.withLock('foo', async () => {
 						spy();
 						expect(db.hasLock('foo')).toBe(true);
 						await delay(100);
 						expect(workerLocked).toBe(false);
-					})
+					});
 				})()
 			]);
 
