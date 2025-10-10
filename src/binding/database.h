@@ -48,6 +48,7 @@ struct Database final {
 	static napi_value ListLogs(napi_env env, napi_callback_info info);
 	static napi_value Notify(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
+	static napi_value PurgeLogs(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);

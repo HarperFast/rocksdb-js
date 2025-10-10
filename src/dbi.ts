@@ -1,5 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { NativeTransaction } from './load-binding.js';
+import type { NativeTransaction, PurgeLogsOptions } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -465,6 +465,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		};
 		this.store.db.addListener(event, wrapper);
 		return this;
+	}
+
+	/**
+	 * Purges transaction logs.
+	 */
+	purgeLogs(options?: PurgeLogsOptions) {
+		return this.store.db.purgeLogs(options);
 	}
 
 	/**

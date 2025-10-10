@@ -4,6 +4,7 @@
 #include <string>
 #include <filesystem>
 #include <map>
+#include <functional>
 #include "transaction_log_file.h"
 
 namespace rocksdb_js {
@@ -27,7 +28,8 @@ struct TransactionLogStore final {
     TransactionLogFile* getLogFile(uint32_t sequenceNumber);
     TransactionLogFile* openLogFile(uint32_t sequenceNumber);
     void query();
-    void registerLogFile(uint32_t sequenceNumber, const std::filesystem::path& path);
+    void purge(std::function<void(const std::filesystem::path&)> visitor, const bool all = false, const std::chrono::milliseconds& retentionMs = std::chrono::milliseconds(0));
+    void registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
 
     static std::shared_ptr<TransactionLogStore> load(const std::filesystem::path& path, const uint32_t maxSize);
 };

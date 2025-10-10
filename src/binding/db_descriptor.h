@@ -106,6 +106,7 @@ public:
 	void removeListenersByOwner(DBHandle* owner);
 
 	napi_value listTransactionLogStores(napi_env env);
+	napi_value purgeTransactionLogs(napi_env env, napi_value options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 
 private:
@@ -198,6 +199,11 @@ public:
 	 * sequence number.
 	 */
 	uint32_t transactionLogMaxSize;
+
+	/**
+	 * The retention period of transaction logs in milliseconds.
+	 */
+	std::chrono::milliseconds transactionLogRetentionMs;
 
 	/**
 	 * The path to the transaction logs.

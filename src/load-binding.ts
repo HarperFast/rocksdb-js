@@ -60,6 +60,11 @@ type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
 
+export type PurgeLogsOptions = {
+	all?: boolean;
+	name?: string;
+};
+
 export type NativeDatabase = {
 	new(): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
@@ -80,6 +85,7 @@ export type NativeDatabase = {
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
+	purgeLogs(options?: PurgeLogsOptions): string[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;

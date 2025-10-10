@@ -24,6 +24,7 @@ DBDescriptor::DBDescriptor(
 	db(db),
 	columns(std::move(columns)),
 	transactionLogMaxSize(options.transactionLogMaxSize),
+	transactionLogRetentionMs(options.transactionLogRetentionMs),
 	transactionLogsPath(options.transactionLogsPath)
 {}
 
@@ -1316,6 +1317,35 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
 }
 
 /**
+ * Purges transaction logs.
+ */
+napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
+	bool all = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "all", all))
+
+	std::string name;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name))
+
+	napi_value removed;
+	NAPI_STATUS_THROWS(::napi_create_array(env, &removed))
+
+	size_t i = 0;
+	for (auto& entry : this->transactionLogStores) {
+		auto store = entry.second;
+		if (name.empty() || store->name == name) {
+			store->purge([&](const std::filesystem::path& filePath) -> void {
+				napi_value logFileValue;
+				auto path = filePath.string();
+				NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
+				NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
+			}, all, std::chrono::milliseconds(this->transactionLogRetentionMs));
+		}
+	}
+
+	return removed;
+}
+
+/**
  * Finds or creates a transaction log store by name.
  *
  * @param name The name of the transaction log store.
@@ -1330,7 +1360,7 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	}
 
 	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
-	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s\n", this, logDirectory.string().c_str())
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s (maxSize=%u)\n", this, logDirectory.string().c_str(), this->transactionLogMaxSize)
 
 	// Ensure the directory exists
 	std::filesystem::create_directories(logDirectory);

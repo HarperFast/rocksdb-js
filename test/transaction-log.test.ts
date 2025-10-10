@@ -3,6 +3,7 @@ import { dbRunner } from './lib/util.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { NativeTransactionLog } from '../src/load-binding.js';
+import { existsSync } from 'node:fs';
 
 describe('Transaction Log', () => {
 	it('should detect existing transaction logs', () => dbRunner({
@@ -58,7 +59,58 @@ describe('Transaction Log', () => {
 	it('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 		const log = db.useLog('foo');
 
-		// TODO: Add just over 16 MB worth of entries
-		log.addEntry(Date.now(), Buffer.from('foo'));
+		const entries = (16 * 1024 * 1024) / 4096;
+		const value = Buffer.alloc(4096);
+		for (let i = 0; i < entries; i++) {
+			log.addEntry(Date.now(), value);
+		}
+
+		expect(existsSync(`${dbPath}/transaction_logs/foo/foo.1.txnlog`)).toBe(true);
+		expect(existsSync(`${dbPath}/transaction_logs/foo/foo.2.txnlog`)).toBe(false);
+		log.addEntry(Date.now(), value);
+		expect(existsSync(`${dbPath}/transaction_logs/foo/foo.2.txnlog`)).toBe(true);
+	}));
+
+	it('should queue all entries for a transaction', () => dbRunner(async ({ db, dbPath }) => {
+		// TODO
+	}));
+
+	it('should purge all transaction log files', () => dbRunner({
+		skipOpen: true
+	}, async ({ db, dbPath }) => {
+		const logDirectory = `${dbPath}/transaction_logs/foo`;
+		const logFile = `${logDirectory}/foo.1.txnlog`;
+		await mkdir(`${dbPath}/transaction_logs/foo`, { recursive: true });
+		await writeFile(logFile, '');
+
+		db.open();
+		expect(db.listLogs()).toEqual(['foo']);
+		expect(existsSync(logFile)).toBe(true);
+		expect(db.purgeLogs({ all: true })).toEqual([logFile]);
+		expect(existsSync(logDirectory)).toBe(false);
+	}));
+
+	it('should purge a specific transaction log file', () => dbRunner({
+		skipOpen: true
+	}, async ({ db, dbPath }) => {
+		const fooLogDirectory = `${dbPath}/transaction_logs/foo`;
+		const fooLogFile = `${fooLogDirectory}/foo.1.txnlog`;
+		await mkdir(`${dbPath}/transaction_logs/foo`, { recursive: true });
+		await writeFile(fooLogFile, '');
+
+		const barLogDirectory = `${dbPath}/transaction_logs/bar`;
+		const barLogFile = `${barLogDirectory}/bar.1.txnlog`;
+		await mkdir(`${dbPath}/transaction_logs/bar`, { recursive: true });
+		await writeFile(barLogFile, '');
+
+		db.open();
+		expect(db.listLogs().sort()).toEqual(['bar', 'foo']);
+		expect(existsSync(fooLogFile)).toBe(true);
+		expect(existsSync(barLogFile)).toBe(true);
+		expect(db.purgeLogs({ all: true, name: 'foo' })).toEqual([fooLogFile]);
+		expect(existsSync(fooLogFile)).toBe(false);
+		expect(existsSync(fooLogDirectory)).toBe(false);
+		expect(existsSync(barLogFile)).toBe(true);
+		expect(existsSync(barLogDirectory)).toBe(true);
 	}));
 });

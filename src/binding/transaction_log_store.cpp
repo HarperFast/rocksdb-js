@@ -1,4 +1,6 @@
+#include <chrono>
 #include <sstream>
+#include <vector>
 #include "macros.h"
 #include "transaction_log_store.h"
 #include "util.h"
@@ -15,12 +17,15 @@ TransactionLogStore::TransactionLogStore(
 	maxSize(maxSize),
 	currentSequenceNumber(1),
 	nextSequenceNumber(2)
-{}
+{
+	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore New transaction log store: %s (maxSize=%u)\n", this, name.c_str(), maxSize)
+}
 
 void TransactionLogStore::addEntry(uint64_t timestamp, char* logEntry, size_t logEntryLength) {
-	DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store: %s (seq=%u)\n",
-		this, this->name.c_str(), this->currentSequenceNumber)
+	// TODO: if this `addEntry()` call is a transaction, then buffer the entry
+	// until `commit()` is called
 
+	// get the current log file and rotate if needed
 	auto logFile = this->openLogFile(this->currentSequenceNumber);
 	if (logFile->size >= this->maxSize) {
 		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
@@ -28,6 +33,9 @@ void TransactionLogStore::addEntry(uint64_t timestamp, char* logEntry, size_t lo
 		this->currentSequenceNumber = this->nextSequenceNumber++;
 		logFile = this->openLogFile(this->currentSequenceNumber);
 	}
+
+	DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store: %s (seq=%u, size=%zu, maxSize=%u)\n",
+		this, this->name.c_str(), this->currentSequenceNumber, logFile->size.load(), this->maxSize)
 
 	logFile->writeToFile(logEntry, logEntryLength);
 }
@@ -90,12 +98,66 @@ void TransactionLogStore::query() {
 }
 
 /**
+ * Purges transaction logs.
+ */
+void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const std::chrono::milliseconds& retentionMs) {
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store: %s (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
+
+	// collect sequence numbers to remove to avoid modifying map during iteration
+	std::vector<uint32_t> sequenceNumbersToRemove;
+
+	for (const auto& entry : this->sequenceFiles) {
+		auto& logFile = entry.second;
+
+		bool shouldPurge = all;
+		if (!shouldPurge && retentionMs.count() > 0) {
+			auto mtime = std::filesystem::last_write_time(logFile->path);
+			auto now = std::chrono::system_clock::now();
+
+			auto mtime_sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+				mtime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+
+			auto fileAge = now - mtime_sys;
+			if (fileAge < retentionMs) {
+				continue; // file is too new, don't purge
+			}
+		}
+
+		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str())
+
+		// delete the log file
+		std::filesystem::remove(logFile->path);
+
+		// call the visitor
+		visitor(logFile->path);
+
+		// collect sequence number for removal
+		sequenceNumbersToRemove.push_back(entry.first);
+	}
+
+	// remove sequence files from the map
+	for (uint32_t sequenceNumber : sequenceNumbersToRemove) {
+		this->sequenceFiles.erase(sequenceNumber);
+	}
+
+	// if all log files have been removed, clean up the empty directory
+	if (this->sequenceFiles.empty() && std::filesystem::exists(this->logsDirectory)) {
+		try {
+			std::filesystem::remove(this->logsDirectory);
+			DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->logsDirectory.string().c_str())
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->logsDirectory.string().c_str(), e.what())
+		}
+	}
+}
+
+/**
  * Registers a log file for the given sequence number.
  *
  * @param sequenceNumber The sequence number of the log file to register.
  * @param path The path to the log file to register.
  */
-void TransactionLogStore::registerLogFile(uint32_t sequenceNumber, const std::filesystem::path& path) {
+void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
 	auto sequenceFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = std::move(sequenceFile);
 
@@ -112,8 +174,14 @@ void TransactionLogStore::registerLogFile(uint32_t sequenceNumber, const std::fi
 		this, path.string().c_str(), sequenceNumber)
 }
 
-
-
+/**
+ * Load all transaction logs from a directory into a new transaction log store
+ * instance.
+ *
+ * @param path The path to the transaction log store directory.
+ * @param maxSize The maximum size of a transaction log before it is rotated to the next sequence number.
+ * @returns The transaction log store.
+ */
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(const std::filesystem::path& path, const uint32_t maxSize) {
 	auto dirName = path.filename().string();
 
@@ -151,7 +219,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(const std::filesy
 			try {
 				std::string sequenceNumberStr = filename.substr(secondLastDot + 1, lastDot - secondLastDot - 1);
 				uint32_t sequenceNumber = std::stoul(sequenceNumberStr);
-				store->registerLogFile(sequenceNumber, filePath);
+				store->registerLogFile(filePath, sequenceNumber);
 			} catch (const std::exception& e) {
 				DEBUG_LOG(
 					"DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
@@ -163,7 +231,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(const std::filesy
 
 	return store;
 }
-
 
 // SequenceFile* TransactionLogHandle::getCurrentSequenceFile() {
 //     if (this->sequenceFiles.empty()) {

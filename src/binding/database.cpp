@@ -615,6 +615,16 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Purges transaction logs.
+ */
+napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	return (*dbHandle)->descriptor->purgeTransactionLogs(env, argv[0]);
+}
+
+/**
  * Puts a key-value pair into the RocksDB database.
  */
 napi_value Database::PutSync(napi_env env, napi_callback_info info) {
@@ -854,6 +864,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
+		{ "purgeLogs", nullptr, PurgeLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
