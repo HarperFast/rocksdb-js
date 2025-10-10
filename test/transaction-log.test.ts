@@ -2,15 +2,16 @@ import { assert, describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { NativeTransactionLog } from '../src/load-binding.js';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { NativeTransactionLog } from '../src/load-binding.js';
 
 describe('Transaction Log', () => {
 	it('should detect existing transaction logs', () => dbRunner({
 		skipOpen: true
 	}, async ({ db, dbPath }) => {
-		await mkdir(`${dbPath}/transaction_logs/foo`, { recursive: true });
-		await writeFile(`${dbPath}/transaction_logs/foo/foo.1.txnlog`, '');
+		await mkdir(join(dbPath, 'transaction_logs', 'foo'), { recursive: true });
+		await writeFile(join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog'), '');
 
 		db.open();
 
@@ -65,10 +66,10 @@ describe('Transaction Log', () => {
 			log.addEntry(Date.now(), value);
 		}
 
-		expect(existsSync(`${dbPath}/transaction_logs/foo/foo.1.txnlog`)).toBe(true);
-		expect(existsSync(`${dbPath}/transaction_logs/foo/foo.2.txnlog`)).toBe(false);
+		expect(existsSync(join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog'))).toBe(true);
+		expect(existsSync(join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog'))).toBe(false);
 		log.addEntry(Date.now(), value);
-		expect(existsSync(`${dbPath}/transaction_logs/foo/foo.2.txnlog`)).toBe(true);
+		expect(existsSync(join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog'))).toBe(true);
 	}));
 
 	it('should queue all entries for a transaction', () => dbRunner(async ({ db, dbPath }) => {
@@ -78,9 +79,9 @@ describe('Transaction Log', () => {
 	it('should purge all transaction log files', () => dbRunner({
 		skipOpen: true
 	}, async ({ db, dbPath }) => {
-		const logDirectory = `${dbPath}/transaction_logs/foo`;
-		const logFile = `${logDirectory}/foo.1.txnlog`;
-		await mkdir(`${dbPath}/transaction_logs/foo`, { recursive: true });
+		const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+		const logFile = join(logDirectory, 'foo.1.txnlog');
+		await mkdir(logDirectory, { recursive: true });
 		await writeFile(logFile, '');
 
 		db.open();
@@ -93,14 +94,14 @@ describe('Transaction Log', () => {
 	it('should purge a specific transaction log file', () => dbRunner({
 		skipOpen: true
 	}, async ({ db, dbPath }) => {
-		const fooLogDirectory = `${dbPath}/transaction_logs/foo`;
-		const fooLogFile = `${fooLogDirectory}/foo.1.txnlog`;
-		await mkdir(`${dbPath}/transaction_logs/foo`, { recursive: true });
+		const fooLogDirectory = join(dbPath, 'transaction_logs', 'foo');
+		const fooLogFile = join(fooLogDirectory, 'foo.1.txnlog');
+		await mkdir(fooLogDirectory, { recursive: true });
 		await writeFile(fooLogFile, '');
 
-		const barLogDirectory = `${dbPath}/transaction_logs/bar`;
-		const barLogFile = `${barLogDirectory}/bar.1.txnlog`;
-		await mkdir(`${dbPath}/transaction_logs/bar`, { recursive: true });
+		const barLogDirectory = join(dbPath, 'transaction_logs', 'bar');
+		const barLogFile = join(barLogDirectory, 'bar.1.txnlog');
+		await mkdir(barLogDirectory, { recursive: true });
 		await writeFile(barLogFile, '');
 
 		db.open();
