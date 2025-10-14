@@ -504,7 +504,6 @@ describe('Ranges', () => {
 
 			const iter = db.getRange({ start: 'a', end: 'c' });
 			const iter2 = db.getRange({ start: 'c', end: 'e' });
-			// @ts-expect-error ExtendedIterable v1 concat() type definition is missing
 			const concat = iter.concat(iter2);
 			expect(Array.from(concat)).toEqual([
 				{ key: 'a', value: 'value a' },

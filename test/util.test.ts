@@ -50,15 +50,15 @@ describe('Util', () => {
 		});
 	});
 
-	describe('withResolvers()', () => {
+	describe('withResolvers<void>()', () => {
 		it('should resolve with value', async () => {
-			const { resolve, promise } = withResolvers();
+			const { resolve, promise } = withResolvers<string>();
 			resolve('foo');
 			await expect(promise).resolves.toBe('foo');
 		});
 
 		it('should reject with error', async () => {
-			const { reject, promise } = withResolvers();
+			const { reject, promise } = withResolvers<void>();
 			reject(new Error('foo'));
 			await expect(promise).rejects.toThrow('foo');
 		});

@@ -14,7 +14,7 @@ const platformMap = {
 
 const streamPipeline = promisify(pipeline);
 
-export async function downloadRocksDB(prebuild: Prebuild, dest: string) {
+export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise<void> {
 	const filename = `rocksdb-${prebuild.version}-${process.arch}-${platformMap[process.platform] || process.platform}`;
 	const [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 	if (!asset) {

@@ -26,7 +26,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		this.#includeValues = options?.values ?? true;
 	}
 
-	[Symbol.iterator]() {
+	[Symbol.iterator](): Iterator<DBIteratorValue<T>> {
 		return this;
 	}
 

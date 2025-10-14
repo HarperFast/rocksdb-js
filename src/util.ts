@@ -40,7 +40,11 @@ export function when<T>(
  *
  * @returns A tuple of `resolve`, `reject`, and `promise`.
  */
-export function withResolvers<T>() {
+export function withResolvers<T>(): {
+	resolve: (value: T) => void;
+	reject: (reason: any) => void;
+	promise: Promise<T>;
+} {
 	let resolve, reject;
 	const promise = new Promise<T>((res, rej) => {
 		resolve = res;

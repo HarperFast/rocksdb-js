@@ -23,7 +23,7 @@ export class Transaction extends DBI {
 	/**
 	 * Abort the transaction.
 	 */
-	abort() {
+	abort(): void {
 		this.#txn.abort();
 	}
 
@@ -61,7 +61,7 @@ export class Transaction extends DBI {
 	/**
 	 * Get the transaction id.
 	 */
-	get id() {
+	get id(): number {
 		return this.#txn.id;
 	}
 }
