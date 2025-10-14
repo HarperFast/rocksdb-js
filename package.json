@@ -1,7 +1,8 @@
 {
   "name": "@harperdb/rocksdb-js",
   "version": "0.0.0",
-  "description": "",
+  "description": "RocksDB binding for Node.js",
+  "license": "Apache-2.0",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "exports": {
