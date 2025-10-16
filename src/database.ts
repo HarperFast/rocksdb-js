@@ -5,7 +5,7 @@ import { config, type TransactionOptions, type RocksDatabaseConfig } from './loa
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
 import * as orderedBinary from 'ordered-binary';
-import type { EncoderFunction, Key } from './encoding.js';
+import type { Encoder, EncoderFunction, Key } from './encoding.js';
 
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
@@ -100,7 +100,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * db.close();
 	 * ```
 	 */
-	close() {
+	close(): void {
 		this.store.close();
 	}
 
@@ -124,11 +124,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
-	dropSync() {
+	dropSync(): void {
 		//
 	}
 
-	get encoder() {
+	get encoder(): Encoder | null {
 		return this.store.encoder;
 	}
 
@@ -140,7 +140,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @returns The oldest snapshot timestamp.
 	 */
-	getOldestSnapshotTimestamp() {
+	getOldestSnapshotTimestamp(): number {
 		return this.store.db.getOldestSnapshotTimestamp();
 	}
 
@@ -201,7 +201,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @returns `true` if the database is open, `false` otherwise.
 	 */
-	isOpen() {
+	isOpen(): boolean {
 		return this.store.isOpen();
 	}
 
@@ -343,7 +343,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this;
 	}
 
-	get path() {
+	get path(): string {
 		return this.store.path;
 	}
 
@@ -361,7 +361,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions) {
+	async transaction<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): Promise<T | PromiseLike<T>> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -380,7 +380,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			} catch (err) {
 				// if the transaction was already aborted/committed, we can just return
 				if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-					return;
+					return undefined as T | PromiseLike<T>;
 				}
 			}
 			// rethrow the user error
@@ -392,7 +392,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			return result;
 		} catch (err) {
 			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-				return;
+				return undefined as T;
 			}
 			throw err;
 		}
@@ -415,7 +415,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> {
+	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> | undefined {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -522,7 +522,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> | undefined {
 		return this.store.withLock(key, callback);
 	}
 }

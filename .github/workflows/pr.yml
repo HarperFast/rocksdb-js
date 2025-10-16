@@ -45,7 +45,7 @@ jobs:
       - name: Use Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.node == 18 && 20 || matrix.node }}
 
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
@@ -56,6 +56,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
+
+      - name: Install Node 18
+        if: matrix.node == 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
 
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage

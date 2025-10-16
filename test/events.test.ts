@@ -14,7 +14,7 @@ describe('Events', () => {
 		expect(db.notify('foo')).toBe(false); // noop
 
 		let resolvers = [
-			withResolvers(),
+			withResolvers<void>(),
 		];
 
 		db.addListener('foo', value => {
@@ -28,8 +28,8 @@ describe('Events', () => {
 		expect(spy).toHaveBeenCalledTimes(1);
 
 		resolvers = [
-			withResolvers(),
-			withResolvers(),
+			withResolvers<void>(),
+			withResolvers<void>(),
 		];
 
 		// add second listener
@@ -50,7 +50,7 @@ describe('Events', () => {
 		expect(db.listeners('foo')).toBe(1);
 
 		resolvers = [
-			withResolvers(),
+			withResolvers<void>(),
 		];
 		expect(db.notify('foo', 'bar')).toBe(true);
 		await expect(Promise.all(resolvers.map(r => r.promise))).resolves.toEqual(['bar']);
@@ -59,38 +59,38 @@ describe('Events', () => {
 	}));
 
 	it('should notify with arguments', () => dbRunner(async ({ db }) => {
-		let resolver = withResolvers();
+		let resolver = withResolvers<any[]>();
 		db.addListener('foo', (...args) => {
 			resolver.resolve(args);
 		});
 		db.notify('foo', 'bar');
 		await expect(resolver.promise).resolves.toEqual(['bar']);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', 1234);
 		await expect(resolver.promise).resolves.toEqual([1234]);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', true);
 		await expect(resolver.promise).resolves.toEqual([true]);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', false);
 		await expect(resolver.promise).resolves.toEqual([false]);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', null);
 		await expect(resolver.promise).resolves.toEqual([null]);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', [1, 2, 3]);
 		await expect(resolver.promise).resolves.toEqual([[1, 2, 3]]);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', { foo: 'bar' });
 		await expect(resolver.promise).resolves.toEqual([{ foo: 'bar' }]);
 
-		resolver = withResolvers();
+		resolver = withResolvers<any[]>();
 		db.notify('foo', 'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' });
 		await expect(resolver.promise).resolves.toEqual([
 			'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' }
@@ -98,7 +98,7 @@ describe('Events', () => {
 	}));
 
 	it('should notify once', () => dbRunner(async ({ db }) => {
-		const { promise, resolve } = withResolvers();
+		const { promise, resolve } = withResolvers<void>();
 		let callCount = 0;
 
 		db.once('foo', () => {
@@ -126,7 +126,7 @@ describe('Events', () => {
 		const spy1 = vi.fn();
 		const spy2 = vi.fn();
 
-		const { promise, resolve } = withResolvers();
+		const { promise, resolve } = withResolvers<void>();
 
 		const callback1 = () => {
 			spy1();
@@ -168,9 +168,9 @@ describe('Events', () => {
 		const spy3 = vi.fn();
 
 		let resolvers = [
-			withResolvers(),
-			withResolvers(),
-			withResolvers(),
+			withResolvers<void>(),
+			withResolvers<void>(),
+			withResolvers<void>(),
 		];
 
 		const callback = () => {
@@ -203,9 +203,9 @@ describe('Events', () => {
 		expect(spy3).toHaveBeenCalledTimes(0);
 
 		resolvers = [
-			withResolvers(),
-			withResolvers(),
-			withResolvers(),
+			withResolvers<void>(),
+			withResolvers<void>(),
+			withResolvers<void>(),
 		];
 		db.notify('foo');
 		await resolvers[0].promise;
@@ -219,9 +219,9 @@ describe('Events', () => {
 		expect(spy3).toHaveBeenCalledTimes(0);
 
 		resolvers = [
-			withResolvers(),
-			withResolvers(),
-			withResolvers(),
+			withResolvers<void>(),
+			withResolvers<void>(),
+			withResolvers<void>(),
 		];
 		db2.notify('foo');
 		await resolvers[0].promise;
@@ -238,9 +238,9 @@ describe('Events', () => {
 		db2.removeListener('foo', callback2);
 
 		resolvers = [
-			withResolvers(),
-			withResolvers(),
-			withResolvers(),
+			withResolvers<void>(),
+			withResolvers<void>(),
+			withResolvers<void>(),
 		];
 		db2.notify('foo');
 		db2.notify('foo');
@@ -286,7 +286,7 @@ describe('Events', () => {
 			}
 		);
 
-		let resolver = withResolvers();
+		let resolver = withResolvers<void>();
 
 		await new Promise<void>((resolve, reject) => {
 			worker.on('error', reject);
@@ -304,16 +304,16 @@ describe('Events', () => {
 			worker.on('exit', () => resolver.resolve());
 		});
 
-		resolver = withResolvers();
+		resolver = withResolvers<void>();
 		db.addListener('worker-event', value => resolver.resolve(value));
 		worker.postMessage({ notify: true });
 		await expect(resolver.promise).resolves.toBe('foo');
 
-		resolver = withResolvers();
+		resolver = withResolvers<void>();
 		db.notify('parent-event', 'bar');
 		await expect(resolver.promise).resolves.toBe('bar');
 
-		resolver = withResolvers();
+		resolver = withResolvers<void>();
 		worker.postMessage({ close: true });
 
 		if (process.versions.deno) {
