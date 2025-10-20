@@ -7,7 +7,10 @@ export { Transaction } from './transaction.js';
 export type { Key } from './encoding.js';
 export { TransactionLog } from './load-binding.js';
 
-export const versions = {
-	'rocksdb': version,
+export const versions: {
+	rocksdb: string;
+	'rocksdb-js': string;
+} = {
+	rocksdb: version,
 	'rocksdb-js': 'ROCKSDB_JS_VERSION',
 };

@@ -1,5 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import type { NativeTransaction, PurgeLogsOptions } from './load-binding.js';
+import type { NativeTransaction, PurgeLogsOptions, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -172,7 +172,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param event - The event name to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	addListener(event: string, callback: (...args: any[]) => void) {
+	addListener(event: string, callback: (...args: any[]) => void): this {
 		this.store.db.addListener(event, callback);
 		return this;
 	}
@@ -328,7 +328,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * Retrieves all keys within a range.
 	 */
-	getKeys(options?: IteratorOptions & T) {
+	getKeys(options?: IteratorOptions & T): any | undefined {
 		return this.store.getRange(this.#context, {
 			...options,
 			values: false
@@ -368,7 +368,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * }
 	 * ```
 	 */
-	getRange(options?: IteratorOptions & T) {
+	getRange(options?: IteratorOptions & T): any | undefined {
 		return this.store.getRange(this.#context, options);
 	}
 
@@ -376,7 +376,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Synchronously retrieves the value for the given key, then returns the
 	 * decoded value.
 	 */
-	getSync(key: Key, options?: GetOptions & T) {
+	getSync(key: Key, options?: GetOptions & T): any | undefined {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
 			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
@@ -415,7 +415,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 *
 	 * @returns an array of transaction log names.
 	 */
-	listLogs() {
+	listLogs(): string[] {
 		return this.store.listLogs();
 	}
 
@@ -436,7 +436,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param event - The event name to remove the listener for.
 	 * @param callback - The callback to remove.
 	 */
-	off(event: string, callback: (...args: any[]) => void) {
+	off(event: string, callback: (...args: any[]) => void): this {
 		this.store.db.removeListener(event, callback);
 		return this;
 	}
@@ -447,7 +447,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param event - The event name to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	on(event: string, callback: (...args: any[]) => void) {
+	on(event: string, callback: (...args: any[]) => void): this {
 		this.store.db.addListener(event, callback);
 		return this;
 	}
@@ -458,7 +458,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param event - The event name to add the listener for.
 	 * @param callback - The callback to add.
 	 */
-	once(event: string, callback: (...args: any[]) => void) {
+	once(event: string, callback: (...args: any[]) => void): this {
 		const wrapper = (...args: any[]) => {
 			this.removeListener(event, wrapper);
 			callback(...args);
@@ -470,7 +470,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * Purges transaction logs.
 	 */
-	purgeLogs(options?: PurgeLogsOptions) {
+	purgeLogs(options?: PurgeLogsOptions): string[] {
 		return this.store.db.purgeLogs(options);
 	}
 
@@ -504,7 +504,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * db.putSync('a', 'b');
 	 * ```
 	 */
-	putSync(key: Key, value: any, options?: PutOptions & T) {
+	putSync(key: Key, value: any, options?: PutOptions & T): void {
 		return this.store.putSync(this.#context, key, value, options);
 	}
 
@@ -559,7 +559,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param name - The name of the transaction log.
 	 * @returns The transaction log.
 	 */
-	useLog(name: string | number) {
+	useLog(name: string | number): TransactionLog {
 		return this.store.useLog(name);
 	}
 }

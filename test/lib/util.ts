@@ -5,7 +5,7 @@ import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { rimraf } from 'rimraf';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export function generateDBPath() {
+export function generateDBPath(): string {
 	return join(
 		tmpdir(),
 		`testdb-${randomBytes(8).toString('hex')}`
@@ -57,7 +57,7 @@ type TestFn = (...databases: TestDB[]) => void | Promise<void>;
 export async function dbRunner(
 	options: TestOptions | TestFn,
 	test?: TestFn
-) {
+): Promise<void> {
 	let testFn: TestFn;
 	if (typeof options === 'function') {
 		testFn = options;

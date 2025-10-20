@@ -131,7 +131,7 @@ describe('User Shared Buffer', () => {
 				}
 			);
 
-			let resolver = withResolvers();
+			let resolver = withResolvers<void>();
 
 			await new Promise<void>((resolve, reject) => {
 				worker.on('error', reject);
@@ -156,7 +156,7 @@ describe('User Shared Buffer', () => {
 			await expect(resolver.promise).resolves.toBe(3n);
 			expect(getNextId()).toBe(4n);
 
-			resolver = withResolvers();
+			resolver = withResolvers<void>();
 			worker.postMessage({ close: true });
 
 			if (process.versions.deno) {

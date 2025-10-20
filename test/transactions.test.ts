@@ -45,10 +45,10 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} async should set a value`, () => dbRunner({
 			dbOptions: [ options ]
 		}, async ({ db }) => {
-			const afterCommit = withResolvers();
-			const beforeCommit = withResolvers();
-			const beginTransaction = withResolvers();
-			const committed = withResolvers();
+			const afterCommit = withResolvers<void>();
+			const beforeCommit = withResolvers<void>();
+			const beginTransaction = withResolvers<void>();
+			const committed = withResolvers<void>();
 
 			db.on('aftercommit', (result) => afterCommit.resolve(result));
 			db.on('beforecommit', () => beforeCommit.resolve());

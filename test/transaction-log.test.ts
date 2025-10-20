@@ -33,7 +33,7 @@ describe('Transaction Log', () => {
 			expect(db.listLogs()).toEqual(['bar', 'foo']);
 		}));
 
-		it('should support numeric log names', () => dbRunner(async ({ db, dbPath }) => {
+		it('should support numeric log names', () => dbRunner(async ({ db }) => {
 			db.open();
 
 			expect(db.listLogs()).toEqual([]);
@@ -103,7 +103,7 @@ describe('Transaction Log', () => {
 				}
 			);
 
-			let resolver = withResolvers();
+			let resolver = withResolvers<void>();
 
 			await new Promise<void>((resolve, reject) => {
 				worker.on('error', reject);
@@ -133,7 +133,7 @@ describe('Transaction Log', () => {
 
 			await resolver.promise;
 
-			resolver = withResolvers();
+			resolver = withResolvers<void>();
 			worker.postMessage({ close: true });
 
 			if (process.versions.deno) {

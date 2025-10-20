@@ -277,7 +277,7 @@ export class Store {
 	/**
 	 * Closes the database and cleans up cached resources.
 	 */
-	close() {
+	close(): void {
 		this.db.close();
 	}
 
@@ -368,7 +368,7 @@ export class Store {
 		resolve: (value: Buffer) => void,
 		reject: (err: unknown) => void,
 		txnId?: number
-	) {
+	): any | undefined {
 		return context.get(
 			this.encodeKey(key),
 			resolve,
@@ -377,7 +377,7 @@ export class Store {
 		);
 	}
 
-	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions) {
+	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions): number {
 		options = { ...options };
 
 		if (options?.start !== undefined) {
@@ -428,7 +428,11 @@ export class Store {
 		);
 	}
 
-	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
+	getSync(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		options?: GetOptions & DBITransactional
+	): any | undefined {
 		return context.getSync(
 			this.encodeKey(key),
 			this.getTxnId(options)
@@ -439,7 +443,7 @@ export class Store {
 	 * Checks if the data method options object contains a transaction ID and
 	 * returns it.
 	 */
-	getTxnId(options?: DBITransactional | unknown) {
+	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
 		if (options && typeof options === 'object' && 'transaction' in options) {
 			txnId = (options.transaction as Transaction)?.id;
@@ -507,7 +511,7 @@ export class Store {
 	 *
 	 * @returns `true` if the database is open, `false` otherwise.
 	 */
-	isOpen() {
+	isOpen(): boolean {
 		return this.db.opened;
 	}
 
@@ -516,7 +520,7 @@ export class Store {
 	 *
 	 * @returns an array of transaction log names.
 	 */
-	listLogs() {
+	listLogs(): string[] {
 		return this.db.listLogs();
 	}
 
@@ -524,7 +528,7 @@ export class Store {
 	 * Opens the database. This must be called before any database operations
 	 * are performed.
 	 */
-	open() {
+	open(): boolean {
 		if (this.db.opened) {
 			return true;
 		}
@@ -541,9 +545,16 @@ export class Store {
 				: undefined,
 			transactionLogsPath: join(this.path, 'transaction_logs')
 		});
+
+		return false;
 	}
 
-	putSync(context: NativeDatabase | NativeTransaction, key: Key, value: any, options?: PutOptions & DBITransactional) {
+	putSync(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		value: any,
+		options?: PutOptions & DBITransactional
+	): void {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -562,7 +573,11 @@ export class Store {
 		);
 	}
 
-	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional | undefined) {
+	removeSync(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		options?: DBITransactional | undefined
+	): void {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}

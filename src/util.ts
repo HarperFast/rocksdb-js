@@ -26,7 +26,7 @@ export type MaybePromiseFunction<T> = () => MaybePromise<T>;
  * parseDuration(NaN); // throws error
  * ```
  */
-export function parseDuration(duration: number | string) {
+export function parseDuration(duration: number | string): number {
 	if (typeof duration === 'number') {
 		if (isNaN(duration) || !isFinite(duration)) {
 			throw new Error(`Invalid duration: ${duration}`);
@@ -100,7 +100,11 @@ export function when<T>(
  *
  * @returns A tuple of `resolve`, `reject`, and `promise`.
  */
-export function withResolvers<T>() {
+export function withResolvers<T>(): {
+	resolve: (value: T) => void;
+	reject: (reason: any) => void;
+	promise: Promise<T>;
+} {
 	let resolve, reject;
 	const promise = new Promise<T>((res, rej) => {
 		resolve = res;

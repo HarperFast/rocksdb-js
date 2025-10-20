@@ -18,7 +18,7 @@ export type Prebuild = {
 	}[];
 };
 
-export async function getPrebuild(desiredVersion?: string) {
+export async function getPrebuild(desiredVersion?: string): Promise<Prebuild> {
 	// download the latest RocksDB prebuild
 	const headers: Record<string, string> = {
 		Accept: 'application/vnd.github.v3.raw',
