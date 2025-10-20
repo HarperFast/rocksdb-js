@@ -4,9 +4,9 @@ import { mkdir, writeFile, utimes } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { TransactionLog } from '../src/load-binding.js';
 import { withResolvers } from '../src/util.js';
 import { Worker } from 'node:worker_threads';
+import type { TransactionLog } from '../src/load-binding.js';
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
