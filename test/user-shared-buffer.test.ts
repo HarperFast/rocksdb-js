@@ -108,17 +108,17 @@ describe('User Shared Buffer', () => {
 			const script = process.versions.deno || process.versions.bun
 				?	`
 					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/user-shared-buffer-worker.mts'));
+					import(pathToFileURL('./test/workers/user-shared-buffer-worker.mts'));
 					`
 				:	majorVersion < 20
 					?	`
 						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/user-shared-buffer-worker.mts', __dirname);
+						tsx.require('./test/workers/user-shared-buffer-worker.mts', __dirname);
 						`
 					:	`
 						import { register } from 'tsx/esm/api';
 						register();
-						import('./test/fixtures/user-shared-buffer-worker.mts');
+						import('./test/workers/user-shared-buffer-worker.mts');
 						`;
 
 			const worker = new Worker(

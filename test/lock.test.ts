@@ -84,17 +84,17 @@ describe('Lock', () => {
 			const script = process.versions.deno || process.versions.bun
 				?	`
 					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/try-lock-worker.mts'));
+					import(pathToFileURL('./test/workers/try-lock-worker.mts'));
 					`
 				:	majorVersion < 20
 					?	`
 						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/try-lock-worker.mts', __dirname);
+						tsx.require('./test/workers/try-lock-worker.mts', __dirname);
 						`
 					:	`
 						import { register } from 'tsx/esm/api';
 						register();
-						import('./test/fixtures/try-lock-worker.mts');
+						import('./test/workers/try-lock-worker.mts');
 						`;
 
 			const worker = new Worker(
@@ -241,17 +241,17 @@ describe('Lock', () => {
 			const script = process.versions.deno || process.versions.bun
 				?	`
 					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/with-lock-worker.mts'));
+					import(pathToFileURL('./test/workers/with-lock-worker.mts'));
 					`
 				:	majorVersion < 20
 					?	`
 						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/with-lock-worker.mts', __dirname);
+						tsx.require('./test/workers/with-lock-worker.mts', __dirname);
 						`
 					:	`
 						import { register } from 'tsx/esm/api';
 						register();
-						import('./test/fixtures/with-lock-worker.mts');
+						import('./test/workers/with-lock-worker.mts');
 						`;
 
 			const worker = new Worker(

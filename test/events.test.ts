@@ -263,17 +263,17 @@ describe('Events', () => {
 		const script = process.versions.deno || process.versions.bun
 			?	`
 				import { pathToFileURL } from 'node:url';
-				import(pathToFileURL('./test/fixtures/events-worker.mts'));
+				import(pathToFileURL('./test/workers/events-worker.mts'));
 				`
 			:	majorVersion < 20
 				?	`
 					const tsx = require('tsx/cjs/api');
-					tsx.require('./test/fixtures/events-worker.mts', __dirname);
+					tsx.require('./test/workers/events-worker.mts', __dirname);
 					`
 				:	`
 					import { register } from 'tsx/esm/api';
 					register();
-					import('./test/fixtures/events-worker.mts');
+					import('./test/workers/events-worker.mts');
 					`;
 
 		const worker = new Worker(

@@ -74,23 +74,23 @@ describe('Transaction Log', () => {
 			expect(weakRef.deref()).toBeUndefined();
 		}), 10000);
 
-		it.skip('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
+		it.only('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
 			const script = process.versions.deno || process.versions.bun
 				?	`
 					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/transaction-log-worker.mts'));
+					import(pathToFileURL('./test/workers/transaction-log-worker.mts'));
 					`
 				:	majorVersion < 20
 					?	`
 						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/transaction-log-worker.mts', __dirname);
+						tsx.require('./test/workers/transaction-log-worker.mts', __dirname);
 						`
 					:	`
 						import { register } from 'tsx/esm/api';
 						register();
-						import('./test/fixtures/transaction-log-worker.mts');
+						import('./test/workers/transaction-log-worker.mts');
 						`;
 
 			const worker = new Worker(
