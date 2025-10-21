@@ -165,8 +165,8 @@ Synchronous version of `get()`.
 Retrieves all keys within a range.
 
 ```typescript
-for (const { key, value } of db.getKeys()) {
-  console.log({ key, value });
+for (const key of db.getKeys()) {
+  console.log(key);
 }
 ```
 
