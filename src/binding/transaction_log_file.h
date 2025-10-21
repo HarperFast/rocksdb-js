@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_LOG_FILE_H__
 #define __TRANSACTION_LOG_FILE_H__
 
+#include <chrono>
 #include <filesystem>
 #include <atomic>
 #include <mutex>
@@ -36,9 +37,27 @@ struct TransactionLogFile final {
 	int fd;
 #endif
 
+	/**
+	 * The size of the file in bytes. This needs to be atomic because write is
+	 * async and doesn't block other threads from writing and thus size needs to
+	 * be updated atomically.
+	 */
 	std::atomic<size_t> size;
+
+	/**
+	 * The number of active operations on the file.
+	 */
 	std::atomic<int> activeOperations;
-	std::mutex closeMutex;
+
+	/**
+	 * The mutex used to protect the file.
+	 */
+	std::mutex fileMutex;
+
+	/**
+	 * The condition variable used to wait for all active operations to
+	 * complete.
+	 */
 	std::condition_variable closeCondition;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
@@ -51,6 +70,7 @@ struct TransactionLogFile final {
 
 	void close();
 	void open();
+	std::chrono::system_clock::time_point getLastWriteTime();
 	int64_t readFromFile(void* buffer, size_t size, int64_t offset = -1);
 	int64_t writeToFile(const void* buffer, size_t size, int64_t offset = -1);
 };

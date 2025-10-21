@@ -74,7 +74,7 @@ describe('Transaction Log', () => {
 			expect(weakRef.deref()).toBeUndefined();
 		}), 10000);
 
-		it.only('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
+		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
 			const script = process.versions.deno || process.versions.bun
@@ -121,9 +121,9 @@ describe('Transaction Log', () => {
 				worker.on('exit', () => resolver.resolve());
 			});
 
-			worker.postMessage({ addManyEntries: true, count: 100 });
+			worker.postMessage({ addManyEntries: true, count: 1000 });
 
-			for (let i = 0; i < 100; i++) {
+			for (let i = 0; i < 1000; i++) {
 				const log = db.useLog('foo');
 				log.addEntry(Date.now(), Buffer.from('hello'));
 				if (i % 10 === 0) {

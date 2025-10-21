@@ -1351,16 +1351,6 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 
 	for (auto& store : storesToRemove) {
 		store->close();
-
-		// wait for all active operations to complete before removing the directory
-		// this ensures that no other threads are still using the store
-		for (const auto& [sequenceNumber, logFile] : store->sequenceFiles) {
-			std::unique_lock<std::mutex> lock(logFile->closeMutex);
-			logFile->closeCondition.wait(lock, [&logFile] {
-				return logFile->activeOperations.load() == 0;
-			});
-		}
-
 		std::filesystem::remove_all(store->logsDirectory);
 		this->transactionLogStores.erase(store->name);
 	}

@@ -18,14 +18,20 @@ TransactionLogStore::TransactionLogStore(
 	maxSize(maxSize),
 	retentionMs(retentionMs),
 	currentSequenceNumber(1),
-	nextSequenceNumber(2)
+	nextSequenceNumber(2),
+	isClosing(false)
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore New transaction log store: %s (maxSize=%u)\n", this, name.c_str(), maxSize)
 }
 
+/**
+ * Adds an entry to the transaction log store.
+ */
 void TransactionLogStore::addEntry(const uint64_t timestamp, const char* data, const size_t size) {
 	// TODO: if this `addEntry()` call is a transaction, then buffer the entry
 	// until `commit()` is called
+
+	std::unique_lock<std::mutex> lock(this->storeMutex);
 
 	// get the current log file and rotate if needed
 	auto logFile = this->openLogFile(this->currentSequenceNumber);
@@ -39,13 +45,25 @@ void TransactionLogStore::addEntry(const uint64_t timestamp, const char* data, c
 	DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store: %s (seq=%u, size=%zu, maxSize=%u)\n",
 		this, this->name.c_str(), this->currentSequenceNumber, logFile->size.load(), this->maxSize)
 
+	lock.unlock();
 	logFile->writeToFile(data, size);
 }
 
 /**
  * Closes the transaction log store and all associated log files.
+ * This method waits for all active operations to complete before closing.
  */
 void TransactionLogStore::close() {
+	// set the closing flag to prevent concurrent closes
+	bool expected = false;
+	if (!this->isClosing.compare_exchange_strong(expected, true)) {
+		// already closing, return early
+		DEBUG_LOG("%p TransactionLogStore::close Already closing, skipping: %s\n", this, this->name.c_str())
+		return;
+	}
+
+	std::unique_lock<std::mutex> lock(this->storeMutex);
+
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store: %s\n", this, this->name.c_str())
 
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
@@ -53,32 +71,25 @@ void TransactionLogStore::close() {
 		logFile->close();
 	}
 
+	lock.unlock();
 	this->purge();
-}
-
-/**
- * Gets a log file for the given sequence number or returns nullptr if the log
- * file does not exist.
- *
- * @param sequenceNumber The sequence number of the log file to get.
- * @returns The log file or nullptr if the log file does not exist.
- */
-TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
-	auto it = this->sequenceFiles.find(sequenceNumber);
-	return (it != this->sequenceFiles.end()) ? it->second.get() : nullptr;
 }
 
 /**
  * Opens a log file for the given sequence number. If the log file does not
  * exist, it will be created.
  *
+ * NOTE: This method must be called with storeMutex already locked.
+ *
  * @param sequenceNumber The sequence number of the log file to open.
  * @returns The log file.
  */
 TransactionLogFile* TransactionLogStore::openLogFile(const uint32_t sequenceNumber) {
-	auto logFile = this->getLogFile(sequenceNumber);
+	auto it = this->sequenceFiles.find(sequenceNumber);
+	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+
 	if (!logFile) {
-		// Ensure the directory exists before creating the file
+		// ensure the directory exists before creating the file
 		std::filesystem::create_directories(this->logsDirectory);
 
 		std::ostringstream oss;
@@ -108,6 +119,8 @@ void TransactionLogStore::query() {
  * Purges transaction logs.
  */
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
+	std::unique_lock<std::mutex> lock(this->storeMutex);
+
 	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store: %s (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
@@ -116,37 +129,19 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	for (const auto& entry : this->sequenceFiles) {
 		auto& logFile = entry.second;
 
-		// Wait for all active operations to complete before checking file timestamps
-		std::unique_lock<std::mutex> lock(logFile->closeMutex);
-		logFile->closeCondition.wait(lock, [&logFile] {
-			return logFile->activeOperations.load() == 0;
-		});
-		lock.unlock(); // Release lock before filesystem operations
-
 		bool shouldPurge = all;
 		if (!shouldPurge && this->retentionMs.count() > 0) {
-			// Now it's safe to check file timestamps since no operations are active
 			try {
-				if (std::filesystem::exists(logFile->path)) {
-					auto mtime = std::filesystem::last_write_time(logFile->path);
-					auto now = std::chrono::system_clock::now();
+				auto mtime = logFile->getLastWriteTime();
+				auto now = std::chrono::system_clock::now();
+				auto fileAge = now - mtime;
+				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(fileAge);
 
-					auto mtime_sys = std::chrono::system_clock::time_point(
-						std::chrono::duration_cast<std::chrono::system_clock::duration>(
-							mtime.time_since_epoch()));
-
-					auto fileAge = now - mtime_sys;
-					auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(fileAge);
-
-					if (fileAgeMs <= this->retentionMs) {
-						continue; // file is too new, don't purge
-					}
-				} else {
-					// File doesn't exist, skip it
-					continue;
+				if (fileAgeMs <= this->retentionMs) {
+					continue; // file is too new, don't purge
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
-				// File was deleted between the exists check and the last_write_time call
+				// file was deleted or doesn't exist
 				DEBUG_LOG("%p TransactionLogStore::purge File no longer exists: %s\n", this, logFile->path.string().c_str())
 				continue;
 			}
@@ -186,12 +181,14 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 /**
  * Registers a log file for the given sequence number.
  *
- * @param sequenceNumber The sequence number of the log file to register.
  * @param path The path to the log file to register.
+ * @param sequenceNumber The sequence number of the log file to register.
  */
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
-	auto sequenceFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
-	this->sequenceFiles[sequenceNumber] = std::move(sequenceFile);
+	std::unique_lock<std::mutex> lock(this->storeMutex);
+
+	auto logFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
+	this->sequenceFiles[sequenceNumber] = std::move(logFile);
 
 	if (sequenceNumber > this->currentSequenceNumber) {
 		this->currentSequenceNumber = sequenceNumber;
@@ -202,7 +199,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this->nextSequenceNumber = sequenceNumber + 1;
 	}
 
-	DEBUG_LOG("%p TransactionLogStore::registerSequenceFile Added sequence file: %s (seq=%u)\n",
+	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
 		this, path.string().c_str(), sequenceNumber)
 }
 
@@ -293,123 +290,5 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	return store;
 }
-
-// SequenceFile* TransactionLogHandle::getCurrentSequenceFile() {
-//     if (this->sequenceFiles.empty()) {
-//         return nullptr;
-//     }
-
-//     // Return the sequence file with the highest sequence number
-//     auto it = this->sequenceFiles.rbegin();
-//     return it->second.get();
-// }
-
-/*
-void TransactionLogHandle::openSequenceFile(uint32_t sequenceNumber) {
-	auto* sequenceFile = getSequenceFile(sequenceNumber);
-	if (!sequenceFile || sequenceFile->isOpen) {
-		return;
-	}
-
-	DEBUG_LOG("%p TransactionLogHandle::openSequenceFile Opening %s\n", this, sequenceFile->path.string().c_str())
-	sequenceFile->file = std::fopen(sequenceFile->path.string().c_str(), "ab"); // append mode for existing files
-	if (!sequenceFile->file) {
-		throw std::runtime_error("Failed to open transaction log sequence file: " + sequenceFile->path.string());
-	}
-
-	sequenceFile->isOpen = true;
-}
-
-void TransactionLogHandle::closeSequenceFile(uint32_t sequenceNumber) {
-	auto* sequenceFile = getSequenceFile(sequenceNumber);
-	if (!sequenceFile || !sequenceFile->isOpen) {
-		return;
-	}
-
-	DEBUG_LOG("%p TransactionLogHandle::closeSequenceFile Closing %s\n", this, sequenceFile->path.string().c_str())
-	std::fclose(sequenceFile->file);
-	sequenceFile->file = nullptr;
-	sequenceFile->isOpen = false;
-}
-
-void TransactionLogHandle::closeAllSequenceFiles() {
-	for (const auto& [sequenceNumber, sequenceFile] : this->sequenceFiles) {
-		if (sequenceFile->isOpen) {
-			closeSequenceFile(sequenceNumber);
-		}
-	}
-}
-
-void TransactionLogHandle::open() {
-	// For now, just ensure we have discovered all sequence files
-	// Individual sequence files will be opened on-demand
-	DEBUG_LOG("%p TransactionLogHandle::open Opening transaction log: %s\n", this, this->name.c_str())
-}
-
-void TransactionLogHandle::close() {
-	closeAllSequenceFiles();
-	DEBUG_LOG("%p TransactionLogHandle::close Closed all sequence files for: %s\n", this, this->name.c_str())
-}
-
-*/
-
-// void TransactionLogStore::mapSequenceFileForReading(uint32_t sequenceNumber) {
-//     auto* sequenceFile = getSequenceFile(sequenceNumber);
-//     if (!sequenceFile || sequenceFile->isMapped) {
-//         return;
-//     }
-
-//     // Open file for reading
-//     sequenceFile->fd = open(sequenceFile->path.c_str(), O_RDONLY);
-//     if (sequenceFile->fd < 0) {
-//         throw std::runtime_error("Failed to open sequence file for reading: " + sequenceFile->path.string());
-//     }
-
-//     // Get file size
-//     struct stat st;
-//     if (fstat(sequenceFile->fd, &st) < 0) {
-//         ::close(sequenceFile->fd);
-//         sequenceFile->fd = -1;
-//         throw std::runtime_error("Failed to get file size: " + sequenceFile->path.string());
-//     }
-
-//     sequenceFile->mappedSize = st.st_size;
-
-//     if (sequenceFile->mappedSize > 0) {
-//         // Map file into memory
-//         sequenceFile->mappedData = mmap(nullptr, sequenceFile->mappedSize,
-//                                       PROT_READ, MAP_SHARED, sequenceFile->fd, 0);
-
-//         if (sequenceFile->mappedData == MAP_FAILED) {
-//             ::close(sequenceFile->fd);
-//             sequenceFile->fd = -1;
-//             throw std::runtime_error("Failed to mmap sequence file: " + sequenceFile->path.string());
-//         }
-
-//         // Advise OS about access pattern
-//         madvise(sequenceFile->mappedData, sequenceFile->mappedSize, MADV_SEQUENTIAL);
-//     }
-
-//     sequenceFile->isMapped = true;
-//     DEBUG_LOG("%p TransactionLogStore::mapSequenceFileForReading Mapped %s (%zu bytes)\n",
-//              this, sequenceFile->path.string().c_str(), sequenceFile->mappedSize);
-// }
-
-// void TransactionLogStore::openCurrentFileForWriting() {
-//     auto* currentFile = getCurrentSequenceFile();
-//     if (!currentFile || currentFile->isOpenForWrite) {
-//         return;
-//     }
-
-//     currentFile->writeFile = std::fopen(currentFile->path.c_str(), "ab");
-//     if (!currentFile->writeFile) {
-//         throw std::runtime_error("Failed to open current sequence file for writing: " +
-//                                currentFile->path.string());
-//     }
-
-//     currentFile->isOpenForWrite = true;
-//     DEBUG_LOG("%p TransactionLogStore::openCurrentFileForWriting Opened %s for writing\n",
-//              this, currentFile->path.string().c_str());
-// }
 
 } // namespace rocksdb_js

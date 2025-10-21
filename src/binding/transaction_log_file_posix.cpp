@@ -9,21 +9,37 @@ namespace rocksdb_js {
 TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq)
 	: path(p), sequenceNumber(seq), fd(-1), size(0), activeOperations(0) {}
 
+/**
+ * Closes the log file.
+ */
 void TransactionLogFile::close() {
-	std::unique_lock<std::mutex> lock(this->closeMutex);
-
-	// Wait for all active operations to complete
-	closeCondition.wait(lock, [this] {
-		return this->activeOperations.load() == 0;
-	});
+	std::unique_lock<std::mutex> lock(this->fileMutex);
 
 	if (this->fd >= 0) {
+		DEBUG_LOG("TransactionLogFile::close Waiting for active operations to complete: %s (fd=%d)\n",
+			this->path.string().c_str(), this->fd)
+
+		// wait for all active operations to complete
+		this->closeCondition.wait(lock, [this] {
+			return this->activeOperations.load() == 0;
+		});
+
+		DEBUG_LOG("TransactionLogFile::close Closing file: %s (fd=%d)\n",
+			this->path.string().c_str(), this->fd)
+
 		::close(this->fd);
 		this->fd = -1;
 	}
 }
 
+/**
+ * Opens the log file for reading and writing.
+ */
 void TransactionLogFile::open() {
+	DEBUG_LOG("TransactionLogFile::open Opening file: %s\n", this->path.string().c_str())
+
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
 	if (this->fd >= 0) {
 		return;
 	}
@@ -45,6 +61,40 @@ void TransactionLogFile::open() {
 	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, size=%zu)\n", pathStr.c_str(), this->fd, this->size.load());
 }
 
+/**
+ * Gets the last write time of the log file or throws an error if the file does
+ * not exist.
+ */
+std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	// wait for all active operations to complete
+	this->closeCondition.wait(lock, [this] {
+		return this->activeOperations.load() == 0;
+	});
+
+	if (!std::filesystem::exists(this->path)) {
+		throw std::filesystem::filesystem_error(
+			"File does not exist",
+			this->path,
+			std::make_error_code(std::errc::no_such_file_or_directory)
+		);
+	}
+
+	auto mtime = std::filesystem::last_write_time(this->path);
+
+	// convert file_time to system_clock time_point
+	auto mtime_sys = std::chrono::system_clock::time_point(
+		std::chrono::duration_cast<std::chrono::system_clock::duration>(
+			mtime.time_since_epoch())
+	);
+
+	return mtime_sys;
+}
+
+/**
+ * Reads data from the log file.
+ */
 int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
 	this->activeOperations.fetch_add(1);
 
@@ -63,12 +113,15 @@ int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offs
 
 	// notify if this was the last operation
 	if (this->activeOperations.load() == 0) {
-		closeCondition.notify_one();
+		this->closeCondition.notify_one();
 	}
 
 	return result;
 }
 
+/**
+ * Writes data to the log file.
+ */
 int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t offset) {
 	this->activeOperations.fetch_add(1);
 
@@ -102,7 +155,7 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t
 
 	// notify if this was the last operation
 	if (this->activeOperations.load() == 0) {
-		closeCondition.notify_one();
+		this->closeCondition.notify_one();
 	}
 
 	return bytesWritten;

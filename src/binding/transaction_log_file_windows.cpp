@@ -10,10 +10,10 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	: path(p), sequenceNumber(seq), fileHandle(INVALID_HANDLE_VALUE), size(0), activeOperations(0) {}
 
 void TransactionLogFile::close() {
-	std::unique_lock<std::mutex> lock(this->closeMutex);
+	std::unique_lock<std::mutex> lock(this->fileMutex);
 
 	// Wait for all active operations to complete
-	closeCondition.wait(lock, [this] {
+	this->closeCondition.wait(lock, [this] {
 		return this->activeOperations.load() == 0;
 	});
 
@@ -24,6 +24,10 @@ void TransactionLogFile::close() {
 }
 
 void TransactionLogFile::open() {
+	DEBUG_LOG("TransactionLogFile::open Opening file: %s\n", this->path.string().c_str())
+
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		return;
 	}
@@ -46,6 +50,33 @@ void TransactionLogFile::open() {
 
 	DEBUG_LOG("TransactionLogFile::open Opened %s (handle=%p, size=%zu)\n",
 		this->path.string().c_str(), this->fileHandle, this->size.load());
+}
+
+std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	// Wait for all active operations to complete
+	this->closeCondition.wait(lock, [this] {
+		return this->activeOperations.load() == 0;
+	});
+
+	if (!std::filesystem::exists(this->path)) {
+		throw std::filesystem::filesystem_error(
+			"File does not exist",
+			this->path,
+			std::make_error_code(std::errc::no_such_file_or_directory)
+		);
+	}
+
+	auto mtime = std::filesystem::last_write_time(this->path);
+
+	// Convert file_time to system_clock time_point
+	auto mtime_sys = std::chrono::system_clock::time_point(
+		std::chrono::duration_cast<std::chrono::system_clock::duration>(
+			mtime.time_since_epoch())
+	);
+
+	return mtime_sys;
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
@@ -72,7 +103,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offs
 
 	// Notify if this was the last operation
 	if (this->activeOperations.load() == 0) {
-		closeCondition.notify_all();
+		this->closeCondition.notify_all();
 	}
 
 	return success ? static_cast<int64_t>(bytesRead) : -1;
@@ -117,7 +148,7 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t
 
 	// Notify if this was the last operation
 	if (this->activeOperations.load() == 0) {
-		closeCondition.notify_all();
+		this->closeCondition.notify_all();
 	}
 
 	return success ? static_cast<int64_t>(bytesWritten) : -1;
