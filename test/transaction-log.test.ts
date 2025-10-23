@@ -174,6 +174,7 @@ describe('Transaction Log', () => {
 			const logFile = join(logDirectory, 'foo.1.txnlog');
 			await mkdir(logDirectory, { recursive: true });
 			await writeFile(logFile, '');
+			expect(existsSync(logFile)).toBe(true);
 
 			db.open();
 			expect(db.listLogs()).toEqual(['foo']);
