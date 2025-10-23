@@ -40,7 +40,7 @@ DBDescriptor::~DBDescriptor() {
 
 	while (!this->closables.empty()) {
 		Closable* handle = *this->closables.begin();
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing closable %p\n", this, handle)
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing closable %p\n", this, handle)
 		this->closables.erase(handle);
 
 		// release the mutex before calling close() to avoid a deadlock
@@ -49,13 +49,16 @@ DBDescriptor::~DBDescriptor() {
 		txnsLock.lock();
 	}
 
-	std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
-	for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing transaction log store %s\n", this, name.c_str())
-		transactionLogStore->close();
+	if (!this->transactionLogStores.empty()) {
+		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size())
+		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store %s\n", this, name.c_str())
+			transactionLogStore->close();
+		}
+		this->transactionLogStores.clear();
 	}
 
-	this->transactionLogStores.clear();
 	this->transactions.clear();
 	this->columns.clear();
 	this->db.reset();
@@ -1351,7 +1354,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 
 	for (auto& store : storesToRemove) {
 		store->close();
-		std::filesystem::remove_all(store->logsDirectory);
+		std::filesystem::remove_all(store->path);
 		this->transactionLogStores.erase(store->name);
 	}
 
@@ -1366,17 +1369,18 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
 	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+
 	auto it = this->transactionLogStores.find(name);
 	if (it != this->transactionLogStores.end()) {
-		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store: %s\n", this, name.c_str())
+		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str())
 		return it->second;
 	}
 
 	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
-	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store: %s (maxSize=%u)\n",
-		this, logDirectory.string().c_str(), this->transactionLogMaxSize)
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store \"%s\"\n",
+		this, name.c_str())
 
-	// Ensure the directory exists
+	// ensure the directory exists
 	std::filesystem::create_directories(logDirectory);
 
 	auto txnLogStore = std::make_shared<TransactionLogStore>(

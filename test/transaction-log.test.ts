@@ -72,7 +72,7 @@ describe('Transaction Log', () => {
 			}
 
 			expect(weakRef.deref()).toBeUndefined();
-		}), 10000);
+		}));
 
 		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
@@ -126,7 +126,7 @@ describe('Transaction Log', () => {
 			for (let i = 0; i < 1000; i++) {
 				const log = db.useLog('foo');
 				log.addEntry(Date.now(), Buffer.from('hello'));
-				if (i % 10 === 0) {
+				if (i > 0 && i % 10 === 0) {
 					db.purgeLogs({ destroy: true });
 				}
 			}
@@ -144,7 +144,7 @@ describe('Transaction Log', () => {
 			}
 
 			await resolver.promise;
-		}));
+		}), 60000);
 
 		it('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');

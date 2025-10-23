@@ -2,8 +2,10 @@
 #define __UTIL_H__
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <condition_variable>
+#include <filesystem>
 #include <mutex>
 #include <node_api.h>
 #include <optional>
@@ -207,6 +209,8 @@ template <typename T>
 
 	return getValue(env, value, result);
 }
+
+std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
 /**
  * Base class for async state.

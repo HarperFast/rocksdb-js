@@ -157,11 +157,11 @@ bool DBHandle::opened() const {
 void DBHandle::unrefLog(const std::string& name) {
 	auto it = this->logRefs.find(name);
 	if (it == this->logRefs.end()) {
-		DEBUG_LOG("%p DBHandle::unrefLog Transaction log %s not found\n", this, name.c_str())
+		DEBUG_LOG("%p DBHandle::unrefLog Transaction log \"%s\" not found (size=%zu)\n", this, name.c_str(), this->logRefs.size())
 		return;
 	}
 
-	DEBUG_LOG("%p DBHandle::unrefLog Unreferencing transaction log %s\n", this, name.c_str())
+	DEBUG_LOG("%p DBHandle::unrefLog Unreferencing transaction log \"%s\" (size=%zu)\n", this, name.c_str(), this->logRefs.size())
 	::napi_delete_reference(this->env, it->second);
 	this->logRefs.erase(it);
 }
@@ -178,16 +178,16 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
 		napi_status status = ::napi_get_reference_value(env, existingRef->second, &instance);
 
 		if (status == napi_ok && instance != nullptr) {
-			DEBUG_LOG("%p DBHandle::useLog Returning existing transaction log %s\n", this, name.c_str())
+			// DEBUG_LOG("%p DBHandle::useLog Returning existing transaction log \"%s\"\n", this, name.c_str())
 			return instance;
 		}
 
-		DEBUG_LOG("%p DBHandle::useLog Removing stale reference to transaction log %s\n", this, name.c_str())
+		DEBUG_LOG("%p DBHandle::useLog Removing stale reference to transaction log \"%s\"\n", this, name.c_str())
 		::napi_delete_reference(env, existingRef->second);
 		this->logRefs.erase(name);
 	}
 
-	DEBUG_LOG("%p DBHandle::useLog Creating new transaction log %s\n", this, name.c_str())
+	DEBUG_LOG("%p DBHandle::useLog Creating new transaction log \"%s\"\n", this, name.c_str())
 
 	napi_value exports;
 	NAPI_STATUS_THROWS(::napi_get_reference_value(env, this->exportsRef, &exports))

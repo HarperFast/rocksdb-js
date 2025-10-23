@@ -9,19 +9,22 @@ namespace rocksdb_js {
 
 TransactionLogStore::TransactionLogStore(
 	const std::string& name,
-	const std::filesystem::path& logsDirectory,
+	const std::filesystem::path& path,
 	const uint32_t maxSize,
 	const std::chrono::milliseconds& retentionMs
 ) :
 	name(name),
-	logsDirectory(logsDirectory),
+	path(path),
 	maxSize(maxSize),
 	retentionMs(retentionMs),
 	currentSequenceNumber(1),
 	nextSequenceNumber(2),
 	isClosing(false)
-{
-	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore New transaction log store: %s (maxSize=%u)\n", this, name.c_str(), maxSize)
+{}
+
+TransactionLogStore::~TransactionLogStore() {
+	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
+	this->close();
 }
 
 /**
@@ -31,21 +34,22 @@ void TransactionLogStore::addEntry(const uint64_t timestamp, const char* data, c
 	// TODO: if this `addEntry()` call is a transaction, then buffer the entry
 	// until `commit()` is called
 
-	std::unique_lock<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+
+	// DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store \"%s\" (seq=%u)\n",
+	// 	this, this->name.c_str(), this->currentSequenceNumber)
 
 	// get the current log file and rotate if needed
-	auto logFile = this->openLogFile(this->currentSequenceNumber);
+	auto logFile = this->getLogFile(this->currentSequenceNumber);
 	if (logFile->size >= this->maxSize) {
 		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
 			this, this->nextSequenceNumber)
 		this->currentSequenceNumber = this->nextSequenceNumber++;
-		logFile = this->openLogFile(this->currentSequenceNumber);
+		logFile = this->getLogFile(this->currentSequenceNumber);
 	}
 
-	DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store: %s (seq=%u, size=%zu, maxSize=%u)\n",
-		this, this->name.c_str(), this->currentSequenceNumber, logFile->size.load(), this->maxSize)
+	// TODO: create header
 
-	lock.unlock();
 	logFile->writeToFile(data, size);
 }
 
@@ -58,16 +62,16 @@ void TransactionLogStore::close() {
 	bool expected = false;
 	if (!this->isClosing.compare_exchange_strong(expected, true)) {
 		// already closing, return early
-		DEBUG_LOG("%p TransactionLogStore::close Already closing, skipping: %s\n", this, this->name.c_str())
+		DEBUG_LOG("%p TransactionLogStore::close Already closing, skipping \"%s\"\n", this, this->name.c_str())
 		return;
 	}
 
 	std::unique_lock<std::mutex> lock(this->storeMutex);
 
-	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store: %s\n", this, this->name.c_str())
+	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str())
 
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
-		DEBUG_LOG("%p TransactionLogStore::close Closing log file: %s\n", this, logFile->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
 		logFile->close();
 	}
 
@@ -79,26 +83,29 @@ void TransactionLogStore::close() {
  * Opens a log file for the given sequence number. If the log file does not
  * exist, it will be created.
  *
- * NOTE: This method must be called with storeMutex already locked.
+ * Important! This method must be called with `storeMutex` already locked.
  *
  * @param sequenceNumber The sequence number of the log file to open.
  * @returns The log file.
  */
-TransactionLogFile* TransactionLogStore::openLogFile(const uint32_t sequenceNumber) {
+TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 
 	if (!logFile) {
-		// ensure the directory exists before creating the file
-		std::filesystem::create_directories(this->logsDirectory);
+		DEBUG_LOG("%p TransactionLogStore::getLogFile Store path \"%s\" (seq=%u) no log file found, creating\n",
+			this, this->path.string().c_str(), sequenceNumber)
+
+		// ensure the directory exists before creating the file (should already exist)
+		std::filesystem::create_directories(this->path);
 
 		std::ostringstream oss;
-		oss << this->logsDirectory.string() << "/" << this->name << "." << sequenceNumber << ".txnlog";
-		logFile = new TransactionLogFile(std::filesystem::path(oss.str()), sequenceNumber);
+		oss << this->name << "." << sequenceNumber << ".txnlog";
+		auto logFilePath = this->path / oss.str();
+		logFile = new TransactionLogFile(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
 	}
 
-	logFile->open();
 	return logFile;
 }
 
@@ -106,7 +113,7 @@ TransactionLogFile* TransactionLogStore::openLogFile(const uint32_t sequenceNumb
  * Queries the transaction log store.
  */
 void TransactionLogStore::query() {
-	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store: %s\n", this, this->name.c_str())
+	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store \"%s\"\n", this, this->name.c_str())
 
 	// TODO: Implement
 	// 1. Determine files to iterate over
@@ -119,9 +126,9 @@ void TransactionLogStore::query() {
  * Purges transaction logs.
  */
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
-	std::unique_lock<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->storeMutex);
 
-	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store: %s (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
@@ -168,12 +175,12 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	}
 
 	// if all log files have been removed, clean up the empty directory
-	if (this->sequenceFiles.empty() && std::filesystem::exists(this->logsDirectory)) {
+	if (this->sequenceFiles.empty() && std::filesystem::exists(this->path)) {
 		try {
-			std::filesystem::remove(this->logsDirectory);
-			DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->logsDirectory.string().c_str())
+			std::filesystem::remove(this->path);
+			DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
 		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->logsDirectory.string().c_str(), e.what())
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what())
 		}
 	}
 }
@@ -185,7 +192,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
  * @param sequenceNumber The sequence number of the log file to register.
  */
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
-	std::unique_lock<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->storeMutex);
 
 	auto logFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = std::move(logFile);
@@ -265,22 +272,22 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			}
 
 			// check if the file is too old
-			if (store->retentionMs.count() > 0) {
+			if (retentionMs.count() > 0) {
 				auto mtime = std::filesystem::last_write_time(filePath);
+				auto mtime_sys = convertFileTimeToSystemTime(mtime);
 				auto now = std::chrono::system_clock::now();
+				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
+				auto delta = fileAgeMs - retentionMs;
 
-				auto mtime_sys = std::chrono::system_clock::time_point(
-					std::chrono::duration_cast<std::chrono::system_clock::duration>(
-						mtime.time_since_epoch()));
-
-				auto fileAge = now - mtime_sys;
-				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(fileAge);
-				DEBUG_LOG("TransactionLogStore::load File age: %s %lld ms\n", filePath.string().c_str(), fileAgeMs.count())
-				if (fileAgeMs > retentionMs) {
+				if (delta.count() > 0) {
 					// file is too old, remove it
-					DEBUG_LOG("TransactionLogStore::load Purging old log file: %s\n", filePath.string().c_str())
+					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
+						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
 					std::filesystem::remove(filePath);
 					continue;
+				} else {
+					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
+						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
 				}
 			}
 

@@ -20,7 +20,7 @@ struct TransactionLogStore final {
 	/**
 	 * The directory containing the transaction store's sequence log files.
 	 */
-	std::filesystem::path logsDirectory;
+	std::filesystem::path path;
 
 	/**
 	 * The maximum size of a transaction log file in bytes.
@@ -63,10 +63,12 @@ struct TransactionLogStore final {
 
 	TransactionLogStore(
 		const std::string& name,
-		const std::filesystem::path& logsDirectory,
+		const std::filesystem::path& path,
 		const uint32_t maxSize,
 		const std::chrono::milliseconds& retentionMs
 	);
+
+	~TransactionLogStore();
 
 	void addEntry(const uint64_t timestamp, const char* data, const size_t size);
 	void close();
@@ -84,7 +86,7 @@ struct TransactionLogStore final {
 	);
 
 private:
-	TransactionLogFile* openLogFile(const uint32_t sequenceNumber);
+	TransactionLogFile* getLogFile(const uint32_t sequenceNumber);
 };
 
 } // namespace rocksdb_js

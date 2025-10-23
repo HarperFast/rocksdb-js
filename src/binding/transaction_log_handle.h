@@ -12,8 +12,9 @@ struct TransactionLogHandle final : Closable {
     TransactionLogHandle(const std::shared_ptr<DBHandle>& dbHandle, const std::string& logName);
     ~TransactionLogHandle();
 
-    std::shared_ptr<DBHandle> dbHandle;
-    std::shared_ptr<TransactionLogStore> store;
+    std::weak_ptr<DBHandle> dbHandle;
+    std::weak_ptr<TransactionLogStore> store;
+    std::string logName;
 
     void addEntry(uint64_t timestamp, char* data, size_t size);
     void close();

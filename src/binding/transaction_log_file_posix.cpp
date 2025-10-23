@@ -36,12 +36,19 @@ void TransactionLogFile::close() {
  * Opens the log file for reading and writing.
  */
 void TransactionLogFile::open() {
-	DEBUG_LOG("TransactionLogFile::open Opening file: %s\n", this->path.string().c_str())
-
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
 	if (this->fd >= 0) {
+		DEBUG_LOG("TransactionLogFile::open File already open: %s\n", this->path.string().c_str())
 		return;
+	}
+
+	DEBUG_LOG("TransactionLogFile::open Opening file: %s\n", this->path.string().c_str())
+
+	// ensure parent directory exists (may have been deleted by purge())
+	auto parentPath = this->path.parent_path();
+	if (!parentPath.empty()) {
+		std::filesystem::create_directories(parentPath);
 	}
 
 	// open file for both reading and writing
@@ -82,24 +89,28 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	}
 
 	auto mtime = std::filesystem::last_write_time(this->path);
-
-	// convert file_time to system_clock time_point
-	auto mtime_sys = std::chrono::system_clock::time_point(
-		std::chrono::duration_cast<std::chrono::system_clock::duration>(
-			mtime.time_since_epoch())
-	);
-
-	return mtime_sys;
+	return convertFileTimeToSystemTime(mtime);
 }
 
 /**
  * Reads data from the log file.
  */
 int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
-	this->activeOperations.fetch_add(1);
+	// acquire mutex to safely check if file needs opening and increment activeOperations
+	{
+		std::unique_lock<std::mutex> lock(this->fileMutex);
 
-	if (this->fd < 0) {
-		this->open();
+		// ensure file is open BEFORE incrementing activeOperations to avoid deadlock
+		// with close() which waits for activeOperations == 0 while holding fileMutex
+		if (this->fd < 0) {
+			// open() will acquire the mutex again, so release it first
+			lock.unlock();
+			this->open();
+			lock.lock();
+		}
+
+		// increment active operations counter while holding the lock
+		this->activeOperations.fetch_add(1);
 	}
 
 	int64_t result;
@@ -123,10 +134,21 @@ int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offs
  * Writes data to the log file.
  */
 int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t offset) {
-	this->activeOperations.fetch_add(1);
+	// acquire mutex to safely check if file needs opening and increment activeOperations
+	{
+		std::unique_lock<std::mutex> lock(this->fileMutex);
 
-	if (this->fd < 0) {
-		this->open();
+		// ensure file is open BEFORE incrementing activeOperations to avoid deadlock
+		// with close() which waits for activeOperations == 0 while holding fileMutex
+		if (this->fd < 0) {
+			// open() will acquire the mutex again, so release it first
+			lock.unlock();
+			this->open();
+			lock.lock();
+		}
+
+		// increment active operations counter while holding the lock
+		this->activeOperations.fetch_add(1);
 	}
 
 	int64_t bytesWritten;

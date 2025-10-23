@@ -415,4 +415,24 @@ const char* getNapiBufferFromArg(
 	return data;
 }
 
+/**
+ * Converts std::filesystem::file_time_type to std::chrono::system_clock::time_point
+ * with proper handling for different platforms and C++ standard versions.
+ */
+std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime) {
+#ifdef _WIN32
+	// Windows `file_time_type` uses 1601 epoch, `system_clock` uses 1970 epoch
+	// the difference is 369 years = 11644473600 seconds
+	constexpr auto epoch_diff = std::chrono::seconds(11644473600);
+	return std::chrono::system_clock::time_point(
+		std::chrono::duration_cast<std::chrono::system_clock::duration>(
+			fileTime.time_since_epoch() - epoch_diff));
+#else
+	// on POSIX systems, the conversion should work directly
+	return std::chrono::system_clock::time_point(
+		std::chrono::duration_cast<std::chrono::system_clock::duration>(
+			fileTime.time_since_epoch()));
+#endif
+}
+
 }
