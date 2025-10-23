@@ -419,7 +419,9 @@ const char* getNapiBufferFromArg(
  * Converts std::filesystem::file_time_type to std::chrono::system_clock::time_point
  * with proper handling for different platforms and C++ standard versions.
  */
-std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime) {
+std::chrono::system_clock::time_point convertFileTimeToSystemTime(
+	const std::filesystem::file_time_type& fileTime
+) {
 #ifdef _WIN32
 	// Windows `file_time_type` uses 1601 epoch, `system_clock` uses 1970 epoch
 	// the difference is 369 years = 11644473600 seconds
@@ -428,10 +430,34 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::fil
 		std::chrono::duration_cast<std::chrono::system_clock::duration>(
 			fileTime.time_since_epoch() - epoch_diff));
 #else
-	// on POSIX systems, the conversion should work directly
-	return std::chrono::system_clock::time_point(
-		std::chrono::duration_cast<std::chrono::system_clock::duration>(
-			fileTime.time_since_epoch()));
+	// On POSIX systems, file_time_type::clock may not be system_clock.
+	// Use clock_cast if available (C++20), otherwise use a runtime-calculated offset.
+	#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+		// C++20 with proper clock_cast support
+		return std::chrono::clock_cast<std::chrono::system_clock>(fileTime);
+	#else
+		// Fallback: calculate the offset between the two clock epochs.
+		// This works by assuming both clocks advance at the same rate (which they do).
+		// The offset is constant for the lifetime of the program.
+		using file_clock = std::filesystem::file_time_type::clock;
+		static const auto offset = []() -> std::chrono::nanoseconds {
+			// Get "now" from both clocks and compute the difference
+			auto sys_now = std::chrono::system_clock::now();
+			auto file_now = file_clock::now();
+
+			// The offset is the difference in their epochs
+			auto sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(sys_now.time_since_epoch());
+			auto file_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(file_now.time_since_epoch());
+
+			return sys_ns - file_ns;
+		}();
+
+		// Apply the offset to convert from file_clock to system_clock
+		auto file_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(fileTime.time_since_epoch());
+		auto sys_ns = file_ns + offset;
+		return std::chrono::system_clock::time_point(
+			std::chrono::duration_cast<std::chrono::system_clock::duration>(sys_ns));
+	#endif
 #endif
 }
 

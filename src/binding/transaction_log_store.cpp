@@ -141,8 +141,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 			try {
 				auto mtime = logFile->getLastWriteTime();
 				auto now = std::chrono::system_clock::now();
-				auto fileAge = now - mtime;
-				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(fileAge);
+				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime);
 
 				if (fileAgeMs <= this->retentionMs) {
 					continue; // file is too new, don't purge
