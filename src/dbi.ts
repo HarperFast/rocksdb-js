@@ -332,7 +332,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return this.store.getRange(this.#context, {
 			...options,
 			values: false
-		});
+		}).map(item => item.key);
 	}
 
 	/**
