@@ -2,8 +2,10 @@
 #define __UTIL_H__
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <condition_variable>
+#include <filesystem>
 #include <mutex>
 #include <node_api.h>
 #include <optional>
@@ -13,7 +15,7 @@
 #include <thread>
 #include "binding.h"
 #include "macros.h"
-#include "rocksdb/status.h"
+#include "rocksdb/db.h"
 
 /**
  * This file contains various napi helper functions.
@@ -38,6 +40,8 @@ struct Closable {
 };
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
+
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name);
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
@@ -206,6 +210,8 @@ template <typename T>
 	return getValue(env, value, result);
 }
 
+std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
+
 /**
  * Base class for async state.
  */
@@ -314,10 +320,10 @@ struct AsyncWorkHandle {
 	void unregisterAsyncWork() {
 		// notify if all work is complete
 		if (--this->activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 			this->asyncWorkComplete.notify_one();
 		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 		}
 	}
 
@@ -345,7 +351,7 @@ struct AsyncWorkHandle {
 		while (this->activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount.load())
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, this->activeAsyncWorkCount.load())
 				return;
 			}
 

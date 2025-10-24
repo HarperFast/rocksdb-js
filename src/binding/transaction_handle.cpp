@@ -13,19 +13,22 @@ namespace rocksdb_js {
  */
 TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
-	txn(nullptr),
 	disableSnapshot(disableSnapshot),
 	snapshotSet(false),
-	state(TransactionState::Pending)
+	state(TransactionState::Pending),
+	txn(nullptr)
 {
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = dbHandle->disableWAL;
+
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
-		this->txn = tdb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
 	} else if (dbHandle->descriptor->mode == DBMode::Optimistic) {
 		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::OptimisticTransactionOptions txnOptions;
-		this->txn = odb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
@@ -65,10 +68,9 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	// unregister this transaction handle from the descriptor
-	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(shared_from_this());
-	}
+	// The transaction should already be removed from the registry when committing/aborting
+	// so we don't need to call transactionRemove here to avoid race conditions and bad_weak_ptr errors
+	DEBUG_LOG("%p TransactionHandle::close transaction should already be removed from registry\n", this)
 
 	this->dbHandle.reset();
 }

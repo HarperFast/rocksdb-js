@@ -41,7 +41,8 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not
   need to exist, but the parent directories do.
 - `options: object` [optional]
-  - `name:string` The column family name. Defaults to `"default"`.
+  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log.
+  - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block
      caching is enabled by default and the cache is shared across all database
      instances.
@@ -52,6 +53,12 @@ Creates a new database instance.
   - `store: Store` A custom store that handles all interaction between the
     `RocksDatabase` or `Transaction` instances and the native database
     interface. See [Custom Store](#custom-store) for more information.
+  - `transactionLogMaxSize: number` The maximum size of a transaction log before
+    it is rotated to the next sequence number. Defaults to 16 MB.
+  - `transactionLogRetention: string | number` The number of minutes to retain
+    transaction logs before purging. Defaults to `'3d'` (3 days).
+  - `transactionLogsPath: string` The path to store transaction logs. Defaults
+    to `"${db.path}/transaction_logs"`.
 
 ### `db.close()`
 
@@ -596,6 +603,100 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 18.3.0 introduced a `--force-node-api-uncaught-exceptions-policy` flag which
 will cause errors to emit the `'uncaughtException'` event. Future Node.js
 releases will enable this flag by default.
+
+## Transaction Log
+
+A user controlled API for logging transactions. This API is designed to be
+generic so that you can log gets, puts, and deletes, but also arbitrary entries.
+
+### `db.listLogs(): string[]`
+
+Returns an array of log store names.
+
+```typescript
+const names = db.listLogs();
+```
+
+### `db.purgeLogs(options?): string[]`
+
+Deletes transaction log files older than the `transactionLogRetention` (defaults
+to 3 days).
+
+- `options: object`
+  - `destroy?: boolean` When `true`, deletes transaction log stores including
+    all log sequence files on disk.
+  - `name?: string` The name of a store to limit the purging to.
+
+Returns an array with the full path of each log file deleted.
+
+```typescript
+const removed = db.purgeLogs();
+console.log(`Removed ${removed.length} log files`);
+```
+
+### `db.useLog(name): TransactionLog`
+
+Gets or creates a `TransactionLog` instance. Internally, the `TransactionLog`
+interfaces with a shared transaction log store that is used by all threads.
+Multiple worker threads can use the same log at the same time.
+
+- `name: string | number` The name of the log. Numeric log names are converted
+  to a string.
+
+```typescript
+const log1 = db.useLog('foo');
+const log2 = db.useLog('foo'); // gets the exist instance (e.g. log1 === log2)
+const log3 = db.useLog(123);
+```
+
+### Class: `TransactionLog`
+
+The transaction callback is passed in a `Transaction` instance which contains
+all of the same data operations methods as the `RocksDatabase` instance plus:
+
+- `log.addEntry()`
+- `log.commit()`
+- `log.query()`
+
+#### `log.addEntry(timestamp, data, options?): void`
+
+Adds an entry to the log.
+
+- `timestamp: number` A numeric timestamp in the form as the number of
+  milliseconds elapsed since the epoch.
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `options?: LogEntryOptions` An optional object containing log settings.
+  - `transaction?: Transaction` A related transaction used to group entries
+    together.
+
+```typescript
+const log = db.useLog('foo');
+log.addEntry(Date.now(), Buffer.from('hello'));
+```
+
+#### `log.commit()`
+
+Writes the queued entries to disk.
+
+```typescript
+const log = db.useLog('foo');
+log.addEntry(Date.now(), Buffer.from('hello'), { transaction });
+log.addEntry(Date.now(), Buffer.from('world'), { transaction });
+log.commit();
+```
+
+#### `log.query()`
+
+Returns an iterator that retreives all entries for the given filter.
+
+```typescript
+const log = db.useLog('foo');
+const iter = log.query();
+for (const entry of iter) {
+  console.log(entry);
+}
+```
 
 ## Custom Store
 

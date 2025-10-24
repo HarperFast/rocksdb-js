@@ -7,7 +7,7 @@ namespace rocksdb_js {
 
 /**
  * The `NativeTransaction` JavaScript class implementation.
- * 
+ *
  * @example
  * ```js
  * const db = new binding.NativeDatabase();

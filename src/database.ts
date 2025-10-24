@@ -348,6 +348,15 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Prunes all transaction logs for the database.
+	 *
+	 * @returns A promise that resolves when the transaction logs have been pruned.
+	 */
+	async pruneTransactionLogs(): Promise<void> {
+		//
+	}
+
+	/**
 	 * Executes all operations in the callback as a single transaction.
 	 *
 	 * @param callback - A async function that receives the transaction as an argument.
