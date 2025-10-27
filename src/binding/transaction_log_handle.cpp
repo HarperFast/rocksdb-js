@@ -20,7 +20,6 @@ TransactionLogHandle::~TransactionLogHandle() {
 
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
-	uint64_t timestamp,
 	char* data,
 	size_t size,
 	napi_env env,
@@ -43,10 +42,7 @@ void TransactionLogHandle::addEntry(
 		throw std::runtime_error("Invalid transaction log store");
 	}
 
-	DEBUG_LOG("%p TransactionLogHandle::addEntry Adding entry to transaction %u (timestamp=%llu, size=%zu)\n",
-		this, transactionId, timestamp, size);
-	auto entry = std::make_unique<TransactionLogEntry>(store, timestamp, data, size, env, bufferRef);
-	txnHandle->addLogEntry(timestamp, std::move(entry));
+	txnHandle->addLogEntry(store, data, size, env, bufferRef);
 }
 
 void TransactionLogHandle::close() {

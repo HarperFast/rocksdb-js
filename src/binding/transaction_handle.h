@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "rocksdb/options.h"
@@ -75,7 +76,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * The start timestamp of the transaction.
 	 */
-	double startTimestamp;
+	int64_t startTimestamp;
 
 	/**
 	 * The state of the transaction.
@@ -88,9 +89,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	rocksdb::Transaction* txn;
 
 	/**
-	 * A map of timestamps to log entries.
+	 * A map of store names to their log entries.
+	 * This groups entries by store to enable efficient batch commits per store.
 	 */
-	std::unordered_map<uint64_t, std::vector<std::unique_ptr<TransactionLogEntry>>> entries;
+	std::unordered_map<std::string, std::vector<std::unique_ptr<TransactionLogEntry>>> entriesByStore;
 
 	TransactionHandle(
 		std::shared_ptr<DBHandle> dbHandle,
@@ -100,7 +102,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 	~TransactionHandle();
 
-	void addLogEntry(uint64_t timestamp, std::unique_ptr<TransactionLogEntry> entry);
+	void addLogEntry(
+		std::shared_ptr<TransactionLogStore> store,
+		char* data,
+		size_t size,
+		napi_env env,
+		napi_ref bufferRef
+	);
 
 	void close() override;
 

@@ -195,15 +195,17 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
 
-				DEBUG_LOG("%p Transaction::Commit committing log entries, %zu timestamps\n", txnHandle.get(), txnHandle->entries.size())
-				for (auto& [timestamp, logEntries] : txnHandle->entries) {
+				DEBUG_LOG("%p Transaction::Commit committing log entries from %zu stores\n",
+					txnHandle.get(), txnHandle->entriesByStore.size())
 
-					// THIS IS FLAWED!!
-					// 1 store reference + vector of entries
-
-					DEBUG_LOG("%p Transaction::Commit commit log entry batch with %zu entries for transaction %u (timestamp=%llu)\n",
-						txnHandle.get(), logEntry->store->name.c_str(), txnHandle->id, logEntry->timestamp, logEntry->size);
-					logEntry->store->commit(timestamp, logEntries);
+				// commit entries for each store
+				for (auto& [storeName, entries] : txnHandle->entriesByStore) {
+					if (!entries.empty() && entries[0]->store) {
+						DEBUG_LOG("%p Transaction::Commit committing %zu entries to store \"%s\" for transaction %u\n",
+							txnHandle.get(), entries.size(), storeName.c_str(), txnHandle->id);
+						// Use the transaction start timestamp as the commit timestamp
+						entries[0]->store->commit(txnHandle->startTimestamp, entries);
+					}
 				}
 
 				state->status = txnHandle->txn->Commit();
@@ -369,6 +371,18 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Retrieves the timestamp of the transaction.
+ */
+napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_TRANSACTION_HANDLE("GetTimestamp")
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, (*txnHandle)->startTimestamp, &result))
+	return result;
+}
+
+/**
  * Retrieves the ID of the transaction.
  */
 napi_value Transaction::Id(napi_env env, napi_callback_info info) {
@@ -423,6 +437,38 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Sets the timestamp of the transaction.
+ */
+napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_HANDLE("SetTimestamp")
+
+	int64_t timestamp = 0;
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
+
+	if (type == napi_undefined || type == napi_null) {
+		// use current timestamp
+		timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch()
+		).count();
+	} else if (type == napi_number) {
+		NAPI_STATUS_THROWS(::napi_get_value_int64(env, argv[0], &timestamp));
+		if (timestamp < 0) {
+			::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
+			return nullptr;
+		}
+	} else {
+		::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
+		return nullptr;
+	}
+
+	(*txnHandle)->startTimestamp = timestamp;
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
  * Creates a new transaction log instance bound to this transaction.
  */
 napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
@@ -463,9 +509,11 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setTimestamp", nullptr, SetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 

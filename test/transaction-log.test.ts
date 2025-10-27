@@ -81,7 +81,7 @@ describe('Transaction Log', () => {
 			await db.transaction(async (txn) => {
 				const value = Buffer.from('world');
 				txn.put(Buffer.from('hello'), value);
-				log.addEntry(Date.now(), value, txn.id);
+				log.addEntry(value, txn.id);
 			});
 		}));
 

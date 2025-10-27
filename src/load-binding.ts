@@ -24,14 +24,16 @@ export type NativeTransaction = {
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
 	getCount(options?: RangeOptions): number;
 	getSync(key: Key): Buffer;
+	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
+	setTimestamp(timestamp?: number): void;
 	useLog(name: string | number): TransactionLog;
 };
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
-	addEntry(commitTimestamp: number, data: Buffer | Uint8Array, txnId?: number): void;
+	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	query(): void;
 };
 

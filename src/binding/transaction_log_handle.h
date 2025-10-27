@@ -34,7 +34,6 @@ struct TransactionLogHandle final : Closable {
 
     void addEntry(
         uint32_t transactionId,
-        uint64_t timestamp,
         char* data,
         size_t size,
         napi_env env,

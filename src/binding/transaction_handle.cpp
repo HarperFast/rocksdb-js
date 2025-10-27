@@ -41,6 +41,10 @@ TransactionHandle::TransactionHandle(
 	}
 
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
+
+	this->startTimestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()
+	).count();
 }
 
 /**
@@ -50,10 +54,23 @@ TransactionHandle::~TransactionHandle() {
 	this->close();
 }
 
-void TransactionHandle::addLogEntry(uint64_t timestamp, std::unique_ptr<TransactionLogEntry> entry) {
-	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding entry to store \"%s\" for transaction %u (timestamp=%llu, size=%zu)\n",
-		this, entry->store->name.c_str(), this->id, timestamp, entry->size);
-	this->entries[timestamp].push_back(std::move(entry));
+/**
+ * Adds a log entry to the transaction.
+ */
+void TransactionHandle::addLogEntry(
+	std::shared_ptr<TransactionLogStore> store,
+	char* data,
+	size_t size,
+	napi_env env,
+	napi_ref bufferRef
+) {
+	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding entry to store \"%s\" for transaction %u (size=%zu)\n",
+		this, store->name.c_str(), this->id, size);
+
+	// Group entries by store name for efficient batch commits
+	this->entriesByStore[store->name].push_back(
+		std::make_unique<TransactionLogEntry>(store, data, size, env, bufferRef)
+	);
 }
 
 /**
@@ -81,7 +98,7 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	this->entries.clear();
+	this->entriesByStore.clear();
 
 	::napi_delete_reference(this->env, this->jsDatabaseRef);
 

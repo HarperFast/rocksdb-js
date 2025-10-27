@@ -19,11 +19,6 @@ struct TransactionLogEntry final {
 	std::shared_ptr<TransactionLogStore> store;
 
 	/**
-	 * The timestamp of the log entry.
-	 */
-	uint64_t timestamp;
-
-	/**
 	 * The data of the log entry.
 	 */
 	char* data;
@@ -48,14 +43,12 @@ struct TransactionLogEntry final {
 	 */
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
-		uint64_t timestamp,
 		char* data,
 		size_t size,
 		napi_env env,
 		napi_ref bufferRef
 	) :
 		store(store),
-		timestamp(timestamp),
 		data(data),
 		size(size),
 		env(env),

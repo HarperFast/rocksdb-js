@@ -82,24 +82,14 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
  * Adds an entry to the transaction log.
  */
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(3)
+	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
-
-	// timestamp
-	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
-	if (type != napi_number) {
-		::napi_throw_error(env, nullptr, "Invalid timestamp, expected a number");
-		return nullptr;
-	}
-	uint64_t timestamp;
-    NAPI_STATUS_THROWS(rocksdb_js::getValue(env, argv[0], timestamp));
 
 	// log entry
 	bool isBuffer;
-	NAPI_STATUS_THROWS(::napi_is_buffer(env, argv[1], &isBuffer));
+	NAPI_STATUS_THROWS(::napi_is_buffer(env, argv[0], &isBuffer));
 	bool isArrayBuffer;
-	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, argv[1], &isArrayBuffer));
+	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer));
 	if (!isBuffer && !isArrayBuffer) {
 		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
 		return nullptr;
@@ -107,20 +97,19 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 
 	char* data = nullptr;
 	size_t size = 0;
-	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&data), &size));
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&data), &size));
 	if (data == nullptr) {
 		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
 		return nullptr;
 	}
 
 	// transaction (only required if TransactionHandle isn't bound to a transaction)
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
-
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type));
 	uint32_t transactionId = (*txnLogHandle)->transactionId;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
 	if (type != napi_undefined) {
 		if (type == napi_number) {
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
+			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &transactionId));
 		} else {
 			transactionId = 0;
 		}
@@ -130,12 +119,12 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// create a reference to pin the buffer in memory (prevents GC until transaction commits/aborts)
+	// // create a reference to pin the buffer in memory (prevents GC)
 	napi_ref bufferRef = nullptr;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[1], 1, &bufferRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
 
 	try {
-		(*txnLogHandle)->addEntry(transactionId, timestamp, data, size, env, bufferRef);
+		(*txnLogHandle)->addEntry(transactionId, data, size, env, bufferRef);
 	} catch (const std::exception& e) {
 		// if addEntry fails, clean up the buffer reference
 		::napi_delete_reference(env, bufferRef);
