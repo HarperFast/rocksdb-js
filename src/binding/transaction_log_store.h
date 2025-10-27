@@ -71,7 +71,6 @@ struct TransactionLogStore final {
 
 	~TransactionLogStore();
 
-	// void addEntry(const uint64_t timestamp, const char* data, const size_t size);
 	void close();
 	void commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
 	void query();

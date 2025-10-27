@@ -27,39 +27,31 @@ TransactionLogStore::~TransactionLogStore() {
 	this->close();
 }
 
-/**
- * Adds an entry to the transaction log store.
- */
-// void TransactionLogStore::addEntry(const uint64_t timestamp, const char* data, const size_t size) {
-// 	std::lock_guard<std::mutex> lock(this->storeMutex);
-
-// 	std::vector<std::pair<uint64_t, std::vector<char>>> actions;
-// 	actions.emplace_back(timestamp, std::vector<char>(data, data + size));
-
-// 	// DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store \"%s\" (seq=%u)\n",
-// 	// 	this, this->name.c_str(), this->currentSequenceNumber)
-
-// 	// get the current log file and rotate if needed
-// 	auto logFile = this->getLogFile(this->currentSequenceNumber);
-// 	if (logFile->size >= this->maxSize) {
-// 		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
-// 			this, this->nextSequenceNumber)
-// 		this->currentSequenceNumber = this->nextSequenceNumber++;
-// 		logFile = this->getLogFile(this->currentSequenceNumber);
-// 	}
-
-	// TODO: create header
-
-	// logFile->writeToFile(data, size);
-// }
-
 void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
 	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, entries.size(), this->name.c_str(), timestamp)
 
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+
+	// get the current log file and rotate if needed
+	auto logFile = this->getLogFile(this->currentSequenceNumber);
+	if (logFile->size >= this->maxSize) {
+		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
+			this, this->nextSequenceNumber)
+		this->currentSequenceNumber = this->nextSequenceNumber++;
+		logFile = this->getLogFile(this->currentSequenceNumber);
+	}
+
+	// TODO: initialize block tracking
+
 	for (auto& entry : entries) {
 		DEBUG_LOG("%p TransactionLogStore::commit Adding entry to store \"%s\" (size=%zu)\n",
 			this, entry->store->name.c_str(), entry->size)
+
+		// TODO: create header (timestamp, flags, offset)
+		// this->startTimestamp
+
+		// logFile->writeToFile(entry->data, entry->size);
 	}
 }
 
@@ -77,9 +69,7 @@ void TransactionLogStore::close() {
 	}
 
 	std::unique_lock<std::mutex> lock(this->storeMutex);
-
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str())
-
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
 		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
 		logFile->close();
