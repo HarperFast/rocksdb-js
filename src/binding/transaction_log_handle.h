@@ -9,14 +9,37 @@
 namespace rocksdb_js {
 
 struct TransactionLogHandle final : Closable {
+    /**
+     * The database handle.
+     */
+    std::weak_ptr<DBHandle> dbHandle;
+
+    /**
+     * The transaction log store.
+     */
+    std::weak_ptr<TransactionLogStore> store;
+
+    /**
+     * The name of the transaction log store.
+     */
+    std::string logName;
+
+    /**
+     * The transaction id.
+     */
+    uint32_t transactionId;
+
     TransactionLogHandle(const std::shared_ptr<DBHandle>& dbHandle, const std::string& logName);
     ~TransactionLogHandle();
 
-    std::weak_ptr<DBHandle> dbHandle;
-    std::weak_ptr<TransactionLogStore> store;
-    std::string logName;
-
-    void addEntry(uint64_t timestamp, char* data, size_t size);
+    void addEntry(
+        uint32_t transactionId,
+        uint64_t timestamp,
+        char* data,
+        size_t size,
+        napi_env env,
+        napi_ref bufferRef
+    );
     void close();
     void query();
 };

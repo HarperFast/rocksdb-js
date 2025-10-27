@@ -11,8 +11,15 @@ namespace rocksdb_js {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
+TransactionHandle::TransactionHandle(
+	std::shared_ptr<DBHandle> dbHandle,
+	napi_env env,
+	napi_ref jsDatabaseRef,
+	bool disableSnapshot
+) :
 	dbHandle(dbHandle),
+	env(env),
+	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
 	snapshotSet(false),
 	state(TransactionState::Pending),
@@ -43,6 +50,12 @@ TransactionHandle::~TransactionHandle() {
 	this->close();
 }
 
+void TransactionHandle::addLogEntry(uint64_t timestamp, std::unique_ptr<TransactionLogEntry> entry) {
+	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding entry to store \"%s\" for transaction %u (timestamp=%llu, size=%zu)\n",
+		this, entry->store->name.c_str(), this->id, timestamp, entry->size);
+	this->entries[timestamp].push_back(std::move(entry));
+}
+
 /**
  * Release the transaction. This is called after successful commit, after
  * the transaction has been aborted, or when the transaction is destroyed.
@@ -68,8 +81,13 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	// The transaction should already be removed from the registry when committing/aborting
-	// so we don't need to call transactionRemove here to avoid race conditions and bad_weak_ptr errors
+	this->entries.clear();
+
+	::napi_delete_reference(this->env, this->jsDatabaseRef);
+
+	// The transaction should already be removed from the registry when
+	// committing/aborting  so we don't need to call transactionRemove here to
+	// avoid race conditions and bad_weak_ptr errors
 	DEBUG_LOG("%p TransactionHandle::close transaction should already be removed from registry\n", this)
 
 	this->dbHandle.reset();

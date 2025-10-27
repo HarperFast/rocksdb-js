@@ -7,6 +7,7 @@
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
 namespace rocksdb_js {
@@ -70,8 +71,9 @@ struct TransactionLogStore final {
 
 	~TransactionLogStore();
 
-	void addEntry(const uint64_t timestamp, const char* data, const size_t size);
+	// void addEntry(const uint64_t timestamp, const char* data, const size_t size);
 	void close();
+	void commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
 	void query();
 	void purge(
 		std::function<void(const std::filesystem::path&)> visitor = nullptr,

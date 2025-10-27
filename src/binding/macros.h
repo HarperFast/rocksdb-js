@@ -144,18 +144,18 @@
 
 #define NAPI_CONSTRUCTOR_ARGV(className, n) \
 	NAPI_CHECK_NEW_TARGET(className) \
-	napi_value args[n]; \
+	napi_value argv[n]; \
 	size_t argc = n; \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, nullptr))
 
 #define NAPI_CONSTRUCTOR_ARGV_WITH_DATA(className, n) \
 	NAPI_CHECK_NEW_TARGET(className) \
-	napi_value args[n]; \
+	napi_value argv[n]; \
 	size_t argc = n; \
 	napi_value jsThis; \
 	void* data; \
-	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, reinterpret_cast<void**>(&data)))
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, reinterpret_cast<void**>(&data)))
 
 #define NAPI_METHOD() \
 	napi_value jsThis; \

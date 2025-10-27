@@ -48,9 +48,9 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("TransactionLog", 2)
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
-	NAPI_GET_DB_HANDLE(args[0], exportsRef, dbHandle, "Invalid argument, expected Database instance")
+	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance")
 
-	NAPI_GET_STRING(args[1], name, "Transaction log store name is required")
+	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required")
 
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
 		std::make_shared<TransactionLogHandle>(*dbHandle, name)
@@ -104,6 +104,7 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
 		return nullptr;
 	}
+
 	char* data = nullptr;
 	size_t size = 0;
 	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&data), &size));
@@ -112,37 +113,35 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// options
-	napi_valuetype optionsType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &optionsType));
-	if (optionsType != napi_undefined && optionsType != napi_null) {
-		if (optionsType != napi_object) {
-			::napi_throw_error(env, nullptr, "Invalid options, expected an object");
-			return nullptr;
+	// transaction (only required if TransactionHandle isn't bound to a transaction)
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
+
+	uint32_t transactionId = (*txnLogHandle)->transactionId;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
+	if (type != napi_undefined) {
+		if (type == napi_number) {
+			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
+		} else {
+			transactionId = 0;
 		}
-
-		// TODO: handle `options.transaction`
 	}
-
-	try {
-		(*txnLogHandle)->addEntry(timestamp, data, size);
-	} catch (const std::exception& e) {
-		::napi_throw_error(env, nullptr, e.what());
+	if (transactionId == 0) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected a transaction id");
 		return nullptr;
 	}
 
-	NAPI_RETURN_UNDEFINED()
-}
+	// create a reference to pin the buffer in memory (prevents GC until transaction commits/aborts)
+	napi_ref bufferRef = nullptr;
+	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[1], 1, &bufferRef));
 
-/**
- * Commits the transaction log.
- */
-napi_value TransactionLog::Commit(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("Commit")
-
-	// Now you can use (*txnLogHandle) to access the TransactionLogHandle
-	// TODO: Implement the actual commit functionality
+	try {
+		(*txnLogHandle)->addEntry(transactionId, timestamp, data, size, env, bufferRef);
+	} catch (const std::exception& e) {
+		// if addEntry fails, clean up the buffer reference
+		::napi_delete_reference(env, bufferRef);
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED()
 }
@@ -175,7 +174,6 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 

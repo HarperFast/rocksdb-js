@@ -51,68 +51,6 @@ struct DBDeleter {
  * RocksDB instances.
  */
 struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
-private:
-    DBDescriptor(
-        const std::string& path,
-        const DBOptions& options,
-        std::shared_ptr<rocksdb::DB> db,
-        std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
-    );
-
-public:
-    static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
-    ~DBDescriptor();
-
-	void attach(Closable* closable);
-	void detach(Closable* closable);
-
-	void lockCall(
-		napi_env env,
-		std::string& key,
-		napi_value callback,
-		napi_deferred deferred,
-		std::shared_ptr<DBHandle> owner
-	);
-	void lockEnqueueCallback(
-		napi_env env,
-		std::string& key,
-		napi_value callback,
-		std::shared_ptr<DBHandle> owner,
-		bool skipEnqueueIfExists,
-		napi_deferred deferred,
-		bool* isNewLock
-	);
-	bool lockExistsByKey(std::string& key);
-	bool lockReleaseByKey(std::string& key);
-	void lockReleaseByOwner(DBHandle* owner);
-	void onCallbackComplete(const std::string& key);
-
-	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
-	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
-	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
-	uint32_t transactionGetNextId();
-
-	napi_value getUserSharedBuffer(
-		napi_env env,
-		std::string& key,
-		napi_value defaultBuffer,
-		napi_ref callbackRef = nullptr
-	);
-
-	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
-	bool notify(std::string key, ListenerData* data);
-	napi_value listeners(napi_env env, std::string& key);
-	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
-	void removeListenersByOwner(DBHandle* owner);
-
-	napi_value listTransactionLogStores(napi_env env);
-	napi_value purgeTransactionLogs(napi_env env, napi_value options);
-	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
-
-private:
-	void discoverTransactionLogStores();
-
-public:
 	/**
 	 * The path of the database.
 	 */
@@ -219,6 +157,66 @@ public:
 	 * Mutex to protect the transaction logs map.
 	 */
 	std::mutex transactionLogMutex;
+
+private:
+    DBDescriptor(
+        const std::string& path,
+        const DBOptions& options,
+        std::shared_ptr<rocksdb::DB> db,
+        std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
+    );
+
+	void discoverTransactionLogStores();
+
+public:
+    static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
+    ~DBDescriptor();
+
+	void attach(Closable* closable);
+	void detach(Closable* closable);
+
+	void lockCall(
+		napi_env env,
+		std::string& key,
+		napi_value callback,
+		napi_deferred deferred,
+		std::shared_ptr<DBHandle> owner
+	);
+	void lockEnqueueCallback(
+		napi_env env,
+		std::string& key,
+		napi_value callback,
+		std::shared_ptr<DBHandle> owner,
+		bool skipEnqueueIfExists,
+		napi_deferred deferred,
+		bool* isNewLock
+	);
+	bool lockExistsByKey(std::string& key);
+	bool lockReleaseByKey(std::string& key);
+	void lockReleaseByOwner(DBHandle* owner);
+	void onCallbackComplete(const std::string& key);
+
+	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
+	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
+	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
+	uint32_t transactionGetNextId();
+
+	napi_value getUserSharedBuffer(
+		napi_env env,
+		std::string& key,
+		napi_value defaultBuffer,
+		napi_ref callbackRef = nullptr
+	);
+
+	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
+	bool notify(std::string key, ListenerData* data);
+	napi_value listeners(napi_env env, std::string& key);
+	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
+	void removeListenersByOwner(DBHandle* owner);
+
+	napi_value listTransactionLogStores(napi_env env);
+	napi_value purgeTransactionLogs(napi_env env, napi_value options);
+	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 };
 
 /**

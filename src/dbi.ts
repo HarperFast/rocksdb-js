@@ -560,6 +560,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @returns The transaction log.
 	 */
 	useLog(name: string | number): TransactionLog {
-		return this.store.useLog(name);
+		return this.store.useLog(this.#context, name);
 	}
 }

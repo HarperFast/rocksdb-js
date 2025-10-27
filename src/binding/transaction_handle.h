@@ -8,13 +8,14 @@
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
+#include "transaction_log_entry.h"
 #include "util.h"
 
 namespace rocksdb_js {
 
-// forward declare DBHandle and DBIteratorOptions because of circular dependency
 struct DBHandle;
 struct DBIteratorOptions;
+struct TransactionLogStore;
 
 /**
  * Transaction state enumeration
@@ -35,10 +36,71 @@ enum class TransactionState {
  *
  * This handle contains `get()`, `put()`, and `remove()` methods which are
  * shared between the `Database` and `Transaction` classes.
+ *
+ * Each instance of this class is bound to a JavaScript `Transaction` instance.
+ * Since a JS instance is bound to a single thread, we don't need any mutexes.
  */
 struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_from_this<TransactionHandle> {
-	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
+	/**
+	 * The database handle.
+	 */
+	std::shared_ptr<DBHandle> dbHandle;
+
+	/**
+	 * The node environment. This is needed to release the database reference
+	 * when the transaction is closed.
+	 */
+	napi_env env;
+
+	/**
+	 * A reference to the main `rocksdb_js` exports object.
+	 */
+	napi_ref jsDatabaseRef;
+
+	/**
+	 * Whether to disable snapshots.
+	 */
+	bool disableSnapshot;
+
+	/**
+	 * The transaction id assigned by the database descriptor.
+	 */
+	uint32_t id;
+
+	/**
+	 * Whether a snapshot has been set.
+	 */
+	bool snapshotSet;
+
+	/**
+	 * The start timestamp of the transaction.
+	 */
+	double startTimestamp;
+
+	/**
+	 * The state of the transaction.
+	 */
+	TransactionState state;
+
+	/**
+	 * The RocksDB transaction.
+	 */
+	rocksdb::Transaction* txn;
+
+	/**
+	 * A map of timestamps to log entries.
+	 */
+	std::unordered_map<uint64_t, std::vector<std::unique_ptr<TransactionLogEntry>>> entries;
+
+	TransactionHandle(
+		std::shared_ptr<DBHandle> dbHandle,
+		napi_env env,
+		napi_ref jsDatabaseRef,
+		bool disableSnapshot = false
+	);
 	~TransactionHandle();
+
+	void addLogEntry(uint64_t timestamp, std::unique_ptr<TransactionLogEntry> entry);
 
 	void close() override;
 
@@ -81,14 +143,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		rocksdb::Slice& key,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
-
-	std::shared_ptr<DBHandle> dbHandle;
-	bool disableSnapshot;
-	uint32_t id;
-	bool snapshotSet;
-	double startTimestamp;
-	TransactionState state;
-	rocksdb::Transaction* txn;
 };
 
 } // namespace rocksdb_js

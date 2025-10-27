@@ -8,6 +8,7 @@
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "db_options.h"
+#include "transaction_log_store.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -47,6 +48,11 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * A reference to the main `rocksdb_js` exports object.
 	 */
 	napi_ref exportsRef;
+
+	/**
+	 * The default transaction log store.
+	 */
+	std::weak_ptr<TransactionLogStore> defaultLog;
 
 	/**
 	 * A map of transaction log store names to `TransactionLog` JavaScript

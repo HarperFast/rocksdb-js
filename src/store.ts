@@ -619,11 +619,15 @@ export class Store {
 	/**
 	 * Gets or creates a transaction log instance.
 	 *
+	 * @param context - The context to use for the transaction log.
 	 * @param name - The name of the transaction log.
 	 * @returns The transaction log.
 	 */
-	useLog(name: string | number): TransactionLog {
-		return this.db.useLog(String(name));
+	useLog(
+		context: NativeDatabase | NativeTransaction,
+		name: string | number
+	): TransactionLog {
+		return context.useLog(String(name));
 	}
 
 	/**

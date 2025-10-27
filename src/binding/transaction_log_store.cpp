@@ -30,27 +30,37 @@ TransactionLogStore::~TransactionLogStore() {
 /**
  * Adds an entry to the transaction log store.
  */
-void TransactionLogStore::addEntry(const uint64_t timestamp, const char* data, const size_t size) {
-	// TODO: if this `addEntry()` call is a transaction, then buffer the entry
-	// until `commit()` is called
+// void TransactionLogStore::addEntry(const uint64_t timestamp, const char* data, const size_t size) {
+// 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+// 	std::vector<std::pair<uint64_t, std::vector<char>>> actions;
+// 	actions.emplace_back(timestamp, std::vector<char>(data, data + size));
 
-	// DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store \"%s\" (seq=%u)\n",
-	// 	this, this->name.c_str(), this->currentSequenceNumber)
+// 	// DEBUG_LOG("%p TransactionLogStore::addEntry Adding entry to store \"%s\" (seq=%u)\n",
+// 	// 	this, this->name.c_str(), this->currentSequenceNumber)
 
-	// get the current log file and rotate if needed
-	auto logFile = this->getLogFile(this->currentSequenceNumber);
-	if (logFile->size >= this->maxSize) {
-		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
-			this, this->nextSequenceNumber)
-		this->currentSequenceNumber = this->nextSequenceNumber++;
-		logFile = this->getLogFile(this->currentSequenceNumber);
-	}
+// 	// get the current log file and rotate if needed
+// 	auto logFile = this->getLogFile(this->currentSequenceNumber);
+// 	if (logFile->size >= this->maxSize) {
+// 		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
+// 			this, this->nextSequenceNumber)
+// 		this->currentSequenceNumber = this->nextSequenceNumber++;
+// 		logFile = this->getLogFile(this->currentSequenceNumber);
+// 	}
 
 	// TODO: create header
 
-	logFile->writeToFile(data, size);
+	// logFile->writeToFile(data, size);
+// }
+
+void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
+	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
+		this, entries.size(), this->name.c_str(), timestamp)
+
+	for (auto& entry : entries) {
+		DEBUG_LOG("%p TransactionLogStore::commit Adding entry to store \"%s\" (timestamp=%llu, size=%zu)\n",
+			this, entry->store->name.c_str(), entry->timestamp, entry->size)
+	}
 }
 
 /**

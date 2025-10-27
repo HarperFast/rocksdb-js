@@ -53,7 +53,7 @@ DBDescriptor::~DBDescriptor() {
 		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
 		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size())
 		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store %s\n", this, name.c_str())
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str())
 			transactionLogStore->close();
 		}
 		this->transactionLogStores.clear();

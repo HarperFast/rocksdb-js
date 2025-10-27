@@ -31,6 +31,14 @@ namespace rocksdb_js {
  * @param env - The NAPI environment.
  * @param info - The callback info.
  * @returns The new `NativeTransaction` object.
+ *
+ * @example
+ * ```ts
+ * const db = RocksDatabase.open('/path/to/database');
+ * const txn = new NativeTransaction(db);
+ * txn.putSync('key', 'value');
+ * await txn.commit();
+ * ```
  */
 napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Transaction", 2)
@@ -40,54 +48,42 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_reference_value(env, exportsRef, &exports))
 
 	napi_value databaseCtor;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor))
-
 	bool isDatabase = false;
-	NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], databaseCtor, &isDatabase))
-
-	bool disableSnapshot = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, args[1], "disableSnapshot", disableSnapshot));
-
-	std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
-
-	if (isDatabase) {
-		std::shared_ptr<DBHandle>* dbHandle = nullptr;
-		NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&dbHandle)))
-		DEBUG_LOG("Transaction::Constructor Initializing transaction handle with Database instance (dbHandle=%p, use_count=%zu)\n", (*dbHandle).get(), (*dbHandle).use_count())
-		if (dbHandle == nullptr || !(*dbHandle)->opened()) {
-			::napi_throw_error(env, nullptr, "Database not open");
-			return nullptr;
-		}
-		txnHandle = new std::shared_ptr<TransactionHandle>(std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot));
-
-		if ((*dbHandle)->descriptor->closing.load()) {
-			::napi_throw_error(env, nullptr, "Database is closing!");
-			return nullptr;
-		}
-
-		(*dbHandle)->descriptor->transactionAdd(*txnHandle);
-	} else {
-		DEBUG_LOG("Transaction::Constructor Using existing transaction handle (txnHandle=%p, txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id)
-		napi_value transactionCtor;
-		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor))
-
-		bool isTransaction = false;
-		NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], transactionCtor, &isTransaction))
-
-		if (isTransaction) {
-			DEBUG_LOG("Transaction::Constructor Received Transaction instance (txnHandle=%p, txnId=%u)\n", txnHandle, (*txnHandle)->id)
-			NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&txnHandle)))
-		} else {
-			napi_valuetype type;
-			NAPI_STATUS_THROWS(::napi_typeof(env, args[0], &type))
-			std::string errorMsg = "Invalid context, expected Database or Transaction instance, got type " + std::to_string(type);
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			return nullptr;
-		}
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor))
+	NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], databaseCtor, &isDatabase))
+	if (!isDatabase) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected Database instance");
+		return nullptr;
 	}
 
+	std::shared_ptr<DBHandle>* dbHandle = nullptr;
+	NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&dbHandle)))
+
+	if (dbHandle == nullptr || !(*dbHandle)->opened()) {
+		::napi_throw_error(env, nullptr, "Database not open");
+		return nullptr;
+	}
+
+	if ((*dbHandle)->descriptor->closing.load()) {
+		::napi_throw_error(env, nullptr, "Database is closing!");
+		return nullptr;
+	}
+
+	bool disableSnapshot = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "disableSnapshot", disableSnapshot));
+
+	napi_ref jsDatabaseRef;
+	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 0, &jsDatabaseRef))
+
+	// create shared_ptr on heap so it persists after function returns
+	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
+		std::make_shared<TransactionHandle>(*dbHandle, env, jsDatabaseRef, disableSnapshot)
+	);
+
+	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
+
 	DEBUG_LOG(
-		"Transaction::Constructor txnHandle=%p txnId=%u dbHandle=%p dbDescriptor=%p use_count=%ld\n",
+		"%p Transaction::Constructor Intializing transaction %u (dbHandle=%p, dbDescriptor=%p, use_count=%ld)\n",
 		(*txnHandle).get(),
 		(*txnHandle)->id,
 		(*txnHandle)->dbHandle.get(),
@@ -198,6 +194,18 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
+
+				DEBUG_LOG("%p Transaction::Commit committing log entries, %zu timestamps\n", txnHandle.get(), txnHandle->entries.size())
+				for (auto& [timestamp, logEntries] : txnHandle->entries) {
+
+					// THIS IS FLAWED!!
+					// 1 store reference + vector of entries
+
+					DEBUG_LOG("%p Transaction::Commit commit log entry batch with %zu entries for transaction %u (timestamp=%llu)\n",
+						txnHandle.get(), logEntry->store->name.c_str(), txnHandle->id, logEntry->timestamp, logEntry->size);
+					logEntry->store->commit(timestamp, logEntries);
+				}
+
 				state->status = txnHandle->txn->Commit();
 				if (state->status.ok()) {
 					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%u\n", txnHandle.get(), txnHandle->id)
@@ -267,6 +275,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED()
 	}
 	(*txnHandle)->state = TransactionState::Committing;
+
+	// TODO: if there's a transaction log, we need to commit it
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
@@ -413,6 +423,36 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Creates a new transaction log instance bound to this transaction.
+ */
+napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], name, "Name is required")
+	UNWRAP_TRANSACTION_HANDLE("UseLog")
+
+	// this needs to create a new TransactionLog instance that is not tracked by
+	// the DBHandle and is bound to this transaction
+	napi_value exports;
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports))
+
+	napi_value transactionLogCtor;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor))
+
+	napi_value jsDatabase;
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, (*txnHandle)->jsDatabaseRef, &jsDatabase))
+
+	napi_value args[2];
+	args[0] = jsDatabase;
+
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]))
+
+	napi_value instance;
+	NAPI_STATUS_THROWS(::napi_new_instance(env, transactionLogCtor, 2, args, &instance))
+
+	return instance;
+}
+
+/**
  * Initializes the `NativeTransaction` JavaScript class.
  */
 void Transaction::Init(napi_env env, napi_value exports) {
@@ -425,7 +465,8 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr }
+		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	auto className = "Transaction";

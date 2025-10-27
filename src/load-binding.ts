@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
 import type { Context } from './store.js';
-import type { Transaction } from './transaction.js';
 
 export type TransactionOptions = {
 	/**
@@ -27,16 +26,12 @@ export type NativeTransaction = {
 	getSync(key: Key): Buffer;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
-};
-
-export type LogEntryOptions = {
-	transaction?: Transaction;
+	useLog(name: string | number): TransactionLog;
 };
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
-	addEntry(commitTimestamp: number, data: Buffer | Uint8Array, options?: LogEntryOptions): void;
-	commit(): void;
+	addEntry(commitTimestamp: number, data: Buffer | Uint8Array, txnId?: number): void;
 	query(): void;
 };
 
