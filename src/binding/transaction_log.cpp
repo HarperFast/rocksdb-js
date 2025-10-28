@@ -82,7 +82,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
  * Adds an entry to the transaction log.
  */
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(3)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
 
 	// log entry
@@ -119,15 +119,26 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// // create a reference to pin the buffer in memory (prevents GC)
+	bool copy = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &copy));
+
 	napi_ref bufferRef = nullptr;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
 
 	try {
-		(*txnLogHandle)->addEntry(transactionId, data, size, env, bufferRef);
+		if (copy) {
+			std::unique_ptr<char[]> copyData(new char[size]);
+			::memcpy(copyData.get(), data, size);
+			(*txnLogHandle)->addEntry(transactionId, std::move(copyData), size);
+		} else {
+			// create a reference to pin the buffer in memory (prevents GC)
+			NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
+			(*txnLogHandle)->addEntry(transactionId, data, size, env, bufferRef);
+		}
 	} catch (const std::exception& e) {
 		// if addEntry fails, clean up the buffer reference
-		::napi_delete_reference(env, bufferRef);
+		if (bufferRef != nullptr) {
+			::napi_delete_reference(env, bufferRef);
+		}
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}

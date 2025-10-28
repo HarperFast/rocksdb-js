@@ -20,6 +20,32 @@ TransactionLogHandle::~TransactionLogHandle() {
 
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
+	std::unique_ptr<char[]> data,
+	size_t size
+) {
+	auto dbHandle = this->dbHandle.lock();
+	if (!dbHandle) {
+		throw std::runtime_error("Database has been closed");
+	}
+
+	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
+	if (!txnHandle) {
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Transaction id %u not found\n", this, transactionId)
+		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
+	}
+
+	auto store = this->store.lock();
+	if (!store) {
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Invalid transaction log store\n", this)
+		throw std::runtime_error("Invalid transaction log store");
+	}
+
+	auto entry = std::make_unique<TransactionLogEntry>(store, std::move(data), size);
+	txnHandle->addLogEntry(std::move(entry));
+}
+
+void TransactionLogHandle::addEntry(
+	uint32_t transactionId,
 	char* data,
 	size_t size,
 	napi_env env,
@@ -42,7 +68,8 @@ void TransactionLogHandle::addEntry(
 		throw std::runtime_error("Invalid transaction log store");
 	}
 
-	txnHandle->addLogEntry(store, data, size, env, bufferRef);
+	auto entry = std::make_unique<TransactionLogEntry>(store, data, size, env, bufferRef);
+	txnHandle->addLogEntry(std::move(entry));
 }
 
 void TransactionLogHandle::close() {

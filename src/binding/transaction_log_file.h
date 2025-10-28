@@ -40,6 +40,16 @@ struct TransactionLogFile final {
 #endif
 
 	/**
+	 * The version of the file format.
+	 */
+	uint32_t version;
+
+	/**
+	 * The size of the block in bytes.
+	 */
+	uint32_t blockSize;
+
+	/**
 	 * The size of the file in bytes. This needs to be atomic because write is
 	 * async and doesn't block other threads from writing and thus size needs to
 	 * be updated atomically.

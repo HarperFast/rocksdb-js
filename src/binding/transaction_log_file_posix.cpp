@@ -6,8 +6,15 @@
 
 namespace rocksdb_js {
 
-TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq)
-	: path(p), sequenceNumber(seq), fd(-1), size(0), activeOperations(0) {}
+TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
+	path(p),
+	sequenceNumber(seq),
+	fd(-1),
+	version(1),
+	blockSize(4096),
+	size(0),
+	activeOperations(0)
+{}
 
 /**
  * Closes the log file.
@@ -66,6 +73,16 @@ void TransactionLogFile::open() {
 
 	std::string pathStr = this->path.string();
 	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, size=%zu)\n", pathStr.c_str(), this->fd, this->size.load());
+
+	// try to read the version and block size from the file
+	uint32_t version = 0;
+	uint32_t blockSize = 0;
+	int64_t result = this->readFromFile(&version, sizeof(version), 0);
+	if (result < 0) {
+		throw std::runtime_error("Failed to read version from file: " + this->path.string());
+	}
+	this->version = version;
+	this->blockSize = blockSize;
 }
 
 /**

@@ -33,8 +33,15 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
     return message;
 }
 
-TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq)
-	: path(p), sequenceNumber(seq), fileHandle(INVALID_HANDLE_VALUE), size(0), activeOperations(0) {}
+TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
+	path(p),
+	sequenceNumber(seq),
+	fileHandle(INVALID_HANDLE_VALUE),
+	size(0),
+	version(1),
+	blockSize(4096),
+	activeOperations(0)
+{}
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);

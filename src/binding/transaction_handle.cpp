@@ -57,20 +57,10 @@ TransactionHandle::~TransactionHandle() {
 /**
  * Adds a log entry to the transaction.
  */
-void TransactionHandle::addLogEntry(
-	std::shared_ptr<TransactionLogStore> store,
-	char* data,
-	size_t size,
-	napi_env env,
-	napi_ref bufferRef
-) {
-	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding entry to store \"%s\" for transaction %u (size=%zu)\n",
-		this, store->name.c_str(), this->id, size);
-
-	// Group entries by store name for efficient batch commits
-	this->entriesByStore[store->name].push_back(
-		std::make_unique<TransactionLogEntry>(store, data, size, env, bufferRef)
-	);
+void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
+	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
+		this, entry->store->name.c_str(), this->id, entry->size);
+	this->entriesByStore[entry->store->name].push_back(std::move(entry));
 }
 
 /**

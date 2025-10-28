@@ -24,6 +24,12 @@ struct TransactionLogEntry final {
 	char* data;
 
 	/**
+	 * Owned data (when we own the memory).
+	 * If this is set, `data` points to the same memory and will be freed automatically.
+	 */
+	std::unique_ptr<char[]> ownedData;
+
+	/**
 	 * The size of the log entry.
 	 */
 	size_t size;
@@ -43,6 +49,22 @@ struct TransactionLogEntry final {
 	 */
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
+		std::unique_ptr<char[]> data,
+		size_t size
+	) :
+		store(store),
+		data(data.get()),
+		ownedData(std::move(data)),
+		size(size),
+		env(nullptr),
+		bufferRef(nullptr)
+	{}
+
+	/**
+	 * Creates a new transaction log entry.
+	 */
+	TransactionLogEntry(
+		std::shared_ptr<TransactionLogStore> store,
 		char* data,
 		size_t size,
 		napi_env env,
@@ -50,6 +72,7 @@ struct TransactionLogEntry final {
 	) :
 		store(store),
 		data(data),
+		ownedData(nullptr),
 		size(size),
 		env(env),
 		bufferRef(bufferRef)

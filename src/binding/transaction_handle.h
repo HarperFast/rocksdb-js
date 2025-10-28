@@ -102,13 +102,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 	~TransactionHandle();
 
-	void addLogEntry(
-		std::shared_ptr<TransactionLogStore> store,
-		char* data,
-		size_t size,
-		napi_env env,
-		napi_ref bufferRef
-	);
+	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
 	void close() override;
 
