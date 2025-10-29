@@ -48,7 +48,6 @@ void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std
 
 		// TODO: create header (timestamp, flags, offset)
 		// this->startTimestamp
-
 		// logFile->writeToFile(entry->data, entry->size);
 	}
 }

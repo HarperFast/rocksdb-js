@@ -278,7 +278,15 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
-	// TODO: if there's a transaction log, we need to commit it
+	// commit entries for each store
+	for (auto& [storeName, entries] : (*txnHandle)->entriesByStore) {
+		if (!entries.empty() && entries[0]->store) {
+			DEBUG_LOG("%p Transaction::Commit committing %zu entries to store \"%s\" for transaction %u\n",
+				(*txnHandle).get(), entries.size(), storeName.c_str(), (*txnHandle)->id);
+			// Use the transaction start timestamp as the commit timestamp
+			entries[0]->store->commit((*txnHandle)->startTimestamp, entries);
+		}
+	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
