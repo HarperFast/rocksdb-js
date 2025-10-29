@@ -74,15 +74,29 @@ void TransactionLogFile::open() {
 	std::string pathStr = this->path.string();
 	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, size=%zu)\n", pathStr.c_str(), this->fd, this->size.load());
 
-	// try to read the version and block size from the file
-	uint32_t version = 0;
-	uint32_t blockSize = 0;
-	int64_t result = this->readFromFile(&version, sizeof(version), 0);
-	if (result < 0) {
-		throw std::runtime_error("Failed to read version from file: " + this->path.string());
+	// read the file header
+	char buffer[4];
+	if (st.st_size < 8) {
+		// file is empty, initialize it
+		writeUint32BE(buffer, this->version);
+		this->writeToFile(buffer, sizeof(buffer));
+		writeUint32BE(buffer, this->blockSize);
+		this->writeToFile(buffer, sizeof(buffer));
+		this->size.store(8);
+	} else {
+		// try to read the version and block size from the file
+		int64_t result = this->readFromFile(buffer, sizeof(buffer), 0);
+		if (result < 0) {
+			throw std::runtime_error("Failed to read version from file: " + this->path.string());
+		}
+		this->version = readUint32BE(buffer);
+
+		result = this->readFromFile(buffer, sizeof(buffer), 4);
+		if (result < 0) {
+			throw std::runtime_error("Failed to block size from file: " + this->path.string());
+		}
+		this->blockSize = readUint32BE(buffer);
 	}
-	this->version = version;
-	this->blockSize = blockSize;
 }
 
 /**

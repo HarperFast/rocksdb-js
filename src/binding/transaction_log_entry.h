@@ -19,13 +19,12 @@ struct TransactionLogEntry final {
 	std::shared_ptr<TransactionLogStore> store;
 
 	/**
-	 * The data of the log entry.
+	 * The log entry data of the log entry owned by Node.js.
 	 */
 	char* data;
 
 	/**
-	 * Owned data (when we own the memory).
-	 * If this is set, `data` points to the same memory and will be freed automatically.
+	 * The log entry data owned by rocksdb-js.
 	 */
 	std::unique_ptr<char[]> ownedData;
 
@@ -45,7 +44,7 @@ struct TransactionLogEntry final {
 	napi_ref bufferRef;
 
 	/**
-	 * Creates a new transaction log entry.
+	 * Creates a new transaction log entry by copy.
 	 */
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
@@ -61,7 +60,7 @@ struct TransactionLogEntry final {
 	{}
 
 	/**
-	 * Creates a new transaction log entry.
+	 * Creates a new transaction log entry by reference.
 	 */
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,

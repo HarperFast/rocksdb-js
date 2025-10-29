@@ -80,6 +80,13 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 
 /**
  * Adds an entry to the transaction log.
+ *
+ * @example
+ * ```ts
+ * const log = db.useLog('foo');
+ * log.addEntry(Buffer.from('hello'), txn.id);
+ * log.addEntry(Buffer.from('world'), txn.id, true);
+ * ```
  */
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
@@ -120,7 +127,13 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	}
 
 	bool copy = false;
-	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &copy));
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
+	if (type == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &copy));
+	} else if (type != napi_undefined) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected copy flag to be a boolean");
+		return nullptr;
+	}
 
 	napi_ref bufferRef = nullptr;
 
