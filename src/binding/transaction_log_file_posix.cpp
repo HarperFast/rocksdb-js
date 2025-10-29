@@ -72,7 +72,6 @@ void TransactionLogFile::open() {
 	this->size.store(st.st_size);
 
 	std::string pathStr = this->path.string();
-	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, size=%zu)\n", pathStr.c_str(), this->fd, this->size.load());
 
 	// read the file header
 	char buffer[4];
@@ -97,6 +96,11 @@ void TransactionLogFile::open() {
 		}
 		this->blockSize = readUint32BE(buffer);
 	}
+
+	this->blockCount.store((this->size.load() - 8) / this->blockSize);
+
+	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, version=%u, size=%zu, blockSize=%u, blockCount=%u)\n",
+		pathStr.c_str(), this->fd, this->version, this->size.load(), this->blockSize, this->blockCount.load())
 }
 
 /**

@@ -7,4 +7,5 @@ node_modules
 .claude
 .DS_Store
 .env
+.pnpm-store
 .vscode

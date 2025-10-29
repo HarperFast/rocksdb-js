@@ -50,6 +50,11 @@ struct TransactionLogFile final {
 	uint32_t blockSize;
 
 	/**
+	 * The number of blocks in the file.
+	 */
+	std::atomic<uint32_t> blockCount;
+
+	/**
 	 * The size of the file in bytes. This needs to be atomic because write is
 	 * async and doesn't block other threads from writing and thus size needs to
 	 * be updated atomically.

@@ -42,8 +42,6 @@ void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std
 		logFile = this->getLogFile(this->currentSequenceNumber);
 	}
 
-	// TODO: initialize block tracking
-
 	for (auto& entry : entries) {
 		DEBUG_LOG("%p TransactionLogStore::commit Adding entry to store \"%s\" (size=%zu)\n",
 			this, entry->store->name.c_str(), entry->size)
