@@ -119,7 +119,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	return convertFileTimeToSystemTime(mtime);
 }
 
-int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
+int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	// acquire mutex to safely check if file needs opening and increment activeOperations
 	{
 		std::unique_lock<std::mutex> lock(this->fileMutex);
@@ -159,7 +159,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offs
 	return success ? static_cast<int64_t>(bytesRead) : -1;
 }
 
-int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t offset) {
+int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
 	// acquire mutex to safely check if file needs opening and increment activeOperations
 	{
 		std::unique_lock<std::mutex> lock(this->fileMutex);
