@@ -1,3 +1,4 @@
+#include <cmath>
 #include "transaction_log_file.h"
 
 // include platform-specific implementation
