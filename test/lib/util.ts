@@ -88,20 +88,22 @@ export async function dbRunner(
 			db?.close();
 		}
 
-		const retries = 3;
-		for (let i = 0; i < retries && dbPaths.size > 0; i++) {
-			for (const dbPath of dbPaths) {
-				try {
-					await rimraf(dbPath);
-					dbPaths.delete(dbPath);
-					break;
-				} catch (e) {
-					if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
-						await delay(150);
-						// try again, but skip after 3 attempts
-					} else {
-						// eslint-disable-next-line no-unsafe-finally
-						throw e;
+		if (!process.env.KEEP_TEMP) {
+			const retries = 3;
+			for (let i = 0; i < retries && dbPaths.size > 0; i++) {
+				for (const dbPath of dbPaths) {
+					try {
+						await rimraf(dbPath);
+						dbPaths.delete(dbPath);
+						break;
+					} catch (e) {
+						if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
+							await delay(150);
+							// try again, but skip after 3 attempts
+						} else {
+							// eslint-disable-next-line no-unsafe-finally
+							throw e;
+						}
 					}
 				}
 			}

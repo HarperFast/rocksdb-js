@@ -59,15 +59,13 @@ void TransactionLogFile::close() {
 	}
 }
 
-void TransactionLogFile::open() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
+void TransactionLogFile::openFile() {
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
-		DEBUG_LOG("TransactionLogFile::open File already open: %s\n", this->path.string().c_str())
+		DEBUG_LOG("TransactionLogFile::openFile File already open: %s\n", this->path.string().c_str())
 		return;
 	}
 
-	DEBUG_LOG("TransactionLogFile::open Opening file: %s\n", this->path.string().c_str())
+	DEBUG_LOG("TransactionLogFile::openFile Opening file: %s\n", this->path.string().c_str())
 
 	// ensure parent directory exists (may have been deleted by purge())
 	auto parentPath = this->path.parent_path();
@@ -84,7 +82,7 @@ void TransactionLogFile::open() {
 	if (this->fileHandle == INVALID_HANDLE_VALUE) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("TransactionLogFile::open Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
+		DEBUG_LOG("TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
 			this->path.string().c_str(), error, errorMessage.c_str())
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
 	}
@@ -94,14 +92,11 @@ void TransactionLogFile::open() {
 	if (!GetFileSizeEx(this->fileHandle, &fileSize)) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("TransactionLogFile::open Failed to get file size: %s (error=%lu: %s)\n",
+		DEBUG_LOG("TransactionLogFile::openFile Failed to get file size: %s (error=%lu: %s)\n",
 			this->path.string().c_str(), error, errorMessage.c_str())
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = static_cast<size_t>(fileSize.QuadPart);
-
-	DEBUG_LOG("TransactionLogFile::open Opened %s (handle=%p, size=%zu)\n",
-		this->path.string().c_str(), this->fileHandle, this->size);
 }
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {

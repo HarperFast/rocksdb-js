@@ -53,11 +53,6 @@ struct TransactionLogFile final {
 	uint32_t version = 1;
 
 	/**
-	 * The flag indicating if the file is valid.
-	 */
-	bool isValid = false;
-
-	/**
 	 * The size of the block in bytes.
 	 */
 	uint32_t blockSize = 4096;
@@ -106,15 +101,51 @@ struct TransactionLogFile final {
 
 	~TransactionLogFile();
 
+	/**
+	 * Closes the log file.
+	 */
 	void close();
-	void open();
+
+	/**
+	 * Opens the log file for reading and writing.
+	 */
+ 	void open();
+
+	/**
+	 * Gets the last write time of the log file.
+	 */
 	std::chrono::system_clock::time_point getLastWriteTime();
-	int64_t readFromFile(void* buffer, uint32_t size, uint32_t offset = -1);
-	int64_t writeToFile(const void* buffer, uint32_t size, uint32_t offset = -1);
-	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
+
+	/**
+	 * Writes a batch of transaction log entries to the log file.
+	 */
 	void writeEntries(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
 
 private:
+	/**
+	 * Platform specific function that opens the log file for reading and writing.
+	 */
+	void openFile();
+
+	/**
+	 * Platform specific function that reads data from the log file.
+	 */
+	int64_t readFromFile(void* buffer, uint32_t size, int64_t offset = -1);
+
+	/**
+	 * Platform specific function that writes data to the log file.
+	 */
+	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
+
+	/**
+	 * Platform specific function that writes multiple buffers to the log file.
+	 */
+	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
+
+	/**
+	 * Writes a batch of transaction log entries to the log file using version 1
+	 * of the transaction log file format.
+	 */
 	void writeEntriesV1(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
 };
 

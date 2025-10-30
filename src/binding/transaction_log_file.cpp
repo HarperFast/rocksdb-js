@@ -13,6 +13,44 @@ TransactionLogFile::~TransactionLogFile() {
 	this->close();
 }
 
+void TransactionLogFile::open() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	this->openFile();
+
+	// read the file header
+	char buffer[4];
+	if (this->size == 0) {
+		// file is empty, initialize it
+		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s\n", this, this->path.string().c_str())
+		writeUint32BE(buffer, this->version);
+		this->writeToFile(buffer, sizeof(buffer));
+		writeUint32BE(buffer, this->blockSize);
+		this->writeToFile(buffer, sizeof(buffer));
+		this->size = 8;
+	} else if (this->size < 8) {
+		throw std::runtime_error("File is too small to be a valid transaction log file: " + this->path.string());
+	} else {
+		// try to read the version and block size from the file
+		int64_t result = this->readFromFile(buffer, sizeof(buffer), 0);
+		if (result < 0) {
+			throw std::runtime_error("Failed to read version from file: " + this->path.string());
+		}
+		this->version = readUint32BE(buffer);
+
+		result = this->readFromFile(buffer, sizeof(buffer), 4);
+		if (result < 0) {
+			throw std::runtime_error("Failed to block size from file: " + this->path.string());
+		}
+		this->blockSize = readUint32BE(buffer);
+	}
+
+	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size - 8) / this->blockSize));
+	this->blockCount = blockCount;
+
+	DEBUG_LOG("%p TransactionLogFile::open Opened %s (fd=%d, version=%u, size=%zu, blockSize=%u, blockCount=%u)\n",
+		this, this->path.string().c_str(), this->fd, this->version, this->size, this->blockSize, blockCount)
+}
+
 void TransactionLogFile::writeEntries(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries (timestamp=%llu)\n",
 		this, entries.size(), timestamp)
@@ -26,7 +64,6 @@ void TransactionLogFile::writeEntries(const uint64_t timestamp, const std::vecto
 }
 
 void TransactionLogFile::writeEntriesV1(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
-	// acquire fileMutex for exclusive access to the log file metadata
 	std::unique_lock<std::mutex> fileLock(this->fileMutex);
 
 	const uint32_t BLOCK_HEADER_SIZE = 12;
@@ -56,9 +93,10 @@ void TransactionLogFile::writeEntriesV1(const uint64_t timestamp, const std::vec
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Total transaction size=%u, currentBlockSize=%u, availableInCurrentBlock=%u, dataForCurrentBlock=%u, dataForNewBlocks=%u, numNewBlocks=%u\n",
 		this, totalTxnSize, currentBlockSize, availableInCurrentBlock, dataForCurrentBlock, dataForNewBlocks, numNewBlocks)
 
-	// build the write buffers for writev
-	// Allocate buffers: one for appending to current block (if any) + buffers for new blocks
-	// Maximum iovecs needed: 1 (current block data) + numNewBlocks * 2 (header + body per new block)
+	/*
+	// build the write buffers
+	// allocate buffers: one for appending to current block (if any) + buffers for new blocks
+	// maximum iovecs needed: 1 (current block data) + numNewBlocks * 2 (header + body per new block)
 	uint32_t maxIovecs = (dataForCurrentBlock > 0 ? 1 : 0) + (numNewBlocks * 2);
 	auto blockHeaders = std::make_unique<char[]>(numNewBlocks * BLOCK_HEADER_SIZE);
 	auto blockBodies = std::make_unique<char[]>((dataForCurrentBlock > 0 ? dataForCurrentBlock : 0) + (numNewBlocks * BLOCK_BODY_SIZE));
@@ -263,6 +301,7 @@ void TransactionLogFile::writeEntriesV1(const uint64_t timestamp, const std::vec
 
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Updated currentBlockSize=%u, added %u blocks, total blockCount=%u\n",
 		this, newBlockSize, blocksAdded, this->blockCount)
+	*/
 }
 
 } // namespace rocksdb_js

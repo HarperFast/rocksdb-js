@@ -75,15 +75,49 @@ struct TransactionLogStore final {
 
 	~TransactionLogStore();
 
+	/**
+	 * Closes the transaction log store and all associated log files.
+	 * This method waits for all active operations to complete before closing.
+	 */
 	void close();
+
+	/**
+	 * Writes a batch of transaction log entries to the store.
+	 */
 	void commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
+
+	/**
+	 * Queries the transaction log store.
+	 */
 	void query();
+
+	/**
+	 * Purges transaction logs.
+	 */
 	void purge(
 		std::function<void(const std::filesystem::path&)> visitor = nullptr,
 		const bool all = false
 	);
+
+	/**
+	 * Registers a log file for the given sequence number.
+	 *
+	 * @param path The path to the log file to register.
+	 * @param sequenceNumber The sequence number of the log file to register.
+	 */
 	void registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
 
+	/**
+	 * Load all transaction logs from a directory into a new transaction log store
+	 * instance. If the retention period is set, any transaction logs that are older
+	 * than the retention period will be removed.
+	 *
+	 * @param path The path to the transaction log store directory.
+	 * @param maxSize The maximum size of a transaction log before it is rotated to
+	 * the next sequence number.
+	 * @param retentionMs The retention period for transaction logs.
+	 * @returns The transaction log store.
+	 */
 	static std::shared_ptr<TransactionLogStore> load(
 		const std::filesystem::path& path,
 		const uint32_t maxSize,
@@ -91,6 +125,15 @@ struct TransactionLogStore final {
 	);
 
 private:
+	/**
+	 * Opens a log file for the given sequence number. If the log file does not
+	 * exist, it will be created.
+	 *
+	 * Important! This method must be called with `storeMutex` already locked.
+	 *
+	 * @param sequenceNumber The sequence number of the log file to open.
+	 * @returns The log file.
+	 */
 	TransactionLogFile* getLogFile(const uint32_t sequenceNumber);
 };
 

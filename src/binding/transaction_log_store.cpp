@@ -24,29 +24,6 @@ TransactionLogStore::~TransactionLogStore() {
 	this->close();
 }
 
-void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
-	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
-		this, entries.size(), this->name.c_str(), timestamp)
-
-	std::lock_guard<std::mutex> lock(this->storeMutex);
-
-	// get the current log file and rotate if needed
-	auto logFile = this->getLogFile(this->currentSequenceNumber);
-	if (logFile->size >= this->maxSize) {
-		DEBUG_LOG("%p TransactionLogStore::commit Store is full, rotating to next sequence number: %u\n",
-			this, this->nextSequenceNumber)
-		this->currentSequenceNumber = this->nextSequenceNumber++;
-		logFile = this->getLogFile(this->currentSequenceNumber);
-	}
-
-	// delegate to the log file to write the entries
-	logFile->writeEntries(timestamp, entries);
-}
-
-/**
- * Closes the transaction log store and all associated log files.
- * This method waits for all active operations to complete before closing.
- */
 void TransactionLogStore::close() {
 	// set the closing flag to prevent concurrent closes
 	bool expected = false;
@@ -67,15 +44,34 @@ void TransactionLogStore::close() {
 	this->purge();
 }
 
-/**
- * Opens a log file for the given sequence number. If the log file does not
- * exist, it will be created.
- *
- * Important! This method must be called with `storeMutex` already locked.
- *
- * @param sequenceNumber The sequence number of the log file to open.
- * @returns The log file.
- */
+void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
+	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
+		this, entries.size(), this->name.c_str(), timestamp)
+
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	TransactionLogFile* logFile = nullptr;
+
+	// get the current log file and rotate if needed
+	while (logFile == nullptr && this->currentSequenceNumber) {
+		logFile = this->getLogFile(this->currentSequenceNumber);
+
+		// we found a log file, check the size
+		if (logFile->size < this->maxSize) {
+			try {
+				logFile->open();
+				break;
+			} catch (const std::exception& e) {
+				DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
+			}
+		}
+
+		this->currentSequenceNumber = this->nextSequenceNumber++;
+	}
+
+	// delegate to the log file to write the entries
+	logFile->writeEntries(timestamp, entries);
+}
+
 TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
@@ -97,9 +93,6 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 	return logFile;
 }
 
-/**
- * Queries the transaction log store.
- */
 void TransactionLogStore::query() {
 	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store \"%s\"\n", this, this->name.c_str())
 
@@ -110,9 +103,6 @@ void TransactionLogStore::query() {
 	// 4. Close the memory mapped files
 }
 
-/**
- * Purges transaction logs.
- */
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
@@ -172,12 +162,6 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	}
 }
 
-/**
- * Registers a log file for the given sequence number.
- *
- * @param path The path to the log file to register.
- * @param sequenceNumber The sequence number of the log file to register.
- */
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
@@ -197,17 +181,6 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this, path.string().c_str(), sequenceNumber)
 }
 
-/**
- * Load all transaction logs from a directory into a new transaction log store
- * instance. If the retention period is set, any transaction logs that are older
- * than the retention period will be removed.
- *
- * @param path The path to the transaction log store directory.
- * @param maxSize The maximum size of a transaction log before it is rotated to
- * the next sequence number.
- * @param retentionMs The retention period for transaction logs.
- * @returns The transaction log store.
- */
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
 	const uint32_t maxSize,
