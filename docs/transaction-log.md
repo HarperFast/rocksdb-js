@@ -179,6 +179,16 @@ await db.transaction((txn) => {
 });
 ```
 
+### Transaction Scoped Log
+
+```javascript
+await db.transaction((txn) => {
+  const log = txn.useLog('log1');
+  log.addEntry(Buffer.from('some data'));
+  log.addEntry(Buffer.from('some more data'));
+});
+```
+
 ## Implementation Notes
 
 ### Memory Management

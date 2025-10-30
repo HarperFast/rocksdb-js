@@ -16,10 +16,7 @@ TransactionLogStore::TransactionLogStore(
 	name(name),
 	path(path),
 	maxSize(maxSize),
-	retentionMs(retentionMs),
-	currentSequenceNumber(1),
-	nextSequenceNumber(2),
-	isClosing(false)
+	retentionMs(retentionMs)
 {}
 
 TransactionLogStore::~TransactionLogStore() {
@@ -36,20 +33,14 @@ void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std
 	// get the current log file and rotate if needed
 	auto logFile = this->getLogFile(this->currentSequenceNumber);
 	if (logFile->size >= this->maxSize) {
-		DEBUG_LOG("%p TransactionLogStore::addEntry Store is full, rotating to next sequence number: %u\n",
+		DEBUG_LOG("%p TransactionLogStore::commit Store is full, rotating to next sequence number: %u\n",
 			this, this->nextSequenceNumber)
 		this->currentSequenceNumber = this->nextSequenceNumber++;
 		logFile = this->getLogFile(this->currentSequenceNumber);
 	}
 
-	for (auto& entry : entries) {
-		DEBUG_LOG("%p TransactionLogStore::commit Adding entry to store \"%s\" (size=%zu)\n",
-			this, entry->store->name.c_str(), entry->size)
-
-		// TODO: create header (timestamp, flags, offset)
-		// this->startTimestamp
-		// logFile->writeToFile(entry->data, entry->size);
-	}
+	// delegate to the log file to write the entries
+	logFile->writeEntries(timestamp, entries);
 }
 
 /**

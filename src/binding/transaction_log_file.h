@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include "transaction_log_entry.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -21,9 +22,16 @@
 	#endif
 	#include <windows.h>
 	#include <io.h>
+
+	// define iovec for Windows compatibility
+	struct iovec {
+		void* iov_base;
+		size_t iov_len;
+	};
 #else
 	#include <fcntl.h>
 	#include <unistd.h>
+	#include <sys/uio.h>
 #endif
 #include <sys/stat.h>
 
@@ -42,37 +50,45 @@ struct TransactionLogFile final {
 	/**
 	 * The version of the file format.
 	 */
-	uint32_t version;
+	uint32_t version = 1;
+
+	/**
+	 * The flag indicating if the file is valid.
+	 */
+	bool isValid = false;
 
 	/**
 	 * The size of the block in bytes.
 	 */
-	uint32_t blockSize;
+	uint32_t blockSize = 4096;
 
 	/**
 	 * The size of the current block in bytes.
+	 * Protected by fileMutex.
 	 */
-	std::atomic<uint32_t> currentBlockSize;
+	uint32_t currentBlockSize = 0;
 
 	/**
 	 * The number of blocks in the file.
+	 * Protected by fileMutex.
 	 */
-	std::atomic<uint32_t> blockCount;
+	uint32_t blockCount = 0;
 
 	/**
-	 * The size of the file in bytes. This needs to be atomic because write is
-	 * async and doesn't block other threads from writing and thus size needs to
-	 * be updated atomically.
+	 * The size of the file in bytes.
+	 * Protected by fileMutex.
 	 */
-	std::atomic<uint32_t> size;
+	uint32_t size = 0;
 
 	/**
 	 * The number of active operations on the file.
+	 * Used with closeCondition for safe shutdown coordination.
 	 */
-	std::atomic<uint32_t> activeOperations;
+	std::atomic<uint32_t> activeOperations = 0;
 
 	/**
-	 * The mutex used to protect the file.
+	 * The mutex used to protect the file and its metadata
+	 * (currentBlockSize, blockCount, size).
 	 */
 	std::mutex fileMutex;
 
@@ -95,6 +111,11 @@ struct TransactionLogFile final {
 	std::chrono::system_clock::time_point getLastWriteTime();
 	int64_t readFromFile(void* buffer, uint32_t size, uint32_t offset = -1);
 	int64_t writeToFile(const void* buffer, uint32_t size, uint32_t offset = -1);
+	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
+	void writeEntries(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
+
+private:
+	void writeEntriesV1(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
 };
 
 } // namespace rocksdb_js

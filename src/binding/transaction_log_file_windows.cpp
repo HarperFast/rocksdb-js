@@ -36,11 +36,7 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
 	path(p),
 	sequenceNumber(seq),
-	fileHandle(INVALID_HANDLE_VALUE),
-	size(0),
-	version(1),
-	blockSize(4096),
-	activeOperations(0)
+	fileHandle(INVALID_HANDLE_VALUE)
 {}
 
 void TransactionLogFile::close() {
@@ -102,10 +98,10 @@ void TransactionLogFile::open() {
 			this->path.string().c_str(), error, errorMessage.c_str())
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
-	this->size.store(static_cast<size_t>(fileSize.QuadPart));
+	this->size = static_cast<size_t>(fileSize.QuadPart);
 
 	DEBUG_LOG("TransactionLogFile::open Opened %s (handle=%p, size=%zu)\n",
-		this->path.string().c_str(), this->fileHandle, this->size.load());
+		this->path.string().c_str(), this->fileHandle, this->size);
 }
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
@@ -197,20 +193,8 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t
 	DWORD bytesWritten;
 	bool success = ::WriteFile(this->fileHandle, buffer, size, &bytesWritten, nullptr);
 
-	if (success && bytesWritten > 0) {
-		// update size if write was successful
-		if (offset >= 0) {
-			// for writes at specific offset, update size if we wrote beyond current end
-			size_t newEnd = static_cast<size_t>(offset) + static_cast<size_t>(bytesWritten);
-			size_t currentSize = this->size.load();
-			while (newEnd > currentSize && !this->size.compare_exchange_weak(currentSize, newEnd)) {
-				// retry if compare_exchange_weak failed due to concurrent modification
-			}
-		} else {
-			// for append writes, add to current size
-			this->size.fetch_add(static_cast<size_t>(bytesWritten));
-		}
-	}
+	// Note: size is not updated here because it will be updated by the caller
+	// while holding fileMutex to ensure consistency with other metadata
 
 	// decrement active operations counter
 	this->activeOperations.fetch_sub(1);
@@ -221,6 +205,114 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t
 	}
 
 	return success ? static_cast<int64_t>(bytesWritten) : -1;
+}
+
+/**
+ * Writes multiple buffers to the log file using WriteFileGather().
+ */
+int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
+	if (iovcnt == 0) {
+		return 0;
+	}
+
+	// acquire mutex to safely check if file needs opening and increment activeOperations
+	{
+		std::unique_lock<std::mutex> lock(this->fileMutex);
+
+		// ensure file is open BEFORE incrementing activeOperations to avoid deadlock
+		if (this->fileHandle == INVALID_HANDLE_VALUE) {
+			lock.unlock();
+			this->open();
+			lock.lock();
+		}
+
+		// increment active operations counter while holding the lock
+		this->activeOperations.fetch_add(1);
+	}
+
+	// Calculate total bytes to write
+	DWORD totalBytes = 0;
+	for (int i = 0; i < iovcnt; i++) {
+		totalBytes += static_cast<DWORD>(iovecs[i].iov_len);
+	}
+
+	// Convert iovec array to FILE_SEGMENT_ELEMENT array
+	// FILE_SEGMENT_ELEMENT requires page-aligned buffers for true scatter-gather,
+	// but we can also use it with regular buffers
+	std::vector<FILE_SEGMENT_ELEMENT> segments(iovcnt + 1); // +1 for null terminator
+	for (int i = 0; i < iovcnt; i++) {
+		segments[i].Buffer = iovecs[i].iov_base;
+	}
+	segments[iovcnt].Buffer = nullptr; // null terminator
+
+	// Get current file position for overlapped structure
+	LARGE_INTEGER currentPos;
+	currentPos.QuadPart = 0;
+	if (!SetFilePointerEx(this->fileHandle, currentPos, &currentPos, FILE_CURRENT)) {
+		this->activeOperations.fetch_sub(1);
+		if (this->activeOperations.load() == 0) {
+			this->closeCondition.notify_all();
+		}
+		return -1;
+	}
+
+	// Set up overlapped structure for WriteFileGather
+	OVERLAPPED overlapped = {0};
+	overlapped.Offset = currentPos.LowPart;
+	overlapped.OffsetHigh = currentPos.HighPart;
+
+	// WriteFileGather requires an event for synchronous operation
+	overlapped.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+	if (overlapped.hEvent == nullptr) {
+		this->activeOperations.fetch_sub(1);
+		if (this->activeOperations.load() == 0) {
+			this->closeCondition.notify_all();
+		}
+		return -1;
+	}
+
+	// Perform the gathered write
+	bool success = ::WriteFileGather(this->fileHandle, segments.data(), totalBytes, nullptr, &overlapped);
+	DWORD error = GetLastError();
+
+	if (!success && error != ERROR_IO_PENDING) {
+		CloseHandle(overlapped.hEvent);
+		this->activeOperations.fetch_sub(1);
+		if (this->activeOperations.load() == 0) {
+			this->closeCondition.notify_all();
+		}
+		return -1;
+	}
+
+	// Wait for the operation to complete
+	DWORD bytesWritten;
+	if (!GetOverlappedResult(this->fileHandle, &overlapped, &bytesWritten, TRUE)) {
+		CloseHandle(overlapped.hEvent);
+		this->activeOperations.fetch_sub(1);
+		if (this->activeOperations.load() == 0) {
+			this->closeCondition.notify_all();
+		}
+		return -1;
+	}
+
+	CloseHandle(overlapped.hEvent);
+
+	// Update file pointer
+	LARGE_INTEGER newPos;
+	newPos.QuadPart = currentPos.QuadPart + bytesWritten;
+	SetFilePointerEx(this->fileHandle, newPos, nullptr, FILE_BEGIN);
+
+	// Note: size is not updated here because it will be updated by the caller
+	// while holding fileMutex to ensure consistency with other metadata
+
+	this->activeOperations.fetch_sub(1);
+
+	// notify if this was the last operation
+	if (this->activeOperations.load() == 0) {
+		this->closeCondition.notify_all();
+	}
+
+	return static_cast<int64_t>(bytesWritten);
 }
 
 } // namespace rocksdb_js

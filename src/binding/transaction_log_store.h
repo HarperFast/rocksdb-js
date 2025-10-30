@@ -12,6 +12,10 @@
 
 namespace rocksdb_js {
 
+// forward declarations
+struct TransactionLogEntry;
+struct TransactionLogFile;
+
 struct TransactionLogStore final {
 	/**
 	 * The name of the transaction log store.
@@ -36,12 +40,12 @@ struct TransactionLogStore final {
 	/**
 	 * The current sequence number of the transaction log file.
 	 */
-	uint32_t currentSequenceNumber;
+	uint32_t currentSequenceNumber = 1;
 
 	/**
 	 * The next sequence number to use for the transaction log file.
 	 */
-	uint32_t nextSequenceNumber;
+	uint32_t nextSequenceNumber = 2;
 
 	/**
 	 * The map of sequence numbers to transaction log files.
@@ -60,7 +64,7 @@ struct TransactionLogStore final {
 	 * This is used to prevent concurrent closes and to ensure that no new
 	 * operations are added to the store after it is closed.
 	 */
-	std::atomic<bool> isClosing;
+	std::atomic<bool> isClosing = false;
 
 	TransactionLogStore(
 		const std::string& name,
