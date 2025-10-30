@@ -4,14 +4,14 @@
 
 The transaction log system provides an append-only, binary log format for recording database transactions. The format is designed for:
 
-- **Durability**: 4KB-aligned blocks for efficient filesystem I/O
+- **Durability**: 4KB block size for fast traversal using binary search
 - **Portability**: Big-endian encoding for platform independence
 - **Efficiency**: Zero-padded blocks minimize write amplification
 - **Scalability**: Support for multi-block transactions of arbitrary size
 
 ## File Structure
 
-Each transaction log file (`.txnlog`) consists of one or more 4KB blocks. Files are rotated based on a configurable maximum size (default: 16MB).
+Each transaction log file (`.txnlog`) consists of a file header followed by zero or more 4KB blocks. Files are rotated based on a configurable maximum size (default: 16MB).
 
 ### Naming Convention
 
@@ -23,6 +23,17 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 
 ## Binary Format Specification
 
+### File Header (8 bytes)
+
+```
++------------------+
+| Format Version   | 4 bytes
++------------------+
+| Block Size       | 4 bytes
++------------------+
+Total: 8 bytes
+```
+
 ### Block Structure (4096 bytes)
 
 Each block is exactly 4KB and contains:
@@ -33,8 +44,6 @@ Each block is exactly 4KB and contains:
 +------------------+
 | Block Body       | 4084 bytes
 +------------------+
-| Zero Padding     | (if needed)
-+------------------+
 Total: 4096 bytes
 ```
 
@@ -42,81 +51,54 @@ Total: 4096 bytes
 
 All multi-byte integers are encoded in **big-endian** format.
 
-| Offset | Size | Type    | Field       | Description                                    |
-|--------|------|---------|-------------|------------------------------------------------|
-| 0      | 8    | uint64  | timestamp   | Block timestamp (milliseconds since epoch)     |
-| 8      | 2    | uint16  | flags       | Block flags (see below)                        |
-| 10     | 2    | uint16  | dataOffset  | Offset where valid data starts (usually 12)    |
+| Offset | Size | Type    | Field       | Description                                 |
+|--------|------|---------|-------------|---------------------------------------------|
+| 0      | 8    | uint64  | timestamp   | Block timestamp (milliseconds since epoch)  |
+| 8      | 2    | uint16  | flags       | Block flags (see below)                     |
+| 10     | 2    | uint16  | dataOffset  | Offset where next transaction block starts  |
 
 #### Block Flags
 
-| Bit | Flag         | Description                                             |
-|-----|--------------|---------------------------------------------------------|
-| 0   | CONTINUATION | This block continues data from the previous block       |
-| 1   | HAS_MORE     | Transaction data continues in the next block            |
-| 2-15| Reserved     | Reserved for future use (must be 0)                     |
+| Bit  | Flag         | Description                                        |
+|------|--------------|----------------------------------------------------|
+| 0    | CONTINUATION | This block continues data from the previous block  |
+| 1-15 | Reserved     | Reserved for future use (must be 0)                |
 
 ### Block Body (4084 bytes)
 
 The block body contains transaction data. If the data is less than 4084 bytes, the remainder is zero-padded.
 
+If the `CONTINUATION` flag is not set, then the `dataOffset` must be `12`. If the flag is set, then the `dataOffset` indicates where the next transaction header begins within the block body.
+
 ## Transaction Format
 
 Transactions are stored within block bodies. A transaction consists of a header followed by one or more actions.
 
-### Transaction Header (16 bytes)
+### Transaction Header (12 bytes)
 
-| Offset | Size | Type    | Field        | Description                                    |
-|--------|------|---------|--------------|------------------------------------------------|
-| 0      | 8    | uint64  | timestamp    | Earliest action timestamp in the transaction   |
-| 8      | 2    | uint16  | flags        | Transaction flags (reserved, must be 0)        |
-| 10     | 2    | uint16  | actionCount  | Number of actions in this transaction          |
-| 12     | 4    | uint32  | totalLength  | Total transaction size including header (bytes)|
-
-**Important**: The `actionCount` field groups actions together. All actions within a transaction are written consecutively, and this count indicates how many actions belong to the same logical transaction.
-
-### Action Structure
-
-Each action consists of a header followed by the action data.
-
-#### Action Header (12 bytes)
-
-| Offset | Size | Type    | Field      | Description                                    |
-|--------|------|---------|------------|------------------------------------------------|
-| 0      | 8    | uint64  | timestamp  | Action timestamp (milliseconds since epoch)    |
-| 8      | 4    | uint32  | dataLength | Length of action data in bytes                 |
-
-#### Action Data (variable)
-
-Raw binary data stored in big-endian format. The interpretation of this data is application-specific.
+| Offset | Size | Type    | Field      | Description                                   |
+|--------|------|---------|------------|-----------------------------------------------|
+| 0      | 8    | uint64  | timestamp  | Earliest action timestamp in the transaction  |
+| 8      | 4    | uint32  | length     | Total size of the transaction body (bytes)    |
 
 ## Multi-Block Transactions
 
 When a transaction exceeds 4084 bytes (the block body size), it spans multiple blocks:
 
 1. **First Block**:
-   - Contains block header (flags = 0 or HAS_MORE if continued)
+   - Contains block header (flags = 0)
    - Contains start of transaction data
-   - Block body is zero-padded to 4KB
 
 2. **Continuation Blocks**:
    - Block header has CONTINUATION flag set
-   - If more blocks follow, HAS_MORE flag is also set
    - Block body continues transaction data from previous block
-   - Zero-padded to 4KB
-
-3. **Last Block**:
-   - Has CONTINUATION flag set (if not the first block)
-   - Does NOT have HAS_MORE flag set
-   - Contains remaining transaction data
-   - Zero-padded to 4KB
 
 ### Example: 10KB Transaction
 
 ```
-Block 1: [Header(HAS_MORE)] + [4084 bytes of data]
-Block 2: [Header(CONTINUATION | HAS_MORE)] + [4084 bytes of data]
-Block 3: [Header(CONTINUATION)] + [1832 bytes of data] + [2252 bytes padding]
+Block 1: [4084 bytes of data]
+Block 2: [Header(CONTINUATION)] + [4084 bytes of data]
+Block 3: [Header(CONTINUATION)] + [1832 bytes of data]
 ```
 
 ## Encoding Details
@@ -135,102 +117,66 @@ This ensures the format is portable across different CPU architectures.
 
 All timestamps are stored as 64-bit unsigned integers representing milliseconds since the Unix epoch (January 1, 1970 00:00:00 UTC).
 
-### Padding
-
-Blocks that don't fully utilize the 4084-byte body are zero-padded to maintain the 4KB alignment. This ensures efficient I/O operations at the filesystem level.
-
 ## Transaction Buffering
 
-The transaction log system supports buffering multiple actions before committing them as a single transaction:
-
-### Without Transaction
+The transaction log system buffers multiple log entries before committing them when the associated transaction is committed.
 
 ```javascript
-const log = db.useLog('mylog');
-log.addEntry(Date.now(), Buffer.from('action1')); // Written immediately as 1-action transaction
-log.addEntry(Date.now(), Buffer.from('action2')); // Written immediately as 1-action transaction
-```
-
-### With Transaction
-
-```javascript
-const log = db.useLog('mylog');
-const txn = db.transaction();
-
-// Buffer actions
-log.addEntry(Date.now(), Buffer.from('action1'), { transaction: txn });
-log.addEntry(Date.now(), Buffer.from('action2'), { transaction: txn });
-log.addEntry(Date.now(), Buffer.from('action3'), { transaction: txn });
-
-// Commit all buffered actions as a single transaction
-log.commit(txn);
+const log = db.useLog('example');
+await db.transaction((txn) => {
+  log.addEntry(Buffer.from('some data'), txn.id);
+  log.addEntry(Buffer.from('some more data'), txn.id);
+});
 ```
 
 ### Buffering Behavior
 
 - Actions are buffered in memory per transaction ID
 - Multiple transactions can be buffered concurrently
-- Buffered actions are NOT written to disk until `commit()` is called
+- Buffered actions are NOT written to disk until the transaction is being committed
 - If the transaction log handle is garbage collected, buffered (uncommitted) actions are lost
-- Calling `commit()` with an unknown transaction ID throws an error
+- Calling `addEntry()` with an unknown transaction ID throws an error
 
 ## Usage Examples
 
 ### Basic Usage
 
 ```javascript
-import { Database } from 'rocksdb-js';
+import { RocksDatabase } from 'rocksdb-js';
 
-const db = new Database('/tmp/mydb');
-db.open();
+const db = RocksDatabase.open('/tmp/mydb');
+const log = db.useLog('example');
 
-const log = db.useLog('orders');
-
-// Write a single action
-log.addEntry(Date.now(), Buffer.from(JSON.stringify({
-  type: 'CREATE_ORDER',
-  orderId: 12345,
-  amount: 99.99
-})));
+await db.transaction((txn) => {
+  log.addEntry(Buffer.from('some data'), txn.id);
+});
 ```
 
-### Multi-Action Transaction
+### Manual Transaction
 
 ```javascript
-const log = db.useLog('orders');
-const txn = db.transaction();
+import { RocksDatabase, Transaction } from 'rocksdb-js';
 
-// Buffer multiple related actions
-log.addEntry(Date.now(), Buffer.from(JSON.stringify({
-  type: 'CREATE_ORDER',
-  orderId: 12345
-})), { transaction: txn });
+const db = RocksDatabase.open('/tmp/mydb');
+const log = db.useLog('example');
+const txn = new Transaction(db);
 
-log.addEntry(Date.now(), Buffer.from(JSON.stringify({
-  type: 'RESERVE_INVENTORY',
-  items: ['SKU-001', 'SKU-002']
-})), { transaction: txn });
-
-log.addEntry(Date.now(), Buffer.from(JSON.stringify({
-  type: 'CHARGE_PAYMENT',
-  amount: 99.99
-})), { transaction: txn });
-
-// Atomically write all actions as a single transaction
-log.commit(txn);
+log.add(Buffer.from('some data'), txn.id);
+await txn.commit();
 ```
 
-### Large Data Handling
+### Multi-Entry Transaction
 
 ```javascript
-const log = db.useLog('backups');
+const log1 = db.useLog('log1');
+const log2 = db.useLog('log2');
 
-// Large data (>4KB) automatically spans multiple blocks
-const largeData = Buffer.alloc(20000);
-// ... fill with data ...
+await db.transaction((txn) => {
+  log1.addEntry(Buffer.from('some data'), txn.id);
+  log1.addEntry(Buffer.from('some more data'), txn.id);
 
-log.addEntry(Date.now(), largeData);
-// This creates a multi-block transaction automatically
+  log2.addEntry(Buffer.from('some data'), txn.id);
+});
 ```
 
 ## Implementation Notes
@@ -244,8 +190,8 @@ log.addEntry(Date.now(), largeData);
 ### Thread Safety
 
 - All log operations are thread-safe
-- Multiple processes can write to the same log store simultaneously
-- Each process maintains its own transaction buffers
+- Multiple worker threads can write to the same log store simultaneously
+- Transactions are bound to a single worker thread
 
 ### File Rotation
 
@@ -259,67 +205,99 @@ log.addEntry(Date.now(), largeData);
 - Commit with unknown transaction ID throws an error
 - Invalid data or corrupted blocks are detected during read operations
 
-## Recovery and Replay
+## Reading The Transaction Log
 
-When reading transaction logs:
+A transaction log can be read sequentially or by range using timestamps. The
+read algorithm is optimized by branching which the logic based on whether both
+start and end timestamps are present. If neither timestamps are set, then a
+sequential read is performed. If one or both of the timestamps are set, then the
+range logic will use a binary search to find the first block to start scanning
+from.
 
-1. Read blocks sequentially
+### Sequential Read
+
+1. Parse file header to get version and block size
 2. Parse block headers to identify block boundaries
-3. Reconstruct multi-block transactions using CONTINUATION and HAS_MORE flags
-4. Parse transaction headers to group actions together
-5. Process actions in order
-
-### Reading Algorithm
+3. Reconstruct multi-block transactions using CONTINUATION flags
+4. Parse transaction headers to group transaction together by timestamp
+5. Process transactions in order
 
 ```
+read file header
 for each block in log file:
-    read block header
+  read block header
 
-    if CONTINUATION flag is set:
-        append block body to previous transaction data
-    else:
-        start new transaction data with block body
+  if CONTINUATION flag is set:
+    append block body to previous transaction data
+  else:
+    start new transaction data with block body
 
-    if HAS_MORE flag is NOT set:
-        transaction is complete
-        parse transaction header
-        parse all actions
-        process transaction
+  transaction is complete
+  parse transaction header
+  parse all transactions
+  process transaction
 ```
 
-## Best Practices
+Note that this is the same as a range read without a start and end timestamp.
 
-1. **Action Size**: Keep individual actions reasonably sized. While the format supports large actions, smaller actions improve memory efficiency during buffering.
+### Range Read
 
-2. **Transaction Grouping**: Group related actions into transactions for atomic replay during recovery.
+1. Parse file header to get version and block size
+2. Determine block count (ceiling((file_size - file_header_size) / block_size))
+3. Determine start and end block
+4. Determine and read middle block (floor((end_block - start_block) / 2))
+5. Repeatedly divide left or right range until block with first transaction is found
+6. Reconstruct multi-block transactions using CONTINUATION flags
+7. Parse transaction headers to group transaction together by timestamp
+8. Process transactions in order
 
-3. **Timestamps**: Use consistent timestamp sources (e.g., `Date.now()`) for proper ordering.
+```
+read file header
+set range start block to first block
+set range end block to last block
 
-4. **Data Encoding**: Store action data in a self-describing format (JSON, Protocol Buffers, etc.) for easier replay and debugging.
+find the first block
+  determine the middle block between the range start and end
+  if middle block timestamp > start timestamp
+    set end block to middle block and recheck range
+  else
+    set start block to middle block and recheck range
 
-5. **Error Handling**: Always wrap log operations in try-catch blocks to handle write failures gracefully.
+for each block starting at first block:
+  read block header
 
-6. **Retention Policy**: Configure appropriate retention periods to manage disk space usage.
+  if CONTINUATION flag is set:
+    append block body to previous transaction data
+  else:
+    start new transaction data with block body
+
+  transaction is complete
+  parse transaction header
+  parse transactions
+  if no end timestamp
+    process transaction
+  else if timestamp < end timestamp
+    process transaction
+  else
+    return
+```
 
 ## Performance Considerations
 
-- **Block Alignment**: 4KB blocks match common filesystem block sizes, minimizing I/O overhead
-- **Batching**: Use transactions to batch multiple actions into fewer disk writes
+- **Block Size**: 4KB blocks that can be traversed quickly using binary search
+- **Batching**: Use transactions to batch multiple actions into fewer disk writes using `writev()`
 - **Zero-Copy**: The format supports memory-mapped I/O for efficient reading
-- **Write Amplification**: Zero-padding trades disk space for write efficiency
 
 ## Limitations
 
-- Maximum action count per transaction: 65,535 (uint16 limit)
-- Maximum single action size: ~4GB (uint32 limit)
+- Maximum single transaction size: ~4GB (uint32 limit)
 - Maximum transaction size: Limited by available memory during buffering
 - Maximum log file size: Configurable, default 16MB
 
 ## Version History
 
 - **Version 1.0**: Initial format specification
-  - 4KB block-aligned format
+  - 4KB block-size format
   - Big-endian encoding
   - Multi-block transaction support
   - Transaction buffering
-

@@ -12,6 +12,8 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	fd(-1),
 	version(1),
 	blockSize(4096),
+	currentBlockSize(0),
+	blockCount(0),
 	size(0),
 	activeOperations(0)
 {}
@@ -75,13 +77,15 @@ void TransactionLogFile::open() {
 
 	// read the file header
 	char buffer[4];
-	if (st.st_size < 8) {
+	if (st.st_size == 0) {
 		// file is empty, initialize it
 		writeUint32BE(buffer, this->version);
 		this->writeToFile(buffer, sizeof(buffer));
 		writeUint32BE(buffer, this->blockSize);
 		this->writeToFile(buffer, sizeof(buffer));
 		this->size.store(8);
+	} else if (st.st_size < 8) {
+		throw std::runtime_error("File is too small to be a valid transaction log file: " + this->path.string());
 	} else {
 		// try to read the version and block size from the file
 		int64_t result = this->readFromFile(buffer, sizeof(buffer), 0);
@@ -97,10 +101,11 @@ void TransactionLogFile::open() {
 		this->blockSize = readUint32BE(buffer);
 	}
 
-	this->blockCount.store((this->size.load() - 8) / this->blockSize);
+	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size.load() - 8) / this->blockSize));
+	this->blockCount.store(blockCount);
 
-	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, version=%u, size=%zu, blockSize=%u, blockCount=%u)\n",
-		pathStr.c_str(), this->fd, this->version, this->size.load(), this->blockSize, this->blockCount.load())
+	DEBUG_LOG("TransactionLogFile::open Opened %s (fd=%d, version=%u, size=%zu, blockSize=%u, blockCount=%u)\n", pathStr.c_str(),
+		this->fd, this->version, this->size.load(), this->blockSize, blockCount)
 }
 
 /**
@@ -130,7 +135,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 /**
  * Reads data from the log file.
  */
-int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offset) {
+int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, uint32_t offset) {
 	// acquire mutex to safely check if file needs opening and increment activeOperations
 	{
 		std::unique_lock<std::mutex> lock(this->fileMutex);
@@ -168,7 +173,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, size_t size, int64_t offs
 /**
  * Writes data to the log file.
  */
-int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t offset) {
+int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, uint32_t offset) {
 	// acquire mutex to safely check if file needs opening and increment activeOperations
 	{
 		std::unique_lock<std::mutex> lock(this->fileMutex);
@@ -197,8 +202,8 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, size_t size, int64_t
 	if (bytesWritten > 0) {
 		if (offset >= 0) {
 			// for writes at specific offset, update size if we wrote beyond current end
-			size_t newEnd = static_cast<size_t>(offset) + static_cast<size_t>(bytesWritten);
-			size_t currentSize = this->size.load();
+			uint32_t newEnd = static_cast<uint32_t>(offset) + static_cast<uint32_t>(bytesWritten);
+			uint32_t currentSize = this->size.load();
 			while (newEnd > currentSize && !this->size.compare_exchange_weak(currentSize, newEnd)) {
 				// retry if compare_exchange_weak failed due to concurrent modification
 			}

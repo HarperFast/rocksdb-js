@@ -50,6 +50,11 @@ struct TransactionLogFile final {
 	uint32_t blockSize;
 
 	/**
+	 * The size of the current block in bytes.
+	 */
+	std::atomic<uint32_t> currentBlockSize;
+
+	/**
 	 * The number of blocks in the file.
 	 */
 	std::atomic<uint32_t> blockCount;
@@ -59,12 +64,12 @@ struct TransactionLogFile final {
 	 * async and doesn't block other threads from writing and thus size needs to
 	 * be updated atomically.
 	 */
-	std::atomic<size_t> size;
+	std::atomic<uint32_t> size;
 
 	/**
 	 * The number of active operations on the file.
 	 */
-	std::atomic<int> activeOperations;
+	std::atomic<uint32_t> activeOperations;
 
 	/**
 	 * The mutex used to protect the file.
@@ -88,8 +93,8 @@ struct TransactionLogFile final {
 	void close();
 	void open();
 	std::chrono::system_clock::time_point getLastWriteTime();
-	int64_t readFromFile(void* buffer, size_t size, int64_t offset = -1);
-	int64_t writeToFile(const void* buffer, size_t size, int64_t offset = -1);
+	int64_t readFromFile(void* buffer, uint32_t size, uint32_t offset = -1);
+	int64_t writeToFile(const void* buffer, uint32_t size, uint32_t offset = -1);
 };
 
 } // namespace rocksdb_js
