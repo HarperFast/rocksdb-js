@@ -80,63 +80,34 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		return 0;
 	}
 
-	// calculate total bytes to write
-	DWORD totalBytes = 0;
+	// emulate writev() by writing each buffer sequentially
+	int64_t totalBytesWritten = 0;
+
 	for (int i = 0; i < iovcnt; i++) {
-		totalBytes += static_cast<DWORD>(iovecs[i].iov_len);
+		DWORD bytesWritten;
+		bool success = ::WriteFile(
+			this->fileHandle,
+			iovecs[i].iov_base,
+			static_cast<DWORD>(iovecs[i].iov_len),
+			&bytesWritten,
+			nullptr
+		);
+
+		if (!success) {
+			// if we've written some data but this write failed, return what we
+			// wrote; otherwise return -1 to indicate error
+			return totalBytesWritten > 0 ? totalBytesWritten : -1;
+		}
+
+		totalBytesWritten += bytesWritten;
+
+		// partial write - stop here
+		if (bytesWritten < iovecs[i].iov_len) {
+			break;
+		}
 	}
 
-	// convert iovec array to FILE_SEGMENT_ELEMENT array
-	// FILE_SEGMENT_ELEMENT requires page-aligned buffers for true scatter-gather,
-	// but we can also use it with regular buffers
-	std::vector<FILE_SEGMENT_ELEMENT> segments(iovcnt + 1); // +1 for null terminator
-	for (int i = 0; i < iovcnt; i++) {
-		segments[i].Buffer = iovecs[i].iov_base;
-	}
-	segments[iovcnt].Buffer = nullptr; // null terminator
-
-	// get current file position for overlapped structure
-	LARGE_INTEGER currentPos;
-	currentPos.QuadPart = 0;
-	if (!::SetFilePointerEx(this->fileHandle, currentPos, &currentPos, FILE_CURRENT)) {
-		return -1;
-	}
-
-	// Set up overlapped structure for WriteFileGather
-	OVERLAPPED overlapped = {0};
-	overlapped.Offset = currentPos.LowPart;
-	overlapped.OffsetHigh = currentPos.HighPart;
-
-	// WriteFileGather requires an event for synchronous operation
-	overlapped.hEvent = ::CreateEvent(nullptr, TRUE, FALSE, nullptr);
-	if (overlapped.hEvent == nullptr) {
-		return -1;
-	}
-
-	// perform the gathered write
-	bool success = ::WriteFileGather(this->fileHandle, segments.data(), totalBytes, nullptr, &overlapped);
-	DWORD error = ::GetLastError();
-
-	if (!success && error != ERROR_IO_PENDING) {
-		::CloseHandle(overlapped.hEvent);
-		return -1;
-	}
-
-	// wait for the operation to complete
-	DWORD bytesWritten;
-	if (!::GetOverlappedResult(this->fileHandle, &overlapped, &bytesWritten, TRUE)) {
-		::CloseHandle(overlapped.hEvent);
-		return -1;
-	}
-
-	::CloseHandle(overlapped.hEvent);
-
-	// update file pointer
-	LARGE_INTEGER newPos;
-	newPos.QuadPart = currentPos.QuadPart + bytesWritten;
-	::SetFilePointerEx(this->fileHandle, newPos, nullptr, FILE_BEGIN);
-
-	return static_cast<int64_t>(bytesWritten);
+	return totalBytesWritten;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
