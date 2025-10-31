@@ -76,12 +76,6 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
-	 * The number of active operations on the file.
-	 * Used with closeCondition for safe shutdown coordination.
-	 */
-	std::atomic<uint32_t> activeOperations = 0;
-
-	/**
 	 * The mutex used to protect the file and its metadata
 	 * (currentBlockSize, blockCount, size).
 	 */
@@ -112,7 +106,8 @@ struct TransactionLogFile final {
  	void open();
 
 	/**
-	 * Gets the last write time of the log file.
+	 * Gets the last write time of the log file or throws an error if the file
+	 * does not exist.
 	 */
 	std::chrono::system_clock::time_point getLastWriteTime();
 
@@ -133,14 +128,14 @@ private:
 	int64_t readFromFile(void* buffer, uint32_t size, int64_t offset = -1);
 
 	/**
-	 * Platform specific function that writes data to the log file.
-	 */
-	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
-
-	/**
 	 * Platform specific function that writes multiple buffers to the log file.
 	 */
 	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
+
+	/**
+	 * Platform specific function that writes data to the log file.
+	 */
+	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1

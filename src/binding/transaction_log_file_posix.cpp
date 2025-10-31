@@ -12,24 +12,12 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	fd(-1)
 {}
 
-/**
- * Closes the log file.
- */
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
 	if (this->fd >= 0) {
-		DEBUG_LOG("TransactionLogFile::close Waiting for active operations to complete: %s (fd=%d)\n",
-			this->path.string().c_str(), this->fd)
-
-		// wait for all active operations to complete
-		this->closeCondition.wait(lock, [this] {
-			return this->activeOperations.load() == 0;
-		});
-
-		DEBUG_LOG("TransactionLogFile::close Closing file: %s (fd=%d)\n",
-			this->path.string().c_str(), this->fd)
-
+		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (fd=%d)\n",
+			this, this->path.string().c_str(), this->fd)
 		::close(this->fd);
 		this->fd = -1;
 	}
@@ -67,120 +55,25 @@ void TransactionLogFile::openFile() {
 	this->size = st.st_size;
 }
 
-/**
- * Gets the last write time of the log file or throws an error if the file does
- * not exist.
- */
-std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
-	// wait for all active operations to complete
-	this->closeCondition.wait(lock, [this] {
-		return this->activeOperations.load() == 0;
-	});
-
-	if (!std::filesystem::exists(this->path)) {
-		throw std::filesystem::filesystem_error(
-			"File does not exist",
-			this->path,
-			std::make_error_code(std::errc::no_such_file_or_directory)
-		);
-	}
-
-	auto mtime = std::filesystem::last_write_time(this->path);
-	return convertFileTimeToSystemTime(mtime);
-}
-
-/**
- * Reads data from the log file.
- */
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
-	// acquire mutex to safely check if file needs opening and increment activeOperations
-	{
-		std::unique_lock<std::mutex> lock(this->fileMutex);
-
-		// ensure file is open BEFORE incrementing activeOperations to avoid deadlock
-		// with close() which waits for activeOperations == 0 while holding fileMutex
-		if (this->fd < 0) {
-			// open() will acquire the mutex again, so release it first
-			lock.unlock();
-			this->open();
-			lock.lock();
-		}
-
-		// increment active operations counter while holding the lock
-		this->activeOperations.fetch_add(1);
-	}
-
-	int64_t result;
 	if (offset >= 0) {
-		result = static_cast<int64_t>(::pread(this->fd, buffer, size, offset));
-	} else {
-		result = static_cast<int64_t>(::read(this->fd, buffer, size));
+		return static_cast<int64_t>(::pread(this->fd, buffer, size, offset));
 	}
-
-	this->activeOperations.fetch_sub(1);
-
-	// notify if this was the last operation
-	if (this->activeOperations.load() == 0) {
-		this->closeCondition.notify_one();
-	}
-
-	return result;
+	return static_cast<int64_t>(::read(this->fd, buffer, size));
 }
 
-/**
- * Writes data to the log file.
- */
-int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
-	// increment active operations counter while holding the lock
-	this->activeOperations.fetch_add(1);
-
-	int64_t bytesWritten;
-	if (offset >= 0) {
-		bytesWritten = static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
-	} else {
-		bytesWritten = static_cast<int64_t>(::write(this->fd, buffer, size));
-	}
-
-	// Note: size is not updated here because it will be updated by the caller
-	// while holding fileMutex to ensure consistency with other metadata
-
-	this->activeOperations.fetch_sub(1);
-
-	// notify if this was the last operation
-	if (this->activeOperations.load() == 0) {
-		this->closeCondition.notify_one();
-	}
-
-	return bytesWritten;
-}
-
-/**
- * Writes multiple buffers to the log file using writev() for efficient batching.
- */
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 	if (iovcnt == 0) {
 		return 0;
 	}
+	return static_cast<int64_t>(::writev(this->fd, iovecs, iovcnt));
+}
 
-	// increment active operations counter while holding the lock
-	this->activeOperations.fetch_add(1);
-
-	// use writev for efficient batched write
-	int64_t bytesWritten = static_cast<int64_t>(::writev(this->fd, iovecs, iovcnt));
-
-	// Note: size is not updated here because it will be updated by the caller
-	// while holding fileMutex to ensure consistency with other metadata
-
-	this->activeOperations.fetch_sub(1);
-
-	// notify if this was the last operation
-	if (this->activeOperations.load() == 0) {
-		this->closeCondition.notify_one();
+int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
+	if (offset >= 0) {
+		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
 	}
-
-	return bytesWritten;
+	return static_cast<int64_t>(::write(this->fd, buffer, size));
 }
 
 } // namespace rocksdb_js

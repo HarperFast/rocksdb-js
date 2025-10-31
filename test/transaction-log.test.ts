@@ -75,7 +75,7 @@ describe('Transaction Log', () => {
 			expect(weakRef.deref()).toBeUndefined();
 		}));
 
-		it.only('should add entries to a transaction log', () => dbRunner(async ({ db, dbPath }) => {
+		it('should add entries to a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 
 			await db.transaction(async (txn) => {
@@ -84,6 +84,12 @@ describe('Transaction Log', () => {
 				log.addEntry(value, txn.id);
 			});
 		}));
+
+		// TODO: test large entry that overflows into next block
+		// TODO: test multiple entries that overflow into next block
+		// TODO: test multiple entries that fit in current block
+		// TODO: test multiple entries that fit in current block but overflow into next block
+		// TODO: transaction header that overflows into next block
 
 		it('should rotate a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 			//

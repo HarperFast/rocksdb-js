@@ -4,12 +4,12 @@ import { randomBytes } from 'node:crypto';
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { rimraf } from 'rimraf';
 import { setTimeout as delay } from 'node:timers/promises';
+import { mkdirSync } from 'node:fs';
 
 export function generateDBPath(): string {
-	return join(
-		tmpdir(),
-		`testdb-${randomBytes(8).toString('hex')}`
-	);
+	const testDir = join(tmpdir(), 'rocksdb-js-tests');
+	mkdirSync(testDir, { recursive: true });
+	return join(testDir, `testdb-${randomBytes(8).toString('hex')}`);
 }
 
 type TestDB = {
