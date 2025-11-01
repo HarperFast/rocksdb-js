@@ -85,8 +85,8 @@ void TransactionLogFile::open() {
 	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size - FILE_HEADER_SIZE) / this->blockSize));
 	this->blockCount = blockCount;
 
-	DEBUG_LOG("%p TransactionLogFile::open Opened %s (fd=%d, version=%u, size=%zu, blockSize=%u, blockCount=%u)\n",
-		this, this->path.string().c_str(), this->fd, this->version, this->size, this->blockSize, blockCount)
+	DEBUG_LOG("%p TransactionLogFile::open Opened %s (version=%u, size=%zu, blockSize=%u, blockCount=%u)\n",
+		this, this->path.string().c_str(), this->version, this->size, this->blockSize, blockCount)
 }
 
 void TransactionLogFile::writeEntries(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries) {
