@@ -309,6 +309,9 @@ describe('Transaction Log', () => {
 				log.addEntry(valueB, txn.id);
 			});
 
+			// we need to wait for Windows to flush the file to disk
+			await delay(1000);
+
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
 			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + ((TRANSACTION_HEADER_SIZE + 10) * 2));
