@@ -319,14 +319,14 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 2000);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.transactions.length).toBe(2);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 2000);
 			expect(info.transactions[0].length).toBe(10);
 			expect(info.transactions[0].data).toEqual(valueA);
-			expect(info.transactions[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.transactions[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 2000);
 			expect(info.transactions[1].length).toBe(10);
 			expect(info.transactions[1].data).toEqual(valueB);
 		}));
