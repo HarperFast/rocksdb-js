@@ -8,7 +8,7 @@ parentPort?.on('message', async (event) => {
 		for (let i = 0; i < event.count; i++) {
 			const log = db.useLog('foo');
 			await db.transaction(async (txn) => {
-				log.addEntry(Buffer.from('hello'), txn.id);
+				log.addEntry(Buffer.from('world'), txn.id);
 			});
 		}
 		parentPort?.postMessage({ done: true });

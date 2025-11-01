@@ -6,6 +6,7 @@ export { DBIterator } from './dbi-iterator.js';
 export { Transaction } from './transaction.js';
 export type { Key } from './encoding.js';
 export { TransactionLog } from './load-binding.js';
+export * from './transaction-log.js';
 
 export const versions: {
 	rocksdb: string;

@@ -12,6 +12,7 @@
 #define FILE_HEADER_SIZE 10
 #define BLOCK_HEADER_SIZE 14
 #define TXN_HEADER_SIZE 12
+#define CONTINUATION_FLAG 0x0001
 
 namespace rocksdb_js {
 
@@ -80,7 +81,7 @@ void TransactionLogFile::open() {
 		this->blockSize = readUint32BE(buffer);
 	}
 
-	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size - 8) / this->blockSize));
+	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size - FILE_HEADER_SIZE) / this->blockSize));
 	this->blockCount = blockCount;
 
 	DEBUG_LOG("%p TransactionLogFile::open Opened %s (fd=%d, version=%u, size=%zu, blockSize=%u, blockCount=%u)\n",
@@ -157,38 +158,28 @@ void TransactionLogFile::writeEntriesV1(const uint64_t timestamp, const std::vec
 		// build block header
 		char* blockHeader = blockHeaders.get() + (blockIdx * BLOCK_HEADER_SIZE);
 
-		// timestamp (8 bytes)
+		// start timestamp (8 bytes)
 		writeUint64BE(blockHeader, timestamp);
 
 		// flags (2 bytes) - first new block is a continuation if we appended to existing block
-		uint16_t flags = (dataForCurrentBlock > 0 || blockIdx > 0) ? 0x0001 : 0x0000; // CONTINUATION flag
+		uint16_t flags = (dataForCurrentBlock > 0 || blockIdx > 0) ? CONTINUATION_FLAG : 0x0000;
 		writeUint16BE(blockHeader + 8, flags);
 
-		// data offset (2 bytes) - where next transaction starts in this block
-		// for the first new block (when not appending to existing block):
-		//   - If transaction fits entirely in this block: BLOCK_HEADER_SIZE + totalTxnSize + 1
-		//   - If transaction overflows to next block: 0
-		// for continuation blocks: 0
+		// data offset (4 bytes) - where first transaction header starts in this
+		// block (relative to block body)
 		uint32_t dataOffset = 0;
-		if (dataForCurrentBlock == 0 && blockIdx == 0) {
-			// First new block
-			if (totalTxnSize < BLOCK_BODY_SIZE) {
-				// Transaction fits entirely in this block
-				dataOffset = BLOCK_HEADER_SIZE + totalTxnSize + 1;
-			} else {
-				// Transaction overflows to continuation blocks
-				dataOffset = 0;
-			}
+		if (flags & CONTINUATION_FLAG) {
+			// FIX ME
 		}
 		writeUint32BE(blockHeader + 10, dataOffset);
 
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 New block %u: timestamp=%llu, flags=%u, dataOffset=%u\n",
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 New block %u: start timestamp=%llu, flags=%u, dataOffset=%u\n",
 			this, blockIdx, timestamp, flags, dataOffset)
 
-		// Add block header to iovec
+		// add block header to iovec
 		iovecs[iovecsIndex++] = {blockHeader, BLOCK_HEADER_SIZE};
 
-		// Add block body to iovec (full size for now, we'll adjust last one later)
+		// add block body to iovec (full size for now, we'll adjust last one later)
 		char* blockBody = dataWritePtr + (blockIdx * BLOCK_BODY_SIZE);
 		iovecs[iovecsIndex++] = {blockBody, BLOCK_BODY_SIZE};
 	}
@@ -198,16 +189,16 @@ void TransactionLogFile::writeEntriesV1(const uint64_t timestamp, const std::vec
 	// track our position as we write across this buffer
 	char* writePtr = blockBodies.get();
 	uint32_t bytesWrittenTotal = 0;
-	uint32_t currentLogicalBlock = dataForCurrentBlock > 0 ? 0 : 1; // 0 = existing block, 1+ = new blocks
+	uint32_t currentLogicalBlock = dataForCurrentBlock > 0 ? 0 : 1; // 0 = existing block, 1+ = new block(s)
 	uint32_t currentBlockOffset = 0; // offset within the current logical block
 
 	// helper to get available space in current logical block
 	auto getAvailableInBlock = [&]() -> uint32_t {
 		if (currentLogicalBlock == 0) {
-			// writing to existing block
+			// writing to the existing block
 			return dataForCurrentBlock - currentBlockOffset;
 		} else {
-			// writing to new blocks
+			// writing to the new block(s)
 			return BLOCK_BODY_SIZE - currentBlockOffset;
 		}
 	};

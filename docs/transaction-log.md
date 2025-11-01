@@ -42,22 +42,22 @@ Each block is exactly 4KB and contains:
 
 ```
 +------------------+
-| Block Header     | 12 bytes
+| Block Header     | 14 bytes
 +------------------+
 | Block Body       | 4084 bytes
 +------------------+
 Total: 4096 bytes
 ```
 
-### Block Header (12 bytes)
+### Block Header (14 bytes)
 
 All multi-byte integers are encoded in **big-endian** format.
 
-| Offset | Size | Type    | Field       | Description                                 |
-|--------|------|---------|-------------|---------------------------------------------|
-| 0      | 8    | uint64  | timestamp   | Block timestamp (milliseconds since epoch)  |
-| 8      | 2    | uint16  | flags       | Block flags (see below)                     |
-| 10     | 4    | uint32  | dataOffset  | Offset where next transaction block starts  |
+| Offset | Size | Type    | Field           | Description                                  |
+|--------|------|---------|-----------------|----------------------------------------------|
+| 0      | 8    | uint64  | startTimestamp  | Block timestamp (milliseconds since epoch)   |
+| 8      | 2    | uint16  | flags           | Block flags (see below)                      |
+| 10     | 4    | uint32  | dataOffset      | Offset where next transaction header starts  |
 
 #### Block Flags
 
@@ -69,10 +69,6 @@ All multi-byte integers are encoded in **big-endian** format.
 ### Block Body (4084 bytes)
 
 The block body contains transaction data. If the data is less than 4084 bytes, the remainder is zero-padded.
-
-If the transaction header + data size is less than the block body length, then the `dataOffset` is set to the length of the transaction header + data + 1.
-
-If the transaction header + data size greater than or equal to the block body (e.g. it will fill up the current block), then `dataOffset` is zero.
 
 ## Transaction Format
 

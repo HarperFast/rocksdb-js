@@ -89,7 +89,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(3)
+	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
 
 	// log entry
@@ -126,32 +126,67 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	bool copy = false;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
-	if (type == napi_boolean) {
-		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &copy));
-	} else if (type != napi_undefined) {
-		::napi_throw_error(env, nullptr, "Invalid argument, expected copy flag to be a boolean");
-		return nullptr;
-	}
-
 	napi_ref bufferRef = nullptr;
 
 	try {
-		if (copy) {
-			std::unique_ptr<char[]> copyData(new char[size]);
-			::memcpy(copyData.get(), data, size);
-			(*txnLogHandle)->addEntry(transactionId, std::move(copyData), size);
-		} else {
-			// create a reference to pin the buffer in memory (prevents GC)
-			NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
-			(*txnLogHandle)->addEntry(transactionId, data, size, env, bufferRef);
-		}
+		// create a reference to pin the buffer in memory (prevents GC)
+		NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
+		(*txnLogHandle)->addEntry(transactionId, data, size, env, bufferRef);
 	} catch (const std::exception& e) {
 		// if addEntry fails, clean up the buffer reference
 		if (bufferRef != nullptr) {
 			::napi_delete_reference(env, bufferRef);
 		}
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntryCopy")
+
+	// log entry
+	bool isBuffer;
+	NAPI_STATUS_THROWS(::napi_is_buffer(env, argv[0], &isBuffer));
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer));
+	if (!isBuffer && !isArrayBuffer) {
+		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+		return nullptr;
+	}
+
+	char* data = nullptr;
+	size_t size = 0;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&data), &size));
+	if (data == nullptr) {
+		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
+		return nullptr;
+	}
+
+	// transaction (only required if TransactionHandle isn't bound to a transaction)
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type));
+	uint32_t transactionId = (*txnLogHandle)->transactionId;
+	if (type != napi_undefined) {
+		if (type == napi_number) {
+			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &transactionId));
+		} else {
+			transactionId = 0;
+		}
+	}
+	if (transactionId == 0) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected a transaction id");
+		return nullptr;
+	}
+
+	try {
+		std::unique_ptr<char[]> copyData(new char[size]);
+		::memcpy(copyData.get(), data, size);
+		(*txnLogHandle)->addEntry(transactionId, std::move(copyData), size);
+	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
@@ -187,6 +222,7 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "addEntryCopy", nullptr, AddEntryCopy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
