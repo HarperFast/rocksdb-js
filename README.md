@@ -649,41 +649,68 @@ const log2 = db.useLog('foo'); // gets the exist instance (e.g. log1 === log2)
 const log3 = db.useLog(123);
 ```
 
-### Class: `TransactionLog`
-
-The transaction callback is passed in a `Transaction` instance which contains
-all of the same data operations methods as the `RocksDatabase` instance plus:
-
-- `log.addEntry()`
-- `log.commit()`
-- `log.query()`
-
-#### `log.addEntry(timestamp, data, options?): void`
-
-Adds an entry to the log.
-
-- `timestamp: number` A numeric timestamp in the form as the number of
-  milliseconds elapsed since the epoch.
-- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
-  limit beyond what Node.js can handle.
-- `options?: LogEntryOptions` An optional object containing log settings.
-  - `transaction?: Transaction` A related transaction used to group entries
-    together.
+`Transaction` instances also provide a `useLog()` method that binds the returned
+transaction log to the transaction so you don't need to pass in the transaction
+id every time you add an entry.
 
 ```typescript
-const log = db.useLog('foo');
-log.addEntry(Date.now(), Buffer.from('hello'));
+await db.transaction(async (txn) => {
+  const log = txn.useLog('foo');
+  log.addEntry(Buffer.from('hello'));
+});
 ```
 
-#### `log.commit()`
+### Class: `TransactionLog`
 
-Writes the queued entries to disk.
+A `TransactionLog` lets you add arbitrary data bound to a transaction that is
+automatically written to disk right before the transaction is committed. You may
+add multiple enties per transaction. The underlying architecture is thread safe.
+
+- `log.addEntry()`
+- `log.addEntryCopy()`
+- `log.query()`
+
+#### `log.addEntry(data, transactionId): void`
+
+Adds an entry to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+Note that the `data` is queued by reference, so you could modify before it has
+been committed. If you need to reuse the buffer, use `log.addEntryCopy()`.
 
 ```typescript
 const log = db.useLog('foo');
-log.addEntry(Date.now(), Buffer.from('hello'), { transaction });
-log.addEntry(Date.now(), Buffer.from('world'), { transaction });
-log.commit();
+await db.transaction(async (txn) => {
+  log.addEntry(Buffer.from('hello'), txn.id);
+});
+```
+
+If using `txn.useLog()` (instead of `db.useLog()`), you can omit the transaction
+id from `addEntry()` calls.
+
+```typescript
+await db.transaction(async (txn) => {
+  const log = txn.useLog('foo');
+  log.addEntry(Buffer.from('hello'));
+});
+```
+
+#### `log.addEntryCopy(data, transactionId): void`
+
+Copy the entry data and add it to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+```typescript
+const log = db.useLog('foo');
+await db.transaction(async (txn) => {
+  log.addEntryCopy(Buffer.from('I will be copied'), txn.id);
+});
 ```
 
 #### `log.query()`
