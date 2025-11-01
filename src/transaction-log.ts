@@ -74,7 +74,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 
 		const blockSize = read(4).readUInt32BE(0);
 		const blockCount = Math.ceil((size - fileOffset) / blockSize);
-		const blocks: Block[] = new Array(blockCount);
+		const blocks: Block[] = Array.from({ length: blockCount });
 		const transactions: Transaction[] = [];
 		const transactionSize = size - (blockCount * BLOCK_HEADER_SIZE);
 		const transactionData = Buffer.allocUnsafe(transactionSize);
