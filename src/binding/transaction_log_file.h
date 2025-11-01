@@ -118,6 +118,11 @@ struct TransactionLogFile final {
 
 private:
 	/**
+	 * Platform specific function that flushes file buffers to disk.
+	 */
+	void flushFile();
+
+	/**
 	 * Platform specific function that opens the log file for reading and writing.
 	 */
 	void openFile();

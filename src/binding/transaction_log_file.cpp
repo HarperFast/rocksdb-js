@@ -50,6 +50,7 @@ void TransactionLogFile::open() {
 		this->writeToFile(buffer, 2);
 		writeUint32BE(buffer, this->blockSize);
 		this->writeToFile(buffer, 4);
+		this->flushFile();
 		this->size = FILE_HEADER_SIZE;
 	} else if (this->size < 8) {
 		throw std::runtime_error("File is too small to be a valid transaction log file: " + this->path.string());
@@ -302,6 +303,9 @@ void TransactionLogFile::writeEntriesV1(const uint64_t timestamp, const std::vec
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file\n", this, bytesWritten)
+
+	// flush to ensure data is written to disk
+	this->flushFile();
 
 	// update file tracking: currentBlockSize and blockCount
 	// calculate the new currentBlockSize (how many bytes in the last block)

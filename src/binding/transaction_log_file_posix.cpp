@@ -23,6 +23,16 @@ void TransactionLogFile::close() {
 	}
 }
 
+void TransactionLogFile::flushFile() {
+	if (this->fd < 0) {
+		return;
+	}
+
+	if (::fsync(this->fd) < 0) {
+		throw std::runtime_error("Failed to flush file buffers to disk");
+	}
+}
+
 void TransactionLogFile::openFile() {
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str())
