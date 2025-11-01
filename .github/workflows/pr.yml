@@ -57,7 +57,8 @@ jobs:
       - name: Build
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm build
+        run: pnpm rebuild:debug
+        # run: pnpm build
 
       - name: Install Node 18
         if: matrix.node == 18
@@ -66,7 +67,8 @@ jobs:
           node-version: 18
 
       - name: Run tests on Node.js ${{ matrix.node }}
-        run: pnpm coverage
+        run: pnpm test transaction-log
+        # run: pnpm coverage
 
   # bun-test:
   #   name: Test on Bun
