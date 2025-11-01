@@ -713,9 +713,20 @@ await db.transaction(async (txn) => {
 });
 ```
 
-#### `log.query()`
+#### `log.query(options?)`
 
-Returns an iterator that retreives all entries for the given filter.
+Returns an iterator that streams all log entries for the given filter.
+
+- `options: object`
+  - `start?: number` The transaction start timestamp
+  - `end?: string` The transction end timestamp
+
+The iterator produces an object with the log entry timestamp and data.
+
+- `object`
+  - `data: Buffer` The entry data
+  - `timestamp: number` The entry timestamp used to collate entries by
+    transaction
 
 ```typescript
 const log = db.useLog('foo');
@@ -723,7 +734,44 @@ const iter = log.query();
 for (const entry of iter) {
   console.log(entry);
 }
+
+const lastHour = Date.now() - (60 * 60 * 1000);
+const rangeIter = log.query({ start: lastHour, end: Date.now() });
+for (const entry of iter) {
+  console.log(entry.timestamp, entry.data);
+}
 ```
+
+### Transaction Log Parser
+
+#### `parseTransactionLog(file)`
+
+In general, you should use `log.query()` to query the transaction log, however
+if you need to load an entire transaction log into memory, you can use the
+`parseTransactionLog()` utility function.
+
+```typescript
+const everything = parseTransactionLog('/path/to/file.txnlog');
+console.log(everything);
+```
+
+Returns an object containing all of the information in the log file.
+
+- `size: number` The size of the file
+- `version: number` The log file format version
+- `blockSize: number` The size of the blocks used to logically partition the log
+  file for efficient parsing
+- `blockCount: number` The number of blocks in the file; note the last block may
+  not be full
+- `blocks: Block[]` An array of block metadata
+  - `startTimestamp: number` The earliest entry timestamp in the block
+  - `flags: number` Indicates the block type
+  - `dataOffset: number` If the block is a continuation block, this value
+    indicates the offset to the start of the next transaction block
+- `entries: LogEntry[]` An array of transaction log entries
+  - `timestamp: number` The entry timestamp
+  - `length: number` The size of the entry data
+  - `data: Buffer` The entry data
 
 ## Custom Store
 

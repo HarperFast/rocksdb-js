@@ -94,10 +94,10 @@ describe('Transaction Log', () => {
 			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(1);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(10);
-			expect(info.transactions[0].data).toEqual(value);
+			expect(info.entries.length).toBe(1);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(value);
 		}));
 
 		it('should add a single small entry within a single block by copy', () => dbRunner(async ({ db, dbPath }) => {
@@ -118,10 +118,10 @@ describe('Transaction Log', () => {
 			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(1);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(10);
-			expect(info.transactions[0].data).toEqual(value);
+			expect(info.entries.length).toBe(1);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(value);
 		}));
 
 		it('should add multiple small entries within a single block', () => dbRunner(async ({ db, dbPath }) => {
@@ -146,16 +146,16 @@ describe('Transaction Log', () => {
 			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(3);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(10);
-			expect(info.transactions[0].data).toEqual(valueA);
-			expect(info.transactions[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[1].length).toBe(10);
-			expect(info.transactions[1].data).toEqual(valueB);
-			expect(info.transactions[2].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[2].length).toBe(10);
-			expect(info.transactions[2].data).toEqual(valueC);
+			expect(info.entries.length).toBe(3);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(valueA);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].length).toBe(10);
+			expect(info.entries[1].data).toEqual(valueB);
+			expect(info.entries[2].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[2].length).toBe(10);
+			expect(info.entries[2].data).toEqual(valueC);
 		}));
 
 		it('should add a large entry across two blocks', () => dbRunner(async ({ db, dbPath }) => {
@@ -179,10 +179,10 @@ describe('Transaction Log', () => {
 			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(1);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(5000);
-			expect(info.transactions[0].data).toEqual(value);
+			expect(info.entries.length).toBe(1);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(5000);
+			expect(info.entries[0].data).toEqual(value);
 		}));
 
 		it('should add an extra large entry across three blocks', () => dbRunner(async ({ db, dbPath }) => {
@@ -209,10 +209,10 @@ describe('Transaction Log', () => {
 			expect(info.blocks[2].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[2].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[2].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(1);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(10000);
-			expect(info.transactions[0].data).toEqual(value);
+			expect(info.entries.length).toBe(1);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10000);
+			expect(info.entries[0].data).toEqual(value);
 		}));
 
 		it('should add a small entry and a large entry across two blocks', () => dbRunner(async ({ db, dbPath }) => {
@@ -239,13 +239,13 @@ describe('Transaction Log', () => {
 			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(2);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(10);
-			expect(info.transactions[0].data).toEqual(valueA);
-			expect(info.transactions[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[1].length).toBe(5000);
-			expect(info.transactions[1].data).toEqual(valueB);
+			expect(info.entries.length).toBe(2);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(valueA);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].length).toBe(5000);
+			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
 		it('should split a transaction header across multiple blocks', () => dbRunner(async ({ db, dbPath }) => {
@@ -274,13 +274,13 @@ describe('Transaction Log', () => {
 			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(2);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(valueALength);
-			expect(info.transactions[0].data).toEqual(valueA);
-			expect(info.transactions[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[1].length).toBe(100);
-			expect(info.transactions[1].data).toEqual(valueB);
+			expect(info.entries.length).toBe(2);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(valueALength);
+			expect(info.entries[0].data).toEqual(valueA);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].length).toBe(100);
+			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
 		it('should not commit the log if the transaction is aborted', () => dbRunner(async ({ db, dbPath }) => {
@@ -296,8 +296,7 @@ describe('Transaction Log', () => {
 			expect(existsSync(logPath)).toBe(false);
 		}));
 
-		// FIXME: test fails on Windows because the file is not flushed to disk for some reason
-		(process.platform === 'win32' ? it.skip : it)('should add multiple entries from separate transactions', () => dbRunner(async ({ db, dbPath }) => {
+		it.only('should add multiple entries from separate transactions', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const valueA = Buffer.alloc(10, 'a');
 			const valueB = Buffer.alloc(10, 'b');
@@ -320,13 +319,13 @@ describe('Transaction Log', () => {
 			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.transactions.length).toBe(2);
-			expect(info.transactions[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[0].length).toBe(10);
-			expect(info.transactions[0].data).toEqual(valueA);
-			expect(info.transactions[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.transactions[1].length).toBe(10);
-			expect(info.transactions[1].data).toEqual(valueB);
+			expect(info.entries.length).toBe(2);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(valueA);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].length).toBe(10);
+			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
 		it('should rotate a transaction log', () => dbRunner({

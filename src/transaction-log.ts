@@ -11,7 +11,7 @@ interface Block {
 	readonly dataOffset: number;
 }
 
-interface Transaction {
+interface LogEntry {
 	readonly timestamp: number;
 	readonly length: number;
 	readonly data: Buffer;
@@ -23,7 +23,7 @@ interface TransactionLog {
 	readonly blockSize: number;
 	readonly blockCount: number;
 	readonly blocks: Block[];
-	readonly transactions: Transaction[];
+	readonly entries: LogEntry[];
 }
 
 /**
@@ -75,7 +75,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 		const blockSize = read(4).readUInt32BE(0);
 		const blockCount = Math.ceil((size - fileOffset) / blockSize);
 		const blocks: Block[] = Array.from({ length: blockCount });
-		const transactions: Transaction[] = [];
+		const entries: LogEntry[] = [];
 		const transactionSize = size - (blockCount * BLOCK_HEADER_SIZE);
 		const transactionData = Buffer.allocUnsafe(transactionSize);
 		let transactionDataLength = 0;
@@ -132,7 +132,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 				throw new Error(`Invalid transaction ${i}: expected at least ${length} bytes for data but only read ${transactionDataLength - transactionOffset}`);
 			}
 
-			transactions.push({
+			entries.push({
 				timestamp,
 				length,
 				data: transactionData.subarray(transactionOffset, transactionOffset + length)
@@ -147,7 +147,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			blockSize,
 			blockCount,
 			blocks,
-			transactions
+			entries
 		};
 	} catch (error) {
 		if (error instanceof Error) {

@@ -1,9 +1,8 @@
 name: Stress Test
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
+  # pull_request:
+  #   types: [opened, synchronize, reopened]
   push:
     branches: [main]
   workflow_dispatch:
