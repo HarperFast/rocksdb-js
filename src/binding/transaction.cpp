@@ -33,7 +33,7 @@ namespace rocksdb_js {
  * @returns The new `NativeTransaction` object.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = RocksDatabase.open('/path/to/database');
  * const txn = new NativeTransaction(db);
  * txn.putSync('key', 'value');
@@ -323,7 +323,7 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
  * Gets the number of keys within a range or in the entire RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const txn = new NativeTransaction(db);
  * const total = txn.getCount();
  * const range = txn.getCount({ start: 'a', end: 'z' });

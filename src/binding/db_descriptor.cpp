@@ -916,7 +916,7 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
  * @returns The user shared buffer.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const userSharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
  * ```
@@ -1099,7 +1099,7 @@ napi_ref DBDescriptor::addListener(
  * @returns `true` if there were at least one listener, `false` otherwise.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.addListener('foo', () => {
  *   console.log('foo');

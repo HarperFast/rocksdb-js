@@ -9,7 +9,7 @@ export type MaybePromiseFunction<T> = () => MaybePromise<T>;
  * @returns The duration in milliseconds.
  *
  * @example
- * ```ts
+ * ```typescript
  * parseDuration('1s'); // 1000
  * parseDuration('1m'); // 60000
  * parseDuration('1h'); // 3600000

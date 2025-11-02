@@ -16,7 +16,7 @@ namespace rocksdb_js {
  * handle to an unopened RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * ```
  */
@@ -59,7 +59,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
  * and recreating it.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * await db.clear(); // default batch size of 10000
  *
@@ -146,7 +146,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
  * and recreating it.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.clearSync(); // default batch size of 10000
  *
@@ -184,7 +184,7 @@ napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
  * registry.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.close();
  * ```
@@ -208,13 +208,13 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
  * Gets a value from the RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const value = await db.get('foo');
  * ```
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const txnId = 123;
  * const value = await db.get('foo', txnId);
@@ -319,7 +319,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
  * Gets the number of keys within a range or in the entire RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = NativeDatabase.open('path/to/db');
  * const total = db.getCount();
  * const range = db.getCount({ start: 'a', end: 'z' });
@@ -378,7 +378,7 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
  * Gets the oldest unreleased snapshot unix timestamp.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = NativeDatabase.open('path/to/db');
  * const oldestSnapshotTimestamp = db.getOldestSnapshotTimestamp();
  * ```
@@ -408,13 +408,13 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
  * Gets a value from the RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const value = await db.get('foo');
  * ```
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const txnId = 123;
  * const value = await db.get('foo', txnId);
@@ -505,7 +505,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
  * Checks if the database has a lock on the given key.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const hasLock = db.hasLock('foo');
  * ```
@@ -737,7 +737,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
  * @returns `true` if the lock was acquired, `false` otherwise.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const lockSuccess = db.tryLock('foo', () => {
  *   console.log('lock was released');
@@ -776,7 +776,7 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
  * @returns `true` if the lock was released, `false` otherwise.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const lockSuccess = db.tryLock('foo', () => {
  *   console.log('lock was released');

@@ -18,32 +18,43 @@ TransactionLogHandle::~TransactionLogHandle() {
 	this->close();
 }
 
+/**
+ * Helper method to resolve and validate transaction/store context.
+ * This common logic is shared by both addEntry overloads.
+ */
+TransactionLogHandle::AddEntryContext TransactionLogHandle::resolveAddEntryContext(uint32_t transactionId) {
+	AddEntryContext ctx;
+
+	ctx.dbHandle = this->dbHandle.lock();
+	if (!ctx.dbHandle) {
+		throw std::runtime_error("Database has been closed");
+	}
+
+	ctx.txnHandle = ctx.dbHandle->descriptor->transactionGet(transactionId);
+	if (!ctx.txnHandle) {
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Transaction id %u not found\n", this, transactionId)
+		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
+	}
+
+	ctx.store = this->store.lock();
+	if (!ctx.store) {
+		// store was closed/destroyed, try to get or create a new one
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
+		ctx.store = ctx.dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		this->store = ctx.store; // update weak_ptr to point to new store
+	}
+
+	return ctx;
+}
+
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
 	std::unique_ptr<char[]> data,
 	size_t size
 ) {
-	auto dbHandle = this->dbHandle.lock();
-	if (!dbHandle) {
-		throw std::runtime_error("Database has been closed");
-	}
-
-	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
-	if (!txnHandle) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Transaction id %u not found\n", this, transactionId)
-		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
-	}
-
-	auto store = this->store.lock();
-	if (!store) {
-		// store was closed/destroyed, try to get or create a new one
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
-		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-		this->store = store; // update weak_ptr to point to new store
-	}
-
-	auto entry = std::make_unique<TransactionLogEntry>(store, std::move(data), size);
-	txnHandle->addLogEntry(std::move(entry));
+	auto ctx = resolveAddEntryContext(transactionId);
+	auto entry = std::make_unique<TransactionLogEntry>(ctx.store, std::move(data), size);
+	ctx.txnHandle->addLogEntry(std::move(entry));
 }
 
 void TransactionLogHandle::addEntry(
@@ -53,27 +64,9 @@ void TransactionLogHandle::addEntry(
 	napi_env env,
 	napi_ref bufferRef
 ) {
-	auto dbHandle = this->dbHandle.lock();
-	if (!dbHandle) {
-		throw std::runtime_error("Database has been closed");
-	}
-
-	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
-	if (!txnHandle) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Transaction id %u not found\n", this, transactionId)
-		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
-	}
-
-	auto store = this->store.lock();
-	if (!store) {
-		// store was closed/destroyed, try to get or create a new one
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
-		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-		this->store = store; // update weak_ptr to point to new store
-	}
-
-	auto entry = std::make_unique<TransactionLogEntry>(store, data, size, env, bufferRef);
-	txnHandle->addLogEntry(std::move(entry));
+	auto ctx = resolveAddEntryContext(transactionId);
+	auto entry = std::make_unique<TransactionLogEntry>(ctx.store, data, size, env, bufferRef);
+	ctx.txnHandle->addLogEntry(std::move(entry));
 }
 
 void TransactionLogHandle::close() {

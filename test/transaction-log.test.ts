@@ -344,7 +344,7 @@ describe('Transaction Log', () => {
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
 		}));
 
-		it.only('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
+		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
 			const script = process.versions.deno || process.versions.bun

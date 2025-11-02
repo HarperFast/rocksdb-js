@@ -31,6 +31,58 @@
 namespace rocksdb_js {
 
 /**
+ * Helper struct to hold parsed log entry data from NAPI arguments.
+ */
+struct ParsedLogEntryData {
+	char* data;
+	size_t size;
+	uint32_t transactionId;
+};
+
+/**
+ * Helper function to parse common log entry arguments.
+ * @returns true on success, false if error was thrown
+ */
+static bool parseLogEntryArgs(
+	napi_env env,
+	napi_value* argv,
+	std::shared_ptr<TransactionLogHandle>& txnLogHandle,
+	ParsedLogEntryData* parsed
+) {
+	bool isBuffer;
+	NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, argv[0], &isBuffer), false);
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS_RVAL(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer), false);
+	if (!isBuffer && !isArrayBuffer) {
+		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+		return false;
+	}
+	NAPI_STATUS_THROWS_RVAL(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&parsed->data), &parsed->size), false);
+	if (parsed->data == nullptr) {
+		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
+		return false;
+	}
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, argv[1], &type), false);
+	parsed->transactionId = txnLogHandle->transactionId;
+	if (type != napi_undefined) {
+		if (type == napi_number) {
+			NAPI_STATUS_THROWS_RVAL(::napi_get_value_uint32(env, argv[1], &parsed->transactionId), false);
+		} else {
+			parsed->transactionId = 0;
+		}
+	}
+
+	if (parsed->transactionId == 0) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected a transaction id");
+		return false;
+	}
+
+	return true;
+}
+
+/**
  * Constructor for the `NativeTransactionLog` class.
  *
  * @param env - The NAPI environment.
@@ -38,7 +90,7 @@ namespace rocksdb_js {
  * @returns The new `NativeTransactionLog` object.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = RocksDatabase.open('/tmp/testdb');
  * db.open('/tmp/testdb');
  * const txnLog = new NativeTransactionLog(db, 'test');
@@ -79,10 +131,10 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Adds an entry to the transaction log.
+ * Adds an entry by reference to the transaction log.
  *
  * @example
- * ```ts
+ * ```typescript
  * const log = db.useLog('foo');
  * log.addEntry(Buffer.from('hello'), txn.id);
  * log.addEntry(Buffer.from('world'), txn.id, true);
@@ -92,37 +144,8 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
 
-	// log entry
-	bool isBuffer;
-	NAPI_STATUS_THROWS(::napi_is_buffer(env, argv[0], &isBuffer));
-	bool isArrayBuffer;
-	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer));
-	if (!isBuffer && !isArrayBuffer) {
-		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
-		return nullptr;
-	}
-
-	char* data = nullptr;
-	size_t size = 0;
-	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&data), &size));
-	if (data == nullptr) {
-		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
-		return nullptr;
-	}
-
-	// transaction (only required if TransactionHandle isn't bound to a transaction)
-	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type));
-	uint32_t transactionId = (*txnLogHandle)->transactionId;
-	if (type != napi_undefined) {
-		if (type == napi_number) {
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &transactionId));
-		} else {
-			transactionId = 0;
-		}
-	}
-	if (transactionId == 0) {
-		::napi_throw_error(env, nullptr, "Invalid argument, expected a transaction id");
+	ParsedLogEntryData parsed;
+	if (!parseLogEntryArgs(env, argv, *txnLogHandle, &parsed)) {
 		return nullptr;
 	}
 
@@ -131,7 +154,7 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	try {
 		// create a reference to pin the buffer in memory (prevents GC)
 		NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
-		(*txnLogHandle)->addEntry(transactionId, data, size, env, bufferRef);
+		(*txnLogHandle)->addEntry(parsed.transactionId, parsed.data, parsed.size, env, bufferRef);
 	} catch (const std::exception& e) {
 		// if addEntry fails, clean up the buffer reference
 		if (bufferRef != nullptr) {
@@ -144,48 +167,29 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Adds an entry by copy to the transaction log.
+ *
+ * @example
+ * ```typescript
+ * const log = db.useLog('foo');
+ * log.addEntryCopy(Buffer.from('hello'), txn.id);
+ * log.addEntryCopy(Buffer.from('world'), txn.id, true);
+ * ```
+ */
 napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntryCopy")
 
-	// log entry
-	bool isBuffer;
-	NAPI_STATUS_THROWS(::napi_is_buffer(env, argv[0], &isBuffer));
-	bool isArrayBuffer;
-	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer));
-	if (!isBuffer && !isArrayBuffer) {
-		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
-		return nullptr;
-	}
-
-	char* data = nullptr;
-	size_t size = 0;
-	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&data), &size));
-	if (data == nullptr) {
-		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
-		return nullptr;
-	}
-
-	// transaction (only required if TransactionHandle isn't bound to a transaction)
-	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &type));
-	uint32_t transactionId = (*txnLogHandle)->transactionId;
-	if (type != napi_undefined) {
-		if (type == napi_number) {
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &transactionId));
-		} else {
-			transactionId = 0;
-		}
-	}
-	if (transactionId == 0) {
-		::napi_throw_error(env, nullptr, "Invalid argument, expected a transaction id");
+	ParsedLogEntryData parsed;
+	if (!parseLogEntryArgs(env, argv, *txnLogHandle, &parsed)) {
 		return nullptr;
 	}
 
 	try {
-		std::unique_ptr<char[]> copyData(new char[size]);
-		::memcpy(copyData.get(), data, size);
-		(*txnLogHandle)->addEntry(transactionId, std::move(copyData), size);
+		std::unique_ptr<char[]> copyData(new char[parsed.size]);
+		::memcpy(copyData.get(), parsed.data, parsed.size);
+		(*txnLogHandle)->addEntry(parsed.transactionId, std::move(copyData), parsed.size);
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
