@@ -9,7 +9,6 @@ import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
 import type { TransactionLog } from '../src/load-binding.js';
 import { BLOCK_HEADER_SIZE, CONTINUATION_FLAG, FILE_HEADER_SIZE, parseTransactionLog, TRANSACTION_HEADER_SIZE } from '../src/transaction-log.js';
-import { execSync } from 'node:child_process';
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
@@ -297,7 +296,7 @@ describe('Transaction Log', () => {
 			expect(existsSync(logPath)).toBe(false);
 		}));
 
-		it.only('should add multiple entries from separate transactions', () => dbRunner(async ({ db, dbPath }) => {
+		it('should add multiple entries from separate transactions', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const valueA = Buffer.alloc(10, 'a');
 			const valueB = Buffer.alloc(10, 'b');
@@ -345,7 +344,7 @@ describe('Transaction Log', () => {
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
 		}));
 
-		it.skip('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
+		it.only('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
 			const script = process.versions.deno || process.versions.bun
