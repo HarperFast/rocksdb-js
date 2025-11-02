@@ -1354,7 +1354,15 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 
 	for (auto& store : storesToRemove) {
 		store->close();
-		std::filesystem::remove_all(store->path);
+		try {
+			std::filesystem::remove_all(store->path);
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",
+				this, store->path.string().c_str(), e.what())
+		} catch (...) {
+			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Unknown error removing log directory %s\n",
+				this, store->path.string().c_str())
+		}
 		this->transactionLogStores.erase(store->name);
 	}
 

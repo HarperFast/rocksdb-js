@@ -44,7 +44,13 @@ void TransactionLogFile::openFile() {
 	// ensure parent directory exists (may have been deleted by purge())
 	auto parentPath = this->path.parent_path();
 	if (!parentPath.empty()) {
-		std::filesystem::create_directories(parentPath);
+		try {
+			std::filesystem::create_directories(parentPath);
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
+				this, parentPath.string().c_str(), e.what())
+			throw std::runtime_error("Failed to create parent directory: " + parentPath.string());
+		}
 	}
 
 	// open file for both reading and writing

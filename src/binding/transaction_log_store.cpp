@@ -21,7 +21,13 @@ TransactionLogStore::TransactionLogStore(
 
 TransactionLogStore::~TransactionLogStore() {
 	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
-	this->close();
+	try {
+		this->close();
+	} catch (const std::exception& e) {
+		DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Error closing store: %s\n", this, e.what())
+	} catch (...) {
+		DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Unknown error closing store\n", this)
+	}
 }
 
 void TransactionLogStore::close() {
@@ -62,10 +68,17 @@ void TransactionLogStore::commit(const uint64_t timestamp, const std::vector<std
 				break;
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
+				// move to next sequence number and try again
+				logFile = nullptr;
 			}
 		}
 
 		this->currentSequenceNumber = this->nextSequenceNumber++;
+	}
+
+	// ensure we have a valid log file before writing
+	if (!logFile) {
+		throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
 	}
 
 	// delegate to the log file to write the entries
@@ -135,11 +148,19 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 
 		// delete the log file
 		logFile->close();
-		std::filesystem::remove(logFile->path);
+		try {
+			std::filesystem::remove(logFile->path);
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log file %s: %s\n", this, logFile->path.string().c_str(), e.what())
+		}
 
-		// call the visitor
-		if (visitor) {
-			visitor(logFile->path);
+		// call the visitor only if the file was successfully removed or doesn't exist
+		if (visitor && !std::filesystem::exists(logFile->path)) {
+			try {
+				visitor(logFile->path);
+			} catch (const std::exception& e) {
+				DEBUG_LOG("%p TransactionLogStore::purge Visitor callback failed for %s: %s\n", this, logFile->path.string().c_str(), e.what())
+			}
 		}
 
 		// collect sequence number for removal
@@ -152,12 +173,17 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	}
 
 	// if all log files have been removed, clean up the empty directory
-	if (this->sequenceFiles.empty() && std::filesystem::exists(this->path)) {
+	// only try to remove if we actually removed at least one file from this store
+	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
-			std::filesystem::remove(this->path);
-			DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
+			if (std::filesystem::exists(this->path)) {
+				std::filesystem::remove(this->path);
+				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
+			}
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what())
+		} catch (...) {
+			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log directory %s\n", this, this->path.string().c_str())
 		}
 	}
 }
@@ -243,7 +269,12 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					// file is too old, remove it
 					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
 						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
-					std::filesystem::remove(filePath);
+					try {
+						std::filesystem::remove(filePath);
+					} catch (const std::filesystem::filesystem_error& e) {
+						DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
+							store.get(), filePath.string().c_str(), e.what())
+					}
 					continue;
 				} else {
 					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",

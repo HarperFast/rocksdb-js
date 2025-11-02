@@ -36,8 +36,10 @@ void TransactionLogHandle::addEntry(
 
 	auto store = this->store.lock();
 	if (!store) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Invalid transaction log store\n", this)
-		throw std::runtime_error("Invalid transaction log store");
+		// store was closed/destroyed, try to get or create a new one
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
+		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		this->store = store; // update weak_ptr to point to new store
 	}
 
 	auto entry = std::make_unique<TransactionLogEntry>(store, std::move(data), size);
@@ -64,8 +66,10 @@ void TransactionLogHandle::addEntry(
 
 	auto store = this->store.lock();
 	if (!store) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Invalid transaction log store\n", this)
-		throw std::runtime_error("Invalid transaction log store");
+		// store was closed/destroyed, try to get or create a new one
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
+		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		this->store = store; // update weak_ptr to point to new store
 	}
 
 	auto entry = std::make_unique<TransactionLogEntry>(store, data, size, env, bufferRef);
