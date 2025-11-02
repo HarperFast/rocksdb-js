@@ -718,15 +718,15 @@ await db.transaction(async (txn) => {
 Returns an iterator that streams all log entries for the given filter.
 
 - `options: object`
-  - `start?: number` The transaction start timestamp
-  - `end?: string` The transction end timestamp
+  - `start?: number` The transaction start timestamp.
+  - `end?: string` The transction end timestamp.
 
 The iterator produces an object with the log entry timestamp and data.
 
 - `object`
-  - `data: Buffer` The entry data
+  - `data: Buffer` The entry data.
   - `timestamp: number` The entry timestamp used to collate entries by
-    transaction
+    transaction.
 
 ```typescript
 const log = db.useLog('foo');
@@ -757,21 +757,21 @@ console.log(everything);
 
 Returns an object containing all of the information in the log file.
 
-- `size: number` The size of the file
-- `version: number` The log file format version
+- `size: number` The size of the file.
+- `version: number` The log file format version.
 - `blockSize: number` The size of the blocks used to logically partition the log
-  file for efficient parsing
+  file for efficient parsing.
 - `blockCount: number` The number of blocks in the file; note the last block may
-  not be full
-- `blocks: Block[]` An array of block metadata
-  - `startTimestamp: number` The earliest entry timestamp in the block
-  - `flags: number` Indicates the block type
+  not be full.
+- `blocks: Block[]` An array of block metadata.
+  - `startTimestamp: number` The earliest entry timestamp in the block.
+  - `flags: number` Indicates the block type.
   - `dataOffset: number` If the block is a continuation block, this value
-    indicates the offset to the start of the next transaction block
-- `entries: LogEntry[]` An array of transaction log entries
-  - `timestamp: number` The entry timestamp
-  - `length: number` The size of the entry data
-  - `data: Buffer` The entry data
+    indicates the offset to the start of the next transaction block.
+- `entries: LogEntry[]` An array of transaction log entries.
+  - `timestamp: number` The entry timestamp.
+  - `length: number` The size of the entry data.
+  - `data: Buffer` The entry data.
 
 ## Custom Store
 
@@ -795,11 +795,13 @@ The default `Store` contains the following methods which can be overridden:
 - `getUserSharedBuffer(key, defaultBuffer?)`
 - `hasLock(key)`
 - `isOpen()`
+- `listLogs()`
 - `open()`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
 - `tryLock(key, onUnlocked?)`
 - `unlock(key)`
+- `useLog(context, name)`
 - `withLock(key, callback?)`
 
 To use it, extend the default `Store` and pass in an instance of your store
