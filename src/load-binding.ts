@@ -24,8 +24,18 @@ export type NativeTransaction = {
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
 	getCount(options?: RangeOptions): number;
 	getSync(key: Key): Buffer;
+	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
+	setTimestamp(timestamp?: number): void;
+	useLog(name: string | number): TransactionLog;
+};
+
+export type TransactionLog = {
+	new(name: string): TransactionLog;
+	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
+	addEntryCopy(data: Buffer | Uint8Array, txnId?: number): void;
+	query(): void;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
@@ -38,16 +48,25 @@ export declare class NativeIteratorCls<T> implements Iterator<T> {
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
+	disableWAL?: boolean;
+	mode?: NativeDatabaseMode;
 	name?: string;
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
-	mode?: NativeDatabaseMode;
+	transactionLogMaxSize?: number;
+	transactionLogRetentionMs?: number;
+	transactionLogsPath?: string;
 };
 
 type ResolveCallback<T> = (value: T) => void;
 type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
+
+export type PurgeLogsOptions = {
+	destroy?: boolean;
+	name?: string;
+};
 
 export type NativeDatabase = {
 	new(): NativeDatabase;
@@ -63,16 +82,19 @@ export type NativeDatabase = {
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
+	listLogs(): string[];
 	opened: boolean;
 	open(
 		path: string,
 		options?: NativeDatabaseOptions
 	): void;
+	purgeLogs(options?: PurgeLogsOptions): string[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
+	useLog(name: string): TransactionLog;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
@@ -132,4 +154,5 @@ export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
+export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const version: string = binding.version;

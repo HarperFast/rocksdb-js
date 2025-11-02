@@ -4,12 +4,12 @@ import { randomBytes } from 'node:crypto';
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { rimraf } from 'rimraf';
 import { setTimeout as delay } from 'node:timers/promises';
+import { mkdirSync } from 'node:fs';
 
 export function generateDBPath(): string {
-	return join(
-		tmpdir(),
-		`testdb-${randomBytes(8).toString('hex')}`
-	);
+	const testDir = join(tmpdir(), 'rocksdb-js-tests');
+	mkdirSync(testDir, { recursive: true });
+	return join(testDir, `testdb-${randomBytes(8).toString('hex')}`);
 }
 
 type TestDB = {
@@ -88,20 +88,22 @@ export async function dbRunner(
 			db?.close();
 		}
 
-		const retries = 3;
-		for (let i = 0; i < retries && dbPaths.size > 0; i++) {
-			for (const dbPath of dbPaths) {
-				try {
-					await rimraf(dbPath);
-					dbPaths.delete(dbPath);
-					break;
-				} catch (e) {
-					if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
-						await delay(150);
-						// try again, but skip after 3 attempts
-					} else {
-						// eslint-disable-next-line no-unsafe-finally
-						throw e;
+		if (!process.env.KEEP_TEMP) {
+			const retries = 3;
+			for (let i = 0; i < retries && dbPaths.size > 0; i++) {
+				for (const dbPath of dbPaths) {
+					try {
+						await rimraf(dbPath);
+						dbPaths.delete(dbPath);
+						break;
+					} catch (e) {
+						if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
+							await delay(150);
+							// try again, but skip after 3 attempts
+						} else {
+							// eslint-disable-next-line no-unsafe-finally
+							throw e;
+						}
 					}
 				}
 			}

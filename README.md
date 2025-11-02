@@ -41,7 +41,8 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not
   need to exist, but the parent directories do.
 - `options: object` [optional]
-  - `name:string` The column family name. Defaults to `"default"`.
+  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log.
+  - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block
      caching is enabled by default and the cache is shared across all database
      instances.
@@ -52,6 +53,12 @@ Creates a new database instance.
   - `store: Store` A custom store that handles all interaction between the
     `RocksDatabase` or `Transaction` instances and the native database
     interface. See [Custom Store](#custom-store) for more information.
+  - `transactionLogMaxSize: number` The maximum size of a transaction log before
+    it is rotated to the next sequence number. Defaults to 16 MB.
+  - `transactionLogRetention: string | number` The number of minutes to retain
+    transaction logs before purging. Defaults to `'3d'` (3 days).
+  - `transactionLogsPath: string` The path to store transaction logs. Defaults
+    to `"${db.path}/transaction_logs"`.
 
 ### `db.close()`
 
@@ -597,6 +604,175 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 will cause errors to emit the `'uncaughtException'` event. Future Node.js
 releases will enable this flag by default.
 
+## Transaction Log
+
+A user controlled API for logging transactions. This API is designed to be
+generic so that you can log gets, puts, and deletes, but also arbitrary entries.
+
+### `db.listLogs(): string[]`
+
+Returns an array of log store names.
+
+```typescript
+const names = db.listLogs();
+```
+
+### `db.purgeLogs(options?): string[]`
+
+Deletes transaction log files older than the `transactionLogRetention` (defaults
+to 3 days).
+
+- `options: object`
+  - `destroy?: boolean` When `true`, deletes transaction log stores including
+    all log sequence files on disk.
+  - `name?: string` The name of a store to limit the purging to.
+
+Returns an array with the full path of each log file deleted.
+
+```typescript
+const removed = db.purgeLogs();
+console.log(`Removed ${removed.length} log files`);
+```
+
+### `db.useLog(name): TransactionLog`
+
+Gets or creates a `TransactionLog` instance. Internally, the `TransactionLog`
+interfaces with a shared transaction log store that is used by all threads.
+Multiple worker threads can use the same log at the same time.
+
+- `name: string | number` The name of the log. Numeric log names are converted
+  to a string.
+
+```typescript
+const log1 = db.useLog('foo');
+const log2 = db.useLog('foo'); // gets the exist instance (e.g. log1 === log2)
+const log3 = db.useLog(123);
+```
+
+`Transaction` instances also provide a `useLog()` method that binds the returned
+transaction log to the transaction so you don't need to pass in the transaction
+id every time you add an entry.
+
+```typescript
+await db.transaction(async (txn) => {
+  const log = txn.useLog('foo');
+  log.addEntry(Buffer.from('hello'));
+});
+```
+
+### Class: `TransactionLog`
+
+A `TransactionLog` lets you add arbitrary data bound to a transaction that is
+automatically written to disk right before the transaction is committed. You may
+add multiple enties per transaction. The underlying architecture is thread safe.
+
+- `log.addEntry()`
+- `log.addEntryCopy()`
+- `log.query()`
+
+#### `log.addEntry(data, transactionId): void`
+
+Adds an entry to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+Note that the `data` is queued by reference, so you could modify before it has
+been committed. If you need to reuse the buffer, use `log.addEntryCopy()`.
+
+```typescript
+const log = db.useLog('foo');
+await db.transaction(async (txn) => {
+  log.addEntry(Buffer.from('hello'), txn.id);
+});
+```
+
+If using `txn.useLog()` (instead of `db.useLog()`), you can omit the transaction
+id from `addEntry()` calls.
+
+```typescript
+await db.transaction(async (txn) => {
+  const log = txn.useLog('foo');
+  log.addEntry(Buffer.from('hello'));
+});
+```
+
+#### `log.addEntryCopy(data, transactionId): void`
+
+Copy the entry data and add it to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+```typescript
+const log = db.useLog('foo');
+await db.transaction(async (txn) => {
+  log.addEntryCopy(Buffer.from('I will be copied'), txn.id);
+});
+```
+
+#### `log.query(options?)`
+
+Returns an iterator that streams all log entries for the given filter.
+
+- `options: object`
+  - `start?: number` The transaction start timestamp
+  - `end?: string` The transction end timestamp
+
+The iterator produces an object with the log entry timestamp and data.
+
+- `object`
+  - `data: Buffer` The entry data
+  - `timestamp: number` The entry timestamp used to collate entries by
+    transaction
+
+```typescript
+const log = db.useLog('foo');
+const iter = log.query();
+for (const entry of iter) {
+  console.log(entry);
+}
+
+const lastHour = Date.now() - (60 * 60 * 1000);
+const rangeIter = log.query({ start: lastHour, end: Date.now() });
+for (const entry of iter) {
+  console.log(entry.timestamp, entry.data);
+}
+```
+
+### Transaction Log Parser
+
+#### `parseTransactionLog(file)`
+
+In general, you should use `log.query()` to query the transaction log, however
+if you need to load an entire transaction log into memory, you can use the
+`parseTransactionLog()` utility function.
+
+```typescript
+const everything = parseTransactionLog('/path/to/file.txnlog');
+console.log(everything);
+```
+
+Returns an object containing all of the information in the log file.
+
+- `size: number` The size of the file
+- `version: number` The log file format version
+- `blockSize: number` The size of the blocks used to logically partition the log
+  file for efficient parsing
+- `blockCount: number` The number of blocks in the file; note the last block may
+  not be full
+- `blocks: Block[]` An array of block metadata
+  - `startTimestamp: number` The earliest entry timestamp in the block
+  - `flags: number` Indicates the block type
+  - `dataOffset: number` If the block is a continuation block, this value
+    indicates the offset to the start of the next transaction block
+- `entries: LogEntry[]` An array of transaction log entries
+  - `timestamp: number` The entry timestamp
+  - `length: number` The size of the entry data
+  - `data: Buffer` The entry data
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`
@@ -837,4 +1013,12 @@ from erasing log output:
 
 ```bash
 CI=1 pnpm test
+```
+
+By default, the test runner deletes all test databases after the tests finish.
+To keep the temp databases for closer inspection, set the `KEEP_TEMP=1`
+environment variable:
+
+```bash
+CI=1 KEEP_TEMP=1 pnpm test
 ```

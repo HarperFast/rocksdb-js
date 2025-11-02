@@ -11,17 +11,17 @@ describe('Stress Transactions', () => {
 		const script = process.versions.deno || process.versions.bun
 			?	`
 				import { pathToFileURL } from 'node:url';
-				import(pathToFileURL('./stress-test/fixtures/stress-transaction-put-worker.mts'));
+				import(pathToFileURL('./stress-test/workers/stress-transaction-put-worker.mts'));
 				`
 			:	majorVersion < 20
 				?	`
 					const tsx = require('tsx/cjs/api');
-					tsx.require('./stress-test/fixtures/stress-transaction-put-worker.mts', __dirname);
+					tsx.require('./stress-test/workers/stress-transaction-put-worker.mts', __dirname);
 					`
 				:	`
 					import { register } from 'tsx/esm/api';
 					register();
-					import('./stress-test/fixtures/stress-transaction-put-worker.mts');
+					import('./stress-test/workers/stress-transaction-put-worker.mts');
 					`;
 
 		const promises: Promise<void>[] = [];
