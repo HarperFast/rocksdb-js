@@ -159,9 +159,15 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	// if all log files have been removed, clean up the empty directory
 	// only try to remove if we actually removed at least one file from this store
 	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
-		if (std::filesystem::exists(this->path)) {
-			std::filesystem::remove(this->path);
-			DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
+		try {
+			if (std::filesystem::exists(this->path)) {
+				std::filesystem::remove(this->path);
+				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
+			}
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what())
+		} catch (...) {
+			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log directory %s\n", this, this->path.string().c_str())
 		}
 	}
 }
@@ -247,7 +253,12 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					// file is too old, remove it
 					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
 						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
-					std::filesystem::remove(filePath);
+					try {
+						std::filesystem::remove(filePath);
+					} catch (const std::filesystem::filesystem_error& e) {
+						DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
+							store.get(), filePath.string().c_str(), e.what())
+					}
 					continue;
 				} else {
 					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
