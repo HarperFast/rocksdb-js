@@ -90,6 +90,11 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		return 0;
 	}
 
+	// seek to end of file before writing (file pointer may have been moved by reads)
+	if (::SetFilePointer(this->fileHandle, 0, nullptr, FILE_END) == INVALID_SET_FILE_POINTER) {
+		return -1;
+	}
+
 	// emulate writev() by writing each buffer sequentially
 	int64_t totalBytesWritten = 0;
 
@@ -121,8 +126,15 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
-	if (offset >= 0 && ::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
-		return -1;
+	if (offset >= 0) {
+		if (::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+			return -1;
+		}
+	} else {
+		// offset < 0 means append to end of file
+		if (::SetFilePointer(this->fileHandle, 0, nullptr, FILE_END) == INVALID_SET_FILE_POINTER) {
+			return -1;
+		}
 	}
 
 	DWORD bytesWritten;
