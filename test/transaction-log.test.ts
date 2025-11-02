@@ -310,9 +310,6 @@ describe('Transaction Log', () => {
 				log.addEntry(valueB, txn.id);
 			});
 
-			await delay(1000);
-			await execSync('ls -la', { cwd: join(dbPath, 'transaction_logs', 'foo'), stdio: 'inherit' });
-
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
 			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + ((TRANSACTION_HEADER_SIZE + 10) * 2));
@@ -320,14 +317,14 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
