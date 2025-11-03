@@ -28,7 +28,13 @@ void TransactionLogFile::flushFile() {
 		return;
 	}
 
+#ifdef __APPLE__
+	// macOS doesn't have fdatasync, use fsync instead
 	if (::fsync(this->fd) < 0) {
+#else
+	// Linux and other POSIX systems have fdatasync
+	if (::fdatasync(this->fd) < 0) {
+#endif
 		throw std::runtime_error("Failed to flush file buffers to disk");
 	}
 }
