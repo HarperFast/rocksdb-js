@@ -6,24 +6,26 @@ export const BLOCK_HEADER_SIZE = 14;
 export const TRANSACTION_HEADER_SIZE = 12;
 
 interface Block {
-	readonly startTimestamp: number;
-	readonly flags: number;
-	readonly dataOffset: number;
+	dataOffset: number;
+	flags: number;
+	startTimestamp: number;
 }
 
 interface LogEntry {
-	readonly timestamp: number;
-	readonly length: number;
-	readonly data: Buffer;
+	continuation?: boolean;
+	data: Buffer;
+	length: number;
+	partial?: boolean;
+	timestamp?: number;
 }
 
 interface TransactionLog {
-	readonly size: number;
-	readonly version: number;
-	readonly blockSize: number;
-	readonly blockCount: number;
-	readonly blocks: Block[];
-	readonly entries: LogEntry[];
+	blockCount: number;
+	blockSize: number;
+	blocks: Block[];
+	entries: LogEntry[];
+	size: number;
+	version: number;
 }
 
 /**
@@ -116,6 +118,17 @@ export function parseTransactionLog(path: string): TransactionLog {
 			}
 		}
 
+		const length = blocks[0]?.dataOffset;
+		if ((blocks[0].flags & CONTINUATION_FLAG) && length > 0) {
+			// the first block is a continuation from the previous file
+			entries.push({
+				data: transactionData.subarray(0, blocks[0].dataOffset),
+				continuation: true,
+				length
+			});
+			transactionOffset += blocks[0].dataOffset;
+		}
+
 		for (let i = 0; transactionOffset < transactionDataLength; i++) {
 			if (transactionOffset + 8 > transactionDataLength) {
 				throw new Error(`Invalid transaction ${i}: expected at least 8 bytes for start timestamp but only read ${transactionDataLength - transactionOffset}`);
@@ -128,15 +141,25 @@ export function parseTransactionLog(path: string): TransactionLog {
 			}
 			const length = transactionData.readUInt32BE(transactionOffset);
 			transactionOffset += 4;
+
+			const data = transactionData.subarray(transactionOffset, transactionOffset + length); // Math.min(transactionOffset + length, transactionDataLength));
+			const entry: LogEntry = {
+				data,
+				length: data.length,
+				timestamp
+			};
+
 			if (transactionOffset + length > transactionDataLength) {
-				throw new Error(`Invalid transaction ${i}: expected at least ${length} bytes for data but only read ${transactionDataLength - transactionOffset}`);
+				// if we're at the end of the file, then we don't have all of
+				// the data and we mark the entry as partial
+				if (fileOffset === size) {
+					entry.partial = true;
+				} else {
+					throw new Error(`Invalid transaction ${i}: expected at least ${length} bytes for data but only read ${transactionDataLength - transactionOffset}`);
+				}
 			}
 
-			entries.push({
-				timestamp,
-				length,
-				data: transactionData.subarray(transactionOffset, transactionOffset + length)
-			});
+			entries.push(entry);
 
 			transactionOffset += length;
 		}

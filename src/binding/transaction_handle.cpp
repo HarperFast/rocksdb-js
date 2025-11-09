@@ -55,12 +55,19 @@ TransactionHandle::~TransactionHandle() {
 }
 
 /**
- * Adds a log entry to the transaction.
+ * Adds a log entry to the specified transaction log store's batch.
  */
 void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
 		this, entry->store->name.c_str(), this->id, entry->size);
-	this->entriesByStore[entry->store->name].push_back(std::move(entry));
+	auto store = this->batchesByStore.find(entry->store->name);
+	if (store == this->batchesByStore.end()) {
+		store = this->batchesByStore.emplace(
+			entry->store->name,
+			TransactionLogEntryBatch(this->startTimestamp)
+		).first;
+	}
+	store->second.addEntry(std::move(entry));
 }
 
 /**
@@ -88,7 +95,7 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	this->entriesByStore.clear();
+	this->batchesByStore.clear();
 
 	::napi_delete_reference(this->env, this->jsDatabaseRef);
 

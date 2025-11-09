@@ -50,7 +50,7 @@ TransactionLogHandle::AddEntryContext TransactionLogHandle::resolveAddEntryConte
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
 	std::unique_ptr<char[]> data,
-	size_t size
+	uint32_t size
 ) {
 	auto ctx = resolveAddEntryContext(transactionId);
 	auto entry = std::make_unique<TransactionLogEntry>(ctx.store, std::move(data), size);
@@ -60,7 +60,7 @@ void TransactionLogHandle::addEntry(
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
 	char* data,
-	size_t size,
+	uint32_t size,
 	napi_env env,
 	napi_ref bufferRef
 ) {

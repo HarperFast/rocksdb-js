@@ -61,10 +61,10 @@ All multi-byte integers are encoded in **big-endian** format.
 
 #### Block Flags
 
-| Bit  | Flag         | Description                                        |
-|------|--------------|----------------------------------------------------|
-| 0    | CONTINUATION | This block continues data from the previous block  |
-| 1-15 | Reserved     | Reserved for future use (must be 0)                |
+| Bit  | Flag         | Description                                             |
+|------|--------------|---------------------------------------------------------|
+| 0    | CONTINUATION | This block continues data from the previous block/file  |
+| 1-15 | Reserved     | Reserved for future use (must be 0)                     |
 
 ### Block Body (4084 bytes)
 

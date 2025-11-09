@@ -88,7 +88,7 @@ export async function dbRunner(
 			db?.close();
 		}
 
-		if (!process.env.KEEP_TEMP) {
+		if (!process.env.KEEP_FILES) {
 			const retries = 3;
 			for (let i = 0; i < retries && dbPaths.size > 0; i++) {
 				for (const dbPath of dbPaths) {

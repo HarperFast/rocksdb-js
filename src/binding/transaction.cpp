@@ -196,15 +196,15 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				auto descriptor = txnHandle->dbHandle->descriptor;
 
 				DEBUG_LOG("%p Transaction::Commit committing log entries from %zu stores\n",
-					txnHandle.get(), txnHandle->entriesByStore.size())
+					txnHandle.get(), txnHandle->batchesByStore.size())
 
 				// commit entries for each store
-				for (auto& [storeName, entries] : txnHandle->entriesByStore) {
-					if (!entries.empty() && entries[0]->store) {
+				for (auto& [storeName, batch] : txnHandle->batchesByStore) {
+					if (!batch.entries.empty() && batch.entries[0]->store) {
 						DEBUG_LOG("%p Transaction::Commit committing %zu entries to store \"%s\" for transaction %u\n",
-							txnHandle.get(), entries.size(), storeName.c_str(), txnHandle->id);
-						// Use the transaction start timestamp as the commit timestamp
-						entries[0]->store->commit(txnHandle->startTimestamp, entries);
+							txnHandle.get(), batch.entries.size(), storeName.c_str(), txnHandle->id);
+						// use the transaction start timestamp as the commit timestamp
+						batch.entries[0]->store->commit(batch);
 					}
 				}
 
@@ -279,12 +279,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	(*txnHandle)->state = TransactionState::Committing;
 
 	// commit entries for each store
-	for (auto& [storeName, entries] : (*txnHandle)->entriesByStore) {
-		if (!entries.empty() && entries[0]->store) {
+	for (auto& [storeName, batch] : (*txnHandle)->batchesByStore) {
+		if (!batch.entries.empty() && batch.entries[0]->store) {
 			DEBUG_LOG("%p Transaction::Commit committing %zu entries to store \"%s\" for transaction %u\n",
-				(*txnHandle).get(), entries.size(), storeName.c_str(), (*txnHandle)->id);
-			// Use the transaction start timestamp as the commit timestamp
-			entries[0]->store->commit((*txnHandle)->startTimestamp, entries);
+				(*txnHandle).get(), batch.entries.size(), storeName.c_str(), (*txnHandle)->id);
+			// use the transaction start timestamp as the commit timestamp
+			batch.entries[0]->store->commit(batch);
 		}
 	}
 

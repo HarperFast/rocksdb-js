@@ -35,13 +35,13 @@ struct TransactionLogHandle final : Closable {
 	void addEntry(
 		uint32_t transactionId,
 		std::unique_ptr<char[]> data,
-		size_t size
+		uint32_t size
 	);
 
 	void addEntry(
 		uint32_t transactionId,
 		char* data,
-		size_t size,
+		uint32_t size,
 		napi_env env,
 		napi_ref bufferRef
 	);

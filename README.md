@@ -1018,9 +1018,9 @@ CI=1 pnpm test
 ```
 
 By default, the test runner deletes all test databases after the tests finish.
-To keep the temp databases for closer inspection, set the `KEEP_TEMP=1`
+To keep the temp databases for closer inspection, set the `KEEP_FILES=1`
 environment variable:
 
 ```bash
-CI=1 KEEP_TEMP=1 pnpm test
+CI=1 KEEP_FILES=1 pnpm test
 ```

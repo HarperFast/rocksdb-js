@@ -31,7 +31,7 @@ struct TransactionLogEntry final {
 	/**
 	 * The size of the log entry.
 	 */
-	size_t size;
+	uint32_t size;
 
 	/**
 	 * The node environment.
@@ -49,7 +49,7 @@ struct TransactionLogEntry final {
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
 		std::unique_ptr<char[]> data,
-		size_t size
+		uint32_t size
 	) :
 		store(store),
 		data(data.get()),
@@ -65,7 +65,7 @@ struct TransactionLogEntry final {
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
 		char* data,
-		size_t size,
+		uint32_t size,
 		napi_env env,
 		napi_ref bufferRef
 	) :
@@ -86,6 +86,78 @@ struct TransactionLogEntry final {
 			::napi_delete_reference(this->env, this->bufferRef);
 			this->bufferRef = nullptr;
 		}
+	}
+};
+
+/**
+ * A batch of transaction log entries with state tracking for partial writes
+ * across multiple log files.
+ */
+struct TransactionLogEntryBatch final {
+	/**
+	 * The timestamp for this batch.
+	 */
+	uint64_t timestamp;
+
+	/**
+	 * The vector of entries to write.
+	 */
+	std::vector<std::unique_ptr<TransactionLogEntry>> entries;
+
+	/**
+	 * The index of the current entry being written.
+	 */
+	uint32_t currentEntryIndex = 0;
+
+	/**
+	 * The number of bytes already written from the current entry, including
+	 * the transaction header. This means:
+	 * - bytes 0-11: transaction header (timestamp + length)
+	 * - bytes 12+: entry data
+	 */
+	uint32_t currentEntryBytesWritten = 0;
+
+	TransactionLogEntryBatch(const uint64_t timestamp) :
+		timestamp(timestamp)
+	{}
+
+	/**
+	 * Adds a new entry to the batch.
+	 */
+	void addEntry(std::unique_ptr<TransactionLogEntry> entry) {
+		this->entries.push_back(std::move(entry));
+	}
+
+	/**
+	 * Gets the remaining bytes to write from the current entry.
+	 */
+	uint32_t getCurrentEntryRemainingBytes() const {
+		if (this->currentEntryIndex >= this->entries.size()) {
+			return 0;
+		}
+		return this->entries[this->currentEntryIndex]->size - this->currentEntryBytesWritten;
+	}
+
+	/**
+	 * Gets the total remaining bytes to write across all entries.
+	 */
+	uint32_t getTotalRemainingBytes() const {
+		if (this->currentEntryIndex >= this->entries.size()) {
+			return 0;
+		}
+
+		uint32_t total = this->getCurrentEntryRemainingBytes();
+		for (uint32_t i = this->currentEntryIndex + 1; i < this->entries.size(); ++i) {
+			total += this->entries[i]->size;
+		}
+		return total;
+	}
+
+	/**
+	 * Checks if all entries have been written.
+	 */
+	bool isComplete() const {
+		return this->currentEntryIndex >= this->entries.size();
 	}
 };
 

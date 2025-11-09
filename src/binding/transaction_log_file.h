@@ -59,19 +59,16 @@ struct TransactionLogFile final {
 
 	/**
 	 * The size of the current block in bytes.
-	 * Protected by fileMutex.
 	 */
 	uint32_t currentBlockSize = 0;
 
 	/**
 	 * The number of blocks in the file.
-	 * Protected by fileMutex.
 	 */
 	uint32_t blockCount = 0;
 
 	/**
 	 * The size of the file in bytes.
-	 * Protected by fileMutex.
 	 */
 	uint32_t size = 0;
 
@@ -113,8 +110,11 @@ struct TransactionLogFile final {
 
 	/**
 	 * Writes a batch of transaction log entries to the log file.
+	 *
+	 * @param batch The batch of entries to write with state tracking.
+	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
-	void writeEntries(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
+	void writeEntries(TransactionLogEntryBatch& batch, uint32_t maxFileSize = 0);
 
 private:
 	/**
@@ -145,8 +145,17 @@ private:
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1
 	 * of the transaction log file format.
+	 *
+	 * @param batch The batch of entries to write with state tracking.
+	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
-	void writeEntriesV1(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
+	void writeEntriesV1(TransactionLogEntryBatch& batch, uint32_t maxFileSize);
+
+	uint32_t getAvailableSpaceInFile(
+		const TransactionLogEntryBatch& batch,
+		uint32_t maxFileSize,
+		uint32_t availableSpaceInCurrentBlock
+	);
 };
 
 } // namespace rocksdb_js

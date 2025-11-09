@@ -13,7 +13,7 @@
 namespace rocksdb_js {
 
 // forward declarations
-struct TransactionLogEntry;
+struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 
 struct TransactionLogStore final {
@@ -84,7 +84,7 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void commit(const uint64_t timestamp, const std::vector<std::unique_ptr<TransactionLogEntry>>& entries);
+	void commit(TransactionLogEntryBatch& batch);
 
 	/**
 	 * Queries the transaction log store.

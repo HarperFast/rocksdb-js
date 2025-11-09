@@ -89,10 +89,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	rocksdb::Transaction* txn;
 
 	/**
-	 * A map of store names to their log entries.
+	 * A map of store names to their log entries batches.
 	 * This groups entries by store to enable efficient batch commits per store.
 	 */
-	std::unordered_map<std::string, std::vector<std::unique_ptr<TransactionLogEntry>>> entriesByStore;
+	std::unordered_map<std::string, TransactionLogEntryBatch> batchesByStore;
 
 	TransactionHandle(
 		std::shared_ptr<DBHandle> dbHandle,
