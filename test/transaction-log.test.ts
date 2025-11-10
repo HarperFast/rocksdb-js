@@ -398,24 +398,129 @@ describe('Transaction Log', () => {
 			}
 		}));
 
-		it.skip('should rotate if not enough room for the next transaction header', () => dbRunner({
+		it('should rotate if not enough room for the next transaction header', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 
-			for (let i = 0; i < 5; i++) {
+			for (let i = 0; i < 2; i++) {
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.alloc(961, 'a'), txn.id);
 				});
 			}
 
-			execSync('ls -l ' + join(dbPath, 'transaction_logs', 'foo'), { stdio: 'inherit' });
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
-			// expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
-			// expect(statSync(join(logStorePath, 'foo.1.txnlog')).size).toBe(1000);
-			// expect(statSync(join(logStorePath, 'foo.2.txnlog')).size).toBe(1000);
-			// expect(statSync(join(logStorePath, 'foo.3.txnlog')).size).toBe(896);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(997);
+			expect(info1.blocks.length).toBe(1);
+			expect(info1.blocks[0].dataOffset).toBe(0);
+			expect(info1.entries.length).toBe(1);
+			expect(info1.entries[0].length).toBe(961);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(961, 'a'));
+
+			expect(info2.size).toBe(997);
+			expect(info2.blocks.length).toBe(1);
+			expect(info2.blocks[0].dataOffset).toBe(0);
+			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].length).toBe(961);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(961, 'a'));
+		}));
+
+		it('should split entry and rotate if not enough room for the entire transaction', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(1024, 'a'), txn.id);
+			});
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(1000);
+			expect(info1.blocks.length).toBe(1);
+			expect(info1.blocks[0].dataOffset).toBe(0);
+			expect(info1.entries.length).toBe(1);
+			expect(info1.entries[0].length).toBe(964);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(964, 'a'));
+			expect(info1.entries[0].partial).toBe(true);
+
+			expect(info2.size).toBe(84);
+			expect(info2.blocks.length).toBe(1);
+			expect(info2.blocks[0].dataOffset).toBe(60);
+			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].length).toBe(60);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(60, 'a'));
+			expect(info2.entries[0].continuation).toBe(true);
+		}));
+
+		it('should split huge entry and rotate across multiple files', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(3500, 'a'), txn.id);
+			});
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog', 'foo.4.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const log3Path = join(dbPath, 'transaction_logs', 'foo', 'foo.3.txnlog');
+			const log4Path = join(dbPath, 'transaction_logs', 'foo', 'foo.4.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+			const info3 = parseTransactionLog(log3Path);
+			const info4 = parseTransactionLog(log4Path);
+
+			expect(info1.size).toBe(1000);
+			expect(info1.blocks.length).toBe(1);
+			expect(info1.blocks[0].dataOffset).toBe(0);
+			expect(info1.entries.length).toBe(1);
+			expect(info1.entries[0].length).toBe(964);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(964, 'a'));
+			expect(info1.entries[0].partial).toBe(true);
+
+			expect(info2.size).toBe(1000);
+			expect(info2.blocks.length).toBe(1);
+			expect(info2.blocks[0].dataOffset).toBe(2536);
+			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].length).toBe(976);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(976, 'a'));
+			expect(info2.entries[0].continuation).toBe(true);
+
+			expect(info3.size).toBe(1000);
+			expect(info3.blocks.length).toBe(1);
+			expect(info3.blocks[0].dataOffset).toBe(1560);
+			expect(info3.entries.length).toBe(1);
+			expect(info3.entries[0].length).toBe(976);
+			expect(info3.entries[0].data).toEqual(Buffer.alloc(976, 'a'));
+			expect(info3.entries[0].continuation).toBe(true);
+
+			expect(info4.size).toBe(608);
+			expect(info4.blocks.length).toBe(1);
+			expect(info4.blocks[0].dataOffset).toBe(584);
+			expect(info4.entries.length).toBe(1);
+			expect(info4.entries[0].length).toBe(584);
+			expect(info4.entries[0].data).toEqual(Buffer.alloc(584, 'a'));
+			expect(info4.entries[0].continuation).toBe(true);
 		}));
 
 		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {

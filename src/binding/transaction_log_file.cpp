@@ -225,7 +225,6 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	uint32_t bytesWrittenTotal = 0;
 	uint32_t currentLogicalBlock = dataForCurrentBlock > 0 ? 0 : 1; // 0 = existing block, 1+ = new block(s)
 	uint32_t currentBlockOffset = 0; // offset within the current logical block
-	uint32_t lastNewBlockBodySize = 0; // track actual bytes written to last new block body
 
 	// helper to get available space in current logical block
 	auto getAvailableInBlock = [&]() -> uint32_t {
@@ -248,6 +247,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	uint32_t totalBytesProcessed = 0;
 	size_t entriesProcessed = 0;
 
+	// write the transaction headers and data to the buffers
 	for (size_t entryIdx = batch.currentEntryIndex; entryIdx < batch.entries.size() && entriesProcessed < numEntriesToWrite; ++entryIdx, ++entriesProcessed) {
 		auto& entry = batch.entries[entryIdx];
 
@@ -342,6 +342,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	}
 
 	// capture the final block's size if we ended in a new block
+	uint32_t lastNewBlockBodySize = 0;
 	if (numNewBlocks > 0 && currentLogicalBlock > 0) {
 		lastNewBlockBodySize = currentBlockOffset;
 		// if we perfectly filled the last block and advanced, currentBlockOffset is 0
@@ -368,9 +369,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		}
 	}
 
-	// write all data using writev
+	// write all data using writev (on posix)
 	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
-
 	if (bytesWritten < 0) {
 		throw std::runtime_error("Failed to write transaction log entries to file");
 	}

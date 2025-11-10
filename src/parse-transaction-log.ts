@@ -119,11 +119,11 @@ export function parseTransactionLog(path: string): TransactionLog {
 			}
 		}
 
-		const length = blocks[0]?.dataOffset;
+		const length = Math.min(blocks[0]?.dataOffset, transactionDataLength);
 		if ((blocks[0].flags & CONTINUATION_FLAG) && length > 0) {
 			// the first block is a continuation from the previous file
 			entries.push({
-				data: transactionData.subarray(0, blocks[0].dataOffset),
+				data: transactionData.subarray(0, length),
 				continuation: true,
 				length
 			});
@@ -143,10 +143,12 @@ export function parseTransactionLog(path: string): TransactionLog {
 			const length = transactionData.readUInt32BE(transactionOffset);
 			transactionOffset += 4;
 
-			const data = transactionData.subarray(transactionOffset, Math.min(transactionOffset + length, transactionDataLength));
+			const end = Math.min(transactionOffset + length, transactionDataLength);
+			const data = transactionData.subarray(transactionOffset, end);
+			console.log({ i, transactionOffset, end, dataLength: data.length });
 			const entry: LogEntry = {
 				data,
-				length: data.length,
+				length: end - transactionOffset,
 				timestamp
 			};
 
