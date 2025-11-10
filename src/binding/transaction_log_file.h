@@ -173,7 +173,10 @@ private:
 		uint32_t availableSpaceInCurrentBlock,
 		uint32_t availableSpaceInFile,
 		uint32_t& totalTxnSize,
-		uint32_t& numEntriesToWrite
+		uint32_t& numEntriesToWrite,
+		uint32_t& dataForCurrentBlock,
+		uint32_t& dataForNewBlocks,
+		uint32_t& numNewBlocks
 	);
 };
 

@@ -113,7 +113,8 @@ export function parseTransactionLog(path: string): TransactionLog {
 				if (transactionDataLength + byteCount > transactionSize) {
 					throw new Error(`Invalid block ${i}: expected at most ${transactionSize} bytes for transaction data but read ${transactionDataLength}`);
 				}
-				transactionData.set(buffer.subarray(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + byteCount), transactionDataLength);
+				const data = buffer.subarray(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + byteCount);
+				transactionData.set(data, transactionDataLength);
 				transactionDataLength += byteCount;
 			}
 		}
@@ -142,7 +143,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			const length = transactionData.readUInt32BE(transactionOffset);
 			transactionOffset += 4;
 
-			const data = transactionData.subarray(transactionOffset, transactionOffset + length); // Math.min(transactionOffset + length, transactionDataLength));
+			const data = transactionData.subarray(transactionOffset, Math.min(transactionOffset + length, transactionDataLength));
 			const entry: LogEntry = {
 				data,
 				length: data.length,

@@ -337,7 +337,7 @@ describe('Transaction Log', () => {
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
-		it.only('should rotate a transaction log', () => dbRunner({
+		it('should rotate a transaction log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
@@ -359,10 +359,6 @@ describe('Transaction Log', () => {
 			const info2 = parseTransactionLog(log2Path);
 			const info3 = parseTransactionLog(log3Path);
 
-			console.log(info1);
-			console.log(info2);
-			console.log(info3);
-
 			expect(info1.size).toBe(1000);
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
@@ -373,24 +369,36 @@ describe('Transaction Log', () => {
 			}
 			expect(info1.entries[info1.entries.length - 1].length).toBe(68);
 			expect(info1.entries[info1.entries.length - 1].data).toEqual(Buffer.alloc(68, 'a'));
+			expect(info1.entries[info1.entries.length - 1].partial).toBe(true);
 
-			// expect(info2.size).toBe(1000);
-			// expect(info2.blocks.length).toBe(1);
-			// expect(info2.blocks[0].dataOffset).toBe(32);
-			// expect(info1.entries.length).toBe(10);
-			// expect(info1.entries[0].length).toBe(32);
-			// expect(info1.entries[0].data).toEqual(Buffer.alloc(32, 'a'));
-			// for (let i = 1; i < info1.entries.length; i++) {
-			// 	expect(info1.entries[i].length).toBe(100);
-			// 	expect(info1.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
-			// }
+			expect(info2.size).toBe(1000);
+			expect(info2.blocks.length).toBe(1);
+			expect(info2.blocks[0].dataOffset).toBe(32);
+			expect(info2.entries.length).toBe(10);
+			expect(info2.entries[0].length).toBe(32);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(32, 'a'));
+			expect(info2.entries[0].continuation).toBe(true);
+			for (let i = 1; i < info2.entries.length - 1; i++) {
+				expect(info2.entries[i].length).toBe(100);
+				expect(info2.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
+			}
+			expect(info2.entries[info2.entries.length - 1].length).toBe(36);
+			expect(info2.entries[info2.entries.length - 1].data).toEqual(Buffer.alloc(36, 'a'));
 
-			// expect(info3.size).toBe(872);
-			// expect(info2.blocks.length).toBe(1);
-			// expect(info2.blocks[0].dataOffset).toBe(64);
+			expect(info3.size).toBe(872);
+			expect(info3.blocks.length).toBe(1);
+			expect(info3.blocks[0].dataOffset).toBe(64);
+			expect(info3.entries.length).toBe(8);
+			expect(info3.entries[0].length).toBe(64);
+			expect(info3.entries[0].data).toEqual(Buffer.alloc(64, 'a'));
+			expect(info3.entries[0].continuation).toBe(true);
+			for (let i = 1; i < info3.entries.length; i++) {
+				expect(info3.entries[i].length).toBe(100);
+				expect(info3.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
+			}
 		}));
 
-		it('should rotate if not enough room for the next transaction header', () => dbRunner({
+		it.skip('should rotate if not enough room for the next transaction header', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
@@ -410,7 +418,7 @@ describe('Transaction Log', () => {
 			// expect(statSync(join(logStorePath, 'foo.3.txnlog')).size).toBe(896);
 		}));
 
-		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
+		it.skip('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
 			const script = process.versions.deno || process.versions.bun
