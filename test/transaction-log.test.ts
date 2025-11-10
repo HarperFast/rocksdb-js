@@ -418,7 +418,7 @@ describe('Transaction Log', () => {
 			// expect(statSync(join(logStorePath, 'foo.3.txnlog')).size).toBe(896);
 		}));
 
-		it.skip('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
+		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			// Node.js 18 and older doesn't properly eval ESM code
 			const majorVersion = parseInt(process.versions.node.split('.')[0]);
 			const script = process.versions.deno || process.versions.bun
