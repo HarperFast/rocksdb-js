@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
 import { mkdir, readdir, writeFile, utimes } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { withResolvers } from '../src/util.js';
 import { Worker } from 'node:worker_threads';
