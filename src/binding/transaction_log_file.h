@@ -35,6 +35,12 @@
 #endif
 #include <sys/stat.h>
 
+#define WOOF_TOKEN 0x574F4F46
+#define FILE_HEADER_SIZE 10
+#define BLOCK_HEADER_SIZE 14
+#define TXN_HEADER_SIZE 12
+#define CONTINUATION_FLAG ((uint16_t)0x0001)
+
 namespace rocksdb_js {
 
 struct TransactionLogFile final {
@@ -56,6 +62,11 @@ struct TransactionLogFile final {
 	 * The size of the block in bytes.
 	 */
 	uint32_t blockSize = 4096;
+
+	/**
+	 * The size of the block body in bytes.
+	 */
+	uint32_t blockBodySize = 4096 - BLOCK_HEADER_SIZE;
 
 	/**
 	 * The size of the current block in bytes.
@@ -155,6 +166,14 @@ private:
 		const TransactionLogEntryBatch& batch,
 		uint32_t maxFileSize,
 		uint32_t availableSpaceInCurrentBlock
+	);
+
+	void calculateEntriesToWrite(
+		const TransactionLogEntryBatch& batch,
+		uint32_t availableSpaceInCurrentBlock,
+		uint32_t availableSpaceInFile,
+		uint32_t& totalTxnSize,
+		uint32_t& numEntriesToWrite
 	);
 };
 

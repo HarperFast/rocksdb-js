@@ -8,12 +8,6 @@
 	#include "transaction_log_file_posix.cpp"
 #endif
 
-#define WOOF_TOKEN 0x574F4F46
-#define FILE_HEADER_SIZE 10
-#define BLOCK_HEADER_SIZE 14
-#define TXN_HEADER_SIZE 12
-#define CONTINUATION_FLAG ((uint16_t)0x0001)
-
 namespace rocksdb_js {
 
 TransactionLogFile::~TransactionLogFile() {
@@ -80,6 +74,10 @@ void TransactionLogFile::open() {
 			throw std::runtime_error("Failed to block size from file: " + this->path.string());
 		}
 		this->blockSize = readUint32BE(buffer);
+		if (this->blockSize <= BLOCK_HEADER_SIZE) {
+			throw std::runtime_error("Block size is too small to be a valid transaction log file: " + this->path.string());
+		}
+		this->blockBodySize = this->blockSize - BLOCK_HEADER_SIZE;
 	}
 
 	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size - FILE_HEADER_SIZE) / this->blockSize));
@@ -149,33 +147,17 @@ uint32_t TransactionLogFile::getAvailableSpaceInFile(
 	return availableSpace;
 }
 
-void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_t maxFileSize) {
-	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-
-	const uint32_t BLOCK_BODY_SIZE = this->blockSize - BLOCK_HEADER_SIZE;
-
-	uint32_t currentBlockSize = this->currentBlockSize;
-	uint32_t availableSpaceInCurrentBlock = this->blockCount > 0 ? (BLOCK_BODY_SIZE - currentBlockSize) : 0;
-	uint32_t availableSpace = this->getAvailableSpaceInFile(batch, maxFileSize, availableSpaceInCurrentBlock);
-
-	if (availableSpace == 0) {
-		return;
-	}
-
-	// helper function to calculate actual bytes on disk (transaction data + block headers)
-	auto calculateBytesOnDisk = [&](uint32_t txnSize) -> uint32_t {
-		uint32_t dataForCurrentBlock = std::min(txnSize, availableSpaceInCurrentBlock);
-		uint32_t dataForNewBlocks = txnSize - dataForCurrentBlock;
-		uint32_t numNewBlocks = dataForNewBlocks > 0
-			? static_cast<uint32_t>(std::ceil(static_cast<double>(dataForNewBlocks) / BLOCK_BODY_SIZE))
-			: 0;
-		return dataForCurrentBlock + (numNewBlocks * BLOCK_HEADER_SIZE) + dataForNewBlocks;
-	};
-
-	// calculate total transaction size for entries we want to write
-	// check against availableSpace, accounting for block headers
-	uint32_t totalTxnSize = 0;
-	size_t numEntriesToWrite = 0;
+void TransactionLogFile::calculateEntriesToWrite(
+	const TransactionLogEntryBatch& batch,
+	uint32_t availableSpaceInCurrentBlock,
+	uint32_t availableSpaceInFile,
+	uint32_t& totalTxnSize,
+	uint32_t& numEntriesToWrite
+) {
+	uint32_t dataForCurrentBlock = 0;
+	uint32_t dataForNewBlocks = 0;
+	uint32_t numNewBlocks = 0;
+	uint32_t bytesOnDisk = 0;
 
 	// start from the current entry in the batch (which could be a continuation)
 	for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
@@ -188,69 +170,106 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 			entrySize += TXN_HEADER_SIZE;
 		}
 
+		uint32_t newSize = totalTxnSize + entrySize;
+
 		// check if adding this entry would exceed available space (including block headers)
-		uint32_t proposedBytesOnDisk = calculateBytesOnDisk(totalTxnSize + entrySize);
+		dataForCurrentBlock = std::min(newSize, availableSpaceInCurrentBlock);
+		dataForNewBlocks = newSize - dataForCurrentBlock;
+		numNewBlocks = dataForNewBlocks > 0
+			? static_cast<uint32_t>(std::ceil(static_cast<double>(dataForNewBlocks) / this->blockBodySize))
+			: 0;
+		bytesOnDisk = dataForCurrentBlock + (numNewBlocks * BLOCK_HEADER_SIZE) + dataForNewBlocks;
 
-		if (proposedBytesOnDisk > availableSpace) {
-			// would exceed limit - calculate how much transaction data we can fit
-			uint32_t currentBytesOnDisk = calculateBytesOnDisk(totalTxnSize);
-			uint32_t remainingDiskSpace = availableSpace > currentBytesOnDisk
-				? availableSpace - currentBytesOnDisk
-				: 0;
-
-			// need at least TXN_HEADER_SIZE disk space to start writing a new entry
-			// (accounting for potential block header if starting a new block)
-			uint32_t minDiskSpaceForNewEntry = (availableSpaceInCurrentBlock > 0)
-				? TXN_HEADER_SIZE
-				: BLOCK_HEADER_SIZE + TXN_HEADER_SIZE;
-			if (i > batch.currentEntryIndex && remainingDiskSpace < minDiskSpaceForNewEntry) {
-				// can't fit the header, stop here (leaves padding)
-				break;
-			}
-
-			// calculate maximum transaction data size that fits in remainingDiskSpace
-			// iterate to find the maximum txnDataSize such that
-			// calculateBytesOnDisk(totalTxnSize + txnDataSize) - currentBytesOnDisk <= remainingDiskSpace
-			uint32_t maxAdditionalTxnData = 0;
-			if (remainingDiskSpace > 0) {
-				// if we're continuing an entry, we only need to fit the remaining data (no header)
-				// if we're starting a new entry, we need to fit the header + data
-				// try each possible size from 0 to maxEntrySize to find the maximum that fits
-				for (uint32_t testSize = 0; testSize <= entrySize; ++testSize) {
-					uint32_t testTxnSize = totalTxnSize + testSize;
-					uint32_t testBytesOnDisk = calculateBytesOnDisk(testTxnSize);
-					uint32_t additionalDiskSpace = testBytesOnDisk > currentBytesOnDisk
-						? testBytesOnDisk - currentBytesOnDisk
-						: 0;
-
-					if (additionalDiskSpace <= remainingDiskSpace) {
-						maxAdditionalTxnData = testSize;
-					} else {
-						// exceeded limit, stop searching
-						break;
-					}
-				}
-			}
-
-			// write partial entry
-			if (maxAdditionalTxnData > 0) {
-				totalTxnSize += maxAdditionalTxnData;
-				numEntriesToWrite++;
-			}
+		if (bytesOnDisk <= availableSpaceInFile) {
+			// fits completely, add it
+			totalTxnSize += entrySize;
+			numEntriesToWrite++;
+		} else {
+			// `entrySize` would exceed limit
+			totalTxnSize += (availableSpaceInFile - bytesOnDisk);
 			break;
 		}
-
-		// fits completely, add it
-		totalTxnSize += entrySize;
-		numEntriesToWrite++;
 	}
+
+	// helper function to calculate actual bytes on disk (transaction data + block headers)
+	// auto calculateBytesOnDisk = [&](uint32_t txnSize) -> uint32_t {
+	// 	uint32_t dataForCurrentBlock = std::min(txnSize, availableSpaceInCurrentBlock);
+	// 	uint32_t dataForNewBlocks = txnSize - dataForCurrentBlock;
+	// 	uint32_t numNewBlocks = dataForNewBlocks > 0
+	// 		? static_cast<uint32_t>(std::ceil(static_cast<double>(dataForNewBlocks) / this->blockBodySize))
+	// 		: 0;
+	// 	return dataForCurrentBlock + (numNewBlocks * BLOCK_HEADER_SIZE) + dataForNewBlocks;
+	// };
+
+	// uint32_t currentBytesOnDisk = calculateBytesOnDisk(totalTxnSize);
+	// uint32_t remainingDiskSpace = availableSpaceInFile > currentBytesOnDisk
+	// 	? availableSpaceInFile - currentBytesOnDisk
+	// 	: 0;
+
+	// // need at least TXN_HEADER_SIZE disk space to start writing a new entry
+	// // (accounting for potential block header if starting a new block)
+	// uint32_t minDiskSpaceForNewEntry = (availableSpaceInCurrentBlock > 0)
+	// 	? TXN_HEADER_SIZE
+	// 	: BLOCK_HEADER_SIZE + TXN_HEADER_SIZE;
+	// if (i > batch.currentEntryIndex && remainingDiskSpace < minDiskSpaceForNewEntry) {
+	// 	// can't fit the header, stop here (leaves padding)
+	// 	break;
+	// }
+
+	// // calculate maximum transaction data size that fits in remainingDiskSpace
+	// // iterate to find the maximum txnDataSize such that
+	// // calculateBytesOnDisk(totalTxnSize + txnDataSize) - currentBytesOnDisk <= remainingDiskSpace
+	// uint32_t maxAdditionalTxnData = 0;
+	// if (remainingDiskSpace > 0) {
+	// 	// if we're continuing an entry, we only need to fit the remaining data (no header)
+	// 	// if we're starting a new entry, we need to fit the header + data
+	// 	// try each possible size from 0 to maxEntrySize to find the maximum that fits
+	// 	for (uint32_t testSize = 0; testSize <= entrySize; ++testSize) {
+	// 		uint32_t testTxnSize = totalTxnSize + testSize;
+	// 		uint32_t testBytesOnDisk = calculateBytesOnDisk(testTxnSize);
+	// 		uint32_t additionalDiskSpace = testBytesOnDisk > currentBytesOnDisk
+	// 			? testBytesOnDisk - currentBytesOnDisk
+	// 			: 0;
+
+	// 		if (additionalDiskSpace <= remainingDiskSpace) {
+	// 			maxAdditionalTxnData = testSize;
+	// 		} else {
+	// 			// exceeded limit, stop searching
+	// 			break;
+	// 		}
+	// 	}
+	// }
+
+	// // write partial entry
+	// if (maxAdditionalTxnData > 0) {
+	// 	totalTxnSize += maxAdditionalTxnData;
+	// 	numEntriesToWrite++;
+	// }
+}
+
+void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_t maxFileSize) {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+
+	uint32_t currentBlockSize = this->currentBlockSize;
+	uint32_t availableSpaceInCurrentBlock = this->blockCount > 0 ? (this->blockBodySize - currentBlockSize) : 0;
+	uint32_t availableSpaceInFile = this->getAvailableSpaceInFile(batch, maxFileSize, availableSpaceInCurrentBlock);
+
+	if (availableSpaceInFile == 0) {
+		return;
+	}
+
+	// calculate total transaction size for entries we want to write
+	// check against availableSpace, accounting for block headers
+	uint32_t totalTxnSize = 0;
+	uint32_t numEntriesToWrite = 0;
+	this->calculateEntriesToWrite(batch, availableSpaceInCurrentBlock, availableSpaceInFile, totalTxnSize, numEntriesToWrite);
 
 	if (numEntriesToWrite == 0 || totalTxnSize == 0) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this)
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Will write %zu entries, totalTxnSize=%u\n",
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Will write %u entries, totalTxnSize=%u\n",
 		this, numEntriesToWrite, totalTxnSize)
 
 	// calculate how much data will go into new blocks vs existing block
@@ -259,11 +278,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 
 	// calculate number of new blocks needed
 	uint32_t numNewBlocks = dataForNewBlocks > 0
-		? static_cast<uint32_t>(std::ceil(static_cast<double>(dataForNewBlocks) / BLOCK_BODY_SIZE))
+		? static_cast<uint32_t>(std::ceil(static_cast<double>(dataForNewBlocks) / this->blockBodySize))
 		: 0;
 
-	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Total transaction size=%u, currentBlockSize=%u, availableSpaceInCurrentBlock=%u, dataForCurrentBlock=%u, dataForNewBlocks=%u, numNewBlocks=%u, availableSpace=%u\n",
-		this, totalTxnSize, currentBlockSize, availableSpaceInCurrentBlock, dataForCurrentBlock, dataForNewBlocks, numNewBlocks, availableSpace)
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Total transaction size=%u, currentBlockSize=%u, availableSpaceInCurrentBlock=%u, dataForCurrentBlock=%u, dataForNewBlocks=%u, numNewBlocks=%u, availableSpaceInFile=%u\n",
+		this, totalTxnSize, currentBlockSize, availableSpaceInCurrentBlock, dataForCurrentBlock, dataForNewBlocks, numNewBlocks, availableSpaceInFile)
 
 	// calculate initial data offset for first new block (if it's a continuation)
 	// this tells us where the first transaction header starts in the first new block
@@ -271,7 +290,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	if (numNewBlocks > 0 && batch.currentEntryBytesWritten > 0 && dataForCurrentBlock == 0) {
 		auto& currentEntry = batch.entries[batch.currentEntryIndex];
 		initialDataOffset = currentEntry->size - batch.currentEntryBytesWritten;
-		if (initialDataOffset > BLOCK_BODY_SIZE) {
+		if (initialDataOffset > this->blockBodySize) {
 			initialDataOffset = 0;
 		}
 	}
@@ -338,8 +357,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		iovecs[iovecsIndex++] = {blockHeader, BLOCK_HEADER_SIZE};
 
 		// add block body to iovec (full size for now, we'll adjust last one later)
-		char* blockBody = dataWritePtr + (blockIdx * BLOCK_BODY_SIZE);
-		iovecs[iovecsIndex++] = {blockBody, BLOCK_BODY_SIZE};
+		char* blockBody = dataWritePtr + (blockIdx * this->blockBodySize);
+		iovecs[iovecsIndex++] = {blockBody, this->blockBodySize};
 	}
 
 	// now fill the buffer with transaction data
@@ -358,7 +377,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 			return dataForCurrentBlock - currentBlockOffset;
 		} else {
 			// writing to the new block(s)
-			return BLOCK_BODY_SIZE - currentBlockOffset;
+			return this->blockBodySize - currentBlockOffset;
 		}
 	};
 
@@ -415,7 +434,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 				totalBytesProcessed += toCopy;
 
 				// move to next block if current is full
-				if (currentBlockOffset >= (currentLogicalBlock == 0 ? dataForCurrentBlock : BLOCK_BODY_SIZE)) {
+				if (currentBlockOffset >= (currentLogicalBlock == 0 ? dataForCurrentBlock : this->blockBodySize)) {
 					advanceToNextBlock();
 				}
 			}
@@ -425,7 +444,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		uint32_t dataBytesToCopy = entryRemainingSize;
 		uint32_t dataOffset = entryStartOffset;
 
-		// respect the availableSpace limit
+		// respect the availableSpaceInFile limit
 		uint32_t remainingSpace = totalTxnSize - totalBytesProcessed;
 		dataBytesToCopy = std::min(dataBytesToCopy, remainingSpace);
 
@@ -449,7 +468,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 			entryBytesWritten += toCopy;
 
 			// move to next block if current is full
-			if (currentBlockOffset >= (currentLogicalBlock == 0 ? dataForCurrentBlock : BLOCK_BODY_SIZE)) {
+			if (currentBlockOffset >= (currentLogicalBlock == 0 ? dataForCurrentBlock : this->blockBodySize)) {
 				advanceToNextBlock();
 			}
 		}
@@ -471,7 +490,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		// if we perfectly filled the last block and advanced, currentBlockOffset is 0
 		// but the last block is actually full
 		if (lastNewBlockBodySize == 0) {
-			lastNewBlockBodySize = BLOCK_BODY_SIZE;
+			lastNewBlockBodySize = this->blockBodySize;
 		}
 	}
 
@@ -519,7 +538,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	}
 
 	// if the last block is full, reset to 0 (ready for next block)
-	if (newBlockSize >= BLOCK_BODY_SIZE) {
+	if (newBlockSize >= this->blockBodySize) {
 		newBlockSize = 0;
 	}
 
