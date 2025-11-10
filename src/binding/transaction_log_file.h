@@ -227,6 +227,28 @@ private:
 		uint32_t size,
 		uint32_t totalTxnSize
 	);
+
+	/**
+	 * Helper struct to represent block distribution for data.
+	 */
+	struct BlockDistribution {
+		uint32_t dataForCurrentBlock;
+		uint32_t dataForNewBlocks;
+		uint32_t numNewBlocks;
+		uint32_t bytesOnDisk;
+	};
+
+	/**
+	 * Calculates how data would be distributed across blocks.
+	 *
+	 * @param dataSize Total data size to distribute
+	 * @param availableSpaceInCurrentBlock Space available in current block
+	 * @return BlockDistribution struct with calculated values
+	 */
+	BlockDistribution calculateBlockDistribution(
+		uint32_t dataSize,
+		uint32_t availableSpaceInCurrentBlock
+	) const;
 };
 
 } // namespace rocksdb_js
