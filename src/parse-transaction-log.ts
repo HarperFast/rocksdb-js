@@ -145,7 +145,6 @@ export function parseTransactionLog(path: string): TransactionLog {
 
 			const end = Math.min(transactionOffset + length, transactionDataLength);
 			const data = transactionData.subarray(transactionOffset, end);
-			console.log({ i, transactionOffset, end, dataLength: data.length });
 			const entry: LogEntry = {
 				data,
 				length: end - transactionOffset,

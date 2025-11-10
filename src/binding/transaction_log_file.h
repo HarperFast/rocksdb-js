@@ -178,6 +178,55 @@ private:
 		uint32_t& dataForNewBlocks,
 		uint32_t& numNewBlocks
 	);
+
+	/**
+	 * Helper struct to track write position across blocks.
+	 */
+	struct WriteContext {
+		char* writePtr;
+		uint32_t bytesWritten;
+		uint32_t totalBytesProcessed;
+		uint32_t currentBlockIdx;
+		uint32_t currentBlockOffset;
+		uint32_t dataForCurrentBlock;
+		uint32_t blockBodySize;
+
+		inline uint32_t getAvailableInBlock() const {
+			if (currentBlockIdx == 0) {
+				return dataForCurrentBlock - currentBlockOffset;
+			}
+			return blockBodySize - currentBlockOffset;
+		}
+
+		inline uint32_t getBlockCapacity() const {
+			return (currentBlockIdx == 0) ? dataForCurrentBlock : blockBodySize;
+		}
+
+		inline void advanceToNextBlock() {
+			currentBlockIdx++;
+			currentBlockOffset = 0;
+		}
+
+		inline bool needsBlockAdvance() const {
+			return currentBlockOffset >= getBlockCapacity();
+		}
+	};
+
+	/**
+	 * Writes data across block boundaries, handling splits automatically.
+	 *
+	 * @param ctx Write context tracking position
+	 * @param data Source data pointer
+	 * @param size Number of bytes to write
+	 * @param totalTxnSize Total transaction size limit
+	 * @return Number of bytes actually written
+	 */
+	uint32_t writeDataAcrossBlocks(
+		WriteContext& ctx,
+		const char* data,
+		uint32_t size,
+		uint32_t totalTxnSize
+	);
 };
 
 } // namespace rocksdb_js
