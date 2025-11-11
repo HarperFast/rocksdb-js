@@ -1,9 +1,7 @@
 import { closeSync, openSync, readSync, statSync, type Stats } from 'node:fs';
+import { constants } from './load-binding.js';
 
-export const CONTINUATION_FLAG = 0x0001;
-export const FILE_HEADER_SIZE = 10;
-export const BLOCK_HEADER_SIZE = 14;
-export const TRANSACTION_HEADER_SIZE = 12;
+const { BLOCK_HEADER_SIZE, CONTINUATION_FLAG } = constants;
 
 interface Block {
 	dataOffset: number;

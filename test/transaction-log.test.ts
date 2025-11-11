@@ -7,14 +7,15 @@ import { join } from 'node:path';
 import { withResolvers } from '../src/util.js';
 import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
-import type { TransactionLog } from '../src/load-binding.js';
-import {
+import { constants, type TransactionLog } from '../src/load-binding.js';
+import { parseTransactionLog } from '../src/parse-transaction-log.js';
+
+const {
 	BLOCK_HEADER_SIZE,
 	CONTINUATION_FLAG,
 	FILE_HEADER_SIZE,
-	parseTransactionLog,
-	TRANSACTION_HEADER_SIZE,
-} from '../src/parse-transaction-log.js';
+	TXN_HEADER_SIZE,
+} = constants;
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
@@ -92,7 +93,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + TRANSACTION_HEADER_SIZE + 10);
+			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + TXN_HEADER_SIZE + 10);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
@@ -116,7 +117,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + TRANSACTION_HEADER_SIZE + 10);
+			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + TXN_HEADER_SIZE + 10);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
@@ -144,7 +145,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + (TRANSACTION_HEADER_SIZE + 10) * 3);
+			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + (TXN_HEADER_SIZE + 10) * 3);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
@@ -176,7 +177,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + TRANSACTION_HEADER_SIZE + 5000);
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + TXN_HEADER_SIZE + 5000);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
@@ -203,7 +204,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 3) + TRANSACTION_HEADER_SIZE + 10000);
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 3) + TXN_HEADER_SIZE + 10000);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(3);
@@ -235,7 +236,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TRANSACTION_HEADER_SIZE + 10) + (TRANSACTION_HEADER_SIZE + 5000));
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TXN_HEADER_SIZE + 10) + (TXN_HEADER_SIZE + 5000));
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
@@ -259,7 +260,7 @@ describe('Transaction Log', () => {
 		it('should split a transaction header across multiple blocks', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			// the transaction header is 12 bytes, but there's only room for 4 bytes in the first block
-			const valueALength = 4096 - BLOCK_HEADER_SIZE - TRANSACTION_HEADER_SIZE - 4;
+			const valueALength = 4096 - BLOCK_HEADER_SIZE - TXN_HEADER_SIZE - 4;
 			const valueA = Buffer.alloc(valueALength, 'a');
 			const valueB = Buffer.alloc(100, 'b');
 
@@ -270,7 +271,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TRANSACTION_HEADER_SIZE + valueALength) + (TRANSACTION_HEADER_SIZE + 100));
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TXN_HEADER_SIZE + valueALength) + (TXN_HEADER_SIZE + 100));
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
@@ -319,7 +320,7 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + ((TRANSACTION_HEADER_SIZE + 10) * 2));
+			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + ((TXN_HEADER_SIZE + 10) * 2));
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
