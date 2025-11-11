@@ -1,4 +1,4 @@
-import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.js';
+import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rimraf } from 'rimraf';
