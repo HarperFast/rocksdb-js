@@ -2,8 +2,15 @@ import { RocksDatabase } from '../../src/index.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 
-// top-level await not supported in Node.js 18
-(async () => {
+parentPort?.on('message', event => {
+	if (event.runTransactions10k) {
+		runTransactions10k();
+	} else if (event.runTransactions10kWithLogs) {
+		runTransactions10kWithLogs();
+	}
+});
+
+async function runTransactions10k() {
 	const db = RocksDatabase.open(workerData.path);
 	let last: Promise<void | PromiseLike<void>> | undefined;
 
@@ -21,4 +28,21 @@ import { randomBytes } from 'node:crypto';
 	}
 
 	parentPort?.postMessage({ done: true });
-})();
+}
+
+async function runTransactions10kWithLogs() {
+	const db = RocksDatabase.open(workerData.path);
+
+	const log = db.useLog('foo');
+
+	for (let i = 0; i < workerData.iterations; i++) {
+		await db.transaction((transaction) => {
+			db.putSync(randomBytes(16).toString('hex'), 'hello world', { transaction });
+			const size = Math.floor(Math.random() * (1048576 - 100 + 1)) + 100; // Random size between 100 bytes and 1MB
+			const data = randomBytes(size);
+			log.addEntry(data, transaction.id);
+		});
+	}
+
+	parentPort?.postMessage({ done: true });
+}
