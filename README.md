@@ -7,6 +7,7 @@ A Node.js binding for the RocksDB library.
 - Supports optimistic and pessimistic transactions
 - Hybrid sync/async data retrieval
 - Range queries return an iterable with array-like methods and lazy evaluation
+- Transaction log system for recording transaction related data
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
 - Designed for Node.js and Bun on Linux, macOS, and Windows
@@ -645,7 +646,7 @@ Multiple worker threads can use the same log at the same time.
 
 ```typescript
 const log1 = db.useLog('foo');
-const log2 = db.useLog('foo'); // gets the exist instance (e.g. log1 === log2)
+const log2 = db.useLog('foo'); // gets existing instance (e.g. log1 === log2)
 const log3 = db.useLog(123);
 ```
 
@@ -769,9 +770,13 @@ Returns an object containing all of the information in the log file.
   - `dataOffset: number` If the block is a continuation block, this value
     indicates the offset to the start of the next transaction block.
 - `entries: LogEntry[]` An array of transaction log entries.
-  - `timestamp: number` The entry timestamp.
-  - `length: number` The size of the entry data.
+  - `continuation: boolean?` When `true`, indicates the buffer is a continuation
+    from the previous block's last transaction entry.
   - `data: Buffer` The entry data.
+  - `length: number` The size of the entry data.
+  - `partial: boolean?` When `true`, indicates the log entry continues into the
+    next block.
+  - `timestamp: number` The entry timestamp.
 
 ## Custom Store
 
