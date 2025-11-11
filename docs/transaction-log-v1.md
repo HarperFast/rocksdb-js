@@ -38,7 +38,7 @@ Total: 10 bytes
 
 ### Block Structure (4096 bytes)
 
-Each block is exactly 4KB and contains:
+The block is exactly 4KB. The block size __must__ be an even number.
 
 ```
 +------------------+

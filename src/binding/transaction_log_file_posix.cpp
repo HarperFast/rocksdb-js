@@ -10,7 +10,11 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	path(p),
 	sequenceNumber(seq),
 	fd(-1)
-{}
+{
+	if (this->blockSize % 2 != 0) {
+		throw std::runtime_error("Invalid block size: " + std::to_string(this->blockSize) + ". Block size must be an even number");
+	}
+}
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);

@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 
 #define WOOF_TOKEN 0x574F4F46
+#define BLOCK_SIZE 4096
 #define FILE_HEADER_SIZE 10
 #define BLOCK_HEADER_SIZE 14
 #define TXN_HEADER_SIZE 12
@@ -59,14 +60,14 @@ struct TransactionLogFile final {
 	uint32_t version = 1;
 
 	/**
-	 * The size of the block in bytes.
+	 * The size of the block in bytes. This must be an even number.
 	 */
-	uint32_t blockSize = 4096;
+	uint32_t blockSize = BLOCK_SIZE;
 
 	/**
 	 * The size of the block body in bytes.
 	 */
-	uint32_t blockBodySize = 4096 - BLOCK_HEADER_SIZE;
+	uint32_t blockBodySize = BLOCK_SIZE - BLOCK_HEADER_SIZE;
 
 	/**
 	 * The size of the current block in bytes.
