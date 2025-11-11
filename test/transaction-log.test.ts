@@ -599,7 +599,7 @@ describe('Transaction Log', () => {
 		it('should error if the log name is invalid', () => dbRunner(async ({ db }) => {
 			expect(() => db.useLog(undefined as any)).toThrowError(new TypeError('Log name must be a string or number'));
 			expect(() => db.useLog([] as any)).toThrowError(new TypeError('Log name must be a string or number'));
-			await expect(() => db.transaction(txn => txn.useLog(undefined as any))).rejects.toThrowError(new TypeError('Log name must be a string or number'));
+			await expect(db.transaction(txn => txn.useLog(undefined as any))).rejects.toThrowError(new TypeError('Log name must be a string or number'));
 		}));
 
 		it('should error if entry data is invalid', () => dbRunner(async ({ db }) => {
