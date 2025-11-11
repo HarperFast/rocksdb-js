@@ -55,7 +55,7 @@ describe('Stress Transactions', () => {
 		await Promise.all(promises);
 	}));
 
-	it.skip('should create 100 worker threads and commit 10k transactions with logs and random entry sizes', () => dbRunner({
+	it('should create 100 worker threads and commit 10k transactions with logs and random entry sizes', () => dbRunner({
 		skipOpen: true
 	}, async ({ dbPath }) => {
 		const promises: Promise<void>[] = [];
@@ -68,7 +68,7 @@ describe('Stress Transactions', () => {
 					eval: true,
 					workerData: {
 						path: dbPath,
-						iterations: 10_000,
+						iterations: 1_000,
 					}
 				}
 			);

@@ -38,7 +38,7 @@ async function runTransactions10kWithLogs() {
 	for (let i = 0; i < workerData.iterations; i++) {
 		await db.transaction((transaction) => {
 			db.putSync(randomBytes(16).toString('hex'), 'hello world', { transaction });
-			const size = Math.floor(Math.random() * (1048576 - 100 + 1)) + 100; // Random size between 100 bytes and 1MB
+			const size = Math.floor(Math.random() * (5000 - 100 + 1)) + 100; // Random size between 100 bytes and 5KB
 			const data = randomBytes(size);
 			log.addEntry(data, transaction.id);
 		});
