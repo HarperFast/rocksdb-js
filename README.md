@@ -361,7 +361,9 @@ all of the same data operations methods as the `RocksDatabase` instance plus:
 - `txn.abort()`
 - `txn.commit()`
 - `txn.commitSync()`
+- `txn.getTimestamp()`
 - `txn.id`
+- `txn.setTimestamp(ts)`
 
 #### `txn.abort(): void`
 
@@ -381,12 +383,22 @@ Synchronously commits and closes the transaction. This is a blocking operation
 on the main thread. Once called, no further transaction operations are
 permitted.
 
+#### `txn.getTimestamp(): number`
+
+Retrieves the transaction start timestamp which defaults to the time at which
+the transaction was created.
+
 #### `txn.id`
 
 Type: `number`
 
 The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are
 unique to the RocksDB database path, regardless the database name/column family.
+
+#### `txn.setTimestamp(ts: number?): void`
+
+Overrides the transaction start timestamp. If called without a timestamp, it
+will set the timestamp to the current time.
 
 ## Events
 

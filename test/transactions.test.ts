@@ -330,6 +330,33 @@ for (const { name, options, txnOptions } of testOptions) {
 			})).rejects.toThrow('Transaction has already been aborted');
 			await expect(db.get('foo')).toBeUndefined();
 		}));
+
+		it(`${name} async should get and set timestamp`, () => dbRunner({
+			dbOptions: [ options ]
+		}, async ({ db }) => {
+			const start = Date.now();
+			await db.transaction(async (txn: Transaction) => {
+				let ts = txn.getTimestamp();
+				expect(ts).toBeGreaterThanOrEqual(start);
+				expect(ts).toBeLessThanOrEqual(start + 1000);
+
+				const newTs = Date.now();
+				txn.setTimestamp(newTs);
+				ts = txn.getTimestamp();
+				expect(ts).toBe(newTs);
+
+				txn.setTimestamp();
+				ts = txn.getTimestamp();
+				expect(ts).toBeGreaterThanOrEqual(newTs);
+
+				expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp('foo' as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(null as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(new Date() as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(new Date(0) as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(new Date(1000) as any)).toThrow('Invalid timestamp, expected positive number');
+			});
+		}));
 	});
 
 	describe(`transactionSync() (${name})`, () => {
@@ -531,6 +558,33 @@ for (const { name, options, txnOptions } of testOptions) {
 				txn.commitSync();
 			})).toThrow('Transaction has already been aborted');
 			expect(db.getSync('foo')).toBeUndefined();
+		}));
+
+		it(`${name} sync should get and set timestamp`, () => dbRunner({
+			dbOptions: [ options ]
+		}, async ({ db }) => {
+			const start = Date.now();
+			db.transactionSync((txn: Transaction) => {
+				let ts = txn.getTimestamp();
+				expect(ts).toBeGreaterThanOrEqual(start);
+				expect(ts).toBeLessThanOrEqual(start + 1000);
+
+				const newTs = Date.now();
+				txn.setTimestamp(newTs);
+				ts = txn.getTimestamp();
+				expect(ts).toBe(newTs);
+
+				txn.setTimestamp();
+				ts = txn.getTimestamp();
+				expect(ts).toBeGreaterThanOrEqual(newTs);
+
+				expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp('foo' as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(null as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(new Date() as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(new Date(0) as any)).toThrow('Invalid timestamp, expected positive number');
+				expect(() => txn.setTimestamp(new Date(1000) as any)).toThrow('Invalid timestamp, expected positive number');
+			});
 		}));
 	});
 

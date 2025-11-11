@@ -455,7 +455,7 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
-	if (type == napi_undefined || type == napi_null) {
+	if (type == napi_undefined) {
 		// use current timestamp
 		timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::system_clock::now().time_since_epoch()
