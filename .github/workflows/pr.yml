@@ -14,12 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Use Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: 'pnpm'
 
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
@@ -40,12 +41,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Use Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node == 18 && 20 || matrix.node }}
+          cache: 'pnpm'
 
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
@@ -59,9 +61,10 @@ jobs:
 
       - name: Install Node 18
         if: matrix.node == 18
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 18
+          cache: 'pnpm'
 
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage
@@ -76,7 +79,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -106,7 +109,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
