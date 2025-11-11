@@ -35,7 +35,8 @@ void TransactionLogFile::flushFile() {
 	// Linux and other POSIX systems have fdatasync
 	if (::fdatasync(this->fd) < 0) {
 #endif
-		throw std::runtime_error("Failed to flush file buffers to disk");
+		DEBUG_LOG("%p TransactionLogFile::flushFile Failed to flush file buffers to disk: %s\n", this, this->path.string().c_str())
+		throw std::runtime_error("Failed to flush file buffers to disk: " + this->path.string());
 	}
 }
 

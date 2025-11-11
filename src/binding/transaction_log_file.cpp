@@ -18,6 +18,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
 	if (!std::filesystem::exists(this->path)) {
+		DEBUG_LOG("%p TransactionLogFile::getLastWriteTime File does not exist: %s\n", this, this->path.string().c_str())
 		throw std::filesystem::filesystem_error(
 			"File does not exist",
 			this->path,
@@ -47,34 +48,41 @@ void TransactionLogFile::open() {
 		this->flushFile();
 		this->size = FILE_HEADER_SIZE;
 	} else if (this->size < 8) {
+		DEBUG_LOG("%p TransactionLogFile::open File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
 		throw std::runtime_error("File is too small to be a valid transaction log file: " + this->path.string());
 	} else {
 		// try to read the WOOF token, version and block size from the file
 		int64_t result = this->readFromFile(buffer, sizeof(buffer), 0);
 		if (result < 0) {
+			DEBUG_LOG("%p TransactionLogFile::open Failed to read version from file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Failed to read version from file: " + this->path.string());
 		}
 		uint32_t token = readUint32BE(buffer);
 		if (token != WOOF_TOKEN) {
+			DEBUG_LOG("%p TransactionLogFile::open Invalid transaction log file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Invalid transaction log file: " + this->path.string());
 		}
 
 		result = this->readFromFile(buffer, sizeof(buffer), 4);
 		if (result < 0) {
+			DEBUG_LOG("%p TransactionLogFile::open Failed to read version from file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Failed to read version from file: " + this->path.string());
 		}
 		this->version = readUint16BE(buffer);
 
 		if (this->version != 1) {
+			DEBUG_LOG("%p TransactionLogFile::open Unsupported transaction log file version: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Unsupported transaction log file version: " + std::to_string(this->version));
 		}
 
 		result = this->readFromFile(buffer, sizeof(buffer), 6);
 		if (result < 0) {
+			DEBUG_LOG("%p TransactionLogFile::open Failed to read block size from file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Failed to block size from file: " + this->path.string());
 		}
 		this->blockSize = readUint32BE(buffer);
 		if (this->blockSize <= BLOCK_HEADER_SIZE) {
+			DEBUG_LOG("%p TransactionLogFile::open Block size is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Block size is too small to be a valid transaction log file: " + this->path.string());
 		}
 		this->blockBodySize = this->blockSize - BLOCK_HEADER_SIZE;
@@ -95,6 +103,7 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, uint32_t 
 	if (this->version == 1) {
 		this->writeEntriesV1(batch, maxFileSize);
 	} else {
+		DEBUG_LOG("%p TransactionLogFile::writeEntries Unsupported transaction log file version: %s\n", this, this->path.string().c_str())
 		throw std::runtime_error("Unsupported transaction log file version: " + std::to_string(this->version));
 	}
 }
@@ -244,7 +253,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	// write to file
 	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
 	if (bytesWritten < 0) {
-		throw std::runtime_error("Failed to write transaction log entries to file");
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
+		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
 	this->flushFile();

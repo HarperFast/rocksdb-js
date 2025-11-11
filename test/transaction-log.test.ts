@@ -595,6 +595,30 @@ describe('Transaction Log', () => {
 
 			await resolver.promise;
 		}), 60000);
+
+		it('should error if the log name is invalid', () => dbRunner(async ({ db }) => {
+			expect(() => db.useLog(undefined as any)).toThrowError(new TypeError('Log name must be a string or number'));
+			expect(() => db.useLog([] as any)).toThrowError(new TypeError('Log name must be a string or number'));
+			await expect(() => db.transaction(txn => txn.useLog(undefined as any))).rejects.toThrowError(new TypeError('Log name must be a string or number'));
+		}));
+
+		it('should error if entry data is invalid', () => dbRunner(async ({ db }) => {
+			const log = db.useLog('foo');
+			await db.transaction(async (txn) => {
+				expect(() => log.addEntry(undefined as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or Uint8Array'));
+				expect(() => log.addEntry([] as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or Uint8Array'));
+				expect(() => log.addEntryCopy(undefined as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or Uint8Array'));
+				expect(() => log.addEntryCopy([] as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or Uint8Array'));
+			});
+		}));
+
+		it('should error if transaction id is invalid', () => dbRunner(async ({ db }) => {
+			const log = db.useLog('foo');
+			await db.transaction(async (txn) => {
+				expect(() => log.addEntry(Buffer.from('hello'), undefined as any)).toThrowError(new TypeError('Invalid argument, expected a transaction id'));
+				expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrowError(new TypeError('Invalid argument, expected a transaction id'));
+			});
+		}));
 	});
 
 	describe('purgeLogs', () => {

@@ -31,6 +31,7 @@ void TransactionLogFile::flushFile() {
 	}
 
 	if (!::FlushFileBuffers(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::flushFile Failed to flush file buffers to disk: %s\n", this, this->path.string().c_str())
 		throw std::runtime_error("Failed to flush file buffers to disk");
 	}
 }

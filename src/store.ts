@@ -627,6 +627,9 @@ export class Store {
 		context: NativeDatabase | NativeTransaction,
 		name: string | number
 	): TransactionLog {
+		if (typeof name !== 'string' && typeof name !== 'number') {
+			throw new TypeError('Log name must be a string or number');
+		}
 		return context.useLog(String(name));
 	}
 

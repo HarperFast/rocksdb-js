@@ -54,13 +54,13 @@ static bool parseLogEntryArgs(
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS_RVAL(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer), false);
 	if (!isBuffer && !isArrayBuffer) {
-		::napi_throw_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+		::napi_throw_type_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
 		return false;
 	}
 	size_t size;
 	NAPI_STATUS_THROWS_RVAL(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&parsed->data), &size), false);
 	if (parsed->data == nullptr) {
-		::napi_throw_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
+		::napi_throw_type_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
 		return false;
 	}
 	parsed->size = static_cast<uint32_t>(size);
@@ -77,7 +77,7 @@ static bool parseLogEntryArgs(
 	}
 
 	if (parsed->transactionId == 0) {
-		::napi_throw_error(env, nullptr, "Invalid argument, expected a transaction id");
+		::napi_throw_type_error(env, nullptr, "Invalid argument, expected a transaction id");
 		return false;
 	}
 

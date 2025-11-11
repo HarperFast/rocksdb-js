@@ -79,6 +79,7 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 
 		// ensure we have a valid log file before writing
 		if (!logFile) {
+			DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
 			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
 		}
 
