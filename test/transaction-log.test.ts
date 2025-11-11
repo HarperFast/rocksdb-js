@@ -614,7 +614,7 @@ describe('Transaction Log', () => {
 
 		it('should error if transaction id is invalid', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
-			await db.transaction(async (txn) => {
+			await db.transaction(async (_txn) => {
 				expect(() => log.addEntry(Buffer.from('hello'), undefined as any)).toThrowError(new TypeError('Invalid argument, expected a transaction id'));
 				expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrowError(new TypeError('Invalid argument, expected a transaction id'));
 			});
