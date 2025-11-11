@@ -1,5 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import type { NativeTransaction, PurgeLogsOptions, TransactionLog } from './load-binding.js';
+import type { NativeTransaction, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -411,15 +411,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Lists all transaction log names.
-	 *
-	 * @returns an array of transaction log names.
-	 */
-	listLogs(): string[] {
-		return this.store.listLogs();
-	}
-
-	/**
 	 * Notifies an event for the given key.
 	 *
 	 * @param event - The event name to emit the event for.
@@ -465,13 +456,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		};
 		this.store.db.addListener(event, wrapper);
 		return this;
-	}
-
-	/**
-	 * Purges transaction logs.
-	 */
-	purgeLogs(options?: PurgeLogsOptions): string[] {
-		return this.store.db.purgeLogs(options);
 	}
 
 	/**

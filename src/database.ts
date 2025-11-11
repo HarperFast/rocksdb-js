@@ -1,7 +1,7 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
-import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
+import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
 import * as orderedBinary from 'ordered-binary';
@@ -206,6 +206,15 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Lists all transaction log names.
+	 *
+	 * @returns an array of transaction log names.
+	 */
+	listLogs(): string[] {
+		return this.store.listLogs();
+	}
+
+	/**
 	 * Sugar method for opening a database.
 	 *
 	 * @param pathOrStore - The filesystem path to the database or a custom store.
@@ -343,17 +352,18 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this;
 	}
 
+	/**
+	 * Returns the path to the database.
+	 */
 	get path(): string {
 		return this.store.path;
 	}
 
 	/**
-	 * Prunes all transaction logs for the database.
-	 *
-	 * @returns A promise that resolves when the transaction logs have been pruned.
+	 * Purges transaction logs.
 	 */
-	async pruneTransactionLogs(): Promise<void> {
-		//
+	purgeLogs(options?: PurgeLogsOptions): string[] {
+		return this.store.db.purgeLogs(options);
 	}
 
 	/**
