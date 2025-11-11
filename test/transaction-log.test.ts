@@ -15,7 +15,6 @@ import {
 	parseTransactionLog,
 	TRANSACTION_HEADER_SIZE,
 } from '../src/parse-transaction-log.js';
-import { execSync } from 'node:child_process';
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
