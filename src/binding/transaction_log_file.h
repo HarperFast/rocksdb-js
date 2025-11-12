@@ -126,7 +126,7 @@ struct TransactionLogFile final {
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
-	void writeEntries(TransactionLogEntryBatch& batch, uint32_t maxFileSize = 0);
+	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
 
 private:
 	/**
@@ -161,23 +161,43 @@ private:
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
-	void writeEntriesV1(TransactionLogEntryBatch& batch, uint32_t maxFileSize);
+	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
 
+	/**
+	 * Calculates the available space in the file.
+	 *
+	 * @param batch The batch of entries to write with state tracking.
+	 * @param maxFileSize The maximum file size limit (0 = no limit).
+	 * @param availableSpaceInCurrentBlock The available space in the current block.
+	 * @return The available space in the file.
+	 */
 	int64_t getAvailableSpaceInFile(
 		const TransactionLogEntryBatch& batch,
-		uint32_t& maxFileSize,
-		uint32_t& availableSpaceInCurrentBlock
+		const uint32_t maxFileSize,
+		const uint32_t availableSpaceInCurrentBlock
 	);
 
+	/**
+	 * Calculates the entries to write to the file.
+	 *
+	 * @param batch The batch of entries to write with state tracking.
+	 * @param availableSpaceInCurrentBlock The available space in the current block.
+	 * @param availableSpaceInFile The available space in the file.
+	 * @param totalTxnSize The total transaction size.
+	 * @param numEntriesToWrite The number of entries to write.
+	 * @param dataForCurrentBlock The data for the current block.
+	 * @param dataForNewBlocks The data for the new blocks.
+	 * @param numNewBlocks The number of new blocks.
+	 */
 	void calculateEntriesToWrite(
 		const TransactionLogEntryBatch& batch,
-		uint32_t& availableSpaceInCurrentBlock,
-		int64_t& availableSpaceInFile,
-		uint32_t& totalTxnSize,
-		uint32_t& numEntriesToWrite,
-		uint32_t& dataForCurrentBlock,
-		uint32_t& dataForNewBlocks,
-		uint32_t& numNewBlocks
+		const uint32_t availableSpaceInCurrentBlock,
+		const int64_t availableSpaceInFile,
+		uint32_t& totalTxnSize, // out
+		uint32_t& numEntriesToWrite, // out
+		uint32_t& dataForCurrentBlock, // out
+		uint32_t& dataForNewBlocks, // out
+		uint32_t& numNewBlocks // out
 	);
 
 	/**

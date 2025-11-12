@@ -95,7 +95,7 @@ void TransactionLogFile::open() {
 		this, this->path.string().c_str(), this->version, this->size, this->blockSize, blockCount)
 }
 
-void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, uint32_t maxFileSize) {
+void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu, bytes written=%zu (timestamp=%llu, maxFileSize=%u, currentSize=%u)\n",
 		this, batch.entries.size(), batch.currentEntryIndex, batch.currentEntryBytesWritten, batch.timestamp, maxFileSize, this->size)
 
@@ -108,7 +108,7 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, uint32_t 
 	}
 }
 
-void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_t maxFileSize) {
+void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
 	/**
 	 * Strategy:
 	 * 1. Calculate available space and entries to write
@@ -142,13 +142,15 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	}
 
 	// calculate initial data offset for continuation across files
+	// dataOffset in the block header indicates the total remaining bytes of the
+	// partial entry from the previous file (not just the bytes in this file)
 	uint32_t initialDataOffset = 0;
-	if (numNewBlocks > 0 && batch.currentEntryBytesWritten > 0 && dataForCurrentBlock == 0) {
+	if (numNewBlocks > 0 && batch.currentEntryHeaderWritten && dataForCurrentBlock == 0) {
+		// we're starting a new file and the header was already written in the
+		// previous file, so dataOffset is the total remaining size of the entry
 		auto& currentEntry = batch.entries[batch.currentEntryIndex];
-		initialDataOffset = currentEntry->size - batch.currentEntryBytesWritten;
-		if (initialDataOffset > this->blockBodySize) {
-			initialDataOffset = 0;
-		}
+		uint32_t remainingEntrySize = currentEntry->size - batch.currentEntryBytesWritten;
+		initialDataOffset = remainingEntrySize;
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Will write %u entries (totalTxnSize=%u, currentBlockSize=%u, availableSpaceInCurrentBlock=%u, dataForCurrentBlock=%u, numNewBlocks=%u, dataForNewBlocks=%u, availableSpaceInFile=%lli, initialDataOffset=%u)\n",
@@ -182,8 +184,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		writeUint64BE(blockHeader, batch.timestamp);
 
 		// flags (2 bytes) - continuation if: appending to current block, not first new block, or continuing from previous file
-		bool isContinuation = (dataForCurrentBlock > 0) || (blockIdx > 0) || (batch.currentEntryBytesWritten > 0);
-		uint16_t flags = isContinuation ? CONTINUATION_FLAG : 0x0000;
+		bool isContinuation = dataForCurrentBlock > 0 || blockIdx > 0 || batch.currentEntryHeaderWritten;
+		uint16_t flags = isContinuation ? CONTINUATION_FLAG : 0;
 		writeUint16BE(blockHeader + 8, flags);
 
 		// data offset (4 bytes)
@@ -212,18 +214,24 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	size_t entriesProcessed = 0;
 	for (size_t entryIdx = batch.currentEntryIndex; entryIdx < batch.entries.size() && entriesProcessed < numEntriesToWrite; ++entryIdx, ++entriesProcessed) {
 		auto& entry = batch.entries[entryIdx];
-		uint32_t entryStartOffset = (entryIdx == batch.currentEntryIndex) ? static_cast<uint32_t>(batch.currentEntryBytesWritten) : 0;
+		bool isCurrentEntry = (entryIdx == batch.currentEntryIndex);
+		uint32_t entryStartOffset = isCurrentEntry ? static_cast<uint32_t>(batch.currentEntryBytesWritten) : 0;
 		uint32_t entryRemainingSize = static_cast<uint32_t>(entry->size) - entryStartOffset;
 
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Processing entry %zu (size=%zu, startOffset=%u, remainingSize=%u)\n",
-			this, entryIdx, entry->size, entryStartOffset, entryRemainingSize)
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Processing entry %zu (size=%zu, startOffset=%u, remainingSize=%u, headerWritten=%d)\n",
+			this, entryIdx, entry->size, entryStartOffset, entryRemainingSize, isCurrentEntry ? batch.currentEntryHeaderWritten : false)
 
-		// write transaction header for new entries
-		if (entryStartOffset == 0) {
+		// write transaction header if not already written
+		if (!isCurrentEntry || !batch.currentEntryHeaderWritten) {
 			char txnHeader[TXN_HEADER_SIZE];
 			writeUint64BE(txnHeader, batch.timestamp);
 			writeUint32BE(txnHeader + 8, static_cast<uint32_t>(entry->size));
 			this->writeDataAcrossBlocks(ctx, txnHeader, TXN_HEADER_SIZE, totalTxnSize);
+
+			// mark header as written for current entry
+			if (isCurrentEntry) {
+				batch.currentEntryHeaderWritten = true;
+			}
 		}
 
 		// write transaction data
@@ -231,9 +239,12 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 
 		// update batch state
 		if (entryStartOffset + entryBytesWritten >= entry->size) {
+			// completed this entry, move to next
 			batch.currentEntryIndex = entryIdx + 1;
 			batch.currentEntryBytesWritten = 0;
+			batch.currentEntryHeaderWritten = false;
 		} else {
+			// partial write, update bytes written
 			batch.currentEntryBytesWritten = entryStartOffset + entryBytesWritten;
 		}
 	}
@@ -287,8 +298,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 
 int64_t TransactionLogFile::getAvailableSpaceInFile(
 	const TransactionLogEntryBatch& batch,
-	uint32_t& maxFileSize,
-	uint32_t& availableSpaceInCurrentBlock
+	const uint32_t maxFileSize,
+	const uint32_t availableSpaceInCurrentBlock
 ) {
 	if (maxFileSize == 0) {
 		// unlimited space, return -1 to indicate no limit
@@ -314,19 +325,13 @@ int64_t TransactionLogFile::getAvailableSpaceInFile(
 
 		if (availableSpaceInCurrentBlock == 0) {
 			// need to create a new block
-			minimumRequired = BLOCK_HEADER_SIZE + TXN_HEADER_SIZE;
-		} else {
+			// if header already written, just need block header + 1 byte data
+			// otherwise need block header + txn header
+			minimumRequired = BLOCK_HEADER_SIZE + (batch.currentEntryHeaderWritten ? 1 : TXN_HEADER_SIZE);
+		} else if (!batch.currentEntryHeaderWritten) {
 			// can append to current block
-
-			// if we haven't written any of the current entry yet, we need space
-			// for the header
-			if (batch.currentEntryBytesWritten == 0) {
-				// we haven't written any of the entry, so we need to write the
-				// header
-				minimumRequired = TXN_HEADER_SIZE;
-			} else {
-				// already wrote header
-			}
+			// header not yet written, need space for it
+			minimumRequired = TXN_HEADER_SIZE;
 		}
 
 		if (availableSpace < minimumRequired) {
@@ -341,24 +346,24 @@ int64_t TransactionLogFile::getAvailableSpaceInFile(
 
 void TransactionLogFile::calculateEntriesToWrite(
 	const TransactionLogEntryBatch& batch,
-	uint32_t& availableSpaceInCurrentBlock,
-	int64_t& availableSpaceInFile,
-	uint32_t& totalTxnSize,
-	uint32_t& numEntriesToWrite,
-	uint32_t& dataForCurrentBlock,
-	uint32_t& dataForNewBlocks,
-	uint32_t& numNewBlocks
+	const uint32_t availableSpaceInCurrentBlock,
+	const int64_t availableSpaceInFile,
+	uint32_t& totalTxnSize, // out
+	uint32_t& numEntriesToWrite, // out
+	uint32_t& dataForCurrentBlock, // out
+	uint32_t& dataForNewBlocks, // out
+	uint32_t& numNewBlocks // out
 ) {
 	// start from the current entry in the batch (which could be a continuation)
 	for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
 		auto& entry = batch.entries[i];
 
-		// calculate entry size including header for new entries
-		bool isContinuation = (i == batch.currentEntryIndex && batch.currentEntryBytesWritten > 0);
-		uint32_t entrySize = isContinuation
-			? (entry->size - batch.currentEntryBytesWritten)
-			: (entry->size + TXN_HEADER_SIZE);
-
+		// calculate entry size including header if not already written
+		bool isCurrentEntry = (i == batch.currentEntryIndex);
+		bool needsHeader = !isCurrentEntry || !batch.currentEntryHeaderWritten;
+		uint32_t headerSize = needsHeader ? TXN_HEADER_SIZE : 0;
+		uint32_t dataOffset = isCurrentEntry ? batch.currentEntryBytesWritten : 0;
+		uint32_t entrySize = headerSize + (entry->size - dataOffset);
 		uint32_t candidateSize = totalTxnSize + entrySize;
 
 		// calculate block distribution for this candidate size
@@ -379,8 +384,10 @@ void TransactionLogFile::calculateEntriesToWrite(
 			// recalculate distribution with adjusted size
 			BlockDistribution adjustedDist = this->calculateBlockDistribution(adjustedSize, availableSpaceInCurrentBlock);
 
-			// only write partial entry if we're continuing or have space for header + data
-			if (isContinuation || adjustedSize >= TXN_HEADER_SIZE) {
+			// only write partial entry if we have space for at least header (if needed) + some data
+			// or if header is already written and we're continuing data
+			bool canWritePartial = (isCurrentEntry && batch.currentEntryHeaderWritten) || adjustedSize >= headerSize;
+			if (canWritePartial) {
 				totalTxnSize = adjustedSize;
 				dataForCurrentBlock = adjustedDist.dataForCurrentBlock;
 				dataForNewBlocks = adjustedDist.dataForNewBlocks;

@@ -116,11 +116,11 @@ export async function dbRunner(
  *
  * @returns The script to run in a worker thread.
  */
-export function createWorkerBootstrapScript(): string {
+export function createWorkerBootstrapScript(path: string): string {
 	if (process.versions.deno || process.versions.bun) {
 		return `
 			import { pathToFileURL } from 'node:url';
-			import(pathToFileURL('./test/workers/transaction-log-worker.mts'));
+			import(pathToFileURL('${path}'));
 			`;
 	}
 
@@ -129,13 +129,13 @@ export function createWorkerBootstrapScript(): string {
 		// Node.js 18 and older doesn't properly eval ESM code
 		return `
 			const tsx = require('tsx/cjs/api');
-			tsx.require('./test/workers/transaction-log-worker.mts', __dirname);
+			tsx.require('${path}', __dirname);
 			`;
 	}
 
 	return `
 		import { register } from 'tsx/esm/api';
 		register();
-		import('./test/workers/transaction-log-worker.mts');
+		import('${path}');
 		`;
 }

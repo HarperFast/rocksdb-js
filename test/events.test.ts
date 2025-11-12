@@ -259,7 +259,7 @@ describe('Events', () => {
 
 	it('should notify events from worker threads', () => dbRunner(async ({ db, dbPath }) => {
 		const worker = new Worker(
-			createWorkerBootstrapScript(),
+			createWorkerBootstrapScript('./test/workers/events-worker.mts'),
 			{
 				eval: true,
 				workerData: {

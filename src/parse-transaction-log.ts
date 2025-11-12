@@ -81,8 +81,6 @@ export function parseTransactionLog(path: string): TransactionLog {
 		let transactionDataLength = 0;
 		let transactionOffset = 0;
 
-		console.log({ size, transactionSize });
-
 		// read all of the blocks and fill the transaction data buffer
 		for (let i = 0; fileOffset < size; i++) {
 			const buffer = Buffer.allocUnsafe(blockSize);
@@ -118,8 +116,6 @@ export function parseTransactionLog(path: string): TransactionLog {
 				transactionDataLength += byteCount;
 			}
 		}
-
-		console.log({ transactionDataLength });
 
 		const length = Math.min(blocks[0]?.dataOffset, transactionDataLength);
 		if ((blocks[0].flags & CONTINUATION_FLAG) && length > 0) {

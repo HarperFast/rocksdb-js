@@ -455,18 +455,21 @@ describe('Transaction Log', () => {
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(961, 'a'));
 		}));
 
-		it.only('should rotate if room for the transaction header, but not the entry', () => dbRunner({
+		it('should rotate if room for the transaction header, but not the entry', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 
+			// fill up the first file with just enough space for the next
+			// transaction header
 			const targetSize = 1000 - FILE_HEADER_SIZE - BLOCK_HEADER_SIZE - (TXN_HEADER_SIZE * 2);
 			const targetData = Buffer.alloc(targetSize, 'a');
-
 			await db.transaction(async (txn) => {
 				log.addEntry(targetData, txn.id);
 			});
 
+			// add a second entry which writes the header to the first file and
+			// continues in the second file
 			await db.transaction(async (txn) => {
 				log.addEntry(Buffer.alloc(100, 'a'), txn.id);
 			});
@@ -480,9 +483,6 @@ describe('Transaction Log', () => {
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 
-			console.log(info1);
-			console.log(info2);
-
 			expect(info1.size).toBe(1000);
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
@@ -495,7 +495,7 @@ describe('Transaction Log', () => {
 
 			expect(info2.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + 100);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(0);
+			expect(info2.blocks[0].dataOffset).toBe(100);
 			expect(info2.entries.length).toBe(1);
 			expect(info2.entries[0].length).toBe(100);
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
@@ -594,7 +594,7 @@ describe('Transaction Log', () => {
 
 		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
 			const worker = new Worker(
-				createWorkerBootstrapScript(),
+				createWorkerBootstrapScript('./test/workers/transaction-log-worker.mts'),
 				{
 					eval: true,
 					workerData: {

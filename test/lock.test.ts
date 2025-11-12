@@ -80,7 +80,7 @@ describe('Lock', () => {
 			expect(db.hasLock('foo')).toBe(true); // main thread has lock
 
 			const worker = new Worker(
-				createWorkerBootstrapScript(),
+				createWorkerBootstrapScript('./test/workers/try-lock-worker.mts'),
 				{
 					eval: true,
 					workerData: {
@@ -219,7 +219,7 @@ describe('Lock', () => {
 			const spy = vi.fn();
 
 			const worker = new Worker(
-				createWorkerBootstrapScript(),
+				createWorkerBootstrapScript('./test/workers/with-lock-worker.mts'),
 				{
 					eval: true,
 					workerData: {

@@ -110,12 +110,15 @@ struct TransactionLogEntryBatch final {
 	uint32_t currentEntryIndex = 0;
 
 	/**
-	 * The number of bytes already written from the current entry, including
-	 * the transaction header. This means:
-	 * - bytes 0-11: transaction header (timestamp + length)
-	 * - bytes 12+: entry data
+	 * The number of bytes already written from the current entry's data
+	 * (excluding the transaction header).
 	 */
 	uint32_t currentEntryBytesWritten = 0;
+
+	/**
+	 * Whether the transaction header for the current entry has been written.
+	 */
+	bool currentEntryHeaderWritten = false;
 
 	TransactionLogEntryBatch(const uint64_t timestamp) :
 		timestamp(timestamp)

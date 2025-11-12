@@ -104,7 +104,7 @@ describe('User Shared Buffer', () => {
 			const getNextId = () => Atomics.add(incrementer, 0, 1n);
 
 			const worker = new Worker(
-				createWorkerBootstrapScript(),
+				createWorkerBootstrapScript('./test/workers/user-shared-buffer-worker.mts'),
 				{
 					eval: true,
 					workerData: {
