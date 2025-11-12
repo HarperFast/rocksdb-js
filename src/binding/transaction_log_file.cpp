@@ -122,7 +122,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 
 	uint32_t currentBlockSize = this->currentBlockSize;
 	uint32_t availableSpaceInCurrentBlock = this->blockCount > 0 ? (this->blockBodySize - currentBlockSize) : 0;
-	uint32_t availableSpaceInFile = this->getAvailableSpaceInFile(batch, maxFileSize, availableSpaceInCurrentBlock);
+	int64_t availableSpaceInFile = this->getAvailableSpaceInFile(batch, maxFileSize, availableSpaceInCurrentBlock);
 
 	if (availableSpaceInFile == 0) {
 		return;
@@ -137,7 +137,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 	this->calculateEntriesToWrite(batch, availableSpaceInCurrentBlock, availableSpaceInFile, totalTxnSize, numEntriesToWrite, dataForCurrentBlock, dataForNewBlocks, numNewBlocks);
 
 	if (numEntriesToWrite == 0 || totalTxnSize == 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this)
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write (availableSpaceInFile=%lli)\n", this, availableSpaceInFile)
 		return;
 	}
 
@@ -151,7 +151,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		}
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Will write %u entries (totalTxnSize=%u, currentBlockSize=%u, availableSpaceInCurrentBlock=%u, dataForCurrentBlock=%u, numNewBlocks=%u, dataForNewBlocks=%u, availableSpaceInFile=%u, initialDataOffset=%u)\n",
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Will write %u entries (totalTxnSize=%u, currentBlockSize=%u, availableSpaceInCurrentBlock=%u, dataForCurrentBlock=%u, numNewBlocks=%u, dataForNewBlocks=%u, availableSpaceInFile=%lli, initialDataOffset=%u)\n",
 		this, numEntriesToWrite, totalTxnSize, currentBlockSize, availableSpaceInCurrentBlock, dataForCurrentBlock, numNewBlocks, dataForNewBlocks, availableSpaceInFile, initialDataOffset)
 
 	// allocate buffers
@@ -285,12 +285,17 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, uint32_
 		this, newBlockSize, blocksAdded, this->blockCount, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
 
-uint32_t TransactionLogFile::getAvailableSpaceInFile(
+int64_t TransactionLogFile::getAvailableSpaceInFile(
 	const TransactionLogEntryBatch& batch,
-	uint32_t maxFileSize,
-	uint32_t availableSpaceInCurrentBlock
+	uint32_t& maxFileSize,
+	uint32_t& availableSpaceInCurrentBlock
 ) {
-	uint32_t availableSpace = 0;
+	if (maxFileSize == 0) {
+		// unlimited space, return -1 to indicate no limit
+		return -1;
+	}
+
+	int64_t availableSpace = -1;
 
 	// calculate how many bytes we can write before hitting the max file size limit
 	if (maxFileSize > 0) {
@@ -307,24 +312,25 @@ uint32_t TransactionLogFile::getAvailableSpaceInFile(
 	if (availableSpace > 0) {
 		uint32_t minimumRequired = 0;
 
-		if (availableSpaceInCurrentBlock > 0) {
+		if (availableSpaceInCurrentBlock == 0) {
+			// need to create a new block
+			minimumRequired = BLOCK_HEADER_SIZE + TXN_HEADER_SIZE;
+		} else {
 			// can append to current block
-			// if we haven't written any of the current entry yet, we need space for the header
+
+			// if we haven't written any of the current entry yet, we need space
+			// for the header
 			if (batch.currentEntryBytesWritten == 0) {
 				// we haven't written any of the entry, so we need to write the
-				// header and at least 1 byte of data
-				minimumRequired = TXN_HEADER_SIZE + 1;
+				// header
+				minimumRequired = TXN_HEADER_SIZE;
 			} else {
-				// already wrote header, just need 1 byte of data
-				minimumRequired = 1;
+				// already wrote header
 			}
-		} else {
-			// need to create a new block
-			minimumRequired = BLOCK_HEADER_SIZE + TXN_HEADER_SIZE + 1;
 		}
 
 		if (availableSpace < minimumRequired) {
-			DEBUG_LOG("%p TransactionLogFile::getAvailableSpaceInFile Not enough space to write anything (need %u, have %u), deferring to next file\n",
+			DEBUG_LOG("%p TransactionLogFile::getAvailableSpaceInFile Not enough space to write anything (need %u, have %lli), deferring to next file\n",
 				this, minimumRequired, availableSpace)
 			return 0;
 		}
@@ -335,8 +341,8 @@ uint32_t TransactionLogFile::getAvailableSpaceInFile(
 
 void TransactionLogFile::calculateEntriesToWrite(
 	const TransactionLogEntryBatch& batch,
-	uint32_t availableSpaceInCurrentBlock,
-	uint32_t availableSpaceInFile,
+	uint32_t& availableSpaceInCurrentBlock,
+	int64_t& availableSpaceInFile,
 	uint32_t& totalTxnSize,
 	uint32_t& numEntriesToWrite,
 	uint32_t& dataForCurrentBlock,
@@ -358,7 +364,7 @@ void TransactionLogFile::calculateEntriesToWrite(
 		// calculate block distribution for this candidate size
 		BlockDistribution dist = this->calculateBlockDistribution(candidateSize, availableSpaceInCurrentBlock);
 
-		if (dist.bytesOnDisk <= availableSpaceInFile) {
+		if (availableSpaceInFile == -1 || dist.bytesOnDisk <= availableSpaceInFile) {
 			// entry fits completely
 			totalTxnSize = candidateSize;
 			dataForCurrentBlock = dist.dataForCurrentBlock;
@@ -374,7 +380,7 @@ void TransactionLogFile::calculateEntriesToWrite(
 			BlockDistribution adjustedDist = this->calculateBlockDistribution(adjustedSize, availableSpaceInCurrentBlock);
 
 			// only write partial entry if we're continuing or have space for header + data
-			if (isContinuation || adjustedSize > TXN_HEADER_SIZE) {
+			if (isContinuation || adjustedSize >= TXN_HEADER_SIZE) {
 				totalTxnSize = adjustedSize;
 				dataForCurrentBlock = adjustedDist.dataForCurrentBlock;
 				dataForNewBlocks = adjustedDist.dataForNewBlocks;

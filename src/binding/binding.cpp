@@ -67,9 +67,9 @@ NAPI_MODULE_INIT() {
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
 
-	// transaction log file constants
-	napi_value txnLogConstants;
-	napi_create_object(env, &txnLogConstants);
+	// constants
+	napi_value constants;
+	napi_create_object(env, &constants);
 
 	napi_value woofToken, blockSize, fileHeaderSize, blockHeaderSize, txnHeaderSize, continuationFlag;
 	napi_create_uint32(env, WOOF_TOKEN, &woofToken);
@@ -79,14 +79,14 @@ NAPI_MODULE_INIT() {
 	napi_create_uint32(env, TXN_HEADER_SIZE, &txnHeaderSize);
 	napi_create_uint32(env, CONTINUATION_FLAG, &continuationFlag);
 
-	napi_set_named_property(env, txnLogConstants, "WOOF_TOKEN", woofToken);
-	napi_set_named_property(env, txnLogConstants, "BLOCK_SIZE", blockSize);
-	napi_set_named_property(env, txnLogConstants, "FILE_HEADER_SIZE", fileHeaderSize);
-	napi_set_named_property(env, txnLogConstants, "BLOCK_HEADER_SIZE", blockHeaderSize);
-	napi_set_named_property(env, txnLogConstants, "TXN_HEADER_SIZE", txnHeaderSize);
-	napi_set_named_property(env, txnLogConstants, "CONTINUATION_FLAG", continuationFlag);
+	napi_set_named_property(env, constants, "WOOF_TOKEN", woofToken);
+	napi_set_named_property(env, constants, "BLOCK_SIZE", blockSize);
+	napi_set_named_property(env, constants, "FILE_HEADER_SIZE", fileHeaderSize);
+	napi_set_named_property(env, constants, "BLOCK_HEADER_SIZE", blockHeaderSize);
+	napi_set_named_property(env, constants, "TXN_HEADER_SIZE", txnHeaderSize);
+	napi_set_named_property(env, constants, "CONTINUATION_FLAG", continuationFlag);
 
-	napi_set_named_property(env, exports, "constants", txnLogConstants);
+	napi_set_named_property(env, exports, "constants", constants);
 
 	return exports;
 }

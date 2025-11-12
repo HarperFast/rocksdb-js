@@ -163,16 +163,16 @@ private:
 	 */
 	void writeEntriesV1(TransactionLogEntryBatch& batch, uint32_t maxFileSize);
 
-	uint32_t getAvailableSpaceInFile(
+	int64_t getAvailableSpaceInFile(
 		const TransactionLogEntryBatch& batch,
-		uint32_t maxFileSize,
-		uint32_t availableSpaceInCurrentBlock
+		uint32_t& maxFileSize,
+		uint32_t& availableSpaceInCurrentBlock
 	);
 
 	void calculateEntriesToWrite(
 		const TransactionLogEntryBatch& batch,
-		uint32_t availableSpaceInCurrentBlock,
-		uint32_t availableSpaceInFile,
+		uint32_t& availableSpaceInCurrentBlock,
+		int64_t& availableSpaceInFile,
 		uint32_t& totalTxnSize,
 		uint32_t& numEntriesToWrite,
 		uint32_t& dataForCurrentBlock,

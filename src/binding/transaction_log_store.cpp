@@ -59,7 +59,7 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 			logFile = this->getLogFile(this->currentSequenceNumber);
 
 			// we found a log file, check if it's already at max size
-			if (logFile->size < this->maxSize) {
+			if (this->maxSize == 0 || logFile->size < this->maxSize) {
 				try {
 					logFile->open();
 					break;
@@ -71,10 +71,12 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 			}
 
 			// log file is at max size, rotate to next sequence
-			DEBUG_LOG("%p TransactionLogStore::commit Log file at max size (%u >= %u), rotating to next sequence\n",
-				this, logFile->size, this->maxSize)
-			this->currentSequenceNumber = this->nextSequenceNumber++;
-			logFile = nullptr;
+			if (this->maxSize > 0) {
+				DEBUG_LOG("%p TransactionLogStore::commit Log file at max size (%u >= %u), rotating to next sequence\n",
+					this, logFile->size, this->maxSize)
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+				logFile = nullptr;
+			}
 		}
 
 		// ensure we have a valid log file before writing
@@ -95,7 +97,7 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
 
 		// if we've reached or exceeded the max size, or if no progress was made, rotate to the next file
-		if (logFile->size >= this->maxSize || logFile->size == sizeBefore) {
+		if (this->maxSize > 0 && (logFile->size >= this->maxSize || logFile->size == sizeBefore)) {
 			if (logFile->size == sizeBefore) {
 				DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			} else {

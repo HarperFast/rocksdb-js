@@ -28,7 +28,8 @@ struct TransactionLogStore final {
 	std::filesystem::path path;
 
 	/**
-	 * The maximum size of a transaction log file in bytes.
+	 * The maximum size of a transaction log file in bytes. A max size of 0
+	 * means no limit.
 	 */
 	uint32_t maxSize;
 

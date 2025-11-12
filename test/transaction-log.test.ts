@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { dbRunner } from './lib/util.js';
+import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import { mkdir, readdir, writeFile, utimes } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { withResolvers } from '../src/util.js';
 import { Worker } from 'node:worker_threads';
@@ -12,6 +12,7 @@ import { parseTransactionLog } from '../src/parse-transaction-log.js';
 
 const {
 	BLOCK_HEADER_SIZE,
+	BLOCK_SIZE,
 	CONTINUATION_FLAG,
 	FILE_HEADER_SIZE,
 	TXN_HEADER_SIZE,
@@ -292,6 +293,27 @@ describe('Transaction Log', () => {
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
+		it('should allow unlimited transaction log size', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 0 }],
+		}, async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10000, 'a');
+
+			for (let i = 0; i < 2000; i++) {
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+			}
+
+			const txnSize = (TXN_HEADER_SIZE + 10000) * 2000;
+			const numBlocks = Math.ceil(txnSize / (BLOCK_SIZE - BLOCK_HEADER_SIZE));
+			const totalSize = FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * numBlocks) + txnSize;
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog']);
+			expect(statSync(join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog')).size).toBe(totalSize);
+		}));
+
 		it('should not commit the log if the transaction is aborted', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
@@ -433,6 +455,53 @@ describe('Transaction Log', () => {
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(961, 'a'));
 		}));
 
+		it.only('should rotate if room for the transaction header, but not the entry', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+
+			const targetSize = 1000 - FILE_HEADER_SIZE - BLOCK_HEADER_SIZE - (TXN_HEADER_SIZE * 2);
+			const targetData = Buffer.alloc(targetSize, 'a');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(targetData, txn.id);
+			});
+
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(100, 'a'), txn.id);
+			});
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			console.log(info1);
+			console.log(info2);
+
+			expect(info1.size).toBe(1000);
+			expect(info1.blocks.length).toBe(1);
+			expect(info1.blocks[0].dataOffset).toBe(0);
+			expect(info1.entries.length).toBe(2);
+			expect(info1.entries[0].length).toBe(targetSize);
+			expect(info1.entries[0].data).toEqual(targetData);
+			expect(info1.entries[1].length).toBe(0);
+			expect(info1.entries[1].data).toEqual(Buffer.alloc(0));
+			expect(info1.entries[1].partial).toBe(true);
+
+			expect(info2.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + 100);
+			expect(info2.blocks.length).toBe(1);
+			expect(info2.blocks[0].dataOffset).toBe(0);
+			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].length).toBe(100);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+			expect(info2.entries[0].continuation).toBe(true);
+		}));
+
 		it('should split entry and rotate if not enough room for the entire transaction', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
@@ -524,26 +593,8 @@ describe('Transaction Log', () => {
 		}));
 
 		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
-			// Node.js 18 and older doesn't properly eval ESM code
-			const majorVersion = parseInt(process.versions.node.split('.')[0]);
-			const script = process.versions.deno || process.versions.bun
-				?	`
-					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/workers/transaction-log-worker.mts'));
-					`
-				:	majorVersion < 20
-					?	`
-						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/workers/transaction-log-worker.mts', __dirname);
-						`
-					:	`
-						import { register } from 'tsx/esm/api';
-						register();
-						import('./test/workers/transaction-log-worker.mts');
-						`;
-
 			const worker = new Worker(
-				script,
+				createWorkerBootstrapScript(),
 				{
 					eval: true,
 					workerData: {

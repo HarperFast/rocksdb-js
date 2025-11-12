@@ -1,7 +1,7 @@
 import { closeSync, openSync, readSync, statSync, type Stats } from 'node:fs';
 import { constants } from './load-binding.js';
 
-const { BLOCK_HEADER_SIZE, CONTINUATION_FLAG } = constants;
+const { BLOCK_HEADER_SIZE, CONTINUATION_FLAG, WOOF_TOKEN } = constants;
 
 interface Block {
 	dataOffset: number;
@@ -63,7 +63,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 	try {
 		// read the file header
 		const token = read(4).readUInt32BE(0);
-		if (token !== 0x574F4F46) {
+		if (token !== WOOF_TOKEN) {
 			throw new Error('Invalid token');
 		}
 
@@ -80,6 +80,8 @@ export function parseTransactionLog(path: string): TransactionLog {
 		const transactionData = Buffer.allocUnsafe(transactionSize);
 		let transactionDataLength = 0;
 		let transactionOffset = 0;
+
+		console.log({ size, transactionSize });
 
 		// read all of the blocks and fill the transaction data buffer
 		for (let i = 0; fileOffset < size; i++) {
@@ -116,6 +118,8 @@ export function parseTransactionLog(path: string): TransactionLog {
 				transactionDataLength += byteCount;
 			}
 		}
+
+		console.log({ transactionDataLength });
 
 		const length = Math.min(blocks[0]?.dataOffset, transactionDataLength);
 		if ((blocks[0].flags & CONTINUATION_FLAG) && length > 0) {
