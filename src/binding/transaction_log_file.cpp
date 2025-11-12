@@ -45,7 +45,6 @@ void TransactionLogFile::open() {
 		this->writeToFile(buffer, 2);
 		writeUint32BE(buffer, this->blockSize);
 		this->writeToFile(buffer, 4);
-		this->flushFile();
 		this->size = FILE_HEADER_SIZE;
 	} else if (this->size < 8) {
 		DEBUG_LOG("%p TransactionLogFile::open File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
