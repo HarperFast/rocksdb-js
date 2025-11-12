@@ -184,6 +184,25 @@ describe('Transaction Log', () => {
 			expect(info.entries[2].data).toEqual(valueC);
 		}));
 
+		it('should add several entries', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+
+			await db.transaction(async (txn) => {
+				for (let i = 0; i < 1000; i++) {
+					log.addEntry(value, txn.id);
+				}
+			});
+
+			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const info = parseTransactionLog(logPath);
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 28) + (TXN_HEADER_SIZE + 100) * 1000);
+			expect(info.version).toBe(1);
+			expect(info.blockSize).toBe(4096);
+			expect(info.blockCount).toBe(28);
+			expect(info.entries.length).toBe(1000);
+		}));
+
 		it('should add a large entry across two blocks', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 10000 }]
 		}, async ({ db, dbPath }) => {
