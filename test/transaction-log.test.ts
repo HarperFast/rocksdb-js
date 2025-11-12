@@ -84,7 +84,7 @@ describe('Transaction Log', () => {
 			expect(weakRef.deref()).toBeUndefined();
 		}));
 
-		it.only('should error if log already bound to a transaction', () => dbRunner(async ({ db }) => {
+		it('should error if log already bound to a transaction', () => dbRunner(async ({ db }) => {
 			const log1 = db.useLog('log1');
 			const log2 = db.useLog('log2');
 			await db.transaction(async (txn) => {
