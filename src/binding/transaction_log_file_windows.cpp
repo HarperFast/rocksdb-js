@@ -76,10 +76,15 @@ void TransactionLogFile::openFile() {
 	}
 
 	// open file for both reading and writing
-	this->fileHandle = ::CreateFileW(this->path.wstring().c_str(),
+	this->fileHandle = ::CreateFileW(
+		this->path.wstring().c_str(),
 		GENERIC_READ | GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		nullptr,
+		OPEN_ALWAYS,
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+		nullptr
+	);
 
 	if (this->fileHandle == INVALID_HANDLE_VALUE) {
 		DWORD error = ::GetLastError();
