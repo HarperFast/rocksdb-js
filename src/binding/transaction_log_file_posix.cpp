@@ -27,23 +27,6 @@ void TransactionLogFile::close() {
 	}
 }
 
-void TransactionLogFile::flushFile() {
-	if (this->fd < 0) {
-		return;
-	}
-
-#ifdef __APPLE__
-	// macOS doesn't have fdatasync, use fsync instead
-	if (::fsync(this->fd) < 0) {
-#else
-	// Linux and other POSIX systems have fdatasync
-	if (::fdatasync(this->fd) < 0) {
-#endif
-		DEBUG_LOG("%p TransactionLogFile::flushFile Failed to flush file buffers to disk: %s\n", this, this->path.string().c_str())
-		throw std::runtime_error("Failed to flush file buffers to disk: " + this->path.string());
-	}
-}
-
 void TransactionLogFile::openFile() {
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str())

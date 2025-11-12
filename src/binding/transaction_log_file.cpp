@@ -268,7 +268,6 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
-	this->flushFile();
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file\n", this, bytesWritten)
 
 	// update file metadata
