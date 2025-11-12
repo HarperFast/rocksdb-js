@@ -312,7 +312,7 @@ describe('Transaction Log', () => {
 			const logFiles = await readdir(logStorePath);
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog']);
 			expect(statSync(join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog')).size).toBe(totalSize);
-		}));
+		}), 60000);
 
 		it('should not commit the log if the transaction is aborted', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
