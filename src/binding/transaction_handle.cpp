@@ -61,6 +61,20 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
 		this, entry->store->name.c_str(), this->id, entry->size);
 
+	// check if this transaction is already bound to a different log store
+	auto currentBoundStore = this->boundLogStore.lock();
+	if (currentBoundStore) {
+		// Transaction is already bound to a log store
+		if (currentBoundStore.get() != entry->store.get()) {
+			throw std::runtime_error("Log already bound to a transaction");
+		}
+	} else {
+		// Bind this transaction to the log store
+		this->boundLogStore = entry->store;
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %u to log store \"%s\"\n",
+			this, this->id, entry->store->name.c_str());
+	}
+
 	if (!this->logEntryBatch) {
 		this->logEntryBatch = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
 	}

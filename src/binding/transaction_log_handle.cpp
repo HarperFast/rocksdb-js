@@ -44,6 +44,12 @@ TransactionLogHandle::AddEntryContext TransactionLogHandle::resolveAddEntryConte
 		this->store = ctx.store; // update weak_ptr to point to new store
 	}
 
+	// check if transaction is already bound to a different log store
+	auto boundStore = ctx.txnHandle->boundLogStore.lock();
+	if (boundStore && boundStore.get() != ctx.store.get()) {
+		throw std::runtime_error("Log already bound to a transaction");
+	}
+
 	return ctx;
 }
 

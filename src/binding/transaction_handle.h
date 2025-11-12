@@ -94,6 +94,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
+	/**
+	 * A weak reference to the transaction log store this transaction is bound to.
+	 * Once set, a transaction can only add entries to this specific log store.
+	 */
+	std::weak_ptr<TransactionLogStore> boundLogStore;
+
 	TransactionHandle(
 		std::shared_ptr<DBHandle> dbHandle,
 		napi_env env,

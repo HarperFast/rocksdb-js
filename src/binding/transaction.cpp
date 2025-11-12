@@ -473,6 +473,21 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], name, "Name is required")
 	UNWRAP_TRANSACTION_HANDLE("UseLog")
 
+	// check if transaction is already bound to a different log store
+	auto boundStore = (*txnHandle)->boundLogStore.lock();
+	if (boundStore && boundStore->name != name) {
+		::napi_throw_error(env, nullptr, "Log already bound to a transaction");
+		return nullptr;
+	}
+
+	// resolve the store and bind if not already bound
+	auto store = (*txnHandle)->dbHandle->descriptor->resolveTransactionLogStore(name);
+	if (!boundStore) {
+		(*txnHandle)->boundLogStore = store;
+		DEBUG_LOG("%p Transaction::UseLog Binding transaction %u to log store \"%s\"\n",
+			(*txnHandle).get(), (*txnHandle)->id, name.c_str());
+	}
+
 	// this needs to create a new TransactionLog instance that is not tracked by
 	// the DBHandle and is bound to this transaction
 	napi_value exports;
