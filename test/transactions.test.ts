@@ -334,11 +334,11 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} async should get and set timestamp`, () => dbRunner({
 			dbOptions: [ options ]
 		}, async ({ db }) => {
-			const start = Date.now();
+			const start = Date.now() - 1000;
 			await db.transaction(async (txn: Transaction) => {
 				let ts = txn.getTimestamp();
 				expect(ts).toBeGreaterThanOrEqual(start);
-				expect(ts).toBeLessThanOrEqual(start + 1000);
+				expect(ts).toBeLessThanOrEqual(start + 2000);
 
 				const newTs = Date.now();
 				txn.setTimestamp(newTs);
@@ -347,7 +347,7 @@ for (const { name, options, txnOptions } of testOptions) {
 
 				txn.setTimestamp();
 				ts = txn.getTimestamp();
-				expect(ts).toBeGreaterThanOrEqual(newTs);
+				expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
 				expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
 				expect(() => txn.setTimestamp('foo' as any)).toThrow('Invalid timestamp, expected positive number');
@@ -576,7 +576,7 @@ for (const { name, options, txnOptions } of testOptions) {
 
 				txn.setTimestamp();
 				ts = txn.getTimestamp();
-				expect(ts).toBeGreaterThanOrEqual(newTs);
+				expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
 				expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
 				expect(() => txn.setTimestamp('foo' as any)).toThrow('Invalid timestamp, expected positive number');

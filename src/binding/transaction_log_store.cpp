@@ -96,13 +96,14 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 		DEBUG_LOG("%p TransactionLogStore::commit Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
 
-		// if we've reached or exceeded the max size, or if no progress was made, rotate to the next file
-		if (this->maxSize > 0 && (logFile->size >= this->maxSize || logFile->size == sizeBefore)) {
-			if (logFile->size == sizeBefore) {
-				DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
-			} else {
-				DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
-			}
+		// if no progress was made, rotate to the next file to avoid infinite loop
+		if (logFile->size == sizeBefore) {
+			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		}
+		// if we've reached or exceeded the max size, rotate to the next file
+		else if (this->maxSize > 0 && logFile->size >= this->maxSize) {
+			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
 	}
