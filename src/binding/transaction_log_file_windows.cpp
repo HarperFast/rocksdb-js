@@ -82,7 +82,7 @@ void TransactionLogFile::openFile() {
 		FILE_SHARE_READ | FILE_SHARE_WRITE,
 		nullptr,
 		OPEN_ALWAYS,
-		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+		FILE_ATTRIBUTE_NORMAL,
 		nullptr
 	);
 
