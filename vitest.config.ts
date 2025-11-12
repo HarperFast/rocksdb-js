@@ -40,7 +40,7 @@ export default defineConfig({
 		},
 		reporters: ['verbose'],
 		silent: false,
-		testTimeout: 30 * 1000,
+		testTimeout: 30000,
 		watch: false
 	}
 });
