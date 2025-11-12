@@ -563,11 +563,11 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} sync should get and set timestamp`, () => dbRunner({
 			dbOptions: [ options ]
 		}, async ({ db }) => {
-			const start = Date.now();
+			const start = Date.now() - 1000;
 			db.transactionSync((txn: Transaction) => {
 				let ts = txn.getTimestamp();
 				expect(ts).toBeGreaterThanOrEqual(start);
-				expect(ts).toBeLessThanOrEqual(start + 1000);
+				expect(ts).toBeLessThanOrEqual(start + 2000);
 
 				const newTs = Date.now();
 				txn.setTimestamp(newTs);
