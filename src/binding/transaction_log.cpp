@@ -41,6 +41,7 @@ struct ParsedLogEntryData {
 
 /**
  * Helper function to parse common log entry arguments.
+ *
  * @returns true on success, false if error was thrown
  */
 static bool parseLogEntryArgs(

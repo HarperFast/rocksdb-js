@@ -84,6 +84,24 @@ describe('Transaction Log', () => {
 			expect(weakRef.deref()).toBeUndefined();
 		}));
 
+		it.only('should error if log already bound to a transaction', () => dbRunner(async ({ db }) => {
+			const log1 = db.useLog('log1');
+			const log2 = db.useLog('log2');
+			await db.transaction(async (txn) => {
+				log1.addEntry(Buffer.from('hello'), txn.id);
+				log1.addEntry(Buffer.from('world'), txn.id);
+				expect(() => log2.addEntry(Buffer.from('nope'), txn.id)).toThrowError(new Error('Log already bound to a transaction'));
+			});
+
+			await db.transaction(async (txn) => {
+				txn.useLog('log3');
+				txn.useLog('log3'); // do it twice
+				expect(() => txn.useLog('log4')).toThrowError(new Error('Log already bound to a transaction'));
+			});
+		}));
+	});
+
+	describe('addEntry()', () => {
 		it('should add a single small entry within a single block by reference', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');

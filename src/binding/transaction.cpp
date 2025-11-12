@@ -195,17 +195,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
 
-				DEBUG_LOG("%p Transaction::Commit committing log entries from %zu stores\n",
-					txnHandle.get(), txnHandle->batchesByStore.size())
-
-				// commit entries for each store
-				for (auto& [storeName, batch] : txnHandle->batchesByStore) {
-					if (!batch.entries.empty() && batch.entries[0]->store) {
-						DEBUG_LOG("%p Transaction::Commit committing %zu entries to store \"%s\" for transaction %u\n",
-							txnHandle.get(), batch.entries.size(), storeName.c_str(), txnHandle->id);
-						// use the transaction start timestamp as the commit timestamp
-						batch.entries[0]->store->commit(batch);
-					}
+				if (txnHandle->logEntryBatch) {
+					DEBUG_LOG("%p Transaction::Commit committing log entries for transaction %u\n",
+						txnHandle.get(), txnHandle->id);
+					txnHandle->logEntryBatch->entries[0]->store->commit(*txnHandle->logEntryBatch);
 				}
 
 				state->status = txnHandle->txn->Commit();
@@ -278,14 +271,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
-	// commit entries for each store
-	for (auto& [storeName, batch] : (*txnHandle)->batchesByStore) {
-		if (!batch.entries.empty() && batch.entries[0]->store) {
-			DEBUG_LOG("%p Transaction::Commit committing %zu entries to store \"%s\" for transaction %u\n",
-				(*txnHandle).get(), batch.entries.size(), storeName.c_str(), (*txnHandle)->id);
-			// use the transaction start timestamp as the commit timestamp
-			batch.entries[0]->store->commit(batch);
-		}
+	if ((*txnHandle)->logEntryBatch) {
+		DEBUG_LOG("%p Transaction::CommitSync committing log entries for transaction %u\n",
+			(*txnHandle).get(), (*txnHandle)->id);
+		(*txnHandle)->logEntryBatch->entries[0]->store->commit(*(*txnHandle)->logEntryBatch);
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
