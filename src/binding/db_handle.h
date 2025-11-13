@@ -45,7 +45,8 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	napi_env env;
 
 	/**
-	 * A reference to the main `rocksdb_js` exports object.
+	 * A reference to the main `rocksdb_js` exports object. This is needed to
+	 * get the `TransactionLog` class.
 	 */
 	napi_ref exportsRef;
 

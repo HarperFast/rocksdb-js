@@ -3,9 +3,7 @@
 
 #include <chrono>
 #include <filesystem>
-#include <atomic>
 #include <mutex>
-#include <condition_variable>
 #include "transaction_log_entry.h"
 
 #ifdef _WIN32
@@ -89,12 +87,6 @@ struct TransactionLogFile final {
 	 * (currentBlockSize, blockCount, size).
 	 */
 	std::mutex fileMutex;
-
-	/**
-	 * The condition variable used to wait for all active operations to
-	 * complete.
-	 */
-	std::condition_variable closeCondition;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 

@@ -154,8 +154,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	auto blockHeaders = std::make_unique<char[]>(numNewBlocks * BLOCK_HEADER_SIZE);
 	auto txnHeaders = std::make_unique<char[]>(numEntriesToWrite * TXN_HEADER_SIZE);
 
-	// estimate max iovecs needed (conservative upper bound for segments split across blocks)
-	auto maxIovecs = (dataForCurrentBlock > 0 ? 1 : 0) + (numNewBlocks * 2) + (numEntriesToWrite * 4);
+	// allocate iovec tracker for blocks + block headers + entries + transaction headers
+	auto maxIovecs = (dataForCurrentBlock > 0 ? 1 : 0) + (numNewBlocks * 2) + (numEntriesToWrite * 2);
 	auto iovecs = std::make_unique<iovec[]>(maxIovecs);
 	size_t iovecsIndex = 0;
 

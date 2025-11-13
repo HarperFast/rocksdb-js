@@ -64,12 +64,12 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	// check if this transaction is already bound to a different log store
 	auto currentBoundStore = this->boundLogStore.lock();
 	if (currentBoundStore) {
-		// Transaction is already bound to a log store
+		// transaction is already bound to a log store
 		if (currentBoundStore.get() != entry->store.get()) {
 			throw std::runtime_error("Log already bound to a transaction");
 		}
 	} else {
-		// Bind this transaction to the log store
+		// bind this transaction to the log store
 		this->boundLogStore = entry->store;
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %u to log store \"%s\"\n",
 			this, this->id, entry->store->name.c_str());
@@ -109,7 +109,7 @@ void TransactionHandle::close() {
 
 	::napi_delete_reference(this->env, this->jsDatabaseRef);
 
-	// The transaction should already be removed from the registry when
+	// the transaction should already be removed from the registry when
 	// committing/aborting  so we don't need to call transactionRemove here to
 	// avoid race conditions and bad_weak_ptr errors
 	DEBUG_LOG("%p TransactionHandle::close transaction should already be removed from registry\n", this)

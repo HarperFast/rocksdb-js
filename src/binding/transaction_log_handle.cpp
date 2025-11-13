@@ -32,7 +32,7 @@ TransactionLogHandle::AddEntryContext TransactionLogHandle::resolveAddEntryConte
 
 	ctx.txnHandle = ctx.dbHandle->descriptor->transactionGet(transactionId);
 	if (!ctx.txnHandle) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Transaction id %u not found\n", this, transactionId)
+		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %u not found\n", this, transactionId)
 		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
 	}
 
