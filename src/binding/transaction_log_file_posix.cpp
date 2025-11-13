@@ -76,7 +76,30 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 	if (iovcnt == 0) {
 		return 0;
 	}
-	return static_cast<int64_t>(::writev(this->fd, iovecs, iovcnt));
+
+	// writev has a limit on the number of iovecs (IOV_MAX, typically 1024 on macOS)
+	// if we exceed this, we need to batch the writes
+	constexpr int MAX_IOVS = 1024;  // IOV_MAX on most systems
+	int64_t totalWritten = 0;
+	int remaining = iovcnt;
+	int offset = 0;
+
+	while (remaining > 0) {
+		int toWrite = std::min(remaining, MAX_IOVS);
+		ssize_t written = ::writev(this->fd, iovecs + offset, toWrite);
+
+		if (written < 0) {
+			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile writev failed: errno=%d (%s)\n",
+				this, errno, strerror(errno))
+			return -1;
+		}
+
+		totalWritten += written;
+		offset += toWrite;
+		remaining -= toWrite;
+	}
+
+	return totalWritten;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
