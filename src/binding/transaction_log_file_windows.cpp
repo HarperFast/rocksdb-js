@@ -104,56 +104,43 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		return -1;
 	}
 
-	// Calculate total size needed
-	size_t totalSize = 0;
-	for (int i = 0; i < iovcnt; i++) {
-		totalSize += iovecs[i].iov_len;
-	}
-
-	if (totalSize == 0) {
-		return 0;
-	}
-
-	// Allocate a single contiguous buffer and copy all data into it
-	// This ensures data stability across the write operation, which is important
-	// on Windows where Node.js buffers might be moved by GC during sequential writes
-	auto buffer = std::make_unique<char[]>(totalSize);
-	size_t offset = 0;
+	// emulate writev() by writing each buffer sequentially
+	// all entry data is now owned by C++ (not Node.js buffers), so safe to access directly
+	int64_t totalBytesWritten = 0;
 
 	for (int i = 0; i < iovcnt; i++) {
 		if (iovecs[i].iov_len == 0) {
 			continue;
 		}
 
-		// validate pointer
-		if (iovecs[i].iov_base == nullptr) {
-			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile ERROR: iovec[%d] has null pointer\n", this, i)
-			return -1;
+		DWORD bytesWritten;
+		bool success = ::WriteFile(
+			this->fileHandle,
+			iovecs[i].iov_base,
+			static_cast<DWORD>(iovecs[i].iov_len),
+			&bytesWritten,
+			nullptr
+		);
+
+		if (!success) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
+				this, error, errorMessage.c_str(), i, iovcnt)
+			// if we've written some data but this write failed, return what we
+			// wrote; otherwise return -1 to indicate error
+			return totalBytesWritten > 0 ? totalBytesWritten : -1;
 		}
 
-		std::memcpy(buffer.get() + offset, iovecs[i].iov_base, iovecs[i].iov_len);
-		offset += iovecs[i].iov_len;
+		totalBytesWritten += bytesWritten;
+
+		// partial write - stop here
+		if (bytesWritten < iovecs[i].iov_len) {
+			break;
+		}
 	}
 
-	// Write the entire buffer in one call
-	DWORD bytesWritten;
-	bool success = ::WriteFile(
-		this->fileHandle,
-		buffer.get(),
-		static_cast<DWORD>(totalSize),
-		&bytesWritten,
-		nullptr
-	);
-
-	if (!success) {
-		DWORD error = ::GetLastError();
-		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, size=%zu)\n",
-			this, error, errorMessage.c_str(), totalSize)
-		return -1;
-	}
-
-	return static_cast<int64_t>(bytesWritten);
+	return totalBytesWritten;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
