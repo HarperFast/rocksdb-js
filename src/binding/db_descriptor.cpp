@@ -1304,9 +1304,9 @@ void DBDescriptor::discoverTransactionLogStores() {
  * @param env The environment of the current callback.
  */
 napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 	napi_value result;
 	size_t i = 0;
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogStores.size(), &result));
 
 	DEBUG_LOG("%p DBDescriptor::listTransactionLogStores Returning %u transaction log store names\n", this, this->transactionLogStores.size())
