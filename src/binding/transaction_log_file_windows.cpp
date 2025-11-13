@@ -97,6 +97,10 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 
 	// seek to end of file before writing (file pointer may have been moved by reads)
 	if (::SetFilePointer(this->fileHandle, 0, nullptr, FILE_END) == INVALID_SET_FILE_POINTER) {
+		DWORD error = ::GetLastError();
+		std::string errorMessage = getWindowsErrorMessage(error);
+		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile SetFilePointer failed (error=%lu: %s)\n",
+			this, error, errorMessage.c_str())
 		return -1;
 	}
 
@@ -104,6 +108,17 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 	int64_t totalBytesWritten = 0;
 
 	for (int i = 0; i < iovcnt; i++) {
+		// skip empty iovecs
+		if (iovecs[i].iov_len == 0) {
+			continue;
+		}
+
+		// validate pointer
+		if (iovecs[i].iov_base == nullptr) {
+			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile ERROR: iovec[%d] has null pointer\n", this, i)
+			return totalBytesWritten > 0 ? totalBytesWritten : -1;
+		}
+
 		DWORD bytesWritten;
 		bool success = ::WriteFile(
 			this->fileHandle,
@@ -114,6 +129,10 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		);
 
 		if (!success) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed at iovec[%d] (error=%lu: %s, ptr=%p, len=%zu)\n",
+				this, i, error, errorMessage.c_str(), iovecs[i].iov_base, iovecs[i].iov_len)
 			// if we've written some data but this write failed, return what we
 			// wrote; otherwise return -1 to indicate error
 			return totalBytesWritten > 0 ? totalBytesWritten : -1;
@@ -123,6 +142,8 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 
 		// partial write - stop here
 		if (bytesWritten < iovecs[i].iov_len) {
+			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile Partial write at iovec[%d]: wrote %lu of %zu bytes\n",
+				this, i, bytesWritten, iovecs[i].iov_len)
 			break;
 		}
 	}

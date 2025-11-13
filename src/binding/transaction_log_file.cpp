@@ -222,15 +222,31 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	size_t entriesProcessed = 0;
 	for (size_t entryIdx = batch.currentEntryIndex; entryIdx < batch.entries.size() && entriesProcessed < numEntriesToWrite; ++entryIdx, ++entriesProcessed) {
 		auto& entry = batch.entries[entryIdx];
+
+		// validate entry
+		if (!entry) {
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: null entry at index %zu\n", this, entryIdx)
+			throw std::runtime_error("null entry in writeEntriesV1");
+		}
+		if (entry->data == nullptr) {
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: null entry data at index %zu\n", this, entryIdx)
+			throw std::runtime_error("null entry data in writeEntriesV1");
+		}
+
 		bool isCurrentEntry = (entryIdx == batch.currentEntryIndex);
 		uint32_t entryStartOffset = isCurrentEntry ? static_cast<uint32_t>(batch.currentEntryBytesWritten) : 0;
 		uint32_t entryRemainingSize = static_cast<uint32_t>(entry->size) - entryStartOffset;
 
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Processing entry %zu (size=%zu, startOffset=%u, remainingSize=%u)\n",
-			this, entryIdx, entry->size, entryStartOffset, entryRemainingSize)
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Processing entry %zu (size=%zu, startOffset=%u, remainingSize=%u, data=%p)\n",
+			this, entryIdx, entry->size, entryStartOffset, entryRemainingSize, entry->data)
 
 		// write transaction header if needed
 		if (!isCurrentEntry || !batch.currentEntryHeaderWritten) {
+			if (txnHeaderIdx >= numEntriesToWrite) {
+				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: txnHeaderIdx overflow! index=%u, max=%u\n",
+					this, txnHeaderIdx, numEntriesToWrite)
+				throw std::runtime_error("txnHeader index overflow in writeEntriesV1");
+			}
 			char* txnHeader = txnHeaders.get() + (txnHeaderIdx * TXN_HEADER_SIZE);
 			writeUint64BE(txnHeader, batch.timestamp);
 			writeUint32BE(txnHeader + 8, static_cast<uint32_t>(entry->size));
