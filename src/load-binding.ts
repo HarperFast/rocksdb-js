@@ -33,6 +33,7 @@ export type NativeTransaction = {
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
+	size: number;
 }
 
 export type TransactionLog = {
@@ -40,7 +41,7 @@ export type TransactionLog = {
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	addEntryCopy(data: Buffer | Uint8Array, txnId?: number): void;
 	getMemoryMapOfFile(sequenceId: number): LogBuffer;
-	getSequencedLogs(): number[];
+	getSequencedLogs(): number[][];
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {

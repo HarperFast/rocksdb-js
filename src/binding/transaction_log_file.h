@@ -85,6 +85,11 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
+	 *
+	 */
+	void* memoryMap = nullptr;
+
+	/**
 	 * The mutex used to protect the file and its metadata
 	 * (currentBlockSize, blockCount, size).
 	 */
@@ -127,6 +132,11 @@ struct TransactionLogFile final {
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
+
+	/**
+	 * Return a memory map of the file
+	 */
+	void* getMemoryMap(uint32_t size);
 
 private:
 	/**

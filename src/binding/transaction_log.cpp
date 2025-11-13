@@ -6,7 +6,6 @@
 #include "util.h"
 #include <stdlib.h>
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <unistd.h>
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
@@ -205,6 +204,10 @@ napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+/**
+ * Return a list of the transaction log files, as a JS array, each entry being
+ * a JS array with two values, the sequence number, and the size in bytes.
+ */
 napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info)
 {
 	NAPI_METHOD_ARGV(0)
@@ -215,14 +218,20 @@ napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info inf
 	for (const auto& entry : *((*txnLogHandle)->getSequenceFiles()))
 	{
 		uint32_t sequenceNumber = entry.first;
-		napi_value seqValue;
-		NAPI_STATUS_THROWS(::napi_create_uint32(env, sequenceNumber, &seqValue));
-		NAPI_STATUS_THROWS(::napi_set_element(env, list, i++, seqValue));
+		napi_value sequenceNumberAndSizeTuple;
+		NAPI_STATUS_THROWS(::napi_create_array_with_length(env, 2, &sequenceNumberAndSizeTuple));
+		NAPI_STATUS_THROWS(::napi_set_element(env, list, i++, sequenceNumberAndSizeTuple));
+		napi_value value;
+		// first entry is the sequence number
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, sequenceNumber, &value));
+		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 0, value));
+		auto size = entry.second->blockCount * entry.second->blockSize;
+		// second entry is the size
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, size, &value));
+		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 1, value));
 	}
 	return list;
 }
-
-const int MAX_LOG_FILE_SIZE = 16777216;
 
 /**
  * Gets the range of the transaction log.
@@ -234,21 +243,13 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 	auto logFileSearch = (*txnLogHandle)->getSequenceFiles()->find(sequenceNumber);
 
-	char *filename = "id/seq.log"; // TODO: create the filename
-	// TODO: We will need a registry/map of the opened memory maps, so we can use an existing map if it exists
-	void *map = nullptr; // = get the map from registry by filename
-	if (!map) {
-		int fd = logFileSearch->second->fd;//open(logFileSearch->second->path, O_RDONLY);
-		if (fd == -1) {
-			// error
-		}
-		map = mmap(NULL, MAX_LOG_FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		// TODO: handle errors
-		// insert into registry of memory-maps
-	}
+	// TODO: increment reference count of log ptr?
+	uint32_t mapSize = (*txnLogHandle)->store.lock()->maxSize;
+	void *map = logFileSearch->second->getMemoryMap(mapSize);
+	// TODO: handle errors
 	napi_value result;
-	napi_create_external_buffer(env, MAX_LOG_FILE_SIZE, map, [](napi_env env, void* data, void* hint) {
-		// TODO: Decrement reference count of registry/map, possibly calling munmap(map, size) and close(fd) if it is done
+	napi_create_external_buffer(env, mapSize, map, [](napi_env env, void* data, void* hint) {
+		// TODO: increment reference count of log ptr?
 	}, nullptr, &result);
 	return result;
 }

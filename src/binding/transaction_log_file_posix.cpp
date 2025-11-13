@@ -1,6 +1,7 @@
 #include "transaction_log_file.h"
 #include "macros.h"
 #include "util.h"
+#include <sys/mman.h>
 
 #ifdef PLATFORM_POSIX
 
@@ -63,6 +64,13 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = st.st_size;
+}
+
+void* TransactionLogFile::getMemoryMap(uint32_t size) {
+	if (!memoryMap) {
+		memoryMap = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	}
+	return memoryMap;
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {

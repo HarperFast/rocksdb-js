@@ -80,6 +80,17 @@ void TransactionLogFile::openFile() {
 	this->size = static_cast<size_t>(fileSize.QuadPart);
 }
 
+void* TransactionLogFile::getMemoryMap(uint32_t size) {
+	if (!memoryMap) {
+		HANDLE mh;
+		mh = CreateFileMapping(this->fileHandle, NULL, PAGE_READ, 0, 0, NULL);
+		if (!mh) return NULL;
+		memoryMap = MapViewOfFileEx(mh, FILE_MAP_READ, 0, 0, rsize, NULL);
+		CloseHandle(mh);
+	}
+	return memoryMap;
+}
+
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0 && ::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
 		return -1;
