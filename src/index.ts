@@ -7,6 +7,7 @@ export { Transaction } from './transaction.js';
 export type { Key } from './encoding.js';
 export { constants, TransactionLog } from './load-binding.js';
 export * from './parse-transaction-log.js';
+export { TransactionLogReader } from './transaction-log-reader.js';
 
 export const versions: {
 	rocksdb: string;

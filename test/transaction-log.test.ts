@@ -100,7 +100,24 @@ describe('Transaction Log', () => {
 			});
 		}));
 	});
+	describe('getSequencedLogs()/getMemoryMapOfFile', () => {
+		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
 
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const logs = log.getSequencedLogs();
+
+			expect(logs.length).toBe(1);
+			expect(logs[0]).toBe(1);
+
+			const buffer = log.getMemoryMapOfFile(logs[0]);
+			expect(buffer.length).toBe(0x1000000);
+			expect(buffer.slice(0, 4).toString()).toBe('WOOF');
+		}));
+	});
 	describe('addEntry()', () => {
 		it('should add a single small entry within a single block by reference', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');

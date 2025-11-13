@@ -49,6 +49,8 @@ struct TransactionLogHandle final : Closable {
 	void close();
 	void query();
 
+	std::map<uint32_t, std::unique_ptr<TransactionLogFile>>* getSequenceFiles();
+
 private:
 	/**
 	 * Helper struct to hold resolved transaction/store context.

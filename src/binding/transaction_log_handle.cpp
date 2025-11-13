@@ -98,5 +98,10 @@ void TransactionLogHandle::query() {
 	}
 	store->query();
 }
+std::map<uint32_t, std::unique_ptr<TransactionLogFile>>* TransactionLogHandle::getSequenceFiles()
+{
+	auto store = this->store.lock();
+	return &store->sequenceFiles;
+}
 
 } // namespace rocksdb_js

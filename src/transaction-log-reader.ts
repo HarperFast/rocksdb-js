@@ -24,7 +24,7 @@ export class TransactionLogReader {
 	 * @param start
 	 * @param end
 	 */
-	getRange(start: number, end: number): Iterator<TransactionEntry> {
+	query(start: number, end: number): Iterator<TransactionEntry> {
 		//
 		const transactionLog = this;
 		let logBuffer: LogBuffer | undefined = this.#currentLogBuffer ?? getNextLogFile();
@@ -132,7 +132,7 @@ export class TransactionLogReader {
 			return logBuffer;
 		}
 		function getLogFile(logId: number) {
-			const logBuffer = transactionLog.#log.getMemoryMapOfFile(logId.toString());
+			const logBuffer = transactionLog.#log.getMemoryMapOfFile(logId);
 			if (!logBuffer) return;
 			logBuffer.logId = logId;
 			logBuffer.dataView = new DataView(logBuffer.buffer);

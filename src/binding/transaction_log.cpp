@@ -205,19 +205,40 @@ napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info)
+{
+	NAPI_METHOD_ARGV(0)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetSequencedLogs")
+	napi_value list;
+	NAPI_STATUS_THROWS(::napi_create_array(env, &list));
+	int i = 0;
+	for (const auto& entry : *((*txnLogHandle)->getSequenceFiles()))
+	{
+		uint32_t sequenceNumber = entry.first;
+		napi_value seqValue;
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, sequenceNumber, &seqValue));
+		NAPI_STATUS_THROWS(::napi_set_element(env, list, i++, seqValue));
+	}
+	return list;
+}
+
 const int MAX_LOG_FILE_SIZE = 16777216;
+
 /**
  * Gets the range of the transaction log.
  */
 napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	// UNWRAP_TRANSACTION_LOG_HANDLE("getMemoryMapOfFile")
-	NAPI_GET_STRING(argv[0], logNumber, "Log number required");
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	auto logFileSearch = (*txnLogHandle)->getSequenceFiles()->find(sequenceNumber);
+
 	char *filename = "id/seq.log"; // TODO: create the filename
 	// TODO: We will need a registry/map of the opened memory maps, so we can use an existing map if it exists
 	void *map = nullptr; // = get the map from registry by filename
 	if (!map) {
-		int fd = open(filename, O_RDONLY);
+		int fd = logFileSearch->second->fd;//open(logFileSearch->second->path, O_RDONLY);
 		if (fd == -1) {
 			// error
 		}
@@ -238,9 +259,10 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
  */
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
-		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "addEntryCopy", nullptr, AddEntryCopy, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getSequencedLogs", nullptr, GetSequencedLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";
