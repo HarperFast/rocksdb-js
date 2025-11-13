@@ -72,9 +72,9 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor))
 
 	bool isDatabase = false;
-	NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], databaseCtor, &isDatabase))
+	NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], databaseCtor, &isDatabase))
 
-	napi_value options = args[1];
+	napi_value options = argv[1];
 	DBIteratorOptions itOptions;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "reverse", itOptions.reverse));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "values", itOptions.values));
@@ -86,7 +86,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 
 	if (isDatabase) {
 		std::shared_ptr<DBHandle>* dbHandle = nullptr;
-		NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&dbHandle)))
+		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&dbHandle)))
 		DEBUG_LOG("DBIterator::Constructor Initializing transaction handle with Database instance (dbHandle=%p)\n", (*dbHandle).get())
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) {
 			::napi_throw_error(env, nullptr, "Database not open");
@@ -99,17 +99,17 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor))
 
 		bool isTransaction = false;
-		NAPI_STATUS_THROWS(::napi_instanceof(env, args[0], transactionCtor, &isTransaction))
+		NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], transactionCtor, &isTransaction))
 
 		if (isTransaction) {
 			DEBUG_LOG("DBIterator::Constructor Received Transaction instance\n")
 			std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
-			NAPI_STATUS_THROWS(::napi_unwrap(env, args[0], reinterpret_cast<void**>(&txnHandle)))
+			NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)))
 			itHandle = new DBIteratorHandle((*txnHandle).get(), itOptions);
 			DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", txnHandle, itHandle->dbHandle->descriptor.get())
 		} else {
 			napi_valuetype type;
-			NAPI_STATUS_THROWS(::napi_typeof(env, args[0], &type))
+			NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
 			std::string errorMsg = "Invalid context, expected Database or Transaction instance, got type " + std::to_string(type);
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			return nullptr;
@@ -302,13 +302,13 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,         // className
-		len,               // length of class name
-		Constructor,       // constructor
-		(void*)exportsRef, // constructor arg
+		className,               // className
+		len,                     // length of class name
+		DBIterator::Constructor, // constructor
+		(void*)exportsRef,       // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
-		properties,        // properties array
-		&ctor              // [out] constructor
+		properties,              // properties array
+		&ctor                    // [out] constructor
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))

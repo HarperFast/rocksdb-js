@@ -13,6 +13,7 @@
 #include "rocksdb/utilities/options_util.h"
 #include "db_options.h"
 #include "transaction_handle.h"
+#include "transaction_log_store.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -50,55 +51,6 @@ struct DBDeleter {
  * RocksDB instances.
  */
 struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
-	DBDescriptor(
-		std::string path,
-		DBMode mode,
-		std::shared_ptr<rocksdb::DB> db,
-		std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
-	);
-	~DBDescriptor();
-
-	void attach(Closable* closable);
-	void detach(Closable* closable);
-
-	void lockCall(
-		napi_env env,
-		std::string key,
-		napi_value callback,
-		napi_deferred deferred,
-		std::shared_ptr<DBHandle> owner
-	);
-	void lockEnqueueCallback(
-		napi_env env,
-		std::string key,
-		napi_value callback,
-		std::shared_ptr<DBHandle> owner,
-		bool skipEnqueueIfExists,
-		napi_deferred deferred,
-		bool* isNewLock
-	);
-	bool lockExistsByKey(std::string key);
-	bool lockReleaseByKey(std::string key);
-	void lockReleaseByOwner(DBHandle* owner);
-	void onCallbackComplete(const std::string& key);
-
-	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
-	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
-	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
-
-	napi_value getUserSharedBuffer(
-		napi_env env,
-		std::string key,
-		napi_value defaultBuffer,
-		napi_ref callbackRef = nullptr
-	);
-
-	napi_ref addListener(napi_env env, std::string key, napi_value callback, std::weak_ptr<DBHandle> owner);
-	bool notify(std::string key, ListenerData* data);
-	napi_value listeners(napi_env env, std::string key);
-	napi_value removeListener(napi_env env, std::string key, napi_value callback);
-	void removeListenersByOwner(DBHandle* owner);
-
 	/**
 	 * The path of the database.
 	 */
@@ -124,6 +76,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of transaction id to transaction handle.
 	 */
 	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
+
+	/**
+	 * Atomic counter for generating unique transaction IDs for this RocksDB
+	 * instance. Sadly we cannot use RocksDB's transaction IDs because they are
+	 * implementation-dependent and are assigned lazily with a default of 0
+	 * causing collisions in the transactions map.
+	 */
+	std::atomic<uint32_t> nextTransactionId{1};
 
 	/**
 	 * Mutex to protect the transactions map and closables set.
@@ -171,6 +131,92 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Mutex to protect the listener callbacks map.
 	 */
 	std::mutex listenerCallbacksMutex;
+
+	/**
+	 * The maximum size of a transaction log before it is rotated to the next
+	 * sequence number.
+	 */
+	uint32_t transactionLogMaxSize;
+
+	/**
+	 * The retention period of transaction logs in milliseconds.
+	 */
+	std::chrono::milliseconds transactionLogRetentionMs;
+
+	/**
+	 * The path to the transaction logs.
+	 */
+	std::string transactionLogsPath;
+
+	/**
+	 * Map of transaction logs by name.
+	 */
+	std::map<std::string, std::shared_ptr<TransactionLogStore>> transactionLogStores;
+
+	/**
+	 * Mutex to protect the transaction logs map.
+	 */
+	std::mutex transactionLogMutex;
+
+private:
+    DBDescriptor(
+        const std::string& path,
+        const DBOptions& options,
+        std::shared_ptr<rocksdb::DB> db,
+        std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
+    );
+
+	void discoverTransactionLogStores();
+
+public:
+    static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
+    ~DBDescriptor();
+
+	void attach(Closable* closable);
+	void detach(Closable* closable);
+
+	void lockCall(
+		napi_env env,
+		std::string& key,
+		napi_value callback,
+		napi_deferred deferred,
+		std::shared_ptr<DBHandle> owner
+	);
+	void lockEnqueueCallback(
+		napi_env env,
+		std::string& key,
+		napi_value callback,
+		std::shared_ptr<DBHandle> owner,
+		bool skipEnqueueIfExists,
+		napi_deferred deferred,
+		bool* isNewLock
+	);
+	bool lockExistsByKey(std::string& key);
+	bool lockReleaseByKey(std::string& key);
+	void lockReleaseByOwner(DBHandle* owner);
+	void onCallbackComplete(const std::string& key);
+
+	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
+	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
+	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
+	uint32_t transactionGetNextId();
+
+	napi_value getUserSharedBuffer(
+		napi_env env,
+		std::string& key,
+		napi_value defaultBuffer,
+		napi_ref callbackRef = nullptr
+	);
+
+	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
+	bool notify(std::string key, ListenerData* data);
+	napi_value listeners(napi_env env, std::string& key);
+	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
+	void removeListenersByOwner(DBHandle* owner);
+
+	napi_value listTransactionLogStores(napi_env env);
+	napi_value purgeTransactionLogs(napi_env env, napi_value options);
+	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 };
 
 /**

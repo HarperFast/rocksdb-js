@@ -1,4 +1,4 @@
-import { type NativeDatabase, NativeTransactionLog, type LogBuffer } from './load-binding';
+import { type NativeDatabase, TransactionLog, type LogBuffer } from './load-binding';
 import { readdirSync, statSync } from 'node:fs';
 
 type TransactionEntry = {
@@ -9,14 +9,14 @@ type TransactionEntry = {
 const BLOCK_SIZE_BITS = 12;
 const BLOCK_SIZE = 2**BLOCK_SIZE_BITS; // 4kb
 const MAX_LOG_FILE_SIZE = 2**24; // 16mb maximum size of a log file
-export class TransactionLog {
-	#log: NativeTransactionLog;
+export class TransactionLogReader {
+	#log: TransactionLog;
 	#currentLogBuffer?: LogBuffer; // current log buffer that we are reading from
 	// cache of log buffers
 	#logBuffers = new Map<number, LogBuffer>();
 
-	constructor(context: NativeDatabase) {
-		this.#log = new NativeTransactionLog(context);
+	constructor(log: TransactionLog) {
+		this.#log = log;
 	}
 
 	/**

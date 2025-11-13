@@ -4,6 +4,7 @@ import {
 	NativeTransaction,
 	type UserSharedBufferCallback,
 	type NativeDatabaseOptions,
+	type TransactionLog,
 } from './load-binding.js';
 import {
 	Encoding,
@@ -20,7 +21,7 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
-// import { TransactionLog } from './transaction-log.js';
+import { join } from 'node:path';
 import { parseDuration } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
@@ -201,6 +202,17 @@ export class Store {
 	readKey: ReadKeyFunction<Key>;
 
 	/**
+	 * The key used to store shared structures.
+	 */
+	sharedStructuresKey?: symbol;
+
+	/**
+	 * The maximum size of a transaction log before it is rotated to the next
+	 * sequence number.
+	 */
+	transactionLogMaxSize?: number;
+
+	/**
 	 * A string containing the amount of time or the number of milliseconds to
 	 * retain transaction logs before purging.
 	 *
@@ -209,9 +221,9 @@ export class Store {
 	transactionLogRetention?: number | string;
 
 	/**
-	 * The key used to store shared structures.
+	 * The path to the transaction logs directory..
 	 */
-	sharedStructuresKey?: symbol;
+	transactionLogsPath: string;
 
 	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
@@ -256,14 +268,16 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
+		this.transactionLogsPath = join(path, 'transaction_logs');
 		this.writeKey = writeKey;
 	}
 
 	/**
-	 * Closes the database.
+	 * Closes the database and cleans up cached resources.
 	 */
-	close() {
+	close(): void {
 		this.db.close();
 	}
 
@@ -354,7 +368,7 @@ export class Store {
 		resolve: (value: Buffer) => void,
 		reject: (err: unknown) => void,
 		txnId?: number
-	) {
+	): any | undefined {
 		return context.get(
 			this.encodeKey(key),
 			resolve,
@@ -363,7 +377,7 @@ export class Store {
 		);
 	}
 
-	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions) {
+	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions): number {
 		options = { ...options };
 
 		if (options?.start !== undefined) {
@@ -414,7 +428,11 @@ export class Store {
 		);
 	}
 
-	getSync(context: NativeDatabase | NativeTransaction, key: Key, options?: GetOptions & DBITransactional) {
+	getSync(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		options?: GetOptions & DBITransactional
+	): any | undefined {
 		return context.getSync(
 			this.encodeKey(key),
 			this.getTxnId(options)
@@ -425,7 +443,7 @@ export class Store {
 	 * Checks if the data method options object contains a transaction ID and
 	 * returns it.
 	 */
-	getTxnId(options?: DBITransactional | unknown) {
+	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
 		if (options && typeof options === 'object' && 'transaction' in options) {
 			txnId = (options.transaction as Transaction)?.id;
@@ -493,15 +511,24 @@ export class Store {
 	 *
 	 * @returns `true` if the database is open, `false` otherwise.
 	 */
-	isOpen() {
+	isOpen(): boolean {
 		return this.db.opened;
+	}
+
+	/**
+	 * Lists all transaction log names.
+	 *
+	 * @returns an array of transaction log names.
+	 */
+	listLogs(): string[] {
+		return this.db.listLogs();
 	}
 
 	/**
 	 * Opens the database. This must be called before any database operations
 	 * are performed.
 	 */
-	open() {
+	open(): boolean {
 		if (this.db.opened) {
 			return true;
 		}
@@ -512,13 +539,22 @@ export class Store {
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			transactionLogMaxSize: this.transactionLogMaxSize,
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
-				: undefined
+				: undefined,
+			transactionLogsPath: join(this.path, 'transaction_logs')
 		});
+
+		return false;
 	}
 
-	putSync(context: NativeDatabase | NativeTransaction, key: Key, value: any, options?: PutOptions & DBITransactional) {
+	putSync(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		value: any,
+		options?: PutOptions & DBITransactional
+	): void {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -537,7 +573,11 @@ export class Store {
 		);
 	}
 
-	removeSync(context: NativeDatabase | NativeTransaction, key: Key, options?: DBITransactional | undefined) {
+	removeSync(
+		context: NativeDatabase | NativeTransaction,
+		key: Key,
+		options?: DBITransactional | undefined
+	): void {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -574,6 +614,23 @@ export class Store {
 	 */
 	unlock(key: Key): void {
 		return this.db.unlock(this.encodeKey(key));
+	}
+
+	/**
+	 * Gets or creates a transaction log instance.
+	 *
+	 * @param context - The context to use for the transaction log.
+	 * @param name - The name of the transaction log.
+	 * @returns The transaction log.
+	 */
+	useLog(
+		context: NativeDatabase | NativeTransaction,
+		name: string | number
+	): TransactionLog {
+		if (typeof name !== 'string' && typeof name !== 'number') {
+			throw new TypeError('Log name must be a string or number');
+		}
+		return context.useLog(String(name));
 	}
 
 	/**

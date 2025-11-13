@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 
-export async function buildRocksDBFromSource(rocksdbPath: string, dest: string) {
+export async function buildRocksDBFromSource(rocksdbPath: string, dest: string): Promise<void> {
 	rocksdbPath = resolve(rocksdbPath);
 
 	execFileSync(

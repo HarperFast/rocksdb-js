@@ -22,8 +22,10 @@ struct DBOptions final {
 	DBMode mode;
 	std::string name;
 	bool noBlockCache;
-	int parallelismThreads;
-	int transactionLogRetentionMs;
+	uint32_t parallelismThreads;
+	uint32_t transactionLogMaxSize;
+	uint32_t transactionLogRetentionMs;
+	std::string transactionLogsPath;
 };
 
 } // namespace rocksdb_js

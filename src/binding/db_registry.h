@@ -26,6 +26,15 @@ struct DBRegistryEntry final {
 		: descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
 };
 
+
+struct DBHandleParams final {
+	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+
+	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<rocksdb::ColumnFamilyHandle> column)
+		: descriptor(std::move(descriptor)), column(std::move(column)) {}
+};
+
 /**
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
  * contains a weak reference to the database and column families.
@@ -55,7 +64,8 @@ private:
 
 public:
 	static void CloseDB(const std::shared_ptr<DBHandle> handle);
-	static std::unique_ptr<DBHandle> OpenDB(const std::string& path, const DBOptions& options);
+	static void Init();
+	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
 	static size_t Size();
 };

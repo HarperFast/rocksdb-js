@@ -240,13 +240,7 @@ describe('Ranges', () => {
 			}
 
 			const iter = db.getKeys();
-			expect(Array.from(iter)).toEqual([
-				{ key: 'a' },
-				{ key: 'b' },
-				{ key: 'c' },
-				{ key: 'd' },
-				{ key: 'e' }
-			]);
+			expect(Array.from(iter)).toEqual(['a', 'b', 'c', 'd', 'e']);
 		}));
 
 		it('should get keys only in a column family', () => dbRunner({
@@ -257,13 +251,7 @@ describe('Ranges', () => {
 			}
 
 			const iter = db.getKeys();
-			expect(Array.from(iter)).toEqual([
-				{ key: 'a' },
-				{ key: 'b' },
-				{ key: 'c' },
-				{ key: 'd' },
-				{ key: 'e' }
-			]);
+			expect(Array.from(iter)).toEqual(['a', 'b', 'c', 'd', 'e']);
 		}));
 
 		it('should get keys only for a transaction', () => dbRunner(async ({ db }) => {
@@ -273,13 +261,7 @@ describe('Ranges', () => {
 
 			await db.transaction(async txn => {
 				const iter = txn.getKeys();
-				expect(Array.from(iter)).toEqual([
-					{ key: 'a' },
-					{ key: 'b' },
-					{ key: 'c' },
-					{ key: 'd' },
-					{ key: 'e' }
-				]);
+				expect(Array.from(iter)).toEqual(['a', 'b', 'c', 'd', 'e']);
 			});
 		}));
 
@@ -292,13 +274,7 @@ describe('Ranges', () => {
 
 			await db.transaction(async txn => {
 				const iter = txn.getKeys();
-				expect(Array.from(iter)).toEqual([
-					{ key: 'a' },
-					{ key: 'b' },
-					{ key: 'c' },
-					{ key: 'd' },
-					{ key: 'e' }
-				]);
+				expect(Array.from(iter)).toEqual(['a', 'b', 'c', 'd', 'e']);
 			});
 		}));
 
@@ -504,7 +480,6 @@ describe('Ranges', () => {
 
 			const iter = db.getRange({ start: 'a', end: 'c' });
 			const iter2 = db.getRange({ start: 'c', end: 'e' });
-			// @ts-expect-error ExtendedIterable v1 concat() type definition is missing
 			const concat = iter.concat(iter2);
 			expect(Array.from(concat)).toEqual([
 				{ key: 'a', value: 'value a' },

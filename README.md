@@ -7,6 +7,7 @@ A Node.js binding for the RocksDB library.
 - Supports optimistic and pessimistic transactions
 - Hybrid sync/async data retrieval
 - Range queries return an iterable with array-like methods and lazy evaluation
+- Transaction log system for recording transaction related data
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
 - Designed for Node.js and Bun on Linux, macOS, and Windows
@@ -53,8 +54,12 @@ Creates a new database instance.
   - `store: Store` A custom store that handles all interaction between the
     `RocksDatabase` or `Transaction` instances and the native database
     interface. See [Custom Store](#custom-store) for more information.
+  - `transactionLogMaxSize: number` The maximum size of a transaction log before
+    it is rotated to the next sequence number. Defaults to 16 MB.
   - `transactionLogRetention: string | number` The number of minutes to retain
     transaction logs before purging. Defaults to `'3d'` (3 days).
+  - `transactionLogsPath: string` The path to store transaction logs. Defaults
+    to `"${db.path}/transaction_logs"`.
 
 ### `db.close()`
 
@@ -168,8 +173,8 @@ Synchronous version of `get()`.
 Retrieves all keys within a range.
 
 ```typescript
-for (const { key, value } of db.getKeys()) {
-  console.log({ key, value });
+for (const key of db.getKeys()) {
+  console.log(key);
 }
 ```
 
@@ -321,8 +326,8 @@ await db.transaction(async (transaction: Transaction) => {
 });
 ```
 
-Note that `db.transaction()` resolves whatever value the transaction callback
-resolves:
+Note that `db.transaction()` returns whatever value the transaction callback
+returns:
 
 ```typescript
 const isBar = await db.transaction(async (txn: Transaction) => {
@@ -347,6 +352,53 @@ db.transactionSync((txn: Transaction) => {
 	txn.putSync('foo', 'baz');
 });
 ```
+
+### Class: `Transaction`
+
+The transaction callback is passed in a `Transaction` instance which contains
+all of the same data operations methods as the `RocksDatabase` instance plus:
+
+- `txn.abort()`
+- `txn.commit()`
+- `txn.commitSync()`
+- `txn.getTimestamp()`
+- `txn.id`
+- `txn.setTimestamp(ts)`
+
+#### `txn.abort(): void`
+
+Rolls back and closes the transaction. This method is automatically called after
+the transaction callback returns, so you shouldn't need to call it, but it's ok
+to do so. Once called, no further transaction operations are permitted.
+
+#### `txn.commit(): Promise<void>`
+
+Commits and closes the transaction. This is a non-blocking operation and runs on
+a background thread. Once called, no further transaction operations are
+permitted.
+
+#### `txn.commitSync(): void`
+
+Synchronously commits and closes the transaction. This is a blocking operation
+on the main thread. Once called, no further transaction operations are
+permitted.
+
+#### `txn.getTimestamp(): number`
+
+Retrieves the transaction start timestamp which defaults to the time at which
+the transaction was created.
+
+#### `txn.id`
+
+Type: `number`
+
+The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are
+unique to the RocksDB database path, regardless the database name/column family.
+
+#### `txn.setTimestamp(ts: number?): void`
+
+Overrides the transaction start timestamp. If called without a timestamp, it
+will set the timestamp to the current time.
 
 ## Events
 
@@ -565,6 +617,179 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 will cause errors to emit the `'uncaughtException'` event. Future Node.js
 releases will enable this flag by default.
 
+## Transaction Log
+
+A user controlled API for logging transactions. This API is designed to be
+generic so that you can log gets, puts, and deletes, but also arbitrary entries.
+
+### `db.listLogs(): string[]`
+
+Returns an array of log store names.
+
+```typescript
+const names = db.listLogs();
+```
+
+### `db.purgeLogs(options?): string[]`
+
+Deletes transaction log files older than the `transactionLogRetention` (defaults
+to 3 days).
+
+- `options: object`
+  - `destroy?: boolean` When `true`, deletes transaction log stores including
+    all log sequence files on disk.
+  - `name?: string` The name of a store to limit the purging to.
+
+Returns an array with the full path of each log file deleted.
+
+```typescript
+const removed = db.purgeLogs();
+console.log(`Removed ${removed.length} log files`);
+```
+
+### `db.useLog(name): TransactionLog`
+
+Gets or creates a `TransactionLog` instance. Internally, the `TransactionLog`
+interfaces with a shared transaction log store that is used by all threads.
+Multiple worker threads can use the same log at the same time.
+
+- `name: string | number` The name of the log. Numeric log names are converted
+  to a string.
+
+```typescript
+const log1 = db.useLog('foo');
+const log2 = db.useLog('foo'); // gets existing instance (e.g. log1 === log2)
+const log3 = db.useLog(123);
+```
+
+`Transaction` instances also provide a `useLog()` method that binds the returned
+transaction log to the transaction so you don't need to pass in the transaction
+id every time you add an entry.
+
+```typescript
+await db.transaction(async (txn) => {
+  const log = txn.useLog('foo');
+  log.addEntry(Buffer.from('hello'));
+});
+```
+
+### Class: `TransactionLog`
+
+A `TransactionLog` lets you add arbitrary data bound to a transaction that is
+automatically written to disk right before the transaction is committed. You may
+add multiple enties per transaction. The underlying architecture is thread safe.
+
+- `log.addEntry()`
+- `log.addEntryCopy()`
+- `log.query()`
+
+#### `log.addEntry(data, transactionId): void`
+
+Adds an entry to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+Note that the `data` is queued by reference, so you could modify before it has
+been committed. If you need to reuse the buffer, use `log.addEntryCopy()`.
+
+```typescript
+const log = db.useLog('foo');
+await db.transaction(async (txn) => {
+  log.addEntry(Buffer.from('hello'), txn.id);
+});
+```
+
+If using `txn.useLog()` (instead of `db.useLog()`), you can omit the transaction
+id from `addEntry()` calls.
+
+```typescript
+await db.transaction(async (txn) => {
+  const log = txn.useLog('foo');
+  log.addEntry(Buffer.from('hello'));
+});
+```
+
+#### `log.addEntryCopy(data, transactionId): void`
+
+Copy the entry data and add it to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+```typescript
+const log = db.useLog('foo');
+await db.transaction(async (txn) => {
+  log.addEntryCopy(Buffer.from('I will be copied'), txn.id);
+});
+```
+
+#### `log.query(options?)`
+
+Returns an iterator that streams all log entries for the given filter.
+
+- `options: object`
+  - `start?: number` The transaction start timestamp.
+  - `end?: string` The transction end timestamp.
+
+The iterator produces an object with the log entry timestamp and data.
+
+- `object`
+  - `data: Buffer` The entry data.
+  - `timestamp: number` The entry timestamp used to collate entries by
+    transaction.
+
+```typescript
+const log = db.useLog('foo');
+const iter = log.query();
+for (const entry of iter) {
+  console.log(entry);
+}
+
+const lastHour = Date.now() - (60 * 60 * 1000);
+const rangeIter = log.query({ start: lastHour, end: Date.now() });
+for (const entry of iter) {
+  console.log(entry.timestamp, entry.data);
+}
+```
+
+### Transaction Log Parser
+
+#### `parseTransactionLog(file)`
+
+In general, you should use `log.query()` to query the transaction log, however
+if you need to load an entire transaction log into memory, you can use the
+`parseTransactionLog()` utility function.
+
+```typescript
+const everything = parseTransactionLog('/path/to/file.txnlog');
+console.log(everything);
+```
+
+Returns an object containing all of the information in the log file.
+
+- `size: number` The size of the file.
+- `version: number` The log file format version.
+- `blockSize: number` The size of the blocks used to logically partition the log
+  file for efficient parsing.
+- `blockCount: number` The number of blocks in the file; note the last block may
+  not be full.
+- `blocks: Block[]` An array of block metadata.
+  - `startTimestamp: number` The earliest entry timestamp in the block.
+  - `flags: number` Indicates the block type.
+  - `dataOffset: number` If the block is a continuation block, this value
+    indicates the offset to the start of the next transaction block.
+- `entries: LogEntry[]` An array of transaction log entries.
+  - `continuation: boolean?` When `true`, indicates the buffer is a continuation
+    from the previous block's last transaction entry.
+  - `data: Buffer` The entry data.
+  - `length: number` The size of the entry data.
+  - `partial: boolean?` When `true`, indicates the log entry continues into the
+    next block.
+  - `timestamp: number` The entry timestamp.
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`
@@ -587,11 +812,13 @@ The default `Store` contains the following methods which can be overridden:
 - `getUserSharedBuffer(key, defaultBuffer?)`
 - `hasLock(key)`
 - `isOpen()`
+- `listLogs()`
 - `open()`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
 - `tryLock(key, onUnlocked?)`
 - `unlock(key)`
+- `useLog(context, name)`
 - `withLock(key, callback?)`
 
 To use it, extend the default `Store` and pass in an instance of your store
@@ -746,6 +973,30 @@ echo "ROCKSDB_PATH=/path/to/rocksdb" >> .env
 pnpm rebuild
 ```
 
+### Debugging
+
+It is often helpful to do a debug build and see the internal debug logging of
+the native binding. You can do a debug build by running:
+
+```bash
+pnpm rebuild:debug
+```
+
+Each debug log message is prefixed with the thread id. Most debug log messages
+include the instance address making it easier to trace through the log output.
+
+#### Debugging on macOS
+
+In the event Node.js crashes, re-run Node.js in `lldb`:
+
+```bash
+lldb node
+# Then in lldb:
+# (lldb) run your-program.js
+# When the crash occurs, print the stack trace:
+# (lldb) bt
+```
+
 ### Testing
 
 To run the tests, run:
@@ -781,4 +1032,12 @@ from erasing log output:
 
 ```bash
 CI=1 pnpm test
+```
+
+By default, the test runner deletes all test databases after the tests finish.
+To keep the temp databases for closer inspection, set the `KEEP_FILES=1`
+environment variable:
+
+```bash
+CI=1 KEEP_FILES=1 pnpm test
 ```

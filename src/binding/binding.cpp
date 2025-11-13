@@ -7,6 +7,7 @@
 #include "rocksdb/db.h"
 #include "transaction.h"
 #include "transaction_log.h"
+#include "transaction_log_file.h"
 #include "util.h"
 #include <atomic>
 
@@ -19,7 +20,7 @@ namespace rocksdb_js {
  * (main thread + worker threads) and we only want to cleanup after the last
  * instance exits.
  */
-static std::atomic<int> moduleRefCount{0};
+static std::atomic<uint32_t> moduleRefCount{0};
 
 NAPI_MODULE_INIT() {
 #ifdef DEBUG
@@ -31,24 +32,24 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	[[maybe_unused]] int refCount = ++moduleRefCount;
-	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
+	[[maybe_unused]] uint32_t refCount = ++moduleRefCount;
+	DEBUG_LOG("Binding::Init Module ref count: %u\n", refCount);
+
+	// initialize the registry
+	DBRegistry::Init();
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		DEBUG_LOG("Binding::Init env cleanup start\n");
-
-		int newCount = --moduleRefCount;
-		DEBUG_LOG("Binding::Init Module ref count after cleanup: %d\n", newCount);
-
-		if (newCount == 0) {
-			DEBUG_LOG("Binding::Init Last module cleaned up, purging all databases\n");
+		uint32_t newRefCount = --moduleRefCount;
+		if (newRefCount == 0) {
+			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
-		} else if (newCount < 0) {
-			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
+			DEBUG_LOG("Binding::Init env cleanup done\n")
+		} else if (newRefCount < 0) {
+			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n")
+		} else {
+			DEBUG_LOG("Binding::Init Skipping cleanup, %u remaining instances\n", newRefCount)
 		}
-
-		DEBUG_LOG("Binding::Init env cleanup done\n");
 	}, nullptr));
 
 	// database
@@ -65,6 +66,27 @@ NAPI_MODULE_INIT() {
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+
+	// constants
+	napi_value constants;
+	napi_create_object(env, &constants);
+
+	napi_value woofToken, blockSize, fileHeaderSize, blockHeaderSize, txnHeaderSize, continuationFlag;
+	napi_create_uint32(env, WOOF_TOKEN, &woofToken);
+	napi_create_uint32(env, BLOCK_SIZE, &blockSize);
+	napi_create_uint32(env, FILE_HEADER_SIZE, &fileHeaderSize);
+	napi_create_uint32(env, BLOCK_HEADER_SIZE, &blockHeaderSize);
+	napi_create_uint32(env, TXN_HEADER_SIZE, &txnHeaderSize);
+	napi_create_uint32(env, CONTINUATION_FLAG, &continuationFlag);
+
+	napi_set_named_property(env, constants, "WOOF_TOKEN", woofToken);
+	napi_set_named_property(env, constants, "BLOCK_SIZE", blockSize);
+	napi_set_named_property(env, constants, "FILE_HEADER_SIZE", fileHeaderSize);
+	napi_set_named_property(env, constants, "BLOCK_HEADER_SIZE", blockHeaderSize);
+	napi_set_named_property(env, constants, "TXN_HEADER_SIZE", txnHeaderSize);
+	napi_set_named_property(env, constants, "CONTINUATION_FLAG", continuationFlag);
+
+	napi_set_named_property(env, exports, "constants", constants);
 
 	return exports;
 }

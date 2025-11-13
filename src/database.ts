@@ -1,11 +1,11 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
-import { config, type TransactionOptions, type RocksDatabaseConfig } from './load-binding.js';
+import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
 import * as orderedBinary from 'ordered-binary';
-import type { EncoderFunction, Key } from './encoding.js';
+import type { Encoder, EncoderFunction, Key } from './encoding.js';
 
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
@@ -22,7 +22,7 @@ export interface RocksDatabaseOptions extends StoreOptions {
  * Before using this class, you must open the database first.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = RocksDatabase.open('/path/to/database');
  * await db.put('key', 'value');
  * const value = await db.get('key');
@@ -47,7 +47,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Removes all data from the database asynchronously.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * await db.clear(); // default batch size of 10000
 	 *
@@ -72,7 +72,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Removes all entries from the database synchronously.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * db.clearSync(); // default batch size of 10000
 	 *
@@ -95,12 +95,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Closes the database.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * db.close();
 	 * ```
 	 */
-	close() {
+	close(): void {
 		this.store.close();
 	}
 
@@ -110,7 +110,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @param options - The options for the database.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
 	 * ```
 	 */
@@ -124,11 +124,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		//
 	}
 
-	dropSync() {
+	dropSync(): void {
 		//
 	}
 
-	get encoder() {
+	get encoder(): Encoder | null {
 		return this.store.encoder;
 	}
 
@@ -140,7 +140,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @returns The oldest snapshot timestamp.
 	 */
-	getOldestSnapshotTimestamp() {
+	getOldestSnapshotTimestamp(): number {
 		return this.store.db.getOldestSnapshotTimestamp();
 	}
 
@@ -165,7 +165,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * used to notify the specified `options.callback`.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const buffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
 	 */
@@ -181,7 +181,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * otherwise.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * db.hasLock('foo'); // false
 	 * db.tryLock('foo', () => {});
@@ -201,17 +201,17 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @returns `true` if the database is open, `false` otherwise.
 	 */
-	isOpen() {
+	isOpen(): boolean {
 		return this.store.isOpen();
 	}
 
 	/**
-	 * Lists all transaction logs for the database.
+	 * Lists all transaction log names.
 	 *
-	 * @returns A promise that resolves to an array of transaction logs.
+	 * @returns an array of transaction log names.
 	 */
-	async listTransactionLogs() {
-		return [];
+	listLogs(): string[] {
+		return this.store.listLogs();
 	}
 
 	/**
@@ -222,7 +222,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @returns A new RocksDatabase instance.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * ```
 	 */
@@ -240,7 +240,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @returns A new RocksDatabase instance.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = new RocksDatabase('/path/to/database');
 	 * db.open();
 	 * ```
@@ -352,17 +352,18 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this;
 	}
 
-	get path() {
+	/**
+	 * Returns the path to the database.
+	 */
+	get path(): string {
 		return this.store.path;
 	}
 
 	/**
-	 * Prunes all transaction logs for the database.
-	 *
-	 * @returns A promise that resolves when the transaction logs have been pruned.
+	 * Purges transaction logs.
 	 */
-	async pruneTransactionLogs() {
-		//
+	purgeLogs(options?: PurgeLogsOptions): string[] {
+		return this.store.db.purgeLogs(options);
 	}
 
 	/**
@@ -372,14 +373,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @returns A promise that resolves the `callback` return value.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * await db.transaction(async (txn) => {
 	 *   await txn.put('key', 'value');
 	 * });
 	 * ```
 	 */
-	async transaction<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions) {
+	async transaction<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): Promise<T | PromiseLike<T>> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -398,7 +399,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			} catch (err) {
 				// if the transaction was already aborted/committed, we can just return
 				if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-					return;
+					return undefined as T | PromiseLike<T>;
 				}
 			}
 			// rethrow the user error
@@ -410,7 +411,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			return result;
 		} catch (err) {
 			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-				return;
+				return undefined as T;
 			}
 			throw err;
 		}
@@ -426,14 +427,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @returns The `callback` return value.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * await db.transaction(async (txn) => {
 	 *   await txn.put('key', 'value');
 	 * });
 	 * ```
 	 */
-	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> {
+	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> | undefined {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -493,7 +494,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @param onUnlocked - A callback to call when the lock is released.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * db.tryLock('foo', () => {
 	 *   console.log('lock acquired');
@@ -514,7 +515,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * exist.
 	 *
 	 * @example
-	 * ```ts
+	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * db.tryLock('foo', () => {});
 	 * db.unlock('foo'); // returns `true`
@@ -540,7 +541,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> {
+	withLock(key: Key, callback: () => void | Promise<void>): Promise<void> | undefined {
 		return this.store.withLock(key, callback);
 	}
 }

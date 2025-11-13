@@ -16,15 +16,16 @@ namespace rocksdb_js {
  * handle to an unopened RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * ```
  */
 napi_value Database::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR("Database")
+	NAPI_CONSTRUCTOR_WITH_DATA("Database")
 
 	// create shared_ptr on heap so it persists after function returns
-	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>());
+	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
+	auto* dbHandle = new std::shared_ptr<DBHandle>(std::make_shared<DBHandle>(env, exportsRef));
 
 	DEBUG_LOG("Database::Constructor Creating NativeDatabase DBHandle=%p\n", dbHandle->get())
 
@@ -58,7 +59,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
  * and recreating it.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * await db.clear(); // default batch size of 10000
  *
@@ -145,7 +146,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
  * and recreating it.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.clearSync(); // default batch size of 10000
  *
@@ -183,7 +184,7 @@ napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
  * registry.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.close();
  * ```
@@ -207,13 +208,13 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
  * Gets a value from the RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const value = await db.get('foo');
  * ```
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const txnId = 123;
  * const value = await db.get('foo', txnId);
@@ -237,7 +238,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Get failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
@@ -317,7 +319,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
  * Gets the number of keys within a range or in the entire RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = NativeDatabase.open('path/to/db');
  * const total = db.getCount();
  * const range = db.getCount({ start: 'a', end: 'z' });
@@ -342,7 +344,8 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Get count failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		txnHandle->getCount(itOptions, count, *dbHandle);
@@ -375,7 +378,7 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
  * Gets the oldest unreleased snapshot unix timestamp.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = NativeDatabase.open('path/to/db');
  * const oldestSnapshotTimestamp = db.getOldestSnapshotTimestamp();
  * ```
@@ -405,13 +408,13 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
  * Gets a value from the RocksDB database.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const value = await db.get('foo');
  * ```
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const txnId = 123;
  * const value = await db.get('foo', txnId);
@@ -435,7 +438,8 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->getSync(keySlice, value, *dbHandle);
@@ -485,7 +489,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type))
 	if (type != napi_undefined) {
 		if (type == napi_function) {
-			DEBUG_LOG("Database::GetUserSharedBuffer key start=%d end=%d:\n", keyStart, keyEnd)
+			DEBUG_LOG("Database::GetUserSharedBuffer key start=%u end=%u:\n", keyStart, keyEnd)
 			DEBUG_LOG_KEY_LN(keyStr)
 			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
 		} else {
@@ -501,7 +505,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
  * Checks if the database has a lock on the given key.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const hasLock = db.hasLock('foo');
  * ```
@@ -536,6 +540,15 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Lists all transaction logs in the database.
+ */
+napi_value Database::ListLogs(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	return (*dbHandle)->descriptor->listTransactionLogStores(env);
+}
+
+/**
  * Opens the RocksDB database. This must be called before any data methods are called.
  */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
@@ -562,18 +575,37 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	std::string modeName;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "mode", modeName));
 
-	int parallelismThreads = std::max<int>(1, std::thread::hardware_concurrency() / 2);
+	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
 
-	int transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
+	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", transactionLogRetentionMs));
+
+	std::string transactionLogsPath;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
+
+	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", transactionLogMaxSize));
+	if (transactionLogMaxSize > 0 && transactionLogMaxSize < 37) {
+		::napi_throw_error(env, nullptr, "transactionLogMaxSize must be greater than 37 bytes");
+		return nullptr;
+	}
 
 	DBMode mode = DBMode::Optimistic;
 	if (modeName == "pessimistic") {
 		mode = DBMode::Pessimistic;
 	}
 
-	DBOptions dbHandleOptions { disableWAL, mode, name, noBlockCache, parallelismThreads, transactionLogRetentionMs };
+	DBOptions dbHandleOptions {
+		disableWAL,
+		mode,
+		name,
+		noBlockCache,
+		parallelismThreads,
+		transactionLogMaxSize,
+		transactionLogRetentionMs,
+		transactionLogsPath
+	};
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
@@ -584,6 +616,16 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_RETURN_UNDEFINED()
+}
+
+/**
+ * Purges transaction logs.
+ */
+napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	return (*dbHandle)->descriptor->purgeTransactionLogs(env, argv[0]);
 }
 
 /**
@@ -615,7 +657,8 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Put sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->putSync(
@@ -664,7 +707,8 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
-			::napi_throw_error(env, nullptr, "Transaction not found");
+			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
@@ -697,7 +741,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
  * @returns `true` if the lock was acquired, `false` otherwise.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const lockSuccess = db.tryLock('foo', () => {
  *   console.log('lock was released');
@@ -736,7 +780,7 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
  * @returns `true` if the lock was released, `false` otherwise.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const lockSuccess = db.tryLock('foo', () => {
  *   console.log('lock was released');
@@ -755,6 +799,17 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 	bool unlocked = (*dbHandle)->descriptor->lockReleaseByKey(keyStr);
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, unlocked, &result))
 	return result;
+}
+
+/**
+ * Get or create a transaction log.
+ */
+napi_value Database::UseLog(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	NAPI_GET_STRING(argv[0], name, "Name is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	return (*dbHandle)->useLog(env, jsThis, name);
 }
 
 /**
@@ -809,31 +864,37 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },\
+		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
+		{ "purgeLogs", nullptr, PurgeLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	auto className = "Database";
 	constexpr size_t len = sizeof("Database") - 1;
 
+	napi_ref exportsRef;
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef))
+
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
-		className,    // className
-		len,          // length of class name
-		Constructor,  // constructor
-		nullptr,      // constructor arg
+		className,                           // className
+		len,                                 // length of class name
+		Database::Constructor,               // constructor
+		reinterpret_cast<void*>(exportsRef), // constructor arg
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
-		properties,   // properties array
-		&ctor         // [out] constructor
+		properties,                          // properties array
+		&ctor                                // [out] constructor
 	))
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))

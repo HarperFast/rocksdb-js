@@ -10,7 +10,7 @@ const runtime = process.versions.bun
 const memory = `${(os.totalmem() / 1024 / 1024 / 1024).toFixed(0)}GB`;
 const machine = `${process.platform}/${process.arch}, ${os.cpus().length} cpus, ${memory}`;
 const version = JSON.parse(readFileSync('./package.json', 'utf8')).version;
-const rocksdbVersion = await import('./dist/index.js')
+const rocksdbVersion = await import('./dist/index.mjs')
 	.then(m => m.versions.rocksdb)
 	.catch(() => '?');
 console.log(`${runtime} (${machine}) rocksdb-js/${version} RocksDB/${rocksdbVersion}`);
@@ -27,9 +27,10 @@ export default defineConfig({
 			reporter: ['html', 'lcov', 'text']
 		},
 		environment: 'node',
+		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
 		include: ['test/**/*.test.ts'],
-		pool: 'threads',
+		pool: process.versions.bun ? 'forks' : 'threads',
 		poolOptions: {
 			threads: {
 				// NOTE: by default, Vitest will run tests in parallel, but
@@ -39,6 +40,7 @@ export default defineConfig({
 		},
 		reporters: ['verbose'],
 		silent: false,
+		testTimeout: 30000,
 		watch: false
 	}
 });

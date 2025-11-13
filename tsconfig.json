@@ -1,13 +1,13 @@
 {
   "compilerOptions": {
-    "allowJs": true,
     "composite": false,
-    "declaration": false,
+    "declaration": true,
     "declarationMap": false,
     "erasableSyntaxOnly": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "inlineSources": false,
+    "isolatedDeclarations": true,
     "isolatedModules": true,
     "lib": ["esnext"],
     "module": "esnext",
@@ -25,5 +25,5 @@
     "typeRoots": ["./node_modules/@types"],
     "types": ["node"]
   },
-  "include": ["./rollup.config.ts", "./rollup.dts.config.ts", "./src", "./scripts", "./test"]
+  "include": ["./tsdown.config.ts", "./src", "./scripts", "./test"]
 }

@@ -9,9 +9,6 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Setup pnpm
-      uses: ./.github/actions/setup-pnpm
-
     - name: Setup RocksDB cache
       uses: actions/cache@v4
       with:

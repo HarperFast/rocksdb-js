@@ -4,12 +4,12 @@ import { randomBytes } from 'node:crypto';
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { rimraf } from 'rimraf';
 import { setTimeout as delay } from 'node:timers/promises';
+import { mkdirSync } from 'node:fs';
 
-export function generateDBPath() {
-	return join(
-		tmpdir(),
-		`testdb-${randomBytes(8).toString('hex')}`
-	);
+export function generateDBPath(): string {
+	const testDir = join(tmpdir(), 'rocksdb-js-tests');
+	mkdirSync(testDir, { recursive: true });
+	return join(testDir, `testdb-${randomBytes(8).toString('hex')}`);
 }
 
 type TestDB = {
@@ -57,7 +57,7 @@ type TestFn = (...databases: TestDB[]) => void | Promise<void>;
 export async function dbRunner(
 	options: TestOptions | TestFn,
 	test?: TestFn
-) {
+): Promise<void> {
 	let testFn: TestFn;
 	if (typeof options === 'function') {
 		testFn = options;
@@ -88,23 +88,54 @@ export async function dbRunner(
 			db?.close();
 		}
 
-		const retries = 3;
-		for (let i = 0; i < retries && dbPaths.size > 0; i++) {
-			for (const dbPath of dbPaths) {
-				try {
-					await rimraf(dbPath);
-					dbPaths.delete(dbPath);
-					break;
-				} catch (e) {
-					if (e instanceof Error && 'code' in e && e.code === 'EPERM') {
-						await delay(150);
-						// try again, but skip after 3 attempts
-					} else {
-						// eslint-disable-next-line no-unsafe-finally
-						throw e;
+		if (!process.env.KEEP_FILES) {
+			const retries = 3;
+			for (let i = 0; i < retries && dbPaths.size > 0; i++) {
+				for (const dbPath of dbPaths) {
+					try {
+						await rimraf(dbPath);
+						dbPaths.delete(dbPath);
+						break;
+					} catch (e) {
+						if (e instanceof Error && 'code' in e && (e.code === 'EPERM' || e.code === 'EBUSY')) {
+							await delay(150);
+							// try again, but skip after 3 attempts
+						} else {
+							// eslint-disable-next-line no-unsafe-finally
+							throw e;
+						}
 					}
 				}
 			}
 		}
 	}
+}
+
+/**
+ * Creates a bootstrap script to run in a worker thread.
+ *
+ * @returns The script to run in a worker thread.
+ */
+export function createWorkerBootstrapScript(path: string): string {
+	if (process.versions.deno || process.versions.bun) {
+		return `
+			import { pathToFileURL } from 'node:url';
+			import(pathToFileURL('${path}'));
+			`;
+	}
+
+	const majorVersion = parseInt(process.versions.node.split('.')[0]);
+	if (majorVersion < 20) {
+		// Node.js 18 and older doesn't properly eval ESM code
+		return `
+			const tsx = require('tsx/cjs/api');
+			tsx.require('${path}', __dirname);
+			`;
+	}
+
+	return `
+		import { register } from 'tsx/esm/api';
+		register();
+		import('${path}');
+		`;
 }

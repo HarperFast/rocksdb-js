@@ -2,8 +2,10 @@
 #define __UTIL_H__
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <condition_variable>
+#include <filesystem>
 #include <mutex>
 #include <node_api.h>
 #include <optional>
@@ -13,7 +15,7 @@
 #include <thread>
 #include "binding.h"
 #include "macros.h"
-#include "rocksdb/status.h"
+#include "rocksdb/db.h"
 
 /**
  * This file contains various napi helper functions.
@@ -38,6 +40,8 @@ struct Closable {
 };
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
+
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name);
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
@@ -206,6 +210,8 @@ template <typename T>
 	return getValue(env, value, result);
 }
 
+std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
+
 /**
  * Base class for async state.
  */
@@ -314,10 +320,10 @@ struct AsyncWorkHandle {
 	void unregisterAsyncWork() {
 		// notify if all work is complete
 		if (--this->activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 			this->asyncWorkComplete.notify_one();
 		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 		}
 	}
 
@@ -345,7 +351,7 @@ struct AsyncWorkHandle {
 		while (this->activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount.load())
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, this->activeAsyncWorkCount.load())
 				return;
 			}
 
@@ -372,6 +378,53 @@ struct AsyncWorkHandle {
 		return this->cancelled.load();
 	}
 };
+
+// Big-endian encoding/decoding helpers for transaction log format
+inline void writeUint64BE(char* buffer, uint64_t value) {
+	buffer[0] = static_cast<char>((value >> 56) & 0xFF);
+	buffer[1] = static_cast<char>((value >> 48) & 0xFF);
+	buffer[2] = static_cast<char>((value >> 40) & 0xFF);
+	buffer[3] = static_cast<char>((value >> 32) & 0xFF);
+	buffer[4] = static_cast<char>((value >> 24) & 0xFF);
+	buffer[5] = static_cast<char>((value >> 16) & 0xFF);
+	buffer[6] = static_cast<char>((value >> 8) & 0xFF);
+	buffer[7] = static_cast<char>(value & 0xFF);
+}
+
+inline void writeUint32BE(char* buffer, uint32_t value) {
+	buffer[0] = static_cast<char>((value >> 24) & 0xFF);
+	buffer[1] = static_cast<char>((value >> 16) & 0xFF);
+	buffer[2] = static_cast<char>((value >> 8) & 0xFF);
+	buffer[3] = static_cast<char>(value & 0xFF);
+}
+
+inline void writeUint16BE(char* buffer, uint16_t value) {
+	buffer[0] = static_cast<char>((value >> 8) & 0xFF);
+	buffer[1] = static_cast<char>(value & 0xFF);
+}
+
+inline uint64_t readUint64BE(const char* buffer) {
+	return (static_cast<uint64_t>(static_cast<uint8_t>(buffer[0])) << 56) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[1])) << 48) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[2])) << 40) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[3])) << 32) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[4])) << 24) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[5])) << 16) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[6])) << 8) |
+	       static_cast<uint64_t>(static_cast<uint8_t>(buffer[7]));
+}
+
+inline uint32_t readUint32BE(const char* buffer) {
+	return (static_cast<uint32_t>(static_cast<uint8_t>(buffer[0])) << 24) |
+	       (static_cast<uint32_t>(static_cast<uint8_t>(buffer[1])) << 16) |
+	       (static_cast<uint32_t>(static_cast<uint8_t>(buffer[2])) << 8) |
+	       static_cast<uint32_t>(static_cast<uint8_t>(buffer[3]));
+}
+
+inline uint16_t readUint16BE(const char* buffer) {
+	return (static_cast<uint16_t>(static_cast<uint8_t>(buffer[0])) << 8) |
+	       static_cast<uint16_t>(static_cast<uint8_t>(buffer[1]));
+}
 
 } // namespace rocksdb_js
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { withResolvers } from '../src/util.js';
-import { dbRunner } from './lib/util.js';
+import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import type { BufferWithDataView } from '../src/encoding.js';
 
 describe('User Shared Buffer', () => {
@@ -103,26 +103,8 @@ describe('User Shared Buffer', () => {
 
 			const getNextId = () => Atomics.add(incrementer, 0, 1n);
 
-			// Node.js 18 and older doesn't properly eval ESM code
-			const majorVersion = parseInt(process.versions.node.split('.')[0]);
-			const script = process.versions.deno || process.versions.bun
-				?	`
-					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/user-shared-buffer-worker.mts'));
-					`
-				:	majorVersion < 20
-					?	`
-						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/user-shared-buffer-worker.mts', __dirname);
-						`
-					:	`
-						import { register } from 'tsx/esm/api';
-						register();
-						import('./test/fixtures/user-shared-buffer-worker.mts');
-						`;
-
 			const worker = new Worker(
-				script,
+				createWorkerBootstrapScript('./test/workers/user-shared-buffer-worker.mts'),
 				{
 					eval: true,
 					workerData: {
@@ -131,7 +113,7 @@ describe('User Shared Buffer', () => {
 				}
 			);
 
-			let resolver = withResolvers();
+			let resolver = withResolvers<void>();
 
 			await new Promise<void>((resolve, reject) => {
 				worker.on('error', reject);
@@ -156,7 +138,7 @@ describe('User Shared Buffer', () => {
 			await expect(resolver.promise).resolves.toBe(3n);
 			expect(getNextId()).toBe(4n);
 
-			resolver = withResolvers();
+			resolver = withResolvers<void>();
 			worker.postMessage({ close: true });
 
 			if (process.versions.deno) {

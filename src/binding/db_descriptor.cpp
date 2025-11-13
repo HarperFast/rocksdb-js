@@ -1,4 +1,5 @@
 #include "db_descriptor.h"
+#include "db_settings.h"
 #include <algorithm>
 #include <memory>
 
@@ -9,41 +10,53 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
 
 /**
- * Creates a new database descriptor.
+ * Creates a new database descriptor. This constructor is private. To create a
+ * new DBDescriptor, use `DBDescriptor::open()`.
  */
 DBDescriptor::DBDescriptor(
-	std::string path,
-	DBMode mode,
+	const std::string& path,
+	const DBOptions& options,
 	std::shared_ptr<rocksdb::DB> db,
-	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns
+	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
 ):
 	path(path),
-	mode(mode),
-	db(db)
-{
-	for (auto& column : columns) {
-		this->columns[column.first] = column.second;
-	}
-}
+	mode(options.mode),
+	db(db),
+	columns(std::move(columns)),
+	transactionLogMaxSize(options.transactionLogMaxSize),
+	transactionLogRetentionMs(options.transactionLogRetentionMs),
+	transactionLogsPath(options.transactionLogsPath)
+{}
 
 /**
  * Destroy the database descriptor and any resources associated to it
  * (transactions, iterators, etc).
  */
 DBDescriptor::~DBDescriptor() {
-	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (%ld closables)\n", this, this->path.c_str(), this->closables.size())
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
+		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size())
 
-	std::unique_lock<std::mutex> lock(this->txnsMutex);
+	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
 	while (!this->closables.empty()) {
 		Closable* handle = *this->closables.begin();
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor closing closable %p\n", this, handle)
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing closable %p\n", this, handle)
 		this->closables.erase(handle);
 
 		// release the mutex before calling close() to avoid a deadlock
-		lock.unlock();
+		txnsLock.unlock();
 		handle->close();
-		lock.lock();
+		txnsLock.lock();
+	}
+
+	if (!this->transactionLogStores.empty()) {
+		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size())
+		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str())
+			transactionLogStore->close();
+		}
+		this->transactionLogStores.clear();
 	}
 
 	this->transactions.clear();
@@ -75,7 +88,7 @@ void DBDescriptor::detach(Closable* closable) {
  */
 void DBDescriptor::lockCall(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value callback,
 	napi_deferred deferred,
 	std::shared_ptr<DBHandle> owner
@@ -166,7 +179,7 @@ void DBDescriptor::lockCall(
  */
 void DBDescriptor::lockEnqueueCallback(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value callback,
 	std::shared_ptr<DBHandle> owner,
 	bool skipEnqueueIfNewLock,
@@ -233,7 +246,7 @@ void DBDescriptor::lockEnqueueCallback(
 /**
  * Checks if a lock exists for the given key. Called by `db.hasLock()`.
  */
-bool DBDescriptor::lockExistsByKey(std::string key) {
+bool DBDescriptor::lockExistsByKey(std::string& key) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
 	bool exists = lockHandle != this->locks.end();
@@ -244,7 +257,7 @@ bool DBDescriptor::lockExistsByKey(std::string key) {
 /**
  * Releases a lock by key. Called by `db.unlock()`.
  */
-bool DBDescriptor::lockReleaseByKey(std::string key) {
+bool DBDescriptor::lockReleaseByKey(std::string& key) {
 	std::queue<LockCallback> threadsafeCallbacks;
 
 	{
@@ -288,11 +301,11 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 
 	{
 		std::lock_guard<std::mutex> lock(this->locksMutex);
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %d locks if they are owned handle %p\n", this, this->locks.size(), owner)
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner)
 		for (auto it = this->locks.begin(); it != this->locks.end();) {
 			auto lockOwner = it->second->owner.lock();
 			if (!lockOwner || lockOwner.get() == owner) {
-				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %d callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
+				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
 				// move all callbacks from the queue
 				while (!it->second->threadsafeCallbacks.empty()) {
 					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
@@ -305,7 +318,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 		}
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling %ld unlock callbacks\n", this, threadsafeCallbacks.size())
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
 
 	// call the callbacks in order, but stop if any callback fails
 	for (auto& callback : threadsafeCallbacks) {
@@ -319,10 +332,107 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 }
 
 /**
+ * Creates a new DBDescriptor.
+ */
+std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
+	std::string name = options.name.empty() ? "default" : options.name;
+	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\")\n", path.c_str(), name.c_str())
+
+	// set or disable the block cache
+	rocksdb::BlockBasedTableOptions tableOptions;
+	if (options.noBlockCache) {
+		tableOptions.no_block_cache = true;
+	} else {
+		DBSettings& settings = DBSettings::getInstance();
+		tableOptions.block_cache = settings.getBlockCache();
+	}
+
+	// set the database options
+	rocksdb::Options dbOptions;
+	dbOptions.comparator = rocksdb::BytewiseComparator();
+	dbOptions.create_if_missing = true;
+	dbOptions.create_missing_column_families = true;
+	dbOptions.enable_blob_files = true;
+	dbOptions.enable_blob_garbage_collection = true;
+	dbOptions.min_blob_size = 1024;
+	dbOptions.persist_user_defined_timestamps = true;
+	dbOptions.IncreaseParallelism(options.parallelismThreads);
+	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+
+	// prepare the column family stuff - first check if database exists
+	std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
+	std::vector<std::string> columnFamilyNames;
+
+	// try to list existing column families
+	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str())
+	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
+	if (listStatus.ok() && !columnFamilyNames.empty()) {
+		// database exists, use existing column families
+		for (const auto& cfName : columnFamilyNames) {
+			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str())
+			cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
+		}
+	} else {
+		// database doesn't exist or no column families found, use default
+		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n")
+		cfDescriptors = {
+			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
+		};
+	}
+
+	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
+	std::shared_ptr<rocksdb::DB> db;
+	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+
+	if (options.mode == DBMode::Pessimistic) {
+		rocksdb::TransactionDBOptions txndbOptions;
+		txndbOptions.default_lock_timeout = 10000;
+		txndbOptions.transaction_lock_timeout = 10000;
+
+		rocksdb::TransactionDB* rdb;
+		DEBUG_LOG("DBDescriptor::open Opening pessimistic transaction db for \"%s\"\n", path.c_str())
+		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
+			throw std::runtime_error(status.ToString().c_str());
+		}
+		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str())
+		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
+	} else {
+		rocksdb::OptimisticTransactionDB* rdb;
+		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str())
+		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
+			throw std::runtime_error(status.ToString().c_str());
+		}
+		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str())
+		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
+	}
+
+	// figure out if desired column family exists and if not create it
+	bool columnExists = false;
+	for (size_t n = 0; n < cfHandles.size(); ++n) {
+		columns[cfDescriptors[n].name] = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
+		if (cfDescriptors[n].name == options.name) {
+			columnExists = true;
+		}
+	}
+	if (!columnExists) {
+		columns[options.name] = rocksdb_js::createRocksDBColumnFamily(db, options.name);
+	}
+
+	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str())
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns)));
+	descriptor->discoverTransactionLogStores();
+	return descriptor;
+}
+
+/**
  * Adds a transaction to the registry.
  */
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
-	uint32_t id = txnHandle->id;
+	auto id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->transactions.emplace(id, txnHandle);
 	this->closables.insert(txnHandle.get());
@@ -333,7 +443,14 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
  */
 std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	return this->transactions[id];
+	auto it = this->transactions.find(id);
+	if (it != this->transactions.end()) {
+		auto txnHandle = it->second;
+		if (txnHandle && txnHandle->txn) {
+			return txnHandle;
+		}
+	}
+	return nullptr;
 }
 
 /**
@@ -345,8 +462,18 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
+		if (it->second != txnHandle) {
+			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %u mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get())
+		}
 		this->transactions.erase(it);
 	}
+}
+
+/**
+ * Generates the next unique transaction ID for this database.
+ */
+uint32_t DBDescriptor::transactionGetNextId() {
+	return this->nextTransactionId.fetch_add(1);
 }
 
 /**
@@ -789,14 +916,14 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
  * @returns The user shared buffer.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * const userSharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
  * ```
  */
 napi_value DBDescriptor::getUserSharedBuffer(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value defaultBuffer,
 	napi_ref callbackRef
 ) {
@@ -822,11 +949,11 @@ napi_value DBDescriptor::getUserSharedBuffer(
 			&size
 		))
 
-		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %ld\n", this, size)
+		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size)
 		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %ld for key:", this, it->second->size)
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size)
 	DEBUG_LOG_KEY_LN(key)
 
 	// create finalize data that holds the key, a weak reference to this
@@ -911,7 +1038,7 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
  */
 napi_ref DBDescriptor::addListener(
 	napi_env env,
-	std::string key,
+	std::string& key,
 	napi_value callback,
 	std::weak_ptr<DBHandle> owner
 ) {
@@ -972,7 +1099,7 @@ napi_ref DBDescriptor::addListener(
  * @returns `true` if there were at least one listener, `false` otherwise.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.addListener('foo', () => {
  *   console.log('foo');
@@ -990,8 +1117,14 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 		auto it = this->listenerCallbacks.find(key);
 
 		if (it == this->listenerCallbacks.end()) {
+			// clean up the original data since we made copies
+			if (data) {
+				delete data;
+			}
+
 			DEBUG_LOG("%p DBDescriptor::notify key has no listeners:", this)
 			DEBUG_LOG_KEY_LN(key)
+
 			return false;
 		}
 
@@ -1031,7 +1164,7 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
  * @param key The key.
  * @returns The number of listeners.
  */
-napi_value DBDescriptor::listeners(napi_env env, std::string key) {
+napi_value DBDescriptor::listeners(napi_env env, std::string& key) {
 	size_t count = 0;
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
@@ -1055,7 +1188,7 @@ napi_value DBDescriptor::listeners(napi_env env, std::string key) {
  * @param key The key.
  * @param callback The callback to remove.
  */
-napi_value DBDescriptor::removeListener(napi_env env, std::string key, napi_value callback) {
+napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_value callback) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
 	if (type != napi_function) {
@@ -1141,6 +1274,131 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 			++keyIt;
 		}
 	}
+}
+
+/**
+ * Discovers all transaction logs in the database directory and stores the
+ * handles in a map.
+ */
+void DBDescriptor::discoverTransactionLogStores() {
+	if (this->transactionLogsPath.empty() || !std::filesystem::exists(this->transactionLogsPath)) {
+		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogStores No transaction logs path set or directory does not exist\n", this)
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+
+	for (const auto& entry : std::filesystem::directory_iterator(this->transactionLogsPath)) {
+		if (entry.is_directory()) {
+			auto store = TransactionLogStore::load(entry.path(), this->transactionLogMaxSize, this->transactionLogRetentionMs);
+			if (store) {
+				this->transactionLogStores.emplace(store->name, store);
+			}
+		}
+	}
+}
+
+/**
+ * Lists all transaction logs in the database.
+ *
+ * @param env The environment of the current callback.
+ */
+napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
+	napi_value result;
+	size_t i = 0;
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogStores.size(), &result));
+
+	DEBUG_LOG("%p DBDescriptor::listTransactionLogStores Returning %u transaction log store names\n", this, this->transactionLogStores.size())
+	for (auto& log : this->transactionLogStores) {
+		napi_value name;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, log.second->name.c_str(), log.second->name.length(), &name));
+		NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, name));
+	}
+
+	return result;
+}
+
+/**
+ * Purges transaction logs.
+ */
+napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
+	bool destroy = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy))
+
+	std::string name;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name))
+
+	napi_value removed;
+	NAPI_STATUS_THROWS(::napi_create_array(env, &removed))
+
+	size_t i = 0;
+	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+
+	for (auto& entry : this->transactionLogStores) {
+		auto store = entry.second;
+		if (name.empty() || store->name == name) {
+			store->purge([&](const std::filesystem::path& filePath) -> void {
+				napi_value logFileValue;
+				auto path = filePath.string();
+				NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
+				NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
+			}, destroy);
+
+			if (destroy) {
+				storesToRemove.push_back(store);
+			}
+		}
+	}
+
+	for (auto& store : storesToRemove) {
+		store->close();
+		try {
+			std::filesystem::remove_all(store->path);
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",
+				this, store->path.string().c_str(), e.what())
+		} catch (...) {
+			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Unknown error removing log directory %s\n",
+				this, store->path.string().c_str())
+		}
+		this->transactionLogStores.erase(store->name);
+	}
+
+	return removed;
+}
+
+/**
+ * Finds or creates a transaction log store by name.
+ *
+ * @param name The name of the transaction log store.
+ * @returns The transaction log store.
+ */
+std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+
+	auto it = this->transactionLogStores.find(name);
+	if (it != this->transactionLogStores.end()) {
+		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str())
+		return it->second;
+	}
+
+	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store \"%s\"\n",
+		this, name.c_str())
+
+	// ensure the directory exists
+	std::filesystem::create_directories(logDirectory);
+
+	auto txnLogStore = std::make_shared<TransactionLogStore>(
+		name,
+		logDirectory,
+		this->transactionLogMaxSize,
+		this->transactionLogRetentionMs
+	);
+	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
+	return txnLogStore;
 }
 
 } // namespace rocksdb_js
