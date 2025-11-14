@@ -6,14 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Building
 - `pnpm build` - Full production build (TypeScript bundle + native C++ binding)
+- `pnpm build:binding` - Incremental build C++ binding only (production)
+- `pnpm build:binding:debug` - Incremental build C++ binding only (debug)
 - `pnpm build:bundle` - TypeScript only (minified)
 - `pnpm build:debug` - TypeScript only (unminified)
-- `pnpm rebuild` - Native C++ binding only (production)
+- `pnpm rebuild` - Configure and build C++ binding only (production)
 - `pnpm rebuild:debug` - Native C++ binding only (with debug logging and coverage)
 
 ### Testing
 - `pnpm test` - Run all tests with Vitest
-- `pnpm coverage` - Run tests with coverage report
+- `pnpm coverage` - Run all tests with Vitest and coverage report
 - `node --expose-gc ./node_modules/vitest/vitest.mjs test/specific.test.ts` - Run single test file
 
 ### Code Quality
@@ -36,12 +38,15 @@ This is a Node.js binding for RocksDB that provides both TypeScript and C++ laye
 - **`dbi.ts` & `dbi-iterator.ts`** - Database interface and iteration logic
 - **`encoding.ts`** - Key/value encoding with msgpack and ordered-binary support
 - **`load-binding.ts`** - Native module loading and configuration
+- **`parse-transaction-log.ts`** - Utility for reading raw transaction log files
+- **`util.ts`** - Various helpers
 
 ### C++ Native Layer (`src/binding/`)
 - **`binding.cpp/h`** - Main N-API module entry point
 - **`database.cpp/h`** - Native database operations and async work handling
 - **`db_handle.cpp/h`** - Database handle management
-- **`transaction*.cpp/h`** - Native transaction implementations
+- **`transaction.cpp/h` && `transaction_handle.cpp/h`** - Native transaction implementations
+- - **`transaction_log*.cpp/h`** - Native transaction log store and file implementations
 - **`db_iterator*.cpp/h`** - Iterator implementations for range queries
 - **`util.cpp/h`** - Utility functions and error handling
 
@@ -65,6 +70,7 @@ Uses `ExtendedIterable` wrapper around native iterators for array-like methods (
 - `ROCKSDB_VERSION` - Override RocksDB version (default from package.json, or 'latest')
 - `ROCKSDB_PATH` - Build from local RocksDB source instead of prebuilt
 - `SKIP_MINIFY=1` - Disable minification for debug builds
+- `KEEP_FILES=1` - Don't delete temporary test databases for debugging purposes
 
 ## Test Structure
 

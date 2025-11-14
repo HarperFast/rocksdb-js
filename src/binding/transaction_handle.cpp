@@ -11,26 +11,40 @@ namespace rocksdb_js {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
+TransactionHandle::TransactionHandle(
+	std::shared_ptr<DBHandle> dbHandle,
+	napi_env env,
+	napi_ref jsDatabaseRef,
+	bool disableSnapshot
+) :
 	dbHandle(dbHandle),
-	txn(nullptr),
+	env(env),
+	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
 	snapshotSet(false),
-	state(TransactionState::Pending)
+	state(TransactionState::Pending),
+	txn(nullptr)
 {
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = dbHandle->disableWAL;
+
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
-		this->txn = tdb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
 	} else if (dbHandle->descriptor->mode == DBMode::Optimistic) {
 		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::OptimisticTransactionOptions txnOptions;
-		this->txn = odb->BeginTransaction(rocksdb::WriteOptions(), txnOptions);
+		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
 
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
+
+	this->startTimestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()
+	).count();
 }
 
 /**
@@ -38,6 +52,34 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
  */
 TransactionHandle::~TransactionHandle() {
 	this->close();
+}
+
+/**
+ * Adds a log entry to the specified transaction log store's batch.
+ */
+void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
+	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
+		this, entry->store->name.c_str(), this->id, entry->size);
+
+	// check if this transaction is already bound to a different log store
+	auto currentBoundStore = this->boundLogStore.lock();
+	if (currentBoundStore) {
+		// Transaction is already bound to a log store
+		if (currentBoundStore.get() != entry->store.get()) {
+			throw std::runtime_error("Log already bound to a transaction");
+		}
+	} else {
+		// Bind this transaction to the log store
+		this->boundLogStore = entry->store;
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %u to log store \"%s\"\n",
+			this, this->id, entry->store->name.c_str());
+	}
+
+	if (!this->logEntryBatch) {
+		this->logEntryBatch = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
+	}
+
+	this->logEntryBatch->addEntry(std::move(entry));
 }
 
 /**
@@ -65,10 +107,12 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	// unregister this transaction handle from the descriptor
-	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(shared_from_this());
-	}
+	::napi_delete_reference(this->env, this->jsDatabaseRef);
+
+	// The transaction should already be removed from the registry when
+	// committing/aborting  so we don't need to call transactionRemove here to
+	// avoid race conditions and bad_weak_ptr errors
+	DEBUG_LOG("%p TransactionHandle::close transaction should already be removed from registry\n", this)
 
 	this->dbHandle.reset();
 }
