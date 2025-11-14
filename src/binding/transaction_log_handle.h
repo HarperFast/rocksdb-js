@@ -46,6 +46,7 @@ struct TransactionLogHandle final : Closable {
 		napi_ref bufferRef
 	);
 
+	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
 	void close();
 	void query();
 

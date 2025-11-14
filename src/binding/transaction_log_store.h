@@ -15,6 +15,7 @@ namespace rocksdb_js {
 // forward declarations
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
+struct MemoryMap;
 
 struct TransactionLogStore final {
 	/**
@@ -91,6 +92,11 @@ struct TransactionLogStore final {
 	 * Queries the transaction log store.
 	 */
 	void query();
+
+	/**
+	 * Memory maps the transaction log file for the given sequence number.
+	 **/
+	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
 
 	/**
 	 * Purges transaction logs.

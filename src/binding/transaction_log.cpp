@@ -241,16 +241,21 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
-	auto logFileSearch = (*txnLogHandle)->getSequenceFiles()->find(sequenceNumber);
-
-	// TODO: increment reference count of log ptr?
-	uint32_t mapSize = (*txnLogHandle)->store.lock()->maxSize;
-	void *map = logFileSearch->second->getMemoryMap(mapSize);
-	// TODO: handle errors
+	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	if (!memoryMap)
+	{
+		::napi_throw_error(env, nullptr, "Unable to create memory map for sequence number");
+		return nullptr;
+	}
+	memoryMap->refCount++;
 	napi_value result;
-	napi_create_external_buffer(env, mapSize, map, [](napi_env env, void* data, void* hint) {
-		// TODO: increment reference count of log ptr?
-	}, nullptr, &result);
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->size, memoryMap->map, [](napi_env env, void* data, void* hint) {
+		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
+		if (--memoryMap->refCount == 0) {
+			// if there are no more references to the memory map, unmap it
+			delete memoryMap;
+		}
+	}, memoryMap, &result));
 	return result;
 }
 

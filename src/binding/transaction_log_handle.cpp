@@ -84,6 +84,11 @@ void TransactionLogHandle::close() {
 		dbHandle->unrefLog(this->logName);
 	}
 }
+MemoryMap* TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
+	auto store = this->store.lock();
+	if (store) return store->getMemoryMap(sequenceNumber);
+	return nullptr;
+}
 
 void TransactionLogHandle::query() {
 	auto store = this->store.lock();

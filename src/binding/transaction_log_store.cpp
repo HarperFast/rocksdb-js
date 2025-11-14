@@ -131,6 +131,15 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 
 	return logFile;
 }
+MemoryMap* TransactionLogStore::getMemoryMap(uint32_t sequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	auto it = this->sequenceFiles.find(sequenceNumber);
+	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+	if (!logFile) {
+		return nullptr;
+	}
+	return logFile->getMemoryMap(maxSize);
+}
 
 void TransactionLogStore::query() {
 	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store \"%s\"\n", this, this->name.c_str())

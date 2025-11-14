@@ -122,7 +122,7 @@ describe('Transaction Log', () => {
 		}));
 	});
 	describe('getRange() from TransactionLogReader', () => {
-		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
+		it('should query a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const startTime = Date.now() - 1000;
