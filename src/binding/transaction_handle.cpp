@@ -107,7 +107,9 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
+	DEBUG_LOG("%p TransactionHandle::close deleting reference to database\n", this)
 	NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database")
+	DEBUG_LOG("%p TransactionHandle::close reference to database deleted successfully\n", this)
 	this->jsDatabaseRef = nullptr;
 
 	// the transaction should already be removed from the registry when

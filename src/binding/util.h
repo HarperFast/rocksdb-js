@@ -280,6 +280,7 @@ struct BaseAsyncState {
 			if (this->resolveRef != nullptr) {
 				DEBUG_LOG("%p BaseAsyncState::cleanupReferences deleting reference to resolve function\n", this)
 				NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
+				DEBUG_LOG("%p BaseAsyncState::cleanupReferences reference to resolve function deleted successfully\n", this)
 				this->resolveRef = nullptr;
 			} else {
 				DEBUG_LOG("%p BaseAsyncState::cleanupReferences resolveRef is null\n", this)
@@ -287,6 +288,7 @@ struct BaseAsyncState {
 			if (this->rejectRef != nullptr) {
 				DEBUG_LOG("%p BaseAsyncState::cleanupReferences deleting reference to reject function\n", this)
 				NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
+				DEBUG_LOG("%p BaseAsyncState::cleanupReferences reference to reject function deleted successfully\n", this)
 				this->rejectRef = nullptr;
 			} else {
 				DEBUG_LOG("%p BaseAsyncState::cleanupReferences rejectRef is null\n", this)
