@@ -217,33 +217,6 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::fil
  */
 template<typename T>
 struct BaseAsyncState {
-	BaseAsyncState(
-		napi_env env,
-		T handle
-	) :
-		env(env),
-		handle(handle),
-		asyncWork(nullptr),
-		resolveRef(nullptr),
-		rejectRef(nullptr) {}
-
-	virtual ~BaseAsyncState() {
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
-
-		// decrement the active async work count
-		this->signalExecuteCompleted();
-	}
-
-	void signalExecuteCompleted() {
-		if (!this->completed.load()) {
-			if (this->handle) {
-				this->handle->unregisterAsyncWork();
-			}
-			this->completed.store(true);
-		}
-	}
-
 	napi_env env;
 	T handle;
 	napi_async_work asyncWork;
@@ -259,6 +232,78 @@ struct BaseAsyncState {
 	 * handler has a chance to close the handle.
 	 */
 	std::atomic<bool> completed{false};
+
+	/**
+	 * A flag to track whether references have been cleaned up. This prevents
+	 * the destructor from trying to delete references that are still in use
+	 * by the complete callback.
+	 */
+	std::atomic<bool> referencesCleanedUp{false};
+
+	BaseAsyncState(
+		napi_env env,
+		T handle
+	) :
+		env(env),
+		handle(handle),
+		asyncWork(nullptr),
+		resolveRef(nullptr),
+		rejectRef(nullptr) {}
+
+	virtual ~BaseAsyncState() {
+		// Don't delete references in the destructor - napi_delete_reference will crash
+		// if the reference is still "in use" by V8. Setting to nullptr prevents
+		// accidental reuse. V8 will clean them up automatically during environment teardown.
+		this->resolveRef = nullptr;
+		this->rejectRef = nullptr;
+		this->referencesCleanedUp.store(true);
+
+		// decrement the active async work count
+		this->signalExecuteCompleted();
+	}
+
+	/**
+	 * Clean up references after they're no longer needed. This should be called
+	 * in the complete callback AFTER using the references (calling resolve/reject).
+	 *
+	 * We delete the references here because:
+	 * 1. We've already used them (called resolve/reject), so they're no longer needed
+	 * 2. If we don't delete them, V8 will try to clean them up during teardown when
+	 *    they're still marked as "in use", causing crashes
+	 * 3. Deleting them immediately after use is the safest approach - we're done with them
+	 */
+	void cleanupReferences() {
+		if (!this->referencesCleanedUp.load()) {
+			// Delete references immediately after use. This must be done in the
+			// complete callback after calling resolve/reject, before deleting the state.
+			// The references are no longer needed after the callbacks have been invoked.
+			if (this->resolveRef != nullptr) {
+				DEBUG_LOG("%p BaseAsyncState::cleanupReferences deleting reference to resolve function\n", this)
+				NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
+				this->resolveRef = nullptr;
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::cleanupReferences resolveRef is null\n", this)
+			}
+			if (this->rejectRef != nullptr) {
+				DEBUG_LOG("%p BaseAsyncState::cleanupReferences deleting reference to reject function\n", this)
+				NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
+				this->rejectRef = nullptr;
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::cleanupReferences rejectRef is null\n", this)
+			}
+			DEBUG_LOG("%p BaseAsyncState::cleanupReferences references cleaned up\n", this)
+			this->referencesCleanedUp.store(true);
+		}
+	}
+
+	void signalExecuteCompleted() {
+		if (!this->completed.load()) {
+			if (this->handle) {
+				this->handle->unregisterAsyncWork();
+			}
+			this->completed.store(true);
+		}
+	}
 };
 
 #define ASSERT_OPENED_AND_NOT_CANCELLED(handle, operation) \

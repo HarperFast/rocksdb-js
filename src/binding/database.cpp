@@ -127,6 +127,9 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 				}
 			}
 
+			// clean up references after they're used (only when not cancelled)
+			state->cleanupReferences();
+
 			delete state;
 		},
 		state,     // data
@@ -301,6 +304,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			if (status != napi_cancelled) {
 				resolveGetResult(env, "Get failed", state->status, state->value, state->resolveRef, state->rejectRef);
 			}
+
+			// clean up references after they're used (only when not cancelled)
+			state->cleanupReferences();
 
 			delete state;
 		},

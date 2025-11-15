@@ -70,10 +70,11 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 				}
 			}
 
-			// log file is at max size, rotate to next sequence
-			if (this->maxSize > 0) {
-				DEBUG_LOG("%p TransactionLogStore::commit Log file at max size (%u >= %u), rotating to next sequence\n",
-					this, logFile->size, this->maxSize)
+			// rotate to next sequence if file open failed or file is at max size
+			// this prevents infinite loops when file open fails (even with maxSize=0)
+			if (logFile == nullptr || this->maxSize > 0) {
+				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxSize=%u)\n",
+					this, this->name.c_str(), static_cast<void*>(logFile), this->maxSize)
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				logFile = nullptr;
 			}
@@ -145,7 +146,7 @@ void TransactionLogStore::query() {
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
-	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store: %s (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;

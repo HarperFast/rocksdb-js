@@ -214,6 +214,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
+			DEBUG_LOG("%p Transaction::Commit complete callback entered (status=%d, cancelled=%d)\n",
+				state->handle.get(), status, napi_cancelled)
+
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
 				napi_value global;
@@ -228,20 +231,50 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						DEBUG_LOG("%p Transaction::Commit complete, but handle is null! txnId=%u\n", state->handle.get(), state->handle->id)
 					}
 
-					DEBUG_LOG("%p Transaction::Commit complete calling resolve txnId=%u\n", state->handle.get(), state->handle->id)
-					napi_value resolve;
-					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+					DEBUG_LOG("%p Transaction::Commit complete calling resolve txnId=%u (resolveRef=%p)\n",
+						state->handle.get(), state->handle->id, static_cast<void*>(state->resolveRef))
+
+					if (state->resolveRef == nullptr) {
+						DEBUG_LOG("%p Transaction::Commit ERROR: resolveRef is null!\n", state->handle.get())
+					} else {
+						napi_value resolve;
+						DEBUG_LOG("%p Transaction::Commit getting reference value...\n", state->handle.get())
+						NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
+						DEBUG_LOG("%p Transaction::Commit calling resolve function...\n", state->handle.get())
+						NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
+						DEBUG_LOG("%p Transaction::Commit resolve function completed\n", state->handle.get())
+					}
 				} else {
-					napi_value reject;
-					napi_value error;
-					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
-					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+					DEBUG_LOG("%p Transaction::Commit calling reject (rejectRef=%p)\n",
+						state->handle.get(), static_cast<void*>(state->rejectRef))
+
+					if (state->rejectRef == nullptr) {
+						DEBUG_LOG("%p Transaction::Commit ERROR: rejectRef is null!\n", state->handle.get())
+					} else {
+						napi_value reject;
+						napi_value error;
+						DEBUG_LOG("%p Transaction::Commit getting reject reference value...\n", state->handle.get())
+						NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
+						ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
+						DEBUG_LOG("%p Transaction::Commit calling reject function...\n", state->handle.get())
+						NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+						DEBUG_LOG("%p Transaction::Commit reject function completed\n", state->handle.get())
+					}
 				}
+
+				// clean up references after they're used (only when not cancelled)
+				DEBUG_LOG("%p Transaction::Commit cleaning up references (resolveRef=%p, rejectRef=%p)\n",
+					state->handle.get(), static_cast<void*>(state->resolveRef), static_cast<void*>(state->rejectRef))
+				state->cleanupReferences();
+				DEBUG_LOG("%p Transaction::Commit references cleaned up\n", state->handle.get())
+			} else {
+				DEBUG_LOG("%p Transaction::Commit work was cancelled, skipping reference cleanup (env will handle it)\n",
+					state->handle.get())
 			}
 
+			DEBUG_LOG("%p Transaction::Commit deleting state\n", state->handle.get())
 			delete state;
+			DEBUG_LOG("Transaction::Commit complete callback finished\n")
 		},
 		state,     // data
 		&state->asyncWork // -> result
@@ -375,7 +408,7 @@ napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_HANDLE("GetTimestamp")
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_int64(env, (*txnHandle)->startTimestamp, &result))
+	NAPI_STATUS_THROWS_ERROR(::napi_create_int64(env, (*txnHandle)->startTimestamp, &result), "Failed to get timestamp")
 	return result;
 }
 
@@ -450,7 +483,8 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 			std::chrono::system_clock::now().time_since_epoch()
 		).count();
 	} else if (type == napi_number) {
-		NAPI_STATUS_THROWS(::napi_get_value_int64(env, argv[0], &timestamp));
+		NAPI_STATUS_THROWS_ERROR(::napi_get_value_int64(env, argv[0], &timestamp),
+			"Invalid timestamp, expected positive number");
 		if (timestamp < 0) {
 			::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
 			return nullptr;
@@ -491,21 +525,21 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	// this needs to create a new TransactionLog instance that is not tracked by
 	// the DBHandle and is bound to this transaction
 	napi_value exports;
-	NAPI_STATUS_THROWS(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports))
+	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports), "Failed to get 'exports' reference")
 
 	napi_value transactionLogCtor;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor))
+	NAPI_STATUS_THROWS_ERROR(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor), "Failed to get 'TransactionLog' constructor")
 
 	napi_value jsDatabase;
-	NAPI_STATUS_THROWS(::napi_get_reference_value(env, (*txnHandle)->jsDatabaseRef, &jsDatabase))
+	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->jsDatabaseRef, &jsDatabase), "Failed to get 'jsDatabase' reference")
 
 	napi_value args[2];
 	args[0] = jsDatabase;
 
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]))
+	NAPI_STATUS_THROWS_ERROR(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]), "Invalid log name")
 
 	napi_value instance;
-	NAPI_STATUS_THROWS(::napi_new_instance(env, transactionLogCtor, 2, args, &instance))
+	NAPI_STATUS_THROWS_ERROR(::napi_new_instance(env, transactionLogCtor, 2, args, &instance), "Failed to create new TransactionLog instance")
 
 	return instance;
 }
