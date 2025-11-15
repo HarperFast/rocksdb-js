@@ -208,8 +208,7 @@ napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
  * Return a list of the transaction log files, as a JS array, each entry being
  * a JS array with two values, the sequence number, and the size in bytes.
  */
-napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info)
-{
+napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(0)
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetSequencedLogs")
 	napi_value list;
@@ -232,6 +231,32 @@ napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info inf
 	}
 	return list;
 }
+/**
+ * Return a buffer with the status of the sequenced log file.
+ */
+napi_value TransactionLog::getSequenceStatus(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("getSequenceStatus")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	if (!memoryMap)
+	{
+		::napi_throw_error(env, nullptr, "Unable to create memory map for sequence number");
+		return nullptr;
+	}
+	memoryMap->refCount++;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 16, memoryMap->map, [](napi_env env, void* data, void* hint) {
+		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
+		if (--memoryMap->refCount == 0) {
+			// if there are no more references to the memory map, unmap it
+			delete memoryMap;
+		}
+	}, memoryMap, &result));
+	return result;
+}
+
 
 /**
  * Gets the range of the transaction log.

@@ -245,6 +245,7 @@ struct MemoryMap final
 	 * The count of references to the memory map. Not using an std::shared_ptr here because memory maps don't have their own destructor
 	 */
 	std::atomic<uint> refCount = 0;
+
 	MemoryMap(void* map, uint32_t size);
 	~MemoryMap();
 };
