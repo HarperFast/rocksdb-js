@@ -163,6 +163,15 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t sequenceNumber) {
 	}
 	return logFile->getMemoryMap(maxSize);
 }
+uint32_t TransactionLogStore::getLogFileSize(uint32_t sequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	auto it = this->sequenceFiles.find(sequenceNumber);
+	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+	if (!logFile) {
+		return 0;
+	}
+	return logFile->size;
+}
 
 PositionHandle* TransactionLogStore::getLastCommittedPosition() {
 	std::lock_guard<std::mutex> lock(this->storeMutex);

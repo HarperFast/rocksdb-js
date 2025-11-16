@@ -11,7 +11,7 @@ const BLOCK_SIZE = 2**BLOCK_SIZE_BITS; // 4kb
 const MAX_LOG_FILE_SIZE = 2**24; // 16mb maximum size of a log file
 export class TransactionLogReader {
 	#log: TransactionLog;
-	#lastPositionDV: DataView;
+	#lastPosition: Uint32Array;
 	#currentLogBuffer?: LogBuffer; // current log buffer that we are reading from
 	// cache of log buffers
 	#logBuffers = new Map<number, LogBuffer>();
@@ -19,12 +19,15 @@ export class TransactionLogReader {
 	constructor(log: TransactionLog) {
 		this.#log = log;
 		const lastCommittedPosition = log.lastCommittedPosition || (log.lastCommittedPosition = log.getLastCommittedPosition());
-		this.#lastPositionDV = new DataView(lastCommittedPosition.buffer);
+		this.#lastPosition = new Uint32Array(lastCommittedPosition.buffer);
 
 	}
 
 	/**
-	 * Returns an iterator for transaction entries within the specified range of timestamps
+	 * Returns an iterable for transaction entries within the specified range of timestamps
+	 * This iterable can be iterated over multiple times, and subsequent iterations will continue
+	 * from where the last iteration left off, allowing for iteration through the log file
+	 * to resume after more transactions have been committed.
 	 * @param start
 	 * @param end
 	 * @param exactStart - if this is true, the function will try to find the transaction that
@@ -32,16 +35,16 @@ export class TransactionLogReader {
 	 * regardless of whether their timestamp is before or after the start
 	 */
 	query(start: number, end: number, exactStart?: boolean): Iterable<TransactionEntry> {
-		//
 		const transactionLog = this;
 		let logBuffer: LogBuffer | undefined = this.#currentLogBuffer ?? getNextLogFile();
-		if (!logBuffer) {
+		if (logBuffer === undefined) {
 			return [][Symbol.iterator]();
 		}
+		let size = this.#lastPosition[0];
 
 		let dataView: DataView = logBuffer.dataView;
 		//let blockTimestamp = dataView.getFloat64(0);
-		let blockTimestamp = Number(dataView.getBigInt64(10));
+		let blockTimestamp = Number(dataView.getBigInt64(0));
 		while (blockTimestamp > start) {
 			// if we have an earlier timestamp than available in this log file, find an earlier log file
 			const logId = logBuffer.logId - 1;
@@ -51,29 +54,34 @@ export class TransactionLogReader {
 				if (previousLogBuffer) logBuffer = previousLogBuffer;
 				else break;
 			}
+			size = logBuffer.size;
+			if (size === 0) {
+				logBuffer.size = this.#log.getLogFileSize(logId);
+			}
 			dataView = logBuffer.dataView;
 			//blockTimestamp = dataView.getFloat64(0);
-			blockTimestamp = Number(dataView.getBigInt64(10));
+			blockTimestamp = Number(dataView.getBigInt64(0));
 		}
 		// Now do a binary search in the log buffer to find the first block that precedes the start timestamp
-		const size: number = logBuffer.size;
-		let position = 10;
-		let low = 0;
-		let high = (size >>> BLOCK_SIZE_BITS) - 1;
-		while (low < high) {
-			const mid = (low + high) >>> 1;
-			position = mid << BLOCK_SIZE_BITS;
-			//const timestamp = dataView.getFloat64(position);
-			blockTimestamp = Number(dataView.getBigInt64(position));
-			if (blockTimestamp < start) {
-				low = mid + 1;
-			} else {
-				high = mid;
+		let position = 0;
+		// we do a stable positioning binary search, for better cache locality
+		for (let shift = 23; shift >= BLOCK_SIZE_BITS; shift--) {
+			const pivotSize = 1 << shift;
+			position += pivotSize;
+			if (position < size) {
+				blockTimestamp = Number(dataView.getBigInt64(position));
+				if (blockTimestamp < start) {
+					// take the upper block
+					continue;
+				}
 			}
+			// otherwise, take the lower block
+			position -= pivotSize;
 		}
 		// if there are multiple blocks with identifcal timestamps, they can have overlapping transactions that may include the start timestamp
-		while(position > 10) { // don't try to iterate past the beginning
+		while(position > 0) { // don't try to iterate past the beginning
 			let previousPosition = position - BLOCK_SIZE;
+			// TODO: we can end up needing to iterate back into a previous log file
 			const previousBlockTimestamp = Number(dataView.getBigInt64(previousPosition));
 			if (previousBlockTimestamp !== blockTimestamp) break;
 			position = previousPosition;
@@ -85,7 +93,18 @@ export class TransactionLogReader {
 				return {
 					next() {
 						let timestamp: number;
-						while(position < logBuffer.size) {
+						if (position >= size) {
+							// our position is beyond the size limit, lets get the updated
+							// size in case we can keep reading further
+							if (logBuffer!.size > 0) {
+								// if the log buffer is done and a known size, update our size
+								size = logBuffer!.size;
+							} else {
+								// get the very latest size and position
+								size = transactionLog.#lastPosition[0];
+							}
+						}
+						while(position < size) {
 							// advance to the next entry, reading the timestamp and the data
 							//timestamp = dataView.getFloat64(position);
 							timestamp = Number(dataView.getBigInt64(position));
@@ -124,25 +143,25 @@ export class TransactionLogReader {
 								let data: Buffer;
 								if (lastBlock === firstBlock) {
 									// fits in the same block, just subarray the data out
-									data = logBuffer.subarray(position, entryEnd);
+									data = logBuffer!.subarray(position, entryEnd);
 									position = entryEnd;
 								} else {
 									// the entry data is split into multiple blocks, need to collect and concatenate it
-									let parts: Buffer[] = [];
+									let blockIndex = firstBlock + 1;
+									let parts: Buffer[] = [logBuffer.subarray(position, blockIndex << BLOCK_SIZE_BITS)];
 									do {
-										if (lastBlock === firstBlock) {
-											parts.push(logBuffer.subarray(position, entryEnd));
-											position = entryEnd;
-										} else {
-											const nextBlock = ((position >>> BLOCK_SIZE_BITS) + 1) << BLOCK_SIZE_BITS;
-											parts.push(logBuffer.subarray(position, nextBlock - 8));
-											position = nextBlock + 12;
-										}
+										const start = (blockIndex << BLOCK_SIZE_BITS) + 14;
+										blockIndex++;
+										position = Math.min(blockIndex << BLOCK_SIZE_BITS, entryEnd);
+										parts.push(logBuffer.subarray(start, position));
 										if (position >= MAX_LOG_FILE_SIZE) {
 											getNextLogFile();
 										}
 									} while (position < entryEnd);
 									data = Buffer.concat(parts, length);
+								}
+								if (++lastBlock << BLOCK_SIZE_BITS < position + 12) {
+									position = (lastBlock << BLOCK_SIZE_BITS) + 14;
 								}
 								return {
 									done: false,
@@ -159,7 +178,7 @@ export class TransactionLogReader {
 							}
 							position = entryEnd;
 						}
-						return { done: true, value: undefined }
+						return { done: true, value: undefined };
 					}
 				};
 			}
@@ -170,12 +189,7 @@ export class TransactionLogReader {
 			if (transactionLog.#currentLogBuffer) {
 				logId = transactionLog.#currentLogBuffer.logId + 1;
 			} else {
-				/*for (let [sequenceNumber, size] of transactionLog.#log.getSequencedLogs()) {
-					if (sequenceNumber > logId) {
-						logId = sequenceNumber;
-						sizeOfNext = size;
-					}
-				}*/
+				logId = transactionLog.#lastPosition[1];
 			}
 			if (logId === 0) return;
 			const logBuffer = getLogMemoryMap(logId);

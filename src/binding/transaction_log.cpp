@@ -205,32 +205,19 @@ napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Return a list of the transaction log files, as a JS array, each entry being
- * a JS array with two values, the sequence number, and the size in bytes.
- *
-napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(0)
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetSequencedLogs")
-	napi_value list;
-	NAPI_STATUS_THROWS(::napi_create_array(env, &list));
-	int i = 0;
-	for (const auto& entry : *((*txnLogHandle)->getSequenceFiles()))
-	{
-		uint32_t sequenceNumber = entry.first;
-		napi_value sequenceNumberAndSizeTuple;
-		NAPI_STATUS_THROWS(::napi_create_array_with_length(env, 2, &sequenceNumberAndSizeTuple));
-		NAPI_STATUS_THROWS(::napi_set_element(env, list, i++, sequenceNumberAndSizeTuple));
-		napi_value value;
-		// first entry is the sequence number
-		NAPI_STATUS_THROWS(::napi_create_uint32(env, sequenceNumber, &value));
-		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 0, value));
-		auto size = entry.second->blockCount * entry.second->blockSize;
-		// second entry is the size
-		NAPI_STATUS_THROWS(::napi_create_uint32(env, size, &value));
-		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 1, value));
-	}
-	return list;
-}*/
+ * Get the size of a sequenced log file.
+ */
+napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	uint32_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, fileSize, &result));
+	return result;
+}
+
 /**
  * Return a buffer with the status of the sequenced log file.
  */
@@ -242,16 +229,14 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 	lastCommittedPosition->refCount++;
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, lastCommittedPosition, [](napi_env env, void* data, void* hint) {
 		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
-		uint refCount = lastCommittedPosition->refCount;
-
+		unsigned int refCount = lastCommittedPosition->refCount;
+		DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup refCount %u\n", refCount);
 		if (--lastCommittedPosition->refCount == 0) {
-			DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup deleting\n");
 			delete lastCommittedPosition;
 		}
 	}, nullptr, &result));
 	return result;
 }
-
 
 /**
  * Gets the range of the transaction log.
@@ -288,6 +273,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "addEntryCopy", nullptr, AddEntryCopy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 

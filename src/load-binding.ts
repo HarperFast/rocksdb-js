@@ -41,6 +41,7 @@ export type TransactionLog = {
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	addEntryCopy(data: Buffer | Uint8Array, txnId?: number): void;
 	getMemoryMapOfFile(sequenceId: number): LogBuffer;
+	getLogFileSize(sequenceId: number): number;
 	getLastCommittedPosition(): Buffer;
 	lastCommittedPosition?: Buffer;
 };

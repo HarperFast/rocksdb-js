@@ -18,9 +18,21 @@ struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
 
+/**
+* Structure to hold the last committed position of a transaction log file, that is exposed
+* to JS through an external buffer with reference counting.
+*/
 struct PositionHandle {
+	/**
+	 * The full position of the last committed transaction, combining the sequence
+	 * with the offset within the file, as a single 64-bit word that can be accessed
+	 * from JS.
+	 */
 	uint64_t position;
-	std::atomic<uint> refCount = 1;
+	/**
+	 * Reference counting for use with JS external buffers
+	 */
+	std::atomic<unsigned int> refCount = 1;
 };
 
 struct TransactionLogStore final {
@@ -123,7 +135,12 @@ struct TransactionLogStore final {
 	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
 
 	/**
-	 * Memory maps the transaction log file for the given sequence number.
+	* Get the log file size.
+	**/
+	uint32_t getLogFileSize(uint32_t sequenceNumber);
+
+	/**
+	 * Get the shared represention object representing the last committed position.
 	 **/
 	PositionHandle* getLastCommittedPosition();
 
