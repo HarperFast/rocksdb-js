@@ -61,6 +61,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 	};
 
 	try {
+		/*
 		// read the file header
 		const token = read(4).readUInt32BE(0);
 		if (token !== WOOF_TOKEN) {
@@ -71,8 +72,9 @@ export function parseTransactionLog(path: string): TransactionLog {
 		if (version !== 1) {
 			throw new Error('Unsupported transaction log file version');
 		}
-
-		const blockSize = read(4).readUInt32BE(0);
+*/
+		const version = 1;
+		const blockSize = 4096;//read(4).readUInt32BE(0);
 		const blockCount = Math.ceil((size - fileOffset) / blockSize);
 		const blocks: Block[] = Array.from({ length: blockCount });
 		const entries: LogEntry[] = [];

@@ -35,7 +35,7 @@ void TransactionLogFile::open() {
 	this->openFile();
 
 	// read the file header
-	char buffer[4];
+	char buffer[4];/*
 	if (this->size == 0) {
 		// file is empty, initialize it
 		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s\n", this, this->path.string().c_str())
@@ -85,7 +85,7 @@ void TransactionLogFile::open() {
 			throw std::runtime_error("Block size is too small to be a valid transaction log file: " + this->path.string());
 		}
 		this->blockBodySize = this->blockSize - BLOCK_HEADER_SIZE;
-	}
+	}*/
 
 	uint32_t blockCount = static_cast<uint32_t>(std::ceil(static_cast<double>(this->size - FILE_HEADER_SIZE) / this->blockSize));
 	this->blockCount = blockCount;

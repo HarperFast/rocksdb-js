@@ -37,7 +37,7 @@
 
 #define WOOF_TOKEN 0x574F4F46
 #define BLOCK_SIZE 4096
-#define FILE_HEADER_SIZE 10
+#define FILE_HEADER_SIZE 0
 #define BLOCK_HEADER_SIZE 14
 #define TXN_HEADER_SIZE 12
 #define CONTINUATION_FLAG ((uint16_t)0x0001)
@@ -235,7 +235,9 @@ struct MemoryMap final
 	 * The memory map of the file.
 	 */
 	void* map = nullptr;
-
+	#ifdef PLATFORM_WINDOWS
+		HANDLE mapHandle;
+	#endif
 	/**
 	 * The size of the memory map.
 	 **/
@@ -244,7 +246,7 @@ struct MemoryMap final
 	/**
 	 * The count of references to the memory map. Not using an std::shared_ptr here because memory maps don't have their own destructor
 	 */
-	std::atomic<uint> refCount = 0;
+	std::atomic<unsigned int> refCount = 0;
 
 	MemoryMap(void* map, uint32_t size);
 	~MemoryMap();
