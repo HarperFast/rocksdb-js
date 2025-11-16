@@ -4,6 +4,9 @@
 #include "transaction_log_handle.h"
 #include "macros.h"
 #include "util.h"
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -202,24 +205,78 @@ napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Return a list of the transaction log files, as a JS array, each entry being
+ * a JS array with two values, the sequence number, and the size in bytes.
+ *
+napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(0)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetSequencedLogs")
+	napi_value list;
+	NAPI_STATUS_THROWS(::napi_create_array(env, &list));
+	int i = 0;
+	for (const auto& entry : *((*txnLogHandle)->getSequenceFiles()))
+	{
+		uint32_t sequenceNumber = entry.first;
+		napi_value sequenceNumberAndSizeTuple;
+		NAPI_STATUS_THROWS(::napi_create_array_with_length(env, 2, &sequenceNumberAndSizeTuple));
+		NAPI_STATUS_THROWS(::napi_set_element(env, list, i++, sequenceNumberAndSizeTuple));
+		napi_value value;
+		// first entry is the sequence number
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, sequenceNumber, &value));
+		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 0, value));
+		auto size = entry.second->blockCount * entry.second->blockSize;
+		// second entry is the size
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, size, &value));
+		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 1, value));
+	}
+	return list;
+}*/
+/**
+ * Return a buffer with the status of the sequenced log file.
+ */
+napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(0)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
+	PositionHandle* lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition();
+	napi_value result;
+	lastCommittedPosition->refCount++;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, lastCommittedPosition, [](napi_env env, void* data, void* hint) {
+		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
+		uint refCount = lastCommittedPosition->refCount;
+
+		if (--lastCommittedPosition->refCount == 0) {
+			DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup deleting\n");
+			delete lastCommittedPosition;
+		}
+	}, nullptr, &result));
+	return result;
+}
+
+
+/**
  * Gets the range of the transaction log.
  */
-napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("Query")
-
-	// TODO:
-	// - create a buffer for query() to populate
-	// - bind the buffer to napi_create_external_buffer()
-
-	try {
-		(*txnLogHandle)->query();
-	} catch (const std::exception& e) {
-		::napi_throw_error(env, nullptr, e.what());
+napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	if (!memoryMap)
+	{
+		::napi_throw_error(env, nullptr, "Unable to create memory map for sequence number");
 		return nullptr;
 	}
-
-	NAPI_RETURN_UNDEFINED()
+	memoryMap->refCount++;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->size, memoryMap->map, [](napi_env env, void* data, void* hint) {
+		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
+		if (--memoryMap->refCount == 0) {
+			// if there are no more references to the memory map, unmap it
+			delete memoryMap;
+		}
+	}, memoryMap, &result));
+	return result;
 }
 
 
@@ -230,7 +287,8 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "addEntryCopy", nullptr, AddEntryCopy, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";

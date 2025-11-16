@@ -44,6 +44,7 @@
 
 namespace rocksdb_js {
 
+struct MemoryMap;
 struct TransactionLogFile final {
 	std::filesystem::path path;
 	uint32_t sequenceNumber;
@@ -83,6 +84,11 @@ struct TransactionLogFile final {
 	 * The size of the file in bytes.
 	 */
 	uint32_t size = 0;
+
+	/**
+	 * The memory map of the file.
+	 */
+	MemoryMap* memoryMap = nullptr;
 
 	/**
 	 * The mutex used to protect the file and its metadata
@@ -127,6 +133,11 @@ struct TransactionLogFile final {
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
+
+	/**
+	 * Return a memory map of the file and mark it as in use
+	 */
+	MemoryMap* getMemoryMap(uint32_t size);
 
 private:
 	/**
@@ -218,6 +229,26 @@ private:
 	) const;
 };
 
+struct MemoryMap final
+{
+	/**
+	 * The memory map of the file.
+	 */
+	void* map = nullptr;
+
+	/**
+	 * The size of the memory map.
+	 **/
+	uint32_t size = 0;
+
+	/**
+	 * The count of references to the memory map. Not using an std::shared_ptr here because memory maps don't have their own destructor
+	 */
+	std::atomic<uint> refCount = 0;
+
+	MemoryMap(void* map, uint32_t size);
+	~MemoryMap();
+};
 } // namespace rocksdb_js
 
 #endif

@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
+import { TransactionLogReader } from '../src';
 
 const {
 	BLOCK_HEADER_SIZE,
@@ -100,7 +101,40 @@ describe('Transaction Log', () => {
 			});
 		}));
 	});
+	describe('getSequencedLogs()/getMemoryMapOfFile', () => {
+		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo-seq');
+			const value = Buffer.alloc(10, 'a');
 
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const positionBuffer = log.getLastCommittedPosition();
+			const dataView = new DataView(positionBuffer.buffer);
+			expect(dataView.getUint32(0)).toBeGreaterThan(10);
+			const sequenceNumber = dataView.getUint32(1);
+			expect(sequenceNumber).toBe(1);
+
+			const buffer = log.getMemoryMapOfFile(1);
+			expect(buffer.length).toBe(0x1000000);
+			expect(buffer.slice(0, 4).toString()).toBe('WOOF');
+		}));
+	});
+	describe.skip('getRange() from TransactionLogReader', () => {
+		it('should query a transaction log', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const startTime = Date.now() - 1000;
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+
+			const logReader = new TransactionLogReader(log);
+			const queryIterable = logReader.query(startTime, Date.now());
+			const queryResults = Array.from(queryIterable);
+			expect(queryResults.length).toBe(1);
+		}));
+	});
 	describe('addEntry()', () => {
 		it('should add a single small entry within a single block by reference', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');

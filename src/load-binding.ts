@@ -30,12 +30,19 @@ export type NativeTransaction = {
 	setTimestamp(timestamp?: number): void;
 	useLog(name: string | number): TransactionLog;
 };
+export type LogBuffer = Buffer & {
+	dataView: DataView;
+	logId: number;
+	size: number;
+}
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	addEntryCopy(data: Buffer | Uint8Array, txnId?: number): void;
-	query(): void;
+	getMemoryMapOfFile(sequenceId: number): LogBuffer;
+	getLastCommittedPosition(): Buffer;
+	lastCommittedPosition?: Buffer;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {

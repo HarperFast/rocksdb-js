@@ -46,8 +46,12 @@ struct TransactionLogHandle final : Closable {
 		napi_ref bufferRef
 	);
 
+	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
+	PositionHandle* getLastCommittedPosition();
 	void close();
 	void query();
+
+	std::map<uint32_t, std::unique_ptr<TransactionLogFile>>* getSequenceFiles();
 
 private:
 	/**

@@ -4,6 +4,7 @@
 #include <string>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <mutex>
 #include <atomic>
 #include <functional>
@@ -15,6 +16,12 @@ namespace rocksdb_js {
 // forward declarations
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
+struct MemoryMap;
+
+struct PositionHandle {
+	uint64_t position;
+	std::atomic<uint> refCount = 1;
+};
 
 struct TransactionLogStore final {
 	/**
@@ -67,6 +74,19 @@ struct TransactionLogStore final {
 	 */
 	std::atomic<bool> isClosing = false;
 
+	/**
+	 * The set of transactions that have been written to log files in this store, but
+	 * have not been committed (to RocksDB) yet. We track these because we don't want
+	 * the transactions in the log to be visible until they are committed and consistent.
+	 */
+	std::set<uint64_t> uncommittedTransactionPositions;
+	/**
+	 * The next sequence position to use for a new transaction log entry.
+	 */
+	uint64_t nextSequencePosition = 0;
+
+	PositionHandle* positionHandle;
+
 	TransactionLogStore(
 		const std::string& name,
 		const std::filesystem::path& path,
@@ -85,12 +105,27 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void commit(TransactionLogEntryBatch& batch);
+	uint64_t commit(TransactionLogEntryBatch& batch);
+
+	/**
+	 * Notifies the transaction log store that a RocksDB commit operation has finished.
+	 */
+	void commitFinished(uint64_t position);
 
 	/**
 	 * Queries the transaction log store.
 	 */
 	void query();
+
+	/**
+	 * Memory maps the transaction log file for the given sequence number.
+	 **/
+	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
+
+	/**
+	 * Memory maps the transaction log file for the given sequence number.
+	 **/
+	PositionHandle* getLastCommittedPosition();
 
 	/**
 	 * Purges transaction logs.
