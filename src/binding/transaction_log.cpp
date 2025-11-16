@@ -207,7 +207,7 @@ napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
 /**
  * Return a list of the transaction log files, as a JS array, each entry being
  * a JS array with two values, the sequence number, and the size in bytes.
- */
+ *
 napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(0)
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetSequencedLogs")
@@ -230,30 +230,25 @@ napi_value TransactionLog::GetSequencedLogs(napi_env env, napi_callback_info inf
 		NAPI_STATUS_THROWS(::napi_set_element(env, sequenceNumberAndSizeTuple, 1, value));
 	}
 	return list;
-}
+}*/
 /**
  * Return a buffer with the status of the sequenced log file.
  */
-napi_value TransactionLog::getSequenceStatus(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	UNWRAP_TRANSACTION_LOG_HANDLE("getSequenceStatus")
-	uint32_t sequenceNumber = 0;
-	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
-	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
-	if (!memoryMap)
-	{
-		::napi_throw_error(env, nullptr, "Unable to create memory map for sequence number");
-		return nullptr;
-	}
-	memoryMap->refCount++;
+napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(0)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
+	PositionHandle* lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition();
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 16, memoryMap->map, [](napi_env env, void* data, void* hint) {
-		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
-		if (--memoryMap->refCount == 0) {
-			// if there are no more references to the memory map, unmap it
-			delete memoryMap;
+	lastCommittedPosition->refCount++;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, lastCommittedPosition, [](napi_env env, void* data, void* hint) {
+		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
+		uint refCount = lastCommittedPosition->refCount;
+
+		if (--lastCommittedPosition->refCount == 0) {
+			DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup deleting\n");
+			delete lastCommittedPosition;
 		}
-	}, memoryMap, &result));
+	}, nullptr, &result));
 	return result;
 }
 
@@ -292,7 +287,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "addEntryCopy", nullptr, AddEntryCopy, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getSequencedLogs", nullptr, GetSequencedLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 

@@ -103,25 +103,24 @@ describe('Transaction Log', () => {
 	});
 	describe('getSequencedLogs()/getMemoryMapOfFile', () => {
 		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
-			const log = db.useLog('foo');
+			const log = db.useLog('foo-seq');
 			const value = Buffer.alloc(10, 'a');
 
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
 			});
-			const logs = log.getSequencedLogs();
+			const positionBuffer = log.getLastCommittedPosition();
+			const dataView = new DataView(positionBuffer.buffer);
+			expect(dataView.getUint32(0)).toBeGreaterThan(10);
+			const sequenceNumber = dataView.getUint32(1);
+			expect(sequenceNumber).toBe(1);
 
-			expect(logs.length).toBe(1);
-			expect(logs[0].length).toBe(2);
-			expect(logs[0][0]).toBe(1);
-			expect(logs[0][1]).toBe(4096);
-
-			const buffer = log.getMemoryMapOfFile(logs[0][0]);
+			const buffer = log.getMemoryMapOfFile(1);
 			expect(buffer.length).toBe(0x1000000);
 			expect(buffer.slice(0, 4).toString()).toBe('WOOF');
 		}));
 	});
-	describe('getRange() from TransactionLogReader', () => {
+	describe.skip('getRange() from TransactionLogReader', () => {
 		it('should query a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');

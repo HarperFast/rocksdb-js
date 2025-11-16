@@ -89,6 +89,11 @@ MemoryMap* TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
 	if (store) return store->getMemoryMap(sequenceNumber);
 	return nullptr;
 }
+PositionHandle* TransactionLogHandle::getLastCommittedPosition() {
+	auto store = this->store.lock();
+	if (store) return store->getLastCommittedPosition();
+	return nullptr;
+}
 
 void TransactionLogHandle::query() {
 	auto store = this->store.lock();

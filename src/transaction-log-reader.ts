@@ -11,12 +11,16 @@ const BLOCK_SIZE = 2**BLOCK_SIZE_BITS; // 4kb
 const MAX_LOG_FILE_SIZE = 2**24; // 16mb maximum size of a log file
 export class TransactionLogReader {
 	#log: TransactionLog;
+	#lastPositionDV: DataView;
 	#currentLogBuffer?: LogBuffer; // current log buffer that we are reading from
 	// cache of log buffers
 	#logBuffers = new Map<number, LogBuffer>();
 
 	constructor(log: TransactionLog) {
 		this.#log = log;
+		const lastCommittedPosition = log.lastCommittedPosition || (log.lastCommittedPosition = log.getLastCommittedPosition());
+		this.#lastPositionDV = new DataView(lastCommittedPosition.buffer);
+
 	}
 
 	/**
@@ -166,12 +170,12 @@ export class TransactionLogReader {
 			if (transactionLog.#currentLogBuffer) {
 				logId = transactionLog.#currentLogBuffer.logId + 1;
 			} else {
-				for (let [sequenceNumber, size] of transactionLog.#log.getSequencedLogs()) {
+				/*for (let [sequenceNumber, size] of transactionLog.#log.getSequencedLogs()) {
 					if (sequenceNumber > logId) {
 						logId = sequenceNumber;
 						sizeOfNext = size;
 					}
-				}
+				}*/
 			}
 			if (logId === 0) return;
 			const logBuffer = getLogMemoryMap(logId);

@@ -41,7 +41,8 @@ export type TransactionLog = {
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	addEntryCopy(data: Buffer | Uint8Array, txnId?: number): void;
 	getMemoryMapOfFile(sequenceId: number): LogBuffer;
-	getSequencedLogs(): number[][];
+	getLastCommittedPosition(): Buffer;
+	lastCommittedPosition?: Buffer;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {

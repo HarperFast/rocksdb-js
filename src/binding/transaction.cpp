@@ -194,14 +194,19 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
+				uint64_t committedPosition;
 
 				if (txnHandle->logEntryBatch) {
 					DEBUG_LOG("%p Transaction::Commit committing log entries for transaction %u\n",
 						txnHandle.get(), txnHandle->id);
-					txnHandle->logEntryBatch->entries[0]->store->commit(*txnHandle->logEntryBatch);
+					committedPosition = txnHandle->logEntryBatch->entries[0]->store->commit(*txnHandle->logEntryBatch);
 				}
 
 				state->status = txnHandle->txn->Commit();
+				if (txnHandle->logEntryBatch) {
+					txnHandle->logEntryBatch->entries[0]->store->commitFinished(committedPosition);
+				}
+
 				if (state->status.ok()) {
 					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%u\n", txnHandle.get(), txnHandle->id)
 					txnHandle->state = TransactionState::Committed;
@@ -271,13 +276,19 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
+	uint64_t committedPosition;
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
-		(*txnHandle)->logEntryBatch->entries[0]->store->commit(*(*txnHandle)->logEntryBatch);
+		committedPosition = (*txnHandle)->logEntryBatch->entries[0]->store->commit(*(*txnHandle)->logEntryBatch);
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
+
+	if ((*txnHandle)->logEntryBatch) {
+		(*txnHandle)->logEntryBatch->entries[0]->store->commitFinished(committedPosition);
+	}
+
 	if (status.ok()) {
 		DEBUG_LOG("%p Transaction::CommitSync emitted committed event txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->state = TransactionState::Committed;

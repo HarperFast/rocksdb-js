@@ -47,6 +47,7 @@ struct TransactionLogHandle final : Closable {
 	);
 
 	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
+	PositionHandle* getLastCommittedPosition();
 	void close();
 	void query();
 

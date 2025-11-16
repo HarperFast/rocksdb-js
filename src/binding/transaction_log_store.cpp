@@ -17,10 +17,17 @@ TransactionLogStore::TransactionLogStore(
 	path(path),
 	maxSize(maxSize),
 	retentionMs(retentionMs)
-{}
+{
+	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
+	positionHandle = new PositionHandle();
+}
 
 TransactionLogStore::~TransactionLogStore() {
 	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
+	if (--positionHandle->refCount == 0) {
+		DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore delete positionHandle\n", this);
+		delete positionHandle;
+	}
 	this->close();
 }
 
@@ -44,12 +51,13 @@ void TransactionLogStore::close() {
 	this->purge();
 }
 
-void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
+uint64_t TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
 
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
+	uint64_t sequencePosition = this->nextSequencePosition;
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		TransactionLogFile* logFile = nullptr;
@@ -77,6 +85,10 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				logFile = nullptr;
 			}
+		}
+		if (!sequencePosition) {
+			// if this wasn't initialized, we do so now
+			sequencePosition = this->nextSequencePosition;
 		}
 
 		// ensure we have a valid log file before writing
@@ -106,11 +118,18 @@ void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
+		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
 	}
+	uncommittedTransactionPositions.insert(this->nextSequencePosition);
 
 	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
+	return sequencePosition;
 }
 
+void TransactionLogStore::commitFinished(const uint64_t position) {
+	uncommittedTransactionPositions.erase(position);
+	positionHandle->position = *(uncommittedTransactionPositions.begin());
+}
 TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
@@ -127,6 +146,10 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 		auto logFilePath = this->path / oss.str();
 		logFile = new TransactionLogFile(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
+		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
+		if (this->uncommittedTransactionPositions.empty()) {
+			this->uncommittedTransactionPositions.insert(this->nextSequencePosition);
+		}
 	}
 
 	return logFile;
@@ -139,6 +162,11 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t sequenceNumber) {
 		return nullptr;
 	}
 	return logFile->getMemoryMap(maxSize);
+}
+
+PositionHandle* TransactionLogStore::getLastCommittedPosition() {
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	return this->positionHandle;
 }
 
 void TransactionLogStore::query() {
@@ -221,6 +249,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	if (sequenceNumber > this->currentSequenceNumber) {
 		this->currentSequenceNumber = sequenceNumber;
+		nextSequencePosition = ((uint64_t) sequenceNumber << 32) | logFile->size;
 	}
 
 	// update next sequence number to be one higher than the highest existing
@@ -310,6 +339,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store->registerLogFile(filePath, sequenceNumber);
 		}
 	}
+	store->uncommittedTransactionPositions.insert(store->nextSequencePosition);
 
 	return store;
 }
