@@ -426,8 +426,14 @@ struct AsyncWorkHandle {
 		auto start = std::chrono::steady_clock::now();
 		const auto pollInterval = std::chrono::milliseconds(10);
 		std::unique_lock<std::mutex> lock(this->waitMutex);
+		auto activeAsyncWorkCount = this->activeAsyncWorkCount.load();
 
-		while (this->activeAsyncWorkCount > 0) {
+		if (activeAsyncWorkCount == 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion no async work to wait for\n", this)
+			return;
+		}
+
+		while (activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
 				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, this->activeAsyncWorkCount.load())
@@ -443,7 +449,7 @@ struct AsyncWorkHandle {
 			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
 				// check if all active work has completed execution
 				// note: the mutex is already locked here
-				return this->activeAsyncWorkCount == 0;
+				return this->activeAsyncWorkCount.load() == 0;
 			});
 
 			if (completed) {

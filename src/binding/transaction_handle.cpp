@@ -107,15 +107,13 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	// Properly clean up database reference by decrementing refcount before deleting
-	DEBUG_LOG("%p TransactionHandle::close cleaning up reference to database\n", this)
 	if (this->jsDatabaseRef != nullptr) {
-		uint32_t refcount;
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_reference_unref(this->env, this->jsDatabaseRef, &refcount), "Failed to unref database reference")
-		DEBUG_LOG("%p TransactionHandle::close unreferenced database ref, refcount=%u\n", this, refcount)
+		DEBUG_LOG("%p TransactionHandle::close cleaning up reference to database\n", this)
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database")
 		DEBUG_LOG("%p TransactionHandle::close reference to database deleted successfully\n", this)
 		this->jsDatabaseRef = nullptr;
+	} else {
+		DEBUG_LOG("%p TransactionHandle::close jsDatabaseRef is already null\n", this)
 	}
 
 	// the transaction should already be removed from the registry when

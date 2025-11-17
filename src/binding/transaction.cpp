@@ -220,10 +220,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
-					DEBUG_LOG("%p Transaction::Commit complete closing txnId=%u\n", state->handle.get(), state->handle->id)
-
 					if (state->handle) {
+						DEBUG_LOG("%p Transaction::Commit complete closing txnId=%u\n", state->handle.get(), state->handle->id)
 						state->handle->close();
+						DEBUG_LOG("%p Transaction::Commit complete closed txnId=%u\n", state->handle.get(), state->handle->id)
 					} else {
 						DEBUG_LOG("%p Transaction::Commit complete, but handle is null! txnId=%u\n", state->handle.get(), state->handle->id)
 					}
