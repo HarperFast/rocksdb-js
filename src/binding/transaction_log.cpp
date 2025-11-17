@@ -6,7 +6,6 @@
 #include "util.h"
 #include <stdlib.h>
 #include <fcntl.h>
-#include <unistd.h>
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
