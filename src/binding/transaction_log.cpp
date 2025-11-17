@@ -221,7 +221,7 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
  * Return a buffer with the status of the sequenced log file.
  */
 napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(0)
+	NAPI_METHOD()
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
 	PositionHandle* lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition();
 	napi_value result;
