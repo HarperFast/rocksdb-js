@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
-import { TransactionLogReader } from '../src';
+import { TransactionLogReader, RocksDatabase } from '../src';
 
 const {
 	BLOCK_HEADER_SIZE,
@@ -133,6 +133,45 @@ describe('Transaction Log', () => {
 			const queryIterable = logReader.query(startTime, Date.now());
 			const queryResults = Array.from(queryIterable);
 			expect(queryResults.length).toBe(1);
+		}));
+		it('should query a transaction log with multiple log instances', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const startTime = Date.now() - 1000;
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const log2 = db.useLog('foo');
+
+			const logReader = new TransactionLogReader(log);
+			let queryResults = Array.from(logReader.query(startTime, Date.now()));
+			expect(queryResults.length).toBe(1);
+			const logReader2 = new TransactionLogReader(log2);
+			const logReader3 = new TransactionLogReader(log2);
+			queryResults = Array.from(logReader2.query(startTime, Date.now()));
+			expect(queryResults.length).toBe(1);
+			queryResults = Array.from(logReader3.query(startTime, Date.now()));
+			expect(queryResults.length).toBe(1);
+		}));
+		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const startTime = Date.now() - 1000;
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const logReader = new TransactionLogReader(log);
+			let queryResults = Array.from(logReader.query(startTime, Date.now()));
+			expect(queryResults.length).toBe(1);
+			db.close();
+			db = RocksDatabase.open(dbPath);
+			let log2 = db.useLog('foo');
+			let logReader2 = new TransactionLogReader(log2);
+			let queryResults2 = Array.from(logReader2.query(startTime, Date.now()));
+			expect(queryResults2.length).toBe(1);
+			queryResults = Array.from(logReader.query(startTime, Date.now()));
+			expect(queryResults.length).toBe(1);
+
 		}));
 	});
 	describe('addEntry()', () => {
