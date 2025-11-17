@@ -107,10 +107,16 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	DEBUG_LOG("%p TransactionHandle::close deleting reference to database\n", this)
-	NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database")
-	DEBUG_LOG("%p TransactionHandle::close reference to database deleted successfully\n", this)
-	this->jsDatabaseRef = nullptr;
+	// Properly clean up database reference by decrementing refcount before deleting
+	DEBUG_LOG("%p TransactionHandle::close cleaning up reference to database\n", this)
+	if (this->jsDatabaseRef != nullptr) {
+		uint32_t refcount;
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_reference_unref(this->env, this->jsDatabaseRef, &refcount), "Failed to unref database reference")
+		DEBUG_LOG("%p TransactionHandle::close unreferenced database ref, refcount=%u\n", this, refcount)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database")
+		DEBUG_LOG("%p TransactionHandle::close reference to database deleted successfully\n", this)
+		this->jsDatabaseRef = nullptr;
+	}
 
 	// the transaction should already be removed from the registry when
 	// committing/aborting  so we don't need to call transactionRemove here to
@@ -205,11 +211,7 @@ napi_value TransactionHandle::get(
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
-			resolveGetResult(env, "Transaction get failed", state->status, state->value, state->resolveRef, state->rejectRef);
-
-			// Clean up references after they're no longer needed
-			state->cleanupReferences();
-
+			resolveGetResult(env, "Transaction get failed", state);
 			delete state;
 		},
 		state,     // data

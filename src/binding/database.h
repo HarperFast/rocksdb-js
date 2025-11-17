@@ -106,13 +106,11 @@ napi_value resolveGetSyncResult(
 	napi_value reject
 );
 
+template<typename T>
 void resolveGetResult(
 	napi_env env,
 	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_ref resolveRef,
-	napi_ref rejectRef
+	AsyncGetState<T>* state
 );
 
 } // namespace rocksdb_js

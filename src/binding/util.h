@@ -233,13 +233,6 @@ struct BaseAsyncState {
 	 */
 	std::atomic<bool> completed{false};
 
-	/**
-	 * A flag to track whether references have been cleaned up. This prevents
-	 * the destructor from trying to delete references that are still in use
-	 * by the complete callback.
-	 */
-	std::atomic<bool> referencesCleanedUp{false};
-
 	BaseAsyncState(
 		napi_env env,
 		T handle
@@ -256,54 +249,93 @@ struct BaseAsyncState {
 		// accidental reuse. V8 will clean them up automatically during environment teardown.
 		this->resolveRef = nullptr;
 		this->rejectRef = nullptr;
-		this->referencesCleanedUp.store(true);
 
-		// decrement the active async work count
-		this->signalExecuteCompleted();
+		// this->signalExecuteCompleted();
 	}
 
 	/**
-	 * Clean up references after they're no longer needed. This should be called
-	 * in the complete callback AFTER using the references (calling resolve/reject).
+	 * Calls the resolve function. This function must be called from the main
+	 * thread after the async work has completed.
 	 *
-	 * We delete the references here because:
-	 * 1. We've already used them (called resolve/reject), so they're no longer needed
-	 * 2. If we don't delete them, V8 will try to clean them up during teardown when
-	 *    they're still marked as "in use", causing crashes
-	 * 3. Deleting them immediately after use is the safest approach - we're done with them
+	 * @param [result] An optionalresult to pass to the resolve function.
 	 */
-	void cleanupReferences() {
-		if (!this->referencesCleanedUp.load()) {
-			// Delete references immediately after use. This must be done in the
-			// complete callback after calling resolve/reject, before deleting the state.
-			// The references are no longer needed after the callbacks have been invoked.
-			if (this->resolveRef != nullptr) {
-				DEBUG_LOG("%p BaseAsyncState::cleanupReferences deleting reference to resolve function\n", this)
-				NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
-				DEBUG_LOG("%p BaseAsyncState::cleanupReferences reference to resolve function deleted successfully\n", this)
-				this->resolveRef = nullptr;
-			} else {
-				DEBUG_LOG("%p BaseAsyncState::cleanupReferences resolveRef is null\n", this)
-			}
-			if (this->rejectRef != nullptr) {
-				DEBUG_LOG("%p BaseAsyncState::cleanupReferences deleting reference to reject function\n", this)
-				NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
-				DEBUG_LOG("%p BaseAsyncState::cleanupReferences reference to reject function deleted successfully\n", this)
-				this->rejectRef = nullptr;
-			} else {
-				DEBUG_LOG("%p BaseAsyncState::cleanupReferences rejectRef is null\n", this)
-			}
-			DEBUG_LOG("%p BaseAsyncState::cleanupReferences references cleaned up\n", this)
-			this->referencesCleanedUp.store(true);
+	void callResolve(napi_value result = nullptr) {
+		if (this->resolveRef == nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callResolve resolveRef is null\n", this)
+			return;
 		}
+
+		if (this->rejectRef != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callResolve Deleting usused reject reference\n", this)
+			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
+			DEBUG_LOG("%p BaseAsyncState::callResolve Reject reference deleted successfully\n", this)
+			this->rejectRef = nullptr;
+		}
+
+		napi_value global;
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_global(this->env, &global), "Failed to get global object");
+
+		napi_value resolve;
+		DEBUG_LOG("%p BaseAsyncState::callResolve Getting resolve from reference...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_reference_value(this->env, this->resolveRef, &resolve), "Failed to get reference to resolve function");
+
+		DEBUG_LOG("%p BaseAsyncState::callResolve Calling resolve function...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, resolve, result ? 1 : 0, result ? &result : nullptr, nullptr), "Failed to call resolve function");
+		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve function completed successfully\n", this)
+
+		DEBUG_LOG("%p BaseAsyncState::callResolve Deleting resolve reference\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
+		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve reference deleted successfully\n", this)
+		this->resolveRef = nullptr;
+	}
+
+	/**
+	 * Calls the reject function. This function must be called from the main
+	 * thread after the async work has completed.
+	 *
+	 * @param error The error to pass to the reject function.
+	 */
+	void callReject(napi_value error) {
+		if (this->rejectRef == nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callReject rejectRef is null\n", this)
+			return;
+		}
+
+		if (this->resolveRef != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callReject Deleting usused resolve reference\n", this)
+			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
+			DEBUG_LOG("%p BaseAsyncState::callReject Resolve reference deleted successfully\n", this)
+			this->resolveRef = nullptr;
+		}
+
+		napi_value global;
+		NAPI_STATUS_THROWS_VOID(::napi_get_global(this->env, &global))
+
+		napi_value reject;
+		DEBUG_LOG("%p BaseAsyncState::callReject Getting reject from reference...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_reference_value(this->env, this->rejectRef, &reject), "Failed to get reference to reject function");
+
+		DEBUG_LOG("%p BaseAsyncState::callReject Calling reject function...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, reject, 1, &error, nullptr), "Failed to call reject function");
+		DEBUG_LOG("%p BaseAsyncState::callReject Reject function completed successfully\n", this)
+
+		DEBUG_LOG("%p BaseAsyncState::callReject Deleting reject reference\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
+		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this)
+		this->rejectRef = nullptr;
 	}
 
 	void signalExecuteCompleted() {
 		if (!this->completed.load()) {
+			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Unregistering async work\n", this)
 			if (this->handle) {
 				this->handle->unregisterAsyncWork();
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Handle is null\n", this)
 			}
 			this->completed.store(true);
+		} else {
+			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Execute already completed\n", this)
 		}
 	}
 };

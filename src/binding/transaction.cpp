@@ -219,9 +219,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
-				napi_value global;
-				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-
 				if (state->status.ok()) {
 					DEBUG_LOG("%p Transaction::Commit complete closing txnId=%u\n", state->handle.get(), state->handle->id)
 
@@ -231,50 +228,15 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						DEBUG_LOG("%p Transaction::Commit complete, but handle is null! txnId=%u\n", state->handle.get(), state->handle->id)
 					}
 
-					DEBUG_LOG("%p Transaction::Commit complete calling resolve txnId=%u (resolveRef=%p)\n",
-						state->handle.get(), state->handle->id, static_cast<void*>(state->resolveRef))
-
-					if (state->resolveRef == nullptr) {
-						DEBUG_LOG("%p Transaction::Commit ERROR: resolveRef is null!\n", state->handle.get())
-					} else {
-						napi_value resolve;
-						DEBUG_LOG("%p Transaction::Commit getting reference value...\n", state->handle.get())
-						NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-						DEBUG_LOG("%p Transaction::Commit calling resolve function...\n", state->handle.get())
-						NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 0, nullptr, nullptr))
-						DEBUG_LOG("%p Transaction::Commit resolve function completed\n", state->handle.get())
-					}
+					state->callResolve();
 				} else {
-					DEBUG_LOG("%p Transaction::Commit calling reject (rejectRef=%p)\n",
-						state->handle.get(), static_cast<void*>(state->rejectRef))
-
-					if (state->rejectRef == nullptr) {
-						DEBUG_LOG("%p Transaction::Commit ERROR: rejectRef is null!\n", state->handle.get())
-					} else {
-						napi_value reject;
-						napi_value error;
-						DEBUG_LOG("%p Transaction::Commit getting reject reference value...\n", state->handle.get())
-						NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-						ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
-						DEBUG_LOG("%p Transaction::Commit calling reject function...\n", state->handle.get())
-						NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
-						DEBUG_LOG("%p Transaction::Commit reject function completed\n", state->handle.get())
-					}
+					napi_value error;
+					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
+					state->callReject(error);
 				}
-
-				// clean up references after they're used (only when not cancelled)
-				DEBUG_LOG("%p Transaction::Commit cleaning up references (resolveRef=%p, rejectRef=%p)\n",
-					state->handle.get(), static_cast<void*>(state->resolveRef), static_cast<void*>(state->rejectRef))
-				state->cleanupReferences();
-				DEBUG_LOG("%p Transaction::Commit references cleaned up\n", state->handle.get())
-			} else {
-				DEBUG_LOG("%p Transaction::Commit work was cancelled, skipping reference cleanup (env will handle it)\n",
-					state->handle.get())
 			}
 
-			DEBUG_LOG("%p Transaction::Commit deleting state\n", state->handle.get())
 			delete state;
-			DEBUG_LOG("Transaction::Commit complete callback finished\n")
 		},
 		state,     // data
 		&state->asyncWork // -> result
