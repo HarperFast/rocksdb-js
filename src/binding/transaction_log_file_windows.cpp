@@ -80,10 +80,10 @@ void TransactionLogFile::openFile() {
 	this->size = static_cast<size_t>(fileSize.QuadPart);
 }
 
-void* TransactionLogFile::getMemoryMap(uint32_t size) {
+MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
 	if (!memoryMap) {
 		HANDLE mh;
-		mh = CreateFileMapping(this->fileHandle, NULL, PAGE_READ, 0, 0, NULL);
+		mh = CreateFileMapping(this->fileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
 		if (!mh) return NULL;
 		// map the memory object into our address space
 		// note that MapViewOfFileEx can be used if we wanted to suggest an address
