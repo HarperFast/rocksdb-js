@@ -6,21 +6,23 @@ type TransactionEntry = {
 	data: Buffer;
 }
 
+const FLOAT_TO_UINT32 = new Float64Array(1);
+const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
+
 const BLOCK_SIZE_BITS = 12;
 const BLOCK_SIZE = 2**BLOCK_SIZE_BITS; // 4kb
 const MAX_LOG_FILE_SIZE = 2**24; // 16mb maximum size of a log file
 export class TransactionLogReader {
 	#log: TransactionLog;
-	#lastPosition: Uint32Array;
-	#currentLogBuffer?: LogBuffer; // current log buffer that we are reading from
+	#lastPosition: Float64Array;
+	#currentLogBuffer?: LogBuffer; // latest log buffer, this is cached for quick access and to pin it in memory (older buffers are weakly referenced)
 	// cache of log buffers
-	#logBuffers = new Map<number, LogBuffer>();
+	#logBuffers = new Map<number, WeakRef<LogBuffer>>();
 
 	constructor(log: TransactionLog) {
 		this.#log = log;
 		const lastCommittedPosition = log.lastCommittedPosition || (log.lastCommittedPosition = log.getLastCommittedPosition());
-		this.#lastPosition = new Uint32Array(lastCommittedPosition.buffer);
-
+		this.#lastPosition = new Float64Array(lastCommittedPosition.buffer);
 	}
 
 	/**
@@ -34,29 +36,35 @@ export class TransactionLogReader {
 	 * exactly matches the start timestamp, and then return all subsequent transactions in the log
 	 * regardless of whether their timestamp is before or after the start
 	 */
-	query(start: number, end: number, exactStart?: boolean): Iterable<TransactionEntry> {
-		const transactionLog = this;
-		let logBuffer: LogBuffer | undefined = this.#currentLogBuffer ?? getNextLogFile();
+	query({ start, end, exactStart, readUncommitted }: { start: number, end: number, exactStart?: boolean, readUncommitted?: boolean }): Iterable<TransactionEntry> {
+		const transactionLogReader = this;
+		let size = 0;
+		let latestLogId = loadLastPosition();
+		let logBuffer: LogBuffer = this.#currentLogBuffer!; // try the current one first
+		if (logBuffer?.logId !== latestLogId) {
+			// if the current log buffer is not the one we want, load the memory map
+			logBuffer = getLogMemoryMap(latestLogId)!;
+			if (!readUncommitted) { // if we are reading uncomitted, we might be a log file ahead of the committed transaction
+				this.#currentLogBuffer = logBuffer;
+			}
+		}
 		if (logBuffer === undefined) {
 			return [][Symbol.iterator]();
 		}
-		let size = this.#lastPosition[0];
 
 		let dataView: DataView = logBuffer.dataView;
 		//let blockTimestamp = dataView.getFloat64(0);
 		let blockTimestamp = Number(dataView.getBigInt64(0));
 		while (blockTimestamp > start) {
 			// if we have an earlier timestamp than available in this log file, find an earlier log file
-			const logId = logBuffer.logId - 1;
-			let previousLogBuffer = this.#logBuffers.get(logId);
+			let previousLogBuffer = getLogMemoryMap(logBuffer.logId - 1)!;
 			if (!previousLogBuffer) {
-				const previousLogBuffer = getLogMemoryMap(logId);
-				if (previousLogBuffer) logBuffer = previousLogBuffer;
-				else break;
+				break;
 			}
+			logBuffer = previousLogBuffer;
 			size = logBuffer.size;
 			if (size === 0) {
-				logBuffer.size = this.#log.getLogFileSize(logId);
+				logBuffer.size = this.#log.getLogFileSize(logBuffer.logId);
 			}
 			dataView = logBuffer.dataView;
 			//blockTimestamp = dataView.getFloat64(0);
@@ -94,14 +102,23 @@ export class TransactionLogReader {
 					next() {
 						let timestamp: number;
 						if (position >= size) {
-							// our position is beyond the size limit, lets get the updated
-							// size in case we can keep reading further
-							if (logBuffer!.size > 0) {
-								// if the log buffer is done and a known size, update our size
-								size = logBuffer!.size;
-							} else {
-								// get the very latest size and position
-								size = transactionLog.#lastPosition[0];
+							// our position is beyond the size limit, get the updated
+							// size in case we can keep reading further from the same block
+							let latestLogId = loadLastPosition();
+							let latestSize = size;
+							if (latestLogId > logBuffer.logId) {
+								// if it is not the latest log, get the file size
+								size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+								if (position >= size) {
+									// we can't read any further in this block, go to the next block
+									logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+									if (latestLogId > logBuffer.logId) {
+										size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+									} else {
+										size = latestSize;
+									}
+									position = 0;
+								}
 							}
 						}
 						while(position < size) {
@@ -154,8 +171,14 @@ export class TransactionLogReader {
 										blockIndex++;
 										position = Math.min(blockIndex << BLOCK_SIZE_BITS, entryEnd);
 										parts.push(logBuffer.subarray(start, position));
-										if (position >= MAX_LOG_FILE_SIZE) {
-											getNextLogFile();
+										if (position >= size) {
+											// move to the next block
+											logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+											let latestLogId = loadLastPosition();
+											if (latestLogId > logBuffer.logId) {
+												size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+											}
+											position = 0;
 										}
 									} while (position < entryEnd);
 									data = Buffer.concat(parts, length);
@@ -186,28 +209,55 @@ export class TransactionLogReader {
 		function getNextLogFile() {
 			let logId = 0;
 			let sizeOfNext = 0;
-			if (transactionLog.#currentLogBuffer) {
-				logId = transactionLog.#currentLogBuffer.logId + 1;
+			if (transactionLogReader.#currentLogBuffer) {
+				logId = transactionLogReader.#currentLogBuffer.logId + 1;
 			} else {
-				logId = transactionLog.#lastPosition[1];
+				logId = transactionLogReader.#lastPosition[1];
 			}
 			if (logId === 0) return;
 			const logBuffer = getLogMemoryMap(logId);
 			if (logBuffer) {
-				transactionLog.#currentLogBuffer = logBuffer;
+				transactionLogReader.#currentLogBuffer = logBuffer;
 				logBuffer.size = sizeOfNext;
 			}
 			return logBuffer;
 		}
 		function getLogMemoryMap(logId: number) {
 			if (logId > 0) {
-				const logBuffer = transactionLog.#log.getMemoryMapOfFile(logId);
+				let logBuffer = transactionLogReader.#logBuffers.get(logId)?.deref();
+				if (logBuffer) { // if we have a cached buffer, return it
+					return logBuffer;
+				}
+				logBuffer = transactionLogReader.#log.getMemoryMapOfFile(logId);
 				if (!logBuffer) return;
 				logBuffer.logId = logId;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
-				transactionLog.#logBuffers.set(logId, logBuffer); // add to cache
+				transactionLogReader.#logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
 				return logBuffer;
 			} // else return undefined
+		}
+		function loadLastPosition() {
+			// atomically copy the full 64-bit last committed position word to a local variable so we can read it without memory tearing
+			FLOAT_TO_UINT32[0] = transactionLogReader.#lastPosition[0]
+			let logId = UINT32_FROM_FLOAT[1];
+			if (readUncommitted) {
+				// if we are reading uncommitted transactions, we need to read the entire log file to find the latest position
+				let nextSize = 0;
+				let nextLogId = logId || 1;
+				while(true) {
+					nextSize = transactionLogReader.#log.getLogFileSize(nextLogId);
+					if (nextSize === 0) { // if the size is zero, there is no next log file, we are done
+						break;
+					} else {
+						size = nextSize;
+						logId = nextLogId++;
+					}
+				}
+			} else {
+				// otherwise, just use the last committed position, which indicates the latest committed transaction in the log
+				size = UINT32_FROM_FLOAT[0];
+			}
+			return logId;
 		}
 	}
 }
