@@ -394,18 +394,20 @@ struct AsyncWorkHandle {
 	 * Registers an async work task with this handle.
 	 */
 	void registerAsyncWork() {
-		++this->activeAsyncWorkCount;
+		this->activeAsyncWorkCount.fetch_add(1);
 	}
 
 	/**
 	 * Unregisters an async work task with this handle.
 	 */
 	void unregisterAsyncWork() {
-		// notify if all work is complete
-		auto activeAsyncWorkCount = this->activeAsyncWorkCount.fetch_sub(1);
+		// decrement the count, but since `fetch_sub()` returns the old value,
+		// we need to subtract 1 to get the new value
+		auto activeAsyncWorkCount = this->activeAsyncWorkCount.fetch_sub(1) - 1;
 		if (activeAsyncWorkCount > 0) {
 			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount)
 		} else if (activeAsyncWorkCount == 0) {
+			// notify if all work is complete
 			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this)
 			this->asyncWorkComplete.notify_one();
 		}

@@ -266,7 +266,7 @@ struct LockCallback final {
  */
 struct LockHandle final {
 	LockHandle(std::weak_ptr<DBHandle> owner, napi_env env)
-		: owner(owner), isRunning(false), env(env) {}
+		: owner(owner), env(env) {}
 
 	~LockHandle() {
 		while (!threadsafeCallbacks.empty()) {
@@ -292,7 +292,7 @@ struct LockHandle final {
 	 * a new callback is enqueued to determine if we should call the callback
 	 * immediately (false) or add it to the queue (true).
 	 */
-	std::atomic<bool> isRunning;
+	std::atomic<bool> isRunning = false;
 
 	/**
 	 * The environment of the current callback.

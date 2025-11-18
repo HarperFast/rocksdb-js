@@ -20,7 +20,7 @@ namespace rocksdb_js {
  * (main thread + worker threads) and we only want to cleanup after the last
  * instance exits.
  */
-static std::atomic<uint32_t> moduleRefCount{0};
+static std::atomic<int32_t> moduleRefCount{0};
 
 NAPI_MODULE_INIT() {
 #ifdef DEBUG
@@ -32,7 +32,7 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	[[maybe_unused]] uint32_t refCount = ++moduleRefCount;
+	[[maybe_unused]] uint32_t refCount = moduleRefCount.fetch_add(1) + 1;
 	DEBUG_LOG("Binding::Init Module ref count: %u\n", refCount);
 
 	// initialize the registry
@@ -40,7 +40,7 @@ NAPI_MODULE_INIT() {
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		uint32_t newRefCount = --moduleRefCount;
+		uint32_t newRefCount = moduleRefCount.fetch_sub(1) - 1;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
