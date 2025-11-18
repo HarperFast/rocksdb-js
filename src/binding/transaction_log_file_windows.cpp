@@ -93,7 +93,7 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
 			return NULL;
 		}
 		memoryMap = new MemoryMap(map, size);
-		memoryMap.mapHandle = mh;
+		memoryMap->mapHandle = mh;
 	}
 	return memoryMap;
 }
