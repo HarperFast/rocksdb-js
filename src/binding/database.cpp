@@ -116,14 +116,10 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 				if (state->status.ok()) {
 					napi_value result;
 					NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, state->deleted, &result))
-					napi_value resolve;
-					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->resolveRef, &resolve))
-					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
+					state->callResolve(result);
 				} else {
 					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Clear failed")
-					napi_value reject;
-					NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, state->rejectRef, &reject))
-					NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
+					state->callReject(error);
 				}
 			}
 
@@ -299,7 +295,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<DBHandle>>*>(data);
 
 			if (status != napi_cancelled) {
-				resolveGetResult(env, "Get failed", state->status, state->value, state->resolveRef, state->rejectRef);
+				resolveGetResult(env, "Get failed", state);
 			}
 
 			delete state;
@@ -937,40 +933,6 @@ napi_value resolveGetSyncResult(
 	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus))
 	return returnStatus;
-}
-
-/**
- * Resolves the result of a `Get` operation.
- */
-void resolveGetResult(
-	napi_env env,
-	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_ref resolveRef,
-	napi_ref rejectRef
-) {
-	napi_value result;
-	napi_value global;
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-
-	if (status.IsNotFound()) {
-		napi_get_undefined(env, &result);
-		napi_value resolve;
-		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, resolveRef, &resolve))
-		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-	} else if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(status, "Get failed")
-		napi_value reject;
-		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, rejectRef, &reject))
-		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, reject, 1, &error, nullptr))
-	} else {
-		// TODO: when in "fast" mode, use the shared buffer
-		NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, value.size(), value.data(), nullptr, &result))
-		napi_value resolve;
-		NAPI_STATUS_THROWS_VOID(::napi_get_reference_value(env, resolveRef, &resolve))
-		NAPI_STATUS_THROWS_VOID(::napi_call_function(env, global, resolve, 1, &result, nullptr))
-	}
 }
 
 } // namespace rocksdb_js

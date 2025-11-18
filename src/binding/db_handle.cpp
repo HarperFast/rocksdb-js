@@ -2,7 +2,6 @@
 #include "db_handle.h"
 #include "db_descriptor.h"
 #include "db_registry.h"
-#include "transaction_log.h"
 
 namespace rocksdb_js {
 

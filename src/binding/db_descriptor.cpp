@@ -133,7 +133,7 @@ void DBDescriptor::lockCall(
 
 	// we now "own" the execution for this key
 	if (handle->threadsafeCallbacks.empty()) {
-		handle->isRunning = false;
+		handle->isRunning.store(false);
 		DEBUG_LOG("%p DBDescriptor::lockCall no callbacks left, removing lock for key:", this)
 		DEBUG_LOG_KEY_LN(key)
 		// remove the empty lock handle from the map
@@ -487,7 +487,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		std::lock_guard<std::mutex> lock(this->locksMutex);
 		auto lockHandle = this->locks.find(key);
 		if (lockHandle != this->locks.end()) {
-			lockHandle->second->isRunning = false;
+			lockHandle->second->isRunning.store(false);
 			DEBUG_LOG("%p DBDescriptor::onCallbackComplete marking as complete (key=\"%s\")\n", this, key.c_str());
 		} else {
 			DEBUG_LOG("%p DBDescriptor::onCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
@@ -525,7 +525,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 
 		// we now "own" the execution for this key
 		if (handle->threadsafeCallbacks.empty()) {
-			handle->isRunning = false;
+			handle->isRunning.store(false);
 			DEBUG_LOG("%p DBDescriptor::onCallbackComplete no callbacks left (key=\"%s\"), removing lock\n", this, key.c_str())
 			// remove the empty lock handle from the map
 			this->locks.erase(key);

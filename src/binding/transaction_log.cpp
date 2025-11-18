@@ -53,34 +53,40 @@ static bool parseLogEntryArgs(
 	ParsedLogEntryData* parsed
 ) {
 	bool isBuffer;
-	NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, argv[0], &isBuffer), false);
+	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_is_buffer(env, argv[0], &isBuffer), false, "Failed to check if log entry data is a Buffer");
 	bool isArrayBuffer;
-	NAPI_STATUS_THROWS_RVAL(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer), false);
+	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer), false, "Failed to check if log entry data is an ArrayBuffer");
 	if (!isBuffer && !isArrayBuffer) {
-		::napi_throw_type_error(env, nullptr, "Invalid log entry, expected a Buffer or Uint8Array");
+		::napi_throw_type_error(env, nullptr, "Invalid log entry, expected a Buffer or ArrayBuffer");
 		return false;
 	}
 	size_t size;
-	NAPI_STATUS_THROWS_RVAL(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&parsed->data), &size), false);
+	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&parsed->data), &size), false,
+		"Failed to get log entry data buffer info");
 	if (parsed->data == nullptr) {
-		::napi_throw_type_error(env, nullptr, "Invalid log data, expected a Buffer or Uint8Array");
+		::napi_throw_type_error(env, nullptr, "Invalid log entry data, expected a Buffer or Uint8Array");
 		return false;
 	}
 	parsed->size = static_cast<uint32_t>(size);
 
 	napi_valuetype type;
-	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, argv[1], &type), false);
+	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_typeof(env, argv[1], &type), false, "Failed to get log entry transaction id type");
 	parsed->transactionId = txnLogHandle->transactionId;
 	if (type != napi_undefined) {
 		if (type == napi_number) {
-			NAPI_STATUS_THROWS_RVAL(::napi_get_value_uint32(env, argv[1], &parsed->transactionId), false);
+			int32_t signedTransactionId;
+			NAPI_STATUS_THROWS_ERROR_RVAL(::napi_get_value_int32(env, argv[1], &signedTransactionId), false, "Failed to get log entry transaction id");
+			if (signedTransactionId < 0) {
+				::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
+				return false;
+			}
+			parsed->transactionId = static_cast<uint32_t>(signedTransactionId);
 		} else {
-			parsed->transactionId = 0;
+			::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
+			return false;
 		}
-	}
-
-	if (parsed->transactionId == 0) {
-		::napi_throw_type_error(env, nullptr, "Invalid argument, expected a transaction id");
+	} else if (parsed->transactionId == 0) {
+		::napi_throw_type_error(env, nullptr, "Missing argument, transaction id is required");
 		return false;
 	}
 
@@ -158,11 +164,12 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 
 	try {
 		// create a reference to pin the buffer in memory (prevents GC)
-		NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 1, &bufferRef));
+		NAPI_STATUS_THROWS_ERROR(::napi_create_reference(env, argv[0], 1, &bufferRef), "Failed to create reference to log entry data");
 		(*txnLogHandle)->addEntry(parsed.transactionId, parsed.data, parsed.size, env, bufferRef);
 	} catch (const std::exception& e) {
 		// if addEntry fails, clean up the buffer reference
 		if (bufferRef != nullptr) {
+			// FIX ME
 			::napi_delete_reference(env, bufferRef);
 		}
 		::napi_throw_error(env, nullptr, e.what());

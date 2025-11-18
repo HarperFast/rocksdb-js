@@ -67,10 +67,13 @@
 	}
 
 #define NAPI_STATUS_THROWS_VOID(call) \
+	NAPI_STATUS_THROWS_ERROR_VOID(call, nullptr)
+
+#define NAPI_STATUS_THROWS_ERROR_VOID(call, errorMsg) \
 	{ \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
-			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status, errorMsg); \
 			::napi_throw_error(env, nullptr, errorStr.c_str()); \
 			return; \
 		} \
