@@ -23,7 +23,7 @@ describe('transaction-log-query', () => {
 					}
 				},
 				async bench({ db, data, queryLog }) {
-					for (const item of queryLog.query(10, 1000000000000000)) {
+					for (const item of queryLog.query({start: 10, end: 1000000000000000})) {
 					}
 				}
 			});

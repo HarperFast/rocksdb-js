@@ -113,9 +113,10 @@ export class TransactionLogReader {
 									// we can't read any further in this block, go to the next block
 									logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 									if (latestLogId > logBuffer.logId) {
+										// it is non-current log file, we can safely use or cache the size
 										size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
 									} else {
-										size = latestSize;
+										size = latestSize; // use the latest position from loadLastPosition
 									}
 									position = 0;
 								}
