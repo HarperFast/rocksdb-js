@@ -431,7 +431,12 @@ void TransactionLogFile::calculateEntriesToWrite(
 		// calculate block distribution for this candidate size
 		BlockDistribution dist = this->calculateBlockDistribution(candidateSize, availableSpaceInCurrentBlock);
 
-		if (availableSpaceInFile == -1 || dist.bytesOnDisk <= availableSpaceInFile) {
+		// check if entry fits completely
+		// when availableSpaceInFile == -1 (unlimited), always fits
+		bool fitsCompletely = (availableSpaceInFile == -1) ||
+		                      (availableSpaceInFile >= 0 && dist.bytesOnDisk <= static_cast<uint64_t>(availableSpaceInFile));
+
+		if (fitsCompletely) {
 			// entry fits completely
 			totalTxnSize = candidateSize;
 			dataForCurrentBlock = dist.dataForCurrentBlock;
@@ -440,7 +445,8 @@ void TransactionLogFile::calculateEntriesToWrite(
 			numEntriesToWrite++;
 		} else {
 			// entry would exceed limit - write partial entry if possible
-			uint32_t overage = dist.bytesOnDisk - availableSpaceInFile;
+			// at this point, availableSpaceInFile must be >= 0 (not -1)
+			uint32_t overage = dist.bytesOnDisk - static_cast<uint32_t>(availableSpaceInFile);
 			uint32_t adjustedSize = candidateSize - overage;
 
 			// recalculate distribution with adjusted size
