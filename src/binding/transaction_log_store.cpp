@@ -162,6 +162,7 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t sequenceNumber) {
 	if (!logFile) {
 		return nullptr;
 	}
+	logFile->open();
 	return logFile->getMemoryMap(maxSize);
 }
 uint32_t TransactionLogStore::getLogFileSize(uint32_t sequenceNumber) {
@@ -171,6 +172,7 @@ uint32_t TransactionLogStore::getLogFileSize(uint32_t sequenceNumber) {
 	if (!logFile) {
 		return 0;
 	}
+	logFile->open();
 	return logFile->size;
 }
 
@@ -255,12 +257,13 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
 	auto logFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
-	this->sequenceFiles[sequenceNumber] = std::move(logFile);
 
-	if (sequenceNumber > this->currentSequenceNumber) {
+	if (sequenceNumber >= this->currentSequenceNumber) {
+		logFile->open();
 		this->currentSequenceNumber = sequenceNumber;
 		nextSequencePosition = ((uint64_t) sequenceNumber << 32) | logFile->size;
 	}
+	this->sequenceFiles[sequenceNumber] = std::move(logFile);
 
 	// update next sequence number to be one higher than the highest existing
 	if (sequenceNumber > this->nextSequenceNumber) {
