@@ -252,11 +252,7 @@ struct BaseAsyncState {
 
 		this->signalExecuteCompleted();
 
-		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work\n", this)
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_async_work(this->env, this->asyncWork), "Failed to delete async work");
-		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work deleted successfully\n", this)
-		this->asyncWork = nullptr;
-		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work set to nullptr\n", this)
+		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor");
 	}
 
 	/**
@@ -329,6 +325,21 @@ struct BaseAsyncState {
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
 		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this)
 		this->rejectRef = nullptr;
+	}
+
+	/**
+	 * Deletes the async work. This function must be called from the main thread
+	 * after the async work has completed.
+	 */
+	void deleteAsyncWork() {
+		if (this->asyncWork != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::deleteAsyncWork Deleting async work\n", this)
+			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_async_work(this->env, this->asyncWork), "Failed to delete async work");
+			this->asyncWork = nullptr;
+			DEBUG_LOG("%p BaseAsyncState::deleteAsyncWork Async work deleted successfully\n", this)
+		} else {
+			DEBUG_LOG("%p BaseAsyncState::deleteAsyncWork Async work was already null\n", this)
+		}
 	}
 
 	void signalExecuteCompleted() {

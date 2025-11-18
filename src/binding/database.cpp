@@ -123,6 +123,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 				}
 			}
 
+			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data
@@ -298,6 +299,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 				resolveGetResult(env, "Get failed", state);
 			}
 
+			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data
