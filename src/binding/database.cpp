@@ -935,32 +935,4 @@ napi_value resolveGetSyncResult(
 	return returnStatus;
 }
 
-/**
- * Resolves the result of a `Get` operation.
- */
-template<typename T>
-void resolveGetResult(
-	napi_env env,
-	const char* errorMsg,
-	AsyncGetState<T>* state
-) {
-	napi_value global;
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-
-	if (state->status.IsNotFound() || state->status.ok()) {
-		napi_value result;
-		if (state->status.IsNotFound()) {
-			napi_get_undefined(env, &result);
-		} else {
-			// TODO: when in "fast" mode, use the shared buffer
-			NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->value.size(), state->value.data(), nullptr, &result))
-		}
-
-		state->callResolve(result);
-	} else {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
-		state->callReject(error);
-	}
-}
-
 } // namespace rocksdb_js
