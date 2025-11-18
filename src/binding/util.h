@@ -250,7 +250,11 @@ struct BaseAsyncState {
 		this->resolveRef = nullptr;
 		this->rejectRef = nullptr;
 
-		// this->signalExecuteCompleted();
+		this->signalExecuteCompleted();
+
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_async_work(this->env, this->asyncWork), "Failed to delete async work");
+		this->asyncWork = nullptr;
+		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work deleted successfully\n", this)
 	}
 
 	/**
@@ -373,7 +377,7 @@ struct AsyncWorkHandle {
 	/**
 	 * Count of active async work tasks.
 	 */
-	std::atomic<uint32_t> activeAsyncWorkCount{0};
+	std::atomic<int32_t> activeAsyncWorkCount{0};
 
 	/**
 	 * A mutex used to wait for all async work to complete.
@@ -398,11 +402,12 @@ struct AsyncWorkHandle {
 	 */
 	void unregisterAsyncWork() {
 		// notify if all work is complete
-		if (--this->activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
+		auto activeAsyncWorkCount = this->activeAsyncWorkCount.fetch_sub(1);
+		if (activeAsyncWorkCount > 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount)
+		} else if (activeAsyncWorkCount == 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this)
 			this->asyncWorkComplete.notify_one();
-		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%u)\n", this, this->activeAsyncWorkCount.load())
 		}
 	}
 
@@ -436,14 +441,14 @@ struct AsyncWorkHandle {
 		while (activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, this->activeAsyncWorkCount.load())
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, activeAsyncWorkCount)
 				return;
 			}
 
 			auto remainingTime = timeout - elapsed;
 			auto waitTime = std::min(pollInterval, remainingTime);
 
-			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %zu active work items\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %u active work items\n", this, activeAsyncWorkCount)
 
 			// wait for either all work to be unregistered OR all execute handlers to complete
 			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
