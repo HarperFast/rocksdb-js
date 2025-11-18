@@ -43,8 +43,8 @@ void TransactionLogFile::open() {
 		this->writeToFile(buffer, 4);
 		writeUint16BE(buffer, this->version);
 		this->writeToFile(buffer, 2);
-		writeUint32BE(buffer, this->blockSize);
-		this->writeToFile(buffer, 4);
+		writeUint16BE(buffer, this->blockSize);
+		this->writeToFile(buffer, 2);
 		this->size = FILE_HEADER_SIZE;
 	} else if (this->size < 8) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
@@ -79,7 +79,7 @@ void TransactionLogFile::open() {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read block size from file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Failed to block size from file: " + this->path.string());
 		}
-		this->blockSize = readUint32BE(buffer);
+		this->blockSize = readUint16BE(buffer);
 		if (this->blockSize <= BLOCK_HEADER_SIZE) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Block size is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Block size is too small to be a valid transaction log file: " + this->path.string());

@@ -72,7 +72,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			throw new Error('Unsupported transaction log file version');
 		}
 
-		const blockSize = read(4).readUInt32BE(0);
+		const blockSize = read(2).readUInt16BE(0);
 		const blockCount = Math.ceil((size - fileOffset) / blockSize);
 		const blocks: Block[] = Array.from({ length: blockCount });
 		const entries: LogEntry[] = [];

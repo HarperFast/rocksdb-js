@@ -4,7 +4,7 @@
 
 The transaction log system provides an append-only, binary log format for recording database transactions. The format is designed for:
 
-- **Durability**: 4KB block size for fast traversal using binary search
+- **Durability**: 4KB block size (by default) for fast traversal using binary search
 - **Portability**: Big-endian encoding for platform independence
 - **Efficiency**: Zero-padded blocks minimize write amplification
 - **Scalability**: Support for multi-block transactions of arbitrary size
@@ -23,7 +23,7 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 
 ## Binary Format Specification
 
-### File Header (10 bytes)
+### File Header (8 bytes)
 
 ```
 +------------------+
@@ -31,14 +31,18 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 +------------------+
 | Format Version   | 2 bytes
 +------------------+
-| Block Size       | 4 bytes
+| Block Size       | 2 bytes
 +------------------+
-Total: 10 bytes
+Total: 8 bytes
 ```
 
-### Block Structure (4096 bytes)
+The `version` indicates the format version of the file.
 
-The block is exactly 4KB. The block size __must__ be an even number.
+The `Block Size` defines how large the fixed-sized blocks in the file are. It
+defaults to 4096 bytes (4KB). The block size __must__ be an even number. The
+maximum block size is 65,535 bytes.
+
+### Block Structure (default 4096 bytes)
 
 ```
 +------------------+

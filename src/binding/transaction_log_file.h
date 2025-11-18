@@ -35,7 +35,7 @@
 
 #define WOOF_TOKEN 0x574F4F46
 #define BLOCK_SIZE 4096
-#define FILE_HEADER_SIZE 10
+#define FILE_HEADER_SIZE 8
 #define BLOCK_HEADER_SIZE 14
 #define TXN_HEADER_SIZE 12
 #define CONTINUATION_FLAG ((uint16_t)0x0001)
@@ -60,7 +60,7 @@ struct TransactionLogFile final {
 	/**
 	 * The size of the block in bytes. This must be an even number.
 	 */
-	uint32_t blockSize = BLOCK_SIZE;
+	uint16_t blockSize = BLOCK_SIZE;
 
 	/**
 	 * The size of the block body in bytes.
