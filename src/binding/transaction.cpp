@@ -236,7 +236,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				}
 			}
 
-			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data

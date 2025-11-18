@@ -244,15 +244,23 @@ struct BaseAsyncState {
 		rejectRef(nullptr) {}
 
 	virtual ~BaseAsyncState() {
-		// Don't delete references in the destructor - napi_delete_reference will crash
-		// if the reference is still "in use" by V8. Setting to nullptr prevents
-		// accidental reuse. V8 will clean them up automatically during environment teardown.
 		this->resolveRef = nullptr;
 		this->rejectRef = nullptr;
 
 		this->signalExecuteCompleted();
 
-		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor");
+		if (this->asyncWork != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work\n", this)
+			napi_status status = ::napi_delete_async_work(this->env, this->asyncWork);
+			if (status == napi_ok) {
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Successfully deleted async work\n", this)
+				this->asyncWork = nullptr;
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Failed to delete async work (status=%d)\n", this, status)
+			}
+		} else {
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work was already null!\n", this)
+		}
 	}
 
 	/**
@@ -325,21 +333,6 @@ struct BaseAsyncState {
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
 		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this)
 		this->rejectRef = nullptr;
-	}
-
-	/**
-	 * Deletes the async work. This function must be called from the main thread
-	 * after the async work has completed.
-	 */
-	void deleteAsyncWork() {
-		if (this->asyncWork != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::deleteAsyncWork Deleting async work\n", this)
-			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_async_work(this->env, this->asyncWork), "Failed to delete async work");
-			this->asyncWork = nullptr;
-			DEBUG_LOG("%p BaseAsyncState::deleteAsyncWork Async work deleted successfully\n", this)
-		} else {
-			DEBUG_LOG("%p BaseAsyncState::deleteAsyncWork Async work was already null\n", this)
-		}
 	}
 
 	void signalExecuteCompleted() {
