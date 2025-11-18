@@ -252,9 +252,11 @@ struct BaseAsyncState {
 
 		this->signalExecuteCompleted();
 
+		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work\n", this)
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_async_work(this->env, this->asyncWork), "Failed to delete async work");
-		this->asyncWork = nullptr;
 		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work deleted successfully\n", this)
+		this->asyncWork = nullptr;
+		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work set to nullptr\n", this)
 	}
 
 	/**
