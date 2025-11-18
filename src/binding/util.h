@@ -249,6 +249,10 @@ struct BaseAsyncState {
 
 		this->signalExecuteCompleted();
 
+		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor!");
+	}
+
+	void deleteAsyncWork() {
 		if (this->asyncWork != nullptr) {
 			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work\n", this)
 			napi_status status = ::napi_delete_async_work(this->env, this->asyncWork);

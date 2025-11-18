@@ -214,6 +214,7 @@ napi_value TransactionHandle::get(
 				resolveGetResult(env, "Transaction get failed", state);
 			}
 
+			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data
