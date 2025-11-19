@@ -271,9 +271,10 @@ describe('Transaction Log', () => {
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
-		it('should split a transaction header across multiple blocks', () => dbRunner(async ({ db, dbPath }) => {
+		it('should not split a transaction header across blocks', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
-			// the transaction header is 12 bytes, but there's only room for 4 bytes in the first block
+			// the transaction header is 12 bytes, but there's only room for 4
+			// more bytes in the first block, so we advance to the next block
 			const valueALength = 4096 - BLOCK_HEADER_SIZE - TXN_HEADER_SIZE - 4;
 			const valueA = Buffer.alloc(valueALength, 'a');
 			const valueB = Buffer.alloc(100, 'b');
@@ -295,8 +296,7 @@ describe('Transaction Log', () => {
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
-			expect(info.blocks[1].dataOffset).toBe(0);
+			expect(info.blocks[1].flags).toBe(0);
 			expect(info.entries.length).toBe(2);
 			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[0].length).toBe(valueALength);
@@ -320,7 +320,7 @@ describe('Transaction Log', () => {
 
 			const txnSize = (TXN_HEADER_SIZE + 10000) * 2000;
 			const numBlocks = Math.ceil(txnSize / (BLOCK_SIZE - BLOCK_HEADER_SIZE)) - 1;
-			const totalSize = FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * numBlocks) + txnSize;
+			const totalSize = FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * numBlocks) + txnSize + TXN_HEADER_SIZE;
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog']);
