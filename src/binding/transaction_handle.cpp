@@ -209,12 +209,12 @@ napi_value TransactionHandle::get(
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
 				resolveGetResult(env, "Transaction get failed", state);
 			}
 
-			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data

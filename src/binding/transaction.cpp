@@ -196,14 +196,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				auto descriptor = txnHandle->dbHandle->descriptor;
 
 				if (txnHandle->logEntryBatch) {
-					DEBUG_LOG("%p Transaction::Commit committing log entries for transaction %u\n",
+					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 						txnHandle.get(), txnHandle->id);
 					txnHandle->logEntryBatch->entries[0]->store->commit(*txnHandle->logEntryBatch);
 				}
 
 				state->status = txnHandle->txn->Commit();
 				if (state->status.ok()) {
-					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%u\n", txnHandle.get(), txnHandle->id)
+					DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id)
 					txnHandle->state = TransactionState::Committed;
 					descriptor->notify("committed", nullptr);
 				}
@@ -214,18 +214,20 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
-			DEBUG_LOG("%p Transaction::Commit complete callback entered (status=%d, cancelled=%d)\n",
-				state->handle.get(), status, napi_cancelled)
+			DEBUG_LOG("%p Transaction::Commit complete callback entered (status=%d, txnId=%d)\n",
+				state->handle.get(), status, state->handle->id);
+
+			state->deleteAsyncWork();
 
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					if (state->handle) {
-						DEBUG_LOG("%p Transaction::Commit complete closing txnId=%u\n", state->handle.get(), state->handle->id)
+						DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%u)\n", state->handle.get(), state->handle->id)
 						state->handle->close();
-						DEBUG_LOG("%p Transaction::Commit complete closed txnId=%u\n", state->handle.get(), state->handle->id)
+						DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id)
 					} else {
-						DEBUG_LOG("%p Transaction::Commit complete, but handle is null! txnId=%u\n", state->handle.get(), state->handle->id)
+						DEBUG_LOG("%p Transaction::Commit Complete, but handle is null! (txnId=%u)\n", state->handle.get(), state->handle->id)
 					}
 
 					state->callResolve();
@@ -236,7 +238,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				}
 			}
 
-			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data

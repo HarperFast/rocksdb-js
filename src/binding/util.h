@@ -254,7 +254,7 @@ struct BaseAsyncState {
 
 	void deleteAsyncWork() {
 		if (this->asyncWork != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work\n", this)
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work %p\n", this, this->asyncWork)
 			napi_status status = ::napi_delete_async_work(this->env, this->asyncWork);
 			if (status == napi_ok) {
 				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Successfully deleted async work\n", this)

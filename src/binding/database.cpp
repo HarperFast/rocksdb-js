@@ -109,6 +109,8 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncClearState*>(data);
 
+			state->deleteAsyncWork();
+
 			if (status != napi_cancelled) {
 				napi_value global;
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
@@ -123,7 +125,6 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 				}
 			}
 
-			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data
@@ -295,11 +296,12 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<DBHandle>>*>(data);
 
+			state->deleteAsyncWork();
+
 			if (status != napi_cancelled) {
 				resolveGetResult(env, "Get failed", state);
 			}
 
-			state->deleteAsyncWork();
 			delete state;
 		},
 		state,     // data
