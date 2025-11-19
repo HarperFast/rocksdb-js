@@ -140,7 +140,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Adds an entry by reference to the transaction log.
+ * Adds an entry to the transaction log. The data is copied.
  *
  * @example
  * ```typescript
@@ -152,44 +152,6 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
-
-	ParsedLogEntryData parsed;
-	if (!parseLogEntryArgs(env, argv, *txnLogHandle, &parsed)) {
-		return nullptr;
-	}
-
-	napi_ref bufferRef = nullptr;
-
-	try {
-		// create a reference to pin the buffer in memory (prevents GC)
-		NAPI_STATUS_THROWS_ERROR(::napi_create_reference(env, argv[0], 1, &bufferRef), "Failed to create reference to log entry data");
-		(*txnLogHandle)->addEntry(parsed.transactionId, parsed.data, parsed.size, env, bufferRef);
-	} catch (const std::exception& e) {
-		// if addEntry fails, clean up the buffer reference
-		if (bufferRef != nullptr) {
-			// FIX ME
-			::napi_delete_reference(env, bufferRef);
-		}
-		::napi_throw_error(env, nullptr, e.what());
-		return nullptr;
-	}
-
-	NAPI_RETURN_UNDEFINED()
-}
-
-/**
- * Adds an entry by copy to the transaction log.
- *
- * @example
- * ```typescript
- * const log = db.useLog('foo');
- * log.addEntryCopy(Buffer.from('hello'), txn.id);
- * log.addEntryCopy(Buffer.from('world'), txn.id, true);
- * ```
- */
-napi_value TransactionLog::AddEntryCopy(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntryCopy")
 
 	ParsedLogEntryData parsed;
 	if (!parseLogEntryArgs(env, argv, *txnLogHandle, &parsed)) {
@@ -236,7 +198,6 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "addEntryCopy", nullptr, AddEntryCopy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 

@@ -48,22 +48,6 @@ struct TransactionLogHandle final : Closable {
 
 	void close();
 	void query();
-
-private:
-	/**
-	 * Helper struct to hold resolved transaction/store context.
-	 */
-	struct AddEntryContext {
-		std::shared_ptr<DBHandle> dbHandle;
-		std::shared_ptr<TransactionHandle> txnHandle;
-		std::shared_ptr<TransactionLogStore> store;
-	};
-
-	/**
-	 * Helper method to resolve and validate transaction/store context.
-	 * Shared by both addEntry overloads.
-	 */
-	AddEntryContext resolveAddEntryContext(uint32_t transactionId);
 };
 
 } // namespace rocksdb_js

@@ -233,23 +233,6 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 			throw std::runtime_error("null entry data in writeEntriesV1");
 		}
 
-		// ensure entry data is owned (not a Node.js buffer reference)
-		// this prevents issues with GC moving buffers on Windows Node.js 18
-		if (!entry->ownedData) {
-			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Copying Node.js buffer to owned memory for entry %zu (size=%zu)\n",
-				this, entryIdx, entry->size)
-			auto ownedCopy = std::make_unique<char[]>(entry->size);
-			std::memcpy(ownedCopy.get(), entry->data, entry->size);
-			entry->data = ownedCopy.get();
-			entry->ownedData = std::move(ownedCopy);
-
-			// release the Node.js buffer reference since we now own the data
-			if (entry->bufferRef != nullptr) {
-				::napi_delete_reference(entry->env, entry->bufferRef);
-				entry->bufferRef = nullptr;
-			}
-		}
-
 		bool isCurrentEntry = (entryIdx == batch.currentEntryIndex);
 		uint32_t entryStartOffset = isCurrentEntry ? static_cast<uint32_t>(batch.currentEntryBytesWritten) : 0;
 		uint32_t entryRemainingSize = static_cast<uint32_t>(entry->size) - entryStartOffset;

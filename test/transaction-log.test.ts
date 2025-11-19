@@ -102,36 +102,12 @@ describe('Transaction Log', () => {
 	});
 
 	describe('addEntry()', () => {
-		it('should add a single small entry within a single block by reference', () => dbRunner(async ({ db, dbPath }) => {
+		it('should add a single small entry within a single block', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
-			});
-
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + TXN_HEADER_SIZE + 10);
-			expect(info.version).toBe(1);
-			expect(info.blockSize).toBe(4096);
-			expect(info.blockCount).toBe(1);
-			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.blocks[0].flags).toBe(0);
-			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.entries[0].length).toBe(10);
-			expect(info.entries[0].data).toEqual(value);
-		}));
-
-		it('should add a single small entry within a single block by copy', () => dbRunner(async ({ db, dbPath }) => {
-			const log = db.useLog('foo');
-			const value = Buffer.alloc(10, 'a');
-
-			await db.transaction(async (txn) => {
-				log.addEntryCopy(value, txn.id);
 			});
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
@@ -696,8 +672,6 @@ describe('Transaction Log', () => {
 			await db.transaction(async (txn) => {
 				expect(() => log.addEntry(undefined as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
 				expect(() => log.addEntry([] as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
-				expect(() => log.addEntryCopy(undefined as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
-				expect(() => log.addEntryCopy([] as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
 			});
 		}));
 

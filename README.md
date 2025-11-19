@@ -680,7 +680,6 @@ automatically written to disk right before the transaction is committed. You may
 add multiple enties per transaction. The underlying architecture is thread safe.
 
 - `log.addEntry()`
-- `log.addEntryCopy()`
 - `log.query()`
 
 #### `log.addEntry(data, transactionId): void`
@@ -690,9 +689,6 @@ Adds an entry to the transaction log.
 - `data: Buffer | UInt8Array` The entry data to store. There is no inherent
   limit beyond what Node.js can handle.
 - `transactionId: Number` A related transaction used to batch entries on commit.
-
-Note that the `data` is queued by reference, so you could modify before it has
-been committed. If you need to reuse the buffer, use `log.addEntryCopy()`.
 
 ```typescript
 const log = db.useLog('foo');
@@ -708,21 +704,6 @@ id from `addEntry()` calls.
 await db.transaction(async (txn) => {
   const log = txn.useLog('foo');
   log.addEntry(Buffer.from('hello'));
-});
-```
-
-#### `log.addEntryCopy(data, transactionId): void`
-
-Copy the entry data and add it to the transaction log.
-
-- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
-  limit beyond what Node.js can handle.
-- `transactionId: Number` A related transaction used to batch entries on commit.
-
-```typescript
-const log = db.useLog('foo');
-await db.transaction(async (txn) => {
-  log.addEntryCopy(Buffer.from('I will be copied'), txn.id);
 });
 ```
 

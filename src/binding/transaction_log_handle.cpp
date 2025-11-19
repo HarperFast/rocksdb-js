@@ -18,61 +18,38 @@ TransactionLogHandle::~TransactionLogHandle() {
 	this->close();
 }
 
-/**
- * Helper method to resolve and validate transaction/store context.
- * This common logic is shared by both addEntry overloads.
- */
-TransactionLogHandle::AddEntryContext TransactionLogHandle::resolveAddEntryContext(uint32_t transactionId) {
-	AddEntryContext ctx;
-
-	ctx.dbHandle = this->dbHandle.lock();
-	if (!ctx.dbHandle) {
-		throw std::runtime_error("Database has been closed");
-	}
-
-	ctx.txnHandle = ctx.dbHandle->descriptor->transactionGet(transactionId);
-	if (!ctx.txnHandle) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %u not found\n", this, transactionId)
-		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
-	}
-
-	ctx.store = this->store.lock();
-	if (!ctx.store) {
-		// store was closed/destroyed, try to get or create a new one
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
-		ctx.store = ctx.dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-		this->store = ctx.store; // update weak_ptr to point to new store
-	}
-
-	// check if transaction is already bound to a different log store
-	auto boundStore = ctx.txnHandle->boundLogStore.lock();
-	if (boundStore && boundStore.get() != ctx.store.get()) {
-		throw std::runtime_error("Log already bound to a transaction");
-	}
-
-	return ctx;
-}
-
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
 	std::unique_ptr<char[]> data,
 	uint32_t size
 ) {
-	auto ctx = resolveAddEntryContext(transactionId);
-	auto entry = std::make_unique<TransactionLogEntry>(ctx.store, std::move(data), size);
-	ctx.txnHandle->addLogEntry(std::move(entry));
-}
+	auto dbHandle = this->dbHandle.lock();
+	if (!dbHandle) {
+		throw std::runtime_error("Database has been closed");
+	}
 
-void TransactionLogHandle::addEntry(
-	uint32_t transactionId,
-	char* data,
-	uint32_t size,
-	napi_env env,
-	napi_ref bufferRef
-) {
-	auto ctx = resolveAddEntryContext(transactionId);
-	auto entry = std::make_unique<TransactionLogEntry>(ctx.store, data, size, env, bufferRef);
-	ctx.txnHandle->addLogEntry(std::move(entry));
+	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
+	if (!txnHandle) {
+		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %u not found\n", this, transactionId)
+		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
+	}
+
+	auto store = this->store.lock();
+	if (!store) {
+		// store was closed/destroyed, try to get or create a new one
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str())
+		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		this->store = store; // update weak_ptr to point to new store
+	}
+
+	// check if transaction is already bound to a different log store
+	auto boundStore = txnHandle->boundLogStore.lock();
+	if (boundStore && boundStore.get() != store.get()) {
+		throw std::runtime_error("Log already bound to a transaction");
+	}
+
+	auto entry = std::make_unique<TransactionLogEntry>(store, std::move(data), size);
+	txnHandle->addLogEntry(std::move(entry));
 }
 
 void TransactionLogHandle::close() {

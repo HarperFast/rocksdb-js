@@ -34,7 +34,6 @@ export type NativeTransaction = {
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
-	addEntryCopy(data: Buffer | Uint8Array, txnId?: number): void;
 	query(): void;
 };
 
