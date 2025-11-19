@@ -46,14 +46,14 @@ maximum block size is 65,535 bytes.
 
 ```
 +------------------+
-| Block Header     | 14 bytes
+| Block Header     | 12 bytes
 +------------------+
 | Block Body       | 4084 bytes
 +------------------+
 Total: 4096 bytes
 ```
 
-### Block Header (14 bytes)
+### Block Header (12 bytes)
 
 All multi-byte integers are encoded in **big-endian** format.
 
@@ -61,7 +61,7 @@ All multi-byte integers are encoded in **big-endian** format.
 |--------|------|---------|-----------------|----------------------------------------------|
 | 0      | 8    | uint64  | startTimestamp  | Block timestamp (milliseconds since epoch)   |
 | 8      | 2    | uint16  | flags           | Block flags (see below)                      |
-| 10     | 4    | uint32  | dataOffset      | Offset where next transaction header starts  |
+| 10     | 2    | uint16  | dataOffset      | Offset where next transaction header starts  |
 
 #### Block Flags
 

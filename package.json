@@ -31,10 +31,10 @@
     "prebuild": "echo 'TODO'",
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
-    "test": "node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
-    "test:bun": "bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
-    "test:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
-    "test:stress": "node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
+    "test": "CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:bun": "CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:deno": "CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
+    "test:stress": "CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
     "type-check": "tsc --noEmit"
   },
   "files": [

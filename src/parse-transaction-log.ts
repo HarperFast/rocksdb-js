@@ -99,11 +99,11 @@ export function parseTransactionLog(path: string): TransactionLog {
 			const flags = buffer.readUInt16BE(8);
 			byteCount -= 2;
 
-			if (byteCount < 4) {
-				throw new Error(`Invalid block ${i}: expected at least 4 bytes for data offset but only read ${byteCount}`);
+			if (byteCount < 2) {
+				throw new Error(`Invalid block ${i}: expected at least 2 bytes for data offset but only read ${byteCount}`);
 			}
-			const dataOffset = buffer.readUInt32BE(10);
-			byteCount -= 4;
+			const dataOffset = buffer.readUInt16BE(10);
+			byteCount -= 2;
 
 			blocks[i] = { startTimestamp, flags, dataOffset };
 

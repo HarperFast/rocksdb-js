@@ -168,8 +168,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		uint16_t flags = isContinuation ? CONTINUATION_FLAG : 0;
 		writeUint16BE(blockHeader + 8, flags);
 
-		uint32_t dataOffset = (blockIdx == 0 && initialDataOffset > 0) ? initialDataOffset : 0;
-		writeUint32BE(blockHeader + 10, dataOffset);
+		uint16_t dataOffset = (blockIdx == 0 && initialDataOffset > 0) ? static_cast<uint16_t>(initialDataOffset) : 0;
+		writeUint16BE(blockHeader + 10, dataOffset);
 
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Block %u header: timestamp=%llu, flags=%u, dataOffset=%u\n",
 			this, blockIdx, batch.timestamp, flags, dataOffset)

@@ -319,7 +319,7 @@ describe('Transaction Log', () => {
 			}
 
 			const txnSize = (TXN_HEADER_SIZE + 10000) * 2000;
-			const numBlocks = Math.ceil(txnSize / (BLOCK_SIZE - BLOCK_HEADER_SIZE));
+			const numBlocks = Math.ceil(txnSize / (BLOCK_SIZE - BLOCK_HEADER_SIZE)) - 1;
 			const totalSize = FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * numBlocks) + txnSize;
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
@@ -402,30 +402,30 @@ describe('Transaction Log', () => {
 				expect(info1.entries[i].length).toBe(100);
 				expect(info1.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
 			}
-			expect(info1.entries[info1.entries.length - 1].length).toBe(70);
-			expect(info1.entries[info1.entries.length - 1].data).toEqual(Buffer.alloc(70, 'a'));
+			expect(info1.entries[info1.entries.length - 1].length).toBe(72);
+			expect(info1.entries[info1.entries.length - 1].data).toEqual(Buffer.alloc(72, 'a'));
 			expect(info1.entries[info1.entries.length - 1].partial).toBe(true);
 
 			expect(info2.size).toBe(1000);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(30);
+			expect(info2.blocks[0].dataOffset).toBe(28);
 			expect(info2.entries.length).toBe(10);
-			expect(info2.entries[0].length).toBe(30);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(30, 'a'));
+			expect(info2.entries[0].length).toBe(28);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(28, 'a'));
 			expect(info2.entries[0].continuation).toBe(true);
 			for (let i = 1; i < info2.entries.length - 1; i++) {
 				expect(info2.entries[i].length).toBe(100);
 				expect(info2.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
 			}
-			expect(info2.entries[info2.entries.length - 1].length).toBe(40);
-			expect(info2.entries[info2.entries.length - 1].data).toEqual(Buffer.alloc(40, 'a'));
+			expect(info2.entries[info2.entries.length - 1].length).toBe(44);
+			expect(info2.entries[info2.entries.length - 1].data).toEqual(Buffer.alloc(44, 'a'));
 
-			expect(info3.size).toBe(866);
+			expect(info3.size).toBe(860);
 			expect(info3.blocks.length).toBe(1);
-			expect(info3.blocks[0].dataOffset).toBe(60);
+			expect(info3.blocks[0].dataOffset).toBe(56);
 			expect(info3.entries.length).toBe(8);
-			expect(info3.entries[0].length).toBe(60);
-			expect(info3.entries[0].data).toEqual(Buffer.alloc(60, 'a'));
+			expect(info3.entries[0].length).toBe(56);
+			expect(info3.entries[0].data).toEqual(Buffer.alloc(56, 'a'));
 			expect(info3.entries[0].continuation).toBe(true);
 			for (let i = 1; i < info3.entries.length; i++) {
 				expect(info3.entries[i].length).toBe(100);
@@ -453,14 +453,14 @@ describe('Transaction Log', () => {
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 
-			expect(info1.size).toBe(997);
+			expect(info1.size).toBe(995);
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
 			expect(info1.entries.length).toBe(1);
 			expect(info1.entries[0].length).toBe(963);
 			expect(info1.entries[0].data).toEqual(Buffer.alloc(963, 'a'));
 
-			expect(info2.size).toBe(997);
+			expect(info2.size).toBe(995);
 			expect(info2.blocks.length).toBe(1);
 			expect(info2.blocks[0].dataOffset).toBe(0);
 			expect(info2.entries.length).toBe(1);
@@ -537,16 +537,16 @@ describe('Transaction Log', () => {
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
 			expect(info1.entries.length).toBe(1);
-			expect(info1.entries[0].length).toBe(966);
-			expect(info1.entries[0].data).toEqual(Buffer.alloc(966, 'a'));
+			expect(info1.entries[0].length).toBe(968);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(968, 'a'));
 			expect(info1.entries[0].partial).toBe(true);
 
-			expect(info2.size).toBe(80);
+			expect(info2.size).toBe(76);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(58);
+			expect(info2.blocks[0].dataOffset).toBe(56);
 			expect(info2.entries.length).toBe(1);
-			expect(info2.entries[0].length).toBe(58);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(58, 'a'));
+			expect(info2.entries[0].length).toBe(56);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(56, 'a'));
 			expect(info2.entries[0].continuation).toBe(true);
 		}));
 
@@ -576,32 +576,32 @@ describe('Transaction Log', () => {
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
 			expect(info1.entries.length).toBe(1);
-			expect(info1.entries[0].length).toBe(966);
-			expect(info1.entries[0].data).toEqual(Buffer.alloc(966, 'a'));
+			expect(info1.entries[0].length).toBe(968);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(968, 'a'));
 			expect(info1.entries[0].partial).toBe(true);
 
 			expect(info2.size).toBe(1000);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(2534);
+			expect(info2.blocks[0].dataOffset).toBe(2532);
 			expect(info2.entries.length).toBe(1);
-			expect(info2.entries[0].length).toBe(978);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(978, 'a'));
+			expect(info2.entries[0].length).toBe(980);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(980, 'a'));
 			expect(info2.entries[0].continuation).toBe(true);
 
 			expect(info3.size).toBe(1000);
 			expect(info3.blocks.length).toBe(1);
-			expect(info3.blocks[0].dataOffset).toBe(1556);
+			expect(info3.blocks[0].dataOffset).toBe(1552);
 			expect(info3.entries.length).toBe(1);
-			expect(info3.entries[0].length).toBe(978);
-			expect(info3.entries[0].data).toEqual(Buffer.alloc(978, 'a'));
+			expect(info3.entries[0].length).toBe(980);
+			expect(info3.entries[0].data).toEqual(Buffer.alloc(980, 'a'));
 			expect(info3.entries[0].continuation).toBe(true);
 
-			expect(info4.size).toBe(600);
+			expect(info4.size).toBe(592);
 			expect(info4.blocks.length).toBe(1);
-			expect(info4.blocks[0].dataOffset).toBe(578);
+			expect(info4.blocks[0].dataOffset).toBe(572);
 			expect(info4.entries.length).toBe(1);
-			expect(info4.entries[0].length).toBe(578);
-			expect(info4.entries[0].data).toEqual(Buffer.alloc(578, 'a'));
+			expect(info4.entries[0].length).toBe(572);
+			expect(info4.entries[0].data).toEqual(Buffer.alloc(572, 'a'));
 			expect(info4.entries[0].continuation).toBe(true);
 		}));
 
