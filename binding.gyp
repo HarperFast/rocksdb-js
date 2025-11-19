@@ -25,7 +25,7 @@
 				'src/binding/util.cpp',
 			],
 			'defines': [
-				'NAPI_VERSION=9',
+				# 'NAPI_VERSION=9',
 			],
 			'cflags!': [ '-fno-exceptions', '-std=c++17' ],
 			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],
