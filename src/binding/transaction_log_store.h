@@ -83,11 +83,6 @@ struct TransactionLogStore final {
 	void close();
 
 	/**
-	 * Writes a batch of transaction log entries to the store.
-	 */
-	void commit(TransactionLogEntryBatch& batch);
-
-	/**
 	 * Queries the transaction log store.
 	 */
 	void query();
@@ -107,6 +102,11 @@ struct TransactionLogStore final {
 	 * @param sequenceNumber The sequence number of the log file to register.
 	 */
 	void registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
+
+	/**
+	 * Writes a batch of transaction log entries to the store.
+	 */
+	void writeBatch(TransactionLogEntryBatch& batch);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log store

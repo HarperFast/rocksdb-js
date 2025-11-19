@@ -44,74 +44,6 @@ void TransactionLogStore::close() {
 	this->purge();
 }
 
-void TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
-	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
-		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
-
-	std::lock_guard<std::mutex> lock(this->storeMutex);
-
-	// write entries across multiple log files until all are written
-	while (!batch.isComplete()) {
-		TransactionLogFile* logFile = nullptr;
-
-		// get the current log file and rotate if needed
-		while (logFile == nullptr && this->currentSequenceNumber) {
-			logFile = this->getLogFile(this->currentSequenceNumber);
-
-			// we found a log file, check if it's already at max size
-			if (this->maxSize == 0 || logFile->size < this->maxSize) {
-				try {
-					logFile->open();
-					break;
-				} catch (const std::exception& e) {
-					DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
-					// move to next sequence number and try again
-					logFile = nullptr;
-				}
-			}
-
-			// rotate to next sequence if file open failed or file is at max size
-			// this prevents infinite loops when file open fails (even with maxSize=0)
-			if (logFile == nullptr || this->maxSize > 0) {
-				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxSize=%u)\n",
-					this, this->name.c_str(), static_cast<void*>(logFile), this->maxSize)
-				this->currentSequenceNumber = this->nextSequenceNumber++;
-				logFile = nullptr;
-			}
-		}
-
-		// ensure we have a valid log file before writing
-		if (!logFile) {
-			DEBUG_LOG("%p TransactionLogStore::commit ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
-			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
-		}
-
-		uint32_t sizeBefore = logFile->size;
-
-		DEBUG_LOG("%p TransactionLogStore::commit Writing to log file for store \"%s\" (seq=%u, size=%u, maxSize=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxSize)
-
-		// write as much as possible to this file
-		logFile->writeEntries(batch, this->maxSize);
-
-		DEBUG_LOG("%p TransactionLogStore::commit Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
-
-		// if no progress was made, rotate to the next file to avoid infinite loop
-		if (logFile->size == sizeBefore) {
-			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
-			this->currentSequenceNumber = this->nextSequenceNumber++;
-		}
-		// if we've reached or exceeded the max size, rotate to the next file
-		else if (this->maxSize > 0 && logFile->size >= this->maxSize) {
-			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
-			this->currentSequenceNumber = this->nextSequenceNumber++;
-		}
-	}
-
-	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
-}
-
 TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
@@ -222,6 +154,74 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
 		this, path.string().c_str(), sequenceNumber)
+}
+
+void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
+	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
+		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
+
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+
+	// write entries across multiple log files until all are written
+	while (!batch.isComplete()) {
+		TransactionLogFile* logFile = nullptr;
+
+		// get the current log file and rotate if needed
+		while (logFile == nullptr && this->currentSequenceNumber) {
+			logFile = this->getLogFile(this->currentSequenceNumber);
+
+			// we found a log file, check if it's already at max size
+			if (this->maxSize == 0 || logFile->size < this->maxSize) {
+				try {
+					logFile->open();
+					break;
+				} catch (const std::exception& e) {
+					DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
+					// move to next sequence number and try again
+					logFile = nullptr;
+				}
+			}
+
+			// rotate to next sequence if file open failed or file is at max size
+			// this prevents infinite loops when file open fails (even with maxSize=0)
+			if (logFile == nullptr || this->maxSize > 0) {
+				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxSize=%u)\n",
+					this, this->name.c_str(), static_cast<void*>(logFile), this->maxSize)
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+				logFile = nullptr;
+			}
+		}
+
+		// ensure we have a valid log file before writing
+		if (!logFile) {
+			DEBUG_LOG("%p TransactionLogStore::commit ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
+			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
+		}
+
+		uint32_t sizeBefore = logFile->size;
+
+		DEBUG_LOG("%p TransactionLogStore::commit Writing to log file for store \"%s\" (seq=%u, size=%u, maxSize=%u)\n",
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxSize)
+
+		// write as much as possible to this file
+		logFile->writeEntries(batch, this->maxSize);
+
+		DEBUG_LOG("%p TransactionLogStore::commit Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
+
+		// if no progress was made, rotate to the next file to avoid infinite loop
+		if (logFile->size == sizeBefore) {
+			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		}
+		// if we've reached or exceeded the max size, rotate to the next file
+		else if (this->maxSize > 0 && logFile->size >= this->maxSize) {
+			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		}
+	}
+
+	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
