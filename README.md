@@ -385,8 +385,8 @@ permitted.
 
 #### `txn.getTimestamp(): number`
 
-Retrieves the transaction start timestamp which defaults to the time at which
-the transaction was created.
+Retrieves the transaction start timestamp in seconds as a decimal. It defaults
+to the time at which the transaction was created.
 
 #### `txn.id`
 
@@ -398,7 +398,14 @@ unique to the RocksDB database path, regardless the database name/column family.
 #### `txn.setTimestamp(ts: number?): void`
 
 Overrides the transaction start timestamp. If called without a timestamp, it
-will set the timestamp to the current time.
+will set the timestamp to the current time. The value must be in seconds with
+higher precision in the decimal.
+
+```typescript
+await db.transaction(async (txn) => {
+  txn.setTimestamp(Date.now() / 1000);
+});
+```
 
 ## Events
 
