@@ -204,7 +204,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 				state->status = txnHandle->txn->Commit();
 				if (txnHandle->logEntryBatch) {
-					txnHandle->logEntryBatch->entries[0]->store->commitFinished(committedPosition);
+					txnHandle->logEntryBatch->entries[0]->store->commitFinished(committedPosition, txnHandle->dbHandle->descriptor->db->GetLatestSequenceNumber());
 				}
 
 				if (state->status.ok()) {
@@ -281,7 +281,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
 	if ((*txnHandle)->logEntryBatch) {
-		(*txnHandle)->logEntryBatch->entries[0]->store->commitFinished(committedPosition);
+		(*txnHandle)->logEntryBatch->entries[0]->store->commitFinished(committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
 	}
 
 	if (status.ok()) {

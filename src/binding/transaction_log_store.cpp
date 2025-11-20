@@ -127,10 +127,50 @@ uint64_t TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
 	return sequencePosition;
 }
 
-void TransactionLogStore::commitFinished(const uint64_t position) {
+void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
+	// This written transaction entry is no longer uncommitted, so we can remove it
 	uncommittedTransactionPositions.erase(position);
-	positionHandle->position = *(uncommittedTransactionPositions.begin());
+	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
+	uint64_t fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
+	// update the current position handle with latest fully committed position
+	positionHandle->position = fullyCommittedPosition;
+	// now setup a sequence position that matches a rocksdb sequence number to our log position
+	SequencePosition sequencePosition;
+	sequencePosition.position = fullyCommittedPosition;
+	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
+	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
+	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
+	// an exact map of every pairing, but enough that we won't lose more than half of what has to be replayed since the last flush
+	unsigned int count = nextSequencePositionsCount++;
+	int index = 0;
+	for (; index < 19; index++) {
+	    if ((count >> index) & 1) break;
+	}
+	// record in the array (is there possibly some concern about concurrent writes causing memory tearing?)
+	recentlyCommittedSequencePositions[index] = sequencePosition;
 }
+
+void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	uint64_t latestFlushedPosition = 0;
+	// the latest sequence number that has been flushed according to this flush update
+	for (int i; i < 20; i++) {
+		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
+		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
+			latestFlushedPosition = sequencePosition.position;
+		}
+	}
+	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
+	// a "log" file, but the API provides all the functionality we need to just write a single word
+	if (!flushedTrackerFile) {
+		std::ostringstream oss;
+		oss << this->path << ".txnflush";
+		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
+		flushedTrackerFile->open();
+	}
+	// save the position of fully flushed transaction logs (future replay will start from here)
+	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
+}
+
 TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
@@ -155,9 +195,10 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 
 	return logFile;
 }
-MemoryMap* TransactionLogStore::getMemoryMap(uint32_t sequenceNumber) {
+
+MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
-	auto it = this->sequenceFiles.find(sequenceNumber);
+	auto it = this->sequenceFiles.find(logSequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 	if (!logFile) {
 		return nullptr;
@@ -165,9 +206,10 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t sequenceNumber) {
 	logFile->open();
 	return logFile->getMemoryMap(maxSize);
 }
-uint32_t TransactionLogStore::getLogFileSize(uint32_t sequenceNumber) {
+
+uint32_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
-	auto it = this->sequenceFiles.find(sequenceNumber);
+	auto it = this->sequenceFiles.find(logSequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 	if (!logFile) {
 		return 0;

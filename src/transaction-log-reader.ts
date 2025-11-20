@@ -36,9 +36,11 @@ export class TransactionLogReader {
 	 * exactly matches the start timestamp, and then return all subsequent transactions in the log
 	 * regardless of whether their timestamp is before or after the start
 	 */
-	query({ start, end, exactStart, readUncommitted }: { start: number, end: number, exactStart?: boolean, readUncommitted?: boolean }): Iterable<TransactionEntry> {
+	query({ start, end, exactStart, readUncommitted }: { start?: number, end?: number, exactStart?: boolean, readUncommitted?: boolean }): Iterable<TransactionEntry> {
 		const transactionLogReader = this;
 		let size = 0;
+		start ??= 0;
+		end ??= Number.MAX_VALUE;
 		let latestLogId = loadLastPosition();
 		let logBuffer: LogBuffer = this.#currentLogBuffer!; // try the current one first
 		if (logBuffer?.logId !== latestLogId) {
@@ -143,7 +145,7 @@ export class TransactionLogReader {
 									exactStart = false;
 								}
 							} else {
-								matchesRange = timestamp >= start && timestamp < end;
+								matchesRange = timestamp >= start! && timestamp < end!;
 							}
 							let entryEnd = position + length;
 							let firstBlock = position >>> BLOCK_SIZE_BITS;
@@ -207,22 +209,6 @@ export class TransactionLogReader {
 				};
 			}
 		};
-		function getNextLogFile() {
-			let logId = 0;
-			let sizeOfNext = 0;
-			if (transactionLogReader.#currentLogBuffer) {
-				logId = transactionLogReader.#currentLogBuffer.logId + 1;
-			} else {
-				logId = transactionLogReader.#lastPosition[1];
-			}
-			if (logId === 0) return;
-			const logBuffer = getLogMemoryMap(logId);
-			if (logBuffer) {
-				transactionLogReader.#currentLogBuffer = logBuffer;
-				logBuffer.size = sizeOfNext;
-			}
-			return logBuffer;
-		}
 		function getLogMemoryMap(logId: number) {
 			if (logId > 0) {
 				let logBuffer = transactionLogReader.#logBuffers.get(logId)?.deref();

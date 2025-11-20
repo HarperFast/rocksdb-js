@@ -131,6 +131,11 @@ struct TransactionLogFile final {
 	 */
 	MemoryMap* getMemoryMap(uint32_t size);
 
+	/**
+	 * Platform specific function that writes data to the log file.
+	 */
+	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
+
 private:
 	/**
 	 * Platform specific function that opens the log file for reading and writing.
@@ -146,11 +151,6 @@ private:
 	 * Platform specific function that writes multiple buffers to the log file.
 	 */
 	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
-
-	/**
-	 * Platform specific function that writes data to the log file.
-	 */
-	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1

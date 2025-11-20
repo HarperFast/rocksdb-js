@@ -22,7 +22,7 @@
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
     "build:bundle": "rimraf dist && tsdown -c tsdown.config.ts",
-    "build:debug": "SKIP_MINIFY=1 pnpm build:bundle",
+    "build:debug": "SKIP_MINIFY=1 pnpm build:bundle --sourcemap",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts",
