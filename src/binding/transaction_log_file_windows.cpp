@@ -84,12 +84,21 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
 	if (!memoryMap) {
 		HANDLE mh;
 		mh = CreateFileMapping(this->fileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
-		if (!mh) return NULL;
+		if (!mh)
+		{
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			throw std::runtime_error("Failed to CreateFileMapping: " + error);
+			return NULL;
+		}
 		// map the memory object into our address space
 		// note that MapViewOfFileEx can be used if we wanted to suggest an address
 		void* map = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, size);
 		if (!map) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
 			CloseHandle(mh);
+			throw std::runtime_error("Failed to MapViewOfFile: " + error);
 			return NULL;
 		}
 		memoryMap = new MemoryMap(map, size);
