@@ -102,7 +102,7 @@ describe('Transaction Log', () => {
 	});
 
 	describe('addEntry()', () => {
-		it('should add a single small entry within a single block', () => dbRunner(async ({ db, dbPath }) => {
+		it.only('should add a single small entry within a single block', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 

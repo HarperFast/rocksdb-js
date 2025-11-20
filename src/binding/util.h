@@ -528,6 +528,17 @@ inline uint16_t readUint16BE(const char* buffer) {
 	       static_cast<uint16_t>(static_cast<uint8_t>(buffer[1]));
 }
 
+/**
+ * Returns the current timestamp as a monotonically increasing timestamp in
+ * nanoseconds.
+ *
+ * To convert to a double:
+ * ```
+ * double ts = static_cast<double>(getTimestamp()) / 1000000000.0;
+ * ```
+ */
+uint64_t getTimestamp();
+
 } // namespace rocksdb_js
 
 #endif
