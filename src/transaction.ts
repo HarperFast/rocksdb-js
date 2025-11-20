@@ -62,10 +62,10 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Returns the transaction start timestamp. Defaults to the time at which
+	 * Returns the transaction start timestamp in seconds. Defaults to the time at which
 	 * the transaction was created.
 	 *
-	 * @returns The transaction start timestamp.
+	 * @returns The transaction start timestamp in seconds.
 	 */
 	getTimestamp(): number {
 		return this.#txn.getTimestamp();
@@ -79,9 +79,9 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Set the transaction start timestamp.
+	 * Set the transaction start timestamp in seconds.
 	 *
-	 * @param timestamp - The timestamp to set.
+	 * @param timestamp - The timestamp to set in seconds.
 	 */
 	setTimestamp(timestamp?: number): void {
 		this.#txn.setTimestamp(timestamp);

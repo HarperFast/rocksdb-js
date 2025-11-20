@@ -90,7 +90,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			if (byteCount < 8) {
 				throw new Error(`Invalid block ${i}: expected at least 8 bytes for start timestamp but only read ${byteCount}`);
 			}
-			const startTimestamp = Number(buffer.readBigUInt64BE(0));
+			const startTimestamp = buffer.readDoubleBE(0);
 			byteCount -= 8;
 
 			if (byteCount < 2) {
@@ -132,7 +132,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			if (transactionOffset + 8 > transactionDataLength) {
 				throw new Error(`Invalid transaction ${i}: expected at least 8 bytes for start timestamp but only read ${transactionDataLength - transactionOffset}`);
 			}
-			const timestamp = Number(transactionData.readBigUInt64BE(transactionOffset));
+			const timestamp = transactionData.readDoubleBE(transactionOffset);
 			transactionOffset += 8;
 
 			if (transactionOffset + 4 > transactionDataLength) {

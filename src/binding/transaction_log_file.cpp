@@ -95,7 +95,7 @@ void TransactionLogFile::open() {
 }
 
 void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu, bytes written=%zu (timestamp=%llu, maxFileSize=%u, currentSize=%u)\n",
+	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu, bytes written=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
 		this, batch.entries.size(), batch.currentEntryIndex, batch.currentEntryBytesWritten, batch.timestamp, maxFileSize, this->size)
 
 	// Branch based on file format version
@@ -190,11 +190,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 			throw std::runtime_error("block header overflow in writeEntriesV1");
 		}
 		char* blockHeader = blockHeaders.get() + (nextBlockHeaderIdx * BLOCK_HEADER_SIZE);
-		writeUint64BE(blockHeader, batch.timestamp);
+		writeDoubleBE(blockHeader, batch.timestamp);
 		uint16_t flags = isContinuation ? CONTINUATION_FLAG : 0;
 		writeUint16BE(blockHeader + 8, flags);
 		writeUint16BE(blockHeader + 10, dataOffset);
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Block %u header: timestamp=%llu, flags=%u, dataOffset=%u\n",
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Block %u header: timestamp=%f, flags=%u, dataOffset=%u\n",
 			this, nextBlockHeaderIdx, batch.timestamp, flags, dataOffset)
 		nextBlockHeaderIdx++;
 		return blockHeader;
@@ -251,7 +251,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 				throw std::runtime_error("txnHeader index overflow in writeEntriesV1");
 			}
 			char* txnHeader = txnHeaders.get() + (txnHeaderIdx * TXN_HEADER_SIZE);
-			writeUint64BE(txnHeader, batch.timestamp);
+			writeDoubleBE(txnHeader, batch.timestamp);
 			writeUint32BE(txnHeader + 8, static_cast<uint32_t>(entry->size));
 			txnHeaderIdx++;
 

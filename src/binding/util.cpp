@@ -463,7 +463,7 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 
 static std::atomic<uint64_t> lastTimestamp{0};
 
-uint64_t getTimestamp() {
+double getTimestamp() {
 	uint64_t last = lastTimestamp.load(std::memory_order_acquire);
 	uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()
@@ -475,7 +475,7 @@ uint64_t getTimestamp() {
 		}
 	} while (!lastTimestamp.compare_exchange_strong(last, now, std::memory_order_acq_rel));
 
-	return now;
+	return static_cast<double>(now) / 1000000000.0;
 }
 
 }

@@ -55,7 +55,7 @@ struct TransactionLogEntryBatch final {
 	/**
 	 * The timestamp for this batch.
 	 */
-	uint64_t timestamp;
+	double timestamp;
 
 	/**
 	 * The vector of entries to write.
@@ -78,7 +78,7 @@ struct TransactionLogEntryBatch final {
 	 */
 	bool currentEntryHeaderWritten = false;
 
-	TransactionLogEntryBatch(const uint64_t timestamp) :
+	TransactionLogEntryBatch(const double timestamp) :
 		timestamp(timestamp)
 	{}
 

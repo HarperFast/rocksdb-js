@@ -528,16 +528,26 @@ inline uint16_t readUint16BE(const char* buffer) {
 	       static_cast<uint16_t>(static_cast<uint8_t>(buffer[1]));
 }
 
+inline void writeDoubleBE(char* buffer, double value) {
+	// Interpret the double's bits as uint64_t and write in big endian
+	uint64_t bits;
+	std::memcpy(&bits, &value, sizeof(double));
+	writeUint64BE(buffer, bits);
+}
+
+inline double readDoubleBE(const char* buffer) {
+	// Read uint64_t in big endian and interpret as double
+	uint64_t bits = readUint64BE(buffer);
+	double value;
+	std::memcpy(&value, &bits, sizeof(double));
+	return value;
+}
+
 /**
  * Returns the current timestamp as a monotonically increasing timestamp in
  * nanoseconds.
- *
- * To convert to a double:
- * ```
- * double ts = static_cast<double>(getTimestamp()) / 1000000000.0;
- * ```
  */
-uint64_t getTimestamp();
+double getTimestamp();
 
 } // namespace rocksdb_js
 

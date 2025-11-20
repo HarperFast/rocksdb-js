@@ -377,14 +377,14 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Retrieves the timestamp of the transaction.
+ * Retrieves the timestamp of the transaction in seconds.
  */
 napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("GetTimestamp")
 
 	napi_value result;
-	NAPI_STATUS_THROWS_ERROR(::napi_create_int64(env, (*txnHandle)->startTimestamp, &result), "Failed to get timestamp")
+	NAPI_STATUS_THROWS_ERROR(::napi_create_double(env, (*txnHandle)->startTimestamp, &result), "Failed to get timestamp")
 	return result;
 }
 
@@ -449,19 +449,17 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_TRANSACTION_HANDLE("SetTimestamp")
 
-	int64_t timestamp = 0;
+	double timestampSec = 0.0;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
 	if (type == napi_undefined) {
 		// use current timestamp
-		timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::system_clock::now().time_since_epoch()
-		).count();
+		(*txnHandle)->startTimestamp = rocksdb_js::getTimestamp();
 	} else if (type == napi_number) {
-		NAPI_STATUS_THROWS_ERROR(::napi_get_value_int64(env, argv[0], &timestamp),
+		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampSec),
 			"Invalid timestamp, expected positive number");
-		if (timestamp < 0) {
+		if (timestampSec <= 0) {
 			::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
 			return nullptr;
 		}
@@ -470,7 +468,7 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	(*txnHandle)->startTimestamp = timestamp;
+	(*txnHandle)->startTimestamp = timestampSec;
 
 	NAPI_RETURN_UNDEFINED()
 }

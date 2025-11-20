@@ -76,7 +76,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * The start timestamp of the transaction.
 	 */
-	uint64_t startTimestamp;
+	double startTimestamp;
 
 	/**
 	 * The state of the transaction.
