@@ -150,12 +150,17 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Will write %u entries (totalTxnSize=%u, currentBlockSize=%u, availableSpaceInCurrentBlock=%u, dataForCurrentBlock=%u, numNewBlocks=%u, dataForNewBlocks=%u, availableSpaceInFile=%lli, initialDataOffset=%u)\n",
 		this, numEntriesToWrite, totalTxnSize, currentBlockSize, availableSpaceInCurrentBlock, dataForCurrentBlock, numNewBlocks, dataForNewBlocks, availableSpaceInFile, initialDataOffset)
 
-	// allocate buffers for headers only
-	auto blockHeaders = std::make_unique<char[]>(numNewBlocks * BLOCK_HEADER_SIZE);
+	// allocate buffers for headers
+	// Note: allocate extra block headers to account for blocks we might skip to avoid splitting transaction headers
+	// In the worst case, each entry could require skipping to a new block, so we allocate numNewBlocks + numEntriesToWrite
+	uint32_t maxBlockHeaders = numNewBlocks + numEntriesToWrite;
+	auto blockHeaders = std::make_unique<char[]>(maxBlockHeaders * BLOCK_HEADER_SIZE);
 	auto txnHeaders = std::make_unique<char[]>(numEntriesToWrite * TXN_HEADER_SIZE);
 
-	// allocate iovec tracker for blocks + block headers + entries + transaction headers
-	auto maxIovecs = (dataForCurrentBlock > 0 ? 1 : 0) + (numNewBlocks * 2) + (numEntriesToWrite * 2);
+	// allocate iovec tracker for blocks + block headers + entries + transaction headers + padding
+	// Use maxBlockHeaders instead of numNewBlocks to account for potential block skips
+	// Each block might need padding, so add maxBlockHeaders for padding iovecs
+	auto maxIovecs = (dataForCurrentBlock > 0 ? 1 : 0) + (maxBlockHeaders * 3) + (numEntriesToWrite * 2);
 	auto iovecs = std::make_unique<iovec[]>(maxIovecs);
 	size_t iovecsIndex = 0;
 
@@ -184,9 +189,9 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	};
 
 	auto createBlockHeader = [&](bool isContinuation, uint16_t dataOffset) -> char* {
-		if (nextBlockHeaderIdx >= numNewBlocks) {
+		if (nextBlockHeaderIdx >= maxBlockHeaders) {
 			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: block header overflow! index=%u, max=%u\n",
-				this, nextBlockHeaderIdx, numNewBlocks)
+				this, nextBlockHeaderIdx, maxBlockHeaders)
 			throw std::runtime_error("block header overflow in writeEntriesV1");
 		}
 		char* blockHeader = blockHeaders.get() + (nextBlockHeaderIdx * BLOCK_HEADER_SIZE);
@@ -200,11 +205,36 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		return blockHeader;
 	};
 
+	// static padding buffer for filling blocks
+	static const char paddingBytes[4096] = {0};
+
 	auto advanceToNextBlock = [&](bool isContinuation) {
+		// write padding to fill the rest of the current block and update
+		// `dataOffset` if padding is written (to indicate actual data size)
+		if (currentBlockIdx >= 0 && currentBlockOffset > 0) {
+			uint32_t blockCapacity = getBlockCapacity();
+			if (currentBlockOffset < blockCapacity) {
+				uint32_t paddingSize = blockCapacity - currentBlockOffset;
+				addIovec(const_cast<char*>(paddingBytes), paddingSize);
+				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Added %u bytes of padding to block %u\n",
+					this, paddingSize, currentBlockIdx)
+
+				// update the `dataOffset` for this block's header to indicate actual data size (before padding)
+				// this allows the parser to exclude the padding from the transaction data buffer
+				if (nextBlockHeaderIdx > 0) {
+					char* currentBlockHeader = blockHeaders.get() + ((nextBlockHeaderIdx - 1) * BLOCK_HEADER_SIZE);
+					writeUint16BE(currentBlockHeader + 10, static_cast<uint16_t>(currentBlockOffset));
+					DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Updated block %u dataOffset to %u (excluding %u bytes of padding)\n",
+						this, nextBlockHeaderIdx - 1, currentBlockOffset, paddingSize)
+				}
+			}
+		}
+
 		currentBlockIdx++;
 		currentBlockOffset = 0;
 		// create and add block header iovec for the new block
-		if (currentBlockIdx > 0 && currentBlockIdx <= numNewBlocks) {
+		// use nextBlockHeaderIdx to check if we have space allocated, not currentBlockIdx
+		if (currentBlockIdx > 0 && nextBlockHeaderIdx < maxBlockHeaders) {
 			uint16_t dataOffset = (nextBlockHeaderIdx == 0 && initialDataOffset > 0) ? static_cast<uint16_t>(initialDataOffset) : 0;
 			char* blockHeader = createBlockHeader(isContinuation, dataOffset);
 			addIovec(blockHeader, BLOCK_HEADER_SIZE);

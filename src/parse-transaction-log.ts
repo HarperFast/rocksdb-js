@@ -111,15 +111,25 @@ export function parseTransactionLog(path: string): TransactionLog {
 				if (transactionDataLength + byteCount > transactionSize) {
 					throw new Error(`Invalid block ${i}: expected at most ${transactionSize} bytes for transaction data but read ${transactionDataLength}`);
 				}
-				const data = buffer.subarray(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + byteCount);
+				// If `dataOffset` is set and this is NOT a continuation block (first block with CONTINUATION_FLAG),
+				// then it indicates padding - use it to exclude padding from the data
+				// For continuation blocks, dataOffset indicates where continuation ends, but we copy all data
+				let actualDataBytes = byteCount;
+				if (dataOffset > 0 && !(i === 0 && (flags & CONTINUATION_FLAG))) {
+					// This block has padding at the end, use dataOffset to exclude it
+					actualDataBytes = dataOffset;
+				}
+				actualDataBytes = Math.min(actualDataBytes, byteCount);
+
+				const data = buffer.subarray(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + actualDataBytes);
 				transactionData.set(data, transactionDataLength);
-				transactionDataLength += byteCount;
+				transactionDataLength += actualDataBytes;
 			}
 		}
 
 		const length = Math.min(blocks[0]?.dataOffset, transactionDataLength);
 		if ((blocks[0].flags & CONTINUATION_FLAG) && length > 0) {
-			// the first block is a continuation from the previous file
+			// The first block is a continuation from the previous file
 			entries.push({
 				data: transactionData.subarray(0, length),
 				continuation: true,

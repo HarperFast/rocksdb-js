@@ -545,7 +545,7 @@ inline double readDoubleBE(const char* buffer) {
 
 /**
  * Returns the current timestamp as a monotonically increasing timestamp in
- * nanoseconds.
+ * nanoseconds (internally) and returns it as milliseconds (double).
  */
 double getTimestamp();
 

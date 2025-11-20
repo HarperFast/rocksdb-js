@@ -117,11 +117,11 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(value);
 		}));
@@ -145,17 +145,17 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(3);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
-			expect(info.entries[2].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[2].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[2].length).toBe(10);
 			expect(info.entries[2].data).toEqual(valueC);
 		}));
@@ -172,7 +172,9 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 28) + (TXN_HEADER_SIZE + 100) * 1000);
+			// padding bytes: some blocks need padding when skipping to avoid splitting transaction headers
+			const paddingBytes = 8; // 2 blocks with 4 bytes of padding each (blocks 12 and 25)
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 28) + (TXN_HEADER_SIZE + 100) * 1000 + paddingBytes);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(28);
@@ -196,14 +198,14 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
 			expect(info.blocks.length).toBe(2);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(5000);
 			expect(info.entries[0].data).toEqual(value);
 		}));
@@ -223,17 +225,17 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(3);
 			expect(info.blocks.length).toBe(3);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
-			expect(info.blocks[2].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[2].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[2].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[2].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10000);
 			expect(info.entries[0].data).toEqual(value);
 		}));
@@ -256,18 +258,18 @@ describe('Transaction Log', () => {
 			expect(info.blockCount).toBe(2);
 			expect(info.blocks.length).toBe(2);
 
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
 
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(5000);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
@@ -287,23 +289,27 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TXN_HEADER_SIZE + valueALength) + (TXN_HEADER_SIZE + 100));
+			// file size includes 4 bytes of padding at the end of block 1 (to
+			// skip to block 2 for the second transaction header)
+			const paddingBytes = 4;
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TXN_HEADER_SIZE + valueALength) + paddingBytes + (TXN_HEADER_SIZE + 100));
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
 			expect(info.blocks.length).toBe(2);
 
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
-			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			// block 0 has 4 bytes of padding, so `dataOffset` indicates the actual data size (4080)
+			expect(info.blocks[0].dataOffset).toBe(4080);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(0);
 
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(valueALength);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(100);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
@@ -362,15 +368,15 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
