@@ -2,7 +2,8 @@
 
 ## Overview
 
-The transaction log system provides an append-only, binary log format for recording database transactions. The format is designed for:
+The transaction log system provides an append-only, binary log format for
+recording database transactions. The format is designed for:
 
 - **Durability**: 4KB block size (by default) for fast traversal using binary search
 - **Portability**: Big-endian encoding for platform independence
@@ -11,7 +12,9 @@ The transaction log system provides an append-only, binary log format for record
 
 ## File Structure
 
-Each transaction log file (`.txnlog`) consists of a file header followed by zero or more 4KB blocks. Files are rotated based on a configurable maximum size (default: 16MB).
+Each transaction log file (`.txnlog`) consists of a file header followed by zero
+or more 4KB blocks. Files are rotated based on a configurable maximum size
+(default: 16MB).
 
 ### Naming Convention
 
@@ -59,7 +62,7 @@ All multi-byte integers are encoded in **big-endian** format.
 
 | Offset | Size | Type    | Field           | Description                                  |
 |--------|------|---------|-----------------|----------------------------------------------|
-| 0      | 8    | uint64  | startTimestamp  | Block timestamp (milliseconds since epoch)   |
+| 0      | 8    | double  | startTimestamp  | Block timestamp (milliseconds since epoch)   |
 | 8      | 2    | uint16  | flags           | Block flags (see below)                      |
 | 10     | 2    | uint16  | dataOffset      | Offset where next transaction header starts  |
 
@@ -82,7 +85,7 @@ Transactions are stored within block bodies. A transaction consists of a header 
 
 | Offset | Size | Type    | Field      | Description                                   |
 |--------|------|---------|------------|-----------------------------------------------|
-| 0      | 8    | uint64  | timestamp  | Earliest action timestamp in the transaction  |
+| 0      | 8    | double  | timestamp  | Earliest action timestamp in the transaction  |
 | 8      | 4    | uint32  | length     | Total size of the transaction body (bytes)    |
 
 ## Multi-Block Transactions
@@ -109,7 +112,8 @@ Block 3: [Header(CONTINUATION)] + [1832 bytes of data]
 
 ### Endianness
 
-All multi-byte numeric values are stored in **big-endian** (network byte order) format:
+All multi-byte numeric values are stored in **big-endian** (network byte order)
+format:
 
 - **uint64**: Most significant byte first
 - **uint32**: Most significant byte first
@@ -119,11 +123,13 @@ This ensures the format is portable across different CPU architectures.
 
 ### Timestamps
 
-All timestamps are stored as 64-bit unsigned integers representing milliseconds since the Unix epoch (January 1, 1970 00:00:00 UTC).
+All timestamps are stored as 64-bit doubles representing milliseconds since the
+Unix epoch (January 1, 1970 00:00:00 UTC).
 
 ## Transaction Buffering
 
-The transaction log system buffers multiple log entries before committing them when the associated transaction is committed.
+The transaction log system buffers multiple log entries before committing them
+when the associated transaction is committed.
 
 ```javascript
 const log = db.useLog('example');
