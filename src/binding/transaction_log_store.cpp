@@ -20,6 +20,10 @@ TransactionLogStore::TransactionLogStore(
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	positionHandle = new PositionHandle();
+	for (int i = 0; i < 20; i++) { // initialize recent commits to not match until values are entered
+		recentlyCommittedSequencePositions[i].position = 0;
+		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match commit
+	}
 }
 
 TransactionLogStore::~TransactionLogStore() {
@@ -299,7 +303,7 @@ void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::Seque
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
 	uint64_t latestFlushedPosition = 0;
 	// the latest sequence number that has been flushed according to this flush update
-	for (int i; i < 20; i++) {
+	for (int i = 0; i < 20; i++) {
 		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
 		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
 			latestFlushedPosition = sequencePosition.position;
@@ -309,7 +313,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 	// a "log" file, but the API provides all the functionality we need to just write a single word
 	if (!flushedTrackerFile) {
 		std::ostringstream oss;
-		oss << this->path << ".txnflush";
+		oss << this->path << ".txnstate";
 		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
 		flushedTrackerFile->open();
 	}
