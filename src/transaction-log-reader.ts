@@ -46,7 +46,7 @@ export class TransactionLogReader {
 		if (logBuffer?.logId !== latestLogId) {
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(latestLogId)!;
-			if (!readUncommitted) { // if we are reading uncomitted, we might be a log file ahead of the committed transaction
+			if (!readUncommitted) { // if we are reading uncommitted, we might be a log file ahead of the committed transaction
 				this.#currentLogBuffer = logBuffer;
 			}
 		}
@@ -55,8 +55,7 @@ export class TransactionLogReader {
 		}
 
 		let dataView: DataView = logBuffer.dataView;
-		//let blockTimestamp = dataView.getFloat64(0);
-		let blockTimestamp = Number(dataView.getBigInt64(0));
+		let blockTimestamp = dataView.getFloat64(0);
 		while (blockTimestamp > start) {
 			// if we have an earlier timestamp than available in this log file, find an earlier log file
 			let previousLogBuffer = getLogMemoryMap(logBuffer.logId - 1)!;
@@ -69,17 +68,25 @@ export class TransactionLogReader {
 				logBuffer.size = this.#log.getLogFileSize(logBuffer.logId);
 			}
 			dataView = logBuffer.dataView;
-			//blockTimestamp = dataView.getFloat64(0);
-			blockTimestamp = Number(dataView.getBigInt64(0));
+			blockTimestamp = dataView.getFloat64(0);
 		}
-		// Now do a binary search in the log buffer to find the first block that precedes the start timestamp
 		let position = 0;
-		// we do a stable positioning binary search, for better cache locality
+		// Now do a binary search in the log buffer to find the first block that precedes the start timestamp.
+		// We do a stable positioning binary search instead of a traditional iterative split binary search, which means
+		// that instead of taking the array and splitting it in half (and continue to split each part in half), we choose
+		// pivot points based on powers of two. This has a couple of significant advantages:
+		// - As a log grows in size, rather than constantly choosing different pivot points based on length, we are heavily
+		// reusing the same pivot points for each search (starting pivot point only changes when a log grows past the next 2^n, for example).
+		// This significantly improves the probability of cache hits, whether that is for pages swapped out of memory
+		// or even just L1/L2 cache usage.
+		// - This binary search also "favors" newer entries. For most recent entries, 50% of pivot point comparisons can be
+		// skipped because the next (pivot + 2^n) is outside the size bounds, so this provides a performance/acceleration bias
+		// towards newer entries, which are expected to be searched much more frequently.
 		for (let shift = 23; shift >= BLOCK_SIZE_BITS; shift--) {
 			const pivotSize = 1 << shift;
 			position += pivotSize;
 			if (position < size) {
-				blockTimestamp = Number(dataView.getBigInt64(position));
+				blockTimestamp = dataView.getFloat64(position);
 				if (blockTimestamp < start) {
 					// take the upper block
 					continue;
@@ -92,7 +99,7 @@ export class TransactionLogReader {
 		while(position > 0) { // don't try to iterate past the beginning
 			let previousPosition = position - BLOCK_SIZE;
 			// TODO: we can end up needing to iterate back into a previous log file
-			const previousBlockTimestamp = Number(dataView.getBigInt64(previousPosition));
+			const previousBlockTimestamp = dataView.getFloat64(previousPosition);
 			if (previousBlockTimestamp !== blockTimestamp) break;
 			position = previousPosition;
 		}
@@ -126,8 +133,7 @@ export class TransactionLogReader {
 						}
 						while(position < size) {
 							// advance to the next entry, reading the timestamp and the data
-							//timestamp = dataView.getFloat64(position);
-							timestamp = Number(dataView.getBigInt64(position));
+							timestamp = dataView.getFloat64(position);
 							if (!timestamp) {
 								// we have gone beyond the last transaction and reached the end
 								return { done: true, value: undefined };
@@ -197,7 +203,7 @@ export class TransactionLogReader {
 									}
 								}
 							} else if (lastBlock !== firstBlock) {
-								const blockTimestamp = Number(dataView.getBigInt64(lastBlock << BLOCK_SIZE_BITS));
+								const blockTimestamp = dataView.getFloat64(lastBlock << BLOCK_SIZE_BITS);
 								if (blockTimestamp >= end) {
 									return { done: true, value: undefined };
 								}
