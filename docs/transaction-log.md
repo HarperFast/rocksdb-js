@@ -26,25 +26,6 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 
 ## Binary Format Specification
 
-### File Header (8 bytes)
-
-```
-+------------------+
-| WOOF Token       | 4 bytes
-+------------------+
-| Format Version   | 2 bytes
-+------------------+
-| Block Size       | 2 bytes
-+------------------+
-Total: 8 bytes
-```
-
-The `version` indicates the format version of the file.
-
-The `Block Size` defines how large the fixed-sized blocks in the file are. It
-defaults to 4096 bytes (4KB). The block size __must__ be an even number. The
-maximum block size is 65,535 bytes.
-
 ### Block Structure (default 4096 bytes)
 
 ```
@@ -56,15 +37,25 @@ maximum block size is 65,535 bytes.
 Total: 4096 bytes
 ```
 
-### Block Header (12 bytes)
+### Block Header (14 bytes)
 
 All multi-byte integers are encoded in **big-endian** format.
 
-| Offset | Size | Type    | Field           | Description                                  |
-|--------|------|---------|-----------------|----------------------------------------------|
-| 0      | 8    | double  | startTimestamp  | Block timestamp (milliseconds since epoch)   |
-| 8      | 2    | uint16  | flags           | Block flags (see below)                      |
-| 10     | 2    | uint16  | dataOffset      | Offset where next transaction header starts  |
+| Offset | Size | Type    | Field           | Description                                                 |
+|--------|------|---------|-----------------|-------------------------------------------------------------|
+| 0      | 1    | uint8   | flags           | Block flags (see below)                                     |
+| 1      | 1    | uint8   | blockSize       | Size of a block, as a power of 2                            |
+| 2      | 2    | uint8   | previousBlocks  | The number of previous blocks with the same block timestamp |
+| 4      | 8    | double  | timestamp       | Block timestamp (seconds since epoch)                       |
+| 12     | 2    | uint16  | dataOffset      | Offset where next transaction header starts                 |
+
+#### Block Types (1 byte)
+
+The block `type` describes how to parse the block contents.
+
+| Type | Description     |
+| ---- | --------------- |
+| 1    | Original format |
 
 #### Block Flags
 
