@@ -1,4 +1,4 @@
-The transaction log is a file that contains a sequence of entries that describe the updates that have been made to the database. These updates are intended to be largely opaque to RocksDB, and to be can be used by the rocksdb-js consumer to implement their own replay and subscription semantics.
+The transaction log is a file that contains a sequence of entries that describe the updates that have been made to the database. These updates are intended to be largely opaque to RocksDB, and can be used by the rocksdb-js consumer to implement their own replay and subscription semantics.
 The transaction log consists of 4KB blocks that each have their own header.
 The block header contains the following fields:
 - `earliest-timestamp`: A 8-byte timestamp field that indicates the timestamp of the earliest transaction that was active or was written in this block. There should be no transactions in this block or any subsequent block that has a timestamp earlier than this. This should be stored in a double/float64 format of the timestamp in epoch milliseconds, in big-endian ordering. 
