@@ -67,10 +67,13 @@
 	}
 
 #define NAPI_STATUS_THROWS_VOID(call) \
+	NAPI_STATUS_THROWS_ERROR_VOID(call, nullptr)
+
+#define NAPI_STATUS_THROWS_ERROR_VOID(call, errorMsg) \
 	{ \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
-			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status, errorMsg); \
 			::napi_throw_error(env, nullptr, errorStr.c_str()); \
 			return; \
 		} \
@@ -136,20 +139,26 @@
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, nullptr))
 
+#define NAPI_CONSTRUCTOR_WITH_DATA(className) \
+	NAPI_CHECK_NEW_TARGET(className) \
+	napi_value jsThis; \
+	void* data; \
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, nullptr, nullptr, &jsThis, reinterpret_cast<void**>(&data)))
+
 #define NAPI_CONSTRUCTOR_ARGV(className, n) \
 	NAPI_CHECK_NEW_TARGET(className) \
-	napi_value args[n]; \
+	napi_value argv[n]; \
 	size_t argc = n; \
 	napi_value jsThis; \
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, nullptr))
 
 #define NAPI_CONSTRUCTOR_ARGV_WITH_DATA(className, n) \
 	NAPI_CHECK_NEW_TARGET(className) \
-	napi_value args[n]; \
+	napi_value argv[n]; \
 	size_t argc = n; \
 	napi_value jsThis; \
 	void* data; \
-	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, reinterpret_cast<void**>(&data)))
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, reinterpret_cast<void**>(&data)))
 
 #define NAPI_METHOD() \
 	napi_value jsThis; \
@@ -173,6 +182,26 @@
 #define NAPI_GET_STRING(from, to, errorMsg) \
 	std::string to; \
 	NAPI_STATUS_THROWS_ERROR(rocksdb_js::getString(env, from, to), errorMsg)
+
+#define NAPI_GET_DB_HANDLE(from, exportsRef, to, errorMsg) \
+	std::shared_ptr<DBHandle>* to; \
+	{ \
+		napi_value exports; \
+		NAPI_STATUS_THROWS(::napi_get_reference_value(env, exportsRef, &exports)) \
+		napi_value databaseCtor; \
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor)) \
+		bool isDatabase = false; \
+		NAPI_STATUS_THROWS(::napi_instanceof(env, from, databaseCtor, &isDatabase)) \
+		if (!isDatabase) { \
+			::napi_throw_type_error(env, nullptr, "Invalid argument, expected Database instance"); \
+			return nullptr; \
+		} \
+		NAPI_STATUS_THROWS(::napi_unwrap(env, from, reinterpret_cast<void**>(&to))) \
+		if (!to || !(*to)) { \
+			::napi_throw_type_error(env, nullptr, "Invalid database handle"); \
+			return nullptr; \
+		} \
+	}
 
 #define ROCKSDB_STATUS_FORMAT_ERROR(status, msg) \
 	std::string errorStr; \

@@ -1,9 +1,10 @@
-#ifndef DB_SETTINGS_H
-#define DB_SETTINGS_H
+#ifndef __DB_SETTINGS_H__
+#define __DB_SETTINGS_H__
 
 #include <memory>
 #include <node_api.h>
 #include "rocksdb/cache.h"
+
 namespace rocksdb_js {
 
 /**
@@ -38,6 +39,6 @@ public:
 	static void Init(napi_env env, napi_value exports);
 };
 
-}
+} // namespace rocksdb_js
 
 #endif

@@ -3,6 +3,4 @@
 
 #include <node_api.h>
 
-#define NAPI_VERSION 8
-
 #endif

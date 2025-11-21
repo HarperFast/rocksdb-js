@@ -45,6 +45,9 @@ export class Transaction extends DBI {
 		}
 	}
 
+	/**
+	 * Commit the transaction synchronously.
+	 */
 	commitSync(): void {
 		try {
 			this.notify('beforecommit');
@@ -59,9 +62,28 @@ export class Transaction extends DBI {
 	}
 
 	/**
+	 * Returns the transaction start timestamp in seconds. Defaults to the time at which
+	 * the transaction was created.
+	 *
+	 * @returns The transaction start timestamp in seconds.
+	 */
+	getTimestamp(): number {
+		return this.#txn.getTimestamp();
+	}
+
+	/**
 	 * Get the transaction id.
 	 */
 	get id(): number {
 		return this.#txn.id;
+	}
+
+	/**
+	 * Set the transaction start timestamp in seconds.
+	 *
+	 * @param timestamp - The timestamp to set in seconds.
+	 */
+	setTimestamp(timestamp?: number): void {
+		this.#txn.setTimestamp(timestamp);
 	}
 }

@@ -7,7 +7,7 @@ namespace rocksdb_js {
  * Adds a listener.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.addEventListener('foo', () => {
  *   console.log('foo');
@@ -28,7 +28,7 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
  * Calls all listeners for a given key.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.addEventListener('foo', () => {
  *   console.log('foo');
@@ -77,7 +77,7 @@ napi_value Database::Notify(napi_env env, napi_callback_info info) {
  * Gets the number of listeners for the given key.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.listeners('foo'); // returns 0
  *
@@ -99,7 +99,7 @@ napi_value Database::Listeners(napi_env env, napi_callback_info info) {
  * Removes a listener.
  *
  * @example
- * ```ts
+ * ```typescript
  * const db = new NativeDatabase();
  * db.addEventListener('foo', () => {});
  * db.removeEventListener('foo', () => {});

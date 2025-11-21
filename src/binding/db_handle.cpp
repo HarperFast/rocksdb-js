@@ -1,21 +1,15 @@
+#include <algorithm>
 #include "db_handle.h"
 #include "db_descriptor.h"
 #include "db_registry.h"
-#include <algorithm>
 
 namespace rocksdb_js {
 
 /**
  * Creates a new DBHandle.
  */
-DBHandle::DBHandle()
-	: descriptor(nullptr) {}
-
-/**
- * Creates a new DBHandle from a DBDescriptor.
- */
-DBHandle::DBHandle(std::shared_ptr<DBDescriptor> descriptor)
-	: descriptor(descriptor) {}
+DBHandle::DBHandle(napi_env env, napi_ref exportsRef)
+	: descriptor(nullptr), env(env), exportsRef(exportsRef) {}
 
 /**
  * Close the DBHandle and destroy it.
@@ -60,7 +54,10 @@ rocksdb::Status DBHandle::clear(uint32_t batchSize, uint64_t& deleted) {
 			ASSERT_OPENED_AND_NOT_CANCELLED(this, "clear")
 			DEBUG_LOG("%p DBHandle::Clear Writing batch with %zu keys\n", this, batch.Count())
 
-			status = this->descriptor->db->Write(rocksdb::WriteOptions(), &batch);
+			rocksdb::WriteOptions writeOptions;
+			writeOptions.disableWAL = this->disableWAL;
+
+			status = this->descriptor->db->Write(writeOptions, &batch);
 			if (!status.ok()) {
 				return status;
 			}
@@ -106,6 +103,13 @@ void DBHandle::close() {
 		this->descriptor.reset();
 	}
 
+	// clean up transaction log references
+	for (auto& [name, ref] : this->logRefs) {
+		DEBUG_LOG("%p DBHandle::close Releasing transaction log reference %s\n", this, name.c_str())
+		::napi_delete_reference(this->env, ref);
+	}
+	this->logRefs.clear();
+
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this)
 }
 
@@ -129,11 +133,11 @@ napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callbac
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
-	auto handle = DBRegistry::OpenDB(path, options);
-	this->column = std::move(handle->column);
-	this->descriptor = std::move(handle->descriptor);
+	auto handleParams = DBRegistry::OpenDB(path, options);
+	this->column = std::move(handleParams->column);
+	this->descriptor = std::move(handleParams->descriptor);
+	this->disableWAL = options.disableWAL;
 	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
-	DEBUG_LOG("%p DBHandle::open dbhandle %p is no longer needed, moved DBDescriptor %p to this handle (ref count = %ld)\n", this, handle.get(), this->descriptor.get(), this->descriptor.use_count())
 }
 
 /**
@@ -144,6 +148,64 @@ bool DBHandle::opened() const {
 		return true;
 	}
 	return false;
+}
+
+/**
+ * Unreferences a transaction log instance.
+ */
+void DBHandle::unrefLog(const std::string& name) {
+	auto it = this->logRefs.find(name);
+	if (it == this->logRefs.end()) {
+		DEBUG_LOG("%p DBHandle::unrefLog Transaction log \"%s\" not found (size=%zu)\n", this, name.c_str(), this->logRefs.size())
+		return;
+	}
+
+	DEBUG_LOG("%p DBHandle::unrefLog Unreferencing transaction log \"%s\" (size=%zu)\n", this, name.c_str(), this->logRefs.size())
+	::napi_delete_reference(this->env, it->second);
+	this->logRefs.erase(it);
+}
+
+/**
+ * Get or create a transaction log instance.
+ */
+napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& name) {
+	napi_value instance;
+
+	// check if we already have it cached
+	auto existingRef = this->logRefs.find(name);
+	if (existingRef != this->logRefs.end()) {
+		napi_status status = ::napi_get_reference_value(env, existingRef->second, &instance);
+
+		if (status == napi_ok && instance != nullptr) {
+			// DEBUG_LOG("%p DBHandle::useLog Returning existing transaction log \"%s\"\n", this, name.c_str())
+			return instance;
+		}
+
+		DEBUG_LOG("%p DBHandle::useLog Removing stale reference to transaction log \"%s\"\n", this, name.c_str())
+		::napi_delete_reference(env, existingRef->second);
+		this->logRefs.erase(name);
+	}
+
+	DEBUG_LOG("%p DBHandle::useLog Creating new transaction log \"%s\"\n", this, name.c_str())
+
+	napi_value exports;
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, this->exportsRef, &exports))
+
+	napi_value args[2];
+	args[0] = jsDatabase;
+
+	napi_value transactionLogCtor;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor))
+
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]))
+
+	NAPI_STATUS_THROWS(::napi_new_instance(env, transactionLogCtor, 2, args, &instance))
+
+	napi_ref ref;
+	NAPI_STATUS_THROWS(::napi_create_reference(env, instance, 0, &ref))
+	this->logRefs.emplace(name, ref);
+
+	return instance;
 }
 
 } // namespace rocksdb_js

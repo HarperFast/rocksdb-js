@@ -30,7 +30,7 @@ export default defineConfig({
 		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
 		include: ['test/**/*.test.ts'],
-		pool: 'threads',
+		pool: process.versions.bun ? 'forks' : 'threads',
 		poolOptions: {
 			threads: {
 				// NOTE: by default, Vitest will run tests in parallel, but
@@ -40,7 +40,7 @@ export default defineConfig({
 		},
 		reporters: ['verbose'],
 		silent: false,
-		testTimeout: 30 * 1000,
+		testTimeout: 30000,
 		watch: false
 	}
 });
