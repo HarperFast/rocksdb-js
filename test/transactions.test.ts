@@ -334,20 +334,20 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} async should get and set timestamp`, () => dbRunner({
 			dbOptions: [ options ]
 		}, async ({ db }) => {
-			const start = Date.now() / 1000 - 1;  // Convert to seconds and subtract 1 second
+			const start = Date.now() - 1000;
 			await db.transaction(async (txn: Transaction) => {
 				let ts = txn.getTimestamp();
 				expect(ts).toBeGreaterThanOrEqual(start);
-				expect(ts).toBeLessThanOrEqual(start + 2);  // 2 seconds
+				expect(ts).toBeLessThanOrEqual(start + 2000);
 
-				const newTs = Date.now() / 1000;  // Convert to seconds
+				const newTs = Date.now();
 				txn.setTimestamp(newTs);
 				ts = txn.getTimestamp();
-				expect(ts).toBeCloseTo(newTs, 6);  // Allow for floating point precision loss
+				expect(ts).toBeCloseTo(newTs, 6);
 
 				txn.setTimestamp();
 				ts = txn.getTimestamp();
-				expect(ts).toBeGreaterThanOrEqual(newTs - 1);  // 1 second
+				expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
 				expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
 				expect(() => txn.setTimestamp('foo' as any)).toThrow('Invalid timestamp, expected positive number');
@@ -563,20 +563,20 @@ for (const { name, options, txnOptions } of testOptions) {
 		it(`${name} sync should get and set timestamp`, () => dbRunner({
 			dbOptions: [ options ]
 		}, async ({ db }) => {
-			const start = Date.now() / 1000 - 1;  // Convert to seconds and subtract 1 second
+			const start = Date.now() - 1000;
 			db.transactionSync((txn: Transaction) => {
 				let ts = txn.getTimestamp();
 				expect(ts).toBeGreaterThanOrEqual(start);
-				expect(ts).toBeLessThanOrEqual(start + 2);  // 2 seconds
+				expect(ts).toBeLessThanOrEqual(start + 2000);
 
-				const newTs = Date.now() / 1000;  // Convert to seconds
+				const newTs = Date.now();
 				txn.setTimestamp(newTs);
 				ts = txn.getTimestamp();
-				expect(ts).toBeCloseTo(newTs, 6);  // Allow for floating point precision loss
+				expect(ts).toBeCloseTo(newTs, 6);
 
 				txn.setTimestamp();
 				ts = txn.getTimestamp();
-				expect(ts).toBeGreaterThanOrEqual(newTs - 1);  // 1 second
+				expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
 				expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
 				expect(() => txn.setTimestamp('foo' as any)).toThrow('Invalid timestamp, expected positive number');
