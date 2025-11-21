@@ -244,19 +244,27 @@ struct BaseAsyncState {
 		rejectRef(nullptr) {}
 
 	virtual ~BaseAsyncState() {
-		// Don't delete references in the destructor - napi_delete_reference will crash
-		// if the reference is still "in use" by V8. Setting to nullptr prevents
-		// accidental reuse. V8 will clean them up automatically during environment teardown.
 		this->resolveRef = nullptr;
 		this->rejectRef = nullptr;
 
 		this->signalExecuteCompleted();
 
-		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work\n", this)
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_async_work(this->env, this->asyncWork), "Failed to delete async work");
-		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work deleted successfully\n", this)
-		this->asyncWork = nullptr;
-		DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work set to nullptr\n", this)
+		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor!");
+	}
+
+	void deleteAsyncWork() {
+		if (this->asyncWork != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work %p\n", this, this->asyncWork)
+			napi_status status = ::napi_delete_async_work(this->env, this->asyncWork);
+			if (status == napi_ok) {
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Successfully deleted async work\n", this)
+				this->asyncWork = nullptr;
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Failed to delete async work (status=%d)\n", this, status)
+			}
+		} else {
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work was already null!\n", this)
+		}
 	}
 
 	/**
@@ -519,6 +527,27 @@ inline uint16_t readUint16BE(const char* buffer) {
 	return (static_cast<uint16_t>(static_cast<uint8_t>(buffer[0])) << 8) |
 	       static_cast<uint16_t>(static_cast<uint8_t>(buffer[1]));
 }
+
+inline void writeDoubleBE(char* buffer, double value) {
+	// Interpret the double's bits as uint64_t and write in big endian
+	uint64_t bits;
+	std::memcpy(&bits, &value, sizeof(double));
+	writeUint64BE(buffer, bits);
+}
+
+inline double readDoubleBE(const char* buffer) {
+	// Read uint64_t in big endian and interpret as double
+	uint64_t bits = readUint64BE(buffer);
+	double value;
+	std::memcpy(&value, &bits, sizeof(double));
+	return value;
+}
+
+/**
+ * Returns the current timestamp as a monotonically increasing timestamp in
+ * nanoseconds (internally) and returns it as milliseconds (double).
+ */
+double getTimestamp();
 
 } // namespace rocksdb_js
 

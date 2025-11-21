@@ -2,7 +2,6 @@
 #define __TRANSACTION_LOG_ENTRY_H__
 
 #include <memory>
-#include <node_api.h>
 #include "transaction_log_store.h"
 
 namespace rocksdb_js {
@@ -34,17 +33,7 @@ struct TransactionLogEntry final {
 	uint32_t size;
 
 	/**
-	 * The node environment.
-	 */
-	napi_env env;
-
-	/**
-	 * A reference to the buffer of the log entry.
-	 */
-	napi_ref bufferRef;
-
-	/**
-	 * Creates a new transaction log entry by copy.
+	 * Creates a new transaction log entry.
 	 */
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
@@ -54,39 +43,8 @@ struct TransactionLogEntry final {
 		store(store),
 		data(data.get()),
 		ownedData(std::move(data)),
-		size(size),
-		env(nullptr),
-		bufferRef(nullptr)
+		size(size)
 	{}
-
-	/**
-	 * Creates a new transaction log entry by reference.
-	 */
-	TransactionLogEntry(
-		std::shared_ptr<TransactionLogStore> store,
-		char* data,
-		uint32_t size,
-		napi_env env,
-		napi_ref bufferRef
-	) :
-		store(store),
-		data(data),
-		ownedData(nullptr),
-		size(size),
-		env(env),
-		bufferRef(bufferRef)
-	{}
-
-	/**
-	 * Destroys the transaction log entry.
-	 */
-	~TransactionLogEntry() {
-		// delete the buffer reference to allow the buffer to be GC'd
-		if (this->bufferRef != nullptr) {
-			::napi_delete_reference(this->env, this->bufferRef);
-			this->bufferRef = nullptr;
-		}
-	}
 };
 
 /**
@@ -97,7 +55,7 @@ struct TransactionLogEntryBatch final {
 	/**
 	 * The timestamp for this batch.
 	 */
-	uint64_t timestamp;
+	double timestamp;
 
 	/**
 	 * The vector of entries to write.
@@ -120,7 +78,7 @@ struct TransactionLogEntryBatch final {
 	 */
 	bool currentEntryHeaderWritten = false;
 
-	TransactionLogEntryBatch(const uint64_t timestamp) :
+	TransactionLogEntryBatch(const double timestamp) :
 		timestamp(timestamp)
 	{}
 

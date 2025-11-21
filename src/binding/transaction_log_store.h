@@ -136,11 +136,6 @@ struct TransactionLogStore final {
 	void close();
 
 	/**
-	 * Writes a batch of transaction log entries to the store.
-	 */
-	uint64_t commit(TransactionLogEntryBatch& batch);
-
-	/**
 	 * Notifies the transaction log store that a RocksDB commit operation has finished, and the transactions sequence number.
 	 */
 	void commitFinished(uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber);
@@ -185,6 +180,11 @@ struct TransactionLogStore final {
 	 * @param sequenceNumber The sequence number of the log file to register.
 	 */
 	void registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
+
+	/**
+	 * Writes a batch of transaction log entries to the store.
+	 */
+	uint64_t writeBatch(TransactionLogEntryBatch& batch);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log store

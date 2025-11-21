@@ -61,7 +61,7 @@ struct TransactionLogFile final {
 	/**
 	 * The size of the block in bytes. This must be an even number.
 	 */
-	uint32_t blockSize = BLOCK_SIZE;
+	uint16_t blockSize = BLOCK_SIZE;
 
 	/**
 	 * The size of the block body in bytes.

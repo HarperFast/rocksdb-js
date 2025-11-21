@@ -197,18 +197,25 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				uint64_t committedPosition;
 
 				if (txnHandle->logEntryBatch) {
-					DEBUG_LOG("%p Transaction::Commit committing log entries for transaction %u\n",
+					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 						txnHandle.get(), txnHandle->id);
-					committedPosition = txnHandle->logEntryBatch->entries[0]->store->commit(*txnHandle->logEntryBatch);
+					auto store = txnHandle->boundLogStore.lock();
+					if (store) {
+						committedPosition = store->writeBatch(*txnHandle->logEntryBatch);
+					} else {
+						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id)
+						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
+					}
 				}
 
 				state->status = txnHandle->txn->Commit();
 				if (txnHandle->logEntryBatch) {
-					txnHandle->logEntryBatch->entries[0]->store->commitFinished(committedPosition, txnHandle->dbHandle->descriptor->db->GetLatestSequenceNumber());
+					auto store = txnHandle->boundLogStore.lock();
+					store->commitFinished(committedPosition, txnHandle->dbHandle->descriptor->db->GetLatestSequenceNumber());
 				}
 
 				if (state->status.ok()) {
-					DEBUG_LOG("%p Transaction::Commit emitted committed event txnId=%u\n", txnHandle.get(), txnHandle->id)
+					DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id)
 					txnHandle->state = TransactionState::Committed;
 					descriptor->notify("committed", nullptr);
 				}
@@ -219,18 +226,20 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
-			DEBUG_LOG("%p Transaction::Commit complete callback entered (status=%d, cancelled=%d)\n",
-				state->handle.get(), status, napi_cancelled)
+			DEBUG_LOG("%p Transaction::Commit complete callback entered (status=%d, txnId=%d)\n",
+				state->handle.get(), status, state->handle->id);
+
+			state->deleteAsyncWork();
 
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					if (state->handle) {
-						DEBUG_LOG("%p Transaction::Commit complete closing txnId=%u\n", state->handle.get(), state->handle->id)
+						DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%u)\n", state->handle.get(), state->handle->id)
 						state->handle->close();
-						DEBUG_LOG("%p Transaction::Commit complete closed txnId=%u\n", state->handle.get(), state->handle->id)
+						DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id)
 					} else {
-						DEBUG_LOG("%p Transaction::Commit complete, but handle is null! txnId=%u\n", state->handle.get(), state->handle->id)
+						DEBUG_LOG("%p Transaction::Commit Complete, but handle is null! (txnId=%u)\n", state->handle.get(), state->handle->id)
 					}
 
 					state->callResolve();
@@ -275,13 +284,22 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
-		committedPosition = (*txnHandle)->logEntryBatch->entries[0]->store->commit(*(*txnHandle)->logEntryBatch);
+		auto store = (*txnHandle)->boundLogStore.lock();
+		if (store) {
+			committedPosition = store->writeBatch(*(*txnHandle)->logEntryBatch);
+		} else {
+			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id)
+			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
+		}
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
 	if ((*txnHandle)->logEntryBatch) {
-		(*txnHandle)->logEntryBatch->entries[0]->store->commitFinished(committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+		auto store = (*txnHandle)->boundLogStore.lock();
+		if (store) {
+			store->commitFinished(committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+		}
 	}
 
 	if (status.ok()) {
@@ -374,14 +392,14 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Retrieves the timestamp of the transaction.
+ * Retrieves the timestamp of the transaction in milliseconds.
  */
 napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_HANDLE("GetTimestamp")
 
 	napi_value result;
-	NAPI_STATUS_THROWS_ERROR(::napi_create_int64(env, (*txnHandle)->startTimestamp, &result), "Failed to get timestamp")
+	NAPI_STATUS_THROWS_ERROR(::napi_create_double(env, (*txnHandle)->startTimestamp, &result), "Failed to get timestamp")
 	return result;
 }
 
@@ -446,28 +464,25 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_TRANSACTION_HANDLE("SetTimestamp")
 
-	int64_t timestamp = 0;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
 	if (type == napi_undefined) {
 		// use current timestamp
-		timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::system_clock::now().time_since_epoch()
-		).count();
+		(*txnHandle)->startTimestamp = rocksdb_js::getTimestamp();
 	} else if (type == napi_number) {
-		NAPI_STATUS_THROWS_ERROR(::napi_get_value_int64(env, argv[0], &timestamp),
+		double timestampMs = 0.0;
+		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
 			"Invalid timestamp, expected positive number");
-		if (timestamp < 0) {
+		if (timestampMs <= 0) {
 			::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
 			return nullptr;
 		}
+		(*txnHandle)->startTimestamp = timestampMs;
 	} else {
 		::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
 		return nullptr;
 	}
-
-	(*txnHandle)->startTimestamp = timestamp;
 
 	NAPI_RETURN_UNDEFINED()
 }

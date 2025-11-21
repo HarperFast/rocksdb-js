@@ -42,9 +42,7 @@ TransactionHandle::TransactionHandle(
 
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
-	this->startTimestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::system_clock::now().time_since_epoch()
-	).count();
+	this->startTimestamp = rocksdb_js::getTimestamp();
 }
 
 /**
@@ -209,7 +207,12 @@ napi_value TransactionHandle::get(
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
-			resolveGetResult(env, "Transaction get failed", state);
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				resolveGetResult(env, "Transaction get failed", state);
+			}
+
 			delete state;
 		},
 		state,     // data

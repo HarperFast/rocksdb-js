@@ -14,7 +14,6 @@ struct TransactionLog final {
 	static napi_value GetLogFileSize(napi_env env, napi_callback_info info);
 	static napi_value GetLastCommittedPosition(napi_env env, napi_callback_info info);
 	static napi_value AddEntry(napi_env env, napi_callback_info info);
-	static napi_value AddEntryCopy(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
 };

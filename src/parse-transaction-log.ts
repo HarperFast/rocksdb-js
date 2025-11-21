@@ -74,7 +74,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 		}
 */
 		const version = 1;
-		const blockSize = 4096;//read(4).readUInt32BE(0);
+		const blockSize = 4096;//read(2).readUInt16BE(0);
 		const blockCount = Math.ceil((size - fileOffset) / blockSize);
 		const blocks: Block[] = Array.from({ length: blockCount });
 		const entries: LogEntry[] = [];
@@ -92,7 +92,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			if (byteCount < 8) {
 				throw new Error(`Invalid block ${i}: expected at least 8 bytes for start timestamp but only read ${byteCount}`);
 			}
-			const startTimestamp = Number(buffer.readBigUInt64BE(0));
+			const startTimestamp = buffer.readDoubleBE(0);
 			byteCount -= 8;
 
 			if (byteCount < 2) {
@@ -101,11 +101,11 @@ export function parseTransactionLog(path: string): TransactionLog {
 			const flags = buffer.readUInt16BE(8);
 			byteCount -= 2;
 
-			if (byteCount < 4) {
-				throw new Error(`Invalid block ${i}: expected at least 4 bytes for data offset but only read ${byteCount}`);
+			if (byteCount < 2) {
+				throw new Error(`Invalid block ${i}: expected at least 2 bytes for data offset but only read ${byteCount}`);
 			}
-			const dataOffset = buffer.readUInt32BE(10);
-			byteCount -= 4;
+			const dataOffset = buffer.readUInt16BE(10);
+			byteCount -= 2;
 
 			blocks[i] = { startTimestamp, flags, dataOffset };
 
@@ -113,15 +113,25 @@ export function parseTransactionLog(path: string): TransactionLog {
 				if (transactionDataLength + byteCount > transactionSize) {
 					throw new Error(`Invalid block ${i}: expected at most ${transactionSize} bytes for transaction data but read ${transactionDataLength}`);
 				}
-				const data = buffer.subarray(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + byteCount);
+				// If `dataOffset` is set and this is NOT a continuation block (first block with CONTINUATION_FLAG),
+				// then it indicates padding - use it to exclude padding from the data
+				// For continuation blocks, dataOffset indicates where continuation ends, but we copy all data
+				let actualDataBytes = byteCount;
+				if (dataOffset > 0 && !(i === 0 && (flags & CONTINUATION_FLAG))) {
+					// This block has padding at the end, use dataOffset to exclude it
+					actualDataBytes = dataOffset;
+				}
+				actualDataBytes = Math.min(actualDataBytes, byteCount);
+
+				const data = buffer.subarray(BLOCK_HEADER_SIZE, BLOCK_HEADER_SIZE + actualDataBytes);
 				transactionData.set(data, transactionDataLength);
-				transactionDataLength += byteCount;
+				transactionDataLength += actualDataBytes;
 			}
 		}
 
 		const length = Math.min(blocks[0]?.dataOffset, transactionDataLength);
 		if ((blocks[0].flags & CONTINUATION_FLAG) && length > 0) {
-			// the first block is a continuation from the previous file
+			// The first block is a continuation from the previous file
 			entries.push({
 				data: transactionData.subarray(0, length),
 				continuation: true,
@@ -134,7 +144,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			if (transactionOffset + 8 > transactionDataLength) {
 				throw new Error(`Invalid transaction ${i}: expected at least 8 bytes for start timestamp but only read ${transactionDataLength - transactionOffset}`);
 			}
-			const timestamp = Number(transactionData.readBigUInt64BE(transactionOffset));
+			const timestamp = transactionData.readDoubleBE(transactionOffset);
 			transactionOffset += 8;
 
 			if (transactionOffset + 4 > transactionDataLength) {

@@ -175,7 +175,7 @@ describe('Transaction Log', () => {
 		}));
 	});
 	describe('addEntry()', () => {
-		it('should add a single small entry within a single block by reference', () => dbRunner(async ({ db, dbPath }) => {
+		it('should add a single small entry within a single block', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 
@@ -190,35 +190,11 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.entries[0].length).toBe(10);
-			expect(info.entries[0].data).toEqual(value);
-		}));
-
-		it('should add a single small entry within a single block by copy', () => dbRunner(async ({ db, dbPath }) => {
-			const log = db.useLog('foo');
-			const value = Buffer.alloc(10, 'a');
-
-			await db.transaction(async (txn) => {
-				log.addEntryCopy(value, txn.id);
-			});
-
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + BLOCK_HEADER_SIZE + TXN_HEADER_SIZE + 10);
-			expect(info.version).toBe(1);
-			expect(info.blockSize).toBe(4096);
-			expect(info.blockCount).toBe(1);
-			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.blocks[0].flags).toBe(0);
-			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(value);
 		}));
@@ -243,17 +219,17 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(3);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
-			expect(info.entries[2].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[2].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[2].length).toBe(10);
 			expect(info.entries[2].data).toEqual(valueC);
 
@@ -278,7 +254,9 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 28) + (TXN_HEADER_SIZE + 100) * 1000);
+			// padding bytes: some blocks need padding when skipping to avoid splitting transaction headers
+			const paddingBytes = 8; // 2 blocks with 4 bytes of padding each (blocks 12 and 25)
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 28) + (TXN_HEADER_SIZE + 100) * 1000 + paddingBytes);
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(28);
@@ -309,14 +287,14 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
 			expect(info.blocks.length).toBe(2);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(5000);
 			expect(info.entries[0].data).toEqual(value);
 		}));
@@ -336,17 +314,17 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(3);
 			expect(info.blocks.length).toBe(3);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
-			expect(info.blocks[2].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[2].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[2].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[2].dataOffset).toBe(0);
 			expect(info.entries.length).toBe(1);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10000);
 			expect(info.entries[0].data).toEqual(value);
 		}));
@@ -369,24 +347,26 @@ describe('Transaction Log', () => {
 			expect(info.blockCount).toBe(2);
 			expect(info.blocks.length).toBe(2);
 
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
 			expect(info.blocks[1].dataOffset).toBe(0);
+
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(5000);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
 
-		it('should split a transaction header across multiple blocks', () => dbRunner(async ({ db, dbPath }) => {
+		it('should not split a transaction header across blocks', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
-			// the transaction header is 12 bytes, but there's only room for 4 bytes in the first block
+			// the transaction header is 12 bytes, but there's only room for 4
+			// more bytes in the first block, so we advance to the next block
 			const valueALength = 4096 - BLOCK_HEADER_SIZE - TXN_HEADER_SIZE - 4;
 			const valueA = Buffer.alloc(valueALength, 'a');
 			const valueB = Buffer.alloc(100, 'b');
@@ -398,23 +378,27 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const info = parseTransactionLog(logPath);
-			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TXN_HEADER_SIZE + valueALength) + (TXN_HEADER_SIZE + 100));
+			// file size includes 4 bytes of padding at the end of block 1 (to
+			// skip to block 2 for the second transaction header)
+			const paddingBytes = 4;
+			expect(info.size).toBe(FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * 2) + (TXN_HEADER_SIZE + valueALength) + paddingBytes + (TXN_HEADER_SIZE + 100));
 			expect(info.version).toBe(1);
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(2);
 			expect(info.blocks.length).toBe(2);
 
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
-			expect(info.blocks[0].dataOffset).toBe(0);
-			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-			expect(info.blocks[1].flags).toBe(CONTINUATION_FLAG);
-			expect(info.blocks[1].dataOffset).toBe(0);
+			// block 0 has 4 bytes of padding, so `dataOffset` indicates the actual data size (4080)
+			expect(info.blocks[0].dataOffset).toBe(4080);
+			expect(info.blocks[1].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
+			expect(info.blocks[1].flags).toBe(0);
+
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(valueALength);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(100);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
@@ -432,8 +416,8 @@ describe('Transaction Log', () => {
 			}
 
 			const txnSize = (TXN_HEADER_SIZE + 10000) * 2000;
-			const numBlocks = Math.ceil(txnSize / (BLOCK_SIZE - BLOCK_HEADER_SIZE));
-			const totalSize = FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * numBlocks) + txnSize;
+			const numBlocks = Math.ceil(txnSize / (BLOCK_SIZE - BLOCK_HEADER_SIZE)) - 1;
+			const totalSize = FILE_HEADER_SIZE + (BLOCK_HEADER_SIZE * numBlocks) + txnSize + TXN_HEADER_SIZE;
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog']);
@@ -473,14 +457,15 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(1);
 			expect(info.blocks.length).toBe(1);
-			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.blocks[0].startTimestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.blocks[0].flags).toBe(0);
 			expect(info.blocks[0].dataOffset).toBe(0);
+
 			expect(info.entries.length).toBe(2);
-			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(valueA);
-			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() / 1000 - 1);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
 		}));
@@ -515,30 +500,30 @@ describe('Transaction Log', () => {
 				expect(info1.entries[i].length).toBe(100);
 				expect(info1.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
 			}
-			expect(info1.entries[info1.entries.length - 1].length).toBe(68);
-			expect(info1.entries[info1.entries.length - 1].data).toEqual(Buffer.alloc(68, 'a'));
+			expect(info1.entries[info1.entries.length - 1].length).toBe(72);
+			expect(info1.entries[info1.entries.length - 1].data).toEqual(Buffer.alloc(72, 'a'));
 			expect(info1.entries[info1.entries.length - 1].partial).toBe(true);
 
 			expect(info2.size).toBe(1000);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(32);
+			expect(info2.blocks[0].dataOffset).toBe(28);
 			expect(info2.entries.length).toBe(10);
-			expect(info2.entries[0].length).toBe(32);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(32, 'a'));
+			expect(info2.entries[0].length).toBe(28);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(28, 'a'));
 			expect(info2.entries[0].continuation).toBe(true);
 			for (let i = 1; i < info2.entries.length - 1; i++) {
 				expect(info2.entries[i].length).toBe(100);
 				expect(info2.entries[i].data).toEqual(Buffer.alloc(100, 'a'));
 			}
-			expect(info2.entries[info2.entries.length - 1].length).toBe(36);
-			expect(info2.entries[info2.entries.length - 1].data).toEqual(Buffer.alloc(36, 'a'));
+			expect(info2.entries[info2.entries.length - 1].length).toBe(44);
+			expect(info2.entries[info2.entries.length - 1].data).toEqual(Buffer.alloc(44, 'a'));
 
-			expect(info3.size).toBe(872);
+			expect(info3.size).toBe(860);
 			expect(info3.blocks.length).toBe(1);
-			expect(info3.blocks[0].dataOffset).toBe(64);
+			expect(info3.blocks[0].dataOffset).toBe(56);
 			expect(info3.entries.length).toBe(8);
-			expect(info3.entries[0].length).toBe(64);
-			expect(info3.entries[0].data).toEqual(Buffer.alloc(64, 'a'));
+			expect(info3.entries[0].length).toBe(56);
+			expect(info3.entries[0].data).toEqual(Buffer.alloc(56, 'a'));
 			expect(info3.entries[0].continuation).toBe(true);
 			for (let i = 1; i < info3.entries.length; i++) {
 				expect(info3.entries[i].length).toBe(100);
@@ -553,7 +538,7 @@ describe('Transaction Log', () => {
 
 			for (let i = 0; i < 2; i++) {
 				await db.transaction(async (txn) => {
-					log.addEntry(Buffer.alloc(961, 'a'), txn.id);
+					log.addEntry(Buffer.alloc(963, 'a'), txn.id);
 				});
 			}
 
@@ -566,19 +551,19 @@ describe('Transaction Log', () => {
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 
-			expect(info1.size).toBe(997);
+			expect(info1.size).toBe(995);
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
 			expect(info1.entries.length).toBe(1);
-			expect(info1.entries[0].length).toBe(961);
-			expect(info1.entries[0].data).toEqual(Buffer.alloc(961, 'a'));
+			expect(info1.entries[0].length).toBe(963);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(963, 'a'));
 
-			expect(info2.size).toBe(997);
+			expect(info2.size).toBe(995);
 			expect(info2.blocks.length).toBe(1);
 			expect(info2.blocks[0].dataOffset).toBe(0);
 			expect(info2.entries.length).toBe(1);
-			expect(info2.entries[0].length).toBe(961);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(961, 'a'));
+			expect(info2.entries[0].length).toBe(963);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(963, 'a'));
 		}));
 
 		it('should rotate if room for the transaction header, but not the entry', () => dbRunner({
@@ -650,16 +635,16 @@ describe('Transaction Log', () => {
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
 			expect(info1.entries.length).toBe(1);
-			expect(info1.entries[0].length).toBe(964);
-			expect(info1.entries[0].data).toEqual(Buffer.alloc(964, 'a'));
+			expect(info1.entries[0].length).toBe(968);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(968, 'a'));
 			expect(info1.entries[0].partial).toBe(true);
 
-			expect(info2.size).toBe(84);
+			expect(info2.size).toBe(76);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(60);
+			expect(info2.blocks[0].dataOffset).toBe(56);
 			expect(info2.entries.length).toBe(1);
-			expect(info2.entries[0].length).toBe(60);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(60, 'a'));
+			expect(info2.entries[0].length).toBe(56);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(56, 'a'));
 			expect(info2.entries[0].continuation).toBe(true);
 		}));
 
@@ -689,32 +674,32 @@ describe('Transaction Log', () => {
 			expect(info1.blocks.length).toBe(1);
 			expect(info1.blocks[0].dataOffset).toBe(0);
 			expect(info1.entries.length).toBe(1);
-			expect(info1.entries[0].length).toBe(964);
-			expect(info1.entries[0].data).toEqual(Buffer.alloc(964, 'a'));
+			expect(info1.entries[0].length).toBe(968);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(968, 'a'));
 			expect(info1.entries[0].partial).toBe(true);
 
 			expect(info2.size).toBe(1000);
 			expect(info2.blocks.length).toBe(1);
-			expect(info2.blocks[0].dataOffset).toBe(2536);
+			expect(info2.blocks[0].dataOffset).toBe(2532);
 			expect(info2.entries.length).toBe(1);
-			expect(info2.entries[0].length).toBe(976);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(976, 'a'));
+			expect(info2.entries[0].length).toBe(980);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(980, 'a'));
 			expect(info2.entries[0].continuation).toBe(true);
 
 			expect(info3.size).toBe(1000);
 			expect(info3.blocks.length).toBe(1);
-			expect(info3.blocks[0].dataOffset).toBe(1560);
+			expect(info3.blocks[0].dataOffset).toBe(1552);
 			expect(info3.entries.length).toBe(1);
-			expect(info3.entries[0].length).toBe(976);
-			expect(info3.entries[0].data).toEqual(Buffer.alloc(976, 'a'));
+			expect(info3.entries[0].length).toBe(980);
+			expect(info3.entries[0].data).toEqual(Buffer.alloc(980, 'a'));
 			expect(info3.entries[0].continuation).toBe(true);
 
-			expect(info4.size).toBe(608);
+			expect(info4.size).toBe(592);
 			expect(info4.blocks.length).toBe(1);
-			expect(info4.blocks[0].dataOffset).toBe(584);
+			expect(info4.blocks[0].dataOffset).toBe(572);
 			expect(info4.entries.length).toBe(1);
-			expect(info4.entries[0].length).toBe(584);
-			expect(info4.entries[0].data).toEqual(Buffer.alloc(584, 'a'));
+			expect(info4.entries[0].length).toBe(572);
+			expect(info4.entries[0].data).toEqual(Buffer.alloc(572, 'a'));
 			expect(info4.entries[0].continuation).toBe(true);
 		}));
 
@@ -785,8 +770,6 @@ describe('Transaction Log', () => {
 			await db.transaction(async (txn) => {
 				expect(() => log.addEntry(undefined as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
 				expect(() => log.addEntry([] as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
-				expect(() => log.addEntryCopy(undefined as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
-				expect(() => log.addEntryCopy([] as any, txn.id)).toThrowError(new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer'));
 			});
 		}));
 

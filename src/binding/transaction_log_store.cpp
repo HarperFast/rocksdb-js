@@ -51,126 +51,6 @@ void TransactionLogStore::close() {
 	this->purge();
 }
 
-uint64_t TransactionLogStore::commit(TransactionLogEntryBatch& batch) {
-	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
-		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
-
-	std::lock_guard<std::mutex> lock(this->storeMutex);
-
-	uint64_t sequencePosition = this->nextSequencePosition;
-	// write entries across multiple log files until all are written
-	while (!batch.isComplete()) {
-		TransactionLogFile* logFile = nullptr;
-
-		// get the current log file and rotate if needed
-		while (logFile == nullptr && this->currentSequenceNumber) {
-			logFile = this->getLogFile(this->currentSequenceNumber);
-
-			// we found a log file, check if it's already at max size
-			if (this->maxSize == 0 || logFile->size < this->maxSize) {
-				try {
-					logFile->open();
-					break;
-				} catch (const std::exception& e) {
-					DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
-					// move to next sequence number and try again
-					logFile = nullptr;
-				}
-			}
-
-			// rotate to next sequence if file open failed or file is at max size
-			// this prevents infinite loops when file open fails (even with maxSize=0)
-			if (logFile == nullptr || this->maxSize > 0) {
-				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxSize=%u)\n",
-					this, this->name.c_str(), static_cast<void*>(logFile), this->maxSize)
-				this->currentSequenceNumber = this->nextSequenceNumber++;
-				logFile = nullptr;
-			}
-		}
-		if (!sequencePosition) {
-			// if this wasn't initialized, we do so now
-			sequencePosition = this->nextSequencePosition;
-		}
-
-		// ensure we have a valid log file before writing
-		if (!logFile) {
-			DEBUG_LOG("%p TransactionLogStore::commit ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
-			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
-		}
-
-		uint32_t sizeBefore = logFile->size;
-
-		DEBUG_LOG("%p TransactionLogStore::commit Writing to log file for store \"%s\" (seq=%u, size=%u, maxSize=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxSize)
-
-		// write as much as possible to this file
-		logFile->writeEntries(batch, this->maxSize);
-
-		DEBUG_LOG("%p TransactionLogStore::commit Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
-
-		// if no progress was made, rotate to the next file to avoid infinite loop
-		if (logFile->size == sizeBefore) {
-			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
-			this->currentSequenceNumber = this->nextSequenceNumber++;
-		}
-		// if we've reached or exceeded the max size, rotate to the next file
-		else if (this->maxSize > 0 && logFile->size >= this->maxSize) {
-			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
-			this->currentSequenceNumber = this->nextSequenceNumber++;
-		}
-		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
-	}
-	uncommittedTransactionPositions.insert(this->nextSequencePosition);
-
-	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
-	return sequencePosition;
-}
-
-void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
-	// This written transaction entry is no longer uncommitted, so we can remove it
-	uncommittedTransactionPositions.erase(position);
-	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
-	uint64_t fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
-	// update the current position handle with latest fully committed position
-	positionHandle->position = fullyCommittedPosition;
-	// now setup a sequence position that matches a rocksdb sequence number to our log position
-	SequencePosition sequencePosition;
-	sequencePosition.position = fullyCommittedPosition;
-	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
-	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
-	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
-	// an exact map of every pairing, but enough that we won't lose more than half of what has to be replayed since the last flush
-	unsigned int count = nextSequencePositionsCount++;
-	int index = 0;
-	for (; index < 19; index++) {
-	    if ((count >> index) & 1) break;
-	}
-	// record in the array (is there possibly some concern about concurrent writes causing memory tearing?)
-	recentlyCommittedSequencePositions[index] = sequencePosition;
-}
-
-void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
-	uint64_t latestFlushedPosition = 0;
-	// the latest sequence number that has been flushed according to this flush update
-	for (int i; i < 20; i++) {
-		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
-		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
-			latestFlushedPosition = sequencePosition.position;
-		}
-	}
-	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
-	// a "log" file, but the API provides all the functionality we need to just write a single word
-	if (!flushedTrackerFile) {
-		std::ostringstream oss;
-		oss << this->path << ".txnflush";
-		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
-		flushedTrackerFile->open();
-	}
-	// save the position of fully flushed transaction logs (future replay will start from here)
-	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
-}
-
 TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
@@ -314,6 +194,127 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
 		this, path.string().c_str(), sequenceNumber)
+}
+
+uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
+	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
+		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
+
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+
+	uint64_t sequencePosition = this->nextSequencePosition;
+	// write entries across multiple log files until all are written
+	while (!batch.isComplete()) {
+		TransactionLogFile* logFile = nullptr;
+
+		// get the current log file and rotate if needed
+		while (logFile == nullptr && this->currentSequenceNumber) {
+			logFile = this->getLogFile(this->currentSequenceNumber);
+
+			// we found a log file, check if it's already at max size
+			if (this->maxSize == 0 || logFile->size < this->maxSize) {
+				try {
+					logFile->open();
+					break;
+				} catch (const std::exception& e) {
+					DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
+					// move to next sequence number and try again
+					logFile = nullptr;
+				}
+			}
+
+			// rotate to next sequence if file open failed or file is at max size
+			// this prevents infinite loops when file open fails (even with maxSize=0)
+			if (logFile == nullptr || this->maxSize > 0) {
+				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxSize=%u)\n",
+					this, this->name.c_str(), static_cast<void*>(logFile), this->maxSize)
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+				logFile = nullptr;
+			}
+		}
+
+		if (!sequencePosition) {
+			// if this wasn't initialized, we do so now
+			sequencePosition = this->nextSequencePosition;
+		}
+
+		// ensure we have a valid log file before writing
+		if (!logFile) {
+			DEBUG_LOG("%p TransactionLogStore::commit ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
+			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
+		}
+
+		uint32_t sizeBefore = logFile->size;
+
+		DEBUG_LOG("%p TransactionLogStore::commit Writing to log file for store \"%s\" (seq=%u, size=%u, maxSize=%u)\n",
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxSize)
+
+		// write as much as possible to this file
+		logFile->writeEntries(batch, this->maxSize);
+
+		DEBUG_LOG("%p TransactionLogStore::commit Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
+
+		// if no progress was made, rotate to the next file to avoid infinite loop
+		if (logFile->size == sizeBefore) {
+			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		}
+		// if we've reached or exceeded the max size, rotate to the next file
+		else if (this->maxSize > 0 && logFile->size >= this->maxSize) {
+			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		}
+		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
+	}
+	uncommittedTransactionPositions.insert(this->nextSequencePosition);
+
+	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
+	return sequencePosition;
+}
+
+void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
+	// This written transaction entry is no longer uncommitted, so we can remove it
+	uncommittedTransactionPositions.erase(position);
+	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
+	uint64_t fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
+	// update the current position handle with latest fully committed position
+	positionHandle->position = fullyCommittedPosition;
+	// now setup a sequence position that matches a rocksdb sequence number to our log position
+	SequencePosition sequencePosition;
+	sequencePosition.position = fullyCommittedPosition;
+	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
+	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
+	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
+	// an exact map of every pairing, but enough that we won't lose more than half of what has to be replayed since the last flush
+	unsigned int count = nextSequencePositionsCount++;
+	int index = 0;
+	for (; index < 19; index++) {
+	    if ((count >> index) & 1) break;
+	}
+	// record in the array (is there possibly some concern about concurrent writes causing memory tearing?)
+	recentlyCommittedSequencePositions[index] = sequencePosition;
+}
+
+void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	uint64_t latestFlushedPosition = 0;
+	// the latest sequence number that has been flushed according to this flush update
+	for (int i; i < 20; i++) {
+		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
+		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
+			latestFlushedPosition = sequencePosition.position;
+		}
+	}
+	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
+	// a "log" file, but the API provides all the functionality we need to just write a single word
+	if (!flushedTrackerFile) {
+		std::ostringstream oss;
+		oss << this->path << ".txnflush";
+		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
+		flushedTrackerFile->open();
+	}
+	// save the position of fully flushed transaction logs (future replay will start from here)
+	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(

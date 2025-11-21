@@ -385,8 +385,8 @@ permitted.
 
 #### `txn.getTimestamp(): number`
 
-Retrieves the transaction start timestamp which defaults to the time at which
-the transaction was created.
+Retrieves the transaction start timestamp in seconds as a decimal. It defaults
+to the time at which the transaction was created.
 
 #### `txn.id`
 
@@ -398,7 +398,14 @@ unique to the RocksDB database path, regardless the database name/column family.
 #### `txn.setTimestamp(ts: number?): void`
 
 Overrides the transaction start timestamp. If called without a timestamp, it
-will set the timestamp to the current time.
+will set the timestamp to the current time. The value must be in seconds with
+higher precision in the decimal.
+
+```typescript
+await db.transaction(async (txn) => {
+  txn.setTimestamp(Date.now() / 1000);
+});
+```
 
 ## Events
 
@@ -680,7 +687,6 @@ automatically written to disk right before the transaction is committed. You may
 add multiple enties per transaction. The underlying architecture is thread safe.
 
 - `log.addEntry()`
-- `log.addEntryCopy()`
 
 #### `log.addEntry(data, transactionId): void`
 
@@ -689,9 +695,6 @@ Adds an entry to the transaction log.
 - `data: Buffer | UInt8Array` The entry data to store. There is no inherent
   limit beyond what Node.js can handle.
 - `transactionId: Number` A related transaction used to batch entries on commit.
-
-Note that the `data` is queued by reference, so you could modify before it has
-been committed. If you need to reuse the buffer, use `log.addEntryCopy()`.
 
 ```typescript
 const log = db.useLog('foo');
@@ -710,6 +713,7 @@ await db.transaction(async (txn) => {
 });
 ```
 
+<<<<<<< HEAD
 #### `log.addEntryCopy(data, transactionId): void`
 
 Copy the entry data and add it to the transaction log.
