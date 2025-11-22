@@ -80,15 +80,17 @@ void TransactionLogFile::openFile() {
 	this->size = static_cast<size_t>(fileSize.QuadPart);
 }
 
-MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
+	MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
 	if (!memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", size);
 		HANDLE mh;
-		mh = CreateFileMapping(this->fileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
+		mh = CreateFileMappingW(this->fileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
 		if (!mh)
 		{
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
-			throw std::runtime_error("Failed to CreateFileMapping: " + error);
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to CreateFileMapping: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
 			return NULL;
 		}
 		// map the memory object into our address space
@@ -97,15 +99,18 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
 		if (!map) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to MapViewOfFile: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
 			CloseHandle(mh);
-			throw std::runtime_error("Failed to MapViewOfFile: " + error);
 			return NULL;
 		}
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap mapped to: %p\n", map);
 		memoryMap = new MemoryMap(map, size);
 		memoryMap->mapHandle = mh;
 	}
 	return memoryMap;
 }
+
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0 && ::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
