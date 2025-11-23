@@ -66,9 +66,9 @@ void TransactionLogFile::openFile() {
 	this->size = st.st_size;
 }
 
-MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
+MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!memoryMap) {
-		void* map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		void* map = mmap(NULL, fileSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
 		if (!map) return nullptr;
 		// If successful, return a MemoryMap object for tracking references.
@@ -76,8 +76,9 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
 		// destructor. Removing files that are memory mapped is perfectly fine,
 		// and the memory map can be safely used indefinitely (the file descriptor
 		// doesn't need to be kept open either).
-		memoryMap = new MemoryMap(map, size);
+		memoryMap = new MemoryMap(map, fileSize);
 	}
+	memoryMap->fileSize = fileSize;
 	return memoryMap;
 }
 
@@ -125,11 +126,11 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	return static_cast<int64_t>(::write(this->fd, buffer, size));
 }
 
-MemoryMap::MemoryMap(void* map, uint32_t size) : map(map), size(size) {}
+MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
 
 MemoryMap::~MemoryMap()
 {
-	munmap(map, size);
+	munmap(map, mapSize);
 }
 
 } // namespace rocksdb_js

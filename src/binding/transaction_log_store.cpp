@@ -88,7 +88,9 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 		return nullptr;
 	}
 	logFile->open();
-	return logFile->getMemoryMap(maxSize);
+	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
+		maxSize : // if it is the most current log, it will be growing so we need to allocate the max size
+		logFile->size); // otherwise it is frozen, use the file size
 }
 
 uint32_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {

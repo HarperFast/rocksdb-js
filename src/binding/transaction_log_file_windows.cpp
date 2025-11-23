@@ -80,7 +80,7 @@ void TransactionLogFile::openFile() {
 	this->size = static_cast<size_t>(fileSize.QuadPart);
 }
 
-	MemoryMap* TransactionLogFile::getMemoryMap(uint32_t size) {
+MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", size);
 		HANDLE mh;
@@ -95,7 +95,7 @@ void TransactionLogFile::openFile() {
 		}
 		// map the memory object into our address space
 		// note that MapViewOfFileEx can be used if we wanted to suggest an address
-		void* map = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, size);
+		void* map = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, fileSize);
 		if (!map) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
@@ -105,9 +105,10 @@ void TransactionLogFile::openFile() {
 			return NULL;
 		}
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap mapped to: %p\n", map);
-		memoryMap = new MemoryMap(map, size);
+		memoryMap = new MemoryMap(map, fileSize);
 		memoryMap->mapHandle = mh;
 	}
+	memoryMap->fileSize = fileSize;
 	return memoryMap;
 }
 
@@ -219,7 +220,7 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 	return message;
 }
 
-MemoryMap::MemoryMap(void* map, uint32_t size) : map(map), size(size) {}
+MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
 
 MemoryMap::~MemoryMap() {
 	UnmapViewOfFile(map);

@@ -12,6 +12,10 @@ namespace rocksdb_js {
 
 TransactionLogFile::~TransactionLogFile() {
 	this->close();
+	if (memoryMap && --memoryMap->refCount == 0) {
+		// if there are no more references to the memory map, unmap it
+		delete memoryMap;
+	}
 }
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {

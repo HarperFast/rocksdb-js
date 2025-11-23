@@ -222,13 +222,28 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	}
 	memoryMap->refCount++;
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->size, memoryMap->map, [](napi_env env, void* data, void* hint) {
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
 		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
 		if (--memoryMap->refCount == 0) {
 			// if there are no more references to the memory map, unmap it
 			delete memoryMap;
 		}
+		int64_t memoryUsage;
+		// re-adjust back
+		napi_adjust_external_memory(env, memoryMap->fileSize, &memoryUsage);
 	}, memoryMap, &result));
+	int64_t memoryUsage = memoryMap->fileSize;
+	// We need to adjust the tracked external memory after creating the external buffer.
+	// More external memory "pressure" causes V8 to more aggressively garbage collect,
+	// and with lots of external memory, this can be detrimental to performance.
+	// And this is really should *not* be counted as external memory, because it is
+	// a memory map of OS-owner memory, not process owned memory.
+	// However, I am doubtful this is really implemented effectively in V8, these external
+	// memory blocks do still seem to induce extra garbage collection. Still we call this,
+	// because that's what we are supposed to do, and maybe eventually V8 will handle it
+	// better.
+	napi_adjust_external_memory(env, -memoryUsage, &memoryUsage);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
 	return result;
 }
 

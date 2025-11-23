@@ -129,7 +129,7 @@ struct TransactionLogFile final {
 	/**
 	 * Return a memory map of the file and mark it as in use
 	 */
-	MemoryMap* getMemoryMap(uint32_t size);
+	MemoryMap* getMemoryMap(uint32_t fileSize);
 
 	/**
 	 * Platform specific function that writes data to the log file.
@@ -231,14 +231,18 @@ struct MemoryMap final
 		HANDLE mapHandle;
 	#endif
 	/**
-	 * The size of the memory map.
+	 * The size of the memory map that has been mapped.
 	 **/
-	uint32_t size = 0;
+	uint32_t mapSize = 0;
+	/**
+	 * The size of the file (while it is being written, this is the max file size, but when done, it can't expand, so we set the file size)
+	 **/
+	uint32_t fileSize = 0;
 
 	/**
 	 * The count of references to the memory map. Not using an std::shared_ptr here because memory maps don't have their own destructor
 	 */
-	std::atomic<unsigned int> refCount = 0;
+	std::atomic<unsigned int> refCount = 1; // start with one for the reference from TransactionLogFile
 
 	MemoryMap(void* map, uint32_t size);
 	~MemoryMap();
