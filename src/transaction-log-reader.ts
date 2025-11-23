@@ -70,6 +70,7 @@ export class TransactionLogReader {
 			dataView = logBuffer.dataView;
 			blockTimestamp = dataView.getFloat64(0);
 		}
+		let blockSizePower = 12;
 		let position = 0;
 		// Now do a binary search in the log buffer to find the first block that precedes the start timestamp.
 		// We do a stable positioning binary search instead of a traditional iterative split binary search, which means
@@ -83,6 +84,11 @@ export class TransactionLogReader {
 		// skipped because the next (pivot + 2^n) is outside the size bounds, so this provides a performance/acceleration bias
 		// towards newer entries, which are expected to be searched much more frequently.
 		for (let shift = 23; shift >= BLOCK_SIZE_BITS; shift--) {
+			blockSizePower = 12;//logBuffer[position];
+			if (shift < blockSizePower) {
+				// We are at the block size, can't divide and pivot anymore, must sequentially search from here
+				break;
+			}
 			const pivotSize = 1 << shift;
 			position += pivotSize;
 			if (position < size) {
@@ -133,7 +139,10 @@ export class TransactionLogReader {
 						}
 						while(position < size) {
 							// advance to the next entry, reading the timestamp and the data
-							timestamp = dataView.getFloat64(position);
+							do {
+								timestamp = dataView.getFloat64(position);
+								// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
+							} while (timestamp < 1 && ++position < size);
 							if (!timestamp) {
 								// we have gone beyond the last transaction and reached the end
 								return { done: true, value: undefined };
@@ -154,59 +163,62 @@ export class TransactionLogReader {
 								matchesRange = timestamp >= start! && timestamp < end!;
 							}
 							let entryEnd = position + length;
-							let firstBlock = position >>> BLOCK_SIZE_BITS;
-							let lastBlock = entryEnd >>> BLOCK_SIZE_BITS;
-							let spanBlockHeaders = lastBlock - firstBlock;
-							let lastSpanBlockHeaders = 0;
-							while(spanBlockHeaders > lastSpanBlockHeaders) {
-								lastSpanBlockHeaders = spanBlockHeaders;
-								// recompute the end of the entry based on the number of block headers we have to traverse
-								entryEnd = position + length + spanBlockHeaders * 14;
-								lastBlock = entryEnd >>> BLOCK_SIZE_BITS;
-								spanBlockHeaders = lastBlock - firstBlock;
-							}
-							if (matchesRange) {
-								let data: Buffer;
-								if (lastBlock === firstBlock) {
+							let blockEnd = ((position >> blockSizePower) + 1) << blockSizePower;
+
+							let data: Buffer;
+							if (entryEnd <= blockEnd) {
+								if (matchesRange) {
 									// fits in the same block, just subarray the data out
 									data = logBuffer!.subarray(position, entryEnd);
-									position = entryEnd;
-								} else {
-									// the entry data is split into multiple blocks, need to collect and concatenate it
-									let blockIndex = firstBlock + 1;
-									let parts: Buffer[] = [logBuffer.subarray(position, blockIndex << BLOCK_SIZE_BITS)];
-									do {
-										const start = (blockIndex << BLOCK_SIZE_BITS) + 14;
-										blockIndex++;
-										position = Math.min(blockIndex << BLOCK_SIZE_BITS, entryEnd);
-										parts.push(logBuffer.subarray(start, position));
-										if (position >= size) {
-											// move to the next block
-											logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
-											let latestLogId = loadLastPosition();
-											if (latestLogId > logBuffer.logId) {
-												size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
-											}
-											position = 0;
+								}
+								position = entryEnd;
+							} else {
+								// the entry data is split into multiple blocks, need to collect and concatenate it
+								let parts: Buffer[];
+								if (matchesRange) {
+									parts = [logBuffer.subarray(position, blockEnd)];
+								}
+								do {
+									// blockSizePower = logBuffer[blockEnd + 1];
+									const start = blockEnd + 14;
+									entryEnd += 14;
+									blockEnd += 1 << blockSizePower;
+									position = Math.min(blockEnd, entryEnd);
+									if (matchesRange) {
+										parts!.push(logBuffer.subarray(start, position));
+									}
+									if (position >= size) {
+										// move to the next log file
+										logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+										let latestLogId = loadLastPosition();
+										if (latestLogId > logBuffer.logId) {
+											size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
 										}
-									} while (position < entryEnd);
-									data = Buffer.concat(parts, length);
+										position = 0;
+									}
+								} while (position < entryEnd);
+								if (matchesRange) {
+									data = Buffer.concat(parts!, length);
 								}
-								if (++lastBlock << BLOCK_SIZE_BITS < position + 12) {
-									position = (lastBlock << BLOCK_SIZE_BITS) + 14;
-								}
+							}
+							if (blockEnd < position + 12) {
+								// we don't ever split a transaction header, so if we are close to the end
+								// skip ahead
+								// blockSizePower = logBuffer[blockEnd + 1];
+								position = blockEnd + 14;
+							}
+							if (matchesRange) {
 								return {
 									done: false,
 									value: {
 										timestamp,
-										data
+										data: data!
 									}
-								}
-							} else if (lastBlock !== firstBlock) {
-								const blockTimestamp = dataView.getFloat64(lastBlock << BLOCK_SIZE_BITS);
-								if (blockTimestamp >= end) {
-									return { done: true, value: undefined };
-								}
+								};
+							}
+							blockTimestamp = dataView.getFloat64(position);
+							if (blockTimestamp >= end!) {
+								return { done: true, value: undefined };
 							}
 							position = entryEnd;
 						}

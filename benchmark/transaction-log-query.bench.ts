@@ -14,17 +14,19 @@ describe('transaction-log-query', () => {
 				async setup(ctx) {
 					const db = ctx.db;
 					const log = db.useLog('0');
-					ctx.queryLog = new TransactionLogReader(log);
+					global.queryLog = ctx.queryLog = new TransactionLogReader(log);
 					const value = Buffer.alloc(100, 'a');
-					for (let i = 0; i < 10; i++) {
+					ctx.start = Date.now();
+					for (let i = 0; i < 40; i++) {
 						await db.transaction(async (txn) => {
-							log.addEntryCopy(value, txn.id);
+							log.addEntry(value, txn.id);
 						});
+						await new Promise(resolve => setTimeout(resolve, 10));
 					}
+					ctx.duration = Date.now() - ctx.start;
 				},
-				async bench({ db, data, queryLog }) {
-					for (const item of queryLog.query({start: 10, end: 1000000000000000})) {
-					}
+				async bench({ db, data, queryLog, start, duration }) {
+					let result = Array.from(queryLog.query({start: start + Math.random() * duration}));
 				}
 			});
 
@@ -32,14 +34,13 @@ describe('transaction-log-query', () => {
 				setup(ctx) {
 					let start = Date.now();
 					const value = Buffer.alloc(100, 'a');
-					for (let i = 0; i < 10; i++) {
+					for (let i = 0; i < 40; i++) {
 						ctx.db.putSync((start + i) as unknown as string, value);
 					}
 				},
 				async bench({ db, data }) {
 					// @ts-ignore
-					for (const item of db.getRange({start: 10, end: 1000000000000000})) {
-					}
+					let result = Array.from(db.getRange({}));
 				}
 			});
 		});
