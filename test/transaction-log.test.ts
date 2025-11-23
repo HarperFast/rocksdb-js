@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
+import { TransactionLogReader, RocksDatabase } from '../src';
 
 const {
 	BLOCK_HEADER_SIZE,
@@ -100,7 +101,79 @@ describe('Transaction Log', () => {
 			});
 		}));
 	});
+	describe('getSequencedLogs()/getMemoryMapOfFile', () => {
+		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo-seq');
+			const value = Buffer.alloc(10, 'a');
 
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const positionBuffer = log.getLastCommittedPosition();
+			const dataView = new DataView(positionBuffer.buffer);
+			expect(dataView.getUint32(0)).toBeGreaterThan(10);
+			const sequenceNumber = dataView.getUint32(1);
+			expect(sequenceNumber).toBe(1);
+
+			const buffer = log.getMemoryMapOfFile(1);
+			expect(buffer.length).toBe(0x1000000);
+			//expect(buffer.slice(0, 4).toString()).toBe('WOOF');
+		}));
+	});
+	describe('getRange() from TransactionLogReader', () => {
+		it('should query a transaction log', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const startTime = Date.now() - 1000;
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+
+			const logReader = new TransactionLogReader(log);
+			const queryIterable = logReader.query({ start: startTime, end: Date.now() });
+			const queryResults = Array.from(queryIterable);
+			expect(queryResults.length).toBe(1);
+		}));
+		it('should query a transaction log with multiple log instances', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const startTime = Date.now() - 1000;
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const log2 = db.useLog('foo');
+
+			const logReader = new TransactionLogReader(log);
+			let queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(1);
+			const logReader2 = new TransactionLogReader(log2);
+			const logReader3 = new TransactionLogReader(log2);
+			queryResults = Array.from(logReader2.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(1);
+			queryResults = Array.from(logReader3.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(1);
+		}));
+		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const startTime = Date.now() - 1000;
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			const logReader = new TransactionLogReader(log);
+			let queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(1);
+			db.close();
+			db = RocksDatabase.open(dbPath);
+			let log2 = db.useLog('foo');
+			let logReader2 = new TransactionLogReader(log2);
+			let queryResults2 = Array.from(logReader2.query({ start: startTime, end: Date.now(), readUncommitted: true }));
+			expect(queryResults2.length).toBe(1);
+			queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(1);
+
+		}));
+	});
 	describe('addEntry()', () => {
 		it('should add a single small entry within a single block', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
@@ -131,6 +204,7 @@ describe('Transaction Log', () => {
 			const valueA = Buffer.alloc(10, 'a');
 			const valueB = Buffer.alloc(10, 'b');
 			const valueC = Buffer.alloc(10, 'c');
+			const startTime = Date.now() - 1000;
 
 			await db.transaction(async (txn) => {
 				log.addEntry(valueA, txn.id);
@@ -158,11 +232,19 @@ describe('Transaction Log', () => {
 			expect(info.entries[2].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[2].length).toBe(10);
 			expect(info.entries[2].data).toEqual(valueC);
+
+			const logReader = new TransactionLogReader(log);
+			const queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(3);
+			expect(queryResults[0].data).toEqual(valueA);
+			expect(queryResults[1].data).toEqual(valueB);
+			expect(queryResults[2].data).toEqual(valueC);
 		}));
 
 		it('should add several entries', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
+			const startTime = Date.now() - 1000;
 
 			await db.transaction(async (txn) => {
 				for (let i = 0; i < 1000; i++) {
@@ -179,6 +261,13 @@ describe('Transaction Log', () => {
 			expect(info.blockSize).toBe(4096);
 			expect(info.blockCount).toBe(28);
 			expect(info.entries.length).toBe(1000);
+
+			const logReader = new TransactionLogReader(log);
+			const queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			expect(queryResults.length).toBe(1000);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[1].data).toEqual(value);
+			expect(queryResults[900].data).toEqual(value);
 		}));
 
 		it('should add a large entry across two blocks', () => dbRunner({

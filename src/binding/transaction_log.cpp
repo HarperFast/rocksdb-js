@@ -4,6 +4,8 @@
 #include "transaction_log_handle.h"
 #include "macros.h"
 #include "util.h"
+#include <stdlib.h>
+#include <fcntl.h>
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -171,24 +173,78 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Get the size of a sequenced log file.
+ */
+napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	uint32_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, fileSize, &result));
+	return result;
+}
+
+/**
+ * Return a buffer with the status of the sequenced log file.
+ */
+napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
+	PositionHandle* lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition();
+	napi_value result;
+	lastCommittedPosition->refCount++;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, lastCommittedPosition, [](napi_env env, void* data, void* hint) {
+		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
+		unsigned int refCount = lastCommittedPosition->refCount;
+		DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup refCount %u\n", refCount);
+		if (--lastCommittedPosition->refCount == 0) {
+			delete lastCommittedPosition;
+		}
+	}, nullptr, &result));
+	return result;
+}
+
+/**
  * Gets the range of the transaction log.
  */
-napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("Query")
-
-	// TODO:
-	// - create a buffer for query() to populate
-	// - bind the buffer to napi_create_external_buffer()
-
-	try {
-		(*txnLogHandle)->query();
-	} catch (const std::exception& e) {
-		::napi_throw_error(env, nullptr, e.what());
+napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	if (!memoryMap)
+	{
+		::napi_throw_error(env, nullptr, "Unable to create memory map for sequence number");
 		return nullptr;
 	}
-
-	NAPI_RETURN_UNDEFINED()
+	memoryMap->refCount++;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
+		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
+		if (--memoryMap->refCount == 0) {
+			// if there are no more references to the memory map, unmap it
+			delete memoryMap;
+		}
+		int64_t memoryUsage;
+		// re-adjust back
+		napi_adjust_external_memory(env, memoryMap->fileSize, &memoryUsage);
+	}, memoryMap, &result));
+	int64_t memoryUsage = memoryMap->fileSize;
+	// We need to adjust the tracked external memory after creating the external buffer.
+	// More external memory "pressure" causes V8 to more aggressively garbage collect,
+	// and with lots of external memory, this can be detrimental to performance.
+	// And this is really should *not* be counted as external memory, because it is
+	// a memory map of OS-owner memory, not process owned memory.
+	// However, I am doubtful this is really implemented effectively in V8, these external
+	// memory blocks do still seem to induce extra garbage collection. Still we call this,
+	// because that's what we are supposed to do, and maybe eventually V8 will handle it
+	// better.
+	napi_adjust_external_memory(env, -memoryUsage, &memoryUsage);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
+	return result;
 }
 
 
@@ -198,7 +254,9 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";

@@ -17,10 +17,21 @@ TransactionLogStore::TransactionLogStore(
 	path(path),
 	maxSize(maxSize),
 	retentionMs(retentionMs)
-{}
+{
+	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
+	positionHandle = new PositionHandle();
+	for (int i = 0; i < 20; i++) { // initialize recent commits to not match until values are entered
+		recentlyCommittedSequencePositions[i].position = 0;
+		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match commit
+	}
+}
 
 TransactionLogStore::~TransactionLogStore() {
 	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
+	if (--positionHandle->refCount == 0) {
+		DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore delete positionHandle\n", this);
+		delete positionHandle;
+	}
 	this->close();
 }
 
@@ -60,9 +71,42 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 		auto logFilePath = this->path / oss.str();
 		logFile = new TransactionLogFile(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
+		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
+		if (this->uncommittedTransactionPositions.empty()) {
+			this->uncommittedTransactionPositions.insert(this->nextSequencePosition);
+		}
 	}
 
 	return logFile;
+}
+
+MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	auto it = this->sequenceFiles.find(logSequenceNumber);
+	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+	if (!logFile) {
+		return nullptr;
+	}
+	logFile->open();
+	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
+		maxSize : // if it is the most current log, it will be growing so we need to allocate the max size
+		logFile->size); // otherwise it is frozen, use the file size
+}
+
+uint32_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	auto it = this->sequenceFiles.find(logSequenceNumber);
+	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+	if (!logFile) {
+		return 0;
+	}
+	logFile->open();
+	return logFile->size;
+}
+
+PositionHandle* TransactionLogStore::getLastCommittedPosition() {
+	std::lock_guard<std::mutex> lock(this->storeMutex);
+	return this->positionHandle;
 }
 
 void TransactionLogStore::query() {
@@ -141,11 +185,13 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
 	auto logFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
-	this->sequenceFiles[sequenceNumber] = std::move(logFile);
 
-	if (sequenceNumber > this->currentSequenceNumber) {
+	if (sequenceNumber >= this->currentSequenceNumber) {
+		logFile->open();
 		this->currentSequenceNumber = sequenceNumber;
+		nextSequencePosition = ((uint64_t) sequenceNumber << 32) | logFile->size;
 	}
+	this->sequenceFiles[sequenceNumber] = std::move(logFile);
 
 	// update next sequence number to be one higher than the highest existing
 	if (sequenceNumber > this->nextSequenceNumber) {
@@ -156,12 +202,13 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this, path.string().c_str(), sequenceNumber)
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
+uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
 
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
+	uint64_t sequencePosition = this->nextSequencePosition;
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		TransactionLogFile* logFile = nullptr;
@@ -192,6 +239,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			}
 		}
 
+		if (!sequencePosition) {
+			// if this wasn't initialized, we do so now
+			sequencePosition = this->nextSequencePosition;
+		}
+
 		// ensure we have a valid log file before writing
 		if (!logFile) {
 			DEBUG_LOG("%p TransactionLogStore::commit ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
@@ -219,9 +271,56 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
+		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
 	}
+	uncommittedTransactionPositions.insert(this->nextSequencePosition);
 
 	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
+	return sequencePosition;
+}
+
+void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
+	// This written transaction entry is no longer uncommitted, so we can remove it
+	uncommittedTransactionPositions.erase(position);
+	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
+	uint64_t fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
+	// update the current position handle with latest fully committed position
+	positionHandle->position = fullyCommittedPosition;
+	// now setup a sequence position that matches a rocksdb sequence number to our log position
+	SequencePosition sequencePosition;
+	sequencePosition.position = fullyCommittedPosition;
+	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
+	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
+	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
+	// an exact map of every pairing, but enough that we won't lose more than half of what has to be replayed since the last flush
+	unsigned int count = nextSequencePositionsCount++;
+	int index = 0;
+	for (; index < 19; index++) {
+	    if ((count >> index) & 1) break;
+	}
+	// record in the array (is there possibly some concern about concurrent writes causing memory tearing?)
+	recentlyCommittedSequencePositions[index] = sequencePosition;
+}
+
+void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	uint64_t latestFlushedPosition = 0;
+	// the latest sequence number that has been flushed according to this flush update
+	for (int i = 0; i < 20; i++) {
+		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
+		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
+			latestFlushedPosition = sequencePosition.position;
+		}
+	}
+	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
+	// a "log" file, but the API provides all the functionality we need to just write a single word
+	if (!flushedTrackerFile) {
+		std::ostringstream oss;
+		oss << this->path << ".txnstate";
+		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
+		flushedTrackerFile->open();
+	}
+	// save the position of fully flushed transaction logs (future replay will start from here)
+	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
@@ -302,6 +401,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store->registerLogFile(filePath, sequenceNumber);
 		}
 	}
+	store->uncommittedTransactionPositions.insert(store->nextSequencePosition);
 
 	return store;
 }

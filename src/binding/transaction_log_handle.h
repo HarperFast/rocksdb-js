@@ -46,8 +46,29 @@ struct TransactionLogHandle final : Closable {
 		napi_ref bufferRef
 	);
 
+	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
+	uint32_t getLogFileSize(uint32_t sequenceNumber);
+	PositionHandle* getLastCommittedPosition();
 	void close();
 	void query();
+
+	std::map<uint32_t, std::unique_ptr<TransactionLogFile>>* getSequenceFiles();
+
+private:
+	/**
+	 * Helper struct to hold resolved transaction/store context.
+	 */
+	struct AddEntryContext {
+		std::shared_ptr<DBHandle> dbHandle;
+		std::shared_ptr<TransactionHandle> txnHandle;
+		std::shared_ptr<TransactionLogStore> store;
+	};
+
+	/**
+	 * Helper method to resolve and validate transaction/store context.
+	 * Shared by both addEntry overloads.
+	 */
+	AddEntryContext resolveAddEntryContext(uint32_t transactionId);
 };
 
 } // namespace rocksdb_js

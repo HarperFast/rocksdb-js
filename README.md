@@ -687,7 +687,6 @@ automatically written to disk right before the transaction is committed. You may
 add multiple enties per transaction. The underlying architecture is thread safe.
 
 - `log.addEntry()`
-- `log.query()`
 
 #### `log.addEntry(data, transactionId): void`
 
@@ -714,7 +713,34 @@ await db.transaction(async (txn) => {
 });
 ```
 
-#### `log.query(options?)`
+<<<<<<< HEAD
+#### `log.addEntryCopy(data, transactionId): void`
+
+Copy the entry data and add it to the transaction log.
+
+- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
+  limit beyond what Node.js can handle.
+- `transactionId: Number` A related transaction used to batch entries on commit.
+
+```typescript
+const log = db.useLog('foo');
+await db.transaction(async (txn) => {
+  log.addEntryCopy(Buffer.from('I will be copied'), txn.id);
+});
+```
+
+Note that the `TransactionLog` class also has internal mathods `getMemoryMapOfFile`, `getLogFileSize` and `getLastCommittedPosition` that should not be used directly and may change in any version.
+
+### Class: `TransactionLogReader`
+
+A `TransactionLogReader` lets you query the transaction log for entries. A `TransactionLogReader` can be constructed from a `TransactionLog` instance:
+
+```javascript
+const log = db.useLog('foo');
+const logReader = new TransactionLogReader(log);
+```
+
+#### `logReader.query(options?)`
 
 Returns an iterator that streams all log entries for the given filter.
 
@@ -731,14 +757,15 @@ The iterator produces an object with the log entry timestamp and data.
 
 ```typescript
 const log = db.useLog('foo');
-const iter = log.query();
+const logReader = new TransactionLogReader(log);
+const iter = logReader.query();
 for (const entry of iter) {
   console.log(entry);
 }
 
 const lastHour = Date.now() - (60 * 60 * 1000);
 const rangeIter = log.query({ start: lastHour, end: Date.now() });
-for (const entry of iter) {
+for (const entry of rangeIter) {
   console.log(entry.timestamp, entry.data);
 }
 ```
@@ -747,7 +774,7 @@ for (const entry of iter) {
 
 #### `parseTransactionLog(file)`
 
-In general, you should use `log.query()` to query the transaction log, however
+In general, you should use `logReader.query()` to query the transaction log, however
 if you need to load an entire transaction log into memory, you can use the
 `parseTransactionLog()` utility function.
 

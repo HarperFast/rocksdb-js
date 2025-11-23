@@ -4,9 +4,11 @@
 #include <string>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include "rocksdb/db.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
@@ -15,6 +17,29 @@ namespace rocksdb_js {
 // forward declarations
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
+struct MemoryMap;
+
+struct SequencePosition { // forward declaration doesn't work here because it is used in an array
+	rocksdb::SequenceNumber rocksSequenceNumber;
+	uint64_t position;
+};
+
+/**
+* Structure to hold the last committed position of a transaction log file, that is exposed
+* to JS through an external buffer with reference counting.
+*/
+struct PositionHandle {
+	/**
+	 * The full position of the last committed transaction, combining the sequence
+	 * with the offset within the file, as a single 64-bit word that can be accessed
+	 * from JS.
+	 */
+	uint64_t position;
+	/**
+	 * Reference counting for use with JS external buffers
+	 */
+	std::atomic<unsigned int> refCount = 1;
+};
 
 struct TransactionLogStore final {
 	/**
@@ -67,6 +92,34 @@ struct TransactionLogStore final {
 	 */
 	std::atomic<bool> isClosing = false;
 
+	/**
+	 * The set of transactions that have been written to log files in this store, but
+	 * have not been committed (to RocksDB) yet. We track these because we don't want
+	 * the transactions in the log to be visible until they are committed and consistent.
+	 */
+	std::set<uint64_t> uncommittedTransactionPositions;
+
+	/**
+	 * An array of recent sequence positions to correlate a database sequence number with a transaction log position,
+	 * so that when a flush event occurs, we can determine what part of the transaction log has been fully flushed
+	 * to the RocksDB database.
+	 * We are not attempting to track every single transaction log position and sequence number, there could be a very large
+	 * number. Instead this an array where each n position represents an n^2 frequencies of correlations. This is enough
+	 * that we won't lose more than half of what has to be replayed since the last flush.
+	 */
+	SequencePosition recentlyCommittedSequencePositions[20];
+
+	unsigned int nextSequencePositionsCount = 0;
+
+	TransactionLogFile* flushedTrackerFile = nullptr;
+
+	/**
+	 * The next sequence position to use for a new transaction log entry.
+	 */
+	uint64_t nextSequencePosition = 0;
+
+	PositionHandle* positionHandle;
+
 	TransactionLogStore(
 		const std::string& name,
 		const std::filesystem::path& path,
@@ -83,9 +136,34 @@ struct TransactionLogStore final {
 	void close();
 
 	/**
+	 * Notifies the transaction log store that a RocksDB commit operation has finished, and the transactions sequence number.
+	 */
+	void commitFinished(uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber);
+
+	/**
+	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
+	 */
+	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
+
+	/**
 	 * Queries the transaction log store.
 	 */
 	void query();
+
+	/**
+	 * Memory maps the transaction log file for the given sequence number.
+	 **/
+	MemoryMap* getMemoryMap(uint32_t logSequenceNumber);
+
+	/**
+	* Get the log file size.
+	**/
+	uint32_t getLogFileSize(uint32_t logSequenceNumber);
+
+	/**
+	 * Get the shared represention object representing the last committed position.
+	 **/
+	PositionHandle* getLastCommittedPosition();
 
 	/**
 	 * Purges transaction logs.
@@ -106,7 +184,7 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch);
+	uint64_t writeBatch(TransactionLogEntryBatch& batch);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log store

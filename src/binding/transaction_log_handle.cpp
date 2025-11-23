@@ -61,6 +61,20 @@ void TransactionLogHandle::close() {
 		dbHandle->unrefLog(this->logName);
 	}
 }
+uint32_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
+	auto store = this->store.lock();
+	return store->getLogFileSize(sequenceNumber);
+}
+MemoryMap* TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
+	auto store = this->store.lock();
+	if (store) return store->getMemoryMap(sequenceNumber);
+	return nullptr;
+}
+PositionHandle* TransactionLogHandle::getLastCommittedPosition() {
+	auto store = this->store.lock();
+	if (store) return store->getLastCommittedPosition();
+	return nullptr;
+}
 
 void TransactionLogHandle::query() {
 	auto store = this->store.lock();
@@ -74,6 +88,10 @@ void TransactionLogHandle::query() {
 		this->store = store; // update weak_ptr to point to new store
 	}
 	store->query();
+}
+std::map<uint32_t, std::unique_ptr<TransactionLogFile>>* TransactionLogHandle::getSequenceFiles() {
+	auto store = this->store.lock();
+	return &store->sequenceFiles;
 }
 
 } // namespace rocksdb_js

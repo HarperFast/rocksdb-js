@@ -194,13 +194,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
+				uint64_t committedPosition;
 
 				if (txnHandle->logEntryBatch) {
 					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 						txnHandle.get(), txnHandle->id);
 					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
-						store->writeBatch(*txnHandle->logEntryBatch);
+						committedPosition = store->writeBatch(*txnHandle->logEntryBatch);
 					} else {
 						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id)
 						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -208,6 +209,11 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				}
 
 				state->status = txnHandle->txn->Commit();
+				if (txnHandle->logEntryBatch) {
+					auto store = txnHandle->boundLogStore.lock();
+					store->commitFinished(committedPosition, txnHandle->dbHandle->descriptor->db->GetLatestSequenceNumber());
+				}
+
 				if (state->status.ok()) {
 					DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id)
 					txnHandle->state = TransactionState::Committed;
@@ -274,12 +280,13 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
+	uint64_t committedPosition;
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
-			store->writeBatch(*(*txnHandle)->logEntryBatch);
+			committedPosition = store->writeBatch(*(*txnHandle)->logEntryBatch);
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id)
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
@@ -287,6 +294,14 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
+
+	if ((*txnHandle)->logEntryBatch) {
+		auto store = (*txnHandle)->boundLogStore.lock();
+		if (store) {
+			store->commitFinished(committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+		}
+	}
+
 	if (status.ok()) {
 		DEBUG_LOG("%p Transaction::CommitSync emitted committed event txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->state = TransactionState::Committed;
