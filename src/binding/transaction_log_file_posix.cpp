@@ -11,9 +11,6 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	sequenceNumber(seq),
 	fd(-1)
 {
-	if (this->blockSize % 2 != 0) {
-		throw std::runtime_error("Invalid block size: " + std::to_string(this->blockSize) + ". Block size must be an even number");
-	}
 }
 
 void TransactionLogFile::close() {
@@ -48,7 +45,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// open file for both reading and writing
-	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT, 0644);
+	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0644);
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno)
@@ -72,41 +69,58 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return static_cast<int64_t>(::read(this->fd, buffer, size));
 }
 
+void TransactionLogFile::removeFile() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	if (this->fd >= 0) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (fd=%d)\n",
+			this, this->path.string().c_str(), this->fd)
+		::close(this->fd);
+		this->fd = -1;
+	}
+
+	std::filesystem::remove(this->path);
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
+		this, this->path.string().c_str())
+}
+
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
-	if (iovcnt == 0) {
-		return 0;
-	}
+	// if (iovcnt == 0) {
+	// 	return 0;
+	// }
 
-	// writev has a limit on the number of iovecs (IOV_MAX, typically 1024 on macOS)
-	// if we exceed this, we need to batch the writes
-	constexpr int MAX_IOVS = 1024;  // IOV_MAX on most systems
-	int64_t totalWritten = 0;
-	int remaining = iovcnt;
-	int offset = 0;
+	// // writev has a limit on the number of iovecs (IOV_MAX, typically 1024 on macOS)
+	// // if we exceed this, we need to batch the writes
+	// constexpr int MAX_IOVS = 1024;  // IOV_MAX on most systems
+	// int64_t totalWritten = 0;
+	// int remaining = iovcnt;
+	// int offset = 0;
 
-	while (remaining > 0) {
-		int toWrite = std::min(remaining, MAX_IOVS);
-		ssize_t written = ::writev(this->fd, iovecs + offset, toWrite);
+	// while (remaining > 0) {
+	// 	int toWrite = std::min(remaining, MAX_IOVS);
+	// 	ssize_t written = ::writev(this->fd, iovecs + offset, toWrite);
 
-		if (written < 0) {
-			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile writev failed: errno=%d (%s)\n",
-				this, errno, strerror(errno))
-			return -1;
-		}
+	// 	if (written < 0) {
+	// 		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile writev failed: errno=%d (%s)\n",
+	// 			this, errno, strerror(errno))
+	// 		return -1;
+	// 	}
 
-		totalWritten += written;
-		offset += toWrite;
-		remaining -= toWrite;
-	}
+	// 	totalWritten += written;
+	// 	offset += toWrite;
+	// 	remaining -= toWrite;
+	// }
 
-	return totalWritten;
+	// return totalWritten;
+	return 0;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {
-	if (offset >= 0) {
-		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
-	}
-	return static_cast<int64_t>(::write(this->fd, buffer, size));
+	// if (offset >= 0) {
+	// 	return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
+	// }
+	// return static_cast<int64_t>(::write(this->fd, buffer, size));
+	return 0;
 }
 
 } // namespace rocksdb_js

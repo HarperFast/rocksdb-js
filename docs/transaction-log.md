@@ -1,20 +1,20 @@
-# Transaction Log File Format v1
+# Transaction Log File Format
 
 ## Overview
 
 The transaction log system provides an append-only, binary log format for
 recording database transactions. The format is designed for:
 
-- **Durability**: 4KB block size (by default) for fast traversal using binary search
+- **Durability**: Fixed size index entries for fast traversal using binary search
 - **Portability**: Big-endian encoding for platform independence
-- **Efficiency**: Zero-padded blocks minimize write amplification
-- **Scalability**: Support for multi-block transactions of arbitrary size
+- **Efficiency**: Entry metadata and data are written to separate files
+- **Scalability**: Automatic log file rotation
 
 ## File Structure
 
-Each transaction log file (`.txnlog`) consists of a file header followed by zero
-or more 4KB blocks. Files are rotated based on a configurable maximum size
-(default: 16MB).
+Each transaction log file consists of comprised from two files: an index file
+(`.txnlog`) and a data file (`.txndata`). Files are rotated based on a
+configurable maximum size (default: 1MB for index files and 16MB for data files).
 
 ### Naming Convention
 
@@ -24,80 +24,43 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 - `sequenceNumber`: Sequential integer starting from 1
 - Example: `mylog.1.txnlog`, `mylog.2.txnlog`
 
+Data files follow this convention, but with a `.txndata` extension.
+
 ## Binary Format Specification
 
-### Block Structure (default 4096 bytes)
+```
++---------------------+
++ File Header         | 6 bytes
++---------------------+
++ Transaction Header  | 22 bytes
++---------------------+
++ Transaction Data    | variable
++---------------------+
++ Transaction Header  | 22 bytes
++---------------------+
++ Transaction Data    | variable
++---------------------+
+| ...                 |
++---------------------+
+```
+
+### File Header (6 bytes)
 
 ```
-+------------------+
-| Block Header     | 12 bytes
-+------------------+
-| Block Body       | 4084 bytes
-+------------------+
-Total: 4096 bytes
+| Offset | Size | Type    | Field      | Description            |
+|--------|------|---------|------------|------------------------|
+| 0      | 4    | uint32  | token      | Transaction log token  |
+| 4      | 2    | uint16  | version    | Format version         |
 ```
 
-### Block Header (14 bytes)
+### Transaction Header (22 bytes)
 
-All multi-byte integers are encoded in **big-endian** format.
-
-| Offset | Size | Type    | Field           | Description                                                 |
-|--------|------|---------|-----------------|-------------------------------------------------------------|
-| 0      | 1    | uint8   | flags           | Block flags (see below)                                     |
-| 1      | 1    | uint8   | blockSize       | Size of a block, as a power of 2                            |
-| 2      | 2    | uint8   | previousBlocks  | The number of previous blocks with the same block timestamp |
-| 4      | 8    | double  | timestamp       | Block timestamp (seconds since epoch)                       |
-| 12     | 2    | uint16  | dataOffset      | Offset where next transaction header starts                 |
-
-#### Block Types (1 byte)
-
-The block `type` describes how to parse the block contents.
-
-| Type | Description     |
-| ---- | --------------- |
-| 1    | Original format |
-
-#### Block Flags
-
-| Bit  | Flag         | Description                                             |
-|------|--------------|---------------------------------------------------------|
-| 0    | CONTINUATION | This block continues data from the previous block/file  |
-| 1-15 | Reserved     | Reserved for future use (must be 0)                     |
-
-### Block Body (4084 bytes)
-
-The block body contains transaction data. If the data is less than 4084 bytes, the remainder is zero-padded.
-
-## Transaction Format
-
-Transactions are stored within block bodies. A transaction consists of a header followed by one or more actions.
-
-### Transaction Header (12 bytes)
-
-| Offset | Size | Type    | Field      | Description                                   |
-|--------|------|---------|------------|-----------------------------------------------|
-| 0      | 8    | double  | timestamp  | Earliest action timestamp in the transaction  |
-| 8      | 4    | uint32  | length     | Total size of the transaction body (bytes)    |
-
-## Multi-Block Transactions
-
-When a transaction exceeds 4084 bytes (the block body size), it spans multiple blocks:
-
-1. **First Block**:
-   - Contains block header (flags = 0)
-   - Contains start of transaction data
-
-2. **Continuation Blocks**:
-   - Block header has CONTINUATION flag set
-   - Block body continues transaction data from previous block
-
-### Example: 10KB Transaction
-
-```
-Block 1: [4084 bytes of data]
-Block 2: [Header(CONTINUATION)] + [4084 bytes of data]
-Block 3: [Header(CONTINUATION)] + [1832 bytes of data]
-```
+| Offset | Size | Type    | Field              | Description                    |
+|--------|------|---------|--------------------|--------------------------------|
+| 0      | 8    | double  | earliestTimestamp  | Earliest active timestamp      |
+| 8      | 8    | double  | actualTimestamp    | Timestamp transaction created  |
+| 16     | 4    | uint32  | dataLength         | Size of the entry data         |
+| 20     | 2    | uint16  | flags              | Transaction flags              |
 
 ## Encoding Details
 
@@ -134,8 +97,10 @@ await db.transaction((txn) => {
 
 - Actions are buffered in memory per transaction ID
 - Multiple transactions can be buffered concurrently
-- Buffered actions are NOT written to disk until the transaction is being committed
-- If the transaction log handle is garbage collected, buffered (uncommitted) actions are lost
+- Buffered actions are NOT written to disk until the transaction is being
+  committed
+- If the transaction log handle is garbage collected, buffered (uncommitted)
+  actions are lost
 - Calling `addEntry()` with an unknown transaction ID throws an error
 
 ## Usage Examples
@@ -194,8 +159,10 @@ await db.transaction((txn) => {
 
 ### Memory Management
 
-- Transaction buffering is managed by the `TransactionLogHandle`, not the `TransactionLogStore`
-- When a JavaScript `TransactionLog` object is garbage collected, its handle is destroyed and all buffered transaction data is automatically freed
+- Transaction buffering is managed by the `TransactionLogHandle`, not the
+  `TransactionLogStore`
+- When a JavaScript `TransactionLog` object is garbage collected, its handle is
+  destroyed and all buffered transaction data is automatically freed
 - The `TransactionLogStore` is long-lived and does not hold transaction buffers
 
 ### Thread Safety
@@ -206,7 +173,8 @@ await db.transaction((txn) => {
 
 ### File Rotation
 
-- Log files are automatically rotated when they reach the configured maximum size
+- Log files are automatically rotated when either the index or data file reaches
+  their configured maximum sizes
 - Rotation happens on the next write after the size limit is exceeded
 - Old log files can be automatically purged based on retention policy
 
@@ -257,7 +225,8 @@ Note that this is the same as a range read without a start and end timestamp.
 2. Determine block count (ceiling((file_size - file_header_size) / block_size))
 3. Determine start and end block
 4. Determine and read middle block (floor((end_block - start_block) / 2))
-5. Repeatedly divide left or right range until block with first transaction is found
+5. Repeatedly divide left or right range until block with first transaction is
+   found
 6. Reconstruct multi-block transactions using CONTINUATION flags
 7. Parse transaction headers to group transaction together by timestamp
 8. Process transactions in order
@@ -296,19 +265,20 @@ for each block starting at first block:
 ## Performance Considerations
 
 - **Block Size**: 4KB blocks that can be traversed quickly using binary search
-- **Batching**: Use transactions to batch multiple actions into fewer disk writes using `writev()`
+- **Batching**: Use transactions to batch multiple actions into fewer disk
+  writes using `writev()`
 - **Zero-Copy**: The format supports memory-mapped I/O for efficient reading
 
 ## Limitations
 
 - Maximum single transaction size: ~4GB (uint32 limit)
 - Maximum transaction size: Limited by available memory during buffering
-- Maximum log file size: Configurable, default 16MB
+- Maximum log file size: Configurable, default 1MB for index files and 16MB for
+  data files
 
 ## Version History
 
 - **Version 1.0**: Initial format specification
-  - 4KB block-size format
+  - Hybrid index and data file log format
   - Big-endian encoding
-  - Multi-block transaction support
   - Transaction buffering

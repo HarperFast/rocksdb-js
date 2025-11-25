@@ -133,8 +133,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex listenerCallbacksMutex;
 
 	/**
-	 * The maximum size of a transaction log before it is rotated to the next
-	 * sequence number.
+	 * The maximum size of a transaction log file in bytes before it is rotated
+	 * to the next sequence number. A max size of 0 means no limit.
 	 */
 	uint32_t transactionLogMaxSize;
 

@@ -586,8 +586,9 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", transactionLogMaxSize));
-	if (transactionLogMaxSize > 0 && transactionLogMaxSize < 37) {
-		::napi_throw_error(env, nullptr, "transactionLogMaxSize must be greater than 37 bytes");
+	if (transactionLogMaxSize > 0 && transactionLogMaxSize < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+		std::string errorMsg = "transactionLogMaxSize must be greater than " + std::to_string(TRANSACTION_LOG_ENTRY_HEADER_SIZE) + " bytes";
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
 		return nullptr;
 	}
 

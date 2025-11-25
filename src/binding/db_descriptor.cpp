@@ -434,6 +434,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
 	auto id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
+	// txnHandle->boundLogStore
 	this->transactions.emplace(id, txnHandle);
 	this->closables.insert(txnHandle.get());
 }

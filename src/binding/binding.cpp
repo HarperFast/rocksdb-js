@@ -40,7 +40,7 @@ NAPI_MODULE_INIT() {
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		uint32_t newRefCount = moduleRefCount.fetch_sub(1) - 1;
+		int32_t newRefCount = moduleRefCount.fetch_sub(1) - 1;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
@@ -71,22 +71,14 @@ NAPI_MODULE_INIT() {
 	napi_value constants;
 	napi_create_object(env, &constants);
 
-	napi_value woofToken, blockSize, fileHeaderSize, blockHeaderSize, txnHeaderSize, continuationFlag;
-	napi_create_uint32(env, WOOF_TOKEN, &woofToken);
-	napi_create_uint32(env, BLOCK_SIZE, &blockSize);
-	napi_create_uint32(env, FILE_HEADER_SIZE, &fileHeaderSize);
-	napi_create_uint32(env, BLOCK_HEADER_SIZE, &blockHeaderSize);
-	napi_create_uint32(env, TXN_HEADER_SIZE, &txnHeaderSize);
-	napi_create_uint32(env, CONTINUATION_FLAG, &continuationFlag);
-
-	napi_set_named_property(env, constants, "WOOF_TOKEN", woofToken);
-	napi_set_named_property(env, constants, "BLOCK_SIZE", blockSize);
-	napi_set_named_property(env, constants, "FILE_HEADER_SIZE", fileHeaderSize);
-	napi_set_named_property(env, constants, "BLOCK_HEADER_SIZE", blockHeaderSize);
-	napi_set_named_property(env, constants, "TXN_HEADER_SIZE", txnHeaderSize);
-	napi_set_named_property(env, constants, "CONTINUATION_FLAG", continuationFlag);
-
-	napi_set_named_property(env, exports, "constants", constants);
+	napi_value transactionLogToken, transactionLogFileHeaderSize, transactionLogEntryHeaderSize;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_TOKEN, &transactionLogToken));
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_FILE_HEADER_SIZE, &transactionLogFileHeaderSize));
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_ENTRY_HEADER_SIZE, &transactionLogEntryHeaderSize));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_TOKEN", transactionLogToken));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_FILE_HEADER_SIZE", transactionLogFileHeaderSize));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_ENTRY_HEADER_SIZE", transactionLogEntryHeaderSize));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	return exports;
 }

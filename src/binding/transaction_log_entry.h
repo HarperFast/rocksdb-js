@@ -18,14 +18,9 @@ struct TransactionLogEntry final {
 	std::shared_ptr<TransactionLogStore> store;
 
 	/**
-	 * The log entry data of the log entry owned by Node.js.
+	 * The log entry data.
 	 */
-	char* data;
-
-	/**
-	 * The log entry data owned by rocksdb-js.
-	 */
-	std::unique_ptr<char[]> ownedData;
+	std::unique_ptr<char[]> data;
 
 	/**
 	 * The size of the log entry.
@@ -41,8 +36,7 @@ struct TransactionLogEntry final {
 		uint32_t size
 	) :
 		store(store),
-		data(data.get()),
-		ownedData(std::move(data)),
+		data(std::move(data)),
 		size(size)
 	{}
 };

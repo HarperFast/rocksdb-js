@@ -18,6 +18,11 @@ struct TransactionLogFile;
 
 struct TransactionLogStore final {
 	/**
+	 * The earliest active transaction timestamp.
+	 */
+	double earliestActiveTransactionTimestamp = 0;
+
+	/**
 	 * The name of the transaction log store.
 	 */
 	std::string name;
@@ -28,10 +33,10 @@ struct TransactionLogStore final {
 	std::filesystem::path path;
 
 	/**
-	 * The maximum size of a transaction log file in bytes. A max size of 0
-	 * means no limit.
+	 * The maximum size of a transaction log file in bytes before it is rotated
+	 * to the next sequence number. A max size of 0 means no limit.
 	 */
-	uint32_t maxSize;
+	uint32_t maxFileSize;
 
 	/**
 	 * The retention period for transaction logs in milliseconds.
@@ -70,7 +75,7 @@ struct TransactionLogStore final {
 	TransactionLogStore(
 		const std::string& name,
 		const std::filesystem::path& path,
-		const uint32_t maxSize,
+		const uint32_t maxFileSize,
 		const std::chrono::milliseconds& retentionMs
 	);
 
@@ -109,19 +114,19 @@ struct TransactionLogStore final {
 	void writeBatch(TransactionLogEntryBatch& batch);
 
 	/**
-	 * Load all transaction logs from a directory into a new transaction log store
-	 * instance. If the retention period is set, any transaction logs that are older
-	 * than the retention period will be removed.
+	 * Load all transaction logs from a directory into a new transaction log
+	 * store instance. If the retention period is set, any transaction logs that
+	 * are older than the retention period will be removed.
 	 *
 	 * @param path The path to the transaction log store directory.
-	 * @param maxSize The maximum size of a transaction log before it is rotated to
-	 * the next sequence number.
+	 * @param maxFileSize The maximum size of a transaction log before it is
+	 * rotated to the next sequence number.
 	 * @param retentionMs The retention period for transaction logs.
 	 * @returns The transaction log store.
 	 */
 	static std::shared_ptr<TransactionLogStore> load(
 		const std::filesystem::path& path,
-		const uint32_t maxSize,
+		const uint32_t maxFileSize,
 		const std::chrono::milliseconds& retentionMs
 	);
 
