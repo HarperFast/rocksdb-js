@@ -43,7 +43,7 @@ struct TransactionLogStore final {
 	 * older than the retention period before it is rotated to the next sequence
 	 * number. A threshold of 0 means ignore age check.
 	 */
-	float retentionRotateThreshold = 0.75f;
+	float maxAgeThreshold = 0.75f;
 
 	/**
 	 * The current sequence number of the transaction log file.

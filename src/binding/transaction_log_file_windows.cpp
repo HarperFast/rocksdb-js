@@ -90,6 +90,28 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return success ? static_cast<int64_t>(bytesRead) : -1;
 }
 
+bool TransactionLogFile::removeFile() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	if (this->fileHandle != INVALID_HANDLE_VALUE) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (handle=%p)\n",
+			this, this->path.string().c_str(), this->fileHandle)
+		::CloseHandle(this->fileHandle);
+		this->fileHandle = INVALID_HANDLE_VALUE;
+	}
+
+	auto removed = std::filesystem::remove(this->path);
+	if (!removed) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",
+			this, this->path.string().c_str())
+		return false;
+	}
+
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
+		this, this->path.string().c_str())
+	return true;
+}
+
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 	if (iovcnt == 0) {
 		return 0;

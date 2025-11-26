@@ -69,7 +69,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return static_cast<int64_t>(::read(this->fd, buffer, size));
 }
 
-void TransactionLogFile::removeFile() {
+bool TransactionLogFile::removeFile() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
 	if (this->fd >= 0) {
@@ -79,9 +79,16 @@ void TransactionLogFile::removeFile() {
 		this->fd = -1;
 	}
 
-	std::filesystem::remove(this->path);
+	auto removed = std::filesystem::remove(this->path);
+	if (!removed) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",
+			this, this->path.string().c_str())
+		return false;
+	}
+
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
 		this, this->path.string().c_str())
+	return true;
 }
 
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {

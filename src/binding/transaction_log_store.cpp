@@ -78,7 +78,11 @@ void TransactionLogStore::query() {
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
-	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store: %s (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
+	if (this->sequenceFiles.empty()) {
+		return;
+	}
+
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
@@ -106,7 +110,10 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str())
 
 		// delete the log file
-		logFile->removeFile();
+		auto removed = logFile->removeFile();
+		if (visitor && removed) {
+			visitor(logFile->path);
+		}
 
 		// collect sequence number for removal
 		sequenceNumbersToRemove.push_back(entry.first);
@@ -195,9 +202,9 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file
-		if (this->retentionRotateThreshold > 0) {
+		if (this->maxAgeThreshold > 0) {
 			auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-				this->retentionMs * this->retentionRotateThreshold
+				this->retentionMs * this->maxAgeThreshold
 			);
 			auto thresholdTimePoint = std::chrono::system_clock::now() - thresholdDuration;
 			if (logFile->getLastWriteTime() < thresholdTimePoint) {

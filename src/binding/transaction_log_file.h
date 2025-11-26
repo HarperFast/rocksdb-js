@@ -90,7 +90,7 @@ struct TransactionLogFile final {
 	 */
  	void open();
 
-	void removeFile();
+	bool removeFile();
 
 	/**
 	 * Writes a batch of transaction log entries to the log file.
