@@ -209,10 +209,14 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 				this->retentionMs * this->maxAgeThreshold
 			);
 			auto thresholdTimePoint = std::chrono::system_clock::now() - thresholdDuration;
-			if (logFile->getLastWriteTime() < thresholdTimePoint) {
-				DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms), rotating to next file for store \"%s\"\n",
-					this, thresholdDuration.count(), this->name.c_str())
-				this->currentSequenceNumber = this->nextSequenceNumber++;
+			try {
+				if (logFile->getLastWriteTime() < thresholdTimePoint) {
+					DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms), rotating to next file for store \"%s\"\n",
+						this, thresholdDuration.count(), this->name.c_str())
+					this->currentSequenceNumber = this->nextSequenceNumber++;
+				}
+			} catch (const std::filesystem::filesystem_error& e) {
+				// file doesn't exist
 			}
 		}
 
