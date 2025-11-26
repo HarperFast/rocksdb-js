@@ -505,6 +505,10 @@ inline void writeUint16BE(char* buffer, uint16_t value) {
 	buffer[1] = static_cast<char>(value & 0xFF);
 }
 
+inline void writeUint8(char* buffer, uint8_t value) {
+	buffer[0] = static_cast<char>(value);
+}
+
 inline uint64_t readUint64BE(const char* buffer) {
 	return (static_cast<uint64_t>(static_cast<uint8_t>(buffer[0])) << 56) |
 	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[1])) << 48) |
@@ -526,6 +530,10 @@ inline uint32_t readUint32BE(const char* buffer) {
 inline uint16_t readUint16BE(const char* buffer) {
 	return (static_cast<uint16_t>(static_cast<uint8_t>(buffer[0])) << 8) |
 	       static_cast<uint16_t>(static_cast<uint8_t>(buffer[1]));
+}
+
+inline uint8_t readUint8(const char* buffer) {
+	return static_cast<uint8_t>(buffer[0]);
 }
 
 inline void writeDoubleBE(char* buffer, double value) {

@@ -217,6 +217,8 @@ public:
 	napi_value listTransactionLogStores(napi_env env);
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
+
+	double getEarliestActiveTransactionTimestamp(std::shared_ptr<TransactionLogStore> store);
 };
 
 /**

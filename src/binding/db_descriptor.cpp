@@ -434,7 +434,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) {
 	auto id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	// txnHandle->boundLogStore
 	this->transactions.emplace(id, txnHandle);
 	this->closables.insert(txnHandle.get());
 }
@@ -1400,6 +1399,25 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
+}
+
+double DBDescriptor::getEarliestActiveTransactionTimestamp(std::shared_ptr<TransactionLogStore> store) {
+	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+	double earliestTimestamp = 0;
+
+	for (auto& txn : this->transactions) {
+		auto txnHandle = txn.second;
+		auto boundStore = txnHandle->boundLogStore.lock();
+		if (boundStore && boundStore.get() == store.get()) {
+			if (earliestTimestamp == 0) {
+				earliestTimestamp = txnHandle->startTimestamp;
+			} else {
+				earliestTimestamp = std::min(earliestTimestamp, txnHandle->startTimestamp);
+			}
+		}
+	}
+
+	return earliestTimestamp;
 }
 
 } // namespace rocksdb_js

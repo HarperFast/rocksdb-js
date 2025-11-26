@@ -151,12 +151,9 @@ const binding = req(locateBinding());
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const constants: {
-	WOOF_TOKEN: number;
-	BLOCK_SIZE: number;
-	FILE_HEADER_SIZE: number;
-	BLOCK_HEADER_SIZE: number;
-	TXN_HEADER_SIZE: number;
-	CONTINUATION_FLAG: number;
+	TRANSACTION_LOG_TOKEN: number;
+	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;

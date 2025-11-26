@@ -34,8 +34,8 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
-#define TRANSACTION_LOG_FILE_HEADER_SIZE 6
-#define TRANSACTION_LOG_ENTRY_HEADER_SIZE 22
+#define TRANSACTION_LOG_FILE_HEADER_SIZE 5
+#define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 
 namespace rocksdb_js {
 
@@ -53,7 +53,8 @@ struct TransactionLogFile final {
 	/**
 	 * The version of the file format.
 	 */
-	uint32_t version = 1;
+	uint8_t version = 1;
+
 	/**
 	 * The size of the file in bytes.
 	 */
@@ -64,11 +65,6 @@ struct TransactionLogFile final {
 	 * (currentBlockSize, blockCount, size).
 	 */
 	std::mutex fileMutex;
-
-	/**
-	 * The earliest active transaction timestamp.
-	 */
-	double earliestActiveTransactionTimestamp = 0;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
@@ -133,43 +129,6 @@ private:
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
-
-	/**
-	 * Calculates the available space in the file.
-	 *
-	 * @param batch The batch of entries to write with state tracking.
-	 * @param maxFileSize The maximum file size limit (0 = no limit).
-	 * @param availableSpaceInCurrentBlock The available space in the current block.
-	 * @return The available space in the file.
-	 */
-	// int64_t getAvailableSpaceInFile(
-	// 	const TransactionLogEntryBatch& batch,
-	// 	const uint32_t maxIndexFileSize,
-	// 	const uint32_t availableSpaceInCurrentBlock
-	// );
-
-	/**
-	 * Calculates the entries to write to the file.
-	 *
-	 * @param batch The batch of entries to write with state tracking.
-	 * @param availableSpaceInCurrentBlock The available space in the current block.
-	 * @param availableSpaceInFile The available space in the file.
-	 * @param totalTxnSize The total transaction size.
-	 * @param numEntriesToWrite The number of entries to write.
-	 * @param dataForCurrentBlock The data for the current block.
-	 * @param dataForNewBlocks The data for the new blocks.
-	 * @param numNewBlocks The number of new blocks.
-	 */
-	// void calculateEntriesToWrite(
-	// 	const TransactionLogEntryBatch& batch,
-	// 	const uint32_t availableSpaceInCurrentBlock,
-	// 	const int64_t availableSpaceInFile,
-	// 	uint32_t& totalTxnSize, // out
-	// 	uint32_t& numEntriesToWrite, // out
-	// 	uint32_t& dataForCurrentBlock, // out
-	// 	uint32_t& dataForNewBlocks, // out
-	// 	uint32_t& numNewBlocks // out
-	// );
 };
 
 } // namespace rocksdb_js

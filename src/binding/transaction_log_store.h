@@ -18,11 +18,6 @@ struct TransactionLogFile;
 
 struct TransactionLogStore final {
 	/**
-	 * The earliest active transaction timestamp.
-	 */
-	double earliestActiveTransactionTimestamp = 0;
-
-	/**
 	 * The name of the transaction log store.
 	 */
 	std::string name;
@@ -42,6 +37,13 @@ struct TransactionLogStore final {
 	 * The retention period for transaction logs in milliseconds.
 	 */
 	std::chrono::milliseconds retentionMs;
+
+	/**
+	 * The threshold for the transaction log file's last modified time to be
+	 * older than the retention period before it is rotated to the next sequence
+	 * number. A threshold of 0 means ignore age check.
+	 */
+	float retentionRotateThreshold = 0.75f;
 
 	/**
 	 * The current sequence number of the transaction log file.

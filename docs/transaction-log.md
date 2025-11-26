@@ -30,13 +30,13 @@ Data files follow this convention, but with a `.txndata` extension.
 
 ```
 +---------------------+
-+ File Header         | 6 bytes
++ File Header         | 5 bytes
 +---------------------+
-+ Transaction Header  | 22 bytes
++ Transaction Header  | 13 bytes
 +---------------------+
 + Transaction Data    | variable
 +---------------------+
-+ Transaction Header  | 22 bytes
++ Transaction Header  | 13 bytes
 +---------------------+
 + Transaction Data    | variable
 +---------------------+
@@ -44,23 +44,22 @@ Data files follow this convention, but with a `.txndata` extension.
 +---------------------+
 ```
 
-### File Header (6 bytes)
+### File Header (5 bytes)
 
 ```
 | Offset | Size | Type    | Field      | Description            |
 |--------|------|---------|------------|------------------------|
 | 0      | 4    | uint32  | token      | Transaction log token  |
-| 4      | 2    | uint16  | version    | Format version         |
+| 4      | 1    | uint8   | version    | Format version         |
 ```
 
-### Transaction Header (22 bytes)
+### Transaction Header (13 bytes)
 
 | Offset | Size | Type    | Field              | Description                    |
 |--------|------|---------|--------------------|--------------------------------|
-| 0      | 8    | double  | earliestTimestamp  | Earliest active timestamp      |
-| 8      | 8    | double  | actualTimestamp    | Timestamp transaction created  |
-| 16     | 4    | uint32  | dataLength         | Size of the entry data         |
-| 20     | 2    | uint16  | flags              | Transaction flags              |
+| 0      | 8    | double  | actualTimestamp    | Timestamp transaction created  |
+| 8      | 4    | uint32  | dataLength         | Size of the entry data         |
+| 12     | 1    | uint8   | flags              | Transaction flags              |
 
 ## Encoding Details
 
