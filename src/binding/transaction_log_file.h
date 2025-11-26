@@ -61,8 +61,7 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
-	 * The mutex used to protect the file and its metadata
-	 * (currentBlockSize, blockCount, size).
+	 * The mutex used to protect the file (open/close, read/write, etc).
 	 */
 	std::mutex fileMutex;
 

@@ -10,8 +10,7 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	path(p),
 	sequenceNumber(seq),
 	fd(-1)
-{
-}
+{}
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
