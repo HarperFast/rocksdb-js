@@ -11,12 +11,14 @@ TransactionLogStore::TransactionLogStore(
 	const std::string& name,
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
-	const std::chrono::milliseconds& retentionMs
+	const std::chrono::milliseconds& retentionMs,
+	const float maxAgeThreshold
 ) :
 	name(name),
 	path(path),
 	maxFileSize(maxFileSize),
-	retentionMs(retentionMs)
+	retentionMs(retentionMs),
+	maxAgeThreshold(maxAgeThreshold)
 {}
 
 TransactionLogStore::~TransactionLogStore() {
@@ -243,7 +245,8 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
-	const std::chrono::milliseconds& retentionMs
+	const std::chrono::milliseconds& retentionMs,
+	const float maxAgeThreshold
 ) {
 	auto dirName = path.filename().string();
 
@@ -252,7 +255,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		return nullptr;
 	}
 
-	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs);
+	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
 
 	// find `.txnlog` files in the directory
 	for (const auto& fileEntry : std::filesystem::directory_iterator(path)) {

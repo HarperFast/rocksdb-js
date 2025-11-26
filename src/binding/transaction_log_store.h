@@ -43,7 +43,7 @@ struct TransactionLogStore final {
 	 * older than the retention period before it is rotated to the next sequence
 	 * number. A threshold of 0 means ignore age check.
 	 */
-	float maxAgeThreshold = 0.75f;
+	float maxAgeThreshold;
 
 	/**
 	 * The current sequence number of the transaction log file.
@@ -78,7 +78,8 @@ struct TransactionLogStore final {
 		const std::string& name,
 		const std::filesystem::path& path,
 		const uint32_t maxFileSize,
-		const std::chrono::milliseconds& retentionMs
+		const std::chrono::milliseconds& retentionMs,
+		const float maxAgeThreshold
 	);
 
 	~TransactionLogStore();
@@ -129,7 +130,8 @@ struct TransactionLogStore final {
 	static std::shared_ptr<TransactionLogStore> load(
 		const std::filesystem::path& path,
 		const uint32_t maxFileSize,
-		const std::chrono::milliseconds& retentionMs
+		const std::chrono::milliseconds& retentionMs,
+		const float maxAgeThreshold
 	);
 
 private:

@@ -54,14 +54,15 @@ Creates a new database instance.
   - `store: Store` A custom store that handles all interaction between the
     `RocksDatabase` or `Transaction` instances and the native database
     interface. See [Custom Store](#custom-store) for more information.
-  - `transactionLogMaxDataSize: number` The maximum size of a transaction log
-    data file. Once the max size of either the index or data file has been
-    reached, the log file is rotated to the next sequence number. Defaults to
-    16 MB.
-  - `transactionLogMaxIndexSize: number` The maximum size of a transaction log
-    index file. Once the max size of either the index or data file has been
-    reached, the log file is rotated to the next sequence number. Defaults to
-    1 MB.
+  - `transactionLogMaxAgeThreshold: number` The threshold for the transaction
+    log file's last modified time to be older than the retention period before
+    it is rotated to the next sequence number. Value must be between `0.0` and
+    `1.0`. A threshold of `0.0` means ignore age check. Defaults to `0.75`.
+  - `transactionLogMaxSize: number` The maximum size of a transaction log
+    data file. If a log file is empty, the first log entry will always be added
+    regardless if it's larger than the max size. If a log file is not empty and
+    the entry is larger than the space available, the log file is rotated to the
+    next sequence number. Defaults to 16 MB.
   - `transactionLogRetention: string | number` The number of minutes to retain
     transaction logs before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults
