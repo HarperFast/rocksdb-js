@@ -1,6 +1,8 @@
+#include <cmath>
 #include <cinttypes>
 #include <cstdarg>
 #include <functional>
+#include <limits>
 #include <node_api.h>
 #include <string>
 #include <sstream>

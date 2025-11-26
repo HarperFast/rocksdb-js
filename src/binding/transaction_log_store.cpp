@@ -10,12 +10,12 @@ namespace rocksdb_js {
 TransactionLogStore::TransactionLogStore(
 	const std::string& name,
 	const std::filesystem::path& path,
-	const uint32_t maxSize,
+	const uint32_t maxFileSize,
 	const std::chrono::milliseconds& retentionMs
 ) :
 	name(name),
 	path(path),
-	maxSize(maxSize),
+	maxFileSize(maxFileSize),
 	retentionMs(retentionMs)
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
@@ -67,8 +67,8 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 		std::filesystem::create_directories(this->path);
 
 		std::ostringstream oss;
-		oss << this->name << "." << sequenceNumber << ".txnlog";
-		auto logFilePath = this->path / oss.str();
+		oss << this->name << "." << sequenceNumber;
+		auto logFilePath = this->path / (oss.str() + ".txnlog");
 		logFile = new TransactionLogFile(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
 		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
@@ -89,7 +89,7 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 	}
 	logFile->open();
 	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
-		maxSize : // if it is the most current log, it will be growing so we need to allocate the max size
+		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
 		logFile->size); // otherwise it is frozen, use the file size
 }
 
@@ -122,7 +122,11 @@ void TransactionLogStore::query() {
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
 	std::lock_guard<std::mutex> lock(this->storeMutex);
 
-	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store: %s (files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
+	if (this->sequenceFiles.empty()) {
+		return;
+	}
+
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
@@ -150,8 +154,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str())
 
 		// delete the log file
-		logFile->close();
-		bool removed = std::filesystem::remove(logFile->path);
+		auto removed = logFile->removeFile();
 		if (visitor && removed) {
 			visitor(logFile->path);
 		}
@@ -218,7 +221,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			logFile = this->getLogFile(this->currentSequenceNumber);
 
 			// we found a log file, check if it's already at max size
-			if (this->maxSize == 0 || logFile->size < this->maxSize) {
+			if (this->maxFileSize == 0 || logFile->size < this->maxFileSize) {
 				try {
 					logFile->open();
 					break;
@@ -230,10 +233,10 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			}
 
 			// rotate to next sequence if file open failed or file is at max size
-			// this prevents infinite loops when file open fails (even with maxSize=0)
-			if (logFile == nullptr || this->maxSize > 0) {
-				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxSize=%u)\n",
-					this, this->name.c_str(), static_cast<void*>(logFile), this->maxSize)
+			// this prevents infinite loops when file open fails (even with maxIndexSize=0)
+			if (logFile == nullptr || this->maxFileSize > 0) {
+				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
+					this, this->name.c_str(), static_cast<void*>(logFile), this->maxFileSize)
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				logFile = nullptr;
 			}
@@ -250,13 +253,26 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
 		}
 
+		// if the file is older than the retention threshold, rotate to the next file
+		if (this->maxAgeThreshold > 0) {
+			auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+				this->retentionMs * this->maxAgeThreshold
+			);
+			auto thresholdTimePoint = std::chrono::system_clock::now() - thresholdDuration;
+			if (logFile->getLastWriteTime() < thresholdTimePoint) {
+				DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms), rotating to next file for store \"%s\"\n",
+					this, thresholdDuration.count(), this->name.c_str())
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+			}
+		}
+
 		uint32_t sizeBefore = logFile->size;
 
-		DEBUG_LOG("%p TransactionLogStore::commit Writing to log file for store \"%s\" (seq=%u, size=%u, maxSize=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxSize)
+		DEBUG_LOG("%p TransactionLogStore::commit Writing to log file for store \"%s\" (seq=%u, size=%u, maxIndexSize=%u)\n",
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxFileSize)
 
 		// write as much as possible to this file
-		logFile->writeEntries(batch, this->maxSize);
+		logFile->writeEntries(batch, this->maxFileSize);
 
 		DEBUG_LOG("%p TransactionLogStore::commit Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
@@ -267,7 +283,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
 		// if we've reached or exceeded the max size, rotate to the next file
-		else if (this->maxSize > 0 && logFile->size >= this->maxSize) {
+		else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
 			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
@@ -325,7 +341,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
-	const uint32_t maxSize,
+	const uint32_t maxFileSize,
 	const std::chrono::milliseconds& retentionMs
 ) {
 	auto dirName = path.filename().string();
@@ -335,7 +351,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		return nullptr;
 	}
 
-	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxSize, retentionMs);
+	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs);
 
 	// find `.txnlog` files in the directory
 	for (const auto& fileEntry : std::filesystem::directory_iterator(path)) {

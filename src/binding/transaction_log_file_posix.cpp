@@ -11,11 +11,7 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	path(p),
 	sequenceNumber(seq),
 	fd(-1)
-{
-	if (this->blockSize % 2 != 0) {
-		throw std::runtime_error("Invalid block size: " + std::to_string(this->blockSize) + ". Block size must be an even number");
-	}
-}
+{}
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
@@ -49,7 +45,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// open file for both reading and writing
-	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT, 0644);
+	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0644);
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno)
@@ -87,6 +83,38 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 		return static_cast<int64_t>(::pread(this->fd, buffer, size, offset));
 	}
 	return static_cast<int64_t>(::read(this->fd, buffer, size));
+}
+
+bool TransactionLogFile::removeFile() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	if (this->fd >= 0) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (fd=%d)\n",
+			this, this->path.string().c_str(), this->fd)
+		::close(this->fd);
+		this->fd = -1;
+	}
+
+	try {
+		auto removed = std::filesystem::remove(this->path);
+		if (!removed) {
+			DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
+				this, this->path.string().c_str())
+			return false;
+		}
+
+		DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
+			this, this->path.string().c_str())
+		return true;
+	} catch (const std::filesystem::filesystem_error& e) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Filesystem error removing file %s: %s\n",
+			this, this->path.string().c_str(), e.what())
+		return false;
+	} catch (...) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Unknown error removing file %s\n",
+			this, this->path.string().c_str())
+		return false;
+	}
 }
 
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {

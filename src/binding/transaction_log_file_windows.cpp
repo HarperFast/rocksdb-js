@@ -12,11 +12,7 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 	path(p),
 	sequenceNumber(seq),
 	fileHandle(INVALID_HANDLE_VALUE)
-{
-	if (this->blockSize % 2 != 0) {
-		throw std::runtime_error("Invalid block size: " + std::to_string(this->blockSize) + ". Block size must be an even number");
-	}
-}
+{}
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
@@ -121,6 +117,38 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	DWORD bytesRead;
 	bool success = ::ReadFile(this->fileHandle, buffer, size, &bytesRead, nullptr);
 	return success ? static_cast<int64_t>(bytesRead) : -1;
+}
+
+bool TransactionLogFile::removeFile() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	if (this->fileHandle != INVALID_HANDLE_VALUE) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (handle=%p)\n",
+			this, this->path.string().c_str(), this->fileHandle)
+		::CloseHandle(this->fileHandle);
+		this->fileHandle = INVALID_HANDLE_VALUE;
+	}
+
+	try {
+		auto removed = std::filesystem::remove(this->path);
+		if (!removed) {
+			DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
+				this, this->path.string().c_str())
+			return false;
+		}
+
+		DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
+			this, this->path.string().c_str())
+		return true;
+	} catch (const std::filesystem::filesystem_error& e) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Filesystem error removing file %s: %s\n",
+			this, this->path.string().c_str(), e.what())
+		return false;
+	} catch (...) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Unknown error removing file %s\n",
+			this, this->path.string().c_str())
+		return false;
+	}
 }
 
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {

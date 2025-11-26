@@ -33,18 +33,16 @@
 #endif
 #include <sys/stat.h>
 
-#define WOOF_TOKEN 0x574F4F46
-#define BLOCK_SIZE 4096
-#define FILE_HEADER_SIZE 0
-#define BLOCK_HEADER_SIZE 14
-#define TXN_HEADER_SIZE 12
-#define CONTINUATION_FLAG ((uint16_t)0x0001)
+#define TRANSACTION_LOG_TOKEN 0x574f4f46
+#define TRANSACTION_LOG_FILE_HEADER_SIZE 5
+#define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 
 namespace rocksdb_js {
 
 struct MemoryMap;
 struct TransactionLogFile final {
 	std::filesystem::path path;
+
 	uint32_t sequenceNumber;
 
 #ifdef PLATFORM_WINDOWS
@@ -56,27 +54,7 @@ struct TransactionLogFile final {
 	/**
 	 * The version of the file format.
 	 */
-	uint32_t version = 1;
-
-	/**
-	 * The size of the block in bytes. This must be an even number.
-	 */
-	uint16_t blockSize = BLOCK_SIZE;
-
-	/**
-	 * The size of the block body in bytes.
-	 */
-	uint32_t blockBodySize = BLOCK_SIZE - BLOCK_HEADER_SIZE;
-
-	/**
-	 * The size of the current block in bytes.
-	 */
-	uint32_t currentBlockSize = 0;
-
-	/**
-	 * The number of blocks in the file.
-	 */
-	uint32_t blockCount = 0;
+	uint8_t version = 1;
 
 	/**
 	 * The size of the file in bytes.
@@ -84,6 +62,7 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
+<<<<<<< HEAD
 	 * The memory map of the file.
 	 */
 	MemoryMap* memoryMap = nullptr;
@@ -91,6 +70,9 @@ struct TransactionLogFile final {
 	/**
 	 * The mutex used to protect the file and its metadata
 	 * (currentBlockSize, blockCount, size).
+=======
+	 * The mutex used to protect the file (open/close, read/write, etc).
+>>>>>>> origin/core-2698-transaction-log-store
 	 */
 	std::mutex fileMutex;
 
@@ -108,15 +90,17 @@ struct TransactionLogFile final {
 	void close();
 
 	/**
-	 * Opens the log file for reading and writing.
-	 */
- 	void open();
-
-	/**
 	 * Gets the last write time of the log file or throws an error if the file
 	 * does not exist.
 	 */
 	std::chrono::system_clock::time_point getLastWriteTime();
+
+	/**
+	 * Opens the log file for reading and writing.
+	 */
+ 	void open();
+
+	bool removeFile();
 
 	/**
 	 * Writes a batch of transaction log entries to the log file.
@@ -160,65 +144,6 @@ private:
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
-
-	/**
-	 * Calculates the available space in the file.
-	 *
-	 * @param batch The batch of entries to write with state tracking.
-	 * @param maxFileSize The maximum file size limit (0 = no limit).
-	 * @param availableSpaceInCurrentBlock The available space in the current block.
-	 * @return The available space in the file.
-	 */
-	int64_t getAvailableSpaceInFile(
-		const TransactionLogEntryBatch& batch,
-		const uint32_t maxFileSize,
-		const uint32_t availableSpaceInCurrentBlock
-	);
-
-	/**
-	 * Calculates the entries to write to the file.
-	 *
-	 * @param batch The batch of entries to write with state tracking.
-	 * @param availableSpaceInCurrentBlock The available space in the current block.
-	 * @param availableSpaceInFile The available space in the file.
-	 * @param totalTxnSize The total transaction size.
-	 * @param numEntriesToWrite The number of entries to write.
-	 * @param dataForCurrentBlock The data for the current block.
-	 * @param dataForNewBlocks The data for the new blocks.
-	 * @param numNewBlocks The number of new blocks.
-	 */
-	void calculateEntriesToWrite(
-		const TransactionLogEntryBatch& batch,
-		const uint32_t availableSpaceInCurrentBlock,
-		const int64_t availableSpaceInFile,
-		uint32_t& totalTxnSize, // out
-		uint32_t& numEntriesToWrite, // out
-		uint32_t& dataForCurrentBlock, // out
-		uint32_t& dataForNewBlocks, // out
-		uint32_t& numNewBlocks // out
-	);
-
-	/**
-	 * Helper struct to represent block distribution for data.
-	 */
-	struct BlockDistribution {
-		uint32_t dataForCurrentBlock;
-		uint32_t dataForNewBlocks;
-		uint32_t numNewBlocks;
-		uint32_t bytesOnDisk;
-	};
-
-	/**
-	 * Calculates how data would be distributed across blocks.
-	 *
-	 * @param dataSize Total data size to distribute
-	 * @param availableSpaceInCurrentBlock Space available in current block
-	 * @return BlockDistribution struct with calculated values
-	 */
-	BlockDistribution calculateBlockDistribution(
-		uint32_t dataSize,
-		uint32_t availableSpaceInCurrentBlock
-	) const;
 };
 
 struct MemoryMap final

@@ -201,6 +201,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						txnHandle.get(), txnHandle->id);
 					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
+						// set the earliestActiveTransactionTimestamp for the batch
+						txnHandle->logEntryBatch->earliestActiveTransactionTimestamp = descriptor->getEarliestActiveTransactionTimestamp(store);
+
+						// write the batch to the store
 						committedPosition = store->writeBatch(*txnHandle->logEntryBatch);
 					} else {
 						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id)
