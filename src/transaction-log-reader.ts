@@ -83,6 +83,7 @@ export class TransactionLogReader {
 		// - This binary search also "favors" newer entries. For most recent entries, 50% of pivot point comparisons can be
 		// skipped because the next (pivot + 2^n) is outside the size bounds, so this provides a performance/acceleration bias
 		// towards newer entries, which are expected to be searched much more frequently.
+		let rightBlockIsEqual = false;
 		for (let shift = 23; shift >= BLOCK_SIZE_BITS; shift--) {
 			blockSizePower = 12;//logBuffer[position];
 			if (shift < blockSizePower) {
@@ -97,17 +98,25 @@ export class TransactionLogReader {
 					// take the upper block
 					continue;
 				}
+				rightBlockIsEqual = blockTimestamp === start;
 			}
 			// otherwise, take the lower block
 			position -= pivotSize;
 		}
-		// if there are multiple blocks with identifcal timestamps, they can have overlapping transactions that may include the start timestamp
-		while(position > 0) { // don't try to iterate past the beginning
-			let previousPosition = position - BLOCK_SIZE;
-			// TODO: we can end up needing to iterate back into a previous log file
-			const previousBlockTimestamp = dataView.getFloat64(previousPosition);
-			if (previousBlockTimestamp !== blockTimestamp) break;
-			position = previousPosition;
+		if (rightBlockIsEqual) {
+			// if the right block (next block after the one found with the largest timestamp that is before start) is an exact
+			// match, then we don't need to move backwards. If there is no offset in the right
+			// block we can actually move directly to it
+			// if (dataView.getUint16(position + 12) ===0) position += 1 << blockSizePower;
+		} else {
+			// if there are multiple blocks with identifcal timestamps, they can have overlapping transactions that may include the start timestamp
+			while (position > 0) { // don't try to iterate past the beginning
+				let previousPosition = position - BLOCK_SIZE;
+				// TODO: we can end up needing to iterate back into a previous log file
+				const previousBlockTimestamp = dataView.getFloat64(previousPosition);
+				if (previousBlockTimestamp !== blockTimestamp) break;
+				position = previousPosition;
+			}
 		}
 
 		position += 14 + dataView.getUint16(position + 12); // skip past the block descriptor and the offset to the first transaction
