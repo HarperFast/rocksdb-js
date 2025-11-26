@@ -1,11 +1,7 @@
 import { closeSync, openSync, readSync, statSync, type Stats } from 'node:fs';
 import { constants } from './load-binding.js';
 
-const {
-	TRANSACTION_LOG_TOKEN,
-	TRANSACTION_LOG_FILE_HEADER_SIZE,
-	TRANSACTION_LOG_ENTRY_HEADER_SIZE
-} = constants;
+const { TRANSACTION_LOG_TOKEN } = constants;
 
 interface LogEntry {
 	data: Buffer;

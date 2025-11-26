@@ -374,17 +374,17 @@ describe('Transaction Log', () => {
 			await resolver.promise;
 		}), 60000);
 
-		it('should rotate if file exceeds max age threshold', () => dbRunner({
-			dbOptions: [{ transactionLogRetention: 1000 }],
-		}, async ({ db, dbPath }) => {
-			// TODO
-		}));
+		// it('should rotate if file exceeds max age threshold', () => dbRunner({
+		// 	dbOptions: [{ transactionLogRetention: 1000 }],
+		// }, async ({ db, dbPath }) => {
+		// 	// TODO
+		// }));
 
-		it('should append to existing log file', () => dbRunner({
-			dbOptions: [{ transactionLogRetention: 1000 }],
-		}, async ({ db, dbPath }) => {
-			// TODO: add log, close db, open db, add log
-		}));
+		// it('should append to existing log file', () => dbRunner({
+		// 	dbOptions: [{ transactionLogRetention: 1000 }],
+		// }, async ({ db, dbPath }) => {
+		// 	// TODO: add log, close db, open db, add log
+		// }));
 
 		it('should error if the log name is invalid', () => dbRunner(async ({ db }) => {
 			expect(() => db.useLog(undefined as any)).toThrowError(new TypeError('Log name must be a string or number'));
