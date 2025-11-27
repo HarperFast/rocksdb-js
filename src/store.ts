@@ -283,7 +283,7 @@ export class Store {
 	}
 
 	/**
-	 * Closes the database and cleans up cached resources.
+	 * Closes the database.
 	 */
 	close(): void {
 		this.db.close();
@@ -547,11 +547,11 @@ export class Store {
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
 			transactionLogMaxSize: this.transactionLogMaxSize,
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
-			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
 			transactionLogsPath: join(this.path, 'transaction_logs')
 		});
 
