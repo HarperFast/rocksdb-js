@@ -52,6 +52,7 @@ export type NativeDatabaseOptions = {
 	name?: string;
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
+	transactionLogMaxAgeThreshold?: number;
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;

@@ -204,16 +204,33 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file
+		DEBUG_LOG("%p TransactionLogStore::commit Checking if log file is older than threshold (%f) for store \"%s\"\n",
+			this, this->maxAgeThreshold, this->name.c_str())
 		if (this->maxAgeThreshold > 0) {
-			auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-				this->retentionMs * this->maxAgeThreshold
-			);
-			auto thresholdTimePoint = std::chrono::system_clock::now() - thresholdDuration;
 			try {
-				if (logFile->getLastWriteTime() < thresholdTimePoint) {
-					DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms), rotating to next file for store \"%s\"\n",
-						this, thresholdDuration.count(), this->name.c_str())
+				auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+					this->retentionMs * (1 - this->maxAgeThreshold)
+				);
+				auto lastWriteTime = logFile->getLastWriteTime();
+				auto now = std::chrono::system_clock::now();
+				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastWriteTime);
+				DEBUG_LOG("%p TransactionLogStore::commit Max age threshold:        %f\n",
+					this, this->maxAgeThreshold)
+				DEBUG_LOG("%p TransactionLogStore::commit Retention duration:       %lld ms\n",
+					this, this->retentionMs.count())
+				DEBUG_LOG("%p TransactionLogStore::commit Threshold duration:       %lld ms\n",
+					this, thresholdDuration.count())
+				DEBUG_LOG("%p TransactionLogStore::commit Log file last write time: %lld ms\n",
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count())
+				DEBUG_LOG("%p TransactionLogStore::commit Now:                      %lld ms\n",
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count())
+				DEBUG_LOG("%p TransactionLogStore::commit File age:                 %lld ms\n",
+					this, fileAgeMs.count())
+				if (fileAgeMs >= thresholdDuration) {
+					DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms >= %lld ms), rotating to next file for store \"%s\"\n",
+						this, fileAgeMs.count(), thresholdDuration.count(), this->name.c_str())
 					this->currentSequenceNumber = this->nextSequenceNumber++;
+					continue;
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
 				// file doesn't exist
