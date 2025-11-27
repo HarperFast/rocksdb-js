@@ -207,6 +207,13 @@ export class Store {
 	sharedStructuresKey?: symbol;
 
 	/**
+	 * The threshold for the transaction log file's last modified time to be
+	 * older than the retention period before it is rotated to the next sequence
+	 * number. A threshold of 0 means ignore age check.
+	 */
+	transactionLogMaxAgeThreshold?: number;
+
+	/**
 	 * The maximum size of a transaction log before it is rotated to the next
 	 * sequence number.
 	 */
@@ -268,6 +275,7 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.transactionLogMaxAgeThreshold = options?.transactionLogMaxAgeThreshold;
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = join(path, 'transaction_logs');
@@ -543,6 +551,7 @@ export class Store {
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
+			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
 			transactionLogsPath: join(this.path, 'transaction_logs')
 		});
 

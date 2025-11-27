@@ -11,12 +11,14 @@ TransactionLogStore::TransactionLogStore(
 	const std::string& name,
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
-	const std::chrono::milliseconds& retentionMs
+	const std::chrono::milliseconds& retentionMs,
+	const float maxAgeThreshold
 ) :
 	name(name),
 	path(path),
 	maxFileSize(maxFileSize),
-	retentionMs(retentionMs)
+	retentionMs(retentionMs),
+	maxAgeThreshold(maxAgeThreshold)
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	positionHandle = new PositionHandle();
@@ -254,15 +256,36 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file
+		DEBUG_LOG("%p TransactionLogStore::commit Checking if log file is older than threshold (%f) for store \"%s\"\n",
+			this, this->maxAgeThreshold, this->name.c_str())
 		if (this->maxAgeThreshold > 0) {
-			auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-				this->retentionMs * this->maxAgeThreshold
-			);
-			auto thresholdTimePoint = std::chrono::system_clock::now() - thresholdDuration;
-			if (logFile->getLastWriteTime() < thresholdTimePoint) {
-				DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms), rotating to next file for store \"%s\"\n",
-					this, thresholdDuration.count(), this->name.c_str())
-				this->currentSequenceNumber = this->nextSequenceNumber++;
+			try {
+				auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+					this->retentionMs * (1 - this->maxAgeThreshold)
+				);
+				auto lastWriteTime = logFile->getLastWriteTime();
+				auto now = std::chrono::system_clock::now();
+				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastWriteTime);
+				DEBUG_LOG("%p TransactionLogStore::commit Max age threshold:        %f\n",
+					this, this->maxAgeThreshold)
+				DEBUG_LOG("%p TransactionLogStore::commit Retention duration:       %lld ms\n",
+					this, this->retentionMs.count())
+				DEBUG_LOG("%p TransactionLogStore::commit Threshold duration:       %lld ms\n",
+					this, thresholdDuration.count())
+				DEBUG_LOG("%p TransactionLogStore::commit Log file last write time: %lld ms\n",
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count())
+				DEBUG_LOG("%p TransactionLogStore::commit Now:                      %lld ms\n",
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count())
+				DEBUG_LOG("%p TransactionLogStore::commit File age:                 %lld ms\n",
+					this, fileAgeMs.count())
+				if (fileAgeMs >= thresholdDuration) {
+					DEBUG_LOG("%p TransactionLogStore::commit Log file is older than threshold (%lld ms >= %lld ms), rotating to next file for store \"%s\"\n",
+						this, fileAgeMs.count(), thresholdDuration.count(), this->name.c_str())
+					this->currentSequenceNumber = this->nextSequenceNumber++;
+					continue;
+				}
+			} catch (const std::filesystem::filesystem_error& e) {
+				// file doesn't exist
 			}
 		}
 
@@ -342,7 +365,8 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
-	const std::chrono::milliseconds& retentionMs
+	const std::chrono::milliseconds& retentionMs,
+	const float maxAgeThreshold
 ) {
 	auto dirName = path.filename().string();
 
@@ -351,7 +375,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		return nullptr;
 	}
 
-	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs);
+	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
 
 	// find `.txnlog` files in the directory
 	for (const auto& fileEntry : std::filesystem::directory_iterator(path)) {

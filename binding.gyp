@@ -25,6 +25,12 @@
 				'src/binding/util.cpp',
 			],
 			'defines': [
+				# Note: node-gyp defaults to NAPI_VERSION=8 (v12.22.0+,
+				# v14.17.0+, v15.12.0+, 16.0.0 and all later versions)
+				#
+				# We can force NAPI_VERSION=9 (v18.17.0+, 20.3.0+, 21.0.0 and
+				# all later versions) by uncommenting the line below:
+
 				# 'NAPI_VERSION=9',
 			],
 			'cflags!': [ '-fno-exceptions', '-std=c++17' ],

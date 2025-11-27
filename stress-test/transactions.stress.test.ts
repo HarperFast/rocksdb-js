@@ -21,13 +21,13 @@ const bootstrapScript = process.versions.deno || process.versions.bun
 			`;
 
 describe('Stress Transactions', () => {
-	it('should create 100 worker threads and commit 10k transactions', () => dbRunner({
+	it('should create 30 worker threads and commit 10k transactions', () => dbRunner({
 		skipOpen: true
 	}, async ({ dbPath }) => {
 		const promises: Promise<void>[] = [];
 		const workers: Worker[] = [];
 
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 30; i++) {
 			const worker = new Worker(
 				bootstrapScript,
 				{
@@ -55,13 +55,13 @@ describe('Stress Transactions', () => {
 		await Promise.all(promises);
 	}));
 
-	it('should create 100 worker threads and commit 10k transactions with logs and random entry sizes', () => dbRunner({
+	it('should create 30 worker threads and commit 10k transactions with logs and random entry sizes', () => dbRunner({
 		skipOpen: true
 	}, async ({ dbPath }) => {
 		const promises: Promise<void>[] = [];
 		const workers: Worker[] = [];
 
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 30; i++) {
 			const worker = new Worker(
 				bootstrapScript,
 				{

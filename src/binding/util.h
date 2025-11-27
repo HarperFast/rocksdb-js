@@ -151,6 +151,13 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	return napi_ok;
 }
 
+[[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, float& result) {
+	double result2;
+	NAPI_STATUS_RETURN(::napi_get_value_double(env, value, &result2));
+	result = static_cast<float>(result2);
+	return napi_ok;
+}
+
 // Only define size_t overload when size_t is different from uint64_t
 template<typename T = size_t>
 [[maybe_unused]] static typename std::enable_if<!std::is_same<T, uint64_t>::value, napi_status>::type

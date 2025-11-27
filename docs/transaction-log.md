@@ -12,9 +12,9 @@ recording database transactions. The format is designed for:
 
 ## File Structure
 
-Each transaction log file consists of comprised from two files: an index file
-(`.txnlog`) and a data file (`.txndata`). Files are rotated based on a
-configurable maximum size (default: 1MB for index files and 16MB for data files).
+Each transaction log store consists of one or more transaction log sequence
+files. These sequence log files have a `.txnlog` extension and are rotated based
+on a configurable maximum size (default: 16MB).
 
 ### Naming Convention
 
@@ -23,8 +23,6 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 - `name`: The log store name
 - `sequenceNumber`: Sequential integer starting from 1
 - Example: `mylog.1.txnlog`, `mylog.2.txnlog`
-
-Data files follow this convention, but with a `.txndata` extension.
 
 ## Binary Format Specification
 
@@ -94,12 +92,12 @@ await db.transaction((txn) => {
 
 ### Buffering Behavior
 
-- Actions are buffered in memory per transaction ID
+- Log entries are buffered in memory per transaction ID
 - Multiple transactions can be buffered concurrently
-- Buffered actions are NOT written to disk until the transaction is being
-  committed
+- Buffered log entries are NOT written to disk until right before the
+  transaction is committed
 - If the transaction log handle is garbage collected, buffered (uncommitted)
-  actions are lost
+  log entries are lost
 - Calling `addEntry()` with an unknown transaction ID throws an error
 
 ## Usage Examples
@@ -181,89 +179,65 @@ await db.transaction((txn) => {
 
 - Write failures throw exceptions
 - Commit with unknown transaction ID throws an error
-- Invalid data or corrupted blocks are detected during read operations
+- Invalid data is detected during read operations
 
 ## Reading The Transaction Log
 
-A transaction log can be read sequentially or by range using timestamps. The
-read algorithm is optimized by branching which the logic based on whether both
-start and end timestamps are present. If neither timestamps are set, then a
-sequential read is performed. If one or both of the timestamps are set, then the
-range logic will use a binary search to find the first block to start scanning
-from.
+Log entries are not guaranteed to be in order, but are guaranteed to have a
+monotonic timestamp. When reading the transaction log file, each transaction
+entry header must be read, then sorted and indexed. Using this index, queries can
+find all entries within a time range using a binary search and seek to get the
+associated entry data.
 
 ### Sequential Read
 
-1. Parse file header to get version and block size
-2. Parse block headers to identify block boundaries
-3. Reconstruct multi-block transactions using CONTINUATION flags
-4. Parse transaction headers to group transaction together by timestamp
-5. Process transactions in order
+1. Parse file header to get version
+2. While there is bytes to read
+   1. Parse first transaction entry header to identify the entry data length
+   2. Read the entry data
+   3. Next transaction entry header immediately follow the current entry data
 
 ```
 read file header
-for each block in log file:
-  read block header
-
-  if CONTINUATION flag is set:
-    append block body to previous transaction data
-  else:
-    start new transaction data with block body
-
-  transaction is complete
-  parse transaction header
-  parse all transactions
-  process transaction
+for each transaction entry in log file:
+  read transaction entry header
+  read transaction entry data
 ```
-
-Note that this is the same as a range read without a start and end timestamp.
 
 ### Range Read
 
-1. Parse file header to get version and block size
-2. Determine block count (ceiling((file_size - file_header_size) / block_size))
-3. Determine start and end block
-4. Determine and read middle block (floor((end_block - start_block) / 2))
-5. Repeatedly divide left or right range until block with first transaction is
-   found
-6. Reconstruct multi-block transactions using CONTINUATION flags
-7. Parse transaction headers to group transaction together by timestamp
-8. Process transactions in order
+1. Parse file header to get version
+2. Build index
+   1. While there is bytes to read
+      1. Parse first transaction entry header to identify the entry data length
+      2. Next transaction entry header immediately follow the current entry data
+3. Query index with start and end timestamp range
+4. Extract entry data from transaction log file
 
 ```
 read file header
-set range start block to first block
-set range end block to last block
 
-find the first block
-  determine the middle block between the range start and end
-  if middle block timestamp > start timestamp
-    set end block to middle block and recheck range
-  else
-    set start block to middle block and recheck range
-
-for each block starting at first block:
-  read block header
-
-  if CONTINUATION flag is set:
-    append block body to previous transaction data
-  else:
-    start new transaction data with block body
-
-  transaction is complete
-  parse transaction header
-  parse transactions
-  if no end timestamp
-    process transaction
-  else if timestamp < end timestamp
-    process transaction
-  else
-    return
+init index
+for each transaction entry in log file:
+  add transaction entry header to index
+search index for matching entries based on timestamp
+for each log entry
+  extract log entry data
 ```
+
+## Max Age and Automatic Rotation
+
+In addition to max file size, if a log file hasn't been written to in more than
+a certain amount of time, it will rotate to the next sequence log file. This
+max age is a percentage of the retention period.
+
+The default retention period is 3 days and the default max age is 75% of the
+retention period for a threshold period of 18 hours. If a log file hasn't been
+written to in the past 18 hours, it will start a new file.
 
 ## Performance Considerations
 
-- **Block Size**: 4KB blocks that can be traversed quickly using binary search
+- **Max File Size**: 16MB soft limit
 - **Batching**: Use transactions to batch multiple actions into fewer disk
   writes using `writev()`
 - **Zero-Copy**: The format supports memory-mapped I/O for efficient reading
@@ -272,12 +246,11 @@ for each block starting at first block:
 
 - Maximum single transaction size: ~4GB (uint32 limit)
 - Maximum transaction size: Limited by available memory during buffering
-- Maximum log file size: Configurable, default 1MB for index files and 16MB for
-  data files
+- Maximum log file size: Configurable, default 16MB
 
 ## Version History
 
 - **Version 1.0**: Initial format specification
-  - Hybrid index and data file log format
+  - File log format
   - Big-endian encoding
   - Transaction buffering

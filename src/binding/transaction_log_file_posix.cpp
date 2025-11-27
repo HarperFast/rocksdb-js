@@ -60,6 +60,8 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = st.st_size;
+	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",
+		this, this->path.string().c_str(), this->size)
 }
 
 MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
@@ -95,26 +97,16 @@ bool TransactionLogFile::removeFile() {
 		this->fd = -1;
 	}
 
-	try {
-		auto removed = std::filesystem::remove(this->path);
-		if (!removed) {
-			DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
-				this, this->path.string().c_str())
-			return false;
-		}
-
-		DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
-			this, this->path.string().c_str())
-		return true;
-	} catch (const std::filesystem::filesystem_error& e) {
-		DEBUG_LOG("%p TransactionLogFile::removeFile Filesystem error removing file %s: %s\n",
-			this, this->path.string().c_str(), e.what())
-		return false;
-	} catch (...) {
-		DEBUG_LOG("%p TransactionLogFile::removeFile Unknown error removing file %s\n",
+	auto removed = std::filesystem::remove(this->path);
+	if (!removed) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",
 			this, this->path.string().c_str())
 		return false;
 	}
+
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
+		this, this->path.string().c_str())
+	return true;
 }
 
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {

@@ -25,6 +25,7 @@ struct DBOptions final {
 	uint32_t parallelismThreads;
 	uint32_t transactionLogMaxSize;
 	uint32_t transactionLogRetentionMs;
+	float transactionLogMaxAgeThreshold;
 	std::string transactionLogsPath;
 };
 

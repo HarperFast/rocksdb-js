@@ -581,6 +581,13 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", transactionLogRetentionMs));
 
+	float transactionLogMaxAgeThreshold = 0.75f;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", transactionLogMaxAgeThreshold));
+	if (transactionLogMaxAgeThreshold < 0.0f || transactionLogMaxAgeThreshold > 1.0f) {
+		::napi_throw_error(env, nullptr, "transactionLogMaxAgeThreshold must be between 0.0 and 1.0");
+		return nullptr;
+	}
+
 	std::string transactionLogsPath;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
 
@@ -605,6 +612,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		parallelismThreads,
 		transactionLogMaxSize,
 		transactionLogRetentionMs,
+		transactionLogMaxAgeThreshold,
 		transactionLogsPath
 	};
 

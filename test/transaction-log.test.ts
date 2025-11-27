@@ -462,17 +462,86 @@ describe('Transaction Log', () => {
 			await resolver.promise;
 		}), 60000);
 
-		// it('should rotate if file exceeds max age threshold', () => dbRunner({
-		// 	dbOptions: [{ transactionLogRetention: 1000 }],
-		// }, async ({ db, dbPath }) => {
-		// 	// TODO
-		// }));
+		it('should rotate if file exceeds max age threshold', () => dbRunner({
+			dbOptions: [{
+				transactionLogRetention: 2000,
+				transactionLogMaxAgeThreshold: 0.9
+			}],
+		}, async ({ db, dbPath }) => {
+			// we need to add the entry within 3 seconds
+			const log = db.useLog('foo');
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(10, 'a'), txn.id);
+			});
 
-		// it('should append to existing log file', () => dbRunner({
-		// 	dbOptions: [{ transactionLogRetention: 1000 }],
-		// }, async ({ db, dbPath }) => {
-		// 	// TODO: add log, close db, open db, add log
-		// }));
+			await delay(200);
+
+			// we should be in the second half of the retention period and
+			// trigger a new file rotation
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(10, 'a'), txn.id);
+			});
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
+			expect(info1.version).toBe(1);
+			expect(info1.entries.length).toBe(1);
+			expect(info1.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
+			expect(info1.entries[0].length).toBe(10);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(10, 'a'));
+
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
+			expect(info2.version).toBe(1);
+			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info2.entries[0].length).toBe(10);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(10, 'a'));
+		}));
+
+		it('should append to existing log file', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const valueA = Buffer.alloc(10, 'a');
+			const valueB = Buffer.alloc(10, 'b');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(valueA, txn.id);
+			});
+
+			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			let info = parseTransactionLog(logPath);
+			expect(info.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
+			expect(info.version).toBe(1);
+			expect(info.entries.length).toBe(1);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(valueA);
+
+			db.close();
+
+			db.open();
+			await db.transaction(async (txn) => {
+				log.addEntry(valueB, txn.id);
+			});
+
+			info = parseTransactionLog(logPath);
+			expect(info.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10) * 2);
+			expect(info.version).toBe(1);
+			expect(info.entries.length).toBe(2);
+			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
+			expect(info.entries[0].length).toBe(10);
+			expect(info.entries[0].data).toEqual(valueA);
+			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(info.entries[1].length).toBe(10);
+			expect(info.entries[1].data).toEqual(valueB);
+		}));
 
 		it('should error if the log name is invalid', () => dbRunner(async ({ db }) => {
 			expect(() => db.useLog(undefined as any)).toThrowError(new TypeError('Log name must be a string or number'));

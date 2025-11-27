@@ -25,6 +25,7 @@ DBDescriptor::DBDescriptor(
 	columns(std::move(columns)),
 	transactionLogMaxSize(options.transactionLogMaxSize),
 	transactionLogRetentionMs(options.transactionLogRetentionMs),
+	transactionLogMaxAgeThreshold(options.transactionLogMaxAgeThreshold),
 	transactionLogsPath(options.transactionLogsPath)
 {}
 
@@ -1290,7 +1291,12 @@ void DBDescriptor::discoverTransactionLogStores() {
 
 	for (const auto& entry : std::filesystem::directory_iterator(this->transactionLogsPath)) {
 		if (entry.is_directory()) {
-			auto store = TransactionLogStore::load(entry.path(), this->transactionLogMaxSize, this->transactionLogRetentionMs);
+			auto store = TransactionLogStore::load(
+				entry.path(),
+				this->transactionLogMaxSize,
+				this->transactionLogRetentionMs,
+				this->transactionLogMaxAgeThreshold
+			);
 			if (store) {
 				this->transactionLogStores.emplace(store->name, store);
 			}
@@ -1395,7 +1401,8 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 		name,
 		logDirectory,
 		this->transactionLogMaxSize,
-		this->transactionLogRetentionMs
+		this->transactionLogRetentionMs,
+		this->transactionLogMaxAgeThreshold
 	);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
