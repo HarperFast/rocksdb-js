@@ -59,7 +59,7 @@ Creates a new database instance.
     it is rotated to the next sequence number. Value must be between `0.0` and
     `1.0`. A threshold of `0.0` means ignore age check. Defaults to `0.75`.
   - `transactionLogMaxSize: number` The maximum size of a transaction log
-    data file. If a log file is empty, the first log entry will always be added
+    file. If a log file is empty, the first log entry will always be added
     regardless if it's larger than the max size. If a log file is not empty and
     the entry is larger than the space available, the log file is rotated to the
     next sequence number. Defaults to 16 MB.
@@ -767,22 +767,10 @@ Returns an object containing all of the information in the log file.
 
 - `size: number` The size of the file.
 - `version: number` The log file format version.
-- `blockSize: number` The size of the blocks used to logically partition the log
-  file for efficient parsing.
-- `blockCount: number` The number of blocks in the file; note the last block may
-  not be full.
-- `blocks: Block[]` An array of block metadata.
-  - `startTimestamp: number` The earliest entry timestamp in the block.
-  - `flags: number` Indicates the block type.
-  - `dataOffset: number` If the block is a continuation block, this value
-    indicates the offset to the start of the next transaction block.
 - `entries: LogEntry[]` An array of transaction log entries.
-  - `continuation: boolean?` When `true`, indicates the buffer is a continuation
-    from the previous block's last transaction entry.
   - `data: Buffer` The entry data.
+  - `flags: number` Transaction related flags.
   - `length: number` The size of the entry data.
-  - `partial: boolean?` When `true`, indicates the log entry continues into the
-    next block.
   - `timestamp: number` The entry timestamp.
 
 ## Custom Store
