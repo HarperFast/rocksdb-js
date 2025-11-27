@@ -62,19 +62,18 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
-<<<<<<< HEAD
 	 * The memory map of the file.
 	 */
 	MemoryMap* memoryMap = nullptr;
 
 	/**
-	 * The mutex used to protect the file and its metadata
-	 * (currentBlockSize, blockCount, size).
-=======
 	 * The mutex used to protect the file (open/close, read/write, etc).
->>>>>>> origin/core-2698-transaction-log-store
 	 */
 	std::mutex fileMutex;
+
+	std::map<double, uint32_t> positionByTimestampIndex;
+	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	std::mutex indexMutex;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
@@ -114,6 +113,11 @@ struct TransactionLogFile final {
 	 * Return a memory map of the file and mark it as in use
 	 */
 	MemoryMap* getMemoryMap(uint32_t fileSize);
+
+	/**
+	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
+	 */
+	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize);
 
 	/**
 	 * Platform specific function that writes data to the log file.

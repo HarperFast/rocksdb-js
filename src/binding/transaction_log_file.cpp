@@ -174,4 +174,25 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		this, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
 
+uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
+	std::lock_guard<std::mutex> indexLock(this->indexMutex);
+	MemoryMap* memoryMap = getMemoryMap(mapSize);
+	char* mappedFile = (char*) memoryMap->map;
+	// TODO: positionByTimestampIndex should be initialized with the timestamp in the file header with a position of 0
+	while (lastIndexedPosition < size) {
+		double entryTimestamp = readDoubleBE(mappedFile + lastIndexedPosition);
+		// check that the timestamp is greater than any previously indexed timestamp,
+		// otherwise we don't record it, because we want to start at the first position with a timestamp that
+		// is greater than the requested timestamp
+		// TODO: remove first condition once we have the file header
+		if (positionByTimestampIndex.empty() || entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+			// insert with a hint to go at the end
+			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, lastIndexedPosition});
+		}
+		lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + lastIndexedPosition + 8);
+	}
+	auto it = positionByTimestampIndex.lower_bound(timestamp);
+	return it == positionByTimestampIndex.end() ? 0xFFFFFFFF : it->second;
+}
+
 } // namespace rocksdb_js

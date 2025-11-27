@@ -199,6 +199,10 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
 		unsigned int refCount = lastCommittedPosition->refCount;
 		DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup refCount %u\n", refCount);
+		int64_t memoryUsage;
+		napi_adjust_external_memory(env, 0, &memoryUsage);
+DEBUG_LOG("TransactionLog::GetLastCommittedPosition, external memory=%u\n", memoryUsage);
+
 		if (--lastCommittedPosition->refCount == 0) {
 			delete lastCommittedPosition;
 		}
@@ -230,7 +234,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		}
 		int64_t memoryUsage;
 		// re-adjust back
-		napi_adjust_external_memory(env, memoryMap->fileSize, &memoryUsage);
+		napi_adjust_external_memory(env, 0, &memoryUsage);
+		DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%u\n", memoryUsage);
 	}, memoryMap, &result));
 	int64_t memoryUsage = memoryMap->fileSize;
 	// We need to adjust the tracked external memory after creating the external buffer.
@@ -242,11 +247,24 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// memory blocks do still seem to induce extra garbage collection. Still we call this,
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
 	// better.
-	napi_adjust_external_memory(env, -memoryUsage, &memoryUsage);
+	napi_adjust_external_memory(env, 0, &memoryUsage);
 	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
 	return result;
 }
 
+/**
+ * Find the position in the transaction logs with a transaction equal to or greater than the provided timestamp.
+ */
+napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition")
+	double timestamp = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
+	uint64_t position = (*txnLogHandle)->findPosition(timestamp);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, *((double*) &position), &result));
+	return result;
+}
 
 /**
  * Initializes the `NativeTransactionLog` JavaScript class.
@@ -257,6 +275,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";

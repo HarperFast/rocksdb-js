@@ -1,4 +1,4 @@
-import { type NativeDatabase, TransactionLog, type LogBuffer } from './load-binding';
+import { type NativeDatabase, TransactionLog, type LogBuffer, constants } from './load-binding';
 import { readdirSync, statSync } from 'node:fs';
 
 type TransactionEntry = {
@@ -9,8 +9,7 @@ type TransactionEntry = {
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 
-const BLOCK_SIZE_BITS = 12;
-const BLOCK_SIZE = 2**BLOCK_SIZE_BITS; // 4kb
+const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 const MAX_LOG_FILE_SIZE = 2**24; // 16mb maximum size of a log file
 export class TransactionLogReader {
 	#log: TransactionLog;
@@ -42,11 +41,14 @@ export class TransactionLogReader {
 		start ??= 0;
 		end ??= Number.MAX_VALUE;
 		let latestLogId = loadLastPosition();
+		FLOAT_TO_UINT32[0] = transactionLogReader.#log.findPosition(start);
+		let logId = UINT32_FROM_FLOAT[1];
+		let position = UINT32_FROM_FLOAT[0];
 		let logBuffer: LogBuffer = this.#currentLogBuffer!; // try the current one first
-		if (logBuffer?.logId !== latestLogId) {
+		if (logBuffer?.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
-			logBuffer = getLogMemoryMap(latestLogId)!;
-			if (!readUncommitted) { // if we are reading uncommitted, we might be a log file ahead of the committed transaction
+			logBuffer = getLogMemoryMap(logId)!;
+			if (latestLogId === logId && !readUncommitted) { // if we are reading uncommitted, we might be a log file ahead of the committed transaction
 				this.#currentLogBuffer = logBuffer;
 			}
 		}
@@ -55,71 +57,12 @@ export class TransactionLogReader {
 		}
 
 		let dataView: DataView = logBuffer.dataView;
-		let blockTimestamp = dataView.getFloat64(0);
-		while (blockTimestamp > start) {
-			// if we have an earlier timestamp than available in this log file, find an earlier log file
-			let previousLogBuffer = getLogMemoryMap(logBuffer.logId - 1)!;
-			if (!previousLogBuffer) {
-				break;
-			}
-			logBuffer = previousLogBuffer;
+		if (latestLogId !== logId) {
 			size = logBuffer.size;
-			if (size === 0) {
-				logBuffer.size = this.#log.getLogFileSize(logBuffer.logId);
-			}
-			dataView = logBuffer.dataView;
-			blockTimestamp = dataView.getFloat64(0);
-		}
-		let blockSizePower = 12;
-		let position = 0;
-		// Now do a binary search in the log buffer to find the first block that precedes the start timestamp.
-		// We do a stable positioning binary search instead of a traditional iterative split binary search, which means
-		// that instead of taking the array and splitting it in half (and continue to split each part in half), we choose
-		// pivot points based on powers of two. This has a couple of significant advantages:
-		// - As a log grows in size, rather than constantly choosing different pivot points based on length, we are heavily
-		// reusing the same pivot points for each search (starting pivot point only changes when a log grows past the next 2^n, for example).
-		// This significantly improves the probability of cache hits, whether that is for pages swapped out of memory
-		// or even just L1/L2 cache usage.
-		// - This binary search also "favors" newer entries. For most recent entries, 50% of pivot point comparisons can be
-		// skipped because the next (pivot + 2^n) is outside the size bounds, so this provides a performance/acceleration bias
-		// towards newer entries, which are expected to be searched much more frequently.
-		let rightBlockIsEqual = false;
-		for (let shift = 23; shift >= BLOCK_SIZE_BITS; shift--) {
-			blockSizePower = 12;//logBuffer[position];
-			if (shift < blockSizePower) {
-				// We are at the block size, can't divide and pivot anymore, must sequentially search from here
-				break;
-			}
-			const pivotSize = 1 << shift;
-			position += pivotSize;
-			if (position < size) {
-				blockTimestamp = dataView.getFloat64(position);
-				if (blockTimestamp < start) {
-					// take the upper block
-					continue;
-				}
-				rightBlockIsEqual = blockTimestamp === start;
-			}
-			// otherwise, take the lower block
-			position -= pivotSize;
-		}
-		if (rightBlockIsEqual) {
-			// if the right block (next block after the one found with the largest timestamp that is before start) is an exact
-			// match, then we don't need to move backwards. If there is no offset in the right
-			// block we can actually move directly to it
-			// if (dataView.getUint16(position + 12) ===0) position += 1 << blockSizePower;
-		} else {
-			// if there are multiple blocks with identifcal timestamps, they can have overlapping transactions that may include the start timestamp
-			while (position > 0) { // don't try to iterate past the beginning
-				let previousPosition = position - BLOCK_SIZE;
-				// TODO: we can end up needing to iterate back into a previous log file
-				const previousBlockTimestamp = dataView.getFloat64(previousPosition);
-				if (previousBlockTimestamp !== blockTimestamp) break;
-				position = previousPosition;
+			if (!size) {
+				logBuffer.size = this.#log.getLogFileSize(logId);
 			}
 		}
-
-		position += 14 + dataView.getUint16(position + 12); // skip past the block descriptor and the offset to the first transaction
 		return {
 			[Symbol.iterator](): Iterator<TransactionEntry> {
 				return {
@@ -158,7 +101,7 @@ export class TransactionLogReader {
 							}
 
 							const length = dataView.getUint32(position + 8);
-							position += 12;
+							position += 13;
 							let matchesRange = false;
 							if (exactStart) {
 								// in exact start mode, we are look for the exact identifying timestamp of the first transaction
@@ -171,65 +114,27 @@ export class TransactionLogReader {
 							} else {
 								matchesRange = timestamp >= start! && timestamp < end!;
 							}
-							let entryEnd = position + length;
-							let blockEnd = ((position >> blockSizePower) + 1) << blockSizePower;
-
-							let data: Buffer;
-							if (entryEnd <= blockEnd) {
-								if (matchesRange) {
-									// fits in the same block, just subarray the data out
-									data = logBuffer!.subarray(position, entryEnd);
-								}
-								position = entryEnd;
-							} else {
-								// the entry data is split into multiple blocks, need to collect and concatenate it
-								let parts: Buffer[];
-								if (matchesRange) {
-									parts = [logBuffer.subarray(position, blockEnd)];
-								}
-								do {
-									// blockSizePower = logBuffer[blockEnd + 1];
-									const start = blockEnd + 14;
-									entryEnd += 14;
-									blockEnd += 1 << blockSizePower;
-									position = Math.min(blockEnd, entryEnd);
-									if (matchesRange) {
-										parts!.push(logBuffer.subarray(start, position));
-									}
-									if (position >= size) {
-										// move to the next log file
-										logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
-										let latestLogId = loadLastPosition();
-										if (latestLogId > logBuffer.logId) {
-											size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
-										}
-										position = 0;
-									}
-								} while (position < entryEnd);
-								if (matchesRange) {
-									data = Buffer.concat(parts!, length);
-								}
-							}
-							if (blockEnd < position + 12) {
-								// we don't ever split a transaction header, so if we are close to the end
-								// skip ahead
-								// blockSizePower = logBuffer[blockEnd + 1];
-								position = blockEnd + 14;
-							}
+							let entryStart = position;
+							position += length;
 							if (matchesRange) {
+								// fits in the same block, just subarray the data out
 								return {
 									done: false,
 									value: {
 										timestamp,
-										data: data!
+										data: logBuffer!.subarray(entryStart, position)
 									}
 								};
 							}
-							blockTimestamp = dataView.getFloat64(position);
-							if (blockTimestamp >= end!) {
-								return { done: true, value: undefined };
+							if (position >= size) {
+								// move to the next log file
+								logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+								let latestLogId = loadLastPosition();
+								if (latestLogId > logBuffer.logId) {
+									size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+								}
+								position = 0;
 							}
-							position = entryEnd;
 						}
 						return { done: true, value: undefined };
 					}
@@ -247,12 +152,21 @@ export class TransactionLogReader {
 				logBuffer.logId = logId;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
 				transactionLogReader.#logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
+				let maxMisses = 3;
+				for (let [ logId, reference ] of transactionLogReader.#logBuffers) {
+					// clear out any references that have been collected
+					if (reference.deref() === undefined) {
+						transactionLogReader.#logBuffers.delete(logId);
+					} else if (--maxMisses === 0) {
+						break;
+					}
+				}
 				return logBuffer;
 			} // else return undefined
 		}
 		function loadLastPosition() {
 			// atomically copy the full 64-bit last committed position word to a local variable so we can read it without memory tearing
-			FLOAT_TO_UINT32[0] = transactionLogReader.#lastPosition[0]
+			FLOAT_TO_UINT32[0] = transactionLogReader.#lastPosition[0];
 			let logId = UINT32_FROM_FLOAT[1];
 			if (readUncommitted) {
 				// if we are reading uncommitted transactions, we need to read the entire log file to find the latest position

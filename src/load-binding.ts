@@ -42,6 +42,7 @@ export type TransactionLog = {
 	getMemoryMapOfFile(sequenceId: number): LogBuffer;
 	getLogFileSize(sequenceId: number): number;
 	getLastCommittedPosition(): Buffer;
+	findPosition(timestamp: number): number;
 	lastCommittedPosition?: Buffer;
 };
 

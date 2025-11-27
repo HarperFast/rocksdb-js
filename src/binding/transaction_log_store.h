@@ -116,8 +116,15 @@ struct TransactionLogStore final {
 	 */
 	SequencePosition recentlyCommittedSequencePositions[20];
 
+	/**
+	 * A counter for the number of recentlyCommittedSequencePositions updates we have made so that we can use 2^n modulus
+	 * frequencies to assign to recentlyCommittedSequencePositions
+	 */
 	unsigned int nextSequencePositionsCount = 0;
 
+	/**
+	 * This file is used to track how much of the transaction log has been flushed to the database.
+	 */
 	TransactionLogFile* flushedTrackerFile = nullptr;
 
 	/**
@@ -125,6 +132,10 @@ struct TransactionLogStore final {
 	 */
 	uint64_t nextSequencePosition = 0;
 
+	/**
+	 * Data structure to hold the last committed position of a transaction log file, that is exposed
+	 * to JS through an external buffer with reference counting.
+	 */
 	PositionHandle* positionHandle;
 
 	TransactionLogStore(
@@ -172,6 +183,12 @@ struct TransactionLogStore final {
 	 * Get the shared represention object representing the last committed position.
 	 **/
 	PositionHandle* getLastCommittedPosition();
+
+	/**
+	 * Finds the transaction log file position with the oldest transaction that is equal to, or
+	 * newer than, the provided timestamp.
+	 */
+	uint64_t findPositionByTimestamp(double timestamp);
 
 	/**
 	 * Purges transaction logs.

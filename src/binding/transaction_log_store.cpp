@@ -111,6 +111,32 @@ PositionHandle* TransactionLogStore::getLastCommittedPosition() {
 	return this->positionHandle;
 }
 
+uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
+	std::lock_guard<std::mutex> lock(this->storeMutex); // TODO: I think we probably want a finer grained mutex for querying/reading
+	uint32_t sequenceNumber = this->currentSequenceNumber;
+	bool isCurrent = true;
+	uint32_t positionInLogFile = 0;
+	auto it = this->sequenceFiles.find(sequenceNumber);
+	while (it != this->sequenceFiles.end()) {
+		auto logFile = it->second.get();
+		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size);
+		// TODO: This should be positionInLogFile > 0 once we record the last write from the previous log in the file header
+		if (positionInLogFile > TRANSACTION_LOG_FILE_HEADER_SIZE) {
+			if (positionInLogFile == 0xFFFFFFFF)
+			{
+				// beyond the end of this log file, revert to next one
+				break;
+			}
+			// found a valid position in the log file
+			return ((uint64_t) sequenceNumber << 32) | positionInLogFile;
+		}
+		isCurrent = false;
+		it = this->sequenceFiles.find(--sequenceNumber);
+	};
+	// we iterated too far, return to the beginning position in the current log file
+	return (((uint64_t) sequenceNumber + 1) << 32) | TRANSACTION_LOG_FILE_HEADER_SIZE;
+}
+
 void TransactionLogStore::query() {
 	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store \"%s\"\n", this, this->name.c_str())
 
