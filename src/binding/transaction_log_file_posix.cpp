@@ -59,6 +59,8 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = st.st_size;
+	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",
+		this, this->path.string().c_str(), this->size)
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
