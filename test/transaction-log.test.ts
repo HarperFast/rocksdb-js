@@ -98,7 +98,7 @@ describe('Transaction Log', () => {
 			});
 		}));
 	});
-	describe('getSequencedLogs()/getMemoryMapOfFile', () => {
+	describe('_getLastCommittedPosition()/_getMemoryMapOfFile', () => {
 		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo-seq');
 			const value = Buffer.alloc(10, 'a');
@@ -106,13 +106,13 @@ describe('Transaction Log', () => {
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
 			});
-			const positionBuffer = log.getLastCommittedPosition();
+			const positionBuffer = log._getLastCommittedPosition();
 			const dataView = new DataView(positionBuffer.buffer);
 			expect(dataView.getUint32(0)).toBeGreaterThan(10);
 			const sequenceNumber = dataView.getUint32(1);
 			expect(sequenceNumber).toBe(1);
 
-			const buffer = log.getMemoryMapOfFile(1);
+			const buffer = log._getMemoryMapOfFile(1);
 			expect(buffer.length).toBe(0x1000000);
 			//expect(buffer.slice(0, 4).toString()).toBe('WOOF');
 		}));
@@ -244,10 +244,10 @@ describe('Transaction Log', () => {
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
 			const logReader = new TransactionLogReader(log);
 			const queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
-			expect(queryResults.length).toBe(1000);
+			expect(queryResults.length).toBe(20);
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[1].data).toEqual(value);
-			expect(queryResults[900].data).toEqual(value);
+			expect(queryResults[19].data).toEqual(value);
 
 			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');

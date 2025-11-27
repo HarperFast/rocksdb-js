@@ -1,5 +1,4 @@
 import { type NativeDatabase, TransactionLog, type LogBuffer, constants } from './load-binding';
-import { readdirSync, statSync } from 'node:fs';
 
 type TransactionEntry = {
 	timestamp: number;
@@ -20,7 +19,7 @@ export class TransactionLogReader {
 
 	constructor(log: TransactionLog) {
 		this.#log = log;
-		const lastCommittedPosition = log.lastCommittedPosition || (log.lastCommittedPosition = log.getLastCommittedPosition());
+		const lastCommittedPosition = log._lastCommittedPosition || (log._lastCommittedPosition = log._getLastCommittedPosition());
 		this.#lastPosition = new Float64Array(lastCommittedPosition.buffer);
 	}
 
@@ -38,12 +37,20 @@ export class TransactionLogReader {
 	query({ start, end, exactStart, readUncommitted }: { start?: number, end?: number, exactStart?: boolean, readUncommitted?: boolean }): Iterable<TransactionEntry> {
 		const transactionLogReader = this;
 		let size = 0;
-		start ??= 0;
 		end ??= Number.MAX_VALUE;
 		let latestLogId = loadLastPosition();
-		FLOAT_TO_UINT32[0] = transactionLogReader.#log.findPosition(start);
-		let logId = UINT32_FROM_FLOAT[1];
-		let position = UINT32_FROM_FLOAT[0];
+		let logId = latestLogId;
+		let position = 0;
+		if (start === undefined) {
+			// if no start timestamp is specified, start from the last committed position
+			position = size;
+			start = 0;
+		} else {
+			// otherwise, find the log file that contains the start timestamp, and find the position within that file
+			FLOAT_TO_UINT32[0] = transactionLogReader.#log._findPosition(start);
+			logId = UINT32_FROM_FLOAT[1];
+			position = UINT32_FROM_FLOAT[0];
+		}
 		let logBuffer: LogBuffer = this.#currentLogBuffer!; // try the current one first
 		if (logBuffer?.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -60,7 +67,7 @@ export class TransactionLogReader {
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
 			if (!size) {
-				logBuffer.size = this.#log.getLogFileSize(logId);
+				size = logBuffer.size = this.#log._getLogFileSize(logId);
 			}
 		}
 		return {
@@ -75,17 +82,17 @@ export class TransactionLogReader {
 							let latestSize = size;
 							if (latestLogId > logBuffer.logId) {
 								// if it is not the latest log, get the file size
-								size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+								size = logBuffer.size || (logBuffer.size = transactionLogReader.#log._getLogFileSize(logBuffer.logId));
 								if (position >= size) {
 									// we can't read any further in this block, go to the next block
 									logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 									if (latestLogId > logBuffer.logId) {
 										// it is non-current log file, we can safely use or cache the size
-										size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+										size = logBuffer.size || (logBuffer.size = transactionLogReader.#log._getLogFileSize(logBuffer.logId));
 									} else {
 										size = latestSize; // use the latest position from loadLastPosition
 									}
-									position = 0;
+									position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 								}
 							}
 						}
@@ -128,12 +135,18 @@ export class TransactionLogReader {
 							}
 							if (position >= size) {
 								// move to the next log file
-								logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 								let latestLogId = loadLastPosition();
 								if (latestLogId > logBuffer.logId) {
-									size = logBuffer.size || (logBuffer.size = transactionLogReader.#log.getLogFileSize(logBuffer.logId));
+									logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+									size = logBuffer.size;
+									if (!size) {
+										size = transactionLogReader.#log._getLogFileSize(logBuffer.logId);
+										if (!readUncommitted) {
+											logBuffer.size = size;
+										}
+									}
+									position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 								}
-								position = 0;
 							}
 						}
 						return { done: true, value: undefined };
@@ -147,7 +160,7 @@ export class TransactionLogReader {
 				if (logBuffer) { // if we have a cached buffer, return it
 					return logBuffer;
 				}
-				logBuffer = transactionLogReader.#log.getMemoryMapOfFile(logId);
+				logBuffer = transactionLogReader.#log._getMemoryMapOfFile(logId);
 				if (!logBuffer) return;
 				logBuffer.logId = logId;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
@@ -173,7 +186,7 @@ export class TransactionLogReader {
 				let nextSize = 0;
 				let nextLogId = logId || 1;
 				while(true) {
-					nextSize = transactionLogReader.#log.getLogFileSize(nextLogId);
+					nextSize = transactionLogReader.#log._getLogFileSize(nextLogId);
 					if (nextSize === 0) { // if the size is zero, there is no next log file, we are done
 						break;
 					} else {

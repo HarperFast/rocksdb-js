@@ -272,10 +272,10 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";

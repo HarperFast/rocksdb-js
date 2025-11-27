@@ -39,11 +39,11 @@ export type LogBuffer = Buffer & {
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
-	getMemoryMapOfFile(sequenceId: number): LogBuffer;
-	getLogFileSize(sequenceId: number): number;
-	getLastCommittedPosition(): Buffer;
-	findPosition(timestamp: number): number;
-	lastCommittedPosition?: Buffer;
+	_getMemoryMapOfFile(sequenceId: number): LogBuffer;
+	_getLogFileSize(sequenceId: number): number;
+	_getLastCommittedPosition(): Buffer;
+	_findPosition(timestamp: number): number;
+	_lastCommittedPosition?: Buffer;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
