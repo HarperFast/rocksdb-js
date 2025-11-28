@@ -46,7 +46,8 @@ void TransactionLogStore::close() {
 		return;
 	}
 
-	std::unique_lock<std::mutex> lock(this->storeMutex);
+	std::unique_lock<std::mutex> lock(this->writeMutex);
+	std::unique_lock<std::mutex> dataSetsLock(this->dataSetsMutex);
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str())
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
 		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
@@ -54,10 +55,12 @@ void TransactionLogStore::close() {
 	}
 
 	lock.unlock();
+	dataSetsLock.unlock();
 	this->purge();
 }
 
 TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
+	std::unique_lock<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 
@@ -83,7 +86,7 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 }
 
 MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(logSequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 	if (!logFile) {
@@ -96,7 +99,7 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 }
 
 uint32_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(logSequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 	if (!logFile) {
@@ -107,16 +110,20 @@ uint32_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 }
 
 PositionHandle* TransactionLogStore::getLastCommittedPosition() {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	return this->positionHandle;
 }
 
 uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
-	std::lock_guard<std::mutex> lock(this->storeMutex); // TODO: I think we probably want a finer grained mutex for querying/reading
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex); // TODO: I think we probably want a finer grained mutex for querying/reading
 	uint32_t sequenceNumber = this->currentSequenceNumber;
 	bool isCurrent = true;
 	uint32_t positionInLogFile = 0;
 	auto it = this->sequenceFiles.find(sequenceNumber);
+	if (it == this->sequenceFiles.end() && sequenceNumber > 1) {
+		// it is possible that the current log file doesn't exist yet, so we need to look at the previous one
+		it = this->sequenceFiles.find(--sequenceNumber);
+	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
 		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size);
@@ -147,7 +154,8 @@ void TransactionLogStore::query() {
 }
 
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 
 	if (this->sequenceFiles.empty()) {
 		return;
@@ -212,7 +220,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 }
 
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
 	auto logFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
 
@@ -236,7 +244,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
 
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	uint64_t sequencePosition = this->nextSequencePosition;
 	// write entries across multiple log files until all are written
@@ -337,7 +345,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		}
 		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
 	}
-	std::lock_guard<std::mutex> positionsLock(this->transactionsPositionsMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 	uncommittedTransactionPositions.insert(this->nextSequencePosition);
 
 	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
@@ -345,7 +353,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 }
 
 void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->transactionsPositionsMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
 	uncommittedTransactionPositions.erase(position);
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
@@ -369,7 +377,7 @@ void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::Seque
 }
 
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->transactionsPositionsMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	uint64_t latestFlushedPosition = 0;
 	// the latest sequence number that has been flushed according to this flush update
 	for (int i = 0; i < 20; i++) {

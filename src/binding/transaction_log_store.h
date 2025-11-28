@@ -86,9 +86,9 @@ struct TransactionLogStore final {
 	std::map<uint32_t, std::unique_ptr<TransactionLogFile>> sequenceFiles;
 
 	/**
-	 * The mutex to protect the transaction log store.
+	 * The mutex to protect writing with the transaction log store.
 	 */
-	std::mutex storeMutex;
+	std::mutex writeMutex;
 
 	/**
 	 * The flag indicating if the transaction log store is closing. Once a store
@@ -117,9 +117,9 @@ struct TransactionLogStore final {
 	SequencePosition recentlyCommittedSequencePositions[20];
 
 	/**
-	 * The mutex to protect the transaction positions set.
+	 * The mutex to protect the transaction data sets.
 	 */
-	std::mutex transactionsPositionsMutex;
+	std::mutex dataSetsMutex;
 
 	/**
 	 * A counter for the number of recentlyCommittedSequencePositions updates we have made so that we can use 2^n modulus
