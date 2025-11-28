@@ -78,7 +78,7 @@ void TransactionLogFile::openFile() {
 
 MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!memoryMap) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", size);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", this, fileSize);
 		HANDLE mh;
 		mh = CreateFileMappingW(this->fileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
 		if (!mh)

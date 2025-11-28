@@ -94,12 +94,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 						while(position < size) {
+							console.log('iterating from ', position, ' to ', size);
 							// advance to the next entry, reading the timestamp and the data
 							do {
 								timestamp = dataView.getFloat64(position);
 								// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
 							} while (timestamp < 1 && ++position < size);
 							if (!timestamp) {
+								console.log('no timestamp, reached end');
 								// we have gone beyond the last transaction and reached the end
 								return { done: true, value: undefined };
 							}
@@ -118,6 +120,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							} else {
 								matchesRange = timestamp >= start! && timestamp < end!;
 							}
+							console.log('matches', start, end, timestamp, matchesRange);
 							let entryStart = position;
 							position += length;
 							if (matchesRange) {

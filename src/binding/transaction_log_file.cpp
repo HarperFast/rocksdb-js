@@ -83,7 +83,7 @@ void TransactionLogFile::open() {
 		}
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu)\n",
+	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%u)\n",
 		this, this->path.string().c_str(), this->size)
 }
 
