@@ -153,14 +153,10 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::writeEntries Wrote %lld bytes to log file, batch state: entryIndex=%zu, bytesWritten=%zu\n",
+		this, bytesWritten, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
-
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Wrote %lld bytes to log file\n", this, bytesWritten)
-
 	this->size += static_cast<uint32_t>(bytesWritten);
-
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Batch state: entryIndex=%zu, bytesWritten=%zu\n",
-		this, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
 
 } // namespace rocksdb_js
