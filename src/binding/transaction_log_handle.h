@@ -29,9 +29,19 @@ struct TransactionLogHandle final : Closable {
 	 */
 	uint32_t transactionId;
 
+	/**
+	 * Creates a new transaction log handle.
+	 */
 	TransactionLogHandle(const std::shared_ptr<DBHandle>& dbHandle, const std::string& logName);
+
+	/**
+	 * Destroys the transaction log handle.
+	 */
 	~TransactionLogHandle();
 
+	/**
+	 * Adds an entry to the transaction log.
+	 */
 	void addEntry(
 		uint32_t transactionId,
 		std::unique_ptr<char[]> data,
@@ -50,7 +60,14 @@ struct TransactionLogHandle final : Closable {
 	uint64_t findPosition(double timestamp);
 	uint32_t getLogFileSize(uint32_t sequenceNumber);
 	PositionHandle* getLastCommittedPosition();
+	/**
+	 * Closes the transaction log handle.
+	 */
 	void close();
+
+	/**
+	 * Queries the transaction log.
+	 */
 	void query();
 
 	std::map<uint32_t, std::unique_ptr<TransactionLogFile>>* getSequenceFiles();

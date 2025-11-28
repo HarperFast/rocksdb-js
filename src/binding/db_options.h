@@ -23,9 +23,9 @@ struct DBOptions final {
 	std::string name;
 	bool noBlockCache;
 	uint32_t parallelismThreads;
+	float transactionLogMaxAgeThreshold;
 	uint32_t transactionLogMaxSize;
 	uint32_t transactionLogRetentionMs;
-	float transactionLogMaxAgeThreshold;
 	std::string transactionLogsPath;
 };
 

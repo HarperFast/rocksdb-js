@@ -133,6 +133,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex listenerCallbacksMutex;
 
 	/**
+	 * The threshold for the transaction log file's last modified time to be
+	 * older than the retention period before it is rotated to the next sequence
+	 * number. A threshold of 0 means ignore age check.
+	 */
+	float transactionLogMaxAgeThreshold;
+
+	/**
 	 * The maximum size of a transaction log file in bytes before it is rotated
 	 * to the next sequence number. A max size of 0 means no limit.
 	 */
@@ -142,13 +149,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * The retention period of transaction logs in milliseconds.
 	 */
 	std::chrono::milliseconds transactionLogRetentionMs;
-
-	/**
-	 * The threshold for the transaction log file's last modified time to be
-	 * older than the retention period before it is rotated to the next sequence
-	 * number. A threshold of 0 means ignore age check.
-	 */
-	float transactionLogMaxAgeThreshold = 0.75f;
 
 	/**
 	 * The path to the transaction logs.

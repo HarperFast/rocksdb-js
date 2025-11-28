@@ -23,9 +23,9 @@ DBDescriptor::DBDescriptor(
 	mode(options.mode),
 	db(db),
 	columns(std::move(columns)),
+	transactionLogMaxAgeThreshold(options.transactionLogMaxAgeThreshold),
 	transactionLogMaxSize(options.transactionLogMaxSize),
 	transactionLogRetentionMs(options.transactionLogRetentionMs),
-	transactionLogMaxAgeThreshold(options.transactionLogMaxAgeThreshold),
 	transactionLogsPath(options.transactionLogsPath)
 {}
 

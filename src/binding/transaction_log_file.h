@@ -41,13 +41,25 @@ namespace rocksdb_js {
 
 struct MemoryMap;
 struct TransactionLogFile final {
+	/**
+	 * The path to the transaction log file.
+	 */
 	std::filesystem::path path;
 
+	/**
+	 * The sequence number of the transaction log file.
+	 */
 	uint32_t sequenceNumber;
 
 #ifdef PLATFORM_WINDOWS
+	/**
+	 * The Windows file handle for the transaction log file.
+	 */
 	HANDLE fileHandle;
 #else
+	/**
+	 * The POSIX file descriptor for the transaction log file.
+	 */
 	int fd;
 #endif
 
@@ -148,6 +160,11 @@ private:
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
+
+	/**
+	 * Platform specific function that writes data to the log file.
+	 */
+	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
 };
 
 struct MemoryMap final

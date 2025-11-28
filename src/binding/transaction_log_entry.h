@@ -90,31 +90,6 @@ struct TransactionLogEntryBatch final {
 	}
 
 	/**
-	 * Gets the remaining bytes to write from the current entry.
-	 */
-	uint32_t getCurrentEntryRemainingBytes() const {
-		if (this->currentEntryIndex >= this->entries.size()) {
-			return 0;
-		}
-		return this->entries[this->currentEntryIndex]->size - this->currentEntryBytesWritten;
-	}
-
-	/**
-	 * Gets the total remaining bytes to write across all entries.
-	 */
-	uint32_t getTotalRemainingBytes() const {
-		if (this->currentEntryIndex >= this->entries.size()) {
-			return 0;
-		}
-
-		uint32_t total = this->getCurrentEntryRemainingBytes();
-		for (uint32_t i = this->currentEntryIndex + 1; i < this->entries.size(); ++i) {
-			total += this->entries[i]->size;
-		}
-		return total;
-	}
-
-	/**
 	 * Checks if all entries have been written.
 	 */
 	bool isComplete() const {

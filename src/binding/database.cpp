@@ -610,9 +610,9 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		name,
 		noBlockCache,
 		parallelismThreads,
+		transactionLogMaxAgeThreshold,
 		transactionLogMaxSize,
 		transactionLogRetentionMs,
-		transactionLogMaxAgeThreshold,
 		transactionLogsPath
 	};
 
