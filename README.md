@@ -720,40 +720,18 @@ await db.transaction(async (txn) => {
 });
 ```
 
-<<<<<<< HEAD
-#### `log.addEntryCopy(data, transactionId): void`
+Note that the `TransactionLog` class also has internal mathods `_getMemoryMapOfFile`, `_getLogFileSize`, `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in any version.
 
-Copy the entry data and add it to the transaction log.
 
-- `data: Buffer | UInt8Array` The entry data to store. There is no inherent
-  limit beyond what Node.js can handle.
-- `transactionId: Number` A related transaction used to batch entries on commit.
-
-```typescript
-const log = db.useLog('foo');
-await db.transaction(async (txn) => {
-  log.addEntryCopy(Buffer.from('I will be copied'), txn.id);
-});
-```
-
-Note that the `TransactionLog` class also has internal mathods `getMemoryMapOfFile`, `getLogFileSize` and `getLastCommittedPosition` that should not be used directly and may change in any version.
-
-### Class: `TransactionLogReader`
-
-A `TransactionLogReader` lets you query the transaction log for entries. A `TransactionLogReader` can be constructed from a `TransactionLog` instance:
-
-```javascript
-const log = db.useLog('foo');
-const logReader = new TransactionLogReader(log);
-```
-
-#### `logReader.query(options?)`
+#### `log.query(options?)`
 
 Returns an iterator that streams all log entries for the given filter.
 
 - `options: object`
   - `start?: number` The transaction start timestamp.
   - `end?: string` The transction end timestamp.
+  - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction with the given start timestamp. By default all transactions equal to or greater than the start timestamp will be included.
+  - `readUncommitted?: boolean` When `true`, this will include uncommitted transaction entries. Normally transaction entries that haven't finished committed are not included.
 
 The iterator produces an object with the log entry timestamp and data.
 
@@ -764,8 +742,7 @@ The iterator produces an object with the log entry timestamp and data.
 
 ```typescript
 const log = db.useLog('foo');
-const logReader = new TransactionLogReader(log);
-const iter = logReader.query();
+const iter = log.query({});
 for (const entry of iter) {
   console.log(entry);
 }
