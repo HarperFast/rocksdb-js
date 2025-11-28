@@ -92,10 +92,6 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
 
-	char* data = nullptr;
-	size_t size = 0;
-	uint32_t transactionId = (*txnLogHandle)->transactionId;
-
 	bool isBuffer;
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS_ERROR(::napi_is_buffer(env, argv[0], &isBuffer), "Failed to check if log entry data is a Buffer");
@@ -105,13 +101,16 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	NAPI_STATUS_THROWS_ERROR(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(data), &size),
+	char* data = nullptr;
+	size_t size = 0;
+	NAPI_STATUS_THROWS_ERROR(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&data), &size),
 		"Failed to get log entry data buffer info");
 	if (data == nullptr) {
-		::napi_throw_type_error(env, nullptr, "Invalid log entry data, expected a Buffer or Uint8Array");
+		::napi_throw_type_error(env, nullptr, "Invalid log entry data, expected a Buffer or ArrayBuffer");
 		return nullptr;
 	}
 
+	uint32_t transactionId = (*txnLogHandle)->transactionId;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS_ERROR(::napi_typeof(env, argv[1], &type), "Failed to get log entry transaction id type");
 	if (type != napi_undefined) {
@@ -135,7 +134,7 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	try {
 		std::unique_ptr<char[]> copyData(new char[size]);
 		::memcpy(copyData.get(), data, size);
-		(*txnLogHandle)->addEntry(transactionId, std::move(copyData), size);
+		(*txnLogHandle)->addEntry(transactionId, std::move(copyData), static_cast<uint32_t>(size));
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
