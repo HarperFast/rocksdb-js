@@ -465,7 +465,7 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 
 static std::atomic<double> lastTimestamp{0.0};
 
-double getTimestamp() {
+double getMonotonicTimestamp() {
 	uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()
 	).count();

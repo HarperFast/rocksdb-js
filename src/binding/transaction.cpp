@@ -482,7 +482,7 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 
 	if (type == napi_undefined) {
 		// use current timestamp
-		(*txnHandle)->startTimestamp = rocksdb_js::getTimestamp();
+		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	} else if (type == napi_number) {
 		double timestampMs = 0.0;
 		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),

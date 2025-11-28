@@ -374,6 +374,16 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value Database::GetMonotonicTimestamp(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	double timestamp = rocksdb_js::getMonotonicTimestamp();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, timestamp, &result))
+	return result;
+}
+
 /**
  * Gets the oldest unreleased snapshot unix timestamp.
  *
@@ -869,6 +879,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },

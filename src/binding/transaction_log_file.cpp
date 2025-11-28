@@ -50,35 +50,30 @@ void TransactionLogFile::open() {
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
-		fprintf(stderr, "%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
 		throw std::runtime_error("File is too small to be a valid transaction log file: " + this->path.string());
 	} else {
 		// try to read the token and version from the log file
 		int64_t result = this->readFromFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
 		if (result < 0) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str())
-			fprintf(stderr, "%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str());
 			throw std::runtime_error("Failed to read version from file: " + this->path.string());
 		}
 
 		uint32_t token = readUint32BE(buffer);
 		if (token != TRANSACTION_LOG_TOKEN) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Invalid transaction log file: %s\n", this, this->path.string().c_str())
-			fprintf(stderr, "%p TransactionLogFile::open ERROR: Invalid transaction log file: %s\n", this, this->path.string().c_str());
 			throw std::runtime_error("Invalid transaction log file: " + this->path.string());
 		}
 
 		result = this->readFromFile(buffer, 1, 4);
 		if (result < 0) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str())
-			fprintf(stderr, "%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str());
 			throw std::runtime_error("Failed to read version from file: " + this->path.string());
 		}
 		this->version = readUint8(buffer);
 
 		if (this->version != 1) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str())
-			fprintf(stderr, "%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
 			throw std::runtime_error("Unsupported transaction log file version: " + std::to_string(this->version));
 		}
 	}
@@ -96,7 +91,6 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 		this->writeEntriesV1(batch, maxFileSize);
 	} else {
 		DEBUG_LOG("%p TransactionLogFile::writeEntries Unsupported transaction log file version: %s\n", this, this->path.string().c_str())
-		fprintf(stderr, "%p TransactionLogFile::writeEntries Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
 		throw std::runtime_error("Unsupported transaction log file version: " + std::to_string(this->version));
 	}
 }
@@ -160,18 +154,13 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
 	if (bytesWritten < 0) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntries ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
-		fprintf(stderr, "%p TransactionLogFile::writeEntries ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str());
 		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::writeEntries Wrote %lld bytes to log file, batch state: entryIndex=%zu, bytesWritten=%zu\n",
+		this, bytesWritten, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
-
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Wrote %lld bytes to log file\n", this, bytesWritten)
-
 	this->size += static_cast<uint32_t>(bytesWritten);
-
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Batch state: entryIndex=%zu, bytesWritten=%zu\n",
-		this, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
 
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
