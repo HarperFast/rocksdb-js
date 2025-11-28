@@ -160,11 +160,6 @@ private:
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
-
-	/**
-	 * Platform specific function that writes data to the log file.
-	 */
-	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
 };
 
 struct MemoryMap final
