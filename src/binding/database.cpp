@@ -873,7 +873,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },\
+		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
