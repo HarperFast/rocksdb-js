@@ -203,7 +203,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
-				uint64_t committedPosition;
+				uint64_t committedPosition; // To record the log position of the committed transaction, for tracking of visible commits available in transaction log
 
 				if (txnHandle->logEntryBatch) {
 					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
@@ -293,7 +293,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
-	uint64_t committedPosition;
+	uint64_t committedPosition;  // To record the log position of the committed transaction, for tracking of visible commits available in transaction log
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
