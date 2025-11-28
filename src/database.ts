@@ -135,6 +135,16 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// flushed
 
 	/**
+	 * Returns the current timestamp as a monotonically increasing timestamp in
+	 * milliseconds represented as a decimal number.
+	 *
+	 * @returns The current monotonic timestamp in milliseconds.
+	 */
+	getMonotonicTimestamp(): number {
+		return this.store.db.getMonotonicTimestamp();
+	}
+
+	/**
 	 * Returns a number representing a unix timestamp of the oldest unreleased
 	 * snapshot.
 	 *

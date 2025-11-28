@@ -42,7 +42,7 @@ TransactionHandle::TransactionHandle(
 
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
-	this->startTimestamp = rocksdb_js::getTimestamp();
+	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 }
 
 /**

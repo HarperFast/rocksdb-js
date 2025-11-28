@@ -194,6 +194,16 @@ const total = db.getKeysCount();
 const range = db.getKeysCount({ start: 'a', end: 'z' });
 ```
 
+### `db.getMonotonicTimestamp(): number`
+
+Returns the current timestamp as a monotonically increasing timestamp in
+milliseconds represented as a decimal number.
+
+```typescript
+const ts = db.getMonotonicTimestamp();
+console.log(ts); // 1764307857213.739
+```
+
 ### `db.getOldestSnapshotTimestamp(): number`
 
 Returns a number representing a unix timestamp of the oldest unreleased
