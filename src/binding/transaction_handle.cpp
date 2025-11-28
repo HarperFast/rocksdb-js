@@ -106,9 +106,9 @@ void TransactionHandle::close() {
 	this->txn = nullptr;
 
 	if (this->jsDatabaseRef != nullptr) {
-		DEBUG_LOG("%p TransactionHandle::close cleaning up reference to database\n", this)
+		DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this)
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database")
-		DEBUG_LOG("%p TransactionHandle::close reference to database deleted successfully\n", this)
+		DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this)
 		this->jsDatabaseRef = nullptr;
 	} else {
 		DEBUG_LOG("%p TransactionHandle::close jsDatabaseRef is already null\n", this)
@@ -117,7 +117,7 @@ void TransactionHandle::close() {
 	// the transaction should already be removed from the registry when
 	// committing/aborting  so we don't need to call transactionRemove here to
 	// avoid race conditions and bad_weak_ptr errors
-	DEBUG_LOG("%p TransactionHandle::close transaction should already be removed from registry\n", this)
+	DEBUG_LOG("%p TransactionHandle::close Transaction should already be removed from registry\n", this)
 
 	this->dbHandle.reset();
 }
@@ -180,8 +180,6 @@ napi_value TransactionHandle::get(
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, key);
-	// Use refcount 1 to prevent GC during async operation, but don't manually delete
-	// to avoid crashes during environment teardown. The small memory leak is acceptable.
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 

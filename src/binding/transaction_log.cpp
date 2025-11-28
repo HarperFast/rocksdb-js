@@ -31,67 +31,6 @@
 namespace rocksdb_js {
 
 /**
- * Helper struct to hold parsed log entry data from NAPI arguments.
- */
-struct ParsedLogEntryData {
-	char* data;
-	uint32_t size;
-	uint32_t transactionId;
-};
-
-/**
- * Helper function to parse common log entry arguments.
- *
- * @returns true on success, false if error was thrown
- */
-static bool parseLogEntryArgs(
-	napi_env env,
-	napi_value* argv,
-	std::shared_ptr<TransactionLogHandle>& txnLogHandle,
-	ParsedLogEntryData* parsed
-) {
-	bool isBuffer;
-	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_is_buffer(env, argv[0], &isBuffer), false, "Failed to check if log entry data is a Buffer");
-	bool isArrayBuffer;
-	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer), false, "Failed to check if log entry data is an ArrayBuffer");
-	if (!isBuffer && !isArrayBuffer) {
-		::napi_throw_type_error(env, nullptr, "Invalid log entry, expected a Buffer or ArrayBuffer");
-		return false;
-	}
-	size_t size;
-	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&parsed->data), &size), false,
-		"Failed to get log entry data buffer info");
-	if (parsed->data == nullptr) {
-		::napi_throw_type_error(env, nullptr, "Invalid log entry data, expected a Buffer or Uint8Array");
-		return false;
-	}
-	parsed->size = static_cast<uint32_t>(size);
-
-	napi_valuetype type;
-	NAPI_STATUS_THROWS_ERROR_RVAL(::napi_typeof(env, argv[1], &type), false, "Failed to get log entry transaction id type");
-	parsed->transactionId = txnLogHandle->transactionId;
-	if (type != napi_undefined) {
-		if (type == napi_number) {
-			int32_t signedTransactionId;
-			NAPI_STATUS_THROWS_ERROR_RVAL(::napi_get_value_int32(env, argv[1], &signedTransactionId), false, "Failed to get log entry transaction id");
-			if (signedTransactionId < 0) {
-				::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
-				return false;
-			}
-			parsed->transactionId = static_cast<uint32_t>(signedTransactionId);
-		} else {
-			::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
-			return false;
-		}
-	} else if (parsed->transactionId == 0) {
-		::napi_throw_type_error(env, nullptr, "Missing argument, transaction id is required");
-		return false;
-	}
-
-	return true;
-}
-
-/**
  * Constructor for the `NativeTransactionLog` class.
  *
  * @param env - The NAPI environment.
@@ -153,15 +92,50 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
 
-	ParsedLogEntryData parsed;
-	if (!parseLogEntryArgs(env, argv, *txnLogHandle, &parsed)) {
+	char* data = nullptr;
+	size_t size = 0;
+	uint32_t transactionId = (*txnLogHandle)->transactionId;
+
+	bool isBuffer;
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS_ERROR(::napi_is_buffer(env, argv[0], &isBuffer), "Failed to check if log entry data is a Buffer");
+	NAPI_STATUS_THROWS_ERROR(::napi_is_arraybuffer(env, argv[0], &isArrayBuffer), "Failed to check if log entry data is an ArrayBuffer");
+	if (!isBuffer && !isArrayBuffer) {
+		::napi_throw_type_error(env, nullptr, "Invalid log entry, expected a Buffer or ArrayBuffer");
+		return nullptr;
+	}
+
+	NAPI_STATUS_THROWS_ERROR(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(data), &size),
+		"Failed to get log entry data buffer info");
+	if (data == nullptr) {
+		::napi_throw_type_error(env, nullptr, "Invalid log entry data, expected a Buffer or Uint8Array");
+		return nullptr;
+	}
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS_ERROR(::napi_typeof(env, argv[1], &type), "Failed to get log entry transaction id type");
+	if (type != napi_undefined) {
+		if (type == napi_number) {
+			int32_t signedTransactionId;
+			NAPI_STATUS_THROWS_ERROR(::napi_get_value_int32(env, argv[1], &signedTransactionId), "Failed to get log entry transaction id");
+			if (signedTransactionId < 0) {
+				::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
+				return nullptr;
+			}
+			transactionId = static_cast<uint32_t>(signedTransactionId);
+		} else {
+			::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
+			return nullptr;
+		}
+	} else if (transactionId == 0) {
+		::napi_throw_type_error(env, nullptr, "Missing argument, transaction id is required");
 		return nullptr;
 	}
 
 	try {
-		std::unique_ptr<char[]> copyData(new char[parsed.size]);
-		::memcpy(copyData.get(), parsed.data, parsed.size);
-		(*txnLogHandle)->addEntry(parsed.transactionId, std::move(copyData), parsed.size);
+		std::unique_ptr<char[]> copyData(new char[size]);
+		::memcpy(copyData.get(), data, size);
+		(*txnLogHandle)->addEntry(transactionId, std::move(copyData), size);
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;

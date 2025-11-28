@@ -29,24 +29,33 @@ struct TransactionLogHandle final : Closable {
 	 */
 	uint32_t transactionId;
 
+	/**
+	 * Creates a new transaction log handle.
+	 */
 	TransactionLogHandle(const std::shared_ptr<DBHandle>& dbHandle, const std::string& logName);
+
+	/**
+	 * Destroys the transaction log handle.
+	 */
 	~TransactionLogHandle();
 
+	/**
+	 * Adds an entry to the transaction log.
+	 */
 	void addEntry(
 		uint32_t transactionId,
 		std::unique_ptr<char[]> data,
 		uint32_t size
 	);
 
-	void addEntry(
-		uint32_t transactionId,
-		char* data,
-		uint32_t size,
-		napi_env env,
-		napi_ref bufferRef
-	);
-
+	/**
+	 * Closes the transaction log handle.
+	 */
 	void close();
+
+	/**
+	 * Queries the transaction log.
+	 */
 	void query();
 };
 

@@ -209,7 +209,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						txnHandle.get(), txnHandle->id);
 					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
-						// set the earliestActiveTransactionTimestamp for the batch
+						// set the earliest active transaction timestamp for the batch
 						txnHandle->logEntryBatch->earliestActiveTransactionTimestamp = descriptor->getEarliestActiveTransactionTimestamp(store);
 
 						// write the batch to the store
@@ -233,7 +233,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
-			DEBUG_LOG("%p Transaction::Commit complete callback entered (status=%d, txnId=%d)\n",
+			DEBUG_LOG("%p Transaction::Commit Complete callback entered (status=%d, txnId=%d)\n",
 				state->handle.get(), status, state->handle->id);
 
 			state->deleteAsyncWork();
@@ -288,7 +288,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	(*txnHandle)->state = TransactionState::Committing;
 
 	if ((*txnHandle)->logEntryBatch) {
-		DEBUG_LOG("%p Transaction::CommitSync committing log entries for transaction %u\n",
+		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
@@ -301,11 +301,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 	if (status.ok()) {
-		DEBUG_LOG("%p Transaction::CommitSync emitted committed event txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id)
+		DEBUG_LOG("%p Transaction::CommitSync Emitted committed event (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->state = TransactionState::Committed;
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
-		DEBUG_LOG("%p Transaction::CommitSync closing txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id)
+		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->close();
 	} else {
 		napi_value error;
