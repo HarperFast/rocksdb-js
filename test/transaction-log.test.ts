@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
-import { TransactionLogReader, RocksDatabase } from '../src';
+import { RocksDatabase } from '../src';
 
 const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
@@ -126,8 +126,7 @@ describe('Transaction Log', () => {
 				log.addEntry(value, txn.id);
 			});
 
-			const logReader = new TransactionLogReader(log);
-			const queryIterable = logReader.query({ start: startTime, end: Date.now() });
+			const queryIterable = log.query({ start: startTime, end: Date.now() });
 			const queryResults = Array.from(queryIterable);
 			expect(queryResults.length).toBe(1);
 		}));
@@ -140,14 +139,11 @@ describe('Transaction Log', () => {
 			});
 			const log2 = db.useLog('foo');
 
-			const logReader = new TransactionLogReader(log);
-			let queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(1);
-			const logReader2 = new TransactionLogReader(log2);
-			const logReader3 = new TransactionLogReader(log2);
-			queryResults = Array.from(logReader2.query({ start: startTime, end: Date.now() }));
+			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(1);
-			queryResults = Array.from(logReader3.query({ start: startTime, end: Date.now() }));
+			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(1);
 		}));
 		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
@@ -157,16 +153,14 @@ describe('Transaction Log', () => {
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
 			});
-			const logReader = new TransactionLogReader(log);
-			let queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(1);
 			db.close();
 			db = RocksDatabase.open(dbPath);
 			let log2 = db.useLog('foo');
-			let logReader2 = new TransactionLogReader(log2);
-			let queryResults2 = Array.from(logReader2.query({ start: startTime, end: Date.now(), readUncommitted: true }));
+			let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now(), readUncommitted: true }));
 			expect(queryResults2.length).toBe(1);
-			queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(1);
 
 		}));
@@ -218,8 +212,7 @@ describe('Transaction Log', () => {
 			expect(info.entries[2].length).toBe(10);
 			expect(info.entries[2].data).toEqual(valueC);
 
-			const logReader = new TransactionLogReader(log);
-			const queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(3);
 			expect(queryResults[0].data).toEqual(valueA);
 			expect(queryResults[1].data).toEqual(valueB);
@@ -242,8 +235,7 @@ describe('Transaction Log', () => {
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
-			const logReader = new TransactionLogReader(log);
-			const queryResults = Array.from(logReader.query({ start: startTime, end: Date.now() }));
+			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
 			expect(queryResults.length).toBe(20);
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[1].data).toEqual(value);

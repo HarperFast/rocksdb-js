@@ -36,14 +36,28 @@ export type LogBuffer = Buffer & {
 	size: number;
 }
 
+export type TransactionLogQueryOptions = {
+	start?: number;
+	end?: number;
+	exactStart?: boolean;
+	readUncommitted?: boolean;
+}
+
+export type TransactionEntry = {
+	timestamp: number;
+	data: Buffer;
+}
+
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
+	query(options: TransactionLogQueryOptions): Iterable<TransactionEntry>;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer;
 	_getLogFileSize(sequenceId: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_findPosition(timestamp: number): number;
-	_lastCommittedPosition?: Buffer;
+	_lastCommittedPosition?: Float64Array;
+	_logBuffers?: Map<number, WeakRef<LogBuffer>>;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
