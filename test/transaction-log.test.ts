@@ -113,8 +113,7 @@ describe('Transaction Log', () => {
 			expect(sequenceNumber).toBe(1);
 
 			const buffer = log._getMemoryMapOfFile(1);
-			expect(buffer.length).toBe(0x1000000);
-			//expect(buffer.slice(0, 4).toString()).toBe('WOOF');
+			expect(buffer.slice(0, 4).toString()).toBe('WOOF');
 		}));
 	});
 	describe('getRange() from TransactionLog', () => {
