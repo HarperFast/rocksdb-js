@@ -116,7 +116,7 @@ describe('Transaction Log', () => {
 			expect(buffer.slice(0, 4).toString()).toBe('WOOF');
 		}));
 	});
-	describe('getRange() from TransactionLog', () => {
+	describe('query() from TransactionLog', () => {
 		it('should query a transaction log', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');

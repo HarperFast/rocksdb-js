@@ -224,7 +224,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = txnHandle->txn->Commit();
 				if (txnHandle->logEntryBatch) {
 					auto store = txnHandle->boundLogStore.lock();
-					store->commitFinished(committedPosition, txnHandle->dbHandle->descriptor->db->GetLatestSequenceNumber());
+					store->commitFinished(committedPosition, descriptor->db->GetLatestSequenceNumber());
 				}
 
 				if (state->status.ok()) {

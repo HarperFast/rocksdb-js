@@ -337,6 +337,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		}
 		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
 	}
+	std::lock_guard<std::mutex> positionsLock(this->transactionsPositionsMutex);
 	uncommittedTransactionPositions.insert(this->nextSequencePosition);
 
 	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
@@ -344,6 +345,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 }
 
 void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->transactionsPositionsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
 	uncommittedTransactionPositions.erase(position);
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
@@ -362,11 +364,12 @@ void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::Seque
 	for (; index < 19; index++) {
 	    if ((count >> index) & 1) break;
 	}
-	// record in the array (is there possibly some concern about concurrent writes causing memory tearing?)
+	// record in the array
 	recentlyCommittedSequencePositions[index] = sequencePosition;
 }
 
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->transactionsPositionsMutex);
 	uint64_t latestFlushedPosition = 0;
 	// the latest sequence number that has been flushed according to this flush update
 	for (int i = 0; i < 20; i++) {

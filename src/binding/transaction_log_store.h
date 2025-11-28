@@ -117,6 +117,11 @@ struct TransactionLogStore final {
 	SequencePosition recentlyCommittedSequencePositions[20];
 
 	/**
+	 * The mutex to protect the transaction positions set.
+	 */
+	std::mutex transactionsPositionsMutex;
+
+	/**
 	 * A counter for the number of recentlyCommittedSequencePositions updates we have made so that we can use 2^n modulus
 	 * frequencies to assign to recentlyCommittedSequencePositions
 	 */
