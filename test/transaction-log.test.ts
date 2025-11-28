@@ -126,7 +126,7 @@ describe('Transaction Log', () => {
 				log.addEntry(value, txn.id);
 			});
 
-			const queryIterable = log.query({ start: startTime, end: Date.now() });
+			const queryIterable = log.query({ start: startTime, end: Date.now() + 1000 });
 			const queryResults = Array.from(queryIterable);
 			expect(queryResults.length).toBe(1);
 		}));
@@ -139,11 +139,11 @@ describe('Transaction Log', () => {
 			});
 			const log2 = db.useLog('foo');
 
-			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
+			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
-			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() }));
+			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
-			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() }));
+			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
 		}));
 		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
@@ -153,14 +153,14 @@ describe('Transaction Log', () => {
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
 			});
-			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
+			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
 			db.close();
 			db = RocksDatabase.open(dbPath);
 			let log2 = db.useLog('foo');
-			let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now(), readUncommitted: true }));
+			let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now() + 1000, readUncommitted: true }));
 			expect(queryResults2.length).toBe(1);
-			queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
+			queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
 
 		}));
@@ -212,7 +212,7 @@ describe('Transaction Log', () => {
 			expect(info.entries[2].length).toBe(10);
 			expect(info.entries[2].data).toEqual(valueC);
 
-			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
+			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(3);
 			expect(queryResults[0].data).toEqual(valueA);
 			expect(queryResults[1].data).toEqual(valueB);
@@ -235,7 +235,7 @@ describe('Transaction Log', () => {
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
 			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
-			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() }));
+			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(20);
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[1].data).toEqual(value);
