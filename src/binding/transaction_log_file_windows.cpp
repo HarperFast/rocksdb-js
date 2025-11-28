@@ -81,7 +81,7 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	fileSize = size;
 	if (!memoryMap || memoryMap->fileSize < fileSize) {
 		// if there is an existing memory map, but it was too small, we don't need it anymore, unuse existing memory map
-		if (memoryMap && --memoryMap.refCount == 0) {
+		if (memoryMap && --memoryMap->refCount == 0) {
 			delete memoryMap;
 		}
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", this, fileSize);
