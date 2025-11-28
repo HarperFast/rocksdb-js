@@ -77,7 +77,13 @@ void TransactionLogFile::openFile() {
 }
 
 MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
-	if (!memoryMap) {
+	// On windows we can not allocate more than the file size
+	fileSize = size;
+	if (!memoryMap || memoryMap->fileSize < fileSize) {
+		// if there is an existing memory map, but it was too small, we don't need it anymore, unuse existing memory map
+		if (memoryMap && --memoryMap.refCount == 0) {
+			delete memoryMap;
+		}
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", this, fileSize);
 		HANDLE mh;
 		mh = CreateFileMappingW(this->fileHandle, NULL, PAGE_READONLY, 0, fileSize, NULL);
@@ -104,7 +110,6 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		memoryMap = new MemoryMap(map, fileSize);
 		memoryMap->mapHandle = mh;
 	}
-	memoryMap->fileSize = fileSize;
 	return memoryMap;
 }
 
@@ -238,7 +243,7 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 	return message;
 }
 
-MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
+MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), fileSize(mapSize) {}
 
 MemoryMap::~MemoryMap() {
 	UnmapViewOfFile(map);

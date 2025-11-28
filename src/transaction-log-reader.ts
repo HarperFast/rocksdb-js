@@ -6,7 +6,8 @@ import {
 	TransactionLogQueryOptions,
 	TransactionEntry,
 } from './load-binding';
-
+import { platform } from 'node:os';
+const CAN_GROW_FILE_IN_MEMORY_MAP = platform() !== 'win32';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
@@ -29,6 +30,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 	value: function({ start, end, exactStart, readUncommitted }: TransactionLogQueryOptions): Iterable<TransactionEntry> {
 		const transactionLog = this;
 		if (!this._lastCommittedPosition) {
+			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
 			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
 			this._logBuffers = new Map<number, WeakRef<LogBuffer>>();
@@ -44,15 +46,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			start = 0;
 		} else {
 			// otherwise, find the log file that contains the start timestamp, and find the position within that file
-			FLOAT_TO_UINT32[0] = transactionLog._findPosition(start);
+			FLOAT_TO_UINT32[0] = this._findPosition(start);
+			// extract the log file ID from the 64-bit float returned by _findPosition, which is stored in the high 32 bits of the float
 			logId = UINT32_FROM_FLOAT[1];
+			// and position from the low 32 bits of the float
 			position = UINT32_FROM_FLOAT[0];
 		}
 		let logBuffer: LogBuffer = this._currentLogBuffer!; // try the current one first
 		if (logBuffer?.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(logId)!;
-			if (latestLogId === logId && !readUncommitted) { // if we are reading uncommitted, we might be a log file ahead of the committed transaction
+			// if this is the latest, cache for easy access, unless...
+			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
+			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
+			if (latestLogId === logId && !readUncommitted && CAN_GROW_FILE_IN_MEMORY_MAP) {
 				this._currentLogBuffer = logBuffer;
 			}
 		}
@@ -91,17 +98,21 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 									}
 									position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 								}
+							} else if (!CAN_GROW_FILE_IN_MEMORY_MAP) {
+								// see if the file is bigger, and if it is big enough now, we can re-request it
+								size = transactionLog._getLogFileSize(logBuffer.logId);
+								if (position < size) {
+									logBuffer = getLogMemoryMap(logBuffer.logId)!;
+								}
 							}
 						}
 						while(position < size) {
-							console.log('iterating from ', position, ' to ', size);
 							// advance to the next entry, reading the timestamp and the data
 							do {
 								timestamp = dataView.getFloat64(position);
 								// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
 							} while (timestamp < 1 && ++position < size);
 							if (!timestamp) {
-								console.log('no timestamp, reached end');
 								// we have gone beyond the last transaction and reached the end
 								return { done: true, value: undefined };
 							}
@@ -120,7 +131,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							} else {
 								matchesRange = timestamp >= start! && timestamp < end!;
 							}
-							console.log('matches', start, end, timestamp, matchesRange);
 							let entryStart = position;
 							position += length;
 							if (matchesRange) {
@@ -160,11 +170,18 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				if (logBuffer) { // if we have a cached buffer, return it
 					return logBuffer;
 				}
-				logBuffer = transactionLog._getMemoryMapOfFile(logId);
+				try {
+					logBuffer = transactionLog._getMemoryMapOfFile(logId);
+				} catch (error) {
+					(error as Error).message += ` (log file ID: ${logId})`;
+					throw error;
+				}
 				if (!logBuffer) return;
 				logBuffer.logId = logId;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
-				transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
+				if (CAN_GROW_FILE_IN_MEMORY_MAP || logId < latestLogId) { // note that we can not grow the memory on Windows, so don't cache the latest
+					transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
+				}
 				let maxMisses = 3;
 				for (let [ logId, reference ] of transactionLog._logBuffers) {
 					// clear out any references that have been collected
