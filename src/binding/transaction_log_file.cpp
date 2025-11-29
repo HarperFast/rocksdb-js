@@ -171,6 +171,11 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// TODO: positionByTimestampIndex should be initialized with the timestamp in the file header with a position of 0
 	while (lastIndexedPosition < size) {
 		double entryTimestamp = readDoubleBE(mappedFile + lastIndexedPosition);
+		if (entryTimestamp == 0) {
+			// this means we have reached the end of zero-padded file (usually Windows), adjust size and break;
+			size = lastIndexedPosition;
+			break;
+		}
 		// check that the timestamp is greater than any previously indexed timestamp,
 		// otherwise we don't record it, because we want to start at the first position with a timestamp that
 		// is greater than the requested timestamp

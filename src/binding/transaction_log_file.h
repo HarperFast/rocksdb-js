@@ -168,17 +168,17 @@ struct MemoryMap final
 	 * The memory map of the file.
 	 */
 	void* map = nullptr;
-	#ifdef PLATFORM_WINDOWS
+#ifdef PLATFORM_WINDOWS
 	/**
 	 * The Windows memory map handle.
 	 */
 	HANDLE mapHandle;
-	#else
+#endif
 	/**
 	 * The size of the memory map that has been mapped.
 	 **/
 	uint32_t mapSize = 0;
-	#endif
+
 	/**
 	 * The size of the file (while it is being written, this is the max file size, but when done, it can't expand, so we set the file size)
 	 **/

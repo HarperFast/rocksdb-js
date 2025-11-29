@@ -7,7 +7,7 @@ import {
 	TransactionEntry,
 } from './load-binding';
 import { platform } from 'node:os';
-const CAN_GROW_FILE_IN_MEMORY_MAP = platform() !== 'win32';
+const CAN_GROW_FILE_IN_MEMORY_MAP = true;//platform() !== 'win32';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
