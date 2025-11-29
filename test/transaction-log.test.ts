@@ -162,7 +162,6 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(1);
 			db.close();
 			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			console.log('log file after closing', statSync(logPath));
 			db = RocksDatabase.open(dbPath);
 			let log2 = db.useLog('foo');
 			const buffer = log._getMemoryMapOfFile(1);

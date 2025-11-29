@@ -97,7 +97,7 @@ export async function dbRunner(
 						dbPaths.delete(dbPath);
 						break;
 					} catch (e) {
-						if (e instanceof Error && 'code' in e && (e.code === 'EPERM' || e.code === 'EBUSY')) {
+						if (e instanceof Error && 'code' in e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'ENOTEMPTY')) {
 							await delay(150);
 							// try again, but skip after 3 attempts
 						} else {
