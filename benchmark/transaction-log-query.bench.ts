@@ -47,7 +47,7 @@ describe('transaction-log-query', () => {
 				bench: concurrent(({ db, iterators, log },  outstanding) => {
 					let last;
 					for (let iterator of iterators) {
-						for (let entry of iterators) {
+						for (let entry of iterator) {
 							last = entry.timestamp;
 						}
 					}
@@ -74,7 +74,7 @@ describe('transaction-log-query', () => {
 				}),
 			});
 		});
-		describe('read randomly from log with 1000 100 byte records', () => {
+		describe('read one entry from random position from log with 1000 100 byte records', () => {
 			benchmark('rocksdb', {
 				async setup(ctx) {
 					const db = ctx.db;
@@ -91,7 +91,9 @@ describe('transaction-log-query', () => {
 					ctx.duration = Date.now() - ctx.start;
 				},
 				async bench({ db, data, log, start, duration }) {
-					let result = Array.from(log.query({start: start + Math.random() * duration}));
+					for (let entry of log.query({start: start + Math.random() * duration})) {
+						break; // read just one
+					}
 				}
 			});
 
@@ -107,7 +109,9 @@ describe('transaction-log-query', () => {
 				},
 				async bench({ db, data, start, duration }) {
 					// @ts-ignore
-					let result = Array.from(db.getRange({start: start + Math.random() * duration}));
+					for (let entry of db.getRange({start: start + Math.random() * duration})) {
+						break; // read just one
+					}
 				}
 			});
 		});
