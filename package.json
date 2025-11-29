@@ -18,7 +18,7 @@
     "bench": "vitest bench --outputJson benchmark-results.json",
     "bench:bun": "bun --bun bench",
     "bench:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
-    "build": "pnpm build:bundle && pnpm rebuild",
+    "build": "pnpm build:bundle && pnpm rebuild:debug",
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
     "build:bundle": "rimraf dist && tsdown -c tsdown.config.ts --sourcemap",
