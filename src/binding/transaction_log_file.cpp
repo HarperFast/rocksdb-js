@@ -135,7 +135,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	size_t iovecsIndex = 0;
 
 	// write the transaction headers and entry data to the iovecs
-	for (; batch.currentEntryIndex < numEntriesToWrite; ++batch.currentEntryIndex) {
+	for (int i = 0; i < numEntriesToWrite; i++) {
 		auto& entry = batch.entries[batch.currentEntryIndex];
 
 		// write the transaction header
@@ -149,10 +149,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 
 		// add the entry data to the iovecs
 		iovecs[iovecsIndex++] = {entry->data.get(), entry->size};
+		batch.currentEntryIndex++;
 	}
 
 	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
-	if (bytesWritten < 0) {
+	if (bytesWritten <= 0) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntries ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
 		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
