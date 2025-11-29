@@ -74,13 +74,14 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = static_cast<size_t>(fileSize.QuadPart);
-	fprintf(stderr, "File size: %zu file path: %s\n", this->size, this->path.string().c_str());
+	DEBUG_LOG(stderr, "File size: %zu file path: %s\n", this->size, this->path.string().c_str());
 	// On Windows, we have to create the full file size for memory maps, and it is zero-padded, so the act of indexing allows us to find
 	// the end, and adjust the real size accordingly.
-	if (this->size > 0/* && (this->size & 0xFFF) == 0*/) {
-		fprintf(stderr, "File size is multiple of 4096, attempting to resize with indexing\n");
+	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
+	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
+	if (this->size > 0) {
 		this->findPositionByTimestamp(0, this->size);
-		fprintf(stderr, "New file size: %zu file path: %s\n", this->size, this->path.string().c_str());
+		DEBUG_LOG("New file size: %zu file path: %s\n", this->size, this->path.string().c_str());
 	}
 }
 
