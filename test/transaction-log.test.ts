@@ -161,7 +161,38 @@ describe('Transaction Log', () => {
 			expect(queryResults2.length).toBe(1);
 			queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
+		}));
 
+		it('should be able to reuse a query iterator to resume reading a transaction log', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			let queryIterator = log.query({  });
+			let queryIterator2 = log.query({ start: 0 });
+			expect(Array.from(queryIterator).length).toBe(0); // this should be starting after the last commit
+			expect(Array.from(queryIterator2).length).toBe(1); // this should be starting after the last commit
+			let count = 0;
+			let count2 = 0;
+			for (let i = 0; i < 200; i++) {
+				let txnPromise = db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					log.addEntry(value, txn.id);
+				});
+				count += Array.from(queryIterator).length;
+				console.log({ count });
+				count2 += Array.from(queryIterator2).length;
+				console.log({ count2 });
+				await txnPromise;
+				console.log('finished wait');
+			}
+			count += Array.from(queryIterator).length;
+			count2 += Array.from(queryIterator2).length;
+			expect(count).toBe(400);
+			expect(count2).toBe(400);
 		}));
 	});
 	describe('addEntry()', () => {
