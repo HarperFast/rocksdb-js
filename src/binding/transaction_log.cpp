@@ -184,6 +184,14 @@ DEBUG_LOG("TransactionLog::GetLastCommittedPosition, external memory=%u\n", memo
 }
 
 /**
+ * Wrapper around an usage of a memory map, preserving the buffer size so we know how to adjust the external memory usage.
+ */
+struct MemoryMapBuffer {
+	MemoryMap* memoryMap;
+	uint32_t bufferSize;
+};
+
+/**
  * Gets the range of the transaction log.
  */
 napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
@@ -199,18 +207,21 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	}
 	memoryMap->refCount++;
 	napi_value result;
+	MemoryMapBuffer* memoryMapBuffer = new MemoryMapBuffer{ memoryMap, memoryMap->fileSize };
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
-		MemoryMap* memoryMap = static_cast<MemoryMap*>(hint);
+		MemoryMapBuffer* memoryMapBuffer = static_cast<MemoryMapBuffer*>(hint);
+		MemoryMap* memoryMap = memoryMapBuffer->memoryMap;
 		if (--memoryMap->refCount == 0) {
 			// if there are no more references to the memory map, unmap it
 			delete memoryMap;
 		}
 		int64_t memoryUsage;
 		// re-adjust back
-		napi_adjust_external_memory(env, 0, &memoryUsage);
+		napi_adjust_external_memory(env, memoryMapBuffer->bufferSize, &memoryUsage);
+		delete memoryMapBuffer;
 		DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%u\n", memoryUsage);
-	}, memoryMap, &result));
-	int64_t memoryUsage = memoryMap->fileSize;
+	}, memoryMapBuffer, &result));
+	int64_t memoryUsage;
 	// We need to adjust the tracked external memory after creating the external buffer.
 	// More external memory "pressure" causes V8 to more aggressively garbage collect,
 	// and with lots of external memory, this can be detrimental to performance.
@@ -220,7 +231,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// memory blocks do still seem to induce extra garbage collection. Still we call this,
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
 	// better.
-	napi_adjust_external_memory(env, 0, &memoryUsage);
+	napi_adjust_external_memory(env, -memoryMap->fileSize, &memoryUsage);
 	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
 	return result;
 }
