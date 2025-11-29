@@ -77,7 +77,7 @@ void TransactionLogFile::openFile() {
 	fprintf(stderr, "File size: %zu file path: %s\n", this->size, this->path.string().c_str());
 	// On Windows, we have to create the full file size for memory maps, and it is zero-padded, so the act of indexing allows us to find
 	// the end, and adjust the real size accordingly.
-	if (this->size > 0 && this->size & 0xFFF == 0) {
+	if (this->size > 0/* && (this->size & 0xFFF) == 0*/) {
 		fprintf(stderr, "File size is multiple of 4096, attempting to resize with indexing\n");
 		this->findPositionByTimestamp(0, this->size);
 		fprintf(stderr, "New file size: %zu file path: %s\n", this->size, this->path.string().c_str());
@@ -204,8 +204,8 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		return 0;
 	}
 
-	// seek to end of file before writing (file pointer may have been moved by reads)
-	if (::SetFilePointer(this->fileHandle, 0, nullptr, FILE_END) == INVALID_SET_FILE_POINTER) {
+	// seek to current size before writing (file pointer may have been moved by reads)
+	if (::SetFilePointer(this->fileHandle, this->size, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile SetFilePointer failed (error=%lu: %s)\n",
