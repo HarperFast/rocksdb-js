@@ -32,7 +32,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 		throw error;
 	}
 
-	const { size } = stats;
+	let { size } = stats;
 	if (size === 0) {
 		throw new Error('Transaction log file is too small');
 	}
@@ -45,7 +45,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 		const bytesRead = readSync(fileHandle, buffer, 0, numBytes, fileOffset);
 		fileOffset += bytesRead;
 		if (bytesRead !== numBytes) {
-			throw new Error(`Expected to read ${numBytes} bytes but only read ${bytesRead}`);
+			throw new Error(`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset}, file size: ${size}, file path: ${path}, buffer: ${buffer.toString('hex')}`);
 		}
 		return buffer;
 	};
@@ -67,6 +67,11 @@ export function parseTransactionLog(path: string): TransactionLog {
 
 		while (fileOffset < size) {
 			const timestamp = read(8).readDoubleBE(0);
+			if (timestamp === 0) {
+				// if we encounter zero padding, we can stop reading the entries since the next entry will start at the next 8-byte boundary, which is the same as the current file offset.
+				size = fileOffset - 8;
+				break;
+			}
 			const length = read(4).readUInt32BE(0);
 			const flags = read(1).readUInt8(0);
 			const data = read(length);

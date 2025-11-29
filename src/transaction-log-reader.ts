@@ -87,6 +87,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							// size in case we can keep reading further from the same block
 							let latestLogId = loadLastPosition();
 							let latestSize = size;
+							console.log(`read new last size ${latestSize}, logId: ${latestLogId}`);
 							if (latestLogId > logBuffer.logId) {
 								// if it is not the latest log, get the file size
 								size = logBuffer.size || (logBuffer.size = transactionLog._getLogFileSize(logBuffer.logId));
@@ -109,13 +110,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								}
 							}
 						}
+						console.log(`iterating at position ${position}/${size} of log ${logBuffer.logId}`);
 						while(position < size) {
 							// advance to the next entry, reading the timestamp and the data
 							do {
-								timestamp = dataView.getFloat64(position);
+								try {
+									timestamp = dataView.getFloat64(position);
+								} catch(error) {
+									(error as Error).message += ' at position ' + position + ' of log ' + logBuffer.logId + ' of size ' +  size + 'log buffer length' + logBuffer.length;
+									throw error;
+								}
 								// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
 							} while (timestamp < 1 && ++position < size);
 							if (!timestamp) {
+								console.log(`no timestamp found at ${position}/${size} of log ${logBuffer.logId}`);
 								// we have gone beyond the last transaction and reached the end
 								return { done: true, value: undefined };
 							}
@@ -134,6 +142,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							} else {
 								matchesRange = timestamp >= start! && timestamp < end!;
 							}
+							console.log('matching', { matchesRange, timestamp, start, end })
 							let entryStart = position;
 							position += length;
 							if (matchesRange) {
@@ -220,6 +229,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// otherwise, just use the last committed position, which indicates the latest committed transaction in the log
 				size = UINT32_FROM_FLOAT[0];
 			}
+			console.log('loadLastPosition', { logId, size });
 			return logId;
 		}
 	}
