@@ -200,13 +200,13 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	napi_value result;
 	if (!memoryMap)
 	{
-		::napi_throw_error(env, nullptr, "Unable to create memory map for sequence number");
-		return nullptr;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+		return result;
 	}
 	memoryMap->refCount++;
-	napi_value result;
 	MemoryMapBuffer* memoryMapBuffer = new MemoryMapBuffer{ memoryMap, memoryMap->fileSize };
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
 		MemoryMapBuffer* memoryMapBuffer = static_cast<MemoryMapBuffer*>(hint);

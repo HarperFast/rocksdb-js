@@ -120,9 +120,10 @@ uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	bool isCurrent = true;
 	uint32_t positionInLogFile = 0;
 	auto it = this->sequenceFiles.find(sequenceNumber);
-	if (it == this->sequenceFiles.end() && sequenceNumber > 1) {
+	if (it == this->sequenceFiles.end()) {
 		// it is possible that the current log file doesn't exist yet, so we need to look at the previous one
 		it = this->sequenceFiles.find(--sequenceNumber);
+		isCurrent = false;
 	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();

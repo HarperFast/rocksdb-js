@@ -52,6 +52,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			// and position from the low 32 bits of the float
 			position = UINT32_FROM_FLOAT[0];
 		}
+		let dataView: DataView;
 		let logBuffer: LogBuffer = this._currentLogBuffer!; // try the current one first
 		if (logBuffer?.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -62,12 +63,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			if (latestLogId === logId && !readUncommitted && CAN_GROW_FILE_IN_MEMORY_MAP) {
 				this._currentLogBuffer = logBuffer;
 			}
-		}
-		if (logBuffer === undefined) {
-			return [][Symbol.iterator]();
+			if (logBuffer === undefined) {
+				// create a fake log buffer if we don't have any log buffer yet
+				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
+				logBuffer.logId = 0;
+			}
 		}
 
-		let dataView: DataView = logBuffer.dataView;
+		dataView = logBuffer.dataView;
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
 			if (!size) {
@@ -168,6 +171,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			if (logId > 0) {
 				let logBuffer = transactionLog._logBuffers.get(logId)?.deref();
 				if (logBuffer) { // if we have a cached buffer, return it
+					dataView = logBuffer.dataView;
 					return logBuffer;
 				}
 				try {
@@ -178,7 +182,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 				if (!logBuffer) return;
 				logBuffer.logId = logId;
-				logBuffer.dataView = new DataView(logBuffer.buffer);
+				dataView = new DataView(logBuffer.buffer);
+				logBuffer.dataView = dataView;
 				if (CAN_GROW_FILE_IN_MEMORY_MAP || logId < latestLogId) { // note that we can not grow the memory on Windows, so don't cache the latest
 					transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
 				}
