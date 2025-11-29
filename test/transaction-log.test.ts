@@ -190,6 +190,22 @@ describe('Transaction Log', () => {
 			}
 		}));
 
+		it('should be able to rotate with entries that span a transaction', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			for (let i = 0; i < 20; i++) {
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					log.addEntry(value, txn.id);
+				});
+			}
+		}));
+
 		it('should allow unlimited transaction log size', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 0 }],
 		}, async ({ db, dbPath }) => {
