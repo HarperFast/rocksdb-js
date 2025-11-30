@@ -81,18 +81,4 @@ PositionHandle* TransactionLogHandle::getLastCommittedPosition() {
 	return nullptr;
 }
 
-void TransactionLogHandle::query() {
-	auto store = this->store.lock();
-	if (!store) {
-		// store was closed/destroyed, try to get or create a new one
-		auto dbHandle = this->dbHandle.lock();
-		if (!dbHandle) {
-			throw std::runtime_error("Database has been closed");
-		}
-		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-		this->store = store; // update weak_ptr to point to new store
-	}
-	store->query();
-}
-
 } // namespace rocksdb_js

@@ -144,16 +144,6 @@ uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	return (((uint64_t) sequenceNumber + 1) << 32) | TRANSACTION_LOG_FILE_HEADER_SIZE;
 }
 
-void TransactionLogStore::query() {
-	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store \"%s\"\n", this, this->name.c_str())
-
-	// TODO: Implement
-	// 1. Determine files to iterate over
-	// 2. Open each file with a memory map
-	// 3. Iterate over the data in the memory map and copy to the supplied buffer
-	// 4. Close the memory mapped files
-}
-
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);

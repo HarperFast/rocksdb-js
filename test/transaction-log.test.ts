@@ -195,7 +195,6 @@ describe('Transaction Log', () => {
 			db = RocksDatabase.open(dbPath);
 			let log2 = db.useLog('foo');
 			const buffer = log._getMemoryMapOfFile(1);
-			console.log('after re-opening database, memory map size is', buffer.length);
 			let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now() + 1000, readUncommitted: true }));
 			expect(queryResults2.length).toBe(1);
 			queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));

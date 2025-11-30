@@ -57,10 +57,6 @@ struct TransactionLogHandle final : Closable {
 	 */
 	void close();
 
-	/**
-	 * Queries the transaction log.
-	 */
-	void query();
 };
 
 } // namespace rocksdb_js

@@ -170,11 +170,6 @@ struct TransactionLogStore final {
 	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
 
 	/**
-	 * Queries the transaction log store.
-	 */
-	void query();
-
-	/**
 	 * Memory maps the transaction log file for the given sequence number.
 	 **/
 	MemoryMap* getMemoryMap(uint32_t logSequenceNumber);
