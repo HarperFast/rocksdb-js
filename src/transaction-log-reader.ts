@@ -1,13 +1,10 @@
 import {
-	type NativeDatabase,
 	TransactionLog,
 	type LogBuffer,
 	constants,
 	TransactionLogQueryOptions,
 	TransactionEntry,
 } from './load-binding';
-import { platform } from 'node:os';
-const CAN_GROW_FILE_IN_MEMORY_MAP = true;//platform() !== 'win32';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
@@ -60,7 +57,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
-			if (latestLogId === logId && !readUncommitted && CAN_GROW_FILE_IN_MEMORY_MAP) {
+			if (latestLogId === logId && !readUncommitted) {
 				this._currentLogBuffer = logBuffer;
 			}
 			if (logBuffer === undefined) {
@@ -100,12 +97,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 										size = latestSize; // use the latest position from loadLastPosition
 									}
 									position = TRANSACTION_LOG_FILE_HEADER_SIZE;
-								}
-							} else if (!CAN_GROW_FILE_IN_MEMORY_MAP) {
-								// see if the file is bigger, and if it is big enough now, we can re-request it
-								size = transactionLog._getLogFileSize(logBuffer.logId);
-								if (position < size) {
-									logBuffer = getLogMemoryMap(logBuffer.logId)!;
 								}
 							}
 						}
@@ -189,9 +180,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				logBuffer.logId = logId;
 				dataView = new DataView(logBuffer.buffer);
 				logBuffer.dataView = dataView;
-				if (CAN_GROW_FILE_IN_MEMORY_MAP || logId < latestLogId) { // note that we can not grow the memory on Windows, so don't cache the latest
-					transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
-				}
+				transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
 				let maxMisses = 3;
 				for (let [ logId, reference ] of transactionLog._logBuffers) {
 					// clear out any references that have been collected
