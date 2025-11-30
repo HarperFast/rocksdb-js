@@ -23,8 +23,7 @@ const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	enumerable: false,
-	value: function({ start, end, exactStart, readUncommitted }: TransactionLogQueryOptions): Iterable<TransactionEntry> {
+	value: function({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): Iterable<TransactionEntry> {
 		const transactionLog = this;
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
@@ -74,6 +73,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				size = logBuffer.size = this._getLogFileSize(logId);
 			}
 		}
+		let foundExactStart = false;
 		return {
 			[Symbol.iterator](): Iterator<TransactionEntry> {
 				return {
@@ -118,17 +118,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 							const length = dataView.getUint32(position + 8);
 							position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
-							let matchesRange = false;
-							if (exactStart) {
+							let matchesRange: boolean;
+							if (foundExactStart) { // already found the exact start, only need to match on remaining conditions
+								matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end!;
+							} else if (exactStart) {
 								// in exact start mode, we are look for the exact identifying timestamp of the first transaction
 								if (timestamp === start) {
-									matchesRange = true;
-									// after finding this transaction, match all remaining
-									start = 0;
-									exactStart = false;
+									matchesRange = !exclusiveStart;
+									// after finding this transaction, match all remaining (but still respecting end and exclusiveStart
+									foundExactStart = true;
+								} else {
+									matchesRange = false;
 								}
-							} else {
-								matchesRange = timestamp >= start! && timestamp < end!;
+							} else { // no exact start, so just match on conditions
+								matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end!;
 							}
 							let entryStart = position;
 							position += length;

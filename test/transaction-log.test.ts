@@ -135,6 +135,36 @@ describe('Transaction Log', () => {
 			const queryResults = Array.from(queryIterable);
 			expect(queryResults.length).toBe(1);
 		}));
+		it('should query a transaction log with different options', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			for (let i = 0; i < 5; i++) {
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+			}
+			let allTimestamps = Array.from(log.query({ start: 0 })).map(({ timestamp }) => timestamp);
+			expect(Array.from(log.query({ start: allTimestamps[1] })).length).toBe(4);
+			expect(Array.from(log.query({ start: allTimestamps[1], exclusiveStart: true })).length).toBe(3);
+			expect(Array.from(log.query({ start: allTimestamps[1], exactStart: true })).length).toBe(4);
+			expect(Array.from(log.query({ start: allTimestamps[1], exactStart: true, end: allTimestamps[4] })).length).toBe(3);
+		}));
+		it('should query an out-of-order transaction log with different options', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const start = Date.now();
+			for (let i = 0; i < 5; i++) {
+				await db.transaction(async (txn) => {
+					txn.setTimestamp(start - i);
+					log.addEntry(value, txn.id);
+				});
+			}
+			expect(Array.from(log.query({ start: start - 1 })).length).toBe(2);
+			expect(Array.from(log.query({ start: start - 1, exclusiveStart: true })).length).toBe(1);
+			expect(Array.from(log.query({ start: start - 1, exactStart: true })).length).toBe(4);
+			expect(Array.from(log.query({ start: start - 1, exactStart: true, exclusiveStart: true })).length).toBe(3);
+			expect(Array.from(log.query({ start: start - 1, exactStart: true, end: start - 2 })).length).toBe(3);
+		}));
 		it('should query a transaction log with multiple log instances', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
