@@ -177,32 +177,30 @@ describe('Transaction Log', () => {
 		}, async ({ db, dbPath }) => {
 			let log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
-			let queryIterator = log.query({  });
-			let queryIterator2 = log.query({ start: 0 });
-			await db.transaction(async (txn) => {
-				log.addEntry(value, txn.id);
-			});
-			expect(Array.from(queryIterator).length).toBe(1); // this should be starting after the last commit
-			expect(Array.from(queryIterator2).length).toBe(1); // this should be starting after the last commit
-			let count = 0;
-			let count2 = 0;
-			let txnPromise;
-			for (let i = 0; i < 200; i++) {
-				txnPromise = db.transaction(async (txn) => {
+			for (let i = 0; i < 10; i++) {
+				let queryIterator = log.query({});
+				let queryIterator2 = log.query({ start: 0 });
+				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 				});
+				expect(Array.from(queryIterator).length).toBe(1); // this should be starting after the last commit
+				expect(Array.from(queryIterator2).length).toBe(i * 11 + 1); // this should be starting after the last commit
+				let count = 0;
+				let count2 = 0;
+				let txnPromise;
+				for (let i = 0; i < 10; i++) {
+					txnPromise = db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+					count += Array.from(queryIterator).length;
+					count2 += Array.from(queryIterator2).length;
+					await txnPromise;
+				}
 				count += Array.from(queryIterator).length;
 				count2 += Array.from(queryIterator2).length;
-				if (i % 5 === 0)
-					await txnPromise;
-				else
-					await new Promise(setImmediate);
+				expect(count).toBe(10);
+				expect(count2).toBe(10);
 			}
-			await txnPromise;
-			count += Array.from(queryIterator).length;
-			count2 += Array.from(queryIterator2).length;
-			expect(count).toBe(200);
-			expect(count2).toBe(200);
 		}));
 		it.skip('should be able to reuse a query iterator to resume reading a transaction log with multiple entries', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
