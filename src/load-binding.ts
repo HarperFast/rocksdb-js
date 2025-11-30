@@ -52,7 +52,7 @@ export type TransactionEntry = {
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
-	query(options?: TransactionLogQueryOptions): Iterable<TransactionEntry>;
+	query(options?: TransactionLogQueryOptions): Iterable<TransactionEntry> & Iterator<TransactionEntry>;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer;
 	_getLogFileSize(sequenceId: number): number;
 	_getLastCommittedPosition(): Buffer;

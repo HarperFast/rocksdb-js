@@ -23,7 +23,7 @@ const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value: function({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): Iterable<TransactionEntry> {
+	value: function({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): Iterable<TransactionEntry> & Iterator<TransactionEntry> {
 		const transactionLog = this;
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
@@ -75,95 +75,92 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}
 		let foundExactStart = false;
 		return {
-			[Symbol.iterator](): Iterator<TransactionEntry> {
-				return {
-					next() {
-						let timestamp: number;
+			[Symbol.iterator](): Iterable<TransactionEntry> & Iterator<TransactionEntry> { return this; },
+			next() {
+				let timestamp: number;
+				if (position >= size) {
+					// our position is beyond the size limit, get the updated
+					// size in case we can keep reading further from the same block
+					let latestLogId = loadLastPosition();
+					let latestSize = size;
+					if (latestLogId > logBuffer.logId) {
+						// if it is not the latest log, get the file size
+						size = logBuffer.size || (logBuffer.size = transactionLog._getLogFileSize(logBuffer.logId));
 						if (position >= size) {
-							// our position is beyond the size limit, get the updated
-							// size in case we can keep reading further from the same block
-							let latestLogId = loadLastPosition();
-							let latestSize = size;
+							// we can't read any further in this block, go to the next block
+							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 							if (latestLogId > logBuffer.logId) {
-								// if it is not the latest log, get the file size
+								// it is non-current log file, we can safely use or cache the size
 								size = logBuffer.size || (logBuffer.size = transactionLog._getLogFileSize(logBuffer.logId));
-								if (position >= size) {
-									// we can't read any further in this block, go to the next block
-									logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
-									if (latestLogId > logBuffer.logId) {
-										// it is non-current log file, we can safely use or cache the size
-										size = logBuffer.size || (logBuffer.size = transactionLog._getLogFileSize(logBuffer.logId));
-									} else {
-										size = latestSize; // use the latest position from loadLastPosition
-									}
-									position = TRANSACTION_LOG_FILE_HEADER_SIZE;
-								}
+							} else {
+								size = latestSize; // use the latest position from loadLastPosition
 							}
+							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
-						while(position < size) {
-							// advance to the next entry, reading the timestamp and the data
-							do {
-								try {
-									timestamp = dataView.getFloat64(position);
-								} catch(error) {
-									(error as Error).message += ' at position ' + position + ' of log ' + logBuffer.logId + ' of size ' +  size + 'log buffer length' + logBuffer.length;
-									throw error;
-								}
-								// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
-							} while (timestamp < 1 && ++position < size);
-							if (!timestamp) {
-								// we have gone beyond the last transaction and reached the end
-								return { done: true, value: undefined };
-							}
-
-							const length = dataView.getUint32(position + 8);
-							position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
-							let matchesRange: boolean;
-							if (foundExactStart) { // already found the exact start, only need to match on remaining conditions
-								matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end!;
-							} else if (exactStart) {
-								// in exact start mode, we are look for the exact identifying timestamp of the first transaction
-								if (timestamp === start) {
-									matchesRange = !exclusiveStart;
-									// after finding this transaction, match all remaining (but still respecting end and exclusiveStart
-									foundExactStart = true;
-								} else {
-									matchesRange = false;
-								}
-							} else { // no exact start, so just match on conditions
-								matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end!;
-							}
-							let entryStart = position;
-							position += length;
-							if (matchesRange) {
-								// fits in the same block, just subarray the data out
-								return {
-									done: false,
-									value: {
-										timestamp,
-										data: logBuffer!.subarray(entryStart, position)
-									}
-								};
-							}
-							if (position >= size) {
-								// move to the next log file
-								let latestLogId = loadLastPosition();
-								if (latestLogId > logBuffer.logId) {
-									logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
-									size = logBuffer.size;
-									if (!size) {
-										size = transactionLog._getLogFileSize(logBuffer.logId);
-										if (!readUncommitted) {
-											logBuffer.size = size;
-										}
-									}
-									position = TRANSACTION_LOG_FILE_HEADER_SIZE;
-								}
-							}
+					}
+				}
+				while(position < size) {
+					// advance to the next entry, reading the timestamp and the data
+					do {
+						try {
+							timestamp = dataView.getFloat64(position);
+						} catch(error) {
+							(error as Error).message += ' at position ' + position + ' of log ' + logBuffer.logId + ' of size ' +  size + 'log buffer length' + logBuffer.length;
+							throw error;
 						}
+						// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
+					} while (timestamp < 1 && ++position < size);
+					if (!timestamp) {
+						// we have gone beyond the last transaction and reached the end
 						return { done: true, value: undefined };
 					}
-				};
+
+					const length = dataView.getUint32(position + 8);
+					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+					let matchesRange: boolean;
+					if (foundExactStart) { // already found the exact start, only need to match on remaining conditions
+						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end!;
+					} else if (exactStart) {
+						// in exact start mode, we are look for the exact identifying timestamp of the first transaction
+						if (timestamp === start) {
+							matchesRange = !exclusiveStart;
+							// after finding this transaction, match all remaining (but still respecting end and exclusiveStart
+							foundExactStart = true;
+						} else {
+							matchesRange = false;
+						}
+					} else { // no exact start, so just match on conditions
+						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end!;
+					}
+					let entryStart = position;
+					position += length;
+					if (matchesRange) {
+						// fits in the same block, just subarray the data out
+						return {
+							done: false,
+							value: {
+								timestamp,
+								data: logBuffer!.subarray(entryStart, position)
+							}
+						};
+					}
+					if (position >= size) {
+						// move to the next log file
+						let latestLogId = loadLastPosition();
+						if (latestLogId > logBuffer.logId) {
+							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+							size = logBuffer.size;
+							if (!size) {
+								size = transactionLog._getLogFileSize(logBuffer.logId);
+								if (!readUncommitted) {
+									logBuffer.size = size;
+								}
+							}
+							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+						}
+					}
+				}
+				return { done: true, value: undefined };
 			}
 		};
 		function getLogMemoryMap(logId: number) {
