@@ -152,7 +152,17 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize")
 	uint32_t sequenceNumber = 0;
-	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
+	if (type == napi_number) {
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+		if (sequenceNumber == 0) {
+			::napi_throw_type_error(env, nullptr, "Expected sequence number to be a positive integer greater than 0");
+		}
+	} else if (type != napi_undefined) {
+		::napi_throw_type_error(env, nullptr, "Expected sequence number to be a number");
+	} // if type == napi_undefined, leave sequenceNumber as 0, get all log files
+
 	uint64_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_double(env, (double) fileSize, &result));

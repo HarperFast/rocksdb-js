@@ -63,13 +63,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// create a fake log buffer if we don't have any log buffer yet
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
 				logBuffer.logId = 0;
+				logBuffer.size = 0;
 			}
 		}
 
 		dataView = logBuffer.dataView;
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
-			if (!size) {
+			if (size == undefined) {
 				size = logBuffer.size = this.getLogFileSize(logId);
 			}
 		}
@@ -85,13 +86,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					let latestSize = size;
 					if (latestLogId > logBuffer.logId) {
 						// if it is not the latest log, get the file size
-						size = logBuffer.size || (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
+						size = logBuffer.size ?? (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 							if (latestLogId > logBuffer.logId) {
 								// it is non-current log file, we can safely use or cache the size
-								size = logBuffer.size || (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
+								size = logBuffer.size ?? (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
 							} else {
 								size = latestSize; // use the latest position from loadLastPosition
 							}
@@ -150,7 +151,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						if (latestLogId > logBuffer.logId) {
 							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 							size = logBuffer.size;
-							if (!size) {
+							if (size == undefined) {
 								size = transactionLog.getLogFileSize(logBuffer.logId);
 								if (!readUncommitted) {
 									logBuffer.size = size;

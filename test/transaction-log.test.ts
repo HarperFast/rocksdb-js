@@ -335,6 +335,7 @@ describe('Transaction Log', () => {
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[1].data).toEqual(value);
 			expect(queryResults[19].data).toEqual(value);
+			expect(log.getLogFileSize()).toBe(2275);
 
 			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');

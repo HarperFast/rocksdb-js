@@ -54,7 +54,7 @@ export type TransactionLog = {
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	query(options?: TransactionLogQueryOptions): Iterable<TransactionEntry> & Iterator<TransactionEntry>;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer;
-	_getLogFileSize(sequenceId: number): number;
+	getLogFileSize(sequenceId?: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_findPosition(timestamp: number): number;
 	_lastCommittedPosition?: Float64Array;
