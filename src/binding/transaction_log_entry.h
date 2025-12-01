@@ -52,12 +52,6 @@ struct TransactionLogEntryBatch final {
 	double timestamp;
 
 	/**
-	 * The timestamp of the earliest active transaction associated with this
-	 * batch's store.
-	 */
-	double earliestActiveTransactionTimestamp = 0;
-
-	/**
 	 * The vector of entries to write.
 	 */
 	std::vector<std::unique_ptr<TransactionLogEntry>> entries;

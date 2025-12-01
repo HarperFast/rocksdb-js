@@ -1408,23 +1408,4 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	return txnLogStore;
 }
 
-double DBDescriptor::getEarliestActiveTransactionTimestamp(std::shared_ptr<TransactionLogStore> store) {
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-	double earliestTimestamp = 0;
-
-	for (auto& txn : this->transactions) {
-		auto txnHandle = txn.second;
-		auto boundStore = txnHandle->boundLogStore.lock();
-		if (boundStore && boundStore.get() == store.get()) {
-			if (earliestTimestamp == 0) {
-				earliestTimestamp = txnHandle->startTimestamp;
-			} else {
-				earliestTimestamp = std::min(earliestTimestamp, txnHandle->startTimestamp);
-			}
-		}
-	}
-
-	return earliestTimestamp;
-}
-
 } // namespace rocksdb_js
