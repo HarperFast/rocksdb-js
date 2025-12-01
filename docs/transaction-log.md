@@ -49,6 +49,7 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 |--------|------|---------|------------|------------------------|
 | 0      | 4    | uint32  | token      | Transaction log token  |
 | 4      | 1    | uint8   | version    | Format version         |
+| 5      | 8    | double  | timestamp  | The latest timestamp   |
 ```
 
 ### Transaction Header (13 bytes)

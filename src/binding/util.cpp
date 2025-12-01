@@ -470,7 +470,7 @@ double getMonotonicTimestamp() {
 		std::chrono::system_clock::now().time_since_epoch()
 	).count();
 
-	double result = static_cast<double>(now / 1000000) + static_cast<double>(now % 1000000) / 1000000.0;
+	double result = static_cast<double>(now) / 1000000.0;
 
 	double last = lastTimestamp.load(std::memory_order_acquire);
 	if (result <= last) {
