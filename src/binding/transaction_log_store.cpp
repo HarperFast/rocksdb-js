@@ -98,15 +98,26 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 		logFile->size); // otherwise it is frozen, use the file size
 }
 
-uint32_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
+uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	auto it = this->sequenceFiles.find(logSequenceNumber);
-	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
-	if (!logFile) {
-		return 0;
+	if (logSequenceNumber == 0) {
+		// get the total size of all log files
+		uint64_t size = 0;
+		for (auto& [key, value] : this->sequenceFiles) {
+			value->open();
+			size += value->size;
+		}
+		return size;
+	} else
+	{
+		auto it = this->sequenceFiles.find(logSequenceNumber);
+		auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+		if (!logFile) {
+			return 0;
+		}
+		logFile->open();
+		return logFile->size;
 	}
-	logFile->open();
-	return logFile->size;
 }
 
 PositionHandle* TransactionLogStore::getLastCommittedPosition() {

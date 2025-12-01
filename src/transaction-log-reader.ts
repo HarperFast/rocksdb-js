@@ -70,7 +70,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
 			if (!size) {
-				size = logBuffer.size = this._getLogFileSize(logId);
+				size = logBuffer.size = this.getLogFileSize(logId);
 			}
 		}
 		let foundExactStart = false;
@@ -85,13 +85,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					let latestSize = size;
 					if (latestLogId > logBuffer.logId) {
 						// if it is not the latest log, get the file size
-						size = logBuffer.size || (logBuffer.size = transactionLog._getLogFileSize(logBuffer.logId));
+						size = logBuffer.size || (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 							if (latestLogId > logBuffer.logId) {
 								// it is non-current log file, we can safely use or cache the size
-								size = logBuffer.size || (logBuffer.size = transactionLog._getLogFileSize(logBuffer.logId));
+								size = logBuffer.size || (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
 							} else {
 								size = latestSize; // use the latest position from loadLastPosition
 							}
@@ -151,7 +151,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
 							size = logBuffer.size;
 							if (!size) {
-								size = transactionLog._getLogFileSize(logBuffer.logId);
+								size = transactionLog.getLogFileSize(logBuffer.logId);
 								if (!readUncommitted) {
 									logBuffer.size = size;
 								}
@@ -202,7 +202,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				let nextSize = 0;
 				let nextLogId = logId || 1;
 				while(true) {
-					nextSize = transactionLog._getLogFileSize(nextLogId);
+					nextSize = transactionLog.getLogFileSize(nextLogId);
 					if (nextSize === 0) { // if the size is zero, there is no next log file, we are done
 						break;
 					} else {

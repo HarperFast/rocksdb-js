@@ -177,7 +177,7 @@ struct TransactionLogStore final {
 	/**
 	* Get the log file size.
 	**/
-	uint32_t getLogFileSize(uint32_t logSequenceNumber);
+	uint64_t getLogFileSize(uint32_t logSequenceNumber);
 
 	/**
 	 * Get the shared represention object representing the last committed position.

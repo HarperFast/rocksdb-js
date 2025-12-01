@@ -61,7 +61,7 @@ void TransactionLogHandle::close() {
 		dbHandle->unrefLog(this->logName);
 	}
 }
-uint32_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
+uint64_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
 	auto store = this->store.lock();
 	return store->getLogFileSize(sequenceNumber);
 }

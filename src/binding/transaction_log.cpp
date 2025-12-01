@@ -153,9 +153,9 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize")
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
-	uint32_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
+	uint64_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, fileSize, &result));
+	NAPI_STATUS_THROWS(::napi_create_double(env, (double) fileSize, &result));
 	return result;
 }
 
@@ -257,7 +257,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "_getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};

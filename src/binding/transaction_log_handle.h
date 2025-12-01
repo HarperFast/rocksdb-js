@@ -50,7 +50,7 @@ struct TransactionLogHandle final : Closable {
 
 	MemoryMap* getMemoryMap(uint32_t sequenceNumber);
 	uint64_t findPosition(double timestamp);
-	uint32_t getLogFileSize(uint32_t sequenceNumber);
+	uint64_t getLogFileSize(uint32_t sequenceNumber);
 	PositionHandle* getLastCommittedPosition();
 	/**
 	 * Closes the transaction log handle.
