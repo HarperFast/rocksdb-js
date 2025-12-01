@@ -32,15 +32,15 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	[[maybe_unused]] uint32_t refCount = moduleRefCount.fetch_add(1) + 1;
-	DEBUG_LOG("Binding::Init Module ref count: %u\n", refCount);
+	[[maybe_unused]] int32_t refCount = ++moduleRefCount;
+	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
 	// initialize the registry
 	DBRegistry::Init();
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		int32_t newRefCount = moduleRefCount.fetch_sub(1) - 1;
+		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
@@ -48,7 +48,7 @@ NAPI_MODULE_INIT() {
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n")
 		} else {
-			DEBUG_LOG("Binding::Init Skipping cleanup, %u remaining instances\n", newRefCount)
+			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount)
 		}
 	}, nullptr));
 

@@ -474,7 +474,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
  * Generates the next unique transaction ID for this database.
  */
 uint32_t DBDescriptor::transactionGetNextId() {
-	return this->nextTransactionId.fetch_add(1);
+	return ++this->nextTransactionId;
 }
 
 /**
