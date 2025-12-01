@@ -543,17 +543,22 @@ inline uint8_t readUint8(const char* buffer) {
 
 inline void writeDoubleBE(char* buffer, double value) {
 	// Interpret the double's bits as uint64_t and write in big endian
-	uint64_t bits;
-	std::memcpy(&bits, &value, sizeof(double));
-	writeUint64BE(buffer, bits);
+	union {
+		double d;
+		uint64_t u;
+	} converter;
+	converter.d = value;
+	writeUint64BE(buffer, converter.u);
 }
 
 inline double readDoubleBE(const char* buffer) {
 	// Read uint64_t in big endian and interpret as double
-	uint64_t bits = readUint64BE(buffer);
-	double value;
-	std::memcpy(&value, &bits, sizeof(double));
-	return value;
+	union {
+		double d;
+		uint64_t u;
+	} converter;
+	converter.u = readUint64BE(buffer);
+	return converter.d;
 }
 
 /**
