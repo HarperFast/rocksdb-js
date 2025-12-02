@@ -132,9 +132,7 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	}
 
 	try {
-		std::unique_ptr<char[]> copyData(new char[size]);
-		::memcpy(copyData.get(), data, size);
-		(*txnLogHandle)->addEntry(transactionId, std::move(copyData), static_cast<uint32_t>(size));
+		(*txnLogHandle)->addEntry(transactionId, data, static_cast<uint32_t>(size));
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;

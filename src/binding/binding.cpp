@@ -13,6 +13,11 @@
 
 namespace rocksdb_js {
 
+#define EXPORT_CONSTANT(constant) \
+	napi_value constant##Value; \
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, constant, &constant##Value)); \
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, #constant, constant##Value));
+
 /**
  * The number of active `rocksdb-js` modules.
  *
@@ -71,13 +76,10 @@ NAPI_MODULE_INIT() {
 	napi_value constants;
 	napi_create_object(env, &constants);
 
-	napi_value transactionLogToken, transactionLogFileHeaderSize, transactionLogEntryHeaderSize;
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_TOKEN, &transactionLogToken));
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_FILE_HEADER_SIZE, &transactionLogFileHeaderSize));
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_ENTRY_HEADER_SIZE, &transactionLogEntryHeaderSize));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_TOKEN", transactionLogToken));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_FILE_HEADER_SIZE", transactionLogFileHeaderSize));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_ENTRY_HEADER_SIZE", transactionLogEntryHeaderSize));
+	EXPORT_CONSTANT(TRANSACTION_LOG_TOKEN)
+	EXPORT_CONSTANT(TRANSACTION_LOG_FILE_HEADER_SIZE)
+	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_HEADER_SIZE)
+	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_LAST_FLAG)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	return exports;

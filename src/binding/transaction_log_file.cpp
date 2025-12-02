@@ -1,4 +1,5 @@
 #include <cmath>
+#include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
 // include platform-specific implementation
@@ -110,7 +111,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		auto availableSpace = maxFileSize - this->size;
 		for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
 			auto& entry = batch.entries[i];
-			auto spaceNeeded = totalSizeToWrite + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size;
+			auto spaceNeeded = totalSizeToWrite + entry->size;
 			// always write the first entry
 			if (i > batch.currentEntryIndex && spaceNeeded > availableSpace) {
 				// entry won't fit
@@ -119,7 +120,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 			}
 			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u fits (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace)
 			++numEntriesToWrite;
-			totalSizeToWrite += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size;
+			totalSizeToWrite += entry->size;
 		}
 	} else {
 		// unlimited space, write all entries
@@ -134,26 +135,26 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%u bytes)\n", this, numEntriesToWrite, totalSizeToWrite)
 
 	// allocate buffers for the transaction headers and iovecs
-	auto txnHeaders = std::make_unique<char[]>(numEntriesToWrite * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-	auto numIovecs = numEntriesToWrite * 2;
-	auto iovecs = std::make_unique<iovec[]>(numIovecs);
+	auto iovecs = std::make_unique<iovec[]>(numEntriesToWrite);
 	size_t iovecsIndex = 0;
 
 	// write the transaction headers and entry data to the iovecs
 	for (uint32_t i = 0; i < numEntriesToWrite; ++i) {
 		auto& entry = batch.entries[batch.currentEntryIndex];
+		auto data = entry->data.get();
 
-		// write the transaction header
-		auto txnHeader = txnHeaders.get() + (i * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-		writeDoubleBE(txnHeader, batch.timestamp); // actual timestamp
-		writeUint32BE(txnHeader + 8, static_cast<uint32_t>(entry->size)); // data length
-		writeUint8(txnHeader + 12, 0); // flags
-
-		// add the transaction header to the iovecs
-		iovecs[iovecsIndex++] = {txnHeader, TRANSACTION_LOG_ENTRY_HEADER_SIZE};
+		// Write the timestamp into the transaction header
+		// Note: the rest of the transaction header is written in the
+		// `TransactionLogEntry` constructor
+		writeDoubleBE(data, batch.timestamp); // actual timestamp
+		if (batch.currentEntryIndex == batch.entries.size() - 1) {
+			// Last entry in batch, set the last entry flag
+			uint8_t flags = readUint8(data + 12);
+			writeUint8(data + 12, flags | TRANSACTION_LOG_ENTRY_LAST_FLAG);
+		}
 
 		// add the entry data to the iovecs
-		iovecs[iovecsIndex++] = {entry->data.get(), entry->size};
+		iovecs[iovecsIndex++] = {data, entry->size};
 
 		++batch.currentEntryIndex;
 	}

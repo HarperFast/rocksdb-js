@@ -4,7 +4,6 @@
 #include <chrono>
 #include <filesystem>
 #include <mutex>
-#include "transaction_log_entry.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -36,8 +35,12 @@
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 5
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
+#define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
 
 namespace rocksdb_js {
+
+// forward declarations
+struct TransactionLogEntryBatch;
 
 struct TransactionLogFile final {
 	/**

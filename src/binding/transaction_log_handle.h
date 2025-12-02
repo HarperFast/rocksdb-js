@@ -44,7 +44,7 @@ struct TransactionLogHandle final : Closable {
 	 */
 	void addEntry(
 		uint32_t transactionId,
-		std::unique_ptr<char[]> data,
+		char* data,
 		uint32_t size
 	);
 
