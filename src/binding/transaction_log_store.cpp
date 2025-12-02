@@ -252,10 +252,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		if (logFile->size == sizeBefore) {
 			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
-		}
-		// if we've reached or exceeded the max size, rotate to the next file
-		else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
+		} else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
+			// we've reached or exceeded the max size, rotate to the next file
 			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		} else if (!batch.isComplete()) {
+			// we've written some entries, but the batch is not complete, rotate to the next file
+			DEBUG_LOG("%p TransactionLogStore::commit Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
 	}

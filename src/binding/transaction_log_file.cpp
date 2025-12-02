@@ -99,19 +99,26 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	// check if the file is at or over the max size
 	if (maxFileSize > 0) {
 		if (this->size >= maxFileSize) {
-			DEBUG_LOG("%p TransactionLogFile::writeEntries File already at max size (%u >= %u), deferring to next file\n",
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 File already at max size (%u >= %u), deferring to next file\n",
 				this, this->size, maxFileSize)
 			return;
 		}
 
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Calculating how many entries we can fit (size=%u, maxFileSize=%u)\n", this, this->size, maxFileSize)
+
 		// calculate how many entries we can fit
+		auto availableSpace = maxFileSize - this->size;
 		for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
 			auto& entry = batch.entries[i];
-			if (this->size > TRANSACTION_LOG_FILE_HEADER_SIZE && this->size + totalSizeToWrite + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size > maxFileSize) {
+			auto spaceNeeded = totalSizeToWrite + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size;
+			// always write the first entry
+			if (i > batch.currentEntryIndex && spaceNeeded > availableSpace) {
 				// entry won't fit
+				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u won't fit (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace)
 				break;
 			}
-			numEntriesToWrite++;
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u fits (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace)
+			++numEntriesToWrite;
 			totalSizeToWrite += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size;
 		}
 	} else {
@@ -120,9 +127,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	}
 
 	if (numEntriesToWrite == 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntries No entries to write\n", this)
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this)
 		return;
 	}
+
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%u bytes)\n", this, numEntriesToWrite, totalSizeToWrite)
 
 	// allocate buffers for the transaction headers and iovecs
 	auto txnHeaders = std::make_unique<char[]>(numEntriesToWrite * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
@@ -131,11 +140,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	size_t iovecsIndex = 0;
 
 	// write the transaction headers and entry data to the iovecs
-	for (; batch.currentEntryIndex < numEntriesToWrite; ++batch.currentEntryIndex) {
+	for (uint32_t i = 0; i < numEntriesToWrite; ++i) {
 		auto& entry = batch.entries[batch.currentEntryIndex];
 
 		// write the transaction header
-		auto txnHeader = txnHeaders.get() + (batch.currentEntryIndex * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+		auto txnHeader = txnHeaders.get() + (i * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
 		writeDoubleBE(txnHeader, batch.timestamp); // actual timestamp
 		writeUint32BE(txnHeader + 8, static_cast<uint32_t>(entry->size)); // data length
 		writeUint8(txnHeader + 12, 0); // flags
@@ -145,18 +154,20 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 
 		// add the entry data to the iovecs
 		iovecs[iovecsIndex++] = {entry->data.get(), entry->size};
+
+		++batch.currentEntryIndex;
 	}
 
 	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
 	if (bytesWritten < 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntries ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
 		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Wrote %lld bytes to log file, batch state: entryIndex=%zu, bytesWritten=%zu\n",
-		this, bytesWritten, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
 	this->size += static_cast<uint32_t>(bytesWritten);
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
+		this, bytesWritten, this->size, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
 
 } // namespace rocksdb_js

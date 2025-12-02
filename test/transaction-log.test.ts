@@ -168,22 +168,22 @@ describe('Transaction Log', () => {
 			const info2 = parseTransactionLog(log2Path);
 			const info3 = parseTransactionLog(log3Path);
 
-			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
-			expect(info1.entries.length).toBe(8);
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 9);
+			expect(info1.entries.length).toBe(9);
 			for (const { length, data } of info1.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
 			}
 
-			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
-			expect(info2.entries.length).toBe(8);
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 9);
+			expect(info2.entries.length).toBe(9);
 			for (const { length, data } of info2.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
 			}
 
-			expect(info3.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4);
-			expect(info3.entries.length).toBe(4);
+			expect(info3.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 2);
+			expect(info3.entries.length).toBe(2);
 			for (const { length, data } of info3.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
@@ -314,6 +314,72 @@ describe('Transaction Log', () => {
 
 			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100);
 			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].length).toBe(100);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+		}));
+
+		it('should continue batch in next file', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				for (let i = 0; i < 15; i++) {
+					log.addEntry(value, txn.id);
+				}
+			});
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
+			expect(info1.entries.length).toBe(8);
+			expect(info1.entries[0].length).toBe(100);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 7);
+			expect(info2.entries.length).toBe(7);
+			expect(info2.entries[0].length).toBe(100);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+		}));
+
+		it('should be able to rotate with entries that span a transaction', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			for (let i = 0; i < 5; i++) {
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					log.addEntry(value, txn.id);
+				});
+			}
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
+			expect(info1.entries.length).toBe(8);
+			expect(info1.entries[0].length).toBe(100);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 3);
+			expect(info2.entries.length).toBe(3);
 			expect(info2.entries[0].length).toBe(100);
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 		}));
