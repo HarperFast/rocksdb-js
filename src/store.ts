@@ -228,9 +228,9 @@ export class Store {
 	transactionLogRetention?: number | string;
 
 	/**
-	 * The path to the transaction logs directory..
+	 * The path to the transaction logs directory.
 	 */
-	transactionLogsPath: string;
+	transactionLogsPath?: string;
 
 	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
@@ -278,7 +278,7 @@ export class Store {
 		this.transactionLogMaxAgeThreshold = options?.transactionLogMaxAgeThreshold;
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
-		this.transactionLogsPath = join(path, 'transaction_logs');
+		this.transactionLogsPath = options?.transactionLogsPath;
 		this.writeKey = writeKey;
 	}
 
@@ -552,7 +552,7 @@ export class Store {
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
-			transactionLogsPath: join(this.path, 'transaction_logs')
+			transactionLogsPath: this.transactionLogsPath
 		});
 
 		return false;
