@@ -12,6 +12,7 @@ interface LogEntry {
 
 interface TransactionLog {
 	entries: LogEntry[];
+	fileTimestamp: number;
 	size: number;
 	version: number;
 }
@@ -62,6 +63,8 @@ export function parseTransactionLog(path: string): TransactionLog {
 			throw new Error(`Unsupported transaction log file version: ${version}`);
 		}
 
+		const fileTimestamp = read(8).readDoubleBE(0);
+
 		// read the entries
 		const entries: LogEntry[] = [];
 
@@ -73,7 +76,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 			entries.push({ timestamp, length, flags, data });
 		}
 
-		return { size, version, entries };
+		return { entries, fileTimestamp, size, version };
 	} catch (error) {
 		if (error instanceof Error) {
 			error.message = `Invalid transaction log file: ${error.message}`;

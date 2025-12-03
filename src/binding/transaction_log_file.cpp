@@ -44,6 +44,9 @@ void TransactionLogFile::open() {
 		this->writeToFile(buffer, 4);
 		writeUint8(buffer, this->version);
 		this->writeToFile(buffer, 1);
+		this->fileTimestamp = getMonotonicTimestamp(); // temporary!
+		writeDoubleBE(buffer, this->fileTimestamp);
+		this->writeToFile(buffer, 8);
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
@@ -56,12 +59,14 @@ void TransactionLogFile::open() {
 			throw std::runtime_error("Failed to read version from file: " + this->path.string());
 		}
 
+		// token
 		uint32_t token = readUint32BE(buffer);
 		if (token != TRANSACTION_LOG_TOKEN) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Invalid transaction log file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Invalid transaction log file: " + this->path.string());
 		}
 
+		// version
 		result = this->readFromFile(buffer, 1, 4);
 		if (result < 0) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str())
@@ -73,6 +78,17 @@ void TransactionLogFile::open() {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Unsupported transaction log file version: " + std::to_string(this->version));
 		}
+
+		// file timestamp
+		result = this->readFromFile(buffer, 8, 5);
+		if (result < 0) {
+			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read file timestamp from file: %s\n", this, this->path.string().c_str())
+			throw std::runtime_error("Failed to read file timestamp from file: " + this->path.string());
+		}
+		this->fileTimestamp = readDoubleBE(buffer);
+
+		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, fileTimestamp=%f)\n",
+			this, this->path.string().c_str(), this->size, this->version, this->fileTimestamp)
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu)\n",

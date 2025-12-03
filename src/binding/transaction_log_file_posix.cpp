@@ -8,8 +8,7 @@ namespace rocksdb_js {
 
 TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
 	path(p),
-	sequenceNumber(seq),
-	fd(-1)
+	sequenceNumber(seq)
 {}
 
 void TransactionLogFile::close() {

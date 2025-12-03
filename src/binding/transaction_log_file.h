@@ -33,7 +33,7 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
-#define TRANSACTION_LOG_FILE_HEADER_SIZE 5
+#define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
 
@@ -57,18 +57,23 @@ struct TransactionLogFile final {
 	/**
 	 * The Windows file handle for the transaction log file.
 	 */
-	HANDLE fileHandle;
+	HANDLE fileHandle = INVALID_HANDLE_VALUE;
 #else
 	/**
 	 * The POSIX file descriptor for the transaction log file.
 	 */
-	int fd;
+	int fd = -1;
 #endif
 
 	/**
 	 * The version of the file format.
 	 */
 	uint8_t version = 1;
+
+	/**
+	 * ?????
+	 */
+	double fileTimestamp;
 
 	/**
 	 * The size of the file in bytes.

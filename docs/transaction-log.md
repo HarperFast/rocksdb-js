@@ -28,7 +28,7 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 
 ```
 +---------------------+
-+ File Header         | 5 bytes
++ File Header         | 13 bytes
 +---------------------+
 + Transaction Header  | 13 bytes
 +---------------------+
@@ -42,23 +42,51 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 +---------------------+
 ```
 
-### File Header (5 bytes)
+### File Header (13 bytes)
 
 ```
-| Offset | Size | Type    | Field      | Description            |
-|--------|------|---------|------------|------------------------|
-| 0      | 4    | uint32  | token      | Transaction log token  |
-| 4      | 1    | uint8   | version    | Format version         |
-| 5      | 8    | double  | timestamp  | The latest timestamp   |
+| Offset | Size | Type    | Field          | Description            |
+|--------|------|---------|----------------|------------------------|
+| 0      | 4    | uint32  | token          | Transaction log token  |
+| 4      | 1    | uint8   | version        | Format version         |
+| 5      | 8    | double  | fileTimestamp  | The latest timestamp   |
 ```
+
+#### `token`
+
+The token is used to validate that the file is indeed a transaction log.
+
+#### `version`
+
+The transaction log file format version. Currently, version `1` is the latest.
+
+#### `fileTimestamp`
+
+?????
 
 ### Transaction Header (13 bytes)
 
-| Offset | Size | Type    | Field              | Description                    |
-|--------|------|---------|--------------------|--------------------------------|
-| 0      | 8    | double  | actualTimestamp    | Timestamp transaction created  |
-| 8      | 4    | uint32  | dataLength         | Size of the entry data         |
-| 12     | 1    | uint8   | flags              | Transaction flags              |
+| Offset | Size | Type    | Field         | Description                    |
+|--------|------|---------|---------------|--------------------------------|
+| 0      | 8    | double  | txnTimestamp  | Timestamp transaction created  |
+| 8      | 4    | uint32  | entrySize     | Size of the entry data         |
+| 12     | 1    | uint8   | flags         | Transaction flags              |
+
+#### `txnTimestamp`
+
+The timestamp the associated transaction was created.
+
+#### `entrySize`
+
+The size of the data entry directly following the transaction header.
+
+#### `flags`
+
+Transaction entry related flags.
+
+| Flag                              | Value  | Description                                |
+| --------------------------------- | ------ | ------------------------------------------ |
+| `TRANSACTION_LOG_ENTRY_LAST_FLAG` | `0x01` | Indicates the last entry for a transaction |
 
 ## Encoding Details
 

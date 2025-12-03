@@ -10,8 +10,7 @@ std::string getWindowsErrorMessage(DWORD errorCode);
 
 TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
 	path(p),
-	sequenceNumber(seq),
-	fileHandle(INVALID_HANDLE_VALUE)
+	sequenceNumber(seq)
 {}
 
 void TransactionLogFile::close() {
