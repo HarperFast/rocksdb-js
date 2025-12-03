@@ -6,10 +6,17 @@
 #include "macros.h"
 #include "rocksdb/db.h"
 #include "transaction.h"
+#include "transaction_log.h"
+#include "transaction_log_file.h"
 #include "util.h"
 #include <atomic>
 
 namespace rocksdb_js {
+
+#define EXPORT_CONSTANT(constant) \
+	napi_value constant##Value; \
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, constant, &constant##Value)); \
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, #constant, constant##Value));
 
 /**
  * The number of active `rocksdb-js` modules.
@@ -18,7 +25,7 @@ namespace rocksdb_js {
  * (main thread + worker threads) and we only want to cleanup after the last
  * instance exits.
  */
-static std::atomic<int> moduleRefCount{0};
+static std::atomic<int32_t> moduleRefCount{0};
 
 NAPI_MODULE_INIT() {
 #ifdef DEBUG
@@ -30,7 +37,7 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	[[maybe_unused]] int refCount = ++moduleRefCount;
+	[[maybe_unused]] int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
 	// initialize the registry
@@ -38,7 +45,7 @@ NAPI_MODULE_INIT() {
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		int newRefCount = --moduleRefCount;
+		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
@@ -56,11 +63,24 @@ NAPI_MODULE_INIT() {
 	// transaction
 	rocksdb_js::Transaction::Init(env, exports);
 
+	// transaction log
+	rocksdb_js::TransactionLog::Init(env, exports);
+
 	// db iterator
 	rocksdb_js::DBIterator::Init(env, exports);
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+
+	// constants
+	napi_value constants;
+	napi_create_object(env, &constants);
+
+	EXPORT_CONSTANT(TRANSACTION_LOG_TOKEN)
+	EXPORT_CONSTANT(TRANSACTION_LOG_FILE_HEADER_SIZE)
+	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_HEADER_SIZE)
+	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_LAST_FLAG)
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	return exports;
 }

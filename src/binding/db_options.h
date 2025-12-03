@@ -18,10 +18,15 @@ enum class DBMode {
  * values passed in from public `open()` method.
  */
 struct DBOptions final {
+	bool disableWAL;
 	DBMode mode;
 	std::string name;
 	bool noBlockCache;
-	int parallelismThreads;
+	uint32_t parallelismThreads;
+	float transactionLogMaxAgeThreshold;
+	uint32_t transactionLogMaxSize;
+	uint32_t transactionLogRetentionMs;
+	std::string transactionLogsPath;
 };
 
 } // namespace rocksdb_js

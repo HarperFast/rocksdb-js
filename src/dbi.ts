@@ -1,5 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import { NativeTransaction } from './load-binding.js';
+import type { NativeTransaction, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -167,6 +167,17 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
+	 * Adds a listener for the given key.
+	 *
+	 * @param event - The event name to add the listener for.
+	 * @param callback - The callback to add.
+	 */
+	addListener(event: string, callback: (...args: any[]) => void): this {
+		this.store.db.addListener(event, callback);
+		return this;
+	}
+
+	/**
 	 * Retrieves the value for the given key, then returns the decoded value.
 	 */
 	get(key: Key, options?: GetOptions & T): MaybePromise<any | undefined> {
@@ -194,34 +205,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
 					? result
 					: this.store.decodeValue(result as Buffer)
-		);
-	}
-
-	/**
-	 * Synchronously retrieves the value for the given key, then returns the
-	 * decoded value.
-	 */
-	getSync(key: Key, options?: GetOptions & T): any | undefined {
-		if (this.store.decoderCopies) {
-			const bytes = this.getBinaryFastSync(key, options);
-			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
-		}
-
-		if (this.store.encoding === 'binary') {
-			return this.getBinarySync(key, options);
-		}
-
-		if (this.store.decoder) {
-			const result = this.getBinarySync(key, options);
-			return result ? this.store.decodeValue(result) : undefined;
-		}
-
-		if (!this.store.isOpen()) {
-			throw new Error('Database not open');
-		}
-
-		return this.store.decodeValue(
-			this.store.getSync(this.#context, key, options)
 		);
 	}
 
@@ -390,6 +373,92 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
+	 * Synchronously retrieves the value for the given key, then returns the
+	 * decoded value.
+	 */
+	getSync(key: Key, options?: GetOptions & T): any | undefined {
+		if (this.store.decoderCopies) {
+			const bytes = this.getBinaryFastSync(key, options);
+			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+		}
+
+		if (this.store.encoding === 'binary') {
+			return this.getBinarySync(key, options);
+		}
+
+		if (this.store.decoder) {
+			const result = this.getBinarySync(key, options);
+			return result ? this.store.decodeValue(result) : undefined;
+		}
+
+		if (!this.store.isOpen()) {
+			throw new Error('Database not open');
+		}
+
+		return this.store.decodeValue(
+			this.store.getSync(this.#context, key, options)
+		);
+	}
+
+	/**
+	 * Gets the number of listeners for the given key.
+	 *
+	 	* @param event - The event name to get the listeners for.
+	 * @returns The number of listeners for the given key.
+	 */
+	listeners(event: string | BufferWithDataView): number {
+		return this.store.db.listeners(event);
+	}
+
+	/**
+	 * Notifies an event for the given key.
+	 *
+	 * @param event - The event name to emit the event for.
+	 * @param args - The arguments to emit.
+	 * @returns `true` if there were listeners, `false` otherwise.
+	 */
+	notify(event: string, ...args: any[]): boolean {
+		return this.store.db.notify(event, args);
+	}
+
+	/**
+	 * Alias for `removeListener()`.
+	 *
+	 * @param event - The event name to remove the listener for.
+	 * @param callback - The callback to remove.
+	 */
+	off(event: string, callback: (...args: any[]) => void): this {
+		this.store.db.removeListener(event, callback);
+		return this;
+	}
+
+	/**
+	 * Alias for `addListener()`.
+	 *
+	 * @param event - The event name to add the listener for.
+	 * @param callback - The callback to add.
+	 */
+	on(event: string, callback: (...args: any[]) => void): this {
+		this.store.db.addListener(event, callback);
+		return this;
+	}
+
+	/**
+	 * Adds a one-time listener, then automatically removes it.
+	 *
+	 * @param event - The event name to add the listener for.
+	 * @param callback - The callback to add.
+	 */
+	once(event: string, callback: (...args: any[]) => void): this {
+		const wrapper = (...args: any[]) => {
+			this.removeListener(event, wrapper);
+			callback(...args);
+		};
+		this.store.db.addListener(event, wrapper);
+		return this;
+	}
+
+	/**
 	 * Stores a value for the given key.
 	 *
 	 * @param key - The key to store the value for.
@@ -458,75 +527,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Adds a listener for the given key.
-	 *
-	 * @param event - The event name to add the listener for.
-	 * @param callback - The callback to add.
-	 */
-	addListener(event: string, callback: (...args: any[]) => void): this {
-		this.store.db.addListener(event, callback);
-		return this;
-	}
-
-	/**
-	 * Alias for `removeListener()`.
-	 *
-	 * @param event - The event name to remove the listener for.
-	 * @param callback - The callback to remove.
-	 */
-	off(event: string, callback: (...args: any[]) => void): this {
-		this.store.db.removeListener(event, callback);
-		return this;
-	}
-
-	/**
-	 * Alias for `addListener()`.
-	 *
-	 * @param event - The event name to add the listener for.
-	 * @param callback - The callback to add.
-	 */
-	on(event: string, callback: (...args: any[]) => void): this {
-		this.store.db.addListener(event, callback);
-		return this;
-	}
-
-	/**
-	 * Adds a one-time listener, then automatically removes it.
-	 *
-	 * @param event - The event name to add the listener for.
-	 * @param callback - The callback to add.
-	 */
-	once(event: string, callback: (...args: any[]) => void): this {
-		const wrapper = (...args: any[]) => {
-			this.removeListener(event, wrapper);
-			callback(...args);
-		};
-		this.store.db.addListener(event, wrapper);
-		return this;
-	}
-
-	/**
-	 * Notifies an event for the given key.
-	 *
-	 * @param event - The event name to emit the event for.
-	 * @param args - The arguments to emit.
-	 * @returns `true` if there were listeners, `false` otherwise.
-	 */
-	notify(event: string, ...args: any[]): boolean {
-		return this.store.db.notify(event, args);
-	}
-
-	/**
-	 * Gets the number of listeners for the given key.
-	 *
-	 	* @param event - The event name to get the listeners for.
-	 * @returns The number of listeners for the given key.
-	 */
-	listeners(event: string | BufferWithDataView): number {
-		return this.store.db.listeners(event);
-	}
-
-	/**
 	 * Removes an event listener. You must specify the exact same callback that was
 	 * used in `addListener()`.
 	 *
@@ -535,5 +535,15 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 */
 	removeListener(event: string, callback: () => void): boolean {
 		return this.store.db.removeListener(event, callback);
+	}
+
+	/**
+	 * Get or create a transaction log instance.
+	 *
+	 * @param name - The name of the transaction log.
+	 * @returns The transaction log.
+	 */
+	useLog(name: string | number): TransactionLog {
+		return this.store.useLog(this.#context, name);
 	}
 }

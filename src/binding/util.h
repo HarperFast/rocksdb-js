@@ -2,8 +2,10 @@
 #define __UTIL_H__
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <condition_variable>
+#include <filesystem>
 #include <mutex>
 #include <node_api.h>
 #include <optional>
@@ -13,7 +15,7 @@
 #include <thread>
 #include "binding.h"
 #include "macros.h"
-#include "rocksdb/status.h"
+#include "rocksdb/db.h"
 
 /**
  * This file contains various napi helper functions.
@@ -38,6 +40,8 @@ struct Closable {
 };
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
+
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name);
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
@@ -147,6 +151,13 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	return napi_ok;
 }
 
+[[maybe_unused]] static napi_status getValue(napi_env env, napi_value value, float& result) {
+	double result2;
+	NAPI_STATUS_RETURN(::napi_get_value_double(env, value, &result2));
+	result = static_cast<float>(result2);
+	return napi_ok;
+}
+
 // Only define size_t overload when size_t is different from uint64_t
 template<typename T = size_t>
 [[maybe_unused]] static typename std::enable_if<!std::is_same<T, uint64_t>::value, napi_status>::type
@@ -206,38 +217,13 @@ template <typename T>
 	return getValue(env, value, result);
 }
 
+std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
+
 /**
  * Base class for async state.
  */
 template<typename T>
 struct BaseAsyncState {
-	BaseAsyncState(
-		napi_env env,
-		T handle
-	) :
-		env(env),
-		handle(handle),
-		asyncWork(nullptr),
-		resolveRef(nullptr),
-		rejectRef(nullptr) {}
-
-	virtual ~BaseAsyncState() {
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, resolveRef))
-		NAPI_STATUS_THROWS_VOID(::napi_delete_reference(env, rejectRef))
-
-		// decrement the active async work count
-		this->signalExecuteCompleted();
-	}
-
-	void signalExecuteCompleted() {
-		if (!this->completed.load()) {
-			if (this->handle) {
-				this->handle->unregisterAsyncWork();
-			}
-			this->completed.store(true);
-		}
-	}
-
 	napi_env env;
 	T handle;
 	napi_async_work asyncWork;
@@ -253,6 +239,126 @@ struct BaseAsyncState {
 	 * handler has a chance to close the handle.
 	 */
 	std::atomic<bool> completed{false};
+
+	BaseAsyncState(
+		napi_env env,
+		T handle
+	) :
+		env(env),
+		handle(handle),
+		asyncWork(nullptr),
+		resolveRef(nullptr),
+		rejectRef(nullptr) {}
+
+	virtual ~BaseAsyncState() {
+		this->resolveRef = nullptr;
+		this->rejectRef = nullptr;
+
+		this->signalExecuteCompleted();
+
+		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor!");
+	}
+
+	void deleteAsyncWork() {
+		if (this->asyncWork != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work %p\n", this, this->asyncWork)
+			napi_status status = ::napi_delete_async_work(this->env, this->asyncWork);
+			if (status == napi_ok) {
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Successfully deleted async work\n", this)
+				this->asyncWork = nullptr;
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Failed to delete async work (status=%d)\n", this, status)
+			}
+		} else {
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work was already null!\n", this)
+		}
+	}
+
+	/**
+	 * Calls the resolve function. This function must be called from the main
+	 * thread after the async work has completed.
+	 *
+	 * @param [result] An optionalresult to pass to the resolve function.
+	 */
+	void callResolve(napi_value result = nullptr) {
+		if (this->resolveRef == nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callResolve resolveRef is null\n", this)
+			return;
+		}
+
+		if (this->rejectRef != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callResolve Deleting usused reject reference\n", this)
+			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
+			DEBUG_LOG("%p BaseAsyncState::callResolve Reject reference deleted successfully\n", this)
+			this->rejectRef = nullptr;
+		}
+
+		napi_value global;
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_global(this->env, &global), "Failed to get global object");
+
+		napi_value resolve;
+		DEBUG_LOG("%p BaseAsyncState::callResolve Getting resolve from reference...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_reference_value(this->env, this->resolveRef, &resolve), "Failed to get reference to resolve function");
+
+		DEBUG_LOG("%p BaseAsyncState::callResolve Calling resolve function...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, resolve, result ? 1 : 0, result ? &result : nullptr, nullptr), "Failed to call resolve function");
+		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve function completed successfully\n", this)
+
+		DEBUG_LOG("%p BaseAsyncState::callResolve Deleting resolve reference\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
+		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve reference deleted successfully\n", this)
+		this->resolveRef = nullptr;
+	}
+
+	/**
+	 * Calls the reject function. This function must be called from the main
+	 * thread after the async work has completed.
+	 *
+	 * @param error The error to pass to the reject function.
+	 */
+	void callReject(napi_value error) {
+		if (this->rejectRef == nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callReject rejectRef is null\n", this)
+			return;
+		}
+
+		if (this->resolveRef != nullptr) {
+			DEBUG_LOG("%p BaseAsyncState::callReject Deleting usused resolve reference\n", this)
+			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
+			DEBUG_LOG("%p BaseAsyncState::callReject Resolve reference deleted successfully\n", this)
+			this->resolveRef = nullptr;
+		}
+
+		napi_value global;
+		NAPI_STATUS_THROWS_VOID(::napi_get_global(this->env, &global))
+
+		napi_value reject;
+		DEBUG_LOG("%p BaseAsyncState::callReject Getting reject from reference...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_reference_value(this->env, this->rejectRef, &reject), "Failed to get reference to reject function");
+
+		DEBUG_LOG("%p BaseAsyncState::callReject Calling reject function...\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, reject, 1, &error, nullptr), "Failed to call reject function");
+		DEBUG_LOG("%p BaseAsyncState::callReject Reject function completed successfully\n", this)
+
+		DEBUG_LOG("%p BaseAsyncState::callReject Deleting reject reference\n", this)
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
+		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this)
+		this->rejectRef = nullptr;
+	}
+
+	void signalExecuteCompleted() {
+		if (!this->completed.load()) {
+			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Unregistering async work\n", this)
+			if (this->handle) {
+				this->handle->unregisterAsyncWork();
+			} else {
+				DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Handle is null\n", this)
+			}
+			this->completed.store(true);
+		} else {
+			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Execute already completed\n", this)
+		}
+	}
 };
 
 #define ASSERT_OPENED_AND_NOT_CANCELLED(handle, operation) \
@@ -288,7 +394,7 @@ struct AsyncWorkHandle {
 	/**
 	 * Count of active async work tasks.
 	 */
-	std::atomic<uint32_t> activeAsyncWorkCount{0};
+	std::atomic<int32_t> activeAsyncWorkCount{0};
 
 	/**
 	 * A mutex used to wait for all async work to complete.
@@ -312,12 +418,13 @@ struct AsyncWorkHandle {
 	 * Unregisters an async work task with this handle.
 	 */
 	void unregisterAsyncWork() {
-		// notify if all work is complete
-		if (--this->activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork all async work has completed, notifying (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
+		auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
+		if (activeAsyncWorkCount > 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount)
+		} else if (activeAsyncWorkCount == 0) {
+			// notify if all work is complete
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this)
 			this->asyncWorkComplete.notify_one();
-		} else {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork async work has completed, but not all (activeAsyncWorkCount=%d)\n", this, this->activeAsyncWorkCount.load())
 		}
 	}
 
@@ -341,24 +448,30 @@ struct AsyncWorkHandle {
 		auto start = std::chrono::steady_clock::now();
 		const auto pollInterval = std::chrono::milliseconds(10);
 		std::unique_lock<std::mutex> lock(this->waitMutex);
+		auto activeAsyncWorkCount = this->activeAsyncWorkCount.load();
 
-		while (this->activeAsyncWorkCount > 0) {
+		if (activeAsyncWorkCount == 0) {
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion no async work to wait for\n", this)
+			return;
+		}
+
+		while (activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %d items remaining\n", this, this->activeAsyncWorkCount.load())
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, activeAsyncWorkCount)
 				return;
 			}
 
 			auto remainingTime = timeout - elapsed;
 			auto waitTime = std::min(pollInterval, remainingTime);
 
-			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %zu active work items\n", this, this->activeAsyncWorkCount.load())
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %u active work items\n", this, activeAsyncWorkCount)
 
 			// wait for either all work to be unregistered OR all execute handlers to complete
 			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
 				// check if all active work has completed execution
 				// note: the mutex is already locked here
-				return this->activeAsyncWorkCount == 0;
+				return this->activeAsyncWorkCount.load() == 0;
 			});
 
 			if (completed) {
@@ -372,6 +485,87 @@ struct AsyncWorkHandle {
 		return this->cancelled.load();
 	}
 };
+
+// Big-endian encoding/decoding helpers for transaction log format
+inline void writeUint64BE(char* buffer, uint64_t value) {
+	buffer[0] = static_cast<char>((value >> 56) & 0xFF);
+	buffer[1] = static_cast<char>((value >> 48) & 0xFF);
+	buffer[2] = static_cast<char>((value >> 40) & 0xFF);
+	buffer[3] = static_cast<char>((value >> 32) & 0xFF);
+	buffer[4] = static_cast<char>((value >> 24) & 0xFF);
+	buffer[5] = static_cast<char>((value >> 16) & 0xFF);
+	buffer[6] = static_cast<char>((value >> 8) & 0xFF);
+	buffer[7] = static_cast<char>(value & 0xFF);
+}
+
+inline void writeUint32BE(char* buffer, uint32_t value) {
+	buffer[0] = static_cast<char>((value >> 24) & 0xFF);
+	buffer[1] = static_cast<char>((value >> 16) & 0xFF);
+	buffer[2] = static_cast<char>((value >> 8) & 0xFF);
+	buffer[3] = static_cast<char>(value & 0xFF);
+}
+
+inline void writeUint16BE(char* buffer, uint16_t value) {
+	buffer[0] = static_cast<char>((value >> 8) & 0xFF);
+	buffer[1] = static_cast<char>(value & 0xFF);
+}
+
+inline void writeUint8(char* buffer, uint8_t value) {
+	buffer[0] = static_cast<char>(value);
+}
+
+inline uint64_t readUint64BE(const char* buffer) {
+	return (static_cast<uint64_t>(static_cast<uint8_t>(buffer[0])) << 56) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[1])) << 48) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[2])) << 40) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[3])) << 32) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[4])) << 24) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[5])) << 16) |
+	       (static_cast<uint64_t>(static_cast<uint8_t>(buffer[6])) << 8) |
+	       static_cast<uint64_t>(static_cast<uint8_t>(buffer[7]));
+}
+
+inline uint32_t readUint32BE(const char* buffer) {
+	return (static_cast<uint32_t>(static_cast<uint8_t>(buffer[0])) << 24) |
+	       (static_cast<uint32_t>(static_cast<uint8_t>(buffer[1])) << 16) |
+	       (static_cast<uint32_t>(static_cast<uint8_t>(buffer[2])) << 8) |
+	       static_cast<uint32_t>(static_cast<uint8_t>(buffer[3]));
+}
+
+inline uint16_t readUint16BE(const char* buffer) {
+	return (static_cast<uint16_t>(static_cast<uint8_t>(buffer[0])) << 8) |
+	       static_cast<uint16_t>(static_cast<uint8_t>(buffer[1]));
+}
+
+inline uint8_t readUint8(const char* buffer) {
+	return static_cast<uint8_t>(buffer[0]);
+}
+
+inline void writeDoubleBE(char* buffer, double value) {
+	// Interpret the double's bits as uint64_t and write in big endian
+	union {
+		double d;
+		uint64_t u;
+	} converter;
+	converter.d = value;
+	writeUint64BE(buffer, converter.u);
+}
+
+inline double readDoubleBE(const char* buffer) {
+	// Read uint64_t in big endian and interpret as double
+	union {
+		double d;
+		uint64_t u;
+	} converter;
+	converter.u = readUint64BE(buffer);
+	return converter.d;
+}
+
+/**
+ * Returns the current timestamp as a monotonically increasing timestamp in
+ * nanoseconds (internally) and returns it as milliseconds (double).
+ */
+double getMonotonicTimestamp();
 
 } // namespace rocksdb_js
 

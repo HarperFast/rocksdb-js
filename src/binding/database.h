@@ -39,19 +39,23 @@ struct Database final {
 	static napi_value Close(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
+	static napi_value GetMonotonicTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value GetUserSharedBuffer(napi_env env, napi_callback_info info);
 	static napi_value HasLock(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Listeners(napi_env env, napi_callback_info info);
+	static napi_value ListLogs(napi_env env, napi_callback_info info);
 	static napi_value Notify(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
+	static napi_value PurgeLogs(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);
+	static napi_value UseLog(napi_env env, napi_callback_info info);
 	static napi_value WithLock(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
@@ -103,14 +107,30 @@ napi_value resolveGetSyncResult(
 	napi_value reject
 );
 
+template<typename T>
 void resolveGetResult(
 	napi_env env,
 	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_ref resolveRef,
-	napi_ref rejectRef
-);
+	AsyncGetState<T>* state
+) {
+	napi_value global;
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+
+	if (state->status.IsNotFound() || state->status.ok()) {
+		napi_value result;
+		if (state->status.IsNotFound()) {
+			napi_get_undefined(env, &result);
+		} else {
+			// TODO: when in "fast" mode, use the shared buffer
+			NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->value.size(), state->value.data(), nullptr, &result))
+		}
+
+		state->callResolve(result);
+	} else {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
+		state->callReject(error);
+	}
+}
 
 } // namespace rocksdb_js
 

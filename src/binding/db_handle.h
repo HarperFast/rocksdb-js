@@ -8,12 +8,14 @@
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "db_options.h"
+#include "transaction_log_store.h"
 #include "util.h"
 
 namespace rocksdb_js {
 
 // forward declarations
 struct DBDescriptor;
+
 /**
  * Handle for a RocksDB database and the selected column family. This handle is
  * returned by the Registry and is used by the `Database` class.
@@ -32,13 +34,37 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
+	/**
+	 * Whether to disable WAL.
+	 */
+	bool disableWAL = false;
 
-	DBHandle();
-	DBHandle(std::shared_ptr<DBDescriptor> descriptor);
+	/**
+	 * The node environment.
+	 */
+	napi_env env;
+
+	/**
+	 * A reference to the main `rocksdb_js` exports object. This is needed to
+	 * get the `TransactionLog` class.
+	 */
+	napi_ref exportsRef;
+
+	/**
+	 * The default transaction log store.
+	 */
+	std::weak_ptr<TransactionLogStore> defaultLog;
+
+	/**
+	 * A map of transaction log store names to `TransactionLog` JavaScript
+	 * instances.
+	 */
+	std::unordered_map<std::string, napi_ref> logRefs;
+
+	DBHandle(napi_env env, napi_ref exportsRef);
 	~DBHandle();
 
 	napi_ref addListener(napi_env env, std::string key, napi_value callback);
-
 	rocksdb::Status clear(uint32_t batchSize, uint64_t& deleted);
 	void close();
 	napi_value get(
@@ -50,6 +76,8 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	);
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
+	void unrefLog(const std::string& name);
+	napi_value useLog(napi_env env, napi_value jsDatabase, std::string& name);
 };
 
 } // namespace rocksdb_js

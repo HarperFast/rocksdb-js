@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { generateDBPath, dbRunner } from './lib/util.js';
+import { generateDBPath, dbRunner, createWorkerBootstrapScript } from './lib/util.js';
 import { Worker } from 'node:worker_threads';
 import { withResolvers } from '../src/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -258,26 +258,8 @@ describe('Events', () => {
 	}));
 
 	it('should notify events from worker threads', () => dbRunner(async ({ db, dbPath }) => {
-		// Node.js 18 and older doesn't properly eval ESM code
-		const majorVersion = parseInt(process.versions.node.split('.')[0]);
-		const script = process.versions.deno || process.versions.bun
-			?	`
-				import { pathToFileURL } from 'node:url';
-				import(pathToFileURL('./test/fixtures/events-worker.mts'));
-				`
-			:	majorVersion < 20
-				?	`
-					const tsx = require('tsx/cjs/api');
-					tsx.require('./test/fixtures/events-worker.mts', __dirname);
-					`
-				:	`
-					import { register } from 'tsx/esm/api';
-					register();
-					import('./test/fixtures/events-worker.mts');
-					`;
-
 		const worker = new Worker(
-			script,
+			createWorkerBootstrapScript('./test/workers/events-worker.mts'),
 			{
 				eval: true,
 				workerData: {

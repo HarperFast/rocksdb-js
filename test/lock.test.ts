@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { dbRunner } from './lib/util.js';
+import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 
 describe('Lock', () => {
 	describe('tryLock()', () => {
@@ -79,26 +79,8 @@ describe('Lock', () => {
 			expect(db.tryLock('foo', () => spy())).toBe(true);
 			expect(db.hasLock('foo')).toBe(true); // main thread has lock
 
-			// Node.js 18 and older doesn't properly eval ESM code
-			const majorVersion = parseInt(process.versions.node.split('.')[0]);
-			const script = process.versions.deno || process.versions.bun
-				?	`
-					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/try-lock-worker.mts'));
-					`
-				:	majorVersion < 20
-					?	`
-						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/try-lock-worker.mts', __dirname);
-						`
-					:	`
-						import { register } from 'tsx/esm/api';
-						register();
-						import('./test/fixtures/try-lock-worker.mts');
-						`;
-
 			const worker = new Worker(
-				script,
+				createWorkerBootstrapScript('./test/workers/try-lock-worker.mts'),
 				{
 					eval: true,
 					workerData: {
@@ -236,26 +218,8 @@ describe('Lock', () => {
 		it('should lock in a worker thread', () => dbRunner(async ({ db, dbPath }) => {
 			const spy = vi.fn();
 
-			// Node.js 18 and older doesn't properly eval ESM code
-			const majorVersion = parseInt(process.versions.node.split('.')[0]);
-			const script = process.versions.deno || process.versions.bun
-				?	`
-					import { pathToFileURL } from 'node:url';
-					import(pathToFileURL('./test/fixtures/with-lock-worker.mts'));
-					`
-				:	majorVersion < 20
-					?	`
-						const tsx = require('tsx/cjs/api');
-						tsx.require('./test/fixtures/with-lock-worker.mts', __dirname);
-						`
-					:	`
-						import { register } from 'tsx/esm/api';
-						register();
-						import('./test/fixtures/with-lock-worker.mts');
-						`;
-
 			const worker = new Worker(
-				script,
+				createWorkerBootstrapScript('./test/workers/with-lock-worker.mts'),
 				{
 					eval: true,
 					workerData: {
@@ -312,7 +276,7 @@ describe('Lock', () => {
 						expect(db.hasLock('foo')).toBe(true);
 						await delay(100);
 						expect(workerLocked).toBe(false);
-					})
+					});
 				})()
 			]);
 

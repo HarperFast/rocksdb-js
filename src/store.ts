@@ -4,6 +4,7 @@ import {
 	NativeTransaction,
 	type UserSharedBufferCallback,
 	type NativeDatabaseOptions,
+	type TransactionLog,
 } from './load-binding.js';
 import {
 	Encoding,
@@ -20,6 +21,7 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
+import { parseDuration } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -33,7 +35,10 @@ export type Context = NativeDatabase | NativeTransaction;
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
+export interface StoreOptions extends Omit<NativeDatabaseOptions,
+	| 'mode'
+	| 'transactionLogRetentionMs'
+> {
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
@@ -61,7 +66,17 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions, 'mode'> {
 	randomAccessStructure?: boolean;
 
 	// readOnly?: boolean;
+
 	sharedStructuresKey?: symbol;
+
+	/**
+	 * A string containing the amount of time or the number of milliseconds to
+	 * retain transaction logs before purging.
+	 *
+	 * @default '3d' (3 days)
+	 */
+	transactionLogRetention?: number | string;
+
 	// trackMetrics?: boolean;
 }
 
@@ -103,6 +118,11 @@ export class Store {
 	 * Whether the decoder copies the buffer when encoding values.
 	 */
 	decoderCopies: boolean = false;
+
+	/**
+	 * Whether to disable the write ahead log.
+	 */
+	disableWAL: boolean;
 
 	/**
 	 * Reusable buffer for encoding values using `writeKey()` when the custom
@@ -186,6 +206,32 @@ export class Store {
 	sharedStructuresKey?: symbol;
 
 	/**
+	 * The threshold for the transaction log file's last modified time to be
+	 * older than the retention period before it is rotated to the next sequence
+	 * number. A threshold of 0 means ignore age check.
+	 */
+	transactionLogMaxAgeThreshold?: number;
+
+	/**
+	 * The maximum size of a transaction log before it is rotated to the next
+	 * sequence number.
+	 */
+	transactionLogMaxSize?: number;
+
+	/**
+	 * A string containing the amount of time or the number of milliseconds to
+	 * retain transaction logs before purging.
+	 *
+	 * @default '3d' (3 days)
+	 */
+	transactionLogRetention?: number | string;
+
+	/**
+	 * The path to the transaction logs directory.
+	 */
+	transactionLogsPath?: string;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -212,6 +258,7 @@ export class Store {
 
 		this.db = new NativeDatabase();
 		this.decoder = options?.decoder ?? null;
+		this.disableWAL = options?.disableWAL ?? false;
 		this.encodeBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
@@ -227,6 +274,10 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.transactionLogMaxAgeThreshold = options?.transactionLogMaxAgeThreshold;
+		this.transactionLogMaxSize = options?.transactionLogMaxSize;
+		this.transactionLogRetention = options?.transactionLogRetention;
+		this.transactionLogsPath = options?.transactionLogsPath;
 		this.writeKey = writeKey;
 	}
 
@@ -472,6 +523,15 @@ export class Store {
 	}
 
 	/**
+	 * Lists all transaction log names.
+	 *
+	 * @returns an array of transaction log names.
+	 */
+	listLogs(): string[] {
+		return this.db.listLogs();
+	}
+
+	/**
 	 * Opens the database. This must be called before any database operations
 	 * are performed.
 	 */
@@ -481,10 +541,17 @@ export class Store {
 		}
 
 		this.db.open(this.path, {
+			disableWAL: this.disableWAL,
+			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
-			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
+			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
+			transactionLogMaxSize: this.transactionLogMaxSize,
+			transactionLogRetentionMs: this.transactionLogRetention
+				? parseDuration(this.transactionLogRetention)
+				: undefined,
+			transactionLogsPath: this.transactionLogsPath
 		});
 
 		return false;
@@ -555,6 +622,23 @@ export class Store {
 	 */
 	unlock(key: Key): void {
 		return this.db.unlock(this.encodeKey(key));
+	}
+
+	/**
+	 * Gets or creates a transaction log instance.
+	 *
+	 * @param context - The context to use for the transaction log.
+	 * @param name - The name of the transaction log.
+	 * @returns The transaction log.
+	 */
+	useLog(
+		context: NativeDatabase | NativeTransaction,
+		name: string | number
+	): TransactionLog {
+		if (typeof name !== 'string' && typeof name !== 'number') {
+			throw new TypeError('Log name must be a string or number');
+		}
+		return context.useLog(String(name));
 	}
 
 	/**
