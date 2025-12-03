@@ -4,6 +4,8 @@
 #include <chrono>
 #include <filesystem>
 #include <mutex>
+#include <map>
+#include <atomic>
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -33,6 +35,7 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
+#define POSITION_OF_LOG_FILE_TIMESTAMP 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
@@ -92,7 +95,7 @@ struct TransactionLogFile final {
 	std::mutex fileMutex;
 
 	std::map<double, uint32_t> positionByTimestampIndex;
-	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	uint32_t lastIndexedPosition = POSITION_OF_LOG_FILE_TIMESTAMP;
 	std::mutex indexMutex;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
@@ -195,7 +198,7 @@ struct MemoryMap final
 	/**
 	 * The count of references to the memory map. Not using an std::shared_ptr here because memory maps don't have their own destructor
 	 */
-	std::atomic<unsigned int> refCount = 1; // start with one for the reference from TransactionLogFile
+	std::atomic<int32_t> refCount = 1; // start with one for the reference from TransactionLogFile
 
 	MemoryMap(void* map, uint32_t size);
 	~MemoryMap();

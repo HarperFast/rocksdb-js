@@ -180,6 +180,8 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(1);
 			queryResults = Array.from(log2.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[0].endTxn).toBe(true);
 		}));
 		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
 			let log = db.useLog('foo');

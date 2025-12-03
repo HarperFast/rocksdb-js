@@ -137,8 +137,7 @@ uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
 		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size);
-		// TODO: This should be positionInLogFile > 0 once we record the last write from the previous log in the file header
-		if (positionInLogFile > TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		if (positionInLogFile > 0) {
 			if (positionInLogFile == 0xFFFFFFFF && sequenceNumber < this->currentSequenceNumber) {
 				// beyond the end of this log file, revert to next one (because it exists)
 				break;

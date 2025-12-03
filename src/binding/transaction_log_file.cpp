@@ -190,7 +190,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
 		this, bytesWritten, this->size, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
-
+const int POSITION_OF_LOG_TIMESTAMP = 5;
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 	MemoryMap* memoryMap = getMemoryMap(mapSize);
@@ -203,11 +203,15 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			size = lastIndexedPosition;
 			break;
 		}
-		// check that the timestamp is greater than any previously indexed timestamp,
-		// otherwise we don't record it, because we want to start at the first position with a timestamp that
-		// is greater than the requested timestamp
-		// TODO: remove first condition once we have the file header
-		if (positionByTimestampIndex.empty() || entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+		// for the first iteration, we insert the log file timestamp at the beginning of the index
+		if (POSITION_OF_LOG_FILE_TIMESTAMP == lastIndexedPosition) {
+			positionByTimestampIndex.insert({entryTimestamp, 0}); // specifically record the log file timestamp as the first entry with a position of zero
+			lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
+			continue;
+			// else check that the timestamp is greater than any previously indexed timestamp,
+			// otherwise we don't record it, because we want to start at the first position with a timestamp that
+			// is greater than the requested timestamp:
+		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
 			// insert with a hint to go at the end
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, lastIndexedPosition});
 		}

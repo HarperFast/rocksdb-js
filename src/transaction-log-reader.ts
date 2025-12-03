@@ -89,7 +89,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						size = logBuffer.size ?? (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+							const nextLogBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+							logBuffer = nextLogBuffer;
 							if (latestLogId > logBuffer.logId) {
 								// it is non-current log file, we can safely use or cache the size
 								size = logBuffer.size ?? (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
@@ -141,6 +142,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							done: false,
 							value: {
 								timestamp,
+								endTxn: Boolean(logBuffer[entryStart - 1] & 1),
 								data: logBuffer!.subarray(entryStart, position)
 							}
 						};

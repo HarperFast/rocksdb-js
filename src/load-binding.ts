@@ -47,6 +47,7 @@ export type TransactionLogQueryOptions = {
 export type TransactionEntry = {
 	timestamp: number;
 	data: Buffer;
+	endTxn: boolean;
 }
 
 export type TransactionLog = {
