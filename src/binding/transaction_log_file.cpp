@@ -31,7 +31,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	return convertFileTimeToSystemTime(mtime);
 }
 
-void TransactionLogFile::open() {
+void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	this->openFile();
 
@@ -39,13 +39,13 @@ void TransactionLogFile::open() {
 	char buffer[TRANSACTION_LOG_FILE_HEADER_SIZE];
 	if (this->size == 0) {
 		// file is empty, initialize it
-		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s\n", this, this->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s (timestamp=%f)\n", this, this->path.string().c_str(), latestTimestamp)
 		writeUint32BE(buffer, TRANSACTION_LOG_TOKEN);
 		this->writeToFile(buffer, 4);
 		writeUint8(buffer, this->version);
 		this->writeToFile(buffer, 1);
-		this->fileTimestamp = getMonotonicTimestamp(); // temporary!
-		writeDoubleBE(buffer, this->fileTimestamp);
+		this->timestamp = latestTimestamp;
+		writeDoubleBE(buffer, this->timestamp);
 		this->writeToFile(buffer, 8);
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
@@ -85,10 +85,10 @@ void TransactionLogFile::open() {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read file timestamp from file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Failed to read file timestamp from file: " + this->path.string());
 		}
-		this->fileTimestamp = readDoubleBE(buffer);
+		this->timestamp = readDoubleBE(buffer);
 
-		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, fileTimestamp=%f)\n",
-			this, this->path.string().c_str(), this->size, this->version, this->fileTimestamp)
+		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, timestamp=%f)\n",
+			this, this->path.string().c_str(), this->size, this->version, this->timestamp)
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu)\n",

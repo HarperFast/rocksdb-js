@@ -45,11 +45,11 @@ Log files follow the pattern: `{name}.{sequenceNumber}.txnlog`
 ### File Header (13 bytes)
 
 ```
-| Offset | Size | Type    | Field          | Description            |
-|--------|------|---------|----------------|------------------------|
-| 0      | 4    | uint32  | token          | Transaction log token  |
-| 4      | 1    | uint8   | version        | Format version         |
-| 5      | 8    | double  | fileTimestamp  | The latest timestamp   |
+| Offset | Size | Type    | Field      | Description            |
+|--------|------|---------|------------|------------------------|
+| 0      | 4    | uint32  | token      | Transaction log token  |
+| 4      | 1    | uint8   | version    | Format version         |
+| 5      | 8    | double  | timestamp  | The latest timestamp   |
 ```
 
 #### `token`
@@ -60,19 +60,19 @@ The token is used to validate that the file is indeed a transaction log.
 
 The transaction log file format version. Currently, version `1` is the latest.
 
-#### `fileTimestamp`
+#### `timestamp`
 
-?????
+The timestamp of the most recent transaction log batch that has been written.
 
 ### Transaction Header (13 bytes)
 
-| Offset | Size | Type    | Field         | Description                    |
-|--------|------|---------|---------------|--------------------------------|
-| 0      | 8    | double  | txnTimestamp  | Timestamp transaction created  |
-| 8      | 4    | uint32  | entrySize     | Size of the entry data         |
-| 12     | 1    | uint8   | flags         | Transaction flags              |
+| Offset | Size | Type    | Field      | Description                    |
+|--------|------|---------|------------|--------------------------------|
+| 0      | 8    | double  | timestamp  | Timestamp transaction created  |
+| 8      | 4    | uint32  | entrySize  | Size of the entry data         |
+| 12     | 1    | uint8   | flags      | Transaction flags              |
 
-#### `txnTimestamp`
+#### `timestamp`
 
 The timestamp the associated transaction was created.
 

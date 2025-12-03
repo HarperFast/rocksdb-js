@@ -71,9 +71,10 @@ struct TransactionLogFile final {
 	uint8_t version = 1;
 
 	/**
-	 * ?????
+	 * The timestamp of the most recent transaction log batch that has been
+	 * written to the file.
 	 */
-	double fileTimestamp;
+	double timestamp;
 
 	/**
 	 * The size of the file in bytes.
@@ -107,8 +108,13 @@ struct TransactionLogFile final {
 	/**
 	 * Opens the log file for reading and writing.
 	 */
- 	void open();
+ 	void open(const double latestTimestamp);
 
+	/**
+	 * Closes the log file and removes it.
+	 *
+	 * @returns `true` if the file was removed, `false` if it did not exist.
+	 */
 	bool removeFile();
 
 	/**
