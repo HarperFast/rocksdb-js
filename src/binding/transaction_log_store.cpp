@@ -1,5 +1,4 @@
 #include <chrono>
-#include <sstream>
 #include <vector>
 #include "macros.h"
 #include "transaction_log_store.h"
@@ -71,9 +70,8 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 		// ensure the directory exists before creating the file (should already exist)
 		std::filesystem::create_directories(this->path);
 
-		std::ostringstream oss;
-		oss << this->name << "." << sequenceNumber;
-		auto logFilePath = this->path / (oss.str() + ".txnlog");
+		std::string filename = std::to_string(sequenceNumber) + ".txnlog";
+		auto logFilePath = this->path / filename;
 		logFile = new TransactionLogFile(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
 		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
@@ -339,10 +337,13 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		if (logFile->size == sizeBefore) {
 			DEBUG_LOG("%p TransactionLogStore::commit No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
-		}
-		// if we've reached or exceeded the max size, rotate to the next file
-		else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
+		} else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
+			// we've reached or exceeded the max size, rotate to the next file
 			DEBUG_LOG("%p TransactionLogStore::commit Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			this->currentSequenceNumber = this->nextSequenceNumber++;
+		} else if (!batch.isComplete()) {
+			// we've written some entries, but the batch is not complete, rotate to the next file
+			DEBUG_LOG("%p TransactionLogStore::commit Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
 		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
@@ -421,34 +422,17 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			auto filePath = fileEntry.path();
 			auto filename = filePath.filename().string();
 
-			// parse sequence number: {dirName}.{sequenceNumber}.txnlog
-			size_t lastDot = filename.find_last_of('.');
-			if (lastDot == std::string::npos) {
-				// this should never happen since we know the file is a `.txnlog` file
-				continue;
-			}
-
-			size_t secondLastDot = filename.find_last_of('.', lastDot - 1);
-			if (secondLastDot == std::string::npos) {
-				// no sequence number
-				continue;
-			}
-
-			if (filename.substr(0, secondLastDot) != dirName) {
-				// filename doesn't match the directory name
-				continue;
-			}
-
-			std::string sequenceNumberStr = filename.substr(secondLastDot + 1, lastDot - secondLastDot - 1);
+			std::string sequenceNumberStr = filename.substr(0, filename.size() - 7);
 			uint32_t sequenceNumber = 0;
 
 			try {
 				sequenceNumber = std::stoul(sequenceNumberStr);
-			} catch (const std::exception& e) {
+			} catch (...) {
 				DEBUG_LOG(
 					"DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
 					filename.c_str()
 				)
+				continue;
 			}
 
 			// check if the file is too old

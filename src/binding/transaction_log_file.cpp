@@ -1,4 +1,5 @@
 #include <cmath>
+#include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
 // include platform-specific implementation
@@ -47,6 +48,9 @@ void TransactionLogFile::open() {
 		this->writeToFile(buffer, 4);
 		writeUint8(buffer, this->version);
 		this->writeToFile(buffer, 1);
+		this->fileTimestamp = getMonotonicTimestamp(); // temporary!
+		writeDoubleBE(buffer, this->fileTimestamp);
+		this->writeToFile(buffer, 8);
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str())
@@ -59,12 +63,14 @@ void TransactionLogFile::open() {
 			throw std::runtime_error("Failed to read version from file: " + this->path.string());
 		}
 
+		// token
 		uint32_t token = readUint32BE(buffer);
 		if (token != TRANSACTION_LOG_TOKEN) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Invalid transaction log file: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Invalid transaction log file: " + this->path.string());
 		}
 
+		// version
 		result = this->readFromFile(buffer, 1, 4);
 		if (result < 0) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str())
@@ -76,6 +82,17 @@ void TransactionLogFile::open() {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str())
 			throw std::runtime_error("Unsupported transaction log file version: " + std::to_string(this->version));
 		}
+
+		// file timestamp
+		result = this->readFromFile(buffer, 8, 5);
+		if (result < 0) {
+			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read file timestamp from file: %s\n", this, this->path.string().c_str())
+			throw std::runtime_error("Failed to read file timestamp from file: " + this->path.string());
+		}
+		this->fileTimestamp = readDoubleBE(buffer);
+
+		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, fileTimestamp=%f)\n",
+			this, this->path.string().c_str(), this->size, this->version, this->fileTimestamp)
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%u)\n",
@@ -103,20 +120,27 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	// check if the file is at or over the max size
 	if (maxFileSize > 0) {
 		if (this->size >= maxFileSize) {
-			DEBUG_LOG("%p TransactionLogFile::writeEntries File already at max size (%u >= %u), deferring to next file\n",
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 File already at max size (%u >= %u), deferring to next file\n",
 				this, this->size, maxFileSize)
 			return;
 		}
 
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Calculating how many entries we can fit (size=%u, maxFileSize=%u)\n", this, this->size, maxFileSize)
+
 		// calculate how many entries we can fit
+		auto availableSpace = maxFileSize - this->size;
 		for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
 			auto& entry = batch.entries[i];
-			if (this->size > TRANSACTION_LOG_FILE_HEADER_SIZE && this->size + totalSizeToWrite + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size > maxFileSize) {
+			auto spaceNeeded = totalSizeToWrite + entry->size;
+			// always write the first entry
+			if (i > batch.currentEntryIndex && spaceNeeded > availableSpace) {
 				// entry won't fit
+				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u won't fit (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace)
 				break;
 			}
-			numEntriesToWrite++;
-			totalSizeToWrite += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry->size;
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u fits (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace)
+			++numEntriesToWrite;
+			totalSizeToWrite += entry->size;
 		}
 	} else {
 		// unlimited space, write all entries
@@ -124,44 +148,47 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	}
 
 	if (numEntriesToWrite == 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntries No entries to write\n", this)
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this)
 		return;
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%u bytes)\n", this, numEntriesToWrite, totalSizeToWrite)
+
 	// allocate buffers for the transaction headers and iovecs
-	auto txnHeaders = std::make_unique<char[]>(numEntriesToWrite * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-	auto numIovecs = numEntriesToWrite * 2;
-	auto iovecs = std::make_unique<iovec[]>(numIovecs);
+	auto iovecs = std::make_unique<iovec[]>(numEntriesToWrite);
 	size_t iovecsIndex = 0;
 
 	// write the transaction headers and entry data to the iovecs
-	for (int i = 0; i < numEntriesToWrite; i++) {
+	for (uint32_t i = 0; i < numEntriesToWrite; ++i) {
 		auto& entry = batch.entries[batch.currentEntryIndex];
+		auto data = entry->data.get();
 
-		// write the transaction header
-		auto txnHeader = txnHeaders.get() + (batch.currentEntryIndex * TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-		writeDoubleBE(txnHeader, batch.timestamp); // actual timestamp
-		writeUint32BE(txnHeader + 8, static_cast<uint32_t>(entry->size)); // data length
-		writeUint8(txnHeader + 12, 0); // flags
-
-		// add the transaction header to the iovecs
-		iovecs[iovecsIndex++] = {txnHeader, TRANSACTION_LOG_ENTRY_HEADER_SIZE};
+		// Write the timestamp into the transaction header
+		// Note: the rest of the transaction header is written in the
+		// `TransactionLogEntry` constructor
+		writeDoubleBE(data, batch.timestamp); // actual timestamp
+		if (batch.currentEntryIndex == batch.entries.size() - 1) {
+			// Last entry in batch, set the last entry flag
+			uint8_t flags = readUint8(data + 12);
+			writeUint8(data + 12, flags | TRANSACTION_LOG_ENTRY_LAST_FLAG);
+		}
 
 		// add the entry data to the iovecs
-		iovecs[iovecsIndex++] = {entry->data.get(), entry->size};
-		batch.currentEntryIndex++;
+		iovecs[iovecsIndex++] = {data, entry->size};
+
+		++batch.currentEntryIndex;
 	}
 
 	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
-	if (bytesWritten <= 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntries ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
+	if (bytesWritten < 0) {
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str())
 		throw std::runtime_error("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Wrote %lld bytes to log file, batch state: entryIndex=%zu, bytesWritten=%zu\n",
-		this, bytesWritten, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
 	this->size += static_cast<uint32_t>(bytesWritten);
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
+		this, bytesWritten, this->size, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
 
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {

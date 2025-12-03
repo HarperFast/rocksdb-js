@@ -13,6 +13,11 @@
 
 namespace rocksdb_js {
 
+#define EXPORT_CONSTANT(constant) \
+	napi_value constant##Value; \
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, constant, &constant##Value)); \
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, #constant, constant##Value));
+
 /**
  * The number of active `rocksdb-js` modules.
  *
@@ -32,15 +37,15 @@ NAPI_MODULE_INIT() {
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
 
-	[[maybe_unused]] uint32_t refCount = moduleRefCount.fetch_add(1) + 1;
-	DEBUG_LOG("Binding::Init Module ref count: %u\n", refCount);
+	[[maybe_unused]] int32_t refCount = ++moduleRefCount;
+	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
 	// initialize the registry
 	DBRegistry::Init();
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
-		int32_t newRefCount = moduleRefCount.fetch_sub(1) - 1;
+		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
 			rocksdb_js::DBRegistry::PurgeAll();
@@ -48,7 +53,7 @@ NAPI_MODULE_INIT() {
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n")
 		} else {
-			DEBUG_LOG("Binding::Init Skipping cleanup, %u remaining instances\n", newRefCount)
+			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount)
 		}
 	}, nullptr));
 
@@ -71,13 +76,10 @@ NAPI_MODULE_INIT() {
 	napi_value constants;
 	napi_create_object(env, &constants);
 
-	napi_value transactionLogToken, transactionLogFileHeaderSize, transactionLogEntryHeaderSize;
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_TOKEN, &transactionLogToken));
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_FILE_HEADER_SIZE, &transactionLogFileHeaderSize));
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, TRANSACTION_LOG_ENTRY_HEADER_SIZE, &transactionLogEntryHeaderSize));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_TOKEN", transactionLogToken));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_FILE_HEADER_SIZE", transactionLogFileHeaderSize));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, "TRANSACTION_LOG_ENTRY_HEADER_SIZE", transactionLogEntryHeaderSize));
+	EXPORT_CONSTANT(TRANSACTION_LOG_TOKEN)
+	EXPORT_CONSTANT(TRANSACTION_LOG_FILE_HEADER_SIZE)
+	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_HEADER_SIZE)
+	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_LAST_FLAG)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	return exports;

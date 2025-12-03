@@ -2,7 +2,9 @@
 #define __TRANSACTION_LOG_ENTRY_H__
 
 #include <memory>
+#include "transaction_log_file.h"
 #include "transaction_log_store.h"
+#include "util.h"
 
 namespace rocksdb_js {
 
@@ -32,13 +34,20 @@ struct TransactionLogEntry final {
 	 */
 	TransactionLogEntry(
 		std::shared_ptr<TransactionLogStore> store,
-		std::unique_ptr<char[]> data,
+		char* data,
 		uint32_t size
 	) :
-		store(store),
-		data(std::move(data)),
-		size(size)
-	{}
+		store(store)
+	{
+		this->size = size + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+		this->data = std::make_unique<char[]>(this->size);
+
+		// write the transaction header (13 bytes)
+		// skip timestamp for now, it will be written when the batch is written
+		writeUint32BE(this->data.get() + 8, static_cast<uint32_t>(size)); // data length
+		writeUint8(this->data.get() + 12, 0); // flags
+		::memcpy(this->data.get() + 13, data, size);
+	}
 };
 
 /**
@@ -50,12 +59,6 @@ struct TransactionLogEntryBatch final {
 	 * The timestamp for this batch.
 	 */
 	double timestamp;
-
-	/**
-	 * The timestamp of the earliest active transaction associated with this
-	 * batch's store.
-	 */
-	double earliestActiveTransactionTimestamp = 0;
 
 	/**
 	 * The vector of entries to write.

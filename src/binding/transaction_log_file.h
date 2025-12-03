@@ -4,7 +4,6 @@
 #include <chrono>
 #include <filesystem>
 #include <mutex>
-#include "transaction_log_entry.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -34,12 +33,16 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
-#define TRANSACTION_LOG_FILE_HEADER_SIZE 5
+#define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
+#define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
 
 namespace rocksdb_js {
 
+// forward declarations
 struct MemoryMap;
+struct TransactionLogEntryBatch;
+
 struct TransactionLogFile final {
 	/**
 	 * The path to the transaction log file.
@@ -55,18 +58,23 @@ struct TransactionLogFile final {
 	/**
 	 * The Windows file handle for the transaction log file.
 	 */
-	HANDLE fileHandle;
+	HANDLE fileHandle = INVALID_HANDLE_VALUE;
 #else
 	/**
 	 * The POSIX file descriptor for the transaction log file.
 	 */
-	int fd;
+	int fd = -1;
 #endif
 
 	/**
 	 * The version of the file format.
 	 */
 	uint8_t version = 1;
+
+	/**
+	 * ?????
+	 */
+	double fileTimestamp;
 
 	/**
 	 * The size of the file in bytes.

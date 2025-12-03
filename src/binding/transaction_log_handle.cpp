@@ -20,7 +20,7 @@ TransactionLogHandle::~TransactionLogHandle() {
 
 void TransactionLogHandle::addEntry(
 	uint32_t transactionId,
-	std::unique_ptr<char[]> data,
+	char* data,
 	uint32_t size
 ) {
 	auto dbHandle = this->dbHandle.lock();
@@ -48,7 +48,7 @@ void TransactionLogHandle::addEntry(
 		throw std::runtime_error("Log already bound to a transaction");
 	}
 
-	auto entry = std::make_unique<TransactionLogEntry>(store, std::move(data), size);
+	auto entry = std::make_unique<TransactionLogEntry>(store, data, size);
 	txnHandle->addLogEntry(std::move(entry));
 }
 

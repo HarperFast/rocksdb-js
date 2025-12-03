@@ -37,7 +37,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	/**
 	 * Whether to disable WAL.
 	 */
-	bool disableWAL;
+	bool disableWAL = false;
 
 	/**
 	 * The node environment.

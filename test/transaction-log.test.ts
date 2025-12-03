@@ -22,7 +22,7 @@ describe('Transaction Log', () => {
 			skipOpen: true
 		}, async ({ db, dbPath }) => {
 			await mkdir(join(dbPath, 'transaction_logs', 'foo'), { recursive: true });
-			await writeFile(join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog'), '');
+			await writeFile(join(dbPath, 'transaction_logs', 'foo', '1.txnlog'), '');
 
 			db.open();
 
@@ -269,7 +269,7 @@ describe('Transaction Log', () => {
 				log.addEntry(value, txn.id);
 			});
 
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			const info = parseTransactionLog(logPath);
 			expect(info.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
 			expect(info.version).toBe(1);
@@ -292,7 +292,7 @@ describe('Transaction Log', () => {
 				log.addEntry(valueC, txn.id);
 			});
 
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			const info = parseTransactionLog(logPath);
 			expect(info.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10) * 3);
 			expect(info.version).toBe(1);
@@ -329,7 +329,7 @@ describe('Transaction Log', () => {
 
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
-			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog', 'foo.3.txnlog']);
+			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog', '3.txnlog']);
 			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(20);
 			expect(queryResults[0].data).toEqual(value);
@@ -337,29 +337,29 @@ describe('Transaction Log', () => {
 			expect(queryResults[19].data).toEqual(value);
 			expect(log.getLogFileSize()).toBe(2275);
 
-			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
-			const log3Path = join(dbPath, 'transaction_logs', 'foo', 'foo.3.txnlog');
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
+			const log3Path = join(dbPath, 'transaction_logs', 'foo', '3.txnlog');
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 			const info3 = parseTransactionLog(log3Path);
 
-			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
-			expect(info1.entries.length).toBe(8);
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 9);
+			expect(info1.entries.length).toBe(9);
 			for (const { length, data } of info1.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
 			}
 
-			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
-			expect(info2.entries.length).toBe(8);
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 9);
+			expect(info2.entries.length).toBe(9);
 			for (const { length, data } of info2.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
 			}
 
-			expect(info3.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4);
-			expect(info3.entries.length).toBe(4);
+			expect(info3.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 2);
+			expect(info3.entries.length).toBe(2);
 			for (const { length, data } of info3.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
@@ -381,8 +381,8 @@ describe('Transaction Log', () => {
 			const totalSize = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 2000;
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
-			expect(logFiles).toEqual(['foo.1.txnlog']);
-			expect(statSync(join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog')).size).toBe(totalSize);
+			expect(logFiles).toEqual(['1.txnlog']);
+			expect(statSync(join(dbPath, 'transaction_logs', 'foo', '1.txnlog')).size).toBe(totalSize);
 		}));
 
 		it('should not commit the log if the transaction is aborted', () => dbRunner(async ({ db, dbPath }) => {
@@ -394,7 +394,7 @@ describe('Transaction Log', () => {
 				txn.abort();
 			});
 
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			expect(existsSync(logPath)).toBe(false);
 		}));
 
@@ -411,7 +411,7 @@ describe('Transaction Log', () => {
 				log.addEntry(valueB, txn.id);
 			});
 
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			const info = parseTransactionLog(logPath);
 			expect(info.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10) * 2);
 			expect(info.version).toBe(1);
@@ -437,10 +437,10 @@ describe('Transaction Log', () => {
 
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
-			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
-			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 
@@ -476,10 +476,10 @@ describe('Transaction Log', () => {
 
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
-			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
-			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 
@@ -490,6 +490,72 @@ describe('Transaction Log', () => {
 
 			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100);
 			expect(info2.entries.length).toBe(1);
+			expect(info2.entries[0].length).toBe(100);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+		}));
+
+		it('should continue batch in next file', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				for (let i = 0; i < 15; i++) {
+					log.addEntry(value, txn.id);
+				}
+			});
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
+			expect(info1.entries.length).toBe(8);
+			expect(info1.entries[0].length).toBe(100);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 7);
+			expect(info2.entries.length).toBe(7);
+			expect(info2.entries[0].length).toBe(100);
+			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+		}));
+
+		it('should be able to rotate with entries that span a transaction', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			for (let i = 0; i < 5; i++) {
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					log.addEntry(value, txn.id);
+				});
+			}
+
+			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+			const logFiles = await readdir(logStorePath);
+			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
+
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
+			const info1 = parseTransactionLog(log1Path);
+			const info2 = parseTransactionLog(log2Path);
+
+			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
+			expect(info1.entries.length).toBe(8);
+			expect(info1.entries[0].length).toBe(100);
+			expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 3);
+			expect(info2.entries.length).toBe(3);
 			expect(info2.entries[0].length).toBe(100);
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 		}));
@@ -572,10 +638,10 @@ describe('Transaction Log', () => {
 
 			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 			const logFiles = await readdir(logStorePath);
-			expect(logFiles.sort()).toEqual(['foo.1.txnlog', 'foo.2.txnlog']);
+			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
-			const log1Path = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
-			const log2Path = join(dbPath, 'transaction_logs', 'foo', 'foo.2.txnlog');
+			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
 
@@ -603,7 +669,7 @@ describe('Transaction Log', () => {
 				log.addEntry(valueA, txn.id);
 			});
 
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
+			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			let info = parseTransactionLog(logPath);
 			expect(info.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
 			expect(info.version).toBe(1);
@@ -659,7 +725,7 @@ describe('Transaction Log', () => {
 			skipOpen: true
 		}, async ({ db, dbPath }) => {
 			const logDirectory = join(dbPath, 'transaction_logs', 'foo');
-			const logFile = join(logDirectory, 'foo.1.txnlog');
+			const logFile = join(logDirectory, '1.txnlog');
 			await mkdir(logDirectory, { recursive: true });
 			await writeFile(logFile, '');
 			expect(existsSync(logFile)).toBe(true);
@@ -675,7 +741,7 @@ describe('Transaction Log', () => {
 			skipOpen: true
 		}, async ({ db, dbPath }) => {
 			const fooLogDirectory = join(dbPath, 'transaction_logs', 'foo');
-			const fooLogFile = join(fooLogDirectory, 'foo.1.txnlog');
+			const fooLogFile = join(fooLogDirectory, '1.txnlog');
 			await mkdir(fooLogDirectory, { recursive: true });
 			await writeFile(fooLogFile, '');
 
@@ -700,7 +766,7 @@ describe('Transaction Log', () => {
 			skipOpen: true
 		}, async ({ db, dbPath }) => {
 			const logDirectory = join(dbPath, 'transaction_logs', 'foo');
-			const logFile = join(logDirectory, 'foo.1.txnlog');
+			const logFile = join(logDirectory, '1.txnlog');
 			await mkdir(logDirectory, { recursive: true });
 			await writeFile(logFile, '');
 

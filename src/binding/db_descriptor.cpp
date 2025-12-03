@@ -475,7 +475,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
  * Generates the next unique transaction ID for this database.
  */
 uint32_t DBDescriptor::transactionGetNextId() {
-	return this->nextTransactionId.fetch_add(1);
+	return ++this->nextTransactionId;
 }
 
 /**
@@ -1407,25 +1407,6 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
-}
-
-double DBDescriptor::getEarliestActiveTransactionTimestamp(std::shared_ptr<TransactionLogStore> store) {
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-	double earliestTimestamp = 0;
-
-	for (auto& txn : this->transactions) {
-		auto txnHandle = txn.second;
-		auto boundStore = txnHandle->boundLogStore.lock();
-		if (boundStore && boundStore.get() == store.get()) {
-			if (earliestTimestamp == 0) {
-				earliestTimestamp = txnHandle->startTimestamp;
-			} else {
-				earliestTimestamp = std::min(earliestTimestamp, txnHandle->startTimestamp);
-			}
-		}
-	}
-
-	return earliestTimestamp;
 }
 
 } // namespace rocksdb_js
