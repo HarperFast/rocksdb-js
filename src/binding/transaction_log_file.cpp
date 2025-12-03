@@ -190,33 +190,45 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
 		this, bytesWritten, this->size, batch.currentEntryIndex, batch.currentEntryBytesWritten)
 }
-const int POSITION_OF_LOG_TIMESTAMP = 5;
+
+/**
+ * Find the position of a timestamp, specifically the position where there are no transactions with an earlier timestamp
+ * @param timestamp - the timestamp to find the position of
+ * @param mapSize - the size of the memory map to search in
+ * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
+ */
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 	MemoryMap* memoryMap = getMemoryMap(mapSize);
+	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;
-	// TODO: positionByTimestampIndex should be initialized with the timestamp in the file header with a position of 0
+	// We begin by indexing the file, so we can use fast ordered std::map access O(log n). We only need to index the file
+	// that hasn't been indexed yet, so we start at the last indexed position. Note that there may be a slight benefit
+	// to using an ordered vector with binary search for faster lookups, but std::map is simpler for now is very close in performance
 	while (lastIndexedPosition < size) {
 		double entryTimestamp = readDoubleBE(mappedFile + lastIndexedPosition);
 		if (entryTimestamp == 0) {
-			// this means we have reached the end of zero-padded file (usually Windows), adjust size and break;
+			// this means we have reached the end of zero-padded file (usually Windows), adjust size and break out of the loop
 			size = lastIndexedPosition;
 			break;
 		}
 		// for the first iteration, we insert the log file timestamp at the beginning of the index
 		if (POSITION_OF_LOG_FILE_TIMESTAMP == lastIndexedPosition) {
-			positionByTimestampIndex.insert({entryTimestamp, 0}); // specifically record the log file timestamp as the first entry with a position of zero
+			// specifically record the log file timestamp as the first entry with a position of zero
+			positionByTimestampIndex.insert({entryTimestamp, 0});
 			lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
 			continue;
 			// else check that the timestamp is greater than any previously indexed timestamp,
 			// otherwise we don't record it, because we want to start at the first position with a timestamp that
 			// is greater than the requested timestamp:
 		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
-			// insert with a hint to go at the end
+			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, lastIndexedPosition});
 		}
+		// read size of the entry and move on
 		lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + lastIndexedPosition + 8);
 	}
+	// now do the actual search: just a search for the lower bound
 	auto it = positionByTimestampIndex.lower_bound(timestamp);
 	return it == positionByTimestampIndex.end() ? 0xFFFFFFFF : it->second;
 }

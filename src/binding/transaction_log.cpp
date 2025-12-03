@@ -209,8 +209,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
 	napi_value result;
-	if (!memoryMap)
-	{
+	if (!memoryMap) {
+		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 		return result;
 	}
@@ -238,7 +238,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// However, I am doubtful this is really implemented effectively in V8, these external
 	// memory blocks do still seem to induce extra garbage collection. Still we call this,
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
-	// better.
+	// better, and hopefully it helps.
 	napi_adjust_external_memory(env, -memoryMap->fileSize, &memoryUsage);
 	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
 	return result;

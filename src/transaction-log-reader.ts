@@ -23,7 +23,7 @@ const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value: function({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): Iterable<TransactionEntry> & Iterator<TransactionEntry> {
+	value: function({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
 		const transactionLog = this;
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
@@ -76,7 +76,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}
 		let foundExactStart = false;
 		return {
-			[Symbol.iterator](): Iterable<TransactionEntry> & Iterator<TransactionEntry> { return this; },
+			[Symbol.iterator](): IterableIterator<TransactionEntry> { return this; },
 			next() {
 				let timestamp: number;
 				if (position >= size) {

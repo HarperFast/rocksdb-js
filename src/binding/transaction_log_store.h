@@ -32,7 +32,7 @@ struct PositionHandle {
 	/**
 	 * The full position of the last committed transaction, combining the sequence
 	 * with the offset within the file, as a single 64-bit word that can be accessed
-	 * from JS.
+	 * from JS. Maybe we should use a union here?
 	 */
 	uint64_t position;
 	/**
@@ -168,6 +168,8 @@ struct TransactionLogStore final {
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
 	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
+	// TODO: We should probably implement a databaseFlushStart so we can pin the current flush sequence number in memory for better accuracy
+	// once we have added support for flush events
 
 	/**
 	 * Memory maps the transaction log file for the given sequence number.

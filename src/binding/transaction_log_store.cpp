@@ -23,7 +23,7 @@ TransactionLogStore::TransactionLogStore(
 	positionHandle = new PositionHandle();
 	for (int i = 0; i < 20; i++) { // initialize recent commits to not match until values are entered
 		recentlyCommittedSequencePositions[i].position = 0;
-		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match commit
+		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
 	}
 }
 
@@ -76,6 +76,7 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
 		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
 		if (this->uncommittedTransactionPositions.empty()) {
+			// initialize with the first position in the log file
 			this->uncommittedTransactionPositions.insert(this->nextSequencePosition);
 		}
 	}
@@ -124,7 +125,7 @@ PositionHandle* TransactionLogStore::getLastCommittedPosition() {
 }
 
 uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
-	std::lock_guard<std::mutex> lock(this->dataSetsMutex); // TODO: I think we probably want a finer grained mutex for querying/reading
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	uint32_t sequenceNumber = this->currentSequenceNumber;
 	bool isCurrent = true;
 	uint32_t positionInLogFile = 0;
@@ -137,6 +138,8 @@ uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
 		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size);
+		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
+		// we are in the correct log file to start searching
 		if (positionInLogFile > 0) {
 			if (positionInLogFile == 0xFFFFFFFF && sequenceNumber < this->currentSequenceNumber) {
 				// beyond the end of this log file, revert to next one (because it exists)
@@ -368,11 +371,13 @@ void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::Seque
 	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
 	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
 	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
-	// an exact map of every pairing, but enough that we won't lose more than half of what has to be replayed since the last flush
+	// an exact map of every pairing, and we don't need to. We don't need to know the exact rocks sequence number, we just
+	// need a sequence number that is not greater than the point of the flush. But we want to record enough that we
+	// won't lose more than half of what has to be replayed since the last flush.
 	unsigned int count = nextSequencePositionsCount++;
 	int index = 0;
 	for (; index < 19; index++) {
-	    if ((count >> index) & 1) break;
+	    if ((count >> index) & 1) break; // will break 50% of the time at each iteration
 	}
 	// record in the array
 	recentlyCommittedSequencePositions[index] = sequencePosition;

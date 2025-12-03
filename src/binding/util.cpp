@@ -474,12 +474,12 @@ double getMonotonicTimestamp() {
 
 	double last = lastTimestamp.load(std::memory_order_acquire);
 	if (result <= last) {
-		result = (double) ((uint64_t)result + 1);
+		result = std::nextafter(last, std::numeric_limits<double>::infinity());
 	}
 
 	while (!lastTimestamp.compare_exchange_strong(last, result, std::memory_order_acq_rel)) {
 		if (result <= last) {
-			result = (double) ((uint64_t)result + 1);
+			result = std::nextafter(last, std::numeric_limits<double>::infinity());
 		}
 	}
 

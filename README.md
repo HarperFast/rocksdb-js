@@ -730,24 +730,27 @@ await db.transaction(async (txn) => {
 });
 ```
 
-Note that the `TransactionLog` class also has internal mathods `_getMemoryMapOfFile`, `_getLogFileSize`, `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in any version.
+Note that the `TransactionLog` class also has internal mathods `_getMemoryMapOfFile`, `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in any version.
 
 
-#### `log.query(options?)`
+#### `log.query(options?): IterableIterator<TransactionLogEntry>`
 
-Returns an iterator that streams all log entries for the given filter.
+Returns an iterable/iterator that streams all log entries for the given filter.
 
 - `options: object`
   - `start?: number` The transaction start timestamp.
   - `end?: string` The transction end timestamp.
-  - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction with the given start timestamp. By default all transactions equal to or greater than the start timestamp will be included.
-  - `readUncommitted?: boolean` When `true`, this will include uncommitted transaction entries. Normally transaction entries that haven't finished committed are not included.
+  - `exclusiveStart?: boolean` When `true`, this will only match transactions with timestamps after the start timestamp.
+  - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction with the given start timestamp. Once the specified transaction is found, all subsequent transactions will be returned (regardless of whether their timestamp comes before the `start` time). This can be combined with `exactStart`, finding the specified transaction, and returning all transactions that follow. By default, all transactions equal to or greater than the start timestamp will be included.
+  - `readUncommitted?: boolean` When `true`, this will include uncommitted transaction entries. Normally transaction entries that haven't finished committed are not included. This is particularly useful for replaying transaction logs on startup where many entries may have been written to the log but are no longer considered committed if they were not flushed to disk.
 
 The iterator produces an object with the log entry timestamp and data.
 
 - `object`
   - `data: Buffer` The entry data.
   - `timestamp: number` The entry timestamp used to collate entries by
+    transaction.
+  - `endTxn: boolean` This is `true` when the entry is the last entry in a
     transaction.
 
 ```typescript
@@ -764,12 +767,17 @@ for (const entry of rangeIter) {
 }
 ```
 
+#### `log.getLogFileSize(sequenceNumber?: number): number`
+
+Returns the size of the given transaction log sequence file in bytes. Omit the sequence number to get the total size of
+all the transaction log sequence files for this log.
+
 ### Transaction Log Parser
 
 #### `parseTransactionLog(file)`
 
-In general, you should use `logReader.query()` to query the transaction log, however
-if you need to load an entire transaction log into memory, you can use the
+In general, you should use `log.query()` to query the transaction log, however,
+if you need to load an entire transaction log into memory and want detailed information about entries, you can use the
 `parseTransactionLog()` utility function.
 
 ```typescript
