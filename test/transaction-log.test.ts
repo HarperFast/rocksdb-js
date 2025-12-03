@@ -233,7 +233,7 @@ describe('Transaction Log', () => {
 				expect(count2).toBe(10);
 			}
 		}));
-		it.skip('should be able to reuse a query iterator to resume reading a transaction log with multiple entries', () => dbRunner({
+		it('should be able to reuse a query iterator to resume reading a transaction log with multiple entries', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
 			let log = db.useLog('foo');
@@ -279,6 +279,12 @@ describe('Transaction Log', () => {
 			expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[0].length).toBe(10);
 			expect(info.entries[0].data).toEqual(value);
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(1);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(queryResults[0].endTxn).toBe(true);
 		}));
 
 		it('should add multiple small entries within a single file', () => dbRunner(async ({ db, dbPath }) => {
@@ -312,8 +318,11 @@ describe('Transaction Log', () => {
 			const queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(3);
 			expect(queryResults[0].data).toEqual(valueA);
+			expect(queryResults[0].endTxn).toBe(false);
 			expect(queryResults[1].data).toEqual(valueB);
+			expect(queryResults[1].endTxn).toBe(false);
 			expect(queryResults[2].data).toEqual(valueC);
+			expect(queryResults[2].endTxn).toBe(true);
 		}));
 
 		it('should rotate to next sequence number', () => dbRunner({
@@ -398,6 +407,8 @@ describe('Transaction Log', () => {
 
 			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			expect(existsSync(logPath)).toBe(false);
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(0);
 		}));
 
 		it('should add multiple entries from separate transactions', () => dbRunner(async ({ db, dbPath }) => {
@@ -424,6 +435,9 @@ describe('Transaction Log', () => {
 			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(2);
 		}));
 
 		it('should rotate if not enough room for the next transaction header', () => dbRunner({
@@ -494,6 +508,9 @@ describe('Transaction Log', () => {
 			expect(info2.entries.length).toBe(1);
 			expect(info2.entries[0].length).toBe(100);
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(2);
 		}));
 
 		it('should continue batch in next file', () => dbRunner({
@@ -525,6 +542,11 @@ describe('Transaction Log', () => {
 			expect(info2.entries.length).toBe(7);
 			expect(info2.entries[0].length).toBe(100);
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(15);
+			expect(queryResults[0].endTxn).toBe(false);
+			expect(queryResults[14].endTxn).toBe(true);
 		}));
 
 		it('should be able to rotate with entries that span a transaction', () => dbRunner({
@@ -560,6 +582,9 @@ describe('Transaction Log', () => {
 			expect(info2.entries.length).toBe(3);
 			expect(info2.entries[0].length).toBe(100);
 			expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(11);
 		}));
 
 		it('should write to same log from multiple workers', () => dbRunner(async ({ db, dbPath }) => {
@@ -697,6 +722,9 @@ describe('Transaction Log', () => {
 			expect(info.entries[1].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(info.entries[1].length).toBe(10);
 			expect(info.entries[1].data).toEqual(valueB);
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(2);
 		}));
 
 		it.skip('should write earliest timestamp in file headers', () => dbRunner({
