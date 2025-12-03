@@ -598,7 +598,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	std::string transactionLogsPath;
+	std::string transactionLogsPath = (std::filesystem::path(path) / "transaction_logs").string();
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
 
 	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB

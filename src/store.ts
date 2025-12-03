@@ -21,7 +21,6 @@ import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperdb/extended-iterable';
-import { join } from 'node:path';
 import { parseDuration } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;
@@ -228,9 +227,9 @@ export class Store {
 	transactionLogRetention?: number | string;
 
 	/**
-	 * The path to the transaction logs directory..
+	 * The path to the transaction logs directory.
 	 */
-	transactionLogsPath: string;
+	transactionLogsPath?: string;
 
 	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
@@ -278,7 +277,7 @@ export class Store {
 		this.transactionLogMaxAgeThreshold = options?.transactionLogMaxAgeThreshold;
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
-		this.transactionLogsPath = join(path, 'transaction_logs');
+		this.transactionLogsPath = options?.transactionLogsPath;
 		this.writeKey = writeKey;
 	}
 
@@ -552,7 +551,7 @@ export class Store {
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
-			transactionLogsPath: join(this.path, 'transaction_logs')
+			transactionLogsPath: this.transactionLogsPath
 		});
 
 		return false;
