@@ -129,7 +129,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 			auto& entry = batch.entries[i];
 			auto spaceNeeded = totalSizeToWrite + entry->size;
 			// always write the first entry
-			if (i > batch.currentEntryIndex && spaceNeeded > availableSpace) {
+			if ((this->size > TRANSACTION_LOG_FILE_HEADER_SIZE || i > batch.currentEntryIndex) && spaceNeeded > availableSpace) {
 				// entry won't fit
 				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u won't fit (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace)
 				break;
