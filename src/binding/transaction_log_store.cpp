@@ -58,10 +58,10 @@ void TransactionLogStore::close() {
 	this->purge();
 }
 
-TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
+std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
 	std::unique_lock<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(sequenceNumber);
-	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+	std::shared_ptr<TransactionLogFile> logFile = it != this->sequenceFiles.end() ? it->second : nullptr;
 
 	if (!logFile) {
 		DEBUG_LOG("%p TransactionLogStore::getLogFile Store path \"%s\" (seq=%u) no log file found, creating\n",
@@ -72,8 +72,8 @@ TransactionLogFile* TransactionLogStore::getLogFile(const uint32_t sequenceNumbe
 
 		std::string filename = std::to_string(sequenceNumber) + ".txnlog";
 		auto logFilePath = this->path / filename;
-		logFile = new TransactionLogFile(logFilePath, sequenceNumber);
-		this->sequenceFiles[sequenceNumber] = std::unique_ptr<TransactionLogFile>(logFile);
+		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber);
+		this->sequenceFiles[sequenceNumber] = logFile;
 		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
 		if (this->uncommittedTransactionPositions.empty()) {
 			// initialize with the first position in the log file
@@ -91,7 +91,7 @@ MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 	if (!logFile) {
 		return nullptr;
 	}
-	logFile->open();
+	logFile->open(this->latestTimestamp);
 	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
 		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
 		logFile->size); // otherwise it is frozen, use the file size
@@ -103,7 +103,7 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 		// get the total size of all log files
 		uint64_t size = 0;
 		for (auto& [key, value] : this->sequenceFiles) {
-			value->open();
+			value->open(this->latestTimestamp);
 			size += value->size;
 		}
 		return size;
@@ -114,7 +114,7 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 		if (!logFile) {
 			return 0;
 		}
-		logFile->open();
+		logFile->open(this->latestTimestamp);
 		return logFile->size;
 	}
 }
@@ -224,14 +224,14 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
-	auto logFile = std::make_unique<TransactionLogFile>(path, sequenceNumber);
+	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
+	this->sequenceFiles[sequenceNumber] = logFile;
 
 	if (sequenceNumber >= this->currentSequenceNumber) {
-		logFile->open();
+		logFile->open(this->latestTimestamp);
 		this->currentSequenceNumber = sequenceNumber;
 		nextSequencePosition = ((uint64_t) sequenceNumber << 32) | logFile->size;
 	}
-	this->sequenceFiles[sequenceNumber] = std::move(logFile);
 
 	// update next sequence number to be one higher than the highest existing
 	if (sequenceNumber > this->nextSequenceNumber) {
@@ -249,9 +249,15 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	uint64_t sequencePosition = this->nextSequencePosition;
+
+	if (batch.timestamp > this->latestTimestamp) {
+		DEBUG_LOG("%p TransactionLogStore::commit Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp)
+		this->latestTimestamp = batch.timestamp;
+	}
+
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
-		TransactionLogFile* logFile = nullptr;
+		std::shared_ptr<TransactionLogFile> logFile = nullptr;
 
 		// get the current log file and rotate if needed
 		while (logFile == nullptr && this->currentSequenceNumber) {
@@ -260,7 +266,7 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			// we found a log file, check if it's already at max size
 			if (this->maxFileSize == 0 || logFile->size < this->maxFileSize) {
 				try {
-					logFile->open();
+					logFile->open(this->latestTimestamp);
 					break;
 				} catch (const std::exception& e) {
 					DEBUG_LOG("%p TransactionLogStore::commit Failed to open transaction log file: %s\n", this, e.what())
@@ -399,7 +405,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 		std::ostringstream oss;
 		oss << this->path << ".txnstate";
 		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
-		flushedTrackerFile->open();
+		flushedTrackerFile->open(this->latestTimestamp);
 	}
 	// save the position of fully flushed transaction logs (future replay will start from here)
 	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);

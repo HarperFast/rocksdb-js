@@ -727,7 +727,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(2);
 		}));
 
-		it.skip('should write earliest timestamp in file headers', () => dbRunner({
+		it('should write earliest timestamp in file headers', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
@@ -735,34 +735,51 @@ describe('Transaction Log', () => {
 			await Promise.all([
 				db.transaction(async (txn) => {
 					// this transaction started first, but will take longer
-					await delay(500);
-					log.addEntry(Buffer.alloc(990, 'a'), txn.id);
+					await delay(100);
+					log.addEntry(Buffer.alloc(990, 'a'), txn.id); // 2.txnlog
 				}),
 				db.transaction(async (txn) => {
-					log.addEntry(Buffer.alloc(990, 'a'), txn.id);
+					log.addEntry(Buffer.alloc(990, 'a'), txn.id); // 1.txnlog
 				}),
 			]);
-
-			const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-			const logFiles = await readdir(logStorePath);
-			expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
 			const info1 = parseTransactionLog(log1Path);
 			const info2 = parseTransactionLog(log2Path);
+			expect(info1.timestamp).toBe(info2.timestamp);
 
-			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 990);
-			expect(info1.entries.length).toBe(1);
-			expect(info1.entries[0].length).toBe(990);
-			expect(info1.entries[0].data).toEqual(Buffer.alloc(990, 'a'));
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(990, 'a'), txn.id); // 3.txnlog
+			});
+			const log3Path = join(dbPath, 'transaction_logs', 'foo', '3.txnlog');
+			const info3 = parseTransactionLog(log3Path);
+			expect(info3.timestamp).toBeGreaterThan(info2.timestamp);
 
-			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 990);
-			expect(info2.entries.length).toBe(1);
-			expect(info2.entries[0].length).toBe(990);
-			expect(info2.entries[0].data).toEqual(Buffer.alloc(990, 'a'));
+			await Promise.all([
+				db.transaction(async (txn) => {
+					// this transaction started first, but will take longer
+					await delay(200);
+					log.addEntry(Buffer.alloc(990, 'a'), txn.id); // 6.txnlog
+				}),
+				db.transaction(async (txn) => {
+					log.addEntry(Buffer.alloc(990, 'a'), txn.id); // 4.txnlog
+				}),
+				db.transaction(async (txn) => {
+					await delay(100);
+					log.addEntry(Buffer.alloc(990, 'a'), txn.id); // 5.txnlog
+				}),
+			]);
 
-			expect(info1.fileTimestamp).toBeLessThan(info2.fileTimestamp);
+			const log4Path = join(dbPath, 'transaction_logs', 'foo', '4.txnlog');
+			const log5Path = join(dbPath, 'transaction_logs', 'foo', '5.txnlog');
+			const log6Path = join(dbPath, 'transaction_logs', 'foo', '6.txnlog');
+			const info4 = parseTransactionLog(log4Path);
+			const info5 = parseTransactionLog(log5Path);
+			const info6 = parseTransactionLog(log6Path);
+			expect(info4.timestamp).toBeGreaterThan(info3.timestamp);
+			expect(info5.timestamp).toBeGreaterThan(info4.timestamp);
+			expect(info6.timestamp).toBe(info5.timestamp);
 		}));
 
 		it('should error if the log name is invalid', () => dbRunner(async ({ db }) => {

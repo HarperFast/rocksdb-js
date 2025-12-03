@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <map>
 #include <set>
+#include <memory>
 #include <mutex>
 #include <atomic>
 #include <functional>
@@ -48,6 +49,12 @@ struct TransactionLogStore final {
 	std::string name;
 
 	/**
+	 * The timestamp of the most recent transaction log batch being written.
+	 * This value is used in the transaction log file header timestamp.
+	 */
+	double latestTimestamp = 0;
+
+	/**
 	 * The directory containing the transaction store's sequence log files.
 	 */
 	std::filesystem::path path;
@@ -83,7 +90,7 @@ struct TransactionLogStore final {
 	/**
 	 * The map of sequence numbers to transaction log files.
 	 */
-	std::map<uint32_t, std::unique_ptr<TransactionLogFile>> sequenceFiles;
+	std::map<uint32_t, std::shared_ptr<TransactionLogFile>> sequenceFiles;
 
 	/**
 	 * The mutex to protect writing with the transaction log store.
@@ -241,7 +248,7 @@ private:
 	 * @param sequenceNumber The sequence number of the log file to open.
 	 * @returns The log file.
 	 */
-	TransactionLogFile* getLogFile(const uint32_t sequenceNumber);
+	std::shared_ptr<TransactionLogFile> getLogFile(const uint32_t sequenceNumber);
 };
 
 } // namespace rocksdb_js
