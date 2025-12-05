@@ -182,7 +182,7 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 			lastCommittedPosition->refCount);
 		int64_t memoryUsage;
 		napi_adjust_external_memory(env, 0, &memoryUsage);
-DEBUG_LOG("TransactionLog::GetLastCommittedPosition, external memory=%u\n", memoryUsage);
+		DEBUG_LOG("TransactionLog::GetLastCommittedPosition, external memory=%u\n", memoryUsage);
 
 		if (--lastCommittedPosition->refCount == 0) {
 			delete lastCommittedPosition;
