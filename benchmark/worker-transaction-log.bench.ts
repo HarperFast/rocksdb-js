@@ -21,7 +21,7 @@ describe('Transaction log with workers', () => {
 			bench({ db, value, log, start, duration }) {
 				return db.transaction((txn) => {
 					log.addEntry(data, txn.id);
-				});
+				}) as Promise<void>;
 			},
 		}));
 
