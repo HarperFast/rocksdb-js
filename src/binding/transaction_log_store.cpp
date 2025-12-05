@@ -20,7 +20,7 @@ TransactionLogStore::TransactionLogStore(
 	maxAgeThreshold(maxAgeThreshold)
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
-	lastCommittedPosition = std::make_shared<LogPosition>(0);
+	lastCommittedPosition = std::make_shared<LogPosition>();
 	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) { // initialize recent commits to not match until values are entered
 		recentlyCommittedSequencePositions[i].position = { 0, 0 };
 		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit

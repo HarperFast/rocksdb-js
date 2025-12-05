@@ -96,9 +96,6 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		}
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap existing memory map was too small: %u\n", this, memoryMap->mapSize);
 		// this memory map is not big enough, need to create a new one
-		if (--this->memoryMap->refCount == 0) { // unref it
-			delete this->memoryMap;
-		}
 	}
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap creating new memory map: %u\n", this, fileSize);
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
