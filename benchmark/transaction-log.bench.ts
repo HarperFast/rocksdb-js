@@ -22,7 +22,7 @@ describe('Transaction log', () => {
 		}));
 
 		benchmark('lmdb', concurrent({
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();
 				ctx.index = start;
 			},
