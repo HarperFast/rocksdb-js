@@ -67,7 +67,10 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
-		if (!map) return nullptr;
+		if (map == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
+			return nullptr;
+		}
 		// If successful, return a MemoryMap object for tracking references.
 		// Note, that we do not need to do any cleanup from this class's
 		// destructor. Removing files that are memory mapped is perfectly fine,
