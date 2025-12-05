@@ -5,7 +5,6 @@ import {
 } from './setup.js';
 
 describe('Transaction log with workers', () => {
-	const ENTRY_COUNT = 1000;
 	const data = Buffer.alloc(100, 'a');
 
 	describe('write log with 100 byte records', () => {
