@@ -65,7 +65,7 @@ void TransactionLogFile::openFile() {
 
 MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!memoryMap) {
-		void* map = mmap(NULL, fileSize, PROT_READ, MAP_SHARED, fd, 0);
+		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
 		if (!map) return nullptr;
 		// If successful, return a MemoryMap object for tracking references.
