@@ -109,7 +109,7 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		LARGE_INTEGER distanceToMove;
 		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)
 		distanceToMove.QuadPart = 0; // We want to move 0 bytes to query current position
-		if (!SetFilePointerEx(this->fileHandle, distanceToMove, &currentPos, FILE_CURRENT)) {
+		if (!::SetFilePointerEx(this->fileHandle, distanceToMove, &currentPos, FILE_CURRENT)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
