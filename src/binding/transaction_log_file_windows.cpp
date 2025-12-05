@@ -81,7 +81,8 @@ void TransactionLogFile::openFile() {
 	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
 	if (this->size > 0) {
 		this->findPositionByTimestamp(0, this->size);
-		DEBUG_LOG("New file size: %zu file path: %s\n", this->size, this->path.string().c_str());
+		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
+			this, this->size, this->path.string().c_str());
 	}
 }
 
