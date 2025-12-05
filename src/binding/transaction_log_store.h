@@ -118,7 +118,7 @@ struct TransactionLogStore final {
 	 * so that when a flush event occurs, we can determine what part of the transaction log has been fully flushed
 	 * to the RocksDB database.
 	 * We are not attempting to track every single transaction log position and sequence number, there could be a very large
-	 * number. Instead this an array where each n position represents an n^2 frequencies of correlations. This is enough
+	 * number. Instead this is an array where each n position represents an n^2 frequencies of correlations. This is enough
 	 * that we won't lose more than half of what has to be replayed since the last flush.
 	 */
 	SequencePosition recentlyCommittedSequencePositions[20];
