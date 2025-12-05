@@ -1,5 +1,6 @@
 import { describe } from 'vitest';
 import { benchmark, generateTestData } from './setup.js';
+import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
 
 describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
@@ -112,15 +113,22 @@ describe('Transaction log', () => {
 });
 function concurrent<C>(execute: (ctx: C) => Promise<void>, concurrencySlowdown = 100): (ctx: C) => Promise<void> {
 	let outstanding = 0;
-	let rejection;
-	return (ctx: C) => {
+	let previousRejection: Error;
+	return async (ctx: C) => {
 		outstanding++;
-		execute(ctx).then(() => outstanding--, (error) => { rejection = error });
-		if (rejection) {
-			let error = rejection;
-			rejection = null;
-			throw rejection;
+		execute(ctx).then(() => outstanding--, (error) => {
+			previousRejection = error
+		});
+		if (previousRejection) {
+			// a previous execution rejected to an error, so we need to throw it now to surface it
+			let error = previousRejection;
+			previousRejection = null; // reset this
+			throw error;
 		}
-		return new Promise(outstanding > concurrencySlowdown ? (resolve) => setTimeout(resolve, concurrencySlowdown - outstanding) : setImmediate) as Promise<void>;
+		if (concurrencySlowdown) {
+			return delay(concurrencySlowdown - outstanding);
+		} else {
+			return rest();
+		}
 	}
 }
