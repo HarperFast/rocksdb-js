@@ -5,14 +5,15 @@ import { rimraf } from 'rimraf';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { parentPort, Worker, workerData } from 'node:worker_threads';
+import { setImmediate as rest } from 'node:timers/promises';
 
 const vitestBench = workerData.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
 } : (await import('vitest')).bench;
 
-type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
+export type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
-interface BenchmarkContext<T> extends Record<string, any> {
+export interface BenchmarkContext<T> extends Record<string, any> {
 	db: T;
 };
 
@@ -507,3 +508,30 @@ function withResolvers<T>() {
 		promise
 	};
 }
+
+export function concurrent(suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
+export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
+export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
+	let index = 0;
+	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
+	let currentlyExecuting: Promise<void>[] = Array(concurrencyMaximum);
+	const restEachTurn = suite.restEachTurn ?? true;
+	return {
+		...suite,
+		async bench(ctx: BenchmarkContext<T>) {
+			await currentlyExecuting[index]; // await the previous execution for this slot
+			currentlyExecuting[index] = suite.bench(ctx) as Promise<void>; // let it execute concurrently and resolve after concurrencyMaximum number of executions
+			index = (index + 1) % concurrencyMaximum; // cycle in a loop
+			if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
+				await rest();
+			}
+		},
+		async teardown(ctx: BenchmarkContext<T>) {
+			// wait for all outstanding executions to finish
+			await Promise.all(currentlyExecuting);
+			// any more tearing down
+			return suite.teardown?.(ctx);
+		}
+	}
+}
+type HasConcurrencyOptions = { concurrencyMaximum?: number, numWorkers?: number, restEachTurn?: boolean };

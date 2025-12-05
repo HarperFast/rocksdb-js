@@ -18,7 +18,14 @@ TransactionLogStore::TransactionLogStore(
 	maxFileSize(maxFileSize),
 	retentionMs(retentionMs),
 	maxAgeThreshold(maxAgeThreshold)
-{}
+{
+	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
+	lastCommittedPosition = std::make_shared<LogPosition>();
+	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) { // initialize recent commits to not match until values are entered
+		recentlyCommittedSequencePositions[i].position = { { 0, 0 } };
+		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
+	}
+}
 
 TransactionLogStore::~TransactionLogStore() {
 	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
@@ -34,7 +41,8 @@ void TransactionLogStore::close() {
 		return;
 	}
 
-	std::unique_lock<std::mutex> lock(this->storeMutex);
+	std::unique_lock<std::mutex> lock(this->writeMutex);
+	std::unique_lock<std::mutex> dataSetsLock(this->dataSetsMutex);
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str())
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
 		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
@@ -42,10 +50,12 @@ void TransactionLogStore::close() {
 	}
 
 	lock.unlock();
+	dataSetsLock.unlock();
 	this->purge();
 }
 
 std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
+	std::unique_lock<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	std::shared_ptr<TransactionLogFile> logFile = it != this->sequenceFiles.end() ? it->second : nullptr;
 
@@ -60,23 +70,89 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 		auto logFilePath = this->path / filename;
 		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = logFile;
+		this->nextLogPosition = { { 0, sequenceNumber } };
+		if (this->uncommittedTransactionPositions.empty()) {
+			// initialize with the first position in the log file
+			this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+		}
 	}
 
 	return logFile;
 }
 
-void TransactionLogStore::query() {
-	DEBUG_LOG("%p TransactionLogStore::query Querying transaction log store \"%s\"\n", this, this->name.c_str())
+std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	auto it = this->sequenceFiles.find(logSequenceNumber);
+	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+	if (!logFile) {
+		return std::weak_ptr<MemoryMap>(); // nullptr
+	}
+	logFile->open(this->latestTimestamp);
+	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
+		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
+		logFile->size); // otherwise it is frozen, use the file size
+}
 
-	// TODO: Implement
-	// 1. Determine files to iterate over
-	// 2. Open each file with a memory map
-	// 3. Iterate over the data in the memory map and copy to the supplied buffer
-	// 4. Close the memory mapped files
+uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	if (logSequenceNumber == 0) {
+		// get the total size of all log files
+		uint64_t size = 0;
+		for (auto& [key, value] : this->sequenceFiles) {
+			value->open(this->latestTimestamp);
+			size += value->size;
+		}
+		return size;
+	} else
+	{
+		auto it = this->sequenceFiles.find(logSequenceNumber);
+		auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
+		if (!logFile) {
+			return 0;
+		}
+		logFile->open(this->latestTimestamp);
+		return logFile->size;
+	}
+}
+
+std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
+	return this->lastCommittedPosition;
+}
+
+LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	uint32_t sequenceNumber = this->currentSequenceNumber;
+	bool isCurrent = true;
+	uint32_t positionInLogFile = 0;
+	auto it = this->sequenceFiles.find(sequenceNumber);
+	if (it == this->sequenceFiles.end()) {
+		// it is possible that the current log file doesn't exist yet, so we need to look at the previous one
+		it = this->sequenceFiles.find(--sequenceNumber);
+		isCurrent = false;
+	}
+	while (it != this->sequenceFiles.end()) {
+		auto logFile = it->second.get();
+		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size);
+		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
+		// we are in the correct log file to start searching
+		if (positionInLogFile > 0) {
+			if (positionInLogFile == 0xFFFFFFFF && sequenceNumber < this->currentSequenceNumber) {
+				// beyond the end of this log file, revert to next one (because it exists)
+				break;
+			}
+			// found a valid position in the log file
+			return { { positionInLogFile, sequenceNumber } };
+		}
+		isCurrent = false;
+		it = this->sequenceFiles.find(--sequenceNumber);
+	};
+	// we iterated too far, return to the beginning position in the current log file
+	return { { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 } };
 }
 
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 
 	if (this->sequenceFiles.empty()) {
 		return;
@@ -141,13 +217,15 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 }
 
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
 	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = logFile;
 
-	if (sequenceNumber > this->currentSequenceNumber) {
+	if (sequenceNumber >= this->currentSequenceNumber) {
+		logFile->open(this->latestTimestamp);
 		this->currentSequenceNumber = sequenceNumber;
+		nextLogPosition = { { logFile->size, sequenceNumber } };
 	}
 
 	// update next sequence number to be one higher than the highest existing
@@ -159,11 +237,13 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this, path.string().c_str(), sequenceNumber)
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
+LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
 
-	std::lock_guard<std::mutex> lock(this->storeMutex);
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+
+	LogPosition logPosition = this->nextLogPosition;
 
 	if (batch.timestamp > this->latestTimestamp) {
 		DEBUG_LOG("%p TransactionLogStore::commit Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp)
@@ -198,6 +278,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				logFile = nullptr;
 			}
+		}
+
+		if (!logPosition.fullPosition) {
+			// if this wasn't initialized, we do so now
+			logPosition = this->nextLogPosition;
 		}
 
 		// ensure we have a valid log file before writing
@@ -264,9 +349,69 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			DEBUG_LOG("%p TransactionLogStore::commit Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
+		this->nextLogPosition = { { logFile->size, this->currentSequenceNumber } };
 	}
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
+	uncommittedTransactionPositions.insert(this->nextLogPosition);
 
 	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
+	return logPosition;
+}
+
+void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	// This written transaction entry is no longer uncommitted, so we can remove it
+	uncommittedTransactionPositions.erase(position);
+	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
+	LogPosition fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
+	// update the current position handle with latest fully committed position
+	*this->lastCommittedPosition = fullyCommittedPosition;
+	// now setup a sequence position that matches a rocksdb sequence number to our log position
+	SequencePosition sequencePosition;
+	sequencePosition.position = fullyCommittedPosition;
+	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
+	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
+	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
+	// an exact map of every pairing, and we don't need to. We don't need to know the exact rocks sequence number, we just
+	// need a sequence number that is not greater than the point of the flush. But we want to record enough that we
+	// won't lose more than half of what has to be replayed since the last flush.
+	unsigned int count = nextSequencePositionsCount++;
+	int index = 0;
+	// iterate through the array breaking once at the first set bit, but don't iterate past the end of the array (hence -1)
+	for (; index < RECENTLY_COMMITTED_POSITIONS_SIZE - 1; index++) {
+	    if ((count >> index) & 1) break; // will break 50% of the time at each iteration
+	}
+	// record in the array
+	recentlyCommittedSequencePositions[index] = sequencePosition;
+}
+
+bool operator>( const LogPosition a, const LogPosition b ) {
+	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
+	return a.logSequenceNumber == b.logSequenceNumber ?
+		a.positionInLogFile > b.positionInLogFile :
+		a.logSequenceNumber > b.logSequenceNumber;
+};
+
+void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	LogPosition latestFlushedPosition = { { 0, 0 } };
+	// the latest sequence number that has been flushed according to this flush update
+	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
+		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
+		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
+			latestFlushedPosition = sequencePosition.position;
+		}
+	}
+	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
+	// a "log" file, but the API provides all the functionality we need to just write a single word
+	if (!flushedTrackerFile) {
+		std::ostringstream oss;
+		oss << this->path << ".txnstate";
+		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
+		flushedTrackerFile->open(this->latestTimestamp);
+	}
+	// save the position of fully flushed transaction logs (future replay will start from here)
+	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
@@ -295,42 +440,48 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 			try {
 				sequenceNumber = std::stoul(sequenceNumberStr);
+
+				// check if the file is too old
+				if (retentionMs.count() > 0) {
+					auto mtime = std::filesystem::last_write_time(filePath);
+					auto mtime_sys = convertFileTimeToSystemTime(mtime);
+					auto now = std::chrono::system_clock::now();
+					auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
+					auto delta = fileAgeMs - retentionMs;
+
+					if (delta.count() > 0) {
+						// file is too old, remove it
+						DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
+							store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
+						try {
+							std::filesystem::remove(filePath);
+						} catch (const std::filesystem::filesystem_error& e) {
+							DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
+								store.get(), filePath.string().c_str(), e.what())
+						}
+						continue;
+					} else {
+						DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
+							store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
+					}
+				}
+
+				store->registerLogFile(filePath, sequenceNumber);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p TransactionLogStore::load Failed to get last write time for file %s: %s\n",
+					store.get(), filePath.string().c_str(), e.what())
+			} catch (const std::exception& e) {
+				DEBUG_LOG("%p TransactionLogStore::load Failed to load file %s: %s\n",
+					store.get(), filePath.string().c_str(), e.what())
 			} catch (...) {
 				DEBUG_LOG(
 					"DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
 					filename.c_str()
 				)
-				continue;
 			}
-
-			// check if the file is too old
-			if (retentionMs.count() > 0) {
-				auto mtime = std::filesystem::last_write_time(filePath);
-				auto mtime_sys = convertFileTimeToSystemTime(mtime);
-				auto now = std::chrono::system_clock::now();
-				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
-				auto delta = fileAgeMs - retentionMs;
-
-				if (delta.count() > 0) {
-					// file is too old, remove it
-					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
-						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
-					try {
-						std::filesystem::remove(filePath);
-					} catch (const std::filesystem::filesystem_error& e) {
-						DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
-							store.get(), filePath.string().c_str(), e.what())
-					}
-					continue;
-				} else {
-					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
-						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
-				}
-			}
-
-			store->registerLogFile(filePath, sequenceNumber);
 		}
 	}
+	store->uncommittedTransactionPositions.insert(store->nextLogPosition);
 
 	return store;
 }
