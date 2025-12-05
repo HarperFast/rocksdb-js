@@ -65,10 +65,10 @@ uint64_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
 	auto store = this->store.lock();
 	return store->getLogFileSize(sequenceNumber);
 }
-MemoryMap* TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
+std::weak_ptr<MemoryMap> TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
 	auto store = this->store.lock();
 	if (store) return store->getMemoryMap(sequenceNumber);
-	return nullptr;
+	return std::weak_ptr<MemoryMap>(); // nullptr
 }
 uint64_t TransactionLogHandle::findPosition(double timestamp) {
 	auto store = this->store.lock();

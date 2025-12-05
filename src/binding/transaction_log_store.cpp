@@ -84,12 +84,12 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 	return logFile;
 }
 
-MemoryMap* TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
+std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(logSequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 	if (!logFile) {
-		return nullptr;
+		return std::weak_ptr<MemoryMap>(); // nullptr
 	}
 	logFile->open(this->latestTimestamp);
 	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?

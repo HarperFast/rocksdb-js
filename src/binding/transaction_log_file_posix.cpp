@@ -63,23 +63,23 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size)
 }
 
-MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!this->memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
 		if (map == MAP_FAILED) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
-			return nullptr;
+			return std::weak_ptr<MemoryMap>(); // nullptr
 		}
 		// If successful, return a MemoryMap object for tracking references.
 		// Note, that we do not need to do any cleanup from this class's
 		// destructor. Removing files that are memory mapped is perfectly fine,
 		// and the memory map can be safely used indefinitely (the file descriptor
 		// doesn't need to be kept open either).
-		memoryMap = new MemoryMap(map, fileSize);
+		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
 	}
-	memoryMap->fileSize = fileSize;
-	return memoryMap;
+	this->memoryMap->fileSize = fileSize;
+	return this->memoryMap;
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
@@ -147,8 +147,6 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	}
 	return static_cast<int64_t>(::write(this->fd, buffer, size));
 }
-
-MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
 
 MemoryMap::~MemoryMap() {
 	if (this->map != nullptr) {

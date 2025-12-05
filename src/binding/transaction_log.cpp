@@ -195,7 +195,7 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
  * Wrapper around an usage of a memory map, preserving the buffer size so we know how to adjust the external memory usage.
  */
 struct MemoryMapBuffer {
-	MemoryMap* memoryMap;
+	std::shared_ptr<MemoryMap> memoryMap;
 	uint32_t bufferSize;
 };
 
@@ -207,22 +207,16 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
-	MemoryMap* memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	auto memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
 	napi_value result;
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 		return result;
 	}
-	memoryMap->refCount++;
 	MemoryMapBuffer* memoryMapBuffer = new MemoryMapBuffer{ memoryMap, memoryMap->fileSize };
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
 		MemoryMapBuffer* memoryMapBuffer = static_cast<MemoryMapBuffer*>(hint);
-		MemoryMap* memoryMap = memoryMapBuffer->memoryMap;
-		if (--memoryMap->refCount == 0) {
-			// if there are no more references to the memory map, unmap it
-			delete memoryMap;
-		}
 		int64_t memoryUsage;
 		// re-adjust back
 		napi_adjust_external_memory(env, memoryMapBuffer->bufferSize, &memoryUsage);

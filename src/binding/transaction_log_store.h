@@ -181,7 +181,7 @@ struct TransactionLogStore final {
 	/**
 	 * Memory maps the transaction log file for the given sequence number.
 	 **/
-	MemoryMap* getMemoryMap(uint32_t logSequenceNumber);
+	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t logSequenceNumber);
 
 	/**
 	* Get the log file size.

@@ -88,7 +88,7 @@ struct TransactionLogFile final {
 	/**
 	 * The memory map of the file.
 	 */
-	MemoryMap* memoryMap = nullptr;
+	std::shared_ptr<MemoryMap> memoryMap;
 
 	/**
 	 * The mutex used to protect the file (open/close, read/write, etc).
@@ -141,7 +141,7 @@ struct TransactionLogFile final {
 	/**
 	 * Return a memory map of the file and mark it as in use
 	 */
-	MemoryMap* getMemoryMap(uint32_t fileSize);
+	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
 
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
@@ -200,11 +200,6 @@ struct MemoryMap final
 	 * The size of the file (while it is being written, this is the max file size, but when done, it can't expand, so we set the file size)
 	 **/
 	uint32_t fileSize = 0;
-
-	/**
-	 * The count of references to the memory map. Not using an std::shared_ptr here because memory maps don't have their own destructor
-	 */
-	std::atomic<int32_t> refCount = 1; // start with one for the reference from TransactionLogFile
 
 	MemoryMap(void* map, uint32_t size);
 	~MemoryMap();
