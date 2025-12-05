@@ -114,7 +114,7 @@ MemoryMap* TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
 			this, this->path.string().c_str(), error, errorMessage.c_str())
-			return NULL;
+			return nullptr;
 		}
 
 		// Move to the new file size
