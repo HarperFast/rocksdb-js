@@ -704,6 +704,7 @@ automatically written to disk right before the transaction is committed. You may
 add multiple enties per transaction. The underlying architecture is thread safe.
 
 - `log.addEntry()`
+- `log.query()`
 
 #### `log.addEntry(data, transactionId): void`
 
