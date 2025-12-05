@@ -22,7 +22,7 @@ TransactionLogStore::TransactionLogStore(
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	lastCommittedPosition = std::make_shared<LogPosition>(0);
 	for (int i = 0; i < 20; i++) { // initialize recent commits to not match until values are entered
-		recentlyCommittedSequencePositions[i].position = 0;
+		recentlyCommittedSequencePositions[i].position = { 0, 0 };
 		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
 	}
 }
@@ -70,10 +70,10 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 		auto logFilePath = this->path / filename;
 		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = logFile;
-		this->nextSequencePosition = ((uint64_t) sequenceNumber << 32);
+		this->nextLogPosition = { 0, sequenceNumber };
 		if (this->uncommittedTransactionPositions.empty()) {
 			// initialize with the first position in the log file
-			this->uncommittedTransactionPositions.insert(this->nextSequencePosition);
+			this->uncommittedTransactionPositions.insert(this->nextLogPosition);
 		}
 	}
 
@@ -119,7 +119,7 @@ std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 	return this->lastCommittedPosition;
 }
 
-uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
+LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	uint32_t sequenceNumber = this->currentSequenceNumber;
 	bool isCurrent = true;
@@ -141,13 +141,13 @@ uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
 				break;
 			}
 			// found a valid position in the log file
-			return ((uint64_t) sequenceNumber << 32) | positionInLogFile;
+			return { positionInLogFile, sequenceNumber };
 		}
 		isCurrent = false;
 		it = this->sequenceFiles.find(--sequenceNumber);
 	};
 	// we iterated too far, return to the beginning position in the current log file
-	return (((uint64_t) sequenceNumber + 1) << 32) | TRANSACTION_LOG_FILE_HEADER_SIZE;
+	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
 }
 
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
@@ -225,7 +225,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	if (sequenceNumber >= this->currentSequenceNumber) {
 		logFile->open(this->latestTimestamp);
 		this->currentSequenceNumber = sequenceNumber;
-		nextSequencePosition = ((uint64_t) sequenceNumber << 32) | logFile->size;
+		nextLogPosition = { logFile->size, sequenceNumber };
 	}
 
 	// update next sequence number to be one higher than the highest existing
@@ -237,13 +237,13 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this, path.string().c_str(), sequenceNumber)
 }
 
-uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
+LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 	DEBUG_LOG("%p TransactionLogStore::commit Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
 
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
-	uint64_t sequencePosition = this->nextSequencePosition;
+	LogPosition logPosition = this->nextLogPosition;
 
 	if (batch.timestamp > this->latestTimestamp) {
 		DEBUG_LOG("%p TransactionLogStore::commit Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp)
@@ -280,9 +280,9 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			}
 		}
 
-		if (!sequencePosition) {
+		if (!logPosition.fullPosition) {
 			// if this wasn't initialized, we do so now
-			sequencePosition = this->nextSequencePosition;
+			logPosition = this->nextLogPosition;
 		}
 
 		// ensure we have a valid log file before writing
@@ -349,23 +349,23 @@ uint64_t TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			DEBUG_LOG("%p TransactionLogStore::commit Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str())
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
-		this->nextSequencePosition = ((uint64_t) this->currentSequenceNumber << 32) | logFile->size;
+		this->nextLogPosition = { logFile->size, this->currentSequenceNumber };
 	}
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
-	uncommittedTransactionPositions.insert(this->nextSequencePosition);
+	uncommittedTransactionPositions.insert(this->nextLogPosition);
 
 	DEBUG_LOG("%p TransactionLogStore::commit Completed writing all entries\n", this)
-	return sequencePosition;
+	return logPosition;
 }
 
-void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber) {
+void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
 	uncommittedTransactionPositions.erase(position);
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
-	uint64_t fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
+	LogPosition fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
 	// update the current position handle with latest fully committed position
-	this->lastCommittedPosition->fullPosition = fullyCommittedPosition;
+	*this->lastCommittedPosition = fullyCommittedPosition;
 	// now setup a sequence position that matches a rocksdb sequence number to our log position
 	SequencePosition sequencePosition;
 	sequencePosition.position = fullyCommittedPosition;
@@ -384,9 +384,16 @@ void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::Seque
 	recentlyCommittedSequencePositions[index] = sequencePosition;
 }
 
+bool operator>( const LogPosition a, const LogPosition b ) {
+	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
+	return a.logSequenceNumber == b.logSequenceNumber ?
+		a.positionInLogFile > b.positionInLogFile :
+		a.logSequenceNumber > b.logSequenceNumber;
+};
+
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	uint64_t latestFlushedPosition = 0;
+	LogPosition latestFlushedPosition = { 0, 0 };
 	// the latest sequence number that has been flushed according to this flush update
 	for (int i = 0; i < 20; i++) {
 		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
@@ -468,7 +475,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store->registerLogFile(filePath, sequenceNumber);
 		}
 	}
-	store->uncommittedTransactionPositions.insert(store->nextSequencePosition);
+	store->uncommittedTransactionPositions.insert(store->nextLogPosition);
 
 	return store;
 }

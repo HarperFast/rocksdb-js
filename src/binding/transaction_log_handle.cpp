@@ -70,10 +70,10 @@ std::weak_ptr<MemoryMap> TransactionLogHandle::getMemoryMap(uint32_t sequenceNum
 	if (store) return store->getMemoryMap(sequenceNumber);
 	return std::weak_ptr<MemoryMap>(); // nullptr
 }
-uint64_t TransactionLogHandle::findPosition(double timestamp) {
+LogPosition TransactionLogHandle::findPosition(double timestamp) {
 	auto store = this->store.lock();
 	if (store) return store->findPositionByTimestamp(timestamp);
-	return 0;
+	return { 0, 0 };
 }
 std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	auto store = this->store.lock();

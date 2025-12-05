@@ -241,9 +241,9 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition")
 	double timestamp = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
-	uint64_t position = (*txnLogHandle)->findPosition(timestamp);
+	LogPosition position = (*txnLogHandle)->findPosition(timestamp);
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_double(env, *((double*) &position), &result));
+	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
 	return result;
 }
 

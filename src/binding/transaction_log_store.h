@@ -20,11 +20,6 @@ struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
 
-struct SequencePosition { // forward declaration doesn't work here because it is used in an array
-	rocksdb::SequenceNumber rocksSequenceNumber;
-	uint64_t position;
-};
-
 /**
 * Structure to hold the last committed position of a transaction log file, that is exposed
 * to JS through an external buffer
@@ -45,7 +40,23 @@ union LogPosition {
 	 * with the offset within the file, as a single 64-bit word that can be accessed
 	 * from JS.
 	 */
-	uint64_t fullPosition;
+	double fullPosition;
+	bool operator()( const LogPosition a, const LogPosition b ) const {
+		// Comparing fullPosition is presumably faster than comparing the individual fields and should work on little-endian...
+		// unless compilers can figure this out?
+		return a.logSequenceNumber == b.logSequenceNumber ?
+			a.positionInLogFile < b.positionInLogFile :
+			a.logSequenceNumber < b.logSequenceNumber;
+	};
+};
+
+/**
+* Holds a RocksDB sequence number (which Rocks uses to track the version of the database and is returned by flush events)
+* and the corresponding position in the transaction log.
+*/
+struct SequencePosition { // forward declaration doesn't work here because it is used in an array
+	rocksdb::SequenceNumber rocksSequenceNumber;
+	LogPosition position;
 };
 
 struct TransactionLogStore final {
@@ -117,7 +128,7 @@ struct TransactionLogStore final {
 	 * have not been committed (to RocksDB) yet. We track these because we don't want
 	 * the transactions in the log to be visible until they are committed and consistent.
 	 */
-	std::set<uint64_t> uncommittedTransactionPositions;
+	std::set<LogPosition, LogPosition> uncommittedTransactionPositions;
 
 	/**
 	 * An array of recent sequence positions to correlate a database sequence number with a transaction log position,
@@ -148,7 +159,7 @@ struct TransactionLogStore final {
 	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
-	uint64_t nextSequencePosition = 0;
+	LogPosition nextLogPosition = { 0, 0 };
 
 	/**
 	 * Data structure to hold the last committed position of a transaction log file, that is exposed
@@ -175,7 +186,7 @@ struct TransactionLogStore final {
 	/**
 	 * Notifies the transaction log store that a RocksDB commit operation has finished, and the transactions sequence number.
 	 */
-	void commitFinished(uint64_t position, rocksdb::SequenceNumber rocksSequenceNumber);
+	void commitFinished(LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber);
 
 	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
@@ -203,7 +214,7 @@ struct TransactionLogStore final {
 	 * Finds the transaction log file position with the oldest transaction that is equal to, or
 	 * newer than, the provided timestamp.
 	 */
-	uint64_t findPositionByTimestamp(double timestamp);
+	LogPosition findPositionByTimestamp(double timestamp);
 
 	/**
 	 * Purges transaction logs.
@@ -224,7 +235,7 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	uint64_t writeBatch(TransactionLogEntryBatch& batch);
+	LogPosition writeBatch(TransactionLogEntryBatch& batch);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log
