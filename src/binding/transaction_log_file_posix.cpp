@@ -150,9 +150,10 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 
 MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
 
-MemoryMap::~MemoryMap()
-{
-	munmap(map, mapSize);
+MemoryMap::~MemoryMap() {
+	if (this->map != nullptr) {
+		::munmap(this->map, this->mapSize);
+	}
 }
 
 } // namespace rocksdb_js
