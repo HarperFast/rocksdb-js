@@ -96,7 +96,7 @@ struct TransactionLogFile final {
 	std::mutex fileMutex;
 
 	std::map<double, uint32_t> positionByTimestampIndex;
-	uint32_t lastIndexedPosition = POSITION_OF_LOG_FILE_TIMESTAMP;
+	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 	std::mutex indexMutex;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
