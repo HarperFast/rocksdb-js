@@ -99,7 +99,7 @@ describe('Transaction Log', () => {
 		}));
 	});
 	describe('_getLastCommittedPosition()/_getMemoryMapOfFile', () => {
-		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db, dbPath }) => {
+		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo-seq');
 			const value = Buffer.alloc(10, 'a');
 
@@ -116,14 +116,16 @@ describe('Transaction Log', () => {
 			expect(buffer.slice(0, 4).toString()).toBe('WOOF');
 		}));
 	});
+
 	describe('query() from TransactionLog', () => {
-		it('should query an empty transaction log', () => dbRunner(async ({ db, dbPath }) => {
+		it('should query an empty transaction log', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const queryIterable = log.query({ start: 1 });
 			const queryResults = Array.from(queryIterable);
 			expect(queryResults.length).toBe(0);
 		}));
-		it('should query a transaction log', () => dbRunner(async ({ db, dbPath }) => {
+
+		it('should query a transaction log', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const startTime = Date.now() - 1000;
@@ -135,7 +137,8 @@ describe('Transaction Log', () => {
 			const queryResults = Array.from(queryIterable);
 			expect(queryResults.length).toBe(1);
 		}));
-		it('should query a transaction log with different options', () => dbRunner(async ({ db, dbPath }) => {
+
+		it('should query a transaction log with different options', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			for (let i = 0; i < 5; i++) {
@@ -149,7 +152,8 @@ describe('Transaction Log', () => {
 			expect(Array.from(log.query({ start: allTimestamps[1], exactStart: true })).length).toBe(4);
 			expect(Array.from(log.query({ start: allTimestamps[1], exactStart: true, end: allTimestamps[4] })).length).toBe(3);
 		}));
-		it('should query an out-of-order transaction log with different options', () => dbRunner(async ({ db, dbPath }) => {
+
+		it('should query an out-of-order transaction log with different options', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const start = Date.now();
@@ -165,7 +169,8 @@ describe('Transaction Log', () => {
 			expect(Array.from(log.query({ start: start - 1, exactStart: true, exclusiveStart: true })).length).toBe(3);
 			expect(Array.from(log.query({ start: start - 1, exactStart: true, end: start - 2 })).length).toBe(3);
 		}));
-		it('should query a transaction log with multiple log instances', () => dbRunner(async ({ db, dbPath }) => {
+
+		it('should query a transaction log with multiple log instances', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const startTime = Date.now() - 1000;
@@ -183,6 +188,7 @@ describe('Transaction Log', () => {
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[0].endTxn).toBe(true);
 		}));
+
 		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
 			let log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
@@ -193,10 +199,9 @@ describe('Transaction Log', () => {
 			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 			expect(queryResults.length).toBe(1);
 			db.close();
-			const logPath = join(dbPath, 'transaction_logs', 'foo', 'foo.1.txnlog');
 			db = RocksDatabase.open(dbPath);
 			let log2 = db.useLog('foo');
-			const buffer = log._getMemoryMapOfFile(1);
+			log._getMemoryMapOfFile(1);
 			let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now() + 1000, readUncommitted: true }));
 			expect(queryResults2.length).toBe(1);
 			queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
@@ -205,7 +210,7 @@ describe('Transaction Log', () => {
 
 		it('should be able to reuse a query iterator to resume reading a transaction log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
-		}, async ({ db, dbPath }) => {
+		}, async ({ db }) => {
 			let log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
 			for (let i = 0; i < 10; i++) {
@@ -233,9 +238,10 @@ describe('Transaction Log', () => {
 				expect(count2).toBe(10);
 			}
 		}));
+
 		it('should be able to reuse a query iterator to resume reading a transaction log with multiple entries', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
-		}, async ({ db, dbPath }) => {
+		}, async ({ db }) => {
 			let log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
 			await db.transaction(async (txn) => {
@@ -262,6 +268,7 @@ describe('Transaction Log', () => {
 			expect(count2).toBe(400);
 		}));
 	});
+
 	describe('addEntry()', () => {
 		it('should add a single small entry within a single block', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');

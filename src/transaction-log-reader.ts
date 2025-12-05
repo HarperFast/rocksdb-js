@@ -9,7 +9,7 @@ import {
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 
-const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
+const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
 /**
  * Returns an iterable for transaction entries within the specified range of timestamps

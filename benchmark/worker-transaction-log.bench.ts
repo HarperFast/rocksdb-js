@@ -1,7 +1,7 @@
 import {
 	concurrent,
 	workerDescribe as describe,
-	workerBenchmark as benchmark
+	workerBenchmark as benchmark,
 	type BenchmarkContext,
 	type LMDBDatabase
 } from './setup.js';
@@ -13,12 +13,12 @@ describe('Transaction log with workers', () => {
 	describe('write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({
 			numWorkers: 4,
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
 			},
-			bench({ db, value, log, start, duration }) {
+			bench({ db, log }) {
 				return db.transaction((txn) => {
 					log.addEntry(data, txn.id);
 				}) as Promise<void>;
@@ -27,13 +27,13 @@ describe('Transaction log with workers', () => {
 
 		benchmark('lmdb', concurrent({
 			numWorkers: 4,
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();
 				ctx.index = start;
 			},
-			bench(ctx) {
+			bench(ctx: BenchmarkContext<LMDBDatabase>) {
 				const { db } = ctx;
-				return db.put(ctx.index++, data);
+				return db.put(String(ctx.index++), data) as unknown as Promise<void>;
 			},
 		}));
 	});

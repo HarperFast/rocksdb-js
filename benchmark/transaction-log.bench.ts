@@ -1,15 +1,14 @@
 import { describe } from 'vitest';
 import { benchmark, concurrent, type BenchmarkContext, type LMDBDatabase } from './setup.js';
 import type { RocksDatabase } from '../dist/index.mjs';
-import type { TransactionLogQueryOptions } from '../src/load-binding.js';
 
 describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
 	const data = Buffer.alloc(100, 'a');
 
-	describe('write log with 100 byte records', () => {
+	describe.only('write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({
-			async setup(ctx:  BenchmarkContext<RocksDatabase>) {
+			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
@@ -26,25 +25,25 @@ describe('Transaction log', () => {
 				let start = Date.now();
 				ctx.index = start;
 			},
-			bench(ctx) {
+			bench(ctx: BenchmarkContext<LMDBDatabase>) {
 				const { db } = ctx;
-				return db.put(ctx.index++, data) as unknown as Promise<void>;
+				return db.put(String(ctx.index++), data) as unknown as Promise<void>;
 			},
 		}));
 	});
 	describe('read 100 iterators while write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
 				ctx.iterators = Array(100).fill(null).map(() => log.query({ start: 1 }));
 			},
 			bench({ db, iterators, log }) {
-				let last;
+				let _last: number | undefined;
 				for (let iterator of iterators) {
 					for (let entry of iterator) {
-						last = entry.timestamp;
+						_last = entry.timestamp;
 					}
 				}
 				return db.transaction((txn) => {
@@ -55,26 +54,26 @@ describe('Transaction log', () => {
 		}));
 
 		benchmark('lmdb', concurrent({
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();
 				ctx.index = start;
 				ctx.last = 0;
 			},
-			bench(ctx) {
-				const { db, last } = ctx;
+			bench(ctx: BenchmarkContext<LMDBDatabase>) {
+				const { db } = ctx;
 				for (let i = 0; i < 100; i++) {
-					for (let { key, value } of db.getRange({ start: ctx.last })) {
+					for (let { key } of db.getRange({ start: ctx.last })) {
 						ctx.last = key + 1;
 					}
 				}
-				return db.put(ctx.index++, data) as Promise<void>;
+				return db.put(String(ctx.index++), data) as unknown as Promise<void>;
 			},
 			concurrencyMaximum: 2,
 		}));
 	});
 	describe('read one entry from random position from log with 1000 100 byte records', () => {
 		benchmark('rocksdb', {
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
@@ -88,15 +87,15 @@ describe('Transaction log', () => {
 				}
 				ctx.duration = Date.now() - ctx.start;
 			},
-			async bench({ db, data, log, start, duration }) {
-				for (let entry of log.query({ start: start + Math.random() * duration })) {
+			async bench({ log, start, duration }) {
+				for (let _entry of log.query({ start: start + Math.random() * duration })) {
 					break; // read just one
 				}
 			}
 		});
 
 		benchmark('lmdb', {
-			async setup(ctx) {
+			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();
 				const value = Buffer.alloc(100, 'a');
 				ctx.start = start;
@@ -105,9 +104,8 @@ describe('Transaction log', () => {
 				}
 				ctx.duration = ENTRY_COUNT;
 			},
-			async bench({ db, data, start, duration }) {
-				// @ts-ignore
-				for (let entry of db.getRange({ start: start + Math.random() * duration })) {
+			async bench({ db, start, duration }) {
+				for (let _entry of db.getRange({ start: start + Math.random() * duration })) {
 					break; // read just one
 				}
 			}

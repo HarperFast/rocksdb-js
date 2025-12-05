@@ -11,9 +11,9 @@ const vitestBench = workerData.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
 } : (await import('vitest')).bench;
 
-type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
+export type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
-interface BenchmarkContext<T> extends Record<string, any> {
+export interface BenchmarkContext<T> extends Record<string, any> {
 	db: T;
 };
 
@@ -534,4 +534,4 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 		}
 	}
 }
-type HasConcurrencyOptions = { concurrencyMaximum?: number, restEachTurn?: boolean };
+type HasConcurrencyOptions = { concurrencyMaximum?: number, numWorkers?: number, restEachTurn?: boolean };

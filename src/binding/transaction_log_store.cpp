@@ -440,40 +440,45 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 			try {
 				sequenceNumber = std::stoul(sequenceNumberStr);
+
+				// check if the file is too old
+				if (retentionMs.count() > 0) {
+					auto mtime = std::filesystem::last_write_time(filePath);
+					auto mtime_sys = convertFileTimeToSystemTime(mtime);
+					auto now = std::chrono::system_clock::now();
+					auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
+					auto delta = fileAgeMs - retentionMs;
+
+					if (delta.count() > 0) {
+						// file is too old, remove it
+						DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
+							store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
+						try {
+							std::filesystem::remove(filePath);
+						} catch (const std::filesystem::filesystem_error& e) {
+							DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
+								store.get(), filePath.string().c_str(), e.what())
+						}
+						continue;
+					} else {
+						DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
+							store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
+					}
+				}
+
+				store->registerLogFile(filePath, sequenceNumber);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p TransactionLogStore::load Failed to get last write time for file %s: %s\n",
+					store.get(), filePath.string().c_str(), e.what())
+			} catch (const std::exception& e) {
+				DEBUG_LOG("%p TransactionLogStore::load Failed to load file %s: %s\n",
+					store.get(), filePath.string().c_str(), e.what())
 			} catch (...) {
 				DEBUG_LOG(
 					"DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
 					filename.c_str()
 				)
-				continue;
 			}
-
-			// check if the file is too old
-			if (retentionMs.count() > 0) {
-				auto mtime = std::filesystem::last_write_time(filePath);
-				auto mtime_sys = convertFileTimeToSystemTime(mtime);
-				auto now = std::chrono::system_clock::now();
-				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
-				auto delta = fileAgeMs - retentionMs;
-
-				if (delta.count() > 0) {
-					// file is too old, remove it
-					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
-						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
-					try {
-						std::filesystem::remove(filePath);
-					} catch (const std::filesystem::filesystem_error& e) {
-						DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
-							store.get(), filePath.string().c_str(), e.what())
-					}
-					continue;
-				} else {
-					DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
-						store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
-				}
-			}
-
-			store->registerLogFile(filePath, sequenceNumber);
 		}
 	}
 	store->uncommittedTransactionPositions.insert(store->nextLogPosition);
