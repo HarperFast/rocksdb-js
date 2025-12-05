@@ -7,7 +7,7 @@ describe('Transaction log', () => {
 
 	describe('write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({
-			async setup(ctx) {
+			async setup(ctx:  BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
