@@ -2,7 +2,10 @@ import {
 	concurrent,
 	workerDescribe as describe,
 	workerBenchmark as benchmark
+	type BenchmarkContext,
+	type LMDBDatabase
 } from './setup.js';
+import type { RocksDatabase } from '../dist/index.mjs';
 
 describe('Transaction log with workers', () => {
 	const data = Buffer.alloc(100, 'a');
