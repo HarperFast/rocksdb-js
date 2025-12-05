@@ -730,7 +730,7 @@ await db.transaction(async (txn) => {
 });
 ```
 
-Note that the `TransactionLog` class also has internal mathods `_getMemoryMapOfFile`, `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in any version.
+Note that the `TransactionLog` class also has internal methods `_getMemoryMapOfFile`, `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in any version.
 
 
 #### `log.query(options?): IterableIterator<TransactionLogEntry>`
