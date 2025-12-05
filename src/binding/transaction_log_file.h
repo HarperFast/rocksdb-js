@@ -189,7 +189,7 @@ struct MemoryMap final
 	/**
 	 * The Windows memory map handle.
 	 */
-	HANDLE mapHandle;
+	HANDLE mapHandle = INVALID_HANDLE_VALUE;
 #endif
 	/**
 	 * The size of the memory map that has been mapped.
