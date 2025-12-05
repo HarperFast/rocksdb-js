@@ -213,7 +213,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			break;
 		}
 		// for the first iteration, we insert the log file timestamp at the beginning of the index
-		if (POSITION_OF_LOG_FILE_TIMESTAMP == lastIndexedPosition) {
+		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == lastIndexedPosition) {
 			// specifically record the log file timestamp as the first entry with a position of zero
 			positionByTimestampIndex.insert({entryTimestamp, 0});
 			lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
