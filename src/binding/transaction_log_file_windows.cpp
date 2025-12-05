@@ -302,8 +302,12 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
 
 MemoryMap::~MemoryMap() {
-	UnmapViewOfFile(map);
-	CloseHandle(mapHandle);
+	if (this->map != nullptr) {
+		::UnmapViewOfFile(this->map);
+	}
+	if (this->mapHandle != INVALID_HANDLE_VALUE) {
+		::CloseHandle(this->mapHandle);
+	}
 }
 
 } // namespace rocksdb_js
