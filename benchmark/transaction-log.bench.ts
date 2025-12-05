@@ -14,7 +14,7 @@ describe('Transaction log', () => {
 				const log = db.useLog('0');
 				ctx.log = log;
 			},
-			async bench({ db, value, log, start, duration }) {
+			async bench({ db, log }) {
 				return db.transaction((txn) => {
 					log.addEntry(data, txn.id);
 				});
