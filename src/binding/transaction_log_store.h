@@ -13,6 +13,8 @@
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
+#define RECENTLY_COMMITTED_POSITIONS_SIZE 24
+
 namespace rocksdb_js {
 
 // forward declarations
@@ -138,7 +140,7 @@ struct TransactionLogStore final {
 	 * number. Instead this is an array where each n position represents an n^2 frequencies of correlations. This is enough
 	 * that we won't lose more than half of what has to be replayed since the last flush.
 	 */
-	SequencePosition recentlyCommittedSequencePositions[20];
+	SequencePosition recentlyCommittedSequencePositions[RECENTLY_COMMITTED_POSITIONS_SIZE];
 
 	/**
 	 * The mutex to protect the transaction data sets.

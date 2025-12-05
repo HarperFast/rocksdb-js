@@ -21,7 +21,7 @@ TransactionLogStore::TransactionLogStore(
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	lastCommittedPosition = std::make_shared<LogPosition>(0);
-	for (int i = 0; i < 20; i++) { // initialize recent commits to not match until values are entered
+	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) { // initialize recent commits to not match until values are entered
 		recentlyCommittedSequencePositions[i].position = { 0, 0 };
 		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
 	}
@@ -377,7 +377,8 @@ void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::Se
 	// won't lose more than half of what has to be replayed since the last flush.
 	unsigned int count = nextSequencePositionsCount++;
 	int index = 0;
-	for (; index < 19; index++) {
+	// iterate through the array breaking once at the first set bit, but don't iterate past the end of the array (hence -1)
+	for (; index < RECENTLY_COMMITTED_POSITIONS_SIZE - 1; index++) {
 	    if ((count >> index) & 1) break; // will break 50% of the time at each iteration
 	}
 	// record in the array
@@ -395,7 +396,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	LogPosition latestFlushedPosition = { 0, 0 };
 	// the latest sequence number that has been flushed according to this flush update
-	for (int i = 0; i < 20; i++) {
+	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
 		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
 		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
 			latestFlushedPosition = sequencePosition.position;
