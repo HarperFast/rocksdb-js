@@ -1,45 +1,44 @@
 import { describe } from 'vitest';
-import { benchmark, generateTestData } from './setup.js';
-import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
+import { benchmark, concurrent } from './setup.js';
 
 describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
 	const data = Buffer.alloc(100, 'a');
 
 	describe('write log with 100 byte records', () => {
-		benchmark('rocksdb', {
+		benchmark('rocksdb', concurrent({
 			async setup(ctx) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
 			},
-			bench: concurrent(({ db, value, log, start, duration }) => {
+			async bench({ db, value, log, start, duration }) {
 				return db.transaction((txn) => {
 					log.addEntry(data, txn.id);
 				});
-			}),
-		});
+			},
+		}));
 
-		benchmark('lmdb', {
+		benchmark('lmdb', concurrent({
 			async setup(ctx) {
 				let start = Date.now();
 				ctx.index = start;
 			},
-			bench: concurrent((ctx) => {
+			bench(ctx) {
 				const { db } = ctx;
-				return db.put(ctx.index++, data);
-			}),
-		});
+				return db.put(ctx.index++, data) as unknown as Promise<void>;
+			},
+		}));
 	});
 	describe('read 100 iterators while write log with 100 byte records', () => {
-		benchmark('rocksdb', {
+		benchmark('rocksdb', concurrent({
 			async setup(ctx) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
 				ctx.iterators = Array(100).fill(null).map(() => log.query({ start: 1 }));
 			},
-			bench: concurrent(({ db, iterators, log }) => {
+			bench({ db, iterators, log }) {
 				let last;
 				for (let iterator of iterators) {
 					for (let entry of iterator) {
@@ -48,26 +47,28 @@ describe('Transaction log', () => {
 				}
 				return db.transaction((txn) => {
 					log.addEntry(data, txn.id);
-				});
-			}),
-		});
+				}) as Promise<void>;
+			},
+			concurrencyMaximum: 2,
+		}));
 
-		benchmark('lmdb', {
+		benchmark('lmdb', concurrent({
 			async setup(ctx) {
 				let start = Date.now();
 				ctx.index = start;
 				ctx.last = 0;
 			},
-			bench: concurrent((ctx) => {
+			bench(ctx) {
 				const { db, last } = ctx;
 				for (let i = 0; i < 100; i++) {
 					for (let { key, value } of db.getRange({ start: ctx.last })) {
 						ctx.last = key + 1;
 					}
 				}
-				return db.put(ctx.index++, data);
-			}),
-		});
+				return db.put(ctx.index++, data) as Promise<void>;
+			},
+			concurrencyMaximum: 2,
+		}));
 	});
 	describe('read one entry from random position from log with 1000 100 byte records', () => {
 		benchmark('rocksdb', {
@@ -111,24 +112,3 @@ describe('Transaction log', () => {
 		});
 	});
 });
-function concurrent<C>(execute: (ctx: C) => Promise<void>, concurrencySlowdown = 100): (ctx: C) => Promise<void> {
-	let outstanding = 0;
-	let previousRejection: Error;
-	return async (ctx: C) => {
-		outstanding++;
-		execute(ctx).then(() => outstanding--, (error) => {
-			previousRejection = error
-		});
-		if (previousRejection) {
-			// a previous execution rejected to an error, so we need to throw it now to surface it
-			let error = previousRejection;
-			previousRejection = null; // reset this
-			throw error;
-		}
-		if (concurrencySlowdown) {
-			return delay(concurrencySlowdown - outstanding);
-		} else {
-			return rest();
-		}
-	}
-}
