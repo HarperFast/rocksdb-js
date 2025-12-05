@@ -161,7 +161,7 @@ struct TransactionLogStore final {
 	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
-	LogPosition nextLogPosition = { 0, 0 };
+	LogPosition nextLogPosition = { { 0, 0 } };
 
 	/**
 	 * Data structure to hold the last committed position of a transaction log file, that is exposed
