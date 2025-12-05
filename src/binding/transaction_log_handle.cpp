@@ -75,10 +75,10 @@ uint64_t TransactionLogHandle::findPosition(double timestamp) {
 	if (store) return store->findPositionByTimestamp(timestamp);
 	return 0;
 }
-PositionHandle* TransactionLogHandle::getLastCommittedPosition() {
+std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	auto store = this->store.lock();
 	if (store) return store->getLastCommittedPosition();
-	return nullptr;
+	return std::weak_ptr<LogPosition>(); // nullptr
 }
 
 } // namespace rocksdb_js

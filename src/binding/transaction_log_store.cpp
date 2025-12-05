@@ -20,7 +20,7 @@ TransactionLogStore::TransactionLogStore(
 	maxAgeThreshold(maxAgeThreshold)
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
-	positionHandle = new PositionHandle();
+	lastCommittedPosition = std::make_shared<LogPosition>(0);
 	for (int i = 0; i < 20; i++) { // initialize recent commits to not match until values are entered
 		recentlyCommittedSequencePositions[i].position = 0;
 		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
@@ -29,10 +29,6 @@ TransactionLogStore::TransactionLogStore(
 
 TransactionLogStore::~TransactionLogStore() {
 	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
-	if (--positionHandle->refCount == 0) {
-		DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore delete positionHandle\n", this);
-		delete positionHandle;
-	}
 	this->close();
 }
 
@@ -119,9 +115,8 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	}
 }
 
-PositionHandle* TransactionLogStore::getLastCommittedPosition() {
-	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	return this->positionHandle;
+std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
+	return this->lastCommittedPosition;
 }
 
 uint64_t TransactionLogStore::findPositionByTimestamp(double timestamp) {
@@ -370,7 +365,7 @@ void TransactionLogStore::commitFinished(const uint64_t position, rocksdb::Seque
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
 	uint64_t fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
 	// update the current position handle with latest fully committed position
-	positionHandle->position = fullyCommittedPosition;
+	this->lastCommittedPosition->fullPosition = fullyCommittedPosition;
 	// now setup a sequence position that matches a rocksdb sequence number to our log position
 	SequencePosition sequencePosition;
 	sequencePosition.position = fullyCommittedPosition;

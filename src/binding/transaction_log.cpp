@@ -167,27 +167,22 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	return result;
 }
 
+struct PositionHandle {
+	std::shared_ptr<LogPosition> position;
+};
 /**
  * Return a buffer with the status of the sequenced log file.
  */
 napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
-	PositionHandle* lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition();
+	auto lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition().lock();
 	napi_value result;
-	lastCommittedPosition->refCount++;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, lastCommittedPosition, [](napi_env env, void* data, void* hint) {
-		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
-		DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup refCount %u\n",
-			lastCommittedPosition->refCount);
-		int64_t memoryUsage;
-		napi_adjust_external_memory(env, 0, &memoryUsage);
-		DEBUG_LOG("TransactionLog::GetLastCommittedPosition, external memory=%u\n", memoryUsage);
-
-		if (--lastCommittedPosition->refCount == 0) {
-			delete lastCommittedPosition;
-		}
-	}, nullptr, &result));
+	PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, (void*) lastCommittedPosition.get(), [](napi_env env, void* data, void* hint) {
+		PositionHandle* positionHandle = static_cast<PositionHandle*>(hint);
+		delete positionHandle;
+	}, positionHandle, &result));
 	return result;
 }
 

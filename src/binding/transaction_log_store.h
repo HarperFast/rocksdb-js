@@ -27,19 +27,25 @@ struct SequencePosition { // forward declaration doesn't work here because it is
 
 /**
 * Structure to hold the last committed position of a transaction log file, that is exposed
-* to JS through an external buffer with reference counting.
+* to JS through an external buffer
 */
-struct PositionHandle {
+union LogPosition {
+	struct {
+		/**
+		* This offset relative to the start of the log file.
+		*/
+		uint32_t positionInLogFile;
+		/**
+		* The sequence number of the log file.
+		*/
+		uint32_t logSequenceNumber;
+	};
 	/**
 	 * The full position of the last committed transaction, combining the sequence
 	 * with the offset within the file, as a single 64-bit word that can be accessed
-	 * from JS. Maybe we should use a union here?
+	 * from JS.
 	 */
-	uint64_t position;
-	/**
-	 * Reference counting for use with JS external buffers
-	 */
-	std::atomic<unsigned int> refCount = 1;
+	uint64_t fullPosition;
 };
 
 struct TransactionLogStore final {
@@ -148,7 +154,7 @@ struct TransactionLogStore final {
 	 * Data structure to hold the last committed position of a transaction log file, that is exposed
 	 * to JS through an external buffer with reference counting.
 	 */
-	PositionHandle* positionHandle;
+	std::shared_ptr<LogPosition> lastCommittedPosition;
 
 	TransactionLogStore(
 		const std::string& name,
@@ -191,7 +197,7 @@ struct TransactionLogStore final {
 	/**
 	 * Get the shared represention object representing the last committed position.
 	 **/
-	PositionHandle* getLastCommittedPosition();
+	std::weak_ptr<LogPosition> getLastCommittedPosition();
 
 	/**
 	 * Finds the transaction log file position with the oldest transaction that is equal to, or
