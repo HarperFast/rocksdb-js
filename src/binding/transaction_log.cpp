@@ -178,8 +178,8 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 	lastCommittedPosition->refCount++;
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, lastCommittedPosition, [](napi_env env, void* data, void* hint) {
 		PositionHandle* lastCommittedPosition = static_cast<PositionHandle*>(data);
-		unsigned int refCount = lastCommittedPosition->refCount;
-		DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup refCount %u\n", refCount);
+		DEBUG_LOG("TransactionLog::GetLastCommittedPosition cleanup refCount %u\n",
+			lastCommittedPosition->refCount);
 		int64_t memoryUsage;
 		napi_adjust_external_memory(env, 0, &memoryUsage);
 DEBUG_LOG("TransactionLog::GetLastCommittedPosition, external memory=%u\n", memoryUsage);
