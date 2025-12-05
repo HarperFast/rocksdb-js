@@ -1,5 +1,7 @@
 import { describe } from 'vitest';
-import { benchmark, concurrent } from './setup.js';
+import { benchmark, concurrent, type BenchmarkContext, type LMDBDatabase } from './setup.js';
+import type { RocksDatabase } from '../dist/index.mjs';
+import type { TransactionLogQueryOptions } from '../src/load-binding.js';
 
 describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
