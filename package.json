@@ -21,7 +21,7 @@
     "build": "pnpm build:bundle && pnpm rebuild",
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
-    "build:bundle": "rimraf dist && tsdown -c tsdown.config.ts --sourcemap",
+    "build:bundle": "rimraf dist && tsdown -c tsdown.config.ts",
     "build:debug": "cross-env SKIP_MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",

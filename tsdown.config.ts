@@ -21,6 +21,7 @@ const config: UserConfig = defineConfig({
 			}
 		})
 	],
+	sourcemap: true,
 	tsconfig: './tsconfig.build.json'
 });
 export default config;
