@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import assert from 'node:assert';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
-import { RocksDatabase } from '../src';
+import { RocksDatabase } from '../src/index.js';
 
 const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
