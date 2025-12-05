@@ -509,6 +509,8 @@ function withResolvers<T>() {
 	};
 }
 
+export function concurrent(suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
+export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
 export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
 	let index = 0;
 	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
