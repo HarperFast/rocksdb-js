@@ -274,7 +274,7 @@ LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			// this prevents infinite loops when file open fails (even with maxIndexSize=0)
 			if (logFile == nullptr || this->maxFileSize > 0) {
 				DEBUG_LOG("%p TransactionLogStore::commit Rotating to next sequence for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
-					this, this->name.c_str(), static_cast<void*>(logFile), this->maxFileSize)
+					this, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize)
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				logFile = nullptr;
 			}
