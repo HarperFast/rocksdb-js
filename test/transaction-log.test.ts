@@ -267,6 +267,24 @@ describe('Transaction Log', () => {
 			expect(count).toBe(400);
 			expect(count2).toBe(400);
 		}));
+		it('should be able to reuse a query iterator that starts after the latest log', () => dbRunner({
+			dbOptions: [{ transactionLogMaxSize: 1000 }],
+		}, async ({ db, dbPath }) => {
+			let log = db.useLog('foo');
+			const value = Buffer.alloc(100, 'a');
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			let queryIterator = log.query({ start: 0 });
+			const start = Array.from(queryIterator)[0].timestamp + 1;
+			queryIterator = log.query({ start });
+			expect(Array.from(queryIterator).length).toBe(0); // shouldn't return anything because we are staring after last log
+			await delay(2);
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+			});
+			expect(Array.from(queryIterator).length).toBe(1); // latest should show up now
+		}));
 	});
 
 	describe('addEntry()', () => {

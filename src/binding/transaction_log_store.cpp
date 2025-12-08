@@ -136,9 +136,14 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
 		// we are in the correct log file to start searching
 		if (positionInLogFile > 0) {
-			if (positionInLogFile == 0xFFFFFFFF && sequenceNumber < this->currentSequenceNumber) {
-				// beyond the end of this log file, revert to next one (because it exists)
-				break;
+			if (positionInLogFile == 0xFFFFFFFF) {
+				// beyond the end of this log file
+				if (sequenceNumber < this->currentSequenceNumber) {
+					// revert to next one (because it exists)
+					break;
+				} else { // otherwise position at the end of the log file (JS code can filter from here)
+					positionInLogFile = logFile->size;
+				}
 			}
 			// found a valid position in the log file
 			return { { positionInLogFile, sequenceNumber } };
