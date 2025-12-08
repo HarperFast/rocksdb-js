@@ -1,10 +1,29 @@
 #include <chrono>
+#include <exception>
 #include <vector>
 #include "macros.h"
 #include "transaction_log_store.h"
 #include "util.h"
 
 namespace rocksdb_js {
+
+// Helper function to extract exception message from exception_ptr
+static std::string getExceptionMessage(std::exception_ptr eptr) {
+	if (!eptr) {
+		return "No exception information available";
+	}
+	try {
+		std::rethrow_exception(eptr);
+	} catch (const std::exception& e) {
+		return e.what();
+	} catch (const std::string& s) {
+		return s;
+	} catch (const char* s) {
+		return s;
+	} catch (...) {
+		return "Unknown exception type";
+	}
+}
 
 TransactionLogStore::TransactionLogStore(
 	const std::string& name,
@@ -60,10 +79,11 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 	std::shared_ptr<TransactionLogFile> logFile = it != this->sequenceFiles.end() ? it->second : nullptr;
 
 	if (!logFile) {
-		DEBUG_LOG("%p TransactionLogStore::getLogFile Store path \"%s\" (seq=%u) no log file found, creating\n",
+		DEBUG_LOG("%p TransactionLogStore::getLogFile No long file found, creating store \"%s\" (seq=%u)\n",
 			this, this->path.string().c_str(), sequenceNumber)
 
 		// ensure the directory exists before creating the file (should already exist)
+		DEBUG_LOG("%p TransactionLogStore::getLogFile Creating directory: %s\n", this, this->path.string().c_str());
 		std::filesystem::create_directories(this->path);
 
 		std::string filename = std::to_string(sequenceNumber) + ".txnlog";
@@ -188,6 +208,12 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what())
 				continue;
+			} catch (...) {
+				auto eptr = std::current_exception();
+				std::string errorMsg = getExceptionMessage(eptr);
+				DEBUG_LOG("%p TransactionLogStore::purge Unknown error getting last write time for file %s: %s\n",
+					this, logFile->path.string().c_str(), errorMsg.c_str())
+				continue;
 			}
 		}
 
@@ -213,13 +239,17 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
 			if (std::filesystem::exists(this->path)) {
+				DEBUG_LOG("%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str());
 				std::filesystem::remove(this->path);
 				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
 			}
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what())
 		} catch (...) {
-			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log directory %s\n", this, this->path.string().c_str())
+			auto eptr = std::current_exception();
+			std::string errorMsg = getExceptionMessage(eptr);
+			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log directory %s: %s\n",
+				this, this->path.string().c_str(), errorMsg.c_str())
 		}
 	}
 }
@@ -303,27 +333,48 @@ LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Checking if log file is older than threshold (%f) for store \"%s\"\n",
 			this, this->maxAgeThreshold, this->name.c_str())
 		if (this->maxAgeThreshold > 0) {
-			auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-				this->retentionMs * (1 - this->maxAgeThreshold)
-			);
-			auto lastWriteTime = logFile->getLastWriteTime();
-			auto now = std::chrono::system_clock::now();
-			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastWriteTime);
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:        %f\n",
-				this, this->maxAgeThreshold)
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Retention duration:       %lld ms\n",
-				this, this->retentionMs.count())
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Threshold duration:       %lld ms\n",
-				this, thresholdDuration.count())
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Log file last write time: %lld ms\n",
-				this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count())
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Now:                      %lld ms\n",
-				this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count())
-			DEBUG_LOG("%p TransactionLogStore::writeBatch File age:                 %lld ms\n",
-				this, fileAgeMs.count())
-			if (fileAgeMs >= thresholdDuration) {
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Log file is older than threshold (%lld ms >= %lld ms), rotating to next file for store \"%s\"\n",
-					this, fileAgeMs.count(), thresholdDuration.count(), this->name.c_str())
+			try {
+				auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+					this->retentionMs * (1 - this->maxAgeThreshold)
+				);
+				auto lastWriteTime = logFile->getLastWriteTime();
+				auto now = std::chrono::system_clock::now();
+				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastWriteTime);
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:        %f\n",
+					this, this->maxAgeThreshold)
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Retention duration:       %lld ms\n",
+					this, this->retentionMs.count())
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Threshold duration:       %lld ms\n",
+					this, thresholdDuration.count())
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Log file last write time: %lld ms\n",
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count())
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Now:                      %lld ms\n",
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count())
+				DEBUG_LOG("%p TransactionLogStore::writeBatch File age:                 %lld ms\n",
+					this, fileAgeMs.count())
+				if (fileAgeMs >= thresholdDuration) {
+					DEBUG_LOG("%p TransactionLogStore::writeBatch Log file is older than threshold (%lld ms >= %lld ms), rotating to next file for store \"%s\"\n",
+						this, fileAgeMs.count(), thresholdDuration.count(), this->name.c_str())
+					this->currentSequenceNumber = this->nextSequenceNumber++;
+					continue;
+				}
+			} catch (const std::filesystem::filesystem_error& e) {
+				// file was deleted or doesn't exist yet
+				DEBUG_LOG("%p TransactionLogStore::writeBatch File no longer exists or not yet created: %s - %s\n",
+					this, logFile->path.string().c_str(), e.what())
+				// rotate to next file to avoid using a problematic file
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+				continue;
+			} catch (const std::exception& e) {
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to get last write time for file %s: %s\n",
+					this, logFile->path.string().c_str(), e.what())
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+				continue;
+			} catch (...) {
+				auto eptr = std::current_exception();
+				std::string errorMsg = getExceptionMessage(eptr);
+				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Unknown error getting last write time for file %s: %s\n",
+					this, logFile->path.string().c_str(), errorMsg.c_str())
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
 			}
@@ -434,56 +485,62 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
 
 	// find `.txnlog` files in the directory
-	for (const auto& fileEntry : std::filesystem::directory_iterator(path)) {
-		if (fileEntry.is_regular_file() && fileEntry.path().extension() == ".txnlog") {
-			auto filePath = fileEntry.path();
-			auto filename = filePath.filename().string();
-
-			std::string sequenceNumberStr = filename.substr(0, filename.size() - 7);
-			uint32_t sequenceNumber = 0;
-
+	try {
+		for (const auto& fileEntry : std::filesystem::directory_iterator(path)) {
 			try {
-				sequenceNumber = std::stoul(sequenceNumberStr);
+				if (fileEntry.is_regular_file() && fileEntry.path().extension() == ".txnlog") {
+					auto filePath = fileEntry.path();
+					auto filename = filePath.filename().string();
 
-				// check if the file is too old
-				if (retentionMs.count() > 0) {
-					auto mtime = std::filesystem::last_write_time(filePath);
-					auto mtime_sys = convertFileTimeToSystemTime(mtime);
-					auto now = std::chrono::system_clock::now();
-					auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
-					auto delta = fileAgeMs - retentionMs;
+					std::string sequenceNumberStr = filename.substr(0, filename.size() - 7);
+					uint32_t sequenceNumber = 0;
 
-					if (delta.count() > 0) {
-						// file is too old, remove it
-						DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
-							store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
-						try {
-							std::filesystem::remove(filePath);
-						} catch (const std::filesystem::filesystem_error& e) {
-							DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
-								store.get(), filePath.string().c_str(), e.what())
+					sequenceNumber = std::stoul(sequenceNumberStr);
+
+					// check if the file is too old
+					if (retentionMs.count() > 0) {
+						auto mtime = std::filesystem::last_write_time(filePath);
+						auto mtime_sys = convertFileTimeToSystemTime(mtime);
+						auto now = std::chrono::system_clock::now();
+						auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
+						auto delta = fileAgeMs - retentionMs;
+
+						if (delta.count() > 0) {
+							// file is too old, remove it
+							DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
+								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
+							try {
+								DEBUG_LOG("%p TransactionLogStore::load Removing expired file: %s\n", store.get(), filePath.string().c_str());
+								std::filesystem::remove(filePath);
+							} catch (const std::filesystem::filesystem_error& e) {
+								DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
+									store.get(), filePath.string().c_str(), e.what())
+							}
+							continue;
+						} else {
+							DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
+								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
 						}
-						continue;
-					} else {
-						DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
-							store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
 					}
-				}
 
-				store->registerLogFile(filePath, sequenceNumber);
+					store->registerLogFile(filePath, sequenceNumber);
+				}
 			} catch (const std::filesystem::filesystem_error& e) {
-				DEBUG_LOG("%p TransactionLogStore::load Failed to get last write time for file %s: %s\n",
-					store.get(), filePath.string().c_str(), e.what())
+				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
+					store.get(), e.what())
 			} catch (const std::exception& e) {
-				DEBUG_LOG("%p TransactionLogStore::load Failed to load file %s: %s\n",
-					store.get(), filePath.string().c_str(), e.what())
+				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
+					store.get(), e.what())
 			} catch (...) {
-				DEBUG_LOG(
-					"DBDescriptor::discoverTransactionLogStores Invalid sequence number in file: %s\n",
-					filename.c_str()
-				)
+				auto eptr = std::current_exception();
+				std::string errorMsg = getExceptionMessage(eptr);
+				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",
+					store.get(), errorMsg.c_str())
 			}
 		}
+	} catch (const std::filesystem::filesystem_error& e) {
+		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
+			store.get(), e.what())
 	}
 	store->uncommittedTransactionPositions.insert(store->nextLogPosition);
 

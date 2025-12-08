@@ -15,9 +15,9 @@
   "type": "module",
   "gypfile": true,
   "scripts": {
-    "bench": "vitest bench --outputJson benchmark-results.json",
-    "bench:bun": "bun --bun bench",
-    "bench:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
+    "bench": "cross-env CI=1 vitest bench --outputJson benchmark-results.json",
+    "bench:bun": "cross-env CI=1 bun --bun bench",
+    "bench:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
     "build": "pnpm build:bundle && pnpm rebuild",
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
