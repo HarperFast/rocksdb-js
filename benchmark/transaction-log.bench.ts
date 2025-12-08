@@ -20,16 +20,16 @@ describe('Transaction log', () => {
 			},
 		}));
 
-		benchmark('lmdb', concurrent({
-			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
-				let start = Date.now();
-				ctx.index = start;
-			},
-			bench(ctx: BenchmarkContext<LMDBDatabase>) {
-				const { db } = ctx;
-				return db.put(String(ctx.index++), data) as unknown as Promise<void>;
-			},
-		}));
+		// benchmark('lmdb', concurrent({
+		// 	async setup(ctx: BenchmarkContext<LMDBDatabase>) {
+		// 		let start = Date.now();
+		// 		ctx.index = start;
+		// 	},
+		// 	bench(ctx: BenchmarkContext<LMDBDatabase>) {
+		// 		const { db } = ctx;
+		// 		return db.put(String(ctx.index++), data) as unknown as Promise<void>;
+		// 	},
+		// }));
 	});
 	describe('read 100 iterators while write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({

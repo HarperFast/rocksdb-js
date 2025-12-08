@@ -17,16 +17,6 @@ TransactionLogFile::~TransactionLogFile() {
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-
-	if (!std::filesystem::exists(this->path)) {
-		DEBUG_LOG("%p TransactionLogFile::getLastWriteTime ERROR: File does not exist: %s\n", this, this->path.string().c_str())
-		throw std::filesystem::filesystem_error(
-			"File does not exist",
-			this->path,
-			std::make_error_code(std::errc::no_such_file_or_directory)
-		);
-	}
-
 	auto mtime = std::filesystem::last_write_time(this->path);
 	return convertFileTimeToSystemTime(mtime);
 }
