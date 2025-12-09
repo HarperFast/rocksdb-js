@@ -515,29 +515,31 @@ export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDataba
 export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
 	let index = 0;
 	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
-	let currentlyExecuting: { promise: Promise<void> | null, rev: number }[] = Array(concurrencyMaximum);
+	let currentlyExecuting: { promise: Promise<void> | null, index: number, rev: number }[] = Array(concurrencyMaximum);
 	let revs: number[] = Array(concurrencyMaximum).fill(0);
 	const restEachTurn = suite.restEachTurn ?? true;
 	return {
 		...suite,
 		async bench(ctx: BenchmarkContext<T>) {
-			if (currentlyExecuting[index]?.promise) {
-				process.stderr.write(`${process.pid}:${threadId} DONE  ${index}:${currentlyExecuting[index].rev}\n`);
-				await currentlyExecuting[index].promise; // await the previous execution for this slot
+			let idx = index;
+			if (currentlyExecuting[idx]?.promise) {
+				process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${currentlyExecuting[idx].rev}\n`);
+				await currentlyExecuting[idx].promise; // await the previous execution for this slot
 			}
-			const rev = revs[index]++;
-			process.stderr.write(`${process.pid}:${threadId} START ${index}:${rev}\n`);
+			const rev = revs[idx]++;
+			process.stderr.write(`${process.pid}:${threadId} START ${idx}:${rev}\n`);
 			const result = suite.bench(ctx);
 			if (result instanceof Promise) {
-				currentlyExecuting[index] = {
+				currentlyExecuting[idx] = {
 					promise: result.then(() => {
-						process.stderr.write(`${process.pid}:${threadId} DONE  ${index}:${rev}\n`);
+						process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
 					}),
+					index: idx,
 					rev
 				};
 			} else {
-				currentlyExecuting[index] = { promise: null, rev };
-				process.stderr.write(`${process.pid}:${threadId} DONE  ${index}:${rev}\n`);
+				currentlyExecuting[idx] = { promise: null, index: idx, rev };
+				process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
 			}
 
 			// let it execute concurrently and resolve after concurrencyMaximum number of executions
@@ -547,9 +549,10 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 			}
 		},
 		async teardown(ctx: BenchmarkContext<T>) {
-			process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${currentlyExecuting.length} EXECUTIONS\n`);
 			// wait for all outstanding executions to finish
-			await Promise.all(currentlyExecuting.map((execution, index) => {
+			const pending = currentlyExecuting.filter(e => e?.promise);
+			process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${pending.length} EXECUTIONS\n`);
+			await Promise.all(pending.map((execution, index) => {
 				process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${index}:${execution.rev}\n`);
 				return execution.promise;
 			}));
