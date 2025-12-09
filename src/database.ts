@@ -298,7 +298,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
 				};
 				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
-					this.transactionSync((txn: Transaction) => {
+					return this.transactionSync((txn: Transaction) => {
 						// note: we need to get a fresh copy of the shared structures,
 						// so we don't want to use the transaction's getBinarySync()
 						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
