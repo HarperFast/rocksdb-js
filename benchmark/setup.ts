@@ -513,52 +513,69 @@ function withResolvers<T>() {
 export function concurrent(suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
 export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
 export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
-	let index = 0;
+	// let index = 0;
 	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
-	let currentlyExecuting: { promise: Promise<void> | null, index: number, rev: number }[] = Array(concurrencyMaximum);
-	let revs: number[] = Array(concurrencyMaximum).fill(0);
+	// let currentlyExecuting: { promise: Promise<void> | null, index: number, rev: number }[] = Array(concurrencyMaximum);
+	// let revs: number[] = Array(concurrencyMaximum).fill(0);
+	let counter = 0;
+	const pending: Promise<void>[] = [];
 	const restEachTurn = suite.restEachTurn ?? true;
 	return {
 		...suite,
 		async bench(ctx: BenchmarkContext<T>) {
-			let idx = index;
-			if (currentlyExecuting[idx]?.promise) {
-				process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${currentlyExecuting[idx].rev}\n`);
-				await currentlyExecuting[idx].promise; // await the previous execution for this slot
-			}
-			const rev = revs[idx]++;
-			process.stderr.write(`${process.pid}:${threadId} START ${idx}:${rev}\n`);
-			const result = suite.bench(ctx);
-			if (result instanceof Promise) {
-				currentlyExecuting[idx] = {
-					promise: result.then(() => {
-						process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
-					}),
-					index: idx,
-					rev
-				};
-			} else {
-				currentlyExecuting[idx] = { promise: null, index: idx, rev };
-				process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
-			}
+			counter++;
+			const cnt = counter;
+			process.stderr.write(`${process.pid}:${threadId} START ${cnt}\n`);
+			const promise = Promise.all(Array.from({ length: concurrencyMaximum }, async (_, i) => {
+				await suite.bench(ctx);
+				if (restEachTurn) {
+					await rest();
+				}
+			})).then(() => {});
+			pending.push(promise);
 
-			// let it execute concurrently and resolve after concurrencyMaximum number of executions
-			index = (index + 1) % concurrencyMaximum; // cycle in a loop
-			if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
-				await rest();
-			}
+
+			process.stderr.write(`${process.pid}:${threadId} DONE  ${cnt}\n`);
+
+			// let idx = index;
+			// if (currentlyExecuting[idx]?.promise) {
+			// 	process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${currentlyExecuting[idx].rev}\n`);
+			// 	await currentlyExecuting[idx].promise; // await the previous execution for this slot
+			// }
+			// const rev = revs[idx]++;
+			// process.stderr.write(`${process.pid}:${threadId} START ${idx}:${rev}\n`);
+			// const result = suite.bench(ctx);
+			// if (result instanceof Promise) {
+			// 	currentlyExecuting[idx] = {
+			// 		promise: result.then(() => {
+			// 			process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
+			// 		}),
+			// 		index: idx,
+			// 		rev
+			// 	};
+			// } else {
+			// 	currentlyExecuting[idx] = { promise: null, index: idx, rev };
+			// 	process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
+			// }
+
+			// // let it execute concurrently and resolve after concurrencyMaximum number of executions
+			// index = (index + 1) % concurrencyMaximum; // cycle in a loop
+			// if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
+			// 	await rest();
+			// }
 		},
 		async teardown(ctx: BenchmarkContext<T>) {
+			process.stderr.write(`${process.pid}:${threadId} TEARDOWN START counter=${counter}\n`);
 			// wait for all outstanding executions to finish
-			const pending = currentlyExecuting.filter(e => e?.promise);
-			process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${pending.length} EXECUTIONS\n`);
-			await Promise.all(pending.map((execution, index) => {
-				process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${index}:${execution.rev}\n`);
-				return execution.promise;
-			}));
-			process.stderr.write(`${process.pid}:${threadId} TEARDOWN DONE\n`);
+			// const pending = currentlyExecuting.filter(e => e?.promise);
+			// process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${pending.length} EXECUTIONS\n`);
+			// await Promise.all(pending.map(execution => {
+			// 	process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${execution.index}:${execution.rev}\n`);
+			// 	return execution.promise;
+			// }));
+			// process.stderr.write(`${process.pid}:${threadId} TEARDOWN DONE\n`);
 			// any more tearing down
-			return suite.teardown?.(ctx);
+			// return suite.teardown?.(ctx);
 		}
 	}
 }
