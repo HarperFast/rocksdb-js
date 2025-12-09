@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { rimraf } from 'rimraf';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
-import { parentPort, Worker, workerData } from 'node:worker_threads';
+import { parentPort, threadId, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
 
 const vitestBench = workerData.benchmarkWorkerId ? () => {
@@ -76,6 +76,7 @@ export function benchmark(type: string, options: any): void {
 				const path = ctx.db.path;
 				await ctx.db.close();
 				try {
+					process.stderr.write(`${process.pid}:${threadId} Removing path: ${path}\n`);
 					await rimraf(path);
 				} catch {
 					// ignore cleanup errors in benchmarks
@@ -514,21 +515,45 @@ export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDataba
 export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
 	let index = 0;
 	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
-	let currentlyExecuting: Promise<void>[] = Array(concurrencyMaximum);
+	let currentlyExecuting: { promise: Promise<void> | null, rev: number }[] = Array(concurrencyMaximum);
+	let revs: number[] = Array(concurrencyMaximum).fill(0);
 	const restEachTurn = suite.restEachTurn ?? true;
 	return {
 		...suite,
 		async bench(ctx: BenchmarkContext<T>) {
-			await currentlyExecuting[index]; // await the previous execution for this slot
-			currentlyExecuting[index] = suite.bench(ctx) as Promise<void>; // let it execute concurrently and resolve after concurrencyMaximum number of executions
+			if (currentlyExecuting[index]?.promise) {
+				process.stderr.write(`${process.pid}:${threadId} DONE  ${index}:${currentlyExecuting[index].rev}\n`);
+				await currentlyExecuting[index].promise; // await the previous execution for this slot
+			}
+			const rev = revs[index]++;
+			process.stderr.write(`${process.pid}:${threadId} START ${index}:${rev}\n`);
+			const result = suite.bench(ctx);
+			if (result instanceof Promise) {
+				currentlyExecuting[index] = {
+					promise: result.then(() => {
+						process.stderr.write(`${process.pid}:${threadId} DONE  ${index}:${rev}\n`);
+					}),
+					rev
+				};
+			} else {
+				currentlyExecuting[index] = { promise: null, rev };
+				process.stderr.write(`${process.pid}:${threadId} DONE  ${index}:${rev}\n`);
+			}
+
+			// let it execute concurrently and resolve after concurrencyMaximum number of executions
 			index = (index + 1) % concurrencyMaximum; // cycle in a loop
 			if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
 				await rest();
 			}
 		},
 		async teardown(ctx: BenchmarkContext<T>) {
+			process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${currentlyExecuting.length} EXECUTIONS\n`);
 			// wait for all outstanding executions to finish
-			await Promise.all(currentlyExecuting);
+			await Promise.all(currentlyExecuting.map((execution, index) => {
+				process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${index}:${execution.rev}\n`);
+				return execution.promise;
+			}));
+			process.stderr.write(`${process.pid}:${threadId} TEARDOWN DONE\n`);
 			// any more tearing down
 			return suite.teardown?.(ctx);
 		}
