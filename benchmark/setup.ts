@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { parentPort, threadId, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
 
-const vitestBench = workerData.benchmarkWorkerId ? () => {
+const vitestBench = workerData?.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
 } : (await import('vitest')).bench;
 
@@ -45,10 +45,12 @@ export function benchmark(type: string, options: any): void {
 		let timer: NodeJS.Timeout | undefined;
 		return Promise.race([
 			(async () => {
+				process.stderr.write(`${process.pid}:${threadId} BENCH START\n`);
 				await bench(ctx);
 				if (timer) {
 					clearTimeout(timer);
 				}
+				process.stderr.write(`${process.pid}:${threadId} BENCH DONE\n`);
 			})(),
 			new Promise<void>((_resolve, reject) => {
 				timer = setTimeout(() => {
@@ -229,7 +231,7 @@ function describeShim(name: string, fn: () => void) {
  * 2. The worker thread, which does discovery only
  */
 export const workerDescribe = await (async () => {
-	if (workerData.benchmarkWorkerId) {
+	if (workerData?.benchmarkWorkerId) {
 		return Object.assign(describeShim, {
 			only(name: string, fn: () => void) {
 				describeShim(name, fn);
@@ -307,7 +309,7 @@ export function workerBenchmark(type: string, options: any): void {
 		suite.benchmarks.push({ bench, dbOptions, name: benchmarkName, numWorkers, setup, teardown, type });
 	}
 
-	if (workerData.benchmarkWorkerId) {
+	if (workerData?.benchmarkWorkerId) {
 		// worker thread only needs to discover the benchmarks
 		return;
 	}
@@ -518,24 +520,24 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 	// let currentlyExecuting: { promise: Promise<void> | null, index: number, rev: number }[] = Array(concurrencyMaximum);
 	// let revs: number[] = Array(concurrencyMaximum).fill(0);
 	let counter = 0;
-	const pending: Promise<void>[] = [];
+	const pending: Record<number, Promise<void>> = {};
 	const restEachTurn = suite.restEachTurn ?? true;
 	return {
 		...suite,
 		async bench(ctx: BenchmarkContext<T>) {
 			counter++;
-			const cnt = counter;
-			process.stderr.write(`${process.pid}:${threadId} START ${cnt}\n`);
+			const id = counter;
+			process.stderr.write(`${process.pid}:${threadId} START ${id}\n`);
 			const promise = Promise.all(Array.from({ length: concurrencyMaximum }, async (_, i) => {
 				await suite.bench(ctx);
 				if (restEachTurn) {
 					await rest();
 				}
 			})).then(() => {});
-			pending.push(promise);
-
-
-			process.stderr.write(`${process.pid}:${threadId} DONE  ${cnt}\n`);
+			pending[id] = promise;
+			await promise;
+			delete pending[id];
+			process.stderr.write(`${process.pid}:${threadId} DONE  ${id}\n`);
 
 			// let idx = index;
 			// if (currentlyExecuting[idx]?.promise) {
@@ -565,7 +567,8 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 			// }
 		},
 		async teardown(ctx: BenchmarkContext<T>) {
-			process.stderr.write(`${process.pid}:${threadId} TEARDOWN START counter=${counter}\n`);
+			process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${Object.keys(pending).length} PROMISES counter=${counter}\n`);
+			await Promise.all(Object.values(pending));
 			// wait for all outstanding executions to finish
 			// const pending = currentlyExecuting.filter(e => e?.promise);
 			// process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${pending.length} EXECUTIONS\n`);
