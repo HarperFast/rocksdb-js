@@ -1,35 +1,37 @@
 import { describe } from 'vitest';
 import { benchmark, concurrent, type BenchmarkContext, type LMDBDatabase } from './setup.js';
+import { setImmediate as rest } from 'node:timers/promises';
 import type { RocksDatabase } from '../dist/index.mjs';
 
 describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
 	const data = Buffer.alloc(100, 'a');
 
-	describe.only('write log with 100 byte records', () => {
-		benchmark('rocksdb', concurrent({
+	describe('write log with 100 byte records', () => {
+		benchmark('rocksdb', {
 			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
 				ctx.log = log;
 			},
 			async bench({ db, log }) {
-				return db.transaction((txn) => {
+				await db.transaction((txn) => {
 					log.addEntry(data, txn.id);
 				});
+				await rest();
+			},
+		});
+
+		benchmark('lmdb', concurrent({
+			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
+				let start = Date.now();
+				ctx.index = start;
+			},
+			bench(ctx: BenchmarkContext<LMDBDatabase>) {
+				const { db } = ctx;
+				return db.put(String(ctx.index++), data) as unknown as Promise<void>;
 			},
 		}));
-
-		// benchmark('lmdb', concurrent({
-		// 	async setup(ctx: BenchmarkContext<LMDBDatabase>) {
-		// 		let start = Date.now();
-		// 		ctx.index = start;
-		// 	},
-		// 	bench(ctx: BenchmarkContext<LMDBDatabase>) {
-		// 		const { db } = ctx;
-		// 		return db.put(String(ctx.index++), data) as unknown as Promise<void>;
-		// 	},
-		// }));
 	});
 	describe('read 100 iterators while write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({

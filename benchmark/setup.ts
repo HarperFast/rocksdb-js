@@ -38,47 +38,51 @@ export function benchmark(type: string, options: any): void {
 	}
 
 	const { bench, setup, teardown, dbOptions, name } = options;
-	const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	const dbPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	const warmupPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	let ctx: BenchmarkContext<any>;
 
 	vitestBench(name || type, () => {
 		let timer: NodeJS.Timeout | undefined;
+		let timerResolve: (() => void) | undefined;
+		const timerPromise = new Promise<void>((resolve, reject) => {
+			timerResolve = resolve;
+			timer = setTimeout(() => {
+				timerResolve = undefined;
+				reject(new Error('Benchmark timed out'));
+			}, options.timeout || 60_000);
+		});
 		return Promise.race([
 			(async () => {
-				process.stderr.write(`${process.pid}:${threadId} BENCH START\n`);
 				await bench(ctx);
 				if (timer) {
 					clearTimeout(timer);
 				}
-				process.stderr.write(`${process.pid}:${threadId} BENCH DONE\n`);
+				timerResolve?.();
 			})(),
-			new Promise<void>((_resolve, reject) => {
-				timer = setTimeout(() => {
-					reject(new Error('Benchmark timed out'));
-				}, options.timeout || 60_000);
-			})
+			timerPromise,
 		]);
 	}, {
 		throws: true,
-		setup(_task, _mode) {
+		async setup(task, mode: 'warmup' | 'run') {
+			const path = mode === 'warmup' ? warmupPath : dbPath;
 			if (type === 'rocksdb') {
-				ctx = { db: RocksDatabase.open(path, dbOptions) };
+				ctx = { db: RocksDatabase.open(path, dbOptions), mode };
 			} else {
-				ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }) };
+				ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }), mode };
 			}
 			if (typeof setup === 'function') {
-				return setup(ctx);
+				await setup(ctx, task, mode);
 			}
 		},
-		async teardown() {
+		async teardown(task, mode: 'warmup' | 'run') {
 			if (typeof teardown === 'function') {
-				await teardown(ctx);
+				await teardown(ctx, task, mode);
 			}
 			if (ctx.db) {
 				const path = ctx.db.path;
 				await ctx.db.close();
 				try {
-					process.stderr.write(`${process.pid}:${threadId} Removing path: ${path}\n`);
 					await rimraf(path);
 				} catch {
 					// ignore cleanup errors in benchmarks
@@ -515,70 +519,17 @@ function withResolvers<T>() {
 export function concurrent(suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
 export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
 export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
-	// let index = 0;
 	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
-	// let currentlyExecuting: { promise: Promise<void> | null, index: number, rev: number }[] = Array(concurrencyMaximum);
-	// let revs: number[] = Array(concurrencyMaximum).fill(0);
-	let counter = 0;
-	const pending: Record<number, Promise<void>> = {};
 	const restEachTurn = suite.restEachTurn ?? true;
 	return {
 		...suite,
-		async bench(ctx: BenchmarkContext<T>) {
-			counter++;
-			const id = counter;
-			process.stderr.write(`${process.pid}:${threadId} START ${id}\n`);
-			const promise = Promise.all(Array.from({ length: concurrencyMaximum }, async (_, i) => {
+		bench(ctx: BenchmarkContext<T>) {
+			return Promise.all(Array.from({ length: concurrencyMaximum }, async (_, i) => {
 				await suite.bench(ctx);
 				if (restEachTurn) {
 					await rest();
 				}
-			})).then(() => {});
-			pending[id] = promise;
-			await promise;
-			delete pending[id];
-			process.stderr.write(`${process.pid}:${threadId} DONE  ${id}\n`);
-
-			// let idx = index;
-			// if (currentlyExecuting[idx]?.promise) {
-			// 	process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${currentlyExecuting[idx].rev}\n`);
-			// 	await currentlyExecuting[idx].promise; // await the previous execution for this slot
-			// }
-			// const rev = revs[idx]++;
-			// process.stderr.write(`${process.pid}:${threadId} START ${idx}:${rev}\n`);
-			// const result = suite.bench(ctx);
-			// if (result instanceof Promise) {
-			// 	currentlyExecuting[idx] = {
-			// 		promise: result.then(() => {
-			// 			process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
-			// 		}),
-			// 		index: idx,
-			// 		rev
-			// 	};
-			// } else {
-			// 	currentlyExecuting[idx] = { promise: null, index: idx, rev };
-			// 	process.stderr.write(`${process.pid}:${threadId} DONE  ${idx}:${rev}\n`);
-			// }
-
-			// // let it execute concurrently and resolve after concurrencyMaximum number of executions
-			// index = (index + 1) % concurrencyMaximum; // cycle in a loop
-			// if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
-			// 	await rest();
-			// }
-		},
-		async teardown(ctx: BenchmarkContext<T>) {
-			process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${Object.keys(pending).length} PROMISES counter=${counter}\n`);
-			await Promise.all(Object.values(pending));
-			// wait for all outstanding executions to finish
-			// const pending = currentlyExecuting.filter(e => e?.promise);
-			// process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${pending.length} EXECUTIONS\n`);
-			// await Promise.all(pending.map(execution => {
-			// 	process.stderr.write(`${process.pid}:${threadId} TEARDOWN AWAITING ${execution.index}:${execution.rev}\n`);
-			// 	return execution.promise;
-			// }));
-			// process.stderr.write(`${process.pid}:${threadId} TEARDOWN DONE\n`);
-			// any more tearing down
-			// return suite.teardown?.(ctx);
+			}))
 		}
 	}
 }

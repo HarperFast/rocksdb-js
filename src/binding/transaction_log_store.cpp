@@ -86,7 +86,7 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 		auto parentExists = std::filesystem::exists(parentPath);
 
 		// ensure the directory exists before creating the file (should already exist)
-		fprintf(stderr, "%p TransactionLogStore::getLogFile Creating directory: %s (parent exists=%s)\n", this, this->path.string().c_str(), parentExists ? "true" : "false");
+		// fprintf(stderr, "%p TransactionLogStore::getLogFile Creating directory: %s (parent exists=%s)\n", this, this->path.string().c_str(), parentExists ? "true" : "false");
 		DEBUG_LOG("%p TransactionLogStore::getLogFile Creating directory: %s\n", this, this->path.string().c_str());
 		std::filesystem::create_directories(this->path);
 
@@ -243,7 +243,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
 			if (std::filesystem::exists(this->path)) {
-				fprintf(stderr, "%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str());
+				// fprintf(stderr, "%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str());
 				std::filesystem::remove(this->path);
 				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
 			}
