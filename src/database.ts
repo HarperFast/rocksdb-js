@@ -159,8 +159,17 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * @return {void} Does not return a value.
 	 */
-	flush(): void {
-		return this.store.db.flush();
+	flush(): Promise<void> {
+		return new Promise((resolve, reject) => this.store.db.flush(resolve, reject));
+	}
+
+	/**
+	 * Synchronously flushes the underlying database by performing a commit or clearing any buffered operations.
+	 *
+	 * @return {void} Does not return a value.
+	 */
+	flushSync(): void {
+		return this.store.db.flushSync();
 	}
 
 	getStats() {

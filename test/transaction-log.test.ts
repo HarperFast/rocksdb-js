@@ -888,6 +888,37 @@ describe('Transaction Log', () => {
 			expect(existsSync(logFile)).toBe(false);
 		}));
 	});
+	describe('flushSync()', () => {
+		it('should increase the latest flushed position after flushSync calls', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value);
+			});
+
+			let queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[0].endTxn).toBe(true);
+
+			db.flushSync();
+			const contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			expect(u32s[1]).toBe(1);
+			expect(u32s[0]).toBeGreaterThan(1);
+
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(0);
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value);
+			});
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
+		}));
+	});
 	describe('flush()', () => {
 		it('should increase the latest flushed position after flush calls', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');
@@ -903,7 +934,7 @@ describe('Transaction Log', () => {
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[0].endTxn).toBe(true);
 
-			db.flush();
+			await db.flush();
 			const contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
 			const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
 			expect(u32s[1]).toBe(1);
@@ -917,6 +948,18 @@ describe('Transaction Log', () => {
 			});
 			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 			expect(queryResults.length).toBe(1);
+			await Promise.all(Array(20).fill(0).map(async () => {
+				let flushed = db.flush();
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					db.putSync('foo' + Math.random(), Math.random());
+				});
+				await flushed;
+			}));
+			queryResults = Array.from(log.query({ startFromLastFlushed: true })); // undeterministic what this will be, but make sure we don't crash
+			await db.flush(); // final flush
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(0);
 		}));
 	});
 });
