@@ -1,5 +1,6 @@
 #include "db_descriptor.h"
 #include "db_settings.h"
+#include "rocksdb/listener.h"
 #include <algorithm>
 #include <memory>
 
@@ -8,6 +9,39 @@ namespace rocksdb_js {
 // forward declarations
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
+
+/**
+ * Custom event listener that handles flush completion events and notifies
+ * transaction log stores to track what has been flushed to the database.
+ */
+class TransactionLogEventListener : public rocksdb::EventListener {
+public:
+	TransactionLogEventListener(std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr)
+		: descriptorPtr(descriptorPtr) {}
+
+	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
+		if (!descriptorPtr) {
+			return;
+		}
+
+		auto desc = descriptorPtr->lock();
+		if (!desc) {
+			return;
+		}
+
+		rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
+		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted flushedSequence=%llu\n",
+			desc.get(), (unsigned long long)flushedSequence)
+
+		std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
+		for (auto& [name, store] : desc->transactionLogStores) {
+			store->databaseFlushed(flushedSequence);
+		}
+	}
+
+private:
+	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
+};
 
 /**
  * Creates a new database descriptor. This constructor is private. To create a
@@ -361,6 +395,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
+	// create a shared pointer to hold the weak descriptor reference for the event listener
+	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
+	auto eventListener = std::make_shared<TransactionLogEventListener>(descriptorWeakPtr);
+	dbOptions.listeners.push_back(eventListener);
+
 	// prepare the column family stuff - first check if database exists
 	std::vector<rocksdb::ColumnFamilyDescriptor> cfDescriptors;
 	std::vector<std::string> columnFamilyNames;
@@ -426,6 +465,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str())
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns)));
+
+	// set the weak pointer for the event listener
+	*descriptorWeakPtr = descriptor;
+
 	descriptor->discoverTransactionLogStores();
 	return descriptor;
 }
