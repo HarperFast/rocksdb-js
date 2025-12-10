@@ -75,6 +75,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
+      - name: Debug Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm rebuild:debug
+
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm test transaction-log
 
