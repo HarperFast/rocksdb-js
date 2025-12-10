@@ -410,7 +410,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.enable_blob_garbage_collection = true;
 	dbOptions.min_blob_size = 1024;
 	dbOptions.persist_user_defined_timestamps = true;
-	dbOptions.atomic_flush = true; // this is important for tracking sequence numbers across flushes and ensuring data integrity of transaction log flushes
+	// we could also consider some testing around using atomic_flush
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));

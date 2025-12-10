@@ -935,8 +935,8 @@ describe('Transaction Log', () => {
 			expect(queryResults[0].endTxn).toBe(true);
 
 			await db.flush();
-			const contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
-			const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			let contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			let u32s = new Uint32Array(contents.buffer, contents.byteOffset);
 			expect(u32s[1]).toBe(1);
 			expect(u32s[0]).toBeGreaterThan(1);
 
@@ -948,18 +948,33 @@ describe('Transaction Log', () => {
 			});
 			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 			expect(queryResults.length).toBe(1);
-			await Promise.all(Array(20).fill(0).map(async () => {
-				let flushed = db.flush();
+			let lastFlush: Promise<void> | undefined;
+			for (let i = 0; i < 10; i++) {
+				if (i % 3 === 1) {
+					await lastFlush;
+				}
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 					db.putSync('foo' + Math.random(), Math.random());
 				});
-				await flushed;
-			}));
-			queryResults = Array.from(log.query({ startFromLastFlushed: true })); // undeterministic what this will be, but make sure we don't crash
-			await db.flush(); // final flush
+				// make some of this concurrent
+				lastFlush = db.flush();
+			}
+			await lastFlush;
+			// do one last commit and flush
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo' + Math.random(), Math.random());
+			});
+			// make some of this concurrent
+			await db.flush();
+
 			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 			expect(queryResults.length).toBe(0);
+			contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			expect(u32s[1]).toBe(1);
+			expect(u32s[0]).toBeGreaterThan(200);
 		}));
 	});
 });

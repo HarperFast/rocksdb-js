@@ -426,19 +426,6 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
 
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-		// in theory ww
-		LogPosition latestSequencePosition = { { 0, 0 } };
-		// the latest sequence number that has been flushed according to this flush update
-		for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
-			SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
-			if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestSequencePosition) {
-				latestSequencePosition = sequencePosition.position;
-			}
-		}
-		this->currentFlushPosition.position = latestSequencePosition;
-		this->currentFlushPosition.rocksSequenceNumber = rocksSequenceNumber; // make it exactly match so we can verify we are on the right one when it flushes
-		DEBUG_LOG("%p TransactionLogStore::databaseFlushBegin, starting flush up to logId: %u position %u\n", this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
-
 		// Copy the sequence files to a vector so we can release the lock
 		logFilesToFlush.reserve(this->sequenceFiles.size());
 		for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
@@ -464,19 +451,12 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
  */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	LogPosition latestSequencePosition;
-	// we should be able to use the flush position that was recorded in databaseFlushBegin
-	if (this->currentFlushPosition.rocksSequenceNumber == rocksSequenceNumber) {
-		latestSequencePosition = this->currentFlushPosition.position;
-	} else {
-		// if it doesn't match, we need to search again
-		latestSequencePosition = { { 0, 0 } };
-		// the latest sequence number that has been flushed according to this flush update
-		for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
-			SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
-			if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestSequencePosition) {
-				latestSequencePosition = sequencePosition.position;
-			}
+	LogPosition latestSequencePosition = { { 0, 0 } };
+	// the latest sequence number that has been flushed according to this flush update
+	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
+		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
+		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestSequencePosition) {
+			latestSequencePosition = sequencePosition.position;
 		}
 	}
 	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n", this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);

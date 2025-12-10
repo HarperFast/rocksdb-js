@@ -144,11 +144,6 @@ struct TransactionLogStore final {
 	SequencePosition recentlyCommittedSequencePositions[RECENTLY_COMMITTED_POSITIONS_SIZE];
 
 	/**
-	 * The sequence position of the current flush operation (last call to OnFlushBegin)
-	 */
-	SequencePosition currentFlushPosition;
-
-	/**
 	 * The mutex to protect the transaction data sets.
 	 */
 	std::mutex dataSetsMutex;
