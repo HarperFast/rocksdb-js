@@ -641,6 +641,22 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 will cause errors to emit the `'uncaughtException'` event. Future Node.js
 releases will enable this flag by default.
 
+### `db.flush(): Promise<void>`
+
+Flushes all in-memory data to disk asynchronously.
+
+```typescript
+await db.flush();
+```
+
+### `db.flushSync(): void`
+
+Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so it is recommended to use `flush()` if you want to keep the event loop free.
+
+```typescript
+db.flushSync();
+```
+
 ## Transaction Log
 
 A user controlled API for logging transactions. This API is designed to be
