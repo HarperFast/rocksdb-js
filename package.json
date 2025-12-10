@@ -32,6 +32,7 @@
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
     "test": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:release-binding": "node scripts/test-release-binding.mjs",
     "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
     "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
@@ -40,7 +41,6 @@
   "files": [
     "binding.gyp",
     "dist",
-    "prebuilds",
     "src/binding",
     "vendor"
   ],

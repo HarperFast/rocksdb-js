@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { BufferWithDataView, Key } from './encoding.js';
@@ -145,11 +145,21 @@ function locateBinding(): string {
 		}
 	} catch {}
 
+	// check node_modules
+	try {
+		const path = join(baseDir, 'node_modules', `@harperdb/rocksdb-js-${process.platform}-${process.arch}`, 'build', 'Release', 'rocksdb-js.node');
+		if (existsSync(path)) {
+			return resolve(path);
+		}
+	} catch {}
+
 	throw new Error('Unable to locate rocksdb-js native binding');
 }
 
 const req = createRequire(import.meta.url);
-const binding = req(locateBinding());
+const bindingPath = locateBinding();
+// console.log(`Loading binding from ${bindingPath}`);
+const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const constants: {
