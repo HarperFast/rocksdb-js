@@ -118,19 +118,22 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	if (logSequenceNumber == 0) {
 		// get the total size of all log files
 		uint64_t size = 0;
-		for (auto& [key, value] : this->sequenceFiles) {
-			value->open(this->latestTimestamp);
-			size += value->size;
+		for (auto& [key, logFile] : this->sequenceFiles) {
+			if (!logFile->isOpen()) {
+				logFile->open(this->latestTimestamp);
+			}
+			size += logFile->size;
 		}
 		return size;
-	} else
-	{
+	} else {
 		auto it = this->sequenceFiles.find(logSequenceNumber);
 		auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 		if (!logFile) {
 			return 0;
 		}
-		logFile->open(this->latestTimestamp);
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
 		return logFile->size;
 	}
 }
