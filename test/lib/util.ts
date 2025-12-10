@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
-import { rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
 
@@ -93,7 +93,7 @@ export async function dbRunner(
 			for (let i = 0; i < retries && dbPaths.size > 0; i++) {
 				for (const dbPath of dbPaths) {
 					try {
-						await rm(dbPath, { force: true, recursive: true, maxRetries: 3 });
+						rmSync(dbPath, { force: true, recursive: true, maxRetries: 3 });
 						dbPaths.delete(dbPath);
 						break;
 					} catch (e) {

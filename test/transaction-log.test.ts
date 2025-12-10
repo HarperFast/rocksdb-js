@@ -118,7 +118,7 @@ describe('Transaction Log', () => {
 		}));
 	});
 
-	describe('query() from TransactionLog', () => {
+	describe.only('query() from TransactionLog', () => {
 		it('should query an empty transaction log', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const queryIterable = log.query({ start: 1 });
@@ -139,7 +139,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(1);
 		}));
 
-		it.only('should query a transaction log with different options', () => dbRunner(async ({ db }) => {
+		it('should query a transaction log with different options', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			for (let i = 0; i < 5; i++) {
