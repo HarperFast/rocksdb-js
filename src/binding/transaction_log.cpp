@@ -251,7 +251,7 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
  * Get the last flushed position from the txn.state file.
  */
 napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(0)
+	NAPI_METHOD()
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastFlushed")
 	LogPosition position = (*txnLogHandle)->getLastFlushed();
 	napi_value result;
