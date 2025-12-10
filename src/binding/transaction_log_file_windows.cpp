@@ -74,7 +74,7 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = static_cast<size_t>(fileSize.QuadPart);
-	DEBUG_LOG(stderr, "%p TransactionLogFile::openFile File size: %zu file path: %s\n",
+	DEBUG_LOG("%p TransactionLogFile::openFile File size: %zu file path: %s\n",
 		this, this->size, this->path.string().c_str());
 	// On Windows, we have to create the full file size for memory maps, and it is zero-padded, so the act of indexing allows us to find
 	// the end, and adjust the real size accordingly.
