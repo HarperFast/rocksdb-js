@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
-import { parentPort, threadId, Worker, workerData } from 'node:worker_threads';
+import { parentPort, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
 import { rm } from 'node:fs/promises';
 
@@ -517,7 +517,7 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 	return {
 		...suite,
 		bench(ctx: BenchmarkContext<T>) {
-			return Promise.all(Array.from({ length: concurrencyMaximum }, async (_, i) => {
+			return Promise.all(Array.from({ length: concurrencyMaximum }, async () => {
 				await suite.bench(ctx);
 				if (restEachTurn) {
 					await rest();
