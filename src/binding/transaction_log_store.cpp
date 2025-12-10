@@ -107,7 +107,9 @@ std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceN
 	if (!logFile) {
 		return std::weak_ptr<MemoryMap>(); // nullptr
 	}
-	logFile->open(this->latestTimestamp);
+	if (!logFile->isOpen()) {
+		logFile->open(this->latestTimestamp);
+	}
 	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
 		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
 		logFile->size); // otherwise it is frozen, use the file size
@@ -264,7 +266,9 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	this->sequenceFiles[sequenceNumber] = logFile;
 
 	if (sequenceNumber >= this->currentSequenceNumber) {
-		logFile->open(this->latestTimestamp);
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
 		this->currentSequenceNumber = sequenceNumber;
 		nextLogPosition = { { logFile->size, sequenceNumber } };
 	}
@@ -302,7 +306,9 @@ LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			// we found a log file, check if it's already at max size
 			if (this->maxFileSize == 0 || logFile->size < this->maxFileSize) {
 				try {
-					logFile->open(this->latestTimestamp);
+					if (!logFile->isOpen()) {
+						logFile->open(this->latestTimestamp);
+					}
 					break;
 				} catch (const std::exception& e) {
 					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what())
@@ -462,14 +468,14 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 	}
 	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
 	// a "log" file, but the API provides all the functionality we need to just write a single word
-	if (!flushedTrackerFile) {
+	if (!this->flushedTrackerFile) {
 		std::ostringstream oss;
 		oss << this->path << ".txnstate";
-		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
-		flushedTrackerFile->open(this->latestTimestamp);
+		this->flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
+		this->flushedTrackerFile->open(this->latestTimestamp);
 	}
 	// save the position of fully flushed transaction logs (future replay will start from here)
-	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
+	this->flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
