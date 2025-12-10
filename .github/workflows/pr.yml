@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [18, 20, 22, 24]
+        node: [20, 22, 24]
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
@@ -61,7 +61,7 @@ jobs:
       - name: Use Node.js ${{ matrix.node }}
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node == 18 && 20 || matrix.node }}
+          node-version: ${{ matrix.node }}
           cache: 'pnpm'
 
       - name: Setup dependencies
@@ -73,14 +73,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
-
-      - name: Install Node 18
-        if: matrix.node == 18
-        uses: actions/setup-node@v6
-        with:
-          node-version: 18
-          cache: 'pnpm'
-          # pnpm is already installed from earlier step
 
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage
