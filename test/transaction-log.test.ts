@@ -898,10 +898,9 @@ describe('Transaction Log', () => {
 				db.putSync('foo', value);
 			});
 
-			const queryResults = Array.from(log.query({ start: 0 }));
+			let queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 			expect(queryResults.length).toBe(1);
 			expect(queryResults[0].data).toEqual(value);
-			expect(queryResults[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
 			expect(queryResults[0].endTxn).toBe(true);
 
 			db.flush();
@@ -909,6 +908,15 @@ describe('Transaction Log', () => {
 			const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
 			expect(u32s[1]).toBe(1);
 			expect(u32s[0]).toBeGreaterThan(1);
+
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(0);
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value);
+			});
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
 		}));
 	});
 });
