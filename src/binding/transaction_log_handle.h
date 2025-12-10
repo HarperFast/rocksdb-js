@@ -50,6 +50,7 @@ struct TransactionLogHandle final : Closable {
 
 	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t sequenceNumber);
 	LogPosition findPosition(double timestamp);
+	LogPosition getLastFlushed();
 	uint64_t getLogFileSize(uint32_t sequenceNumber);
 	std::weak_ptr<LogPosition> getLastCommittedPosition();
 	/**

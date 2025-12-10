@@ -144,6 +144,11 @@ struct TransactionLogStore final {
 	SequencePosition recentlyCommittedSequencePositions[RECENTLY_COMMITTED_POSITIONS_SIZE];
 
 	/**
+	 * The sequence position of the current flush operation (last call to OnFlushBegin)
+	 */
+	SequencePosition currentFlushPosition;
+
+	/**
 	 * The mutex to protect the transaction data sets.
 	 */
 	std::mutex dataSetsMutex;
@@ -199,9 +204,12 @@ struct TransactionLogStore final {
 	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
+	void databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber);
+
+	/**
+	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
+	 */
 	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
-	// TODO: We should probably implement a databaseFlushStart so we can pin the current flush sequence number in memory for better accuracy
-	// once we have added support for flush events
 
 	/**
 	 * Memory maps the transaction log file for the given sequence number.
@@ -223,6 +231,11 @@ struct TransactionLogStore final {
 	 * newer than, the provided timestamp.
 	 */
 	LogPosition findPositionByTimestamp(double timestamp);
+
+	/**
+	 * Reads and returns the last flushed position from the txn.state file.
+	 */
+	LogPosition getLastFlushedPosition();
 
 	/**
 	 * Purges transaction logs.

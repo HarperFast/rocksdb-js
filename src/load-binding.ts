@@ -40,6 +40,7 @@ export type TransactionLogQueryOptions = {
 	start?: number;
 	end?: number;
 	exactStart?: boolean;
+	startFromLastFlushed?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
 }
@@ -58,6 +59,7 @@ export type TransactionLog = {
 	getLogFileSize(sequenceId?: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_findPosition(timestamp: number): number;
+	_getLastFlushed(): number;
 	_lastCommittedPosition?: Float64Array;
 	_logBuffers?: Map<number, WeakRef<LogBuffer>>;
 };

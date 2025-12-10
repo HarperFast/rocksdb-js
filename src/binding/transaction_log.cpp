@@ -248,6 +248,18 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Get the last flushed position from the txn.state file.
+ */
+napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(0)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastFlushed")
+	LogPosition position = (*txnLogHandle)->getLastFlushed();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
+	return result;
+}
+
+/**
  * Initializes the `NativeTransactionLog` JavaScript class.
  */
 void TransactionLog::Init(napi_env env, napi_value exports) {
@@ -257,6 +269,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getLastFlushed", nullptr, GetLastFlushed, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";
