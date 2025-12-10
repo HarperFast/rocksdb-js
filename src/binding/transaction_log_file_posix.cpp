@@ -36,7 +36,7 @@ void TransactionLogFile::openFile() {
 	if (!parentPath.empty()) {
 		try {
 			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
-			std::filesystem::create_directories(parentPath);
+			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
 				this, parentPath.string().c_str(), e.what())

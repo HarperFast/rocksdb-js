@@ -1,11 +1,11 @@
 import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rimraf } from 'rimraf';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { parentPort, threadId, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
+import { rm } from 'node:fs/promises';
 
 const vitestBench = workerData?.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
@@ -39,37 +39,30 @@ export function benchmark(type: string, options: any): void {
 
 	const { bench, setup, teardown, dbOptions, name } = options;
 	const dbPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
-	const warmupPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	let ctx: BenchmarkContext<any>;
 
 	vitestBench(name || type, () => {
 		let timer: NodeJS.Timeout | undefined;
-		let timerResolve: (() => void) | undefined;
-		const timerPromise = new Promise<void>((resolve, reject) => {
-			timerResolve = resolve;
-			timer = setTimeout(() => {
-				timerResolve = undefined;
-				reject(new Error('Benchmark timed out'));
-			}, options.timeout || 60_000);
-		});
 		return Promise.race([
 			(async () => {
 				await bench(ctx);
 				if (timer) {
 					clearTimeout(timer);
 				}
-				timerResolve?.();
 			})(),
-			timerPromise,
+			new Promise<void>((_resolve, reject) => {
+				timer = setTimeout(() => {
+					reject(new Error('Benchmark timed out'));
+				}, options.timeout || 60_000);
+			})
 		]);
 	}, {
 		throws: true,
 		async setup(task, mode: 'warmup' | 'run') {
-			const path = mode === 'warmup' ? warmupPath : dbPath;
 			if (type === 'rocksdb') {
-				ctx = { db: RocksDatabase.open(path, dbOptions), mode };
+				ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
 			} else {
-				ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }), mode };
+				ctx = { db: lmdb.open({ dbPath, compression: true, ...dbOptions }), mode };
 			}
 			if (typeof setup === 'function') {
 				await setup(ctx, task, mode);
@@ -83,9 +76,9 @@ export function benchmark(type: string, options: any): void {
 				const path = ctx.db.path;
 				await ctx.db.close();
 				try {
-					await rimraf(path);
-				} catch {
-					// ignore cleanup errors in benchmarks
+					await rm(path, { force: true, recursive: true, maxRetries: 3 });
+				} catch (err) {
+					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
 			}
 		}
@@ -430,9 +423,9 @@ export async function workerInit() {
 				// console.log('workerTeardown', workerData.benchmarkWorkerId, workerData.mode, type, path);
 				await ctx.db.close();
 				try {
-					await rimraf(path);
-				} catch {
-					// ignore cleanup errors in benchmarks
+					await rm(path, { force: true, recursive: true, maxRetries: 3 });
+				} catch (err) {
+					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
 			}
 			parentPort!.postMessage({ teardownDone: true, benchmarkWorkerId });

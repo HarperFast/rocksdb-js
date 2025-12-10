@@ -36,7 +36,8 @@ void TransactionLogFile::openFile() {
 	auto parentPath = this->path.parent_path();
 	if (!parentPath.empty()) {
 		try {
-			std::filesystem::create_directories(parentPath);
+			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
 				this, parentPath.string().c_str(), e.what())
@@ -117,7 +118,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		// Move to the new file size
 		LARGE_INTEGER newSize;
 		newSize.QuadPart = fileSize;
-		if (!SetFilePointerEx(this->fileHandle, newSize, NULL, FILE_BEGIN)) {
+		if (!::SetFilePointerEx(this->fileHandle, newSize, NULL, FILE_BEGIN)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
@@ -126,7 +127,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		}
 
 		// Set the End of File with the new file size
-		if (!SetEndOfFile(this->fileHandle)) {
+		if (!::SetEndOfFile(this->fileHandle)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetEndOfFile: %s (error=%lu: %s)\n",
@@ -134,7 +135,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		}
 
 		// Restore original position
-		if (!SetFilePointerEx(this->fileHandle, currentPos, NULL, FILE_BEGIN)) {
+		if (!::SetFilePointerEx(this->fileHandle, currentPos, NULL, FILE_BEGIN)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to restore position: %s (error=%lu: %s)\n",
@@ -142,7 +143,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		}
 	}
 	HANDLE mh;
-	mh = CreateFileMappingW(this->fileHandle, NULL, PAGE_READONLY, 0, fileSize, NULL);
+	mh = ::CreateFileMappingW(this->fileHandle, NULL, PAGE_READONLY, 0, fileSize, NULL);
 	if (!mh)
 	{
 		DWORD error = ::GetLastError();
@@ -153,13 +154,13 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	}
 	// map the memory object into our address space
 	// note that MapViewOfFileEx can be used if we wanted to suggest an address
-	void* map = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, fileSize);
+	void* map = ::MapViewOfFile(mh, FILE_MAP_READ, 0, 0, fileSize);
 	if (!map) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to MapViewOfFile: %s (error=%lu: %s)\n",
 		this, this->path.string().c_str(), error, errorMessage.c_str())
-		CloseHandle(mh);
+		::CloseHandle(mh);
 		return std::weak_ptr<MemoryMap>();
 	}
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap mapped to: %p\n", this, map);
@@ -168,7 +169,6 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	this->memoryMap->mapHandle = mh;
 	return this->memoryMap;
 }
-
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0 && ::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {

@@ -513,7 +513,13 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	}
 
 	// resolve the store and bind if not already bound
-	auto store = (*txnHandle)->dbHandle->descriptor->resolveTransactionLogStore(name);
+	std::shared_ptr<TransactionLogStore> store;
+	try {
+		store = (*txnHandle)->dbHandle->descriptor->resolveTransactionLogStore(name);
+	} catch (const std::runtime_error& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	if (!boundStore) {
 		(*txnHandle)->boundLogStore = store;
 		DEBUG_LOG("%p Transaction::UseLog Binding transaction %u to log store \"%s\"\n",

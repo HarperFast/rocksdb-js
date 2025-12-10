@@ -1397,7 +1397,7 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 
 	// ensure the directory exists
 	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating directory: %s\n", this, logDirectory.string().c_str());
-	std::filesystem::create_directories(logDirectory);
+	rocksdb_js::tryCreateDirectory(logDirectory);
 
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
 		name,
