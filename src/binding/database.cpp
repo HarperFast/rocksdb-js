@@ -203,6 +203,34 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Flushes the RocksDB database memtable to disk.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.flush();
+ * ```
+ */
+napi_value Database::Flush(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	rocksdb::FlushOptions flushOptions;
+	rocksdb::Status status = (*dbHandle)->descriptor->db->Flush(
+		flushOptions
+		// ,(*dbHandle)->column.get() // note that we could potentially add an option to only flush the current column/family store
+	);
+
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Flush failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
  * Gets a value from the RocksDB database.
  *
  * @example
@@ -877,6 +905,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },

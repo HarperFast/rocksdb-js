@@ -99,6 +99,7 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
 	clearSync(batchSize?: number): number;
 	close(): void;
+	flush(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <memory>
@@ -154,9 +155,14 @@ struct TransactionLogStore final {
 	unsigned int nextSequencePositionsCount = 0;
 
 	/**
-	 * This file is used to track how much of the transaction log has been flushed to the database.
+	 * This file stream is used to track how much of the transaction log has been flushed to the database.
 	 */
-	TransactionLogFile* flushedTrackerFile = nullptr;
+	std::ofstream flushedStateFile;
+
+	/**
+	 * The last flushed position that was written to the state file.
+	 */
+	LogPosition lastWrittenFlushedPosition = { { 0, 0 } };
 
 	/**
 	 * The next sequence position to use for a new transaction log entry.

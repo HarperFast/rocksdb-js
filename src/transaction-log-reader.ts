@@ -37,9 +37,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let logId = latestLogId;
 		let position = 0;
 		if (start === undefined) {
-			// if no start timestamp is specified, start from the last committed position
-			position = size;
-			start = 0;
+			if (readUncommitted) {
+				// if no start timestamp is specified and readUncommitted, go to last flushed position
+
+			} else {
+				// otherwise if no start timestamp is specified, start from the last committed position
+				position = size;
+				start = 0;
+			}
 		} else {
 			// otherwise, find the log file that contains the start timestamp, and find the position within that file
 			FLOAT_TO_UINT32[0] = this._findPosition(start);

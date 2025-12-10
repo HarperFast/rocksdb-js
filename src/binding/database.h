@@ -37,6 +37,7 @@ struct Database final {
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
+	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetMonotonicTimestamp(napi_env env, napi_callback_info info);

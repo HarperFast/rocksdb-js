@@ -19,6 +19,10 @@ public:
 	TransactionLogEventListener(std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr)
 		: descriptorPtr(descriptorPtr) {}
 
+	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
+		rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
+		DEBUG_LOG("TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n", (unsigned long long)flushedSequence)
+	}
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
 		if (!descriptorPtr) {
 			return;

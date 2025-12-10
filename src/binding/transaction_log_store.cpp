@@ -3,6 +3,7 @@
 #include "macros.h"
 #include "transaction_log_store.h"
 #include "util.h"
+#include "fstream"
 
 namespace rocksdb_js {
 
@@ -47,6 +48,11 @@ void TransactionLogStore::close() {
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
 		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
 		logFile->close();
+	}
+
+	// Close the state file if it's open
+	if (flushedStateFile.is_open()) {
+		flushedStateFile.close();
 	}
 
 	lock.unlock();
@@ -407,16 +413,26 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 			latestFlushedPosition = sequencePosition.position;
 		}
 	}
-	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
-	// a "log" file, but the API provides all the functionality we need to just write a single word
-	if (!flushedTrackerFile) {
-		std::ostringstream oss;
-		oss << this->path << ".txnstate";
-		flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
-		flushedTrackerFile->open(this->latestTimestamp);
+	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n", this, latestFlushedPosition.logSequenceNumber, latestFlushedPosition.positionInLogFile);
+
+	// Only write if the position has changed
+	if (latestFlushedPosition.fullPosition == lastWrittenFlushedPosition.fullPosition) {
+		return;
 	}
-	// save the position of fully flushed transaction logs (future replay will start from here)
-	flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
+
+	// Open the state file if it isn't open yet
+	if (!flushedStateFile.is_open()) {
+		auto flushedStateFilePath = this->path / "txn.state";
+		flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+	}
+
+	// Write the position to the file
+	if (flushedStateFile.is_open()) {
+		flushedStateFile.seekp(0);
+		flushedStateFile.write(reinterpret_cast<const char*>(&latestFlushedPosition), sizeof(latestFlushedPosition));
+		flushedStateFile.flush();
+		lastWrittenFlushedPosition = latestFlushedPosition;
+	}
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import { mkdir, readdir, writeFile, utimes } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { withResolvers } from '../src/util.js';
 import { Worker } from 'node:worker_threads';
@@ -886,6 +886,29 @@ describe('Transaction Log', () => {
 			db.open();
 			expect(db.listLogs()).toEqual(['foo']);
 			expect(existsSync(logFile)).toBe(false);
+		}));
+	});
+	describe('flush()', () => {
+		it('should increase the latest flushed position after flush calls', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value);
+			});
+
+			const queryResults = Array.from(log.query({ start: 0 }));
+			expect(queryResults.length).toBe(1);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+			expect(queryResults[0].endTxn).toBe(true);
+
+			db.flush();
+			const contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			expect(u32s[1]).toBe(1);
+			expect(u32s[0]).toBeGreaterThan(1);
 		}));
 	});
 });
