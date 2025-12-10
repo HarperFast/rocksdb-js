@@ -1,4 +1,5 @@
 #include <cmath>
+#include <system_error>
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
@@ -17,18 +18,35 @@ TransactionLogFile::~TransactionLogFile() {
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-
+	// Check if file exists first to avoid exceptions from deleted files
 	if (!std::filesystem::exists(this->path)) {
-		DEBUG_LOG("%p TransactionLogFile::getLastWriteTime ERROR: File does not exist: %s\n", this, this->path.string().c_str())
 		throw std::filesystem::filesystem_error(
 			"File does not exist",
 			this->path,
 			std::make_error_code(std::errc::no_such_file_or_directory)
 		);
 	}
-
-	auto mtime = std::filesystem::last_write_time(this->path);
-	return convertFileTimeToSystemTime(mtime);
+	try {
+		auto mtime = std::filesystem::last_write_time(this->path);
+		return convertFileTimeToSystemTime(mtime);
+	} catch (const std::filesystem::filesystem_error&) {
+		// Re-throw filesystem errors as-is
+		throw;
+	} catch (const std::exception& e) {
+		// Convert other standard exceptions to filesystem_error
+		throw std::filesystem::filesystem_error(
+			std::string("Failed to get last write time: ") + e.what(),
+			this->path,
+			std::make_error_code(std::errc::io_error)
+		);
+	} catch (...) {
+		// Convert any other exception to filesystem_error
+		throw std::filesystem::filesystem_error(
+			"Unknown error getting last write time",
+			this->path,
+			std::make_error_code(std::errc::io_error)
+		);
+	}
 }
 
 void TransactionLogFile::open(const double latestTimestamp) {

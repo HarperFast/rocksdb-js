@@ -98,6 +98,7 @@ describe('Transaction Log', () => {
 			});
 		}));
 	});
+
 	describe('_getLastCommittedPosition()/_getMemoryMapOfFile', () => {
 		it('should get a list of sequence files and get a memory map', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo-seq');
@@ -267,6 +268,7 @@ describe('Transaction Log', () => {
 			expect(count).toBe(400);
 			expect(count2).toBe(400);
 		}));
+
 		it('should be able to reuse a query iterator that starts after the latest log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db }) => {

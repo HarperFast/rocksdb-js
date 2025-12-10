@@ -417,10 +417,6 @@ const char* getNapiBufferFromArg(
 	return data;
 }
 
-/**
- * Converts std::filesystem::file_time_type to std::chrono::system_clock::time_point
- * with proper handling for different platforms and C++ standard versions.
- */
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 	const std::filesystem::file_time_type& fileTime
 ) {
@@ -484,6 +480,31 @@ double getMonotonicTimestamp() {
 	}
 
 	return result;
+}
+
+
+void tryCreateDirectory(const std::filesystem::path& path, uint8_t retries) {
+	if (std::filesystem::exists(path)) {
+		return;
+	}
+
+	for (uint8_t i = 0; i < retries; i++) {
+		try {
+			std::filesystem::create_directories(path);
+			return;
+		} catch (const std::filesystem::filesystem_error& e) {
+			DEBUG_LOG("Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		} catch (const std::exception& e) {
+			DEBUG_LOG("Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		} catch (...) {
+			DEBUG_LOG("Attempt %u to create directory failed: %s (unknown error)", i, path.string().c_str());
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+
+	throw std::runtime_error("Failed to create directory: " + path.string());
 }
 
 }

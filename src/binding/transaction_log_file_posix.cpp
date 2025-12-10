@@ -65,7 +65,8 @@ void TransactionLogFile::openFile() {
 	auto parentPath = this->path.parent_path();
 	if (!parentPath.empty()) {
 		try {
-			std::filesystem::create_directories(parentPath);
+			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
 				this, parentPath.string().c_str(), e.what())
@@ -129,6 +130,7 @@ bool TransactionLogFile::removeFile() {
 		this->fd = -1;
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
 	auto removed = std::filesystem::remove(this->path);
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",
