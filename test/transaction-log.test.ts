@@ -269,7 +269,7 @@ describe('Transaction Log', () => {
 		}));
 		it('should be able to reuse a query iterator that starts after the latest log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
-		}, async ({ db, dbPath }) => {
+		}, async ({ db }) => {
 			let log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
 			await db.transaction(async (txn) => {
