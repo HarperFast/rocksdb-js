@@ -209,8 +209,7 @@ void DBRegistry::PurgeAll() {
 }
 
 /**
- * Shutdown all databases and free resources.
- * Closes all open databases and purges the registry.
+ * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
  */
 void DBRegistry::Shutdown() {
 	if (instance) {
@@ -232,7 +231,13 @@ void DBRegistry::Shutdown() {
 		for (auto& descriptor : descriptorsToClose) {
 			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str())
 			descriptor->closing.store(true);
-			descriptor->close();
+			// We want to ensure that all in-memory data is written to disk
+			rocksdb::FlushOptions flushOptions;
+			rocksdb::Status status = descriptor->db->Flush(flushOptions);
+			// wait for any outstanding (background threads) operations to complete. note that this is not setting the
+			// close_db flag since active references to the databases may still exist
+			rocksdb::WaitForCompactOptions options;
+			descriptor->db->WaitForCompact(options);
 		}
 
 		// Purge the registry
