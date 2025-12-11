@@ -209,6 +209,40 @@ void DBRegistry::PurgeAll() {
 }
 
 /**
+ * Shutdown all databases and free resources.
+ * Closes all open databases and purges the registry.
+ */
+void DBRegistry::Shutdown() {
+	if (instance) {
+		std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
+
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size())
+
+			// Collect all descriptors to close
+			for (auto& [path, entry] : instance->databases) {
+				if (entry.descriptor) {
+					descriptorsToClose.push_back(entry.descriptor);
+				}
+			}
+		}
+
+		// Close all descriptors without holding the lock
+		for (auto& descriptor : descriptorsToClose) {
+			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str())
+			descriptor->closing.store(true);
+			descriptor->close();
+		}
+
+		// Purge the registry
+		PurgeAll();
+
+		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance.get())
+	}
+}
+
+/**
  * Get the number of databases in the registry.
  */
 size_t DBRegistry::Size() {
