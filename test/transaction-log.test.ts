@@ -139,7 +139,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(1);
 		}));
 
-		it.only('should query a transaction log with different options', () => dbRunner(async ({ db }) => {
+		it('should query a transaction log with different options', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			for (let i = 0; i < 5; i++) {
@@ -154,7 +154,7 @@ describe('Transaction Log', () => {
 			expect(Array.from(log.query({ start: allTimestamps[1], exactStart: true, end: allTimestamps[4] })).length).toBe(3);
 		}));
 
-		it('should query an out-of-order transaction log with different options', () => dbRunner(async ({ db }) => {
+		it.only('should query an out-of-order transaction log with different options', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const start = Date.now();
