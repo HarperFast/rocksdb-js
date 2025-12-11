@@ -18,17 +18,34 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	// Check if there are active memory maps before closing the file handle.
+	// On Windows, closing the file handle while a memory mapping exists can invalidate the mapping.
+	// We check both memoryMap.use_count() and fileHandleRef.use_count() to be safe.
+	bool hasActiveMappings = false;
 	if (this->memoryMap) {
-		DEBUG_LOG("%p TransactionLogFile::close Releasing memory map before closing file: %s\n",
-			this, this->path.string().c_str())
+		hasActiveMappings = this->memoryMap.use_count() > 1;
+		if (this->memoryMap->fileHandleRef) {
+			// Also check fileHandleRef to see if there are active references to the file handle
+			hasActiveMappings = hasActiveMappings || this->memoryMap->fileHandleRef.use_count() > 1;
+		}
+		DEBUG_LOG("%p TransactionLogFile::close Releasing memory map before closing file: %s (memoryMap.use_count=%ld, fileHandleRef.use_count=%ld)\n",
+			this, this->path.string().c_str(), this->memoryMap.use_count(),
+			this->memoryMap->fileHandleRef ? this->memoryMap->fileHandleRef.use_count() : 0)
 		this->memoryMap.reset();
 	}
 
-	if (this->fileHandle != INVALID_HANDLE_VALUE) {
+	// Only close the file handle if there are no active memory maps.
+	// If there are active mappings, the file handle will be kept open by the MemoryMap's fileHandleRef.
+	if (this->fileHandle != INVALID_HANDLE_VALUE && !hasActiveMappings) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (handle=%p)\n",
 			this, this->path.string().c_str(), this->fileHandle)
 		::CloseHandle(this->fileHandle);
 		this->fileHandle = INVALID_HANDLE_VALUE;
+	} else if (hasActiveMappings) {
+		DEBUG_LOG("%p TransactionLogFile::close Keeping file handle open due to active memory mappings: %s (handle=%p)\n",
+			this, this->path.string().c_str(), this->fileHandle)
+		// The file handle will remain open while MemoryMap instances exist.
+		// It will be closed when TransactionLogFile is destroyed and all MemoryMap instances are gone.
 	}
 }
 
@@ -246,6 +263,16 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
 	this->memoryMap->fileSize = fileSize;
 	this->memoryMap->mapHandle = mh;
+	// Store a shared reference to the file handle to keep it open while the mapping exists.
+	// This prevents the file handle from being closed before the mapping is destroyed,
+	// which is critical on Windows where closing the file handle can invalidate the mapping.
+	// We use a shared_ptr with a no-op deleter since the file handle is owned by TransactionLogFile.
+	// The shared_ptr just keeps a reference count to prevent premature closure.
+	this->memoryMap->fileHandleRef = std::shared_ptr<HANDLE>(&this->fileHandle, [](HANDLE*) {
+		// Custom deleter does nothing - the file handle is owned by TransactionLogFile
+		// and will be closed by TransactionLogFile::close() or TransactionLogFile::removeFile()
+		// This shared_ptr just keeps a reference to prevent premature closure.
+	});
 	return this->memoryMap;
 }
 
@@ -262,17 +289,36 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 bool TransactionLogFile::removeFile() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	// Check if there are active memory maps before closing the file handle.
+	// On Windows, closing the file handle while a memory mapping exists can invalidate the mapping.
+	// We check both memoryMap.use_count() and fileHandleRef.use_count() to be safe.
+	bool hasActiveMappings = false;
 	if (this->memoryMap) {
-		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
-			this, this->path.string().c_str())
+		hasActiveMappings = this->memoryMap.use_count() > 1;
+		if (this->memoryMap->fileHandleRef) {
+			// Also check fileHandleRef to see if there are active references to the file handle
+			hasActiveMappings = hasActiveMappings || this->memoryMap->fileHandleRef.use_count() > 1;
+		}
+		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s (memoryMap.use_count=%ld, fileHandleRef.use_count=%ld)\n",
+			this, this->path.string().c_str(), this->memoryMap.use_count(),
+			this->memoryMap->fileHandleRef ? this->memoryMap->fileHandleRef.use_count() : 0)
 		this->memoryMap.reset();
 	}
 
-	if (this->fileHandle != INVALID_HANDLE_VALUE) {
+	// Only close the file handle if there are no active memory maps.
+	// If there are active mappings, the file handle will be kept open by the MemoryMap's fileHandleRef.
+	// On Windows, you can delete a file even if it has open handles - Windows will keep the file
+	// around until all handles are closed, so we can safely delete it here.
+	if (this->fileHandle != INVALID_HANDLE_VALUE && !hasActiveMappings) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (handle=%p)\n",
 			this, this->path.string().c_str(), this->fileHandle)
 		::CloseHandle(this->fileHandle);
 		this->fileHandle = INVALID_HANDLE_VALUE;
+	} else if (hasActiveMappings) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Keeping file handle open due to active memory mappings: %s (handle=%p)\n",
+			this, this->path.string().c_str(), this->fileHandle)
+		// The file handle will remain open while MemoryMap instances exist.
+		// It will be closed when TransactionLogFile is destroyed and all MemoryMap instances are gone.
 	}
 
 	auto removed = std::filesystem::remove(this->path);
