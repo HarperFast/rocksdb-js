@@ -483,7 +483,7 @@ double getMonotonicTimestamp() {
 }
 
 
-void tryCreateDirectory(const std::filesystem::path& path, uint8_t retries) {
+void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
 	if (std::filesystem::exists(path)) {
 		return;
 	}
@@ -491,6 +491,7 @@ void tryCreateDirectory(const std::filesystem::path& path, uint8_t retries) {
 	for (uint8_t i = 0; i < retries; i++) {
 		try {
 			std::filesystem::create_directories(path);
+			std::filesystem::permissions(path, permissions);
 			return;
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());

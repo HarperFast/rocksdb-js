@@ -23,7 +23,7 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value: function({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
+	value({ start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
 		const transactionLog = this;
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache

@@ -1,9 +1,10 @@
 #include "transaction_log_file.h"
 #include "macros.h"
 #include "util.h"
-#include <sys/mman.h>
 
 #ifdef PLATFORM_POSIX
+
+#include <sys/mman.h>
 
 namespace rocksdb_js {
 
@@ -45,7 +46,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// open file for both reading and writing
-	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0644);
+	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno)
