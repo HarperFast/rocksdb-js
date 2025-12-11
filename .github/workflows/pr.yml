@@ -81,74 +81,74 @@ jobs:
       #   run: pnpm rebuild:debug
 
       - name: Run tests on Node.js ${{ matrix.node }}
-        run: pnpm test transaction-log
+        run: pnpm coverage
 
-  # bun-test:
-  #   name: Test on Bun
-  #   runs-on: ${{ matrix.os }}
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       os: [ubuntu-latest, windows-latest, macos-latest]
+  bun-test:
+    name: Test on Bun
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
-  #   steps:
-  #     - name: Checkout repository
-  #       uses: actions/checkout@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-  #     - name: Install pnpm
-  #       uses: pnpm/action-setup@v4
-  #       with:
-  #         version: latest
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
 
-  #     - name: Install Bun
-  #       uses: oven-sh/setup-bun@v2
-  #       with:
-  #         bun-version: latest
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
-  #     - name: Setup dependencies
-  #       uses: ./.github/actions/setup-deps
-  #       with:
-  #         gh-token: ${{ secrets.GH_TOKEN }}
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
 
-  #     - name: Build
-  #       env:
-  #         GH_TOKEN: ${{ secrets.GH_TOKEN }}
-  #       run: pnpm build
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
 
-  #     - name: Run tests on Bun
-  #       run: pnpm test:bun
+      - name: Run tests on Bun
+        run: pnpm test:bun
 
-  # deno-test:
-  #   name: Test on Deno
-  #   runs-on: ${{ matrix.os }}
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       os: [ubuntu-latest, windows-latest, macos-latest]
+  deno-test:
+    name: Test on Deno
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
-  #   steps:
-  #     - name: Checkout repository
-  #       uses: actions/checkout@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-  #     - name: Install pnpm
-  #       uses: pnpm/action-setup@v4
-  #       with:
-  #         version: latest
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
 
-  #     - name: Install Deno
-  #       uses: denoland/setup-deno@v2
-  #       with:
-  #         deno-version: latest
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: latest
 
-  #     - name: Setup dependencies
-  #       uses: ./.github/actions/setup-deps
-  #       with:
-  #         gh-token: ${{ secrets.GH_TOKEN }}
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
 
-  #     - name: Build
-  #       env:
-  #         GH_TOKEN: ${{ secrets.GH_TOKEN }}
-  #       run: pnpm build
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
 
-  #     - name: Run tests on Deno
-  #       run: pnpm test:deno
+      - name: Run tests on Deno
+        run: pnpm test:deno
