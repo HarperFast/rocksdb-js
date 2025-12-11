@@ -18,6 +18,12 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::close Releasing memory map before closing file: %s\n",
+			this, this->path.string().c_str())
+		this->memoryMap.reset();
+	}
+
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (handle=%p)\n",
 			this, this->path.string().c_str(), this->fileHandle)
