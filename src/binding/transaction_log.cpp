@@ -230,7 +230,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
 	// better, and hopefully it helps.
 	::napi_adjust_external_memory(env, -memoryMapRef->fileSize, &memoryUsage);
-	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMapRef->fileSize, memoryUsage);
 	return result;
 }
 
