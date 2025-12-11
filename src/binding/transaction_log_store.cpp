@@ -113,7 +113,9 @@ std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceN
 	if (!logFile) {
 		return std::weak_ptr<MemoryMap>(); // nullptr
 	}
-	logFile->open(this->latestTimestamp);
+	if (!logFile->isOpen()) {
+		logFile->open(this->latestTimestamp);
+	}
 	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
 		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
 		logFile->size); // otherwise it is frozen, use the file size
@@ -124,19 +126,22 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	if (logSequenceNumber == 0) {
 		// get the total size of all log files
 		uint64_t size = 0;
-		for (auto& [key, value] : this->sequenceFiles) {
-			value->open(this->latestTimestamp);
-			size += value->size;
+		for (auto& [key, logFile] : this->sequenceFiles) {
+			if (!logFile->isOpen()) {
+				logFile->open(this->latestTimestamp);
+			}
+			size += logFile->size;
 		}
 		return size;
-	} else
-	{
+	} else {
 		auto it = this->sequenceFiles.find(logSequenceNumber);
 		auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 		if (!logFile) {
 			return 0;
 		}
-		logFile->open(this->latestTimestamp);
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
 		return logFile->size;
 	}
 }
@@ -280,7 +285,9 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	this->sequenceFiles[sequenceNumber] = logFile;
 
 	if (sequenceNumber >= this->currentSequenceNumber) {
-		logFile->open(this->latestTimestamp);
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
 		this->currentSequenceNumber = sequenceNumber;
 		nextLogPosition = { { logFile->size, sequenceNumber } };
 	}
@@ -318,7 +325,9 @@ LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 			// we found a log file, check if it's already at max size
 			if (this->maxFileSize == 0 || logFile->size < this->maxFileSize) {
 				try {
-					logFile->open(this->latestTimestamp);
+					if (!logFile->isOpen()) {
+						logFile->open(this->latestTimestamp);
+					}
 					break;
 				} catch (const std::exception& e) {
 					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what())

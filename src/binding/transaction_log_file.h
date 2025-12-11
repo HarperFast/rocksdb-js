@@ -129,6 +129,17 @@ struct TransactionLogFile final {
 	std::chrono::system_clock::time_point getLastWriteTime();
 
 	/**
+	 * Checks if the log file is currently open.
+	 */
+	inline bool isOpen() const {
+#ifdef PLATFORM_WINDOWS
+		return this->fileHandle != INVALID_HANDLE_VALUE;
+#else
+		return this->fd != -1;
+#endif
+	}
+
+	/**
 	 * Opens the log file for reading and writing.
 	 */
  	void open(const double latestTimestamp);
