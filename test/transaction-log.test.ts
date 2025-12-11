@@ -126,7 +126,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(0);
 		}));
 
-		it('should query a transaction log', () => dbRunner(async ({ db }) => {
+		it.only('should query a transaction log', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const startTime = Date.now() - 1000;
@@ -171,7 +171,7 @@ describe('Transaction Log', () => {
 			expect(Array.from(log.query({ start: start - 1, exactStart: true, end: start - 2 })).length).toBe(3);
 		}));
 
-		it('should query a transaction log with multiple log instances', () => dbRunner(async ({ db }) => {
+		it.only('should query a transaction log with multiple log instances', () => dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const startTime = Date.now() - 1000;
