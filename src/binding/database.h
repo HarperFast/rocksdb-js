@@ -37,6 +37,8 @@ struct Database final {
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
+	static napi_value Flush(napi_env env, napi_callback_info info);
+	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetMonotonicTimestamp(napi_env env, napi_callback_info info);
@@ -75,6 +77,17 @@ struct AsyncClearState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 
 	uint64_t deleted;
 	uint32_t batchSize;
+};
+
+/**
+ * State for the `Flush` async work.
+ */
+struct AsyncFlushState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
+	AsyncFlushState(
+		napi_env env,
+		std::shared_ptr<DBHandle> handle
+	) :
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}
 };
 
 /**

@@ -154,6 +154,24 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this.store.db.getOldestSnapshotTimestamp();
 	}
 
+	/**
+	 * Flushes the underlying database by performing a commit or clearing any buffered operations.
+	 *
+	 * @return {void} Does not return a value.
+	 */
+	flush(): Promise<void> {
+		return new Promise((resolve, reject) => this.store.db.flush(resolve, reject));
+	}
+
+	/**
+	 * Synchronously flushes the underlying database by performing a commit or clearing any buffered operations.
+	 *
+	 * @return {void} Does not return a value.
+	 */
+	flushSync(): void {
+		return this.store.db.flushSync();
+	}
+
 	getStats() {
 		return {
 			free: {},

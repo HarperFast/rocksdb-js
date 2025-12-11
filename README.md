@@ -641,6 +641,22 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js
 will cause errors to emit the `'uncaughtException'` event. Future Node.js
 releases will enable this flag by default.
 
+### `db.flush(): Promise<void>`
+
+Flushes all in-memory data to disk asynchronously.
+
+```typescript
+await db.flush();
+```
+
+### `db.flushSync(): void`
+
+Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so it is recommended to use `flush()` if you want to keep the event loop free.
+
+```typescript
+db.flushSync();
+```
+
 ## Transaction Log
 
 A user controlled API for logging transactions. This API is designed to be
@@ -744,6 +760,7 @@ Returns an iterable/iterator that streams all log entries for the given filter.
   - `exclusiveStart?: boolean` When `true`, this will only match transactions with timestamps after the start timestamp.
   - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction with the given start timestamp. Once the specified transaction is found, all subsequent transactions will be returned (regardless of whether their timestamp comes before the `start` time). This can be combined with `exactStart`, finding the specified transaction, and returning all transactions that follow. By default, all transactions equal to or greater than the start timestamp will be included.
   - `readUncommitted?: boolean` When `true`, this will include uncommitted transaction entries. Normally transaction entries that haven't finished committed are not included. This is particularly useful for replaying transaction logs on startup where many entries may have been written to the log but are no longer considered committed if they were not flushed to disk.
+  - `startFromLastFlush?: boolean` When `true`, this will only match transactions that have been flushed from RocksDB's memtables to disk (and are within any provided `start` and `end` filters, if included). This is useful for replaying transaction logs on startup where many entries may have been written to the log but are no longer considered committed if they were not flushed to disk.
 
 The iterator produces an object with the log entry timestamp and data.
 

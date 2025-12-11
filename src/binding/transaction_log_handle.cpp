@@ -79,6 +79,12 @@ LogPosition TransactionLogHandle::findPosition(double timestamp) {
 	return { { 0, 0 } };
 }
 
+LogPosition TransactionLogHandle::getLastFlushed() {
+	auto store = this->store.lock();
+	if (store) return store->getLastFlushedPosition();
+	return { { 0, 0 } };
+}
+
 std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	auto store = this->store.lock();
 	if (store) return store->getLastCommittedPosition();

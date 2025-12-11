@@ -203,6 +203,110 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Flushes the RocksDB database memtable to disk synchronously.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.flushSync();
+ * ```
+ */
+napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	rocksdb::FlushOptions flushOptions;
+	rocksdb::Status status = (*dbHandle)->descriptor->db->Flush(
+		flushOptions
+		// ,(*dbHandle)->column.get() // note that we could potentially add an option to only flush the current column/family store
+	);
+
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Flush failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
+ * Flushes the RocksDB database memtable to disk asynchronously.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await db.flush();
+ * ```
+ */
+napi_value Database::Flush(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.flush",
+		NAPI_AUTO_LENGTH,
+		&name
+	))
+
+	auto state = new AsyncFlushState(env, *dbHandle);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env doNotUse, void* data) { // execute
+			auto state = reinterpret_cast<AsyncFlushState*>(data);
+			// check if database is still open before proceeding
+			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
+			} else {
+				rocksdb::FlushOptions flushOptions;
+				state->status = state->handle->descriptor->db->Flush(
+					flushOptions
+					// ,state->handle->column.get() // note that we could potentially add an option to only flush the current column/family store
+				);
+			}
+			// signal that execute handler is complete
+			state->signalExecuteCompleted();
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<AsyncFlushState*>(data);
+
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				if (state->status.ok()) {
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined))
+					state->callResolve(undefined);
+				} else {
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Flush failed")
+					state->callReject(error);
+				}
+			}
+
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	))
+
+	(*dbHandle)->registerAsyncWork();
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
  * Gets a value from the RocksDB database.
  *
  * @example
@@ -877,6 +981,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -86,6 +86,11 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
+	 * The size of the file at the last flush operation.
+	 */
+	uint32_t lastFlushedSize = 0;
+
+	/**
 	 * The memory map of the file.
 	 */
 	std::shared_ptr<MemoryMap> memoryMap;
@@ -111,6 +116,11 @@ struct TransactionLogFile final {
 	 * Closes the log file.
 	 */
 	void close();
+
+	/**
+	 * Flushes any buffered data to disk.
+	 */
+	void flush();
 
 	/**
 	 * Gets the last write time of the log file or throws an error if the file

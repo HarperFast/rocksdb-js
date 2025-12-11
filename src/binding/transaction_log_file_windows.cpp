@@ -24,6 +24,38 @@ void TransactionLogFile::close() {
 	}
 }
 
+void TransactionLogFile::flush() {
+	HANDLE handleToFlush = INVALID_HANDLE_VALUE;
+	uint32_t currentSize = 0;
+
+	{
+		std::unique_lock<std::mutex> lock(this->fileMutex);
+
+		// Only flush if there's new data since the last flush
+		if (this->fileHandle != INVALID_HANDLE_VALUE && this->size > this->lastFlushedSize) {
+			handleToFlush = this->fileHandle;
+			currentSize = this->size;
+		}
+	}
+
+	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
+	if (handleToFlush != INVALID_HANDLE_VALUE) {
+		DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
+			this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize)
+		if (!::FlushFileBuffers(handleToFlush)) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::flush ERROR: FlushFileBuffers failed: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			throw std::runtime_error("Failed to flush file: " + this->path.string());
+		}
+
+		// Update the last flushed size after successful sync
+		std::unique_lock<std::mutex> lock(this->fileMutex);
+		this->lastFlushedSize = currentSize;
+	}
+}
+
 void TransactionLogFile::openFile() {
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str())

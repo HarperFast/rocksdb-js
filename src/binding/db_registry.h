@@ -67,6 +67,7 @@ public:
 	static void Init();
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
+	static void Shutdown();
 	static size_t Size();
 };
 
