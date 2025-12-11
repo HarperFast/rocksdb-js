@@ -201,12 +201,6 @@ struct MemoryMap final
 	 * The Windows memory map handle.
 	 */
 	HANDLE mapHandle = INVALID_HANDLE_VALUE;
-	/**
-	 * Shared reference to the file handle to keep it open while the mapping exists.
-	 * This prevents the file handle from being closed before the mapping is destroyed,
-	 * which is critical on Windows where closing the file handle can invalidate the mapping.
-	 */
-	std::shared_ptr<HANDLE> fileHandleRef;
 #endif
 	/**
 	 * The size of the memory map that has been mapped.
