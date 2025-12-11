@@ -476,9 +476,10 @@ bool operator>( const LogPosition a, const LogPosition b ) {
 };
 
 /**
- * This is not strictly necessary, but if we record the association between the rocks sequence number and position
- * as soon as possible (during OnFlushBegin), the association will be "tighter", and we can save that and use it in the flush, without more
- * commits diluting our array of associated positions
+ * This method is called when a database flush begins, and it prepares the transaction log store for the flush.
+ * It ensures that all log files are flushed to disk before the database flush operation continues.
+ * This maintains the consistency that all entries in the database are guaranteed to have a corresponding entry in the
+ * log file (until it expires), even after crash.
  */
 void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;

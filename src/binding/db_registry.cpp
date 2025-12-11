@@ -234,8 +234,9 @@ void DBRegistry::Shutdown() {
 			// We want to ensure that all in-memory data is written to disk
 			rocksdb::FlushOptions flushOptions;
 			rocksdb::Status status = descriptor->db->Flush(flushOptions);
-			// wait for any outstanding (background threads) operations to complete. note that this is not setting the
-			// close_db flag since active references to the databases may still exist
+			// Wait for any outstanding (background threads) operations to complete. Note that this is not setting the
+			// close_db flag since active references to the databases may still exist.
+			// Also, contrary to the suggestions of the documentation, this method alone does not seem to trigger a flush
 			rocksdb::WaitForCompactOptions options;
 			descriptor->db->WaitForCompact(options);
 		}

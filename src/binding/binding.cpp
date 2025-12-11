@@ -19,7 +19,7 @@ namespace rocksdb_js {
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, #constant, constant##Value));
 
 /**
- * Shutdown function to close all databases and free resources.
+ * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
 	DBRegistry::Shutdown();
