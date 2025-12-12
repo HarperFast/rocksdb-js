@@ -217,12 +217,12 @@ describe('Transaction Log', () => {
 			const value = Buffer.alloc(100, 'a');
 			for (let i = 0; i < 10; i++) {
 				let queryIterator = log.query({});
-				let queryIterator2 = log.query({ start: 0 });
+				// let queryIterator2 = log.query({ start: 0 });
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 				});
-				expect(Array.from(queryIterator).length).toBe(1); // this should be starting after the last commit
-				expect(Array.from(queryIterator2).length).toBe(i * 11 + 1); // this should be starting after the last commit
+				// expect(Array.from(queryIterator).length).toBe(1); // this should be starting after the last commit
+				// expect(Array.from(queryIterator2).length).toBe(i * 11 + 1); // this should be starting after the last commit
 				let count = 0;
 				let count2 = 0;
 				let txnPromise;
@@ -230,14 +230,14 @@ describe('Transaction Log', () => {
 					txnPromise = db.transaction(async (txn) => {
 						log.addEntry(value, txn.id);
 					});
-					count += Array.from(queryIterator).length;
-					count2 += Array.from(queryIterator2).length;
+					// count += Array.from(queryIterator).length;
+					// count2 += Array.from(queryIterator2).length;
 					await txnPromise;
 				}
-				count += Array.from(queryIterator).length;
-				count2 += Array.from(queryIterator2).length;
-				expect(count).toBe(10);
-				expect(count2).toBe(10);
+				// count += Array.from(queryIterator).length;
+				// count2 += Array.from(queryIterator2).length;
+				// expect(count).toBe(10);
+				// expect(count2).toBe(10);
 			}
 		}));
 

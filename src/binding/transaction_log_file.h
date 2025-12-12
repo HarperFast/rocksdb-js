@@ -195,12 +195,7 @@ struct MemoryMap final {
 	 * The memory map of the file.
 	 */
 	void* map = nullptr;
-#ifdef PLATFORM_WINDOWS
-	/**
-	 * The Windows memory map handle.
-	 */
-	HANDLE mapHandle = INVALID_HANDLE_VALUE;
-#endif
+
 	/**
 	 * The size of the memory map that has been mapped.
 	 **/
@@ -211,7 +206,7 @@ struct MemoryMap final {
 	 **/
 	uint32_t fileSize = 0;
 
-	MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
+	MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize), fileSize(mapSize) {}
 	~MemoryMap();
 };
 

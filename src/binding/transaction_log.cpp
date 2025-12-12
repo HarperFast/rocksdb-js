@@ -195,11 +195,15 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 
+	fprintf(stderr, "TransactionLog::GetMemoryMapOfFile Getting memory map for sequence number=%u\n", sequenceNumber);
+
 	std::shared_ptr<MemoryMap> memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
 		NAPI_RETURN_UNDEFINED()
 	}
+
+	NAPI_RETURN_UNDEFINED()
 
 	auto* memoryMapPtr = new std::shared_ptr<MemoryMap>(memoryMap);
 
@@ -231,7 +235,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// memory blocks do still seem to induce extra garbage collection. Still we call this,
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
 	// better, and hopefully it helps.
-	::napi_adjust_external_memory(env, -memoryMap->fileSize, &memoryUsage);
+	::napi_adjust_external_memory(env, static_cast<int64_t>(memoryMap->fileSize) * -1, &memoryUsage);
 	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%lld\n", memoryMap->fileSize, memoryUsage);
 	return result;
 }
