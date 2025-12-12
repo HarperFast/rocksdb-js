@@ -163,7 +163,7 @@ void TransactionLogFile::openFile() {
 	}
 }
 
-std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	auto startTime = std::chrono::high_resolution_clock::now();
 	fprintf(stderr, "TransactionLogFile::getMemoryMap Getting memory map for sequence number=%u\n", fileSize);
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", this, fileSize);
@@ -180,6 +180,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap existing memory map was too small: %u\n", this, memoryMap->mapSize);
 		// this memory map is not big enough, need to create a new one
 		this->memoryMap.reset();
+		this->memoryMap = nullptr;
 	}
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap creating new memory map: %u\n", this, fileSize);
 
@@ -202,7 +203,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
 			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: SetFilePointerEx failed]\n",
 				duration.count(), duration.count() / 1000.0);
-			return std::weak_ptr<MemoryMap>();
+			return nullptr;
 		}
 
 		// Move to the new file size
@@ -217,7 +218,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
 			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: SetFilePointerEx to new size failed]\n",
 				duration.count(), duration.count() / 1000.0);
-			return std::weak_ptr<MemoryMap>();
+			return nullptr;
 		}
 
 		// Set the End of File with the new file size
@@ -230,7 +231,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
 			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: SetEndOfFile failed]\n",
 				duration.count(), duration.count() / 1000.0);
-			return std::weak_ptr<MemoryMap>();
+			return nullptr;
 		}
 
 		// Restore original position
@@ -243,7 +244,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
 			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: Failed to restore position]\n",
 				duration.count(), duration.count() / 1000.0);
-			return std::weak_ptr<MemoryMap>();
+			return nullptr;
 		}
 	}
 
@@ -257,7 +258,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
 		fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: CreateFileMapping failed]\n",
 			duration.count(), duration.count() / 1000.0);
-		return std::weak_ptr<MemoryMap>();
+		return nullptr;
 	}
 
 	// map the memory object into our address space
@@ -273,7 +274,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
 		fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: MapViewOfFile failed]\n",
 			duration.count(), duration.count() / 1000.0);
-		return std::weak_ptr<MemoryMap>();
+		return nullptr;
 	}
 
 	// Close the mapping handle immediately after mapping the view.

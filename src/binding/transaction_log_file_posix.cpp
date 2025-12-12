@@ -71,13 +71,13 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size)
 }
 
-std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!this->memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
 		if (map == MAP_FAILED) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
-			return std::weak_ptr<MemoryMap>(); // nullptr
+			return nullptr;
 		}
 		// If successful, return a MemoryMap object for tracking references.
 		// Note, that we do not need to do any cleanup from this class's

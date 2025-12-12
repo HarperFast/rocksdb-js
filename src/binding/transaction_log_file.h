@@ -88,7 +88,7 @@ struct TransactionLogFile final {
 	/**
 	 * The memory map of the file.
 	 */
-	std::shared_ptr<MemoryMap> memoryMap;
+	std::shared_ptr<MemoryMap> memoryMap = nullptr;
 
 	/**
 	 * The mutex used to protect the file (open/close, read/write, etc).
@@ -152,7 +152,7 @@ struct TransactionLogFile final {
 	/**
 	 * Return a memory map of the file and mark it as in use
 	 */
-	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
 
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.

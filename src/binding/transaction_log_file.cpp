@@ -214,12 +214,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
 	fprintf(stderr, "findPositionByTimestamp: Getting lock timestamp=%f, mapSize=%u\n", timestamp, mapSize);
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
-	auto memoryMap = this->getMemoryMap(mapSize).lock();
-
-	if (!memoryMap) {
-		fprintf(stderr, "findPositionByTimestamp: No memory map found!\n");
-		return 0xFFFFFFFF;
-	}
+	auto memoryMap = this->getMemoryMap(mapSize);
 
 	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;
