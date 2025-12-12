@@ -171,6 +171,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		}
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap existing memory map was too small: %u\n", this, memoryMap->mapSize);
 		// this memory map is not big enough, need to create a new one
+		this->memoryMap.reset();
 	}
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap creating new memory map: %u\n", this, fileSize);
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
@@ -184,8 +185,8 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		if (!::SetFilePointerEx(this->fileHandle, distanceToMove, &currentPos, FILE_CURRENT)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
 			return std::weak_ptr<MemoryMap>();
 		}
 
@@ -195,8 +196,8 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		if (!::SetFilePointerEx(this->fileHandle, newSize, NULL, FILE_BEGIN)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
 			return std::weak_ptr<MemoryMap>();
 		}
 
@@ -204,16 +205,18 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		if (!::SetEndOfFile(this->fileHandle)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to SetEndOfFile: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetEndOfFile: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			return std::weak_ptr<MemoryMap>();
 		}
 
 		// Restore original position
 		if (!::SetFilePointerEx(this->fileHandle, currentPos, NULL, FILE_BEGIN)) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to restore position: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to restore position: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			return std::weak_ptr<MemoryMap>();
 		}
 	}
 	HANDLE mh;
@@ -222,8 +225,8 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	{
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to CreateFileMapping: %s (error=%lu: %s)\n",
-		this, this->path.string().c_str(), error, errorMessage.c_str())
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to CreateFileMapping: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
 		return std::weak_ptr<MemoryMap>();
 	}
 	// map the memory object into our address space
@@ -232,8 +235,8 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!map) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to MapViewOfFile: %s (error=%lu: %s)\n",
-		this, this->path.string().c_str(), error, errorMessage.c_str())
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to MapViewOfFile: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
 		::CloseHandle(mh);
 		return std::weak_ptr<MemoryMap>();
 	}
