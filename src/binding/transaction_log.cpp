@@ -187,13 +187,6 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 }
 
 /**
- * Wrapper around an usage of a memory map, preserving the buffer size so we know how to adjust the external memory usage.
- */
-struct MemoryMapBuffer {
-	uint32_t bufferSize;
-};
-
-/**
  * Gets the range of the transaction log.
  */
 napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
@@ -201,23 +194,32 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
-	std::weak_ptr<MemoryMap> memoryMapPtr = (*txnLogHandle)->getMemoryMap(sequenceNumber);
-	napi_value result;
-	auto memoryMap = memoryMapPtr.lock();
+
+	std::shared_ptr<MemoryMap> memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
-		NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
-		return result;
+		NAPI_RETURN_UNDEFINED()
 	}
-	MemoryMapBuffer* memoryMapBuffer = new MemoryMapBuffer{ memoryMap->fileSize };
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
-		MemoryMapBuffer* memoryMapBuffer = static_cast<MemoryMapBuffer*>(hint);
-		int64_t memoryUsage;
-		// re-adjust back
-		::napi_adjust_external_memory(env, memoryMapBuffer->bufferSize, &memoryUsage);
-		delete memoryMapBuffer;
-		DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%u\n", memoryUsage);
-	}, memoryMapBuffer, &result));
+
+	auto* memoryMapPtr = new std::shared_ptr<MemoryMap>(memoryMap);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(
+		env,  // env
+		memoryMap->fileSize, // length
+		memoryMap->map, // data
+		[](napi_env env, void* data, void* hint) { // finalize_cb
+			auto* memoryMapPtr = static_cast<std::shared_ptr<MemoryMap>*>(hint);
+			int64_t memoryUsage;
+			// re-adjust back
+			::napi_adjust_external_memory(env, (*memoryMapPtr)->fileSize, &memoryUsage);
+			delete memoryMapPtr;
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%u\n", memoryUsage);
+		},
+		memoryMapPtr, // finalize_hint
+		&result          // [out] result
+	));
+
 	int64_t memoryUsage;
 	// We need to adjust the tracked external memory after creating the external buffer.
 	// More external memory "pressure" causes V8 to more aggressively garbage collect,
@@ -229,7 +231,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
 	// better, and hopefully it helps.
 	::napi_adjust_external_memory(env, -memoryMap->fileSize, &memoryUsage);
-	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMapRef->fileSize, memoryUsage);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
 	return result;
 }
 
