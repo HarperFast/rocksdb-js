@@ -50,7 +50,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// Check if file already exists before creating/opening
-	// bool fileExisted = std::filesystem::exists(this->path);
+	bool fileExisted = std::filesystem::exists(this->path);
 
 	// open file for both reading and writing
 	this->fileHandle = ::CreateFileW(
@@ -73,71 +73,71 @@ void TransactionLogFile::openFile() {
 
 	// Set file permissions equivalent to Unix 640 (owner: read+write, group: read, others: none)
 	// Only set permissions if the file was just created (not if it already existed)
-	// if (!fileExisted) {
-	// 	PSID ownerSid = nullptr;
-	// 	PSID groupSid = nullptr;
-	// 	PACL dacl = nullptr;
-	// 	PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
+	if (!fileExisted) {
+		PSID ownerSid = nullptr;
+		PSID groupSid = nullptr;
+		PACL dacl = nullptr;
+		PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
 
-	// 	// Get the file's current security descriptor
-	// 	std::wstring wpath = this->path.wstring();
-	// 	DWORD result = ::GetNamedSecurityInfoW(
-	// 		const_cast<LPWSTR>(wpath.c_str()),
-	// 		SE_FILE_OBJECT,
-	// 		OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-	// 		&ownerSid,
-	// 		&groupSid,
-	// 		&dacl,
-	// 		nullptr,
-	// 		&securityDescriptor
-	// 	);
+		// Get the file's current security descriptor
+		std::wstring wpath = this->path.wstring();
+		DWORD result = ::GetNamedSecurityInfoW(
+			const_cast<LPWSTR>(wpath.c_str()),
+			SE_FILE_OBJECT,
+			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+			&ownerSid,
+			&groupSid,
+			&dacl,
+			nullptr,
+			&securityDescriptor
+		);
 
-	// 	if (result == ERROR_SUCCESS && ownerSid && groupSid) {
-	// 		// Create a new DACL with 640 permissions
-	// 		EXPLICIT_ACCESS_W ea[2];
-	// 		ZeroMemory(ea, sizeof(ea));
+		if (result == ERROR_SUCCESS && ownerSid && groupSid) {
+			// Create a new DACL with 640 permissions
+			EXPLICIT_ACCESS_W ea[2];
+			ZeroMemory(ea, sizeof(ea));
 
-	// 		// Owner: read + write
-	// 		ea[0].grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
-	// 		ea[0].grfAccessMode = SET_ACCESS;
-	// 		ea[0].grfInheritance = NO_INHERITANCE;
-	// 		ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-	// 		ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
-	// 		ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(ownerSid);
+			// Owner: read + write
+			ea[0].grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+			ea[0].grfAccessMode = SET_ACCESS;
+			ea[0].grfInheritance = NO_INHERITANCE;
+			ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+			ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+			ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(ownerSid);
 
-	// 		// Group: read only
-	// 		ea[1].grfAccessPermissions = FILE_GENERIC_READ;
-	// 		ea[1].grfAccessMode = SET_ACCESS;
-	// 		ea[1].grfInheritance = NO_INHERITANCE;
-	// 		ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-	// 		ea[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
-	// 		ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(groupSid);
+			// Group: read only
+			ea[1].grfAccessPermissions = FILE_GENERIC_READ;
+			ea[1].grfAccessMode = SET_ACCESS;
+			ea[1].grfInheritance = NO_INHERITANCE;
+			ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+			ea[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+			ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(groupSid);
 
-	// 		PACL newDacl = nullptr;
-	// 		result = ::SetEntriesInAclW(2, ea, dacl, &newDacl);
-	// 		if (result == ERROR_SUCCESS && newDacl) {
-	// 			// Apply the new DACL
-	// 			result = ::SetNamedSecurityInfoW(
-	// 				const_cast<LPWSTR>(wpath.c_str()),
-	// 				SE_FILE_OBJECT,
-	// 				DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-	// 				nullptr,
-	// 				nullptr,
-	// 				newDacl,
-	// 				nullptr
-	// 			);
-	// 			if (result != ERROR_SUCCESS) {
-	// 				DEBUG_LOG("%p TransactionLogFile::openFile Failed to set file permissions: %s (error=%lu)\n",
-	// 					this, this->path.string().c_str(), result)
-	// 			}
-	// 			::LocalFree(newDacl);
-	// 		}
-	// 	}
+			PACL newDacl = nullptr;
+			result = ::SetEntriesInAclW(2, ea, dacl, &newDacl);
+			if (result == ERROR_SUCCESS && newDacl) {
+				// Apply the new DACL
+				result = ::SetNamedSecurityInfoW(
+					const_cast<LPWSTR>(wpath.c_str()),
+					SE_FILE_OBJECT,
+					DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+					nullptr,
+					nullptr,
+					newDacl,
+					nullptr
+				);
+				if (result != ERROR_SUCCESS) {
+					DEBUG_LOG("%p TransactionLogFile::openFile Failed to set file permissions: %s (error=%lu)\n",
+						this, this->path.string().c_str(), result)
+				}
+				::LocalFree(newDacl);
+			}
+		}
 
-	// 	if (securityDescriptor) {
-	// 		::LocalFree(securityDescriptor);
-	// 	}
-	// }
+		if (securityDescriptor) {
+			::LocalFree(securityDescriptor);
+		}
+	}
 
 	// Get file size
 	LARGE_INTEGER fileSize;
