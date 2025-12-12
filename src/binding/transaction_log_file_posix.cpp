@@ -165,7 +165,6 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 
 MemoryMap::~MemoryMap() {
 	if (this->map != nullptr) {
-		fprintf(stderr, "MemoryMap::~MemoryMap CALLING MUNMAP map=%p, mapSize=%u\n", this->map, this->mapSize);
 		::munmap(this->map, this->mapSize);
 	}
 }
