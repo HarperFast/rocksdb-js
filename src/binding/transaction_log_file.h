@@ -190,8 +190,7 @@ private:
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
 };
 
-struct MemoryMap final
-{
+struct MemoryMap final {
 	/**
 	 * The memory map of the file.
 	 */
@@ -215,6 +214,7 @@ struct MemoryMap final
 	MemoryMap(void* map, uint32_t size);
 	~MemoryMap();
 };
+
 } // namespace rocksdb_js
 
 #endif

@@ -213,6 +213,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 			int64_t memoryUsage;
 			// re-adjust back
 			::napi_adjust_external_memory(env, (*memoryMapPtr)->fileSize, &memoryUsage);
+			fprintf(stderr, "TransactionLog::GetMemoryMapOfFile cleanup external memory=%lld (refcount=%ld)\n", memoryUsage, memoryMapPtr->use_count());
 			delete memoryMapPtr;
 			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%u\n", memoryUsage);
 		},
