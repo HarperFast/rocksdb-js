@@ -1,10 +1,10 @@
+#ifdef PLATFORM_WINDOWS
+
 #include "transaction_log_file.h"
 #include "macros.h"
 #include "util.h"
 #include <aclapi.h>
 #include <sddl.h>
-
-#ifdef PLATFORM_WINDOWS
 
 namespace rocksdb_js {
 

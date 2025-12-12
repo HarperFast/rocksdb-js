@@ -1,9 +1,8 @@
+#ifdef PLATFORM_POSIX
+
 #include "transaction_log_file.h"
 #include "macros.h"
 #include "util.h"
-
-#ifdef PLATFORM_POSIX
-
 #include <sys/mman.h>
 
 namespace rocksdb_js {
