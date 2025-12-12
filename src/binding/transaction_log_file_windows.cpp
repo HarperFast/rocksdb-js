@@ -374,14 +374,13 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 }
 
 MemoryMap::~MemoryMap() {
-	fprintf(stderr, "MemoryMap::~MemoryMap START map=%p, mapSize=%u\n", this->map, this->mapSize);
+	DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize)
 	if (this->map != nullptr) {
 		::UnmapViewOfFile(this->map);
 	}
 	if (this->mapHandle != INVALID_HANDLE_VALUE) {
 		::CloseHandle(this->mapHandle);
 	}
-	fprintf(stderr, "MemoryMap::~MemoryMap END\n");
 }
 
 } // namespace rocksdb_js

@@ -211,7 +211,7 @@ struct MemoryMap final {
 	 **/
 	uint32_t fileSize = 0;
 
-	MemoryMap(void* map, uint32_t size);
+	MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
 	~MemoryMap();
 };
 

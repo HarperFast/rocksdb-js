@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cinttypes>
 #include <cstdarg>
+#include <ctime>
 #include <functional>
 #include <limits>
 #include <node_api.h>
@@ -15,14 +16,32 @@ namespace rocksdb_js {
  * Logs a debug message to stderr prefixed with the current thread id.
  */
 void debugLog(const bool showThreadId, const char* msg, ...) {
-	va_list args;
+	// Get current time
+	auto now = std::chrono::system_clock::now();
+	auto time_t = std::chrono::system_clock::to_time_t(now);
+	auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(
+		now.time_since_epoch());
+	auto ms = ms_since_epoch.count() % 1000;
+
+	// Format timestamp as [HH:MM:SS.mmm]
+	std::tm tm_buf;
+#ifdef _WIN32
+	::localtime_s(&tm_buf, &time_t);
+#else
+	::localtime_r(&time_t, &tm_buf);
+#endif
+	::fprintf(stderr, "%02d:%02d:%02d.%03lld ",
+		tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
+		static_cast<long long>(ms));
+
+	::va_list args;
 	va_start(args, msg);
 	if (showThreadId) {
-		fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+		::fprintf(stderr, "[%04zu] ", std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
 	}
-	vfprintf(stderr, msg, args);
+	::vfprintf(stderr, msg, args);
 	va_end(args);
-	fflush(stderr);
+	::fflush(stderr);
 }
 
 /**
@@ -481,7 +500,6 @@ double getMonotonicTimestamp() {
 
 	return result;
 }
-
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
 	if (std::filesystem::exists(path)) {

@@ -244,7 +244,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
 			if (std::filesystem::exists(this->path)) {
-				// fprintf(stderr, "%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str());
+				DEBUG_LOG("%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str())
 				std::filesystem::remove(this->path);
 				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
 			}

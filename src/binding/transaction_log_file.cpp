@@ -247,6 +247,4 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	return it == positionByTimestampIndex.end() ? 0xFFFFFFFF : it->second;
 }
 
-MemoryMap::MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize) {}
-
 } // namespace rocksdb_js

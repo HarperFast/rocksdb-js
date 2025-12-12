@@ -210,29 +210,29 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		memoryMap->map, // data
 		[](napi_env env, void* data, void* hint) { // finalize_cb
 			auto* memoryMapPtr = static_cast<std::shared_ptr<MemoryMap>*>(hint);
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapPtr=%p (refcount=%ld)\n", hint, memoryMapPtr->use_count())
 			int64_t memoryUsage;
 			// re-adjust back
 			::napi_adjust_external_memory(env, (*memoryMapPtr)->fileSize, &memoryUsage);
-			fprintf(stderr, "TransactionLog::GetMemoryMapOfFile cleanup external memory=%lld (refcount=%ld)\n", memoryUsage, memoryMapPtr->use_count());
 			delete memoryMapPtr;
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%u\n", memoryUsage);
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%lld\n", memoryUsage);
 		},
 		memoryMapPtr, // finalize_hint
-		&result          // [out] result
+		&result // [out] result
 	));
 
 	int64_t memoryUsage;
 	// We need to adjust the tracked external memory after creating the external buffer.
 	// More external memory "pressure" causes V8 to more aggressively garbage collect,
 	// and with lots of external memory, this can be detrimental to performance.
-	// And this is really should *not* be counted as external memory, because it is
+	// And this should really *not* be counted as external memory, because it is
 	// a memory map of OS-owner memory, not process owned memory.
 	// However, I am doubtful this is really implemented effectively in V8, these external
 	// memory blocks do still seem to induce extra garbage collection. Still we call this,
 	// because that's what we are supposed to do, and maybe eventually V8 will handle it
 	// better, and hopefully it helps.
 	::napi_adjust_external_memory(env, -memoryMap->fileSize, &memoryUsage);
-	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%u\n", memoryMap->fileSize, memoryUsage);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile fileSize=%u, external memory=%lld\n", memoryMap->fileSize, memoryUsage);
 	return result;
 }
 
