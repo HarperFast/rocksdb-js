@@ -185,12 +185,6 @@ struct MemoryMap final
 	 * The memory map of the file.
 	 */
 	void* map = nullptr;
-#ifdef PLATFORM_WINDOWS
-	/**
-	 * The Windows memory map handle.
-	 */
-	HANDLE mapHandle = INVALID_HANDLE_VALUE;
-#endif
 	/**
 	 * The size of the memory map that has been mapped.
 	 **/

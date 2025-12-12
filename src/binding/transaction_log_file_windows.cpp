@@ -154,18 +154,17 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	// map the memory object into our address space
 	// note that MapViewOfFileEx can be used if we wanted to suggest an address
 	void* map = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, fileSize);
+	::CloseHandle(mh);
 	if (!map) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Failed to MapViewOfFile: %s (error=%lu: %s)\n",
 		this, this->path.string().c_str(), error, errorMessage.c_str())
-		CloseHandle(mh);
 		return std::weak_ptr<MemoryMap>();
 	}
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap mapped to: %p\n", this, map);
 	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
 	this->memoryMap->fileSize = fileSize;
-	this->memoryMap->mapHandle = mh;
 	return this->memoryMap;
 }
 
@@ -302,9 +301,6 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 MemoryMap::~MemoryMap() {
 	if (this->map != nullptr) {
 		::UnmapViewOfFile(this->map);
-	}
-	if (this->mapHandle != INVALID_HANDLE_VALUE) {
-		::CloseHandle(this->mapHandle);
 	}
 }
 

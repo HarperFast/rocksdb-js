@@ -15,7 +15,7 @@ const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
 } = constants;
-const isWindows = process.platform === 'win32';
+
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
@@ -254,8 +254,7 @@ describe('Transaction Log', () => {
 			expect(Array.from(queryIterator2).length).toBe(1); // this should be starting after the last commit
 			let count = 0;
 			let count2 = 0;
-			const ITERATIONS = isWindows ? 50 : 200;
-			for (let i = 0; i < ITERATIONS; i++) {
+			for (let i = 0; i < 200; i++) {
 				let txnPromise = db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 					log.addEntry(value, txn.id);
@@ -266,8 +265,8 @@ describe('Transaction Log', () => {
 			}
 			count += Array.from(queryIterator).length;
 			count2 += Array.from(queryIterator2).length;
-			expect(count).toBe(ITERATIONS * 2);
-			expect(count2).toBe(ITERATIONS * 2);
+			expect(count).toBe(400);
+			expect(count2).toBe(400);
 		}));
 		it('should be able to reuse a query iterator that starts after the latest log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
@@ -643,9 +642,9 @@ describe('Transaction Log', () => {
 				worker.on('exit', () => resolver.resolve());
 			});
 
-			worker.postMessage({ addManyEntries: true, count: isWindows ? 100: 1000 }); // just can't expect as much from windows
+			worker.postMessage({ addManyEntries: true, count: 1000 });
 
-			for (let i = 0; i < (isWindows ? 100 : 1000); i++) {
+			for (let i = 0; i < 1000; i++) {
 				const log = db.useLog('foo');
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.from('hello'), txn.id);
