@@ -176,8 +176,7 @@ std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap creating new memory map: %u\n", this, fileSize);
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
-	if (fileSize > this->size)
-	{
+	if (fileSize > this->size) {
 		LARGE_INTEGER currentPos;
 		LARGE_INTEGER distanceToMove;
 		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)

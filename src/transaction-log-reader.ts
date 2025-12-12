@@ -107,7 +107,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						try {
 							timestamp = dataView.getFloat64(position);
 						} catch(error) {
-							(error as Error).message += ' at position ' + position + ' of log ' + logBuffer.logId + ' of size ' +  size + 'log buffer length' + logBuffer.length;
+							(error as Error).message += ` at position ${position} of log ${logBuffer.logId} (size=${size}, log buffer length=${logBuffer.length})`;
 							throw error;
 						}
 						// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
