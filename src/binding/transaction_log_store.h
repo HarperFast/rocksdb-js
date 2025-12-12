@@ -50,6 +50,12 @@ union LogPosition {
 			a.positionInLogFile < b.positionInLogFile :
 			a.logSequenceNumber < b.logSequenceNumber;
 	};
+
+	LogPosition& operator=(const LogPosition& other) {
+		this->positionInLogFile = other.positionInLogFile;
+		this->logSequenceNumber = other.logSequenceNumber;
+		return *this;
+	}
 };
 
 /**
@@ -237,7 +243,7 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	LogPosition writeBatch(TransactionLogEntryBatch& batch);
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

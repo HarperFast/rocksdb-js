@@ -190,16 +190,16 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 			auto txnHandle = state->handle;
 			if (!txnHandle) {
-				DEBUG_LOG("%p Transaction::Commit called with nullptr txnHandle\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: called with nullptr txnHandle\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else if (txnHandle->isCancelled()) {
-				DEBUG_LOG("%p Transaction::Commit called with txnHandle cancelled\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: called with txnHandle cancelled\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else if (!txnHandle->dbHandle) {
-				DEBUG_LOG("%p Transaction::Commit called with nullptr dbHandle\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: called with nullptr dbHandle\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else if (!txnHandle->dbHandle->opened()) {
-				DEBUG_LOG("%p Transaction::Commit called with dbHandle not opened\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: called with dbHandle not opened\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
@@ -211,7 +211,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
 						// write the batch to the store
-						committedPosition = store->writeBatch(*txnHandle->logEntryBatch);
+						store->writeBatch(*txnHandle->logEntryBatch, committedPosition);
 					} else {
 						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id)
 						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -296,7 +296,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			(*txnHandle).get(), (*txnHandle)->id);
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
-			committedPosition = store->writeBatch(*(*txnHandle)->logEntryBatch);
+			store->writeBatch(*(*txnHandle)->logEntryBatch, committedPosition);
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id)
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");

@@ -282,13 +282,13 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this, path.string().c_str(), sequenceNumber)
 }
 
-LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
+void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
 
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
-	LogPosition logPosition = this->nextLogPosition;
+	logPosition = this->nextLogPosition;
 
 	if (batch.timestamp > this->latestTimestamp) {
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp)
@@ -419,7 +419,6 @@ LogPosition TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch) {
 	uncommittedTransactionPositions.insert(this->nextLogPosition);
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this)
-	return logPosition;
 }
 
 void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {

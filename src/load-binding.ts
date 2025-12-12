@@ -30,11 +30,12 @@ export type NativeTransaction = {
 	setTimestamp(timestamp?: number): void;
 	useLog(name: string | number): TransactionLog;
 };
+
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
 	size: number;
-}
+};
 
 export type TransactionLogQueryOptions = {
 	start?: number;
@@ -42,13 +43,13 @@ export type TransactionLogQueryOptions = {
 	exactStart?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
-}
+};
 
 export type TransactionEntry = {
 	timestamp: number;
 	data: Buffer;
 	endTxn: boolean;
-}
+};
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
