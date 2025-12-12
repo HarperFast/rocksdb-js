@@ -206,8 +206,6 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED()
 	}
 
-	NAPI_RETURN_UNDEFINED()
-
 	auto* memoryMapHandle = new MemoryMapHandle{ memoryMap, memoryMap->fileSize };
 
 	napi_value result;
