@@ -1,6 +1,7 @@
 #include "transaction_log_file.h"
 #include "macros.h"
 #include "util.h"
+#include <sys/mman.h>
 
 #ifdef PLATFORM_POSIX
 
@@ -60,6 +61,25 @@ void TransactionLogFile::openFile() {
 	this->size = st.st_size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",
 		this, this->path.string().c_str(), this->size)
+}
+
+std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+	if (!this->memoryMap) {
+		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
+		if (map == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
+			return std::weak_ptr<MemoryMap>(); // nullptr
+		}
+		// If successful, return a MemoryMap object for tracking references.
+		// Note, that we do not need to do any cleanup from this class's
+		// destructor. Removing files that are memory mapped is perfectly fine,
+		// and the memory map can be safely used indefinitely (the file descriptor
+		// doesn't need to be kept open either).
+		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
+	}
+	this->memoryMap->fileSize = fileSize;
+	return this->memoryMap;
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
@@ -126,6 +146,12 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
 	}
 	return static_cast<int64_t>(::write(this->fd, buffer, size));
+}
+
+MemoryMap::~MemoryMap() {
+	if (this->map != nullptr) {
+		::munmap(this->map, this->mapSize);
+	}
 }
 
 } // namespace rocksdb_js
