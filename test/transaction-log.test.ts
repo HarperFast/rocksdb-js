@@ -210,7 +210,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(1);
 		}));
 
-		it.only('should be able to reuse a query iterator to resume reading a transaction log', () => dbRunner({
+		it('should be able to reuse a query iterator to resume reading a transaction log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db }) => {
 			let log = db.useLog('foo');

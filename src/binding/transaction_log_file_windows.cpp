@@ -6,7 +6,6 @@
 #include "util.h"
 #include <aclapi.h>
 #include <sddl.h>
-#include <chrono>
 #include <cstdio>
 
 namespace rocksdb_js {
@@ -51,7 +50,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// Check if file already exists before creating/opening
-	bool fileExisted = std::filesystem::exists(this->path);
+	// bool fileExisted = std::filesystem::exists(this->path);
 
 	// open file for both reading and writing
 	this->fileHandle = ::CreateFileW(
@@ -74,71 +73,71 @@ void TransactionLogFile::openFile() {
 
 	// Set file permissions equivalent to Unix 640 (owner: read+write, group: read, others: none)
 	// Only set permissions if the file was just created (not if it already existed)
-	if (!fileExisted) {
-		PSID ownerSid = nullptr;
-		PSID groupSid = nullptr;
-		PACL dacl = nullptr;
-		PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
+	// if (!fileExisted) {
+	// 	PSID ownerSid = nullptr;
+	// 	PSID groupSid = nullptr;
+	// 	PACL dacl = nullptr;
+	// 	PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
 
-		// Get the file's current security descriptor
-		std::wstring wpath = this->path.wstring();
-		DWORD result = ::GetNamedSecurityInfoW(
-			const_cast<LPWSTR>(wpath.c_str()),
-			SE_FILE_OBJECT,
-			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-			&ownerSid,
-			&groupSid,
-			&dacl,
-			nullptr,
-			&securityDescriptor
-		);
+	// 	// Get the file's current security descriptor
+	// 	std::wstring wpath = this->path.wstring();
+	// 	DWORD result = ::GetNamedSecurityInfoW(
+	// 		const_cast<LPWSTR>(wpath.c_str()),
+	// 		SE_FILE_OBJECT,
+	// 		OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+	// 		&ownerSid,
+	// 		&groupSid,
+	// 		&dacl,
+	// 		nullptr,
+	// 		&securityDescriptor
+	// 	);
 
-		if (result == ERROR_SUCCESS && ownerSid && groupSid) {
-			// Create a new DACL with 640 permissions
-			EXPLICIT_ACCESS_W ea[2];
-			ZeroMemory(ea, sizeof(ea));
+	// 	if (result == ERROR_SUCCESS && ownerSid && groupSid) {
+	// 		// Create a new DACL with 640 permissions
+	// 		EXPLICIT_ACCESS_W ea[2];
+	// 		ZeroMemory(ea, sizeof(ea));
 
-			// Owner: read + write
-			ea[0].grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
-			ea[0].grfAccessMode = SET_ACCESS;
-			ea[0].grfInheritance = NO_INHERITANCE;
-			ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-			ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
-			ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(ownerSid);
+	// 		// Owner: read + write
+	// 		ea[0].grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+	// 		ea[0].grfAccessMode = SET_ACCESS;
+	// 		ea[0].grfInheritance = NO_INHERITANCE;
+	// 		ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+	// 		ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+	// 		ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(ownerSid);
 
-			// Group: read only
-			ea[1].grfAccessPermissions = FILE_GENERIC_READ;
-			ea[1].grfAccessMode = SET_ACCESS;
-			ea[1].grfInheritance = NO_INHERITANCE;
-			ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-			ea[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
-			ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(groupSid);
+	// 		// Group: read only
+	// 		ea[1].grfAccessPermissions = FILE_GENERIC_READ;
+	// 		ea[1].grfAccessMode = SET_ACCESS;
+	// 		ea[1].grfInheritance = NO_INHERITANCE;
+	// 		ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+	// 		ea[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+	// 		ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(groupSid);
 
-			PACL newDacl = nullptr;
-			result = ::SetEntriesInAclW(2, ea, dacl, &newDacl);
-			if (result == ERROR_SUCCESS && newDacl) {
-				// Apply the new DACL
-				result = ::SetNamedSecurityInfoW(
-					const_cast<LPWSTR>(wpath.c_str()),
-					SE_FILE_OBJECT,
-					DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-					nullptr,
-					nullptr,
-					newDacl,
-					nullptr
-				);
-				if (result != ERROR_SUCCESS) {
-					DEBUG_LOG("%p TransactionLogFile::openFile Failed to set file permissions: %s (error=%lu)\n",
-						this, this->path.string().c_str(), result)
-				}
-				::LocalFree(newDacl);
-			}
-		}
+	// 		PACL newDacl = nullptr;
+	// 		result = ::SetEntriesInAclW(2, ea, dacl, &newDacl);
+	// 		if (result == ERROR_SUCCESS && newDacl) {
+	// 			// Apply the new DACL
+	// 			result = ::SetNamedSecurityInfoW(
+	// 				const_cast<LPWSTR>(wpath.c_str()),
+	// 				SE_FILE_OBJECT,
+	// 				DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+	// 				nullptr,
+	// 				nullptr,
+	// 				newDacl,
+	// 				nullptr
+	// 			);
+	// 			if (result != ERROR_SUCCESS) {
+	// 				DEBUG_LOG("%p TransactionLogFile::openFile Failed to set file permissions: %s (error=%lu)\n",
+	// 					this, this->path.string().c_str(), result)
+	// 			}
+	// 			::LocalFree(newDacl);
+	// 		}
+	// 	}
 
-		if (securityDescriptor) {
-			::LocalFree(securityDescriptor);
-		}
-	}
+	// 	if (securityDescriptor) {
+	// 		::LocalFree(securityDescriptor);
+	// 	}
+	// }
 
 	// Get file size
 	LARGE_INTEGER fileSize;
@@ -164,17 +163,11 @@ void TransactionLogFile::openFile() {
 }
 
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
-	auto startTime = std::chrono::high_resolution_clock::now();
-	fprintf(stderr, "TransactionLogFile::getMemoryMap Getting memory map for sequence number=%u\n", fileSize);
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", this, fileSize);
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			// existing memory map will work
 			this->memoryMap->fileSize = fileSize;
-			auto endTime = std::chrono::high_resolution_clock::now();
-			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [existing map reused]\n",
-				duration.count(), duration.count() / 1000.0);
 			return this->memoryMap;
 		}
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap existing memory map was too small: %u\n", this, memoryMap->mapSize);
@@ -183,8 +176,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		this->memoryMap = nullptr;
 	}
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap creating new memory map: %u\n", this, fileSize);
-
-	fprintf(stderr, "size: %u, fileSize: %u\n", this->size, fileSize);
 
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
@@ -199,10 +190,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str())
-			auto endTime = std::chrono::high_resolution_clock::now();
-			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: SetFilePointerEx failed]\n",
-				duration.count(), duration.count() / 1000.0);
 			return nullptr;
 		}
 
@@ -214,10 +201,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str())
-			auto endTime = std::chrono::high_resolution_clock::now();
-			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: SetFilePointerEx to new size failed]\n",
-				duration.count(), duration.count() / 1000.0);
 			return nullptr;
 		}
 
@@ -227,10 +210,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetEndOfFile: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str())
-			auto endTime = std::chrono::high_resolution_clock::now();
-			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: SetEndOfFile failed]\n",
-				duration.count(), duration.count() / 1000.0);
 			return nullptr;
 		}
 
@@ -240,10 +219,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to restore position: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str())
-			auto endTime = std::chrono::high_resolution_clock::now();
-			auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-			fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: Failed to restore position]\n",
-				duration.count(), duration.count() / 1000.0);
 			return nullptr;
 		}
 	}
@@ -254,10 +229,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to CreateFileMapping: %s (error=%lu: %s)\n",
 			this, this->path.string().c_str(), error, errorMessage.c_str())
-		auto endTime = std::chrono::high_resolution_clock::now();
-		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-		fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: CreateFileMapping failed]\n",
-			duration.count(), duration.count() / 1000.0);
 		return nullptr;
 	}
 
@@ -270,10 +241,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to MapViewOfFile: %s (error=%lu: %s)\n",
 			this, this->path.string().c_str(), error, errorMessage.c_str())
 		::CloseHandle(mh);
-		auto endTime = std::chrono::high_resolution_clock::now();
-		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-		fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms) [ERROR: MapViewOfFile failed]\n",
-			duration.count(), duration.count() / 1000.0);
 		return nullptr;
 	}
 
@@ -286,11 +253,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap mapped to: %p\n", this, map);
 	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
-
-	auto endTime = std::chrono::high_resolution_clock::now();
-	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-	fprintf(stderr, "TransactionLogFile::getMemoryMap took %lld microseconds (%.3f ms)\n",
-		duration.count(), duration.count() / 1000.0);
 
 	return this->memoryMap;
 }
