@@ -7,6 +7,7 @@
 #include <map>
 #include <atomic>
 #include "macros.h"
+#include "util.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
