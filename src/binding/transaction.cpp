@@ -171,7 +171,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		delete state;
 		return nullptr;
 	}
-	DEBUG_LOG("%p Transaction::Commit setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id)
+	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id)
 	(*txnHandle)->state = TransactionState::Committing;
 
 	napi_value name;
@@ -190,16 +190,16 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 			auto txnHandle = state->handle;
 			if (!txnHandle) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: called with nullptr txnHandle\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr txnHandle\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else if (txnHandle->isCancelled()) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: called with txnHandle cancelled\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: Called with txnHandle cancelled\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else if (!txnHandle->dbHandle) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: called with nullptr dbHandle\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr dbHandle\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else if (!txnHandle->dbHandle->opened()) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: called with dbHandle not opened\n", txnHandle.get())
+				DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get())
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;

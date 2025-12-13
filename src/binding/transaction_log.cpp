@@ -194,6 +194,11 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 struct MemoryMapHandle final {
 	std::shared_ptr<MemoryMap> memoryMap;
 	uint32_t originalSize;
+
+	~MemoryMapHandle() {
+		DEBUG_LOG("MemoryMapHandle::~MemoryMapHandle memoryMap=%p, originalSize=%u, refcount=%ld\n",
+			this->memoryMap.get(), this->originalSize, this->memoryMap.use_count())
+	}
 };
 
 /**

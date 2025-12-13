@@ -20,6 +20,14 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	// Clear the memory map first to release resources
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::close Clearing memory map for: %s\n",
+			this, this->path.string().c_str())
+		this->memoryMap.reset();
+		this->memoryMap = nullptr;
+	}
+
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (handle=%p)\n",
 			this, this->path.string().c_str(), this->fileHandle)
@@ -163,19 +171,21 @@ void TransactionLogFile::openFile() {
 }
 
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
-	DEBUG_LOG("%p TransactionLogFile::getMemoryMap open size: %u\n", this, fileSize);
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			// existing memory map will work
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
 			this->memoryMap->fileSize = fileSize;
 			return this->memoryMap;
+		} else {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
 		}
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap existing memory map was too small: %u\n", this, memoryMap->mapSize);
 		// this memory map is not big enough, need to create a new one
 		this->memoryMap.reset();
 		this->memoryMap = nullptr;
+	} else {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Creating new memory map: %u\n", this, fileSize);
 	}
-	DEBUG_LOG("%p TransactionLogFile::getMemoryMap creating new memory map: %u\n", this, fileSize);
 
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
