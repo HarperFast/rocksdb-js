@@ -51,6 +51,15 @@ union LogPosition {
 			a.logSequenceNumber < b.logSequenceNumber;
 	};
 
+	LogPosition() = default;
+
+	LogPosition(uint32_t positionInLogFile, uint32_t logSequenceNumber) {
+		this->positionInLogFile = positionInLogFile;
+		this->logSequenceNumber = logSequenceNumber;
+	}
+
+	LogPosition(const LogPosition& other) = default;
+
 	LogPosition& operator=(const LogPosition& other) {
 		this->positionInLogFile = other.positionInLogFile;
 		this->logSequenceNumber = other.logSequenceNumber;
@@ -167,7 +176,7 @@ struct TransactionLogStore final {
 	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
-	LogPosition nextLogPosition = { { 0, 0 } };
+	LogPosition nextLogPosition = { 0, 0 };
 
 	/**
 	 * Data structure to hold the last committed position of a transaction log file, that is exposed
