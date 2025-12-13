@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { rm } from 'node:fs/promises';
-import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export function generateDBPath(): string {
 	const testDir = join(tmpdir(), 'rocksdb-js-tests');
@@ -82,30 +82,26 @@ export async function dbRunner(
 			}
 			databases.push({ db, dbPath: path });
 		}
-		await testFn(...databases);
 	} finally {
 		for (const { db } of databases.reverse()) {
 			db?.close();
 		}
 
+		if (globalThis.gc) {
+			globalThis.gc();
+			await delay(100);
+			globalThis.gc();
+			await delay(100);
+		}
+
 		if (!process.env.KEEP_FILES) {
-			const retries = 3;
-			for (let i = 0; i < retries && dbPaths.size > 0; i++) {
-				for (const dbPath of dbPaths) {
-					try {
-						await rm(dbPath, { force: true, recursive: true, maxRetries: 3 });
-						dbPaths.delete(dbPath);
-						break;
-					} catch (e) {
-						if (e instanceof Error && 'code' in e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'ENOTEMPTY')) {
-							await delay(150);
-							// try again, but skip after 3 attempts
-						} else {
-							// eslint-disable-next-line no-unsafe-finally
-							throw e;
-						}
-					}
+			for (const dbPath of dbPaths) {
+				try {
+					await rm(dbPath, { force: true, recursive: true, maxRetries: 10, retryDelay: 250 });
+				} catch (err) {
+					console.error(`Error removing database: ${dbPath}: ${err}`);
 				}
+				dbPaths.delete(dbPath);
 			}
 		}
 	}

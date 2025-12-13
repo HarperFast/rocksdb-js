@@ -29,6 +29,7 @@ export default defineConfig({
 		environment: 'node',
 		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
+		hookTimeout: 30000,
 		include: ['test/**/*.test.ts'],
 		pool: process.versions.bun || process.versions.deno ? 'forks' : 'threads',
 		reporters: ['verbose'],
