@@ -97,8 +97,8 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 			jsThis,
 			reinterpret_cast<void*>(txnHandle),
 			[](napi_env env, void* data, void* hint) {
-				DEBUG_LOG("Transaction::Constructor NativeTransaction GC'd txnHandle=%p\n", data)
 				auto* txnHandle = static_cast<std::shared_ptr<TransactionHandle>*>(data);
+				DEBUG_LOG("Transaction::Constructor NativeTransaction GC'd (txnHandle=%p, ref count=%ld)\n", data, txnHandle->use_count())
 				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
 					(*txnHandle).reset();
