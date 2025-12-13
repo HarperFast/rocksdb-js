@@ -177,6 +177,11 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 	NAPI_METHOD()
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
 	auto lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition().lock();
+
+	if (!lastCommittedPosition) {
+		NAPI_RETURN_UNDEFINED()
+	}
+
 	napi_value result;
 	PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, 8, (void*) lastCommittedPosition.get(), [](napi_env env, void* data, void* hint) {
@@ -200,7 +205,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 
-	std::shared_ptr<MemoryMap> memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
+	auto memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
 		NAPI_RETURN_UNDEFINED()

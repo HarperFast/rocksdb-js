@@ -6,6 +6,7 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include "macros.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -206,8 +207,21 @@ struct MemoryMap final {
 	 **/
 	uint32_t fileSize = 0;
 
-	MemoryMap(void* map, uint32_t mapSize) : map(map), mapSize(mapSize), fileSize(mapSize) {}
-	~MemoryMap();
+	MemoryMap(void* map, uint32_t mapSize)
+		: map(map), mapSize(mapSize), fileSize(mapSize) {}
+
+	~MemoryMap() {
+		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize)
+#ifdef PLATFORM_WINDOWS
+		if (this->map != nullptr) {
+			::UnmapViewOfFile(this->map);
+		}
+#else
+		if (this->map != nullptr) {
+			::munmap(this->map, this->mapSize);
+		}
+#endif
+	}
 };
 
 } // namespace rocksdb_js

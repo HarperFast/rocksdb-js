@@ -512,12 +512,15 @@ void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perm
 			std::filesystem::permissions(path, permissions);
 			return;
 		} catch (const std::filesystem::filesystem_error& e) {
+			fprintf(stderr, "Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());
 			DEBUG_LOG("Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		} catch (const std::exception& e) {
+			fprintf(stderr, "Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());
 			DEBUG_LOG("Attempt %u to create directory failed: %s (error=%s)", i, path.string().c_str(), e.what());
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		} catch (...) {
+			fprintf(stderr, "Attempt %u to create directory failed: %s (unknown error)", i, path.string().c_str());
 			DEBUG_LOG("Attempt %u to create directory failed: %s (unknown error)", i, path.string().c_str());
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}

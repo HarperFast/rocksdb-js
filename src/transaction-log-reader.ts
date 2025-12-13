@@ -123,7 +123,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 					let matchesRange: boolean;
 					if (foundExactStart) { // already found the exact start, only need to match on remaining conditions
-						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end!;
+						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {
 						// in exact start mode, we are look for the exact identifying timestamp of the first transaction
 						if (timestamp === start) {
@@ -134,7 +134,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							matchesRange = false;
 						}
 					} else { // no exact start, so just match on conditions
-						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end!;
+						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end;
 					}
 					let entryStart = position;
 					position += length;

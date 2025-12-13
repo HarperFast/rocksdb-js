@@ -163,12 +163,6 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	return static_cast<int64_t>(::write(this->fd, buffer, size));
 }
 
-MemoryMap::~MemoryMap() {
-	if (this->map != nullptr) {
-		::munmap(this->map, this->mapSize);
-	}
-}
-
 } // namespace rocksdb_js
 
 #endif

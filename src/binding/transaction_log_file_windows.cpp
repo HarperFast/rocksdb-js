@@ -386,13 +386,6 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 	return message;
 }
 
-MemoryMap::~MemoryMap() {
-	DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize)
-	if (this->map != nullptr) {
-		::UnmapViewOfFile(this->map);
-	}
-}
-
 } // namespace rocksdb_js
 
 #endif
