@@ -217,7 +217,41 @@ template <typename T>
 	return getValue(env, value, result);
 }
 
+/**
+ * Converts `std::filesystem::file_time_type` to a
+ * `std::chrono::system_clock::time_point` with proper handling for different
+ * platforms and C++ standard library versions.
+ *
+ * @param fileTime - The file time to convert.
+ * @returns The system time.
+ */
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
+
+/**
+ * Returns the current timestamp as a monotonically increasing timestamp in
+ * nanoseconds (internally) and returns it as milliseconds (double).
+ */
+double getMonotonicTimestamp();
+
+/**
+ * Tries to create a directory. If the directory already exists, does nothing.
+ * If the directory cannot be created, throws an error.
+ *
+ * @param path - The path to the directory to create.
+ * @param permissions - The permissions to set on the directory (default: 0750).
+ * @param retries - The number of times to retry if the directory cannot be
+ * created.
+ */
+void tryCreateDirectory(
+	const std::filesystem::path& path,
+	std::filesystem::perms permissions =
+		std::filesystem::perms::owner_read |
+		std::filesystem::perms::owner_write |
+		std::filesystem::perms::owner_exec |
+		std::filesystem::perms::group_read |
+		std::filesystem::perms::group_exec,
+	uint8_t retries = 3
+);
 
 /**
  * Base class for async state.
@@ -560,12 +594,6 @@ inline double readDoubleBE(const char* buffer) {
 	converter.u = readUint64BE(buffer);
 	return converter.d;
 }
-
-/**
- * Returns the current timestamp as a monotonically increasing timestamp in
- * nanoseconds (internally) and returns it as milliseconds (double).
- */
-double getMonotonicTimestamp();
 
 } // namespace rocksdb_js
 

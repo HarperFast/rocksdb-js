@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rimraf } from 'rimraf';
+import { rm } from 'node:fs/promises';
 import { RocksDatabase } from '../src/index.js';
 import { Context, Store, type PutOptions } from '../src/store.js';
 import { generateDBPath } from './lib/util.js';
@@ -27,7 +27,7 @@ describe('Custom Store', () => {
 			expect(await db.get('foo')).toBe('bar');
 		} finally {
 			db?.close();
-			await rimraf(dbPath);
+			await rm(dbPath, { force: true, recursive: true, maxRetries: 3 });
 		}
 	});
 });

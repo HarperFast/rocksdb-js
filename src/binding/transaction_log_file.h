@@ -4,6 +4,10 @@
 #include <chrono>
 #include <filesystem>
 #include <mutex>
+#include <map>
+#include <atomic>
+#include "macros.h"
+#include "util.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -29,10 +33,12 @@
 	#include <fcntl.h>
 	#include <unistd.h>
 	#include <sys/uio.h>
+	#include <sys/mman.h>
 #endif
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
+#define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
@@ -40,6 +46,7 @@
 namespace rocksdb_js {
 
 // forward declarations
+struct MemoryMap;
 struct TransactionLogEntryBatch;
 
 struct TransactionLogFile final {
@@ -82,9 +89,18 @@ struct TransactionLogFile final {
 	uint32_t size = 0;
 
 	/**
+	 * The memory map of the file.
+	 */
+	std::shared_ptr<MemoryMap> memoryMap = nullptr;
+
+	/**
 	 * The mutex used to protect the file (open/close, read/write, etc).
 	 */
 	std::mutex fileMutex;
+
+	std::map<double, uint32_t> positionByTimestampIndex;
+	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+	std::mutex indexMutex;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
@@ -106,6 +122,17 @@ struct TransactionLogFile final {
 	std::chrono::system_clock::time_point getLastWriteTime();
 
 	/**
+	 * Checks if the log file is currently open.
+	 */
+	inline bool isOpen() const {
+#ifdef PLATFORM_WINDOWS
+		return this->fileHandle != INVALID_HANDLE_VALUE;
+#else
+		return this->fd != -1;
+#endif
+	}
+
+	/**
 	 * Opens the log file for reading and writing.
 	 */
  	void open(const double latestTimestamp);
@@ -124,6 +151,21 @@ struct TransactionLogFile final {
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
+
+	/**
+	 * Return a memory map of the file and mark it as in use
+	 */
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
+
+	/**
+	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
+	 */
+	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize);
+
+	/**
+	 * Platform specific function that writes data to the log file.
+	 */
+	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
 
 private:
 	/**
@@ -149,11 +191,39 @@ private:
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
+};
+
+struct MemoryMap final {
+	/**
+	 * The memory map of the file.
+	 */
+	void* map = nullptr;
 
 	/**
-	 * Platform specific function that writes data to the log file.
-	 */
-	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
+	 * The size of the memory map that has been mapped.
+	 **/
+	uint32_t mapSize = 0;
+
+	/**
+	 * The size of the file (while it is being written, this is the max file size, but when done, it can't expand, so we set the file size)
+	 **/
+	uint32_t fileSize = 0;
+
+	MemoryMap(void* map, uint32_t mapSize)
+		: map(map), mapSize(mapSize), fileSize(mapSize) {}
+
+	~MemoryMap() {
+		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize)
+#ifdef PLATFORM_WINDOWS
+		if (this->map != nullptr) {
+			::UnmapViewOfFile(this->map);
+		}
+#else
+		if (this->map != nullptr) {
+			::munmap(this->map, this->mapSize);
+		}
+#endif
+	}
 };
 
 } // namespace rocksdb_js
