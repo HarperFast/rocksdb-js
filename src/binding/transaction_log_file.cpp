@@ -212,6 +212,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
  * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
  */
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
+	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize)
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 	auto memoryMap = this->getMemoryMap(mapSize);
 

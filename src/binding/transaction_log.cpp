@@ -196,7 +196,7 @@ struct MemoryMapHandle final {
 	uint32_t originalSize;
 
 	~MemoryMapHandle() {
-		DEBUG_LOG("MemoryMapHandle::~MemoryMapHandle memoryMap=%p, originalSize=%u, refcount=%ld\n",
+		DEBUG_LOG("MemoryMapHandle::~MemoryMapHandle memoryMap=%p, originalSize=%u, ref count=%ld\n",
 			this->memoryMap.get(), this->originalSize, this->memoryMap.use_count())
 	}
 };

@@ -22,8 +22,8 @@ void TransactionLogFile::close() {
 
 	// Clear the memory map first to release resources
 	if (this->memoryMap) {
-		DEBUG_LOG("%p TransactionLogFile::close Clearing memory map for: %s\n",
-			this, this->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogFile::close Clearing memory map for: %s (ref count=%ld)\n",
+			this, this->path.string().c_str(), this->memoryMap.use_count())
 		this->memoryMap.reset();
 		this->memoryMap = nullptr;
 	}
@@ -261,7 +261,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	// which is extremely slow. By closing it here, writes via WriteFile will be fast.
 	::CloseHandle(mh);
 
-	DEBUG_LOG("%p TransactionLogFile::getMemoryMap mapped to: %p\n", this, map);
+	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Mapped to: %p\n", this, map);
 	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
 
 	return this->memoryMap;

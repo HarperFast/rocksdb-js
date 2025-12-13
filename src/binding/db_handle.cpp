@@ -105,7 +105,7 @@ void DBHandle::close() {
 
 	// clean up transaction log references
 	for (auto& [name, ref] : this->logRefs) {
-		DEBUG_LOG("%p DBHandle::close Releasing transaction log reference %s\n", this, name.c_str())
+		DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str())
 		::napi_delete_reference(this->env, ref);
 	}
 	this->logRefs.clear();
