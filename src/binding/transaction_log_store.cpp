@@ -41,8 +41,8 @@ TransactionLogStore::TransactionLogStore(
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	lastCommittedPosition = std::make_shared<LogPosition>();
 	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) { // initialize recent commits to not match until values are entered
-		recentlyCommittedSequencePositions[i].position = { 0, 0 };
-		recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
+		this->recentlyCommittedSequencePositions[i].position = { 0, 0 };
+		this->recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
 	}
 }
 
@@ -370,13 +370,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
 				// file was deleted or doesn't exist yet
-				DEBUG_LOG("%p TransactionLogStore::writeBatch File no longer exists or not yet created: %s - %s\n",
+				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: File no longer exists or not yet created: %s - %s\n",
 					this, logFile->path.string().c_str(), e.what())
 				// rotate to next file to avoid using a problematic file
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
 			} catch (const std::exception& e) {
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to get last write time for file %s: %s\n",
+				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to get last write time for file %s: %s\n",
 					this, logFile->path.string().c_str(), e.what())
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
