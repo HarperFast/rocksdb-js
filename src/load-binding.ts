@@ -30,11 +30,12 @@ export type NativeTransaction = {
 	setTimestamp(timestamp?: number): void;
 	useLog(name: string | number): TransactionLog;
 };
+
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
 	size: number;
-}
+};
 
 export type TransactionLogQueryOptions = {
 	start?: number;
@@ -43,19 +44,19 @@ export type TransactionLogQueryOptions = {
 	startFromLastFlushed?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
-}
+};
 
 export type TransactionEntry = {
 	timestamp: number;
 	data: Buffer;
 	endTxn: boolean;
-}
+};
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_getMemoryMapOfFile(sequenceId: number): LogBuffer;
+	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
 	getLogFileSize(sequenceId?: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_findPosition(timestamp: number): number;

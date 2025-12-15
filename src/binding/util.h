@@ -238,10 +238,20 @@ double getMonotonicTimestamp();
  * If the directory cannot be created, throws an error.
  *
  * @param path - The path to the directory to create.
+ * @param permissions - The permissions to set on the directory (default: 0750).
  * @param retries - The number of times to retry if the directory cannot be
  * created.
  */
-void tryCreateDirectory(const std::filesystem::path& path, uint8_t retries = 3);
+void tryCreateDirectory(
+	const std::filesystem::path& path,
+	std::filesystem::perms permissions =
+		std::filesystem::perms::owner_read |
+		std::filesystem::perms::owner_write |
+		std::filesystem::perms::owner_exec |
+		std::filesystem::perms::group_read |
+		std::filesystem::perms::group_exec,
+	uint8_t retries = 3
+);
 
 /**
  * Base class for async state.

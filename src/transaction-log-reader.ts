@@ -23,7 +23,7 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value: function({ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
+	value({ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> | null {
 		const transactionLog = this;
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
@@ -110,17 +110,19 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						}
 					}
 				}
-				while(position < size) {
+
+				while (position < size) {
 					// advance to the next entry, reading the timestamp and the data
 					do {
 						try {
 							timestamp = dataView.getFloat64(position);
 						} catch(error) {
-							(error as Error).message += ' at position ' + position + ' of log ' + logBuffer.logId + ' of size ' +  size + 'log buffer length' + logBuffer.length;
+							(error as Error).message += ` at position ${position} of log ${logBuffer.logId} (size=${size}, log buffer length=${logBuffer.length})`;
 							throw error;
 						}
 						// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
 					} while (timestamp < 1 && ++position < size);
+
 					if (!timestamp) {
 						// we have gone beyond the last transaction and reached the end
 						return { done: true, value: undefined };
@@ -130,7 +132,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 					let matchesRange: boolean;
 					if (foundExactStart) { // already found the exact start, only need to match on remaining conditions
-						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end!;
+						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {
 						// in exact start mode, we are look for the exact identifying timestamp of the first transaction
 						if (timestamp === start) {
@@ -141,7 +143,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							matchesRange = false;
 						}
 					} else { // no exact start, so just match on conditions
-						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end!;
+						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end;
 					}
 					let entryStart = position;
 					position += length;
@@ -175,36 +177,39 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				return { done: true, value: undefined };
 			}
 		};
+
 		function getLogMemoryMap(logId: number) {
-			if (logId > 0) {
-				let logBuffer = transactionLog._logBuffers.get(logId)?.deref();
-				if (logBuffer) { // if we have a cached buffer, return it
-					dataView = logBuffer.dataView;
-					return logBuffer;
-				}
-				try {
-					logBuffer = transactionLog._getMemoryMapOfFile(logId);
-				} catch (error) {
-					(error as Error).message += ` (log file ID: ${logId})`;
-					throw error;
-				}
-				if (!logBuffer) return;
-				logBuffer.logId = logId;
-				dataView = new DataView(logBuffer.buffer);
-				logBuffer.dataView = dataView;
-				transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
-				let maxMisses = 3;
-				for (let [ logId, reference ] of transactionLog._logBuffers) {
-					// clear out any references that have been collected
-					if (reference.deref() === undefined) {
-						transactionLog._logBuffers.delete(logId);
-					} else if (--maxMisses === 0) {
-						break;
-					}
-				}
+			if (logId <= 0) {
+				return;
+			}
+			let logBuffer = transactionLog._logBuffers.get(logId)?.deref();
+			if (logBuffer) { // if we have a cached buffer, return it
+				dataView = logBuffer.dataView;
 				return logBuffer;
-			} // else return undefined
+			}
+			try {
+				logBuffer = transactionLog._getMemoryMapOfFile(logId);
+			} catch (error) {
+				(error as Error).message += ` (log file ID: ${logId})`;
+				throw error;
+			}
+			if (!logBuffer) return;
+			logBuffer.logId = logId;
+			dataView = new DataView(logBuffer.buffer);
+			logBuffer.dataView = dataView;
+			transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
+			let maxMisses = 3;
+			for (let [ logId, reference ] of transactionLog._logBuffers) {
+				// clear out any references that have been collected
+				if (reference.deref() === undefined) {
+					transactionLog._logBuffers.delete(logId);
+				} else if (--maxMisses === 0) {
+					break;
+				}
+			}
+			return logBuffer;
 		}
+
 		function loadLastPosition() {
 			// atomically copy the full 64-bit last committed position word to a local variable so we can read it without memory tearing
 			FLOAT_TO_UINT32[0] = transactionLog._lastCommittedPosition[0];

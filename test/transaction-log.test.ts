@@ -114,7 +114,8 @@ describe('Transaction Log', () => {
 			expect(sequenceNumber).toBe(1);
 
 			const buffer = log._getMemoryMapOfFile(1);
-			expect(buffer.subarray(0, 4).toString()).toBe('WOOF');
+			expect(buffer).toBeDefined();
+			expect(buffer?.subarray(0, 4).toString()).toBe('WOOF');
 		}));
 	});
 

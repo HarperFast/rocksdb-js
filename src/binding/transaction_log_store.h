@@ -23,9 +23,13 @@ struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
 
+#define LOG_POSITION_SIZE 8
+
 /**
-* Structure to hold the last committed position of a transaction log file, that is exposed
-* to JS through an external buffer
+* Structure to hold the last committed position of a transaction log file, that
+* is exposed to JS through an external buffer.
+*
+* The size of this union is stored in `LOG_POSITION_SIZE`.
 */
 union LogPosition {
 	struct {
@@ -38,12 +42,14 @@ union LogPosition {
 		*/
 		uint32_t logSequenceNumber;
 	};
+
 	/**
 	 * The full position of the last committed transaction, combining the sequence
 	 * with the offset within the file, as a single 64-bit word that can be accessed
 	 * from JS.
 	 */
 	double fullPosition;
+
 	bool operator()( const LogPosition a, const LogPosition b ) const {
 		// Comparing fullPosition is presumably faster than comparing the individual fields and should work on little-endian...
 		// unless compilers can figure this out?
@@ -51,6 +57,21 @@ union LogPosition {
 			a.positionInLogFile < b.positionInLogFile :
 			a.logSequenceNumber < b.logSequenceNumber;
 	};
+
+	LogPosition() = default;
+
+	LogPosition(uint32_t positionInLogFile, uint32_t logSequenceNumber) {
+		this->positionInLogFile = positionInLogFile;
+		this->logSequenceNumber = logSequenceNumber;
+	}
+
+	LogPosition(const LogPosition& other) = default;
+
+	LogPosition& operator=(const LogPosition& other) {
+		this->positionInLogFile = other.positionInLogFile;
+		this->logSequenceNumber = other.logSequenceNumber;
+		return *this;
+	}
 };
 
 /**
@@ -167,7 +188,7 @@ struct TransactionLogStore final {
 	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
-	LogPosition nextLogPosition = { { 0, 0 } };
+	LogPosition nextLogPosition = { 0, 0 };
 
 	/**
 	 * Data structure to hold the last committed position of a transaction log file, that is exposed
@@ -251,7 +272,7 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	LogPosition writeBatch(TransactionLogEntryBatch& batch);
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

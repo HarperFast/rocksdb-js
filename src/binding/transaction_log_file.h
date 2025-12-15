@@ -6,6 +6,8 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include "macros.h"
+#include "util.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -31,6 +33,7 @@
 	#include <fcntl.h>
 	#include <unistd.h>
 	#include <sys/uio.h>
+	#include <sys/mman.h>
 #endif
 #include <sys/stat.h>
 
@@ -93,7 +96,7 @@ struct TransactionLogFile final {
 	/**
 	 * The memory map of the file.
 	 */
-	std::shared_ptr<MemoryMap> memoryMap;
+	std::shared_ptr<MemoryMap> memoryMap = nullptr;
 
 	/**
 	 * The mutex used to protect the file (open/close, read/write, etc).
@@ -162,7 +165,7 @@ struct TransactionLogFile final {
 	/**
 	 * Return a memory map of the file and mark it as in use
 	 */
-	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
 
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
@@ -200,18 +203,12 @@ private:
 	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
 };
 
-struct MemoryMap final
-{
+struct MemoryMap final {
 	/**
 	 * The memory map of the file.
 	 */
 	void* map = nullptr;
-#ifdef PLATFORM_WINDOWS
-	/**
-	 * The Windows memory map handle.
-	 */
-	HANDLE mapHandle = INVALID_HANDLE_VALUE;
-#endif
+
 	/**
 	 * The size of the memory map that has been mapped.
 	 **/
@@ -222,9 +219,23 @@ struct MemoryMap final
 	 **/
 	uint32_t fileSize = 0;
 
-	MemoryMap(void* map, uint32_t size);
-	~MemoryMap();
+	MemoryMap(void* map, uint32_t mapSize)
+		: map(map), mapSize(mapSize), fileSize(mapSize) {}
+
+	~MemoryMap() {
+		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize)
+#ifdef PLATFORM_WINDOWS
+		if (this->map != nullptr) {
+			::UnmapViewOfFile(this->map);
+		}
+#else
+		if (this->map != nullptr) {
+			::munmap(this->map, this->mapSize);
+		}
+#endif
+	}
 };
+
 } // namespace rocksdb_js
 
 #endif

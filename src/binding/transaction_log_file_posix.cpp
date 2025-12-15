@@ -1,9 +1,10 @@
 #include "transaction_log_file.h"
+
+#ifdef PLATFORM_POSIX
+
 #include "macros.h"
 #include "util.h"
 #include <sys/mman.h>
-
-#ifdef PLATFORM_POSIX
 
 namespace rocksdb_js {
 
@@ -14,6 +15,16 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	// Explicitly unmap the memory-mapped view to release resources
+	// immediately. Even if JavaScript still holds references to external
+	// buffers, this ensures the underlying memory mapping is released.
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
+			this, this->path.string().c_str(), this->memoryMap.use_count())
+		this->memoryMap.reset();
+		this->memoryMap = nullptr;
+	}
 
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (fd=%d)\n",
@@ -86,7 +97,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// open file for both reading and writing
-	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0644);
+	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno)
@@ -105,13 +116,13 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size)
 }
 
-std::weak_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	if (!this->memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
 		if (map == MAP_FAILED) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
-			return std::weak_ptr<MemoryMap>(); // nullptr
+			return nullptr;
 		}
 		// If successful, return a MemoryMap object for tracking references.
 		// Note, that we do not need to do any cleanup from this class's
@@ -133,6 +144,12 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 
 bool TransactionLogFile::removeFile() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
+			this, this->path.string().c_str())
+		this->memoryMap.reset();
+	}
 
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (fd=%d)\n",
@@ -189,12 +206,6 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
 	}
 	return static_cast<int64_t>(::write(this->fd, buffer, size));
-}
-
-MemoryMap::~MemoryMap() {
-	if (this->map != nullptr) {
-		::munmap(this->map, this->mapSize);
-	}
 }
 
 } // namespace rocksdb_js
