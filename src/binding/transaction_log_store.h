@@ -22,9 +22,13 @@ struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
 
+#define LOG_POSITION_SIZE 8
+
 /**
-* Structure to hold the last committed position of a transaction log file, that is exposed
-* to JS through an external buffer
+* Structure to hold the last committed position of a transaction log file, that
+* is exposed to JS through an external buffer.
+*
+* The size of this union is stored in `LOG_POSITION_SIZE`.
 */
 union LogPosition {
 	struct {
@@ -37,12 +41,14 @@ union LogPosition {
 		*/
 		uint32_t logSequenceNumber;
 	};
+
 	/**
 	 * The full position of the last committed transaction, combining the sequence
 	 * with the offset within the file, as a single 64-bit word that can be accessed
 	 * from JS.
 	 */
 	double fullPosition;
+
 	bool operator()( const LogPosition a, const LogPosition b ) const {
 		// Comparing fullPosition is presumably faster than comparing the individual fields and should work on little-endian...
 		// unless compilers can figure this out?
