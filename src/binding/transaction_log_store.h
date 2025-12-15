@@ -183,7 +183,7 @@ struct TransactionLogStore final {
 	/**
 	 * The last flushed position that was written to the state file.
 	 */
-	LogPosition lastWrittenFlushedPosition = { { 0, 0 } };
+	LogPosition lastWrittenFlushedPosition = { 0, 0 };
 
 	/**
 	 * The next sequence position to use for a new transaction log entry.

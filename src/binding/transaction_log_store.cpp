@@ -189,7 +189,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 LogPosition TransactionLogStore::getLastFlushedPosition() {
 	auto stateFilePath = this->path / "txn.state";
 	std::ifstream inputFile(stateFilePath, std::ios::binary | std::ios::in);
-	LogPosition position = { { 0, 0 } };
+	LogPosition position = { 0, 0 };
 
 	if (inputFile.is_open()) {
 		inputFile.read(reinterpret_cast<char*>(&position), sizeof(position));
