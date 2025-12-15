@@ -10,6 +10,12 @@ namespace rocksdb_js {
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
 
+
+struct JobTracker
+{
+	int columnFamilyCount = 0;
+	rocksdb::SequenceNumber flushedSequence = 0;
+};
 /**
  * Custom event listener that handles flush completion events and notifies
  * transaction log stores to track what has been flushed to the database.
@@ -28,15 +34,32 @@ public:
 		if (!desc) {
 			return;
 		}
+		// Track flush job by job_id, so we can determine when all the flushes have completed for
+		// With atomic flushes, there will be multiple flush events for each column family in the database
+		// We we want to flush at the beginning of the flush job (for first time job_id appears)
+		// And then we want to track the job so that we can determine when all the flushes have completed for
+		// the database job.
+		auto it = this->jobTrackers.find(flush_info.job_id);
+		if (it == this->jobTrackers.end()) {
+			// Create new entry
+			JobTracker tracker;
+			tracker.columnFamilyCount = 1;
+			rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
+			tracker.flushedSequence = flushedSequence;
+			this->jobTrackers[flush_info.job_id] = tracker;
+			DEBUG_LOG("%p TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n",
+				desc.get(), (unsigned long long)flushedSequence)
 
-		rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
-		DEBUG_LOG("%p TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n",
-			desc.get(), (unsigned long long)flushedSequence)
-
-		std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
-		for (auto& [name, store] : desc->transactionLogStores) {
-			store->databaseFlushBegin(flushedSequence);
+			std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
+			for (auto& [name, store] : desc->transactionLogStores) {
+				store->databaseFlushBegin(flushedSequence);
+			}
+		} else {
+			// Increment existing entry so we know how many column families are being flushed
+			it->second.columnFamilyCount++;
 		}
+
+
 	}
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
 		if (!descriptorPtr) {
@@ -49,17 +72,37 @@ public:
 		}
 
 		rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
-		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted flushedSequence=%llu\n",
-			desc.get(), (unsigned long long)flushedSequence)
+		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted cf name=%s job id=%u flushedSequence=%llu\n",
+			desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
 
-		std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
-		for (auto& [name, store] : desc->transactionLogStores) {
-			store->databaseFlushed(flushedSequence);
+		// Track flush job by job_id
+		auto it = this->jobTrackers.find(flush_info.job_id);
+		if (it == this->jobTrackers.end()) {
+			DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted unable to find job id=\n",
+				desc.get(), flush_info.job_id)
+		} else {
+			// we find the highest sequence number; this represents the overall sequence
+			// number for the flush job
+			if (flushedSequence > it->second.flushedSequence) {
+				it->second.flushedSequence = flushedSequence;
+			}
+			// Decrement existing entry until we have completed all the flush actions for the job
+			if (--it->second.columnFamilyCount == 0) {
+				// The last CF flush has completed for the job, now signal that the database flush is done
+				DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted job completed name=%s job id=%u flushedSequence=%llu\n",
+					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
+				std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
+				for (auto& [name, store] : desc->transactionLogStores) {
+					store->databaseFlushed(it->second.flushedSequence);
+				}
+				this->jobTrackers.erase(it); // cleanup
+			}
 		}
 	}
 
 private:
 	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
+	std::unordered_map<int, JobTracker> jobTrackers;
 };
 
 /**
@@ -410,6 +453,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.enable_blob_garbage_collection = true;
 	dbOptions.min_blob_size = 1024;
 	dbOptions.persist_user_defined_timestamps = true;
+	dbOptions.atomic_flush = true; // this is necessary in order to ensure that we can track full flush jobs back to the corresponding sequence numbers
+	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
 	// we could also consider some testing around using atomic_flush
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
@@ -1471,6 +1516,21 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	);
 	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
 	return txnLogStore;
+}
+
+rocksdb::Status DBDescriptor::flush() {
+	// Convert columns map to vector of ColumnFamilyHandle*
+	std::vector<rocksdb::ColumnFamilyHandle*> columnHandles;
+	columnHandles.reserve(this->columns.size());
+	for (const auto& [name, handle] : this->columns) {
+		columnHandles.push_back(handle.get());
+	}
+	// Perform flush
+	rocksdb::FlushOptions flushOptions;
+	return this->db->Flush(
+		flushOptions,
+		columnHandles
+	);
 }
 
 } // namespace rocksdb_js

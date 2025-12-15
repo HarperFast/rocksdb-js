@@ -215,11 +215,7 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	rocksdb::FlushOptions flushOptions;
-	rocksdb::Status status = (*dbHandle)->descriptor->db->Flush(
-		flushOptions
-		// ,(*dbHandle)->column.get() // note that we could potentially add an option to only flush the current column/family store
-	);
+	rocksdb::Status status = (*dbHandle)->descriptor->flush();
 
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Flush failed")
@@ -268,11 +264,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
 			} else {
-				rocksdb::FlushOptions flushOptions;
-				state->status = state->handle->descriptor->db->Flush(
-					flushOptions
-					// ,state->handle->column.get() // note that we could potentially add an option to only flush the current column/family store
-				);
+				state->status = state->handle->descriptor->flush();
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();

@@ -891,13 +891,16 @@ describe('Transaction Log', () => {
 		}));
 	});
 	describe('flushSync()', () => {
-		it('should increase the latest flushed position after flushSync calls', () => dbRunner(async ({ db, dbPath }) => {
+		it('should increase the latest flushed position after flushSync calls', () => dbRunner({
+			dbOptions: [ { name: 'data1' }, { name: 'data2' } ]
+		},async ({ db, dbPath }, { db: db2 }) => {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
-				db.putSync('foo', value);
+				db.putSync('foo', value, { transaction: txn });
+				db2.putSync('foo', value, { transaction: txn });
 			});
 
 			let queryResults = Array.from(log.query({ startFromLastFlushed: true }));
@@ -915,7 +918,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(0);
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
-				db.putSync('foo', value);
+				db.putSync('foo', value, { transaction: txn });
 			});
 			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 			expect(queryResults.length).toBe(1);
@@ -928,7 +931,7 @@ describe('Transaction Log', () => {
 
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
-				db.putSync('foo', value);
+				db.putSync('foo', value, { transaction: txn });
 			});
 
 			let queryResults = Array.from(log.query({ startFromLastFlushed: true }));
@@ -946,7 +949,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(0);
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
-				db.putSync('foo', value);
+				db.putSync('foo', value, { transaction: txn });
 			});
 			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 			expect(queryResults.length).toBe(1);
@@ -957,7 +960,7 @@ describe('Transaction Log', () => {
 				}
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
-					db.putSync('foo' + Math.random(), Math.random());
+					db.putSync('foo' + Math.random(), Math.random(), { transaction: txn });
 				});
 				// make some of this concurrent
 				lastFlush = db.flush();
@@ -966,7 +969,7 @@ describe('Transaction Log', () => {
 			// do one last commit and flush
 			await db.transaction(async (txn) => {
 				log.addEntry(value, txn.id);
-				db.putSync('foo' + Math.random(), Math.random());
+				db.putSync('foo' + Math.random(), Math.random(), { transaction: txn });
 			});
 			// make some of this concurrent
 			await db.flush();
