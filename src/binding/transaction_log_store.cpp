@@ -117,17 +117,8 @@ std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceN
 
 uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	if (logSequenceNumber == 0) {
-		// get the total size of all log files
-		uint64_t size = 0;
-		for (auto& [key, logFile] : this->sequenceFiles) {
-			if (!logFile->isOpen()) {
-				logFile->open(this->latestTimestamp);
-			}
-			size += logFile->size;
-		}
-		return size;
-	} else {
+
+	if (logSequenceNumber > 0) {
 		auto it = this->sequenceFiles.find(logSequenceNumber);
 		auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 		if (!logFile) {
@@ -138,6 +129,16 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 		}
 		return logFile->size;
 	}
+
+	// get the total size of all log files
+	uint64_t size = 0;
+	for (auto& [key, logFile] : this->sequenceFiles) {
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
+		size += logFile->size;
+	}
+	return size;
 }
 
 std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
