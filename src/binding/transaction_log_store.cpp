@@ -270,7 +270,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 			logFile->open(this->latestTimestamp);
 		}
 		this->currentSequenceNumber = sequenceNumber;
-		nextLogPosition = { logFile->size, sequenceNumber };
+		this->nextLogPosition = { logFile->size, sequenceNumber };
 	}
 
 	// update next sequence number to be one higher than the highest existing
@@ -424,31 +424,32 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
-	uncommittedTransactionPositions.erase(position);
+	this->uncommittedTransactionPositions.erase(position);
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
-	LogPosition fullyCommittedPosition = *(uncommittedTransactionPositions.begin());
+	// If there are no uncommitted transactions, everything up to nextLogPosition is fully committed
+	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
+		? this->nextLogPosition
+		: *(this->uncommittedTransactionPositions.begin());
 	// update the current position handle with latest fully committed position
 	*this->lastCommittedPosition = fullyCommittedPosition;
 	// now setup a sequence position that matches a rocksdb sequence number to our log position
-	SequencePosition sequencePosition;
-	sequencePosition.position = fullyCommittedPosition;
-	sequencePosition.rocksSequenceNumber = rocksSequenceNumber;
+	SequencePosition sequencePosition = { rocksSequenceNumber, fullyCommittedPosition };
 	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
 	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
 	// an exact map of every pairing, and we don't need to. We don't need to know the exact rocks sequence number, we just
 	// need a sequence number that is not greater than the point of the flush. But we want to record enough that we
 	// won't lose more than half of what has to be replayed since the last flush.
-	unsigned int count = nextSequencePositionsCount++;
+	unsigned int count = this->nextSequencePositionsCount++;
 	int index = 0;
 	// iterate through the array breaking once at the first set bit, but don't iterate past the end of the array (hence -1)
 	for (; index < RECENTLY_COMMITTED_POSITIONS_SIZE - 1; index++) {
 	    if ((count >> index) & 1) break; // will break 50% of the time at each iteration
 	}
 	// record in the array
-	recentlyCommittedSequencePositions[index] = sequencePosition;
+	this->recentlyCommittedSequencePositions[index] = sequencePosition;
 }
 
-bool operator>( const LogPosition a, const LogPosition b ) {
+bool operator>(const LogPosition a, const LogPosition b) {
 	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
 	return a.logSequenceNumber == b.logSequenceNumber ?
 		a.positionInLogFile > b.positionInLogFile :
@@ -460,7 +461,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 	LogPosition latestFlushedPosition = { 0, 0 };
 	// the latest sequence number that has been flushed according to this flush update
 	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
-		SequencePosition sequencePosition = recentlyCommittedSequencePositions[i];
+		SequencePosition sequencePosition = this->recentlyCommittedSequencePositions[i];
 		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
 			latestFlushedPosition = sequencePosition.position;
 		}
