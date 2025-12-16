@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { parentPort, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
 import { rm } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 
 const vitestBench = workerData?.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
@@ -337,7 +338,7 @@ export function workerBenchmark(type: string, options: any): void {
 				return new Promise<void>((resolve, reject) => {
 					const worker = workerLaunch({
 						...workerPayload,
-						benchmarkFile,
+						benchmarkFile: pathToFileURL(benchmarkFile).toString(),
 						benchmarkWorkerId: i + 1,
 						mode,
 						path
