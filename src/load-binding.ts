@@ -54,11 +54,16 @@ export type TransactionEntry = {
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
-	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
 	getLogFileSize(sequenceId?: number): number;
-	_getLastCommittedPosition(): Buffer;
+	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
+
 	_findPosition(timestamp: number): number;
+	_getLastCommittedPosition(): Buffer;
+	_getLogMemoryMap(logId: number): LogBuffer | undefined;
+	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
+	_loadLastPosition(readUncommitted: boolean): { logId: number; size: number };
+
+	_currentLogBuffer?: LogBuffer;
 	_lastCommittedPosition?: Float64Array;
 	_logBuffers?: Map<number, WeakRef<LogBuffer>>;
 };
