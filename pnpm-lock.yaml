@@ -12,8 +12,8 @@ importers:
         specifier: 1.0.1
         version: 1.0.1
       msgpackr:
-        specifier: 1.11.5
-        version: 1.11.5
+        specifier: 1.11.6
+        version: 1.11.6
       ordered-binary:
         specifier: 1.6.0
         version: 1.6.0
@@ -1238,8 +1238,8 @@ packages:
     resolution: {integrity: sha512-P0efT1C9jIdVRefqjzOQ9Xml57zpOXnIuS+csaB4MdZbTdmGDLo8XhzBG1N7aO11gKDDkJvBLULeFTo46wwreA==}
     hasBin: true
 
-  msgpackr@1.11.5:
-    resolution: {integrity: sha512-UjkUHN0yqp9RWKy0Lplhh+wlpdt9oQBYgULZOiFhV3VclSF1JnSQWZ5r9gORQlNYaUKQoR8itv7g7z1xDDuACA==}
+  msgpackr@1.11.6:
+    resolution: {integrity: sha512-DzHs4d3a2AaIF4bQZNX5z7NfcoV1pHK/FIcX8Ow65s2DVYPVhJoq0S7wf6I17NkYuWRnG0mvRv4/Bii0D1PEfA==}
 
   nanoid@3.3.11:
     resolution: {integrity: sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==}
@@ -2483,7 +2483,7 @@ snapshots:
 
   lmdb@3.4.4:
     dependencies:
-      msgpackr: 1.11.5
+      msgpackr: 1.11.6
       node-addon-api: 6.1.0
       node-gyp-build-optional-packages: 5.2.2
       ordered-binary: 1.6.0
@@ -2585,7 +2585,7 @@ snapshots:
       '@msgpackr-extract/msgpackr-extract-win32-x64': 3.0.3
     optional: true
 
-  msgpackr@1.11.5:
+  msgpackr@1.11.6:
     optionalDependencies:
       msgpackr-extract: 3.0.3
 
