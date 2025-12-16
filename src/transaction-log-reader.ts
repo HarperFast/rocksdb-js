@@ -4,7 +4,7 @@ import {
 	constants,
 	TransactionLogQueryOptions,
 	TransactionEntry,
-} from './load-binding';
+} from './load-binding.js';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
@@ -23,19 +23,20 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value({ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> | null {
-		const transactionLog = this;
+	value(this: TransactionLog, { start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
 			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
 			this._logBuffers = new Map<number, WeakRef<LogBuffer>>();
 		}
-		let size = 0;
 		end ??= Number.MAX_VALUE;
-		let latestLogId = loadLastPosition();
+
+		let { logId: latestLogId, size } = loadLastPosition(this, readUncommitted ?? false);
 		let logId = latestLogId;
 		let position = 0;
+		let logBuffer = this._currentLogBuffer; // try the current one first
+
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
 			position = size;
@@ -50,40 +51,43 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				start ??= 0; // if no start timestamp is specified, include all
 			} else {
 				// otherwise, find the log file that contains the start timestamp, and find the position within that file
-				FLOAT_TO_UINT32[0] = this._findPosition(start);
+				FLOAT_TO_UINT32[0] = this._findPosition(start!);
 			}
 			// extract the log file ID from the 64-bit float returned by _findPosition, which is stored in the high 32 bits of the float
 			logId = UINT32_FROM_FLOAT[1];
 			// and position from the low 32 bits of the float
 			position = UINT32_FROM_FLOAT[0];
 		}
-		let dataView: DataView;
-		let logBuffer: LogBuffer = this._currentLogBuffer!; // try the current one first
-		if (logBuffer?.logId !== logId) {
+
+		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
-			logBuffer = getLogMemoryMap(logId)!;
+			logBuffer = getLogMemoryMap(this, logId);
+			if (logBuffer === undefined) {
+				// create a fake log buffer if we don't have any log buffer yet
+				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
+				logBuffer.dataView = new DataView(logBuffer.buffer);
+				logBuffer.logId = 0;
+				logBuffer.size = 0;
+			}
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
 			if (latestLogId === logId && !readUncommitted) {
 				this._currentLogBuffer = logBuffer;
 			}
-			if (logBuffer === undefined) {
-				// create a fake log buffer if we don't have any log buffer yet
-				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
-				logBuffer.logId = 0;
-				logBuffer.size = 0;
-			}
 		}
 
-		dataView = logBuffer.dataView;
+		let dataView = logBuffer.dataView;
+		let foundExactStart = false;
+		const transactionLog = this;
+
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
-			if (size == undefined) {
+			if (size === undefined) {
 				size = logBuffer.size = this.getLogFileSize(logId);
 			}
 		}
-		let foundExactStart = false;
+
 		return {
 			[Symbol.iterator](): IterableIterator<TransactionEntry> { return this; },
 			next() {
@@ -91,18 +95,18 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
-					let latestLogId = loadLastPosition();
-					let latestSize = size;
-					if (latestLogId > logBuffer.logId) {
+					const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, readUncommitted ?? false);
+					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
-						size = logBuffer.size ?? (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
+						size = logBuffer!.size ?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							const nextLogBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
+							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							dataView = nextLogBuffer.dataView;
 							logBuffer = nextLogBuffer;
-							if (latestLogId > logBuffer.logId) {
+							if (latestLogId > logBuffer!.logId) {
 								// it is non-current log file, we can safely use or cache the size
-								size = logBuffer.size ?? (logBuffer.size = transactionLog.getLogFileSize(logBuffer.logId));
+								size = logBuffer!.size ?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 							} else {
 								size = latestSize; // use the latest position from loadLastPosition
 							}
@@ -117,7 +121,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						try {
 							timestamp = dataView.getFloat64(position);
 						} catch(error) {
-							(error as Error).message += ` at position ${position} of log ${logBuffer.logId} (size=${size}, log buffer length=${logBuffer.length})`;
+							(error as Error).message += ` at position ${position} of log ${logBuffer!.logId} (size=${size}, log buffer length=${logBuffer!.length})`;
 							throw error;
 						}
 						// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
@@ -145,7 +149,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					} else { // no exact start, so just match on conditions
 						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end;
 					}
-					let entryStart = position;
+					const entryStart = position;
 					position += length;
 					if (matchesRange) {
 						// fits in the same block, just subarray the data out
@@ -153,21 +157,23 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							done: false,
 							value: {
 								timestamp,
-								endTxn: Boolean(logBuffer[entryStart - 1] & 1),
+								endTxn: Boolean(logBuffer![entryStart - 1] & 1),
 								data: logBuffer!.subarray(entryStart, position)
 							}
 						};
 					}
 					if (position >= size) {
 						// move to the next log file
-						let latestLogId = loadLastPosition();
-						if (latestLogId > logBuffer.logId) {
-							logBuffer = getLogMemoryMap(logBuffer.logId + 1)!;
-							size = logBuffer.size;
+						const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, readUncommitted ?? false);
+						size = latestSize;
+						if (latestLogId > logBuffer!.logId) {
+							logBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							dataView = logBuffer!.dataView;
+							size = logBuffer!.size;
 							if (size == undefined) {
-								size = transactionLog.getLogFileSize(logBuffer.logId);
+								size = transactionLog.getLogFileSize(logBuffer!.logId);
 								if (!readUncommitted) {
-									logBuffer.size = size;
+									logBuffer!.size = size;
 								}
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
@@ -177,61 +183,61 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				return { done: true, value: undefined };
 			}
 		};
-
-		function getLogMemoryMap(logId: number) {
-			if (logId <= 0) {
-				return;
-			}
-			let logBuffer = transactionLog._logBuffers.get(logId)?.deref();
-			if (logBuffer) { // if we have a cached buffer, return it
-				dataView = logBuffer.dataView;
-				return logBuffer;
-			}
-			try {
-				logBuffer = transactionLog._getMemoryMapOfFile(logId);
-			} catch (error) {
-				(error as Error).message += ` (log file ID: ${logId})`;
-				throw error;
-			}
-			if (!logBuffer) return;
-			logBuffer.logId = logId;
-			dataView = new DataView(logBuffer.buffer);
-			logBuffer.dataView = dataView;
-			transactionLog._logBuffers.set(logId, new WeakRef(logBuffer)); // add to cache
-			let maxMisses = 3;
-			for (let [ logId, reference ] of transactionLog._logBuffers) {
-				// clear out any references that have been collected
-				if (reference.deref() === undefined) {
-					transactionLog._logBuffers.delete(logId);
-				} else if (--maxMisses === 0) {
-					break;
-				}
-			}
-			return logBuffer;
-		}
-
-		function loadLastPosition() {
-			// atomically copy the full 64-bit last committed position word to a local variable so we can read it without memory tearing
-			FLOAT_TO_UINT32[0] = transactionLog._lastCommittedPosition[0];
-			let logId = UINT32_FROM_FLOAT[1];
-			if (readUncommitted) {
-				// if we are reading uncommitted transactions, we need to read the entire log file to find the latest position
-				let nextSize = 0;
-				let nextLogId = logId || 1;
-				while(true) {
-					nextSize = transactionLog.getLogFileSize(nextLogId);
-					if (nextSize === 0) { // if the size is zero, there is no next log file, we are done
-						break;
-					} else {
-						size = nextSize;
-						logId = nextLogId++;
-					}
-				}
-			} else {
-				// otherwise, just use the last committed position, which indicates the latest committed transaction in the log
-				size = UINT32_FROM_FLOAT[0];
-			}
-			return logId;
-		}
 	}
 });
+
+function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
+	if (logId <= 0) {
+		return;
+	}
+	let logBuffer = transactionLog._logBuffers!.get(logId)?.deref();
+	if (logBuffer) { // if we have a cached buffer, return it
+		return logBuffer;
+	}
+	try {
+		logBuffer = transactionLog._getMemoryMapOfFile(logId);
+	} catch (error) {
+		(error as Error).message += ` (log file ID: ${logId})`;
+		throw error;
+	}
+	if (!logBuffer) return;
+	logBuffer.logId = logId;
+	logBuffer.dataView = new DataView(logBuffer.buffer);
+	transactionLog._logBuffers!.set(logId, new WeakRef(logBuffer)); // add to cache
+	let maxMisses = 3;
+	for (const [ logId, reference ] of transactionLog._logBuffers!) {
+		// clear out any references that have been collected
+		if (reference.deref() === undefined) {
+			transactionLog._logBuffers!.delete(logId);
+		} else if (--maxMisses === 0) {
+			break;
+		}
+	}
+	return logBuffer;
+}
+
+function loadLastPosition(transactionLog: TransactionLog, readUncommitted: boolean): { logId: number; size: number } {
+	// atomically copy the full 64-bit last committed position word to a local variable so we can read it without memory tearing
+	FLOAT_TO_UINT32[0] = transactionLog._lastCommittedPosition![0];
+	let logId = UINT32_FROM_FLOAT[1];
+	let size = 0;
+
+	if (readUncommitted) {
+		// if we are reading uncommitted transactions, we need to read the entire log file to find the latest position
+		let nextSize = 0;
+		let nextLogId = logId || 1;
+		while (true) {
+			nextSize = transactionLog.getLogFileSize(nextLogId);
+			if (nextSize === 0) { // if the size is zero, there is no next log file, we are done
+				break;
+			} else {
+				size = nextSize;
+				logId = nextLogId++;
+			}
+		}
+	} else {
+		// otherwise, just use the last committed position, which indicates the latest committed transaction in the log
+		size = UINT32_FROM_FLOAT[0];
+	}
+	return { logId, size };
+}

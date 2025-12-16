@@ -16,14 +16,11 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
-	// Explicitly unmap the memory-mapped view to release resources
-	// immediately. Even if JavaScript still holds references to external
-	// buffers, this ensures the underlying memory mapping is released.
+	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
 			this, this->path.string().c_str(), this->memoryMap.use_count())
 		this->memoryMap.reset();
-		this->memoryMap = nullptr;
 	}
 
 	if (this->fd >= 0) {

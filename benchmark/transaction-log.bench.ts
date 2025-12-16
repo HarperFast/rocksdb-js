@@ -8,7 +8,7 @@ describe('Transaction log', () => {
 	const data = Buffer.alloc(100, 'a');
 
 	describe('write log with 100 byte records', () => {
-		benchmark('rocksdb', {
+		benchmark('rocksdb', concurrent({
 			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
@@ -20,7 +20,7 @@ describe('Transaction log', () => {
 				});
 				await rest();
 			},
-		});
+		}));
 
 		benchmark('lmdb', concurrent({
 			async setup(ctx: BenchmarkContext<LMDBDatabase>) {

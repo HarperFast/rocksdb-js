@@ -20,15 +20,11 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
-	// Explicitly unmap the memory-mapped view to release resources
-	// immediately. Even if JavaScript still holds references to external
-	// buffers, this ensures the Windows file handle is released so the file
-	// can be deleted.
+	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
 			this, this->path.string().c_str(), this->memoryMap.use_count())
 		this->memoryMap.reset();
-		this->memoryMap = nullptr;
 	}
 
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
@@ -216,8 +212,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
 		}
 		// this memory map is not big enough, need to create a new one
-		this->memoryMap.reset();
-		this->memoryMap = nullptr;
 	} else {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Creating new memory map: %u\n", this, fileSize);
 	}

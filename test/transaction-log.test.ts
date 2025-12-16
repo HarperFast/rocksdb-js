@@ -374,7 +374,17 @@ describe('Transaction Log', () => {
 			expect(queryResults[0].data).toEqual(value);
 			expect(queryResults[1].data).toEqual(value);
 			expect(queryResults[19].data).toEqual(value);
-			expect(log.getLogFileSize()).toBeGreaterThan(2000);
+
+			const file1Size = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8;
+			const file2Size = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8;
+			const file3Size = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4;
+
+			expect(log.getLogFileSize()).toBe(file1Size + file2Size + file3Size);
+			expect(log.getLogFileSize(0)).toBe(0);
+			expect(log.getLogFileSize(1)).toBe(file1Size);
+			expect(log.getLogFileSize(2)).toBe(file2Size);
+			expect(log.getLogFileSize(3)).toBe(file3Size);
+			expect(log.getLogFileSize(4)).toBe(0);
 
 			const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
@@ -383,21 +393,21 @@ describe('Transaction Log', () => {
 			const info2 = parseTransactionLog(log2Path);
 			const info3 = parseTransactionLog(log3Path);
 
-			expect(info1.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
+			expect(info1.size).toBe(file1Size);
 			expect(info1.entries.length).toBe(8);
 			for (const { length, data } of info1.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
 			}
 
-			expect(info2.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8);
+			expect(info2.size).toBe(file2Size);
 			expect(info2.entries.length).toBe(8);
 			for (const { length, data } of info2.entries) {
 				expect(length).toBe(100);
 				expect(data).toEqual(value);
 			}
 
-			expect(info3.size).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4);
+			expect(info3.size).toBe(file3Size);
 			expect(info3.entries.length).toBe(4);
 			for (const { length, data } of info3.entries) {
 				expect(length).toBe(100);
