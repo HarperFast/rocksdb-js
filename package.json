@@ -1,5 +1,5 @@
 {
-  "name": "@harperdb/rocksdb-js",
+  "name": "@harperfast/rocksdb-js",
   "version": "0.0.0",
   "description": "RocksDB binding for Node.js",
   "license": "Apache-2.0",
@@ -67,6 +67,9 @@
     "tsx": "4.21.0",
     "typescript": "5.9.3",
     "vitest": "3.2.4"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=18"
