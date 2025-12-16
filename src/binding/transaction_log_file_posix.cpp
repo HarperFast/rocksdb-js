@@ -1,8 +1,10 @@
 #include "transaction_log_file.h"
-#include "macros.h"
-#include "util.h"
 
 #ifdef PLATFORM_POSIX
+
+#include "macros.h"
+#include "util.h"
+#include <sys/mman.h>
 
 namespace rocksdb_js {
 
@@ -13,6 +15,13 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	// Explicitly remove our reference to the memory map.
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
+			this, this->path.string().c_str(), this->memoryMap.use_count())
+		this->memoryMap.reset();
+	}
 
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (fd=%d)\n",
@@ -34,7 +43,8 @@ void TransactionLogFile::openFile() {
 	auto parentPath = this->path.parent_path();
 	if (!parentPath.empty()) {
 		try {
-			std::filesystem::create_directories(parentPath);
+			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
 				this, parentPath.string().c_str(), e.what())
@@ -43,7 +53,7 @@ void TransactionLogFile::openFile() {
 	}
 
 	// open file for both reading and writing
-	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0644);
+	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno)
@@ -62,6 +72,25 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size)
 }
 
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+	if (!this->memoryMap) {
+		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
+		if (map == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
+			return nullptr;
+		}
+		// If successful, return a MemoryMap object for tracking references.
+		// Note, that we do not need to do any cleanup from this class's
+		// destructor. Removing files that are memory mapped is perfectly fine,
+		// and the memory map can be safely used indefinitely (the file descriptor
+		// doesn't need to be kept open either).
+		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
+	}
+	this->memoryMap->fileSize = fileSize;
+	return this->memoryMap;
+}
+
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0) {
 		return static_cast<int64_t>(::pread(this->fd, buffer, size, offset));
@@ -72,6 +101,12 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 bool TransactionLogFile::removeFile() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
+			this, this->path.string().c_str())
+		this->memoryMap.reset();
+	}
+
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (fd=%d)\n",
 			this, this->path.string().c_str(), this->fd)
@@ -79,6 +114,7 @@ bool TransactionLogFile::removeFile() {
 		this->fd = -1;
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
 	auto removed = std::filesystem::remove(this->path);
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",

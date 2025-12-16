@@ -4,6 +4,8 @@
 #include "transaction_log_handle.h"
 #include "macros.h"
 #include "util.h"
+#include <stdlib.h>
+#include <fcntl.h>
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -142,26 +144,126 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Gets the range of the transaction log.
+ * Get the size of a sequenced log file.
  */
-napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("Query")
+napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize")
+	uint32_t sequenceNumber = 0;
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
+	if (type == napi_number) {
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+		if (sequenceNumber == 0) {
+			::napi_throw_type_error(env, nullptr, "Expected sequence number to be a positive integer greater than 0");
+		}
+	} else if (type != napi_undefined) {
+		::napi_throw_type_error(env, nullptr, "Expected sequence number to be a number");
+	} // if type == napi_undefined, leave sequenceNumber as 0, get all log files
 
-	// TODO:
-	// - create a buffer for query() to populate
-	// - bind the buffer to napi_create_external_buffer()
-
-	try {
-		(*txnLogHandle)->query();
-	} catch (const std::exception& e) {
-		::napi_throw_error(env, nullptr, e.what());
-		return nullptr;
-	}
-
-	NAPI_RETURN_UNDEFINED()
+	uint64_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, (double) fileSize, &result));
+	return result;
 }
 
+struct PositionHandle {
+	std::shared_ptr<LogPosition> position;
+};
+/**
+ * Return a buffer with the status of the sequenced log file.
+ */
+napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
+	NAPI_METHOD()
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
+	auto lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition().lock();
+
+	if (!lastCommittedPosition) {
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	napi_value result;
+	PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, LOG_POSITION_SIZE, (void*)lastCommittedPosition.get(), [](napi_env env, void* data, void* hint) {
+		PositionHandle* positionHandle = static_cast<PositionHandle*>(hint);
+		delete positionHandle;
+	}, positionHandle, &result));
+	return result;
+}
+
+struct MemoryMapHandle final {
+	std::shared_ptr<MemoryMap> memoryMap;
+	uint32_t originalSize;
+
+	~MemoryMapHandle() {
+		DEBUG_LOG("MemoryMapHandle::~MemoryMapHandle memoryMap=%p, originalSize=%u, ref count=%ld\n",
+			this->memoryMap.get(), this->originalSize, this->memoryMap.use_count())
+	}
+};
+
+/**
+ * Gets the range of the transaction log.
+ */
+napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+
+	auto memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
+	if (!memoryMap) {
+		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	auto* memoryMapHandle = new MemoryMapHandle{ memoryMap, memoryMap->fileSize };
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(
+		env,  // env
+		memoryMapHandle->originalSize, // length
+		memoryMapHandle->memoryMap->map, // data
+		[](napi_env env, void* data, void* hint) { // finalize_cb
+			auto* memoryMapHandle = static_cast<MemoryMapHandle*>(hint);
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint)
+			int64_t memoryUsage;
+			// re-adjust back
+			::napi_adjust_external_memory(env, memoryMapHandle->originalSize, &memoryUsage);
+			delete memoryMapHandle;
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%lld\n", memoryUsage)
+		},
+		memoryMapHandle, // finalize_hint
+		&result // [out] result
+	));
+
+	int64_t memoryUsage;
+	// We need to adjust the tracked external memory after creating the external buffer.
+	// More external memory "pressure" causes V8 to more aggressively garbage collect,
+	// and with lots of external memory, this can be detrimental to performance.
+	// And this should really *not* be counted as external memory, because it is
+	// a memory map of OS-owner memory, not process owned memory.
+	// However, I am doubtful this is really implemented effectively in V8, these external
+	// memory blocks do still seem to induce extra garbage collection. Still we call this,
+	// because that's what we are supposed to do, and maybe eventually V8 will handle it
+	// better, and hopefully it helps.
+	::napi_adjust_external_memory(env, static_cast<int64_t>(memoryMapHandle->originalSize) * -1, &memoryUsage);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile originalSize=%u, external memory=%lld\n", memoryMapHandle->originalSize, memoryUsage);
+	return result;
+}
+
+/**
+ * Find the position in the transaction logs with a transaction equal to or greater than the provided timestamp.
+ */
+napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition")
+	double timestamp = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
+	LogPosition position = (*txnLogHandle)->findPosition(timestamp);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
+	return result;
+}
 
 /**
  * Initializes the `NativeTransactionLog` JavaScript class.
@@ -169,7 +271,10 @@ napi_value TransactionLog::Query(napi_env env, napi_callback_info info) {
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "query", nullptr, Query, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 	};
 
 	auto className = "TransactionLog";

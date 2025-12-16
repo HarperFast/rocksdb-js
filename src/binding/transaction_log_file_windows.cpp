@@ -1,8 +1,12 @@
 #include "transaction_log_file.h"
-#include "macros.h"
-#include "util.h"
 
 #ifdef PLATFORM_WINDOWS
+
+#include "macros.h"
+#include "util.h"
+#include <aclapi.h>
+#include <sddl.h>
+#include <cstdio>
 
 namespace rocksdb_js {
 
@@ -15,6 +19,13 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 
 void TransactionLogFile::close() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
+
+	// Explicitly remove our reference to the memory map.
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
+			this, this->path.string().c_str(), this->memoryMap.use_count())
+		this->memoryMap.reset();
+	}
 
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (handle=%p)\n",
@@ -36,13 +47,17 @@ void TransactionLogFile::openFile() {
 	auto parentPath = this->path.parent_path();
 	if (!parentPath.empty()) {
 		try {
-			std::filesystem::create_directories(parentPath);
+			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
 				this, parentPath.string().c_str(), e.what())
 			throw std::runtime_error("Failed to create parent directory: " + parentPath.string());
 		}
 	}
+
+	// Check if file already exists before creating/opening
+	bool fileExisted = std::filesystem::exists(this->path);
 
 	// open file for both reading and writing
 	this->fileHandle = ::CreateFileW(
@@ -63,6 +78,74 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
 	}
 
+	// Set file permissions equivalent to Unix 640 (owner: read+write, group: read, others: none)
+	// Only set permissions if the file was just created (not if it already existed)
+	if (!fileExisted) {
+		PSID ownerSid = nullptr;
+		PSID groupSid = nullptr;
+		PACL dacl = nullptr;
+		PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
+
+		// Get the file's current security descriptor
+		std::wstring wpath = this->path.wstring();
+		DWORD result = ::GetNamedSecurityInfoW(
+			const_cast<LPWSTR>(wpath.c_str()),
+			SE_FILE_OBJECT,
+			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+			&ownerSid,
+			&groupSid,
+			&dacl,
+			nullptr,
+			&securityDescriptor
+		);
+
+		if (result == ERROR_SUCCESS && ownerSid && groupSid) {
+			// Create a new DACL with 640 permissions
+			EXPLICIT_ACCESS_W ea[2];
+			ZeroMemory(ea, sizeof(ea));
+
+			// Owner: read + write
+			ea[0].grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+			ea[0].grfAccessMode = SET_ACCESS;
+			ea[0].grfInheritance = NO_INHERITANCE;
+			ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+			ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+			ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(ownerSid);
+
+			// Group: read only
+			ea[1].grfAccessPermissions = FILE_GENERIC_READ;
+			ea[1].grfAccessMode = SET_ACCESS;
+			ea[1].grfInheritance = NO_INHERITANCE;
+			ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+			ea[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+			ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(groupSid);
+
+			PACL newDacl = nullptr;
+			result = ::SetEntriesInAclW(2, ea, dacl, &newDacl);
+			if (result == ERROR_SUCCESS && newDacl) {
+				// Apply the new DACL
+				result = ::SetNamedSecurityInfoW(
+					const_cast<LPWSTR>(wpath.c_str()),
+					SE_FILE_OBJECT,
+					DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+					nullptr,
+					nullptr,
+					newDacl,
+					nullptr
+				);
+				if (result != ERROR_SUCCESS) {
+					DEBUG_LOG("%p TransactionLogFile::openFile Failed to set file permissions: %s (error=%lu)\n",
+						this, this->path.string().c_str(), result)
+				}
+				::LocalFree(newDacl);
+			}
+		}
+
+		if (securityDescriptor) {
+			::LocalFree(securityDescriptor);
+		}
+	}
+
 	// Get file size
 	LARGE_INTEGER fileSize;
 	if (!::GetFileSizeEx(this->fileHandle, &fileSize)) {
@@ -73,6 +156,112 @@ void TransactionLogFile::openFile() {
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = static_cast<size_t>(fileSize.QuadPart);
+	DEBUG_LOG("%p TransactionLogFile::openFile File size: %zu file path: %s\n",
+		this, this->size, this->path.string().c_str());
+	// On Windows, we have to create the full file size for memory maps, and it is zero-padded, so the act of indexing allows us to find
+	// the end, and adjust the real size accordingly.
+	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
+	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
+	if (this->size > 0) {
+		this->findPositionByTimestamp(0, this->size);
+		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
+			this, this->size, this->path.string().c_str());
+	}
+}
+
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+	if (this->memoryMap) {
+		if (this->memoryMap->mapSize >= fileSize) {
+			// existing memory map will work
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
+			this->memoryMap->fileSize = fileSize;
+			return this->memoryMap;
+		} else {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
+		}
+		// this memory map is not big enough, need to create a new one
+	} else {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Creating new memory map: %u\n", this, fileSize);
+	}
+
+	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
+	// in NT.DLL). So we must expand the file to the full size before we can map it.
+	// Check the actual file size on disk to avoid repeated expansions
+	if (fileSize > this->size) {
+		LARGE_INTEGER currentPos;
+		LARGE_INTEGER distanceToMove;
+		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)
+		distanceToMove.QuadPart = 0; // We want to move 0 bytes to query current position
+		if (!::SetFilePointerEx(this->fileHandle, distanceToMove, &currentPos, FILE_CURRENT)) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			return nullptr;
+		}
+
+		// Move to the new file size
+		LARGE_INTEGER newSize;
+		newSize.QuadPart = fileSize;
+		if (!::SetFilePointerEx(this->fileHandle, newSize, NULL, FILE_BEGIN)) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			return nullptr;
+		}
+
+		// Set the End of File with the new file size
+		if (!::SetEndOfFile(this->fileHandle)) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetEndOfFile: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			return nullptr;
+		}
+
+		// Restore original position
+		if (!::SetFilePointerEx(this->fileHandle, currentPos, NULL, FILE_BEGIN)) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to restore position: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str())
+			return nullptr;
+		}
+	}
+
+	HANDLE mh = ::CreateFileMappingW(this->fileHandle, NULL, PAGE_READONLY, 0, fileSize, NULL);
+	if (!mh) {
+		DWORD error = ::GetLastError();
+		std::string errorMessage = getWindowsErrorMessage(error);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to CreateFileMapping: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
+		return nullptr;
+	}
+
+	// map the memory object into our address space
+	// note that MapViewOfFileEx can be used if we wanted to suggest an address
+	void* map = ::MapViewOfFile(mh, FILE_MAP_READ, 0, 0, fileSize);
+	if (!map) {
+		DWORD error = ::GetLastError();
+		std::string errorMessage = getWindowsErrorMessage(error);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to MapViewOfFile: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
+		::CloseHandle(mh);
+		return nullptr;
+	}
+
+	// Close the mapping handle immediately after mapping the view.
+	// On Windows, once a view is mapped, the mapping handle can be closed - the view
+	// remains valid until UnmapViewOfFile is called. Keeping the mapping handle open
+	// causes Windows to synchronize writes to the file with the memory-mapped view,
+	// which is extremely slow. By closing it here, writes via WriteFile will be fast.
+	::CloseHandle(mh);
+
+	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Mapped to: %p\n", this, map);
+	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
+
+	return this->memoryMap;
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
@@ -112,8 +301,8 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		return 0;
 	}
 
-	// seek to end of file before writing (file pointer may have been moved by reads)
-	if (::SetFilePointer(this->fileHandle, 0, nullptr, FILE_END) == INVALID_SET_FILE_POINTER) {
+	// seek to current size before writing (file pointer may have been moved by reads)
+	if (::SetFilePointer(this->fileHandle, this->size, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile SetFilePointer failed (error=%lu: %s)\n",

@@ -1,18 +1,21 @@
 import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rimraf } from 'rimraf';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { parentPort, Worker, workerData } from 'node:worker_threads';
+import { setImmediate as rest } from 'node:timers/promises';
+import { rm } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+const isWindows = process.platform === 'win32';
 
-const vitestBench = workerData.benchmarkWorkerId ? () => {
+const vitestBench = workerData?.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
 } : (await import('vitest')).bench;
 
-type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
+export type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
-interface BenchmarkContext<T> extends Record<string, any> {
+export interface BenchmarkContext<T> extends Record<string, any> {
 	db: T;
 };
 
@@ -37,7 +40,7 @@ export function benchmark(type: string, options: any): void {
 	}
 
 	const { bench, setup, teardown, dbOptions, name } = options;
-	const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	const dbPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	let ctx: BenchmarkContext<any>;
 
 	vitestBench(name || type, () => {
@@ -57,27 +60,27 @@ export function benchmark(type: string, options: any): void {
 		]);
 	}, {
 		throws: true,
-		setup(_task, _mode) {
+		async setup(task, mode: 'warmup' | 'run') {
 			if (type === 'rocksdb') {
-				ctx = { db: RocksDatabase.open(path, dbOptions) };
+				ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
 			} else {
-				ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }) };
+				ctx = { db: lmdb.open({ dbPath, compression: true, ...dbOptions }), mode };
 			}
 			if (typeof setup === 'function') {
-				return setup(ctx);
+				await setup(ctx, task, mode);
 			}
 		},
-		async teardown() {
+		async teardown(task, mode: 'warmup' | 'run') {
 			if (typeof teardown === 'function') {
-				await teardown(ctx);
+				await teardown(ctx, task, mode);
 			}
 			if (ctx.db) {
 				const path = ctx.db.path;
 				await ctx.db.close();
 				try {
-					await rimraf(path);
-				} catch {
-					// ignore cleanup errors in benchmarks
+					await rm(path, { force: true, recursive: true, maxRetries: 3 });
+				} catch (err) {
+					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
 			}
 		}
@@ -227,7 +230,7 @@ function describeShim(name: string, fn: () => void) {
  * 2. The worker thread, which does discovery only
  */
 export const workerDescribe = await (async () => {
-	if (workerData.benchmarkWorkerId) {
+	if (workerData?.benchmarkWorkerId) {
 		return Object.assign(describeShim, {
 			only(name: string, fn: () => void) {
 				describeShim(name, fn);
@@ -305,7 +308,7 @@ export function workerBenchmark(type: string, options: any): void {
 		suite.benchmarks.push({ bench, dbOptions, name: benchmarkName, numWorkers, setup, teardown, type });
 	}
 
-	if (workerData.benchmarkWorkerId) {
+	if (workerData?.benchmarkWorkerId) {
 		// worker thread only needs to discover the benchmarks
 		return;
 	}
@@ -336,7 +339,7 @@ export function workerBenchmark(type: string, options: any): void {
 				return new Promise<void>((resolve, reject) => {
 					const worker = workerLaunch({
 						...workerPayload,
-						benchmarkFile,
+						benchmarkFile: pathToFileURL(benchmarkFile).toString(),
 						benchmarkWorkerId: i + 1,
 						mode,
 						path
@@ -422,9 +425,9 @@ export async function workerInit() {
 				// console.log('workerTeardown', workerData.benchmarkWorkerId, workerData.mode, type, path);
 				await ctx.db.close();
 				try {
-					await rimraf(path);
-				} catch {
-					// ignore cleanup errors in benchmarks
+					await rm(path, { force: true, recursive: true, maxRetries: 3 });
+				} catch (err) {
+					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
 			}
 			parentPort!.postMessage({ teardownDone: true, benchmarkWorkerId });
@@ -507,3 +510,33 @@ function withResolvers<T>() {
 		promise
 	};
 }
+
+export function concurrent(suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
+export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
+export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
+	let index = 0;
+	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
+	let currentlyExecuting: Promise<void>[] = Array(concurrencyMaximum);
+	const restEachTurn = suite.restEachTurn ?? true;
+	return {
+		...suite,
+		async bench(ctx: BenchmarkContext<T>) {
+			await currentlyExecuting[index]; // await the previous execution for this slot
+			currentlyExecuting[index] = suite.bench(ctx) as Promise<void>; // let it execute concurrently and resolve after concurrencyMaximum number of executions
+			if (isWindows) { // don't do any concurrency on windows
+				return currentlyExecuting[index];
+			}
+			index = (index + 1) % concurrencyMaximum; // cycle in a loop
+			if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
+				await rest();
+			}
+		},
+		async teardown(ctx: BenchmarkContext<T>) {
+			// wait for all outstanding executions to finish
+			await Promise.all(currentlyExecuting);
+			// any more tearing down
+			return suite.teardown?.(ctx);
+		}
+	}
+}
+type HasConcurrencyOptions = { concurrencyMaximum?: number, numWorkers?: number, restEachTurn?: boolean };

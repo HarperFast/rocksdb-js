@@ -15,13 +15,13 @@
   "type": "module",
   "gypfile": true,
   "scripts": {
-    "bench": "vitest bench --outputJson benchmark-results.json",
-    "bench:bun": "bun --bun bench",
-    "bench:deno": "deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
+    "bench": "cross-env CI=1 vitest bench --outputJson benchmark-results.json",
+    "bench:bun": "cross-env CI=1 bun --bun bench",
+    "bench:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
     "build": "pnpm build:bundle && pnpm rebuild",
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
-    "build:bundle": "rimraf dist && tsdown -c tsdown.config.ts",
+    "build:bundle": "node scripts/clean-dist.mjs && tsdown -c tsdown.config.ts",
     "build:debug": "cross-env SKIP_MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
@@ -46,13 +46,13 @@
   ],
   "dependencies": {
     "@harperdb/extended-iterable": "1.0.1",
-    "msgpackr": "1.11.5",
+    "msgpackr": "1.11.6",
     "ordered-binary": "1.6.0"
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
     "@types/node": "25.0.2",
-    "@vitest/coverage-v8": "3.2.4",
+    "@vitest/coverage-v8": "4.0.15",
     "cross-env": "10.1.0",
     "dotenv": "17.2.3",
     "lefthook": "2.0.12",
@@ -60,13 +60,12 @@
     "node-gyp": "12.1.0",
     "oxlint": "1.33.0",
     "prebuildify": "6.0.1",
-    "rimraf": "6.1.2",
     "semver": "7.7.3",
     "tsdown": "0.18.0",
     "tslib": "2.8.1",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
-    "vitest": "3.2.4"
+    "vitest": "4.0.15"
   },
   "engines": {
     "node": ">=18"

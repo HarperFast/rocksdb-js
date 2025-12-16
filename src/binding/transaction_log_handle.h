@@ -48,15 +48,15 @@ struct TransactionLogHandle final : Closable {
 		uint32_t size
 	);
 
+	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t sequenceNumber);
+	LogPosition findPosition(double timestamp);
+	uint64_t getLogFileSize(uint32_t sequenceNumber);
+	std::weak_ptr<LogPosition> getLastCommittedPosition();
 	/**
 	 * Closes the transaction log handle.
 	 */
 	void close();
 
-	/**
-	 * Queries the transaction log.
-	 */
-	void query();
 };
 
 } // namespace rocksdb_js

@@ -357,6 +357,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.enable_blob_garbage_collection = true;
 	dbOptions.min_blob_size = 1024;
 	dbOptions.persist_user_defined_timestamps = true;
+	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
@@ -1395,7 +1396,8 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 		this, name.c_str())
 
 	// ensure the directory exists
-	std::filesystem::create_directories(logDirectory);
+	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating directory: %s\n", this, logDirectory.string().c_str());
+	rocksdb_js::tryCreateDirectory(logDirectory);
 
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
 		name,

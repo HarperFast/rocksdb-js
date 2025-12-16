@@ -29,15 +29,9 @@ export default defineConfig({
 		environment: 'node',
 		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
+		hookTimeout: 30000,
 		include: ['test/**/*.test.ts'],
-		pool: process.versions.bun ? 'forks' : 'threads',
-		poolOptions: {
-			threads: {
-				// NOTE: by default, Vitest will run tests in parallel, but
-				// single threaded mode is useful for debugging:
-				// singleThread: true
-			}
-		},
+		pool: process.versions.bun || process.versions.deno ? 'forks' : 'threads',
 		reporters: ['verbose'],
 		silent: false,
 		testTimeout: 30000,
