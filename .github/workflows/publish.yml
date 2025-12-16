@@ -50,7 +50,7 @@ jobs:
         run: pnpm test:release-binding
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: bindings-${{ matrix.platform.target }}
           path: |
@@ -76,13 +76,12 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Download artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
-          name: bindings-${{ matrix.platform.target }}
-          path: prebuilds
+          path: artifacts
 
       - name: List artifacts
-        run: ls -la prebuilds
+        run: ls -la artifacts
 
       - name: Get package.json info
         id: get-package-info
@@ -91,18 +90,11 @@ jobs:
           echo "homepage=$(node -p "require('./package.json').homepage")" >> $GITHUB_OUTPUT
           echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      # TODO:
-      #  - Move artifacts to separate packages
-      #  - Write `package.json` for each package
-      #    - Set name @harperdb/rocksdb-js-<platform>-<arch>
-      #    - Set version to ${{ steps.get-package-info.outputs.version }}
-      #  - Publish packages
-      # @harperdb/rocksdb-js-macos-arm64
-      # @harperdb/rocksdb-js-macos-x64
-      # @harperdb/rocksdb-js-linux-arm64
-      # @harperdb/rocksdb-js-linux-x64
-      # @harperdb/rocksdb-js-windows-arm64
-      # @harperdb/rocksdb-js-windows-x64
+      - name: Publish rocksdb-js platform specific bindings to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
+        run: node scripts/publish.mjs
 
       - name: Publish rocksdb-js to npm
         env:
