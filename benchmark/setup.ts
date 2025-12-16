@@ -7,6 +7,7 @@ import { parentPort, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
 import { rm } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+const isWindows = process.platform === 'win32';
 
 const vitestBench = workerData?.benchmarkWorkerId ? () => {
 	throw new Error('Workers should not be directly calling vitest\'s bench()');
@@ -522,6 +523,9 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 		async bench(ctx: BenchmarkContext<T>) {
 			await currentlyExecuting[index]; // await the previous execution for this slot
 			currentlyExecuting[index] = suite.bench(ctx) as Promise<void>; // let it execute concurrently and resolve after concurrencyMaximum number of executions
+			if (isWindows) { // don't do any concurrency on windows
+				return currentlyExecuting[index];
+			}
 			index = (index + 1) % concurrencyMaximum; // cycle in a loop
 			if (restEachTurn) { // let asynchronous actions have turns in the event queue, more realistic for most scenarios
 				await rest();
