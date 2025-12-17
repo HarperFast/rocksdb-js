@@ -89,7 +89,7 @@ public:
 			// Decrement existing entry until we have completed all the flush actions for the job
 			if (--it->second.columnFamilyCount == 0) {
 				// The last CF flush has completed for the job, now signal that the database flush is done
-				DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted job completed name=%s job id=%u flushedSequence=%llu\n",
+				DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted job completed name=%s job id=%d flushedSequence=%llu\n",
 					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
 				std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
 				for (auto& [name, store] : desc->transactionLogStores) {
