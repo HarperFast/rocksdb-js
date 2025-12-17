@@ -232,7 +232,7 @@ void DBRegistry::Shutdown() {
 			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str())
 			descriptor->closing.store(true);
 			// We want to ensure that all in-memory data is written to disk
-			rocksdb::Status status = descriptor->flush();
+			descriptor->flush();
 			// Wait for any outstanding (background threads) operations to complete. Note that this is not setting the
 			// close_db flag since active references to the databases may still exist.
 			// Also, contrary to the suggestions of the documentation, this method alone does not seem to trigger a flush
