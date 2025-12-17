@@ -4,18 +4,83 @@
 #include <string>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include "rocksdb/db.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
+
+#define RECENTLY_COMMITTED_POSITIONS_SIZE 24
 
 namespace rocksdb_js {
 
 // forward declarations
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
+struct MemoryMap;
+
+#define LOG_POSITION_SIZE 8
+
+/**
+* Structure to hold the last committed position of a transaction log file, that
+* is exposed to JS through an external buffer.
+*
+* The size of this union is stored in `LOG_POSITION_SIZE`.
+*/
+union LogPosition {
+	struct {
+		/**
+		* This offset relative to the start of the log file.
+		*/
+		uint32_t positionInLogFile;
+		/**
+		* The sequence number of the log file.
+		*/
+		uint32_t logSequenceNumber;
+	};
+
+	/**
+	 * The full position of the last committed transaction, combining the sequence
+	 * with the offset within the file, as a single 64-bit word that can be accessed
+	 * from JS.
+	 */
+	double fullPosition;
+
+	bool operator()( const LogPosition a, const LogPosition b ) const {
+		// Comparing fullPosition is presumably faster than comparing the individual fields and should work on little-endian...
+		// unless compilers can figure this out?
+		return a.logSequenceNumber == b.logSequenceNumber ?
+			a.positionInLogFile < b.positionInLogFile :
+			a.logSequenceNumber < b.logSequenceNumber;
+	};
+
+	LogPosition() = default;
+
+	LogPosition(uint32_t positionInLogFile, uint32_t logSequenceNumber) {
+		this->positionInLogFile = positionInLogFile;
+		this->logSequenceNumber = logSequenceNumber;
+	}
+
+	LogPosition(const LogPosition& other) = default;
+
+	LogPosition& operator=(const LogPosition& other) {
+		this->positionInLogFile = other.positionInLogFile;
+		this->logSequenceNumber = other.logSequenceNumber;
+		return *this;
+	}
+};
+
+/**
+* Holds a RocksDB sequence number (which Rocks uses to track the version of the database and is returned by flush events)
+* and the corresponding position in the transaction log.
+*/
+struct SequencePosition { // forward declaration doesn't work here because it is used in an array
+	rocksdb::SequenceNumber rocksSequenceNumber;
+	LogPosition position;
+};
 
 struct TransactionLogStore final {
 	/**
@@ -68,9 +133,9 @@ struct TransactionLogStore final {
 	std::map<uint32_t, std::shared_ptr<TransactionLogFile>> sequenceFiles;
 
 	/**
-	 * The mutex to protect the transaction log store.
+	 * The mutex to protect writing with the transaction log store.
 	 */
-	std::mutex storeMutex;
+	std::mutex writeMutex;
 
 	/**
 	 * The flag indicating if the transaction log store is closing. Once a store
@@ -80,6 +145,50 @@ struct TransactionLogStore final {
 	 * operations are added to the store after it is closed.
 	 */
 	std::atomic<bool> isClosing = false;
+
+	/**
+	 * The set of transactions that have been written to log files in this store, but
+	 * have not been committed (to RocksDB) yet. We track these because we don't want
+	 * the transactions in the log to be visible until they are committed and consistent.
+	 */
+	std::set<LogPosition, LogPosition> uncommittedTransactionPositions;
+
+	/**
+	 * An array of recent sequence positions to correlate a database sequence number with a transaction log position,
+	 * so that when a flush event occurs, we can determine what part of the transaction log has been fully flushed
+	 * to the RocksDB database.
+	 * We are not attempting to track every single transaction log position and sequence number, there could be a very large
+	 * number. Instead this is an array where each n position represents an n^2 frequencies of correlations. This is enough
+	 * that we won't lose more than half of what has to be replayed since the last flush.
+	 */
+	SequencePosition recentlyCommittedSequencePositions[RECENTLY_COMMITTED_POSITIONS_SIZE];
+
+	/**
+	 * The mutex to protect the transaction data sets.
+	 */
+	std::mutex dataSetsMutex;
+
+	/**
+	 * A counter for the number of recentlyCommittedSequencePositions updates we have made so that we can use 2^n modulus
+	 * frequencies to assign to recentlyCommittedSequencePositions
+	 */
+	unsigned int nextSequencePositionsCount = 0;
+
+	/**
+	 * This file is used to track how much of the transaction log has been flushed to the database.
+	 */
+	TransactionLogFile* flushedTrackerFile = nullptr;
+
+	/**
+	 * The next sequence position to use for a new transaction log entry.
+	 */
+	LogPosition nextLogPosition = { 0, 0 };
+
+	/**
+	 * Data structure to hold the last committed position of a transaction log file, that is exposed
+	 * to JS through an external buffer with reference counting.
+	 */
+	std::shared_ptr<LogPosition> lastCommittedPosition;
 
 	TransactionLogStore(
 		const std::string& name,
@@ -98,9 +207,37 @@ struct TransactionLogStore final {
 	void close();
 
 	/**
-	 * Queries the transaction log store.
+	 * Notifies the transaction log store that a RocksDB commit operation has finished, and the transactions sequence number.
 	 */
-	void query();
+	void commitFinished(LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber);
+
+	/**
+	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
+	 */
+	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
+	// TODO: We should probably implement a databaseFlushStart so we can pin the current flush sequence number in memory for better accuracy
+	// once we have added support for flush events
+
+	/**
+	 * Memory maps the transaction log file for the given sequence number.
+	 **/
+	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t logSequenceNumber);
+
+	/**
+	* Get the log file size.
+	**/
+	uint64_t getLogFileSize(uint32_t logSequenceNumber);
+
+	/**
+	 * Get the shared represention object representing the last committed position.
+	 **/
+	std::weak_ptr<LogPosition> getLastCommittedPosition();
+
+	/**
+	 * Finds the transaction log file position with the oldest transaction that is equal to, or
+	 * newer than, the provided timestamp.
+	 */
+	LogPosition findPositionByTimestamp(double timestamp);
 
 	/**
 	 * Purges transaction logs.
@@ -121,7 +258,7 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch);
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

@@ -1,4 +1,5 @@
 #include <cmath>
+#include <system_error>
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 
@@ -17,18 +18,35 @@ TransactionLogFile::~TransactionLogFile() {
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-
+	// Check if file exists first to avoid exceptions from deleted files
 	if (!std::filesystem::exists(this->path)) {
-		DEBUG_LOG("%p TransactionLogFile::getLastWriteTime ERROR: File does not exist: %s\n", this, this->path.string().c_str())
 		throw std::filesystem::filesystem_error(
 			"File does not exist",
 			this->path,
 			std::make_error_code(std::errc::no_such_file_or_directory)
 		);
 	}
-
-	auto mtime = std::filesystem::last_write_time(this->path);
-	return convertFileTimeToSystemTime(mtime);
+	try {
+		auto mtime = std::filesystem::last_write_time(this->path);
+		return convertFileTimeToSystemTime(mtime);
+	} catch (const std::filesystem::filesystem_error&) {
+		// Re-throw filesystem errors as-is
+		throw;
+	} catch (const std::exception& e) {
+		// Convert other standard exceptions to filesystem_error
+		throw std::filesystem::filesystem_error(
+			std::string("Failed to get last write time: ") + e.what(),
+			this->path,
+			std::make_error_code(std::errc::io_error)
+		);
+	} catch (...) {
+		// Convert any other exception to filesystem_error
+		throw std::filesystem::filesystem_error(
+			"Unknown error getting last write time",
+			this->path,
+			std::make_error_code(std::errc::io_error)
+		);
+	}
 }
 
 void TransactionLogFile::open(const double latestTimestamp) {
@@ -91,7 +109,7 @@ void TransactionLogFile::open(const double latestTimestamp) {
 			this, this->path.string().c_str(), this->size, this->version, this->timestamp)
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu)\n",
+	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%u)\n",
 		this, this->path.string().c_str(), this->size)
 }
 
@@ -185,6 +203,50 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	this->size += static_cast<uint32_t>(bytesWritten);
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
 		this, bytesWritten, this->size, batch.currentEntryIndex, batch.currentEntryBytesWritten)
+}
+
+/**
+ * Find the position of a timestamp, specifically the position where there are no transactions with an earlier timestamp
+ * @param timestamp - the timestamp to find the position of
+ * @param mapSize - the size of the memory map to search in
+ * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
+ */
+uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
+	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize)
+	std::lock_guard<std::mutex> indexLock(this->indexMutex);
+	auto memoryMap = this->getMemoryMap(mapSize);
+
+	// we use our memory maps for fast access to the data
+	char* mappedFile = (char*) memoryMap->map;
+	// We begin by indexing the file, so we can use fast ordered std::map access O(log n). We only need to index the file
+	// that hasn't been indexed yet, so we start at the last indexed position. Note that there may be a slight benefit
+	// to using an ordered vector with binary search for faster lookups, but std::map is simpler for now is very close in performance
+	while (this->lastIndexedPosition < this->size) {
+		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
+		if (entryTimestamp == 0) {
+			// this means we have reached the end of zero-padded file (usually Windows), adjust size and break out of the loop
+			this->size = this->lastIndexedPosition;
+			break;
+		}
+		// for the first iteration, we insert the log file timestamp at the beginning of the index
+		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
+			// specifically record the log file timestamp as the first entry with a position of zero
+			positionByTimestampIndex.insert({entryTimestamp, 0});
+			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
+			continue;
+			// else check that the timestamp is greater than any previously indexed timestamp,
+			// otherwise we don't record it, because we want to start at the first position with a timestamp that
+			// is greater than the requested timestamp:
+		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+			// insert with a hint to go at the end (constant time?)
+			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
+		}
+		// read size of the entry and move on
+		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+	}
+	// now do the actual search: just a search for the lower bound
+	auto it = this->positionByTimestampIndex.lower_bound(timestamp);
+	return it == this->positionByTimestampIndex.end() ? 0xFFFFFFFF : it->second;
 }
 
 } // namespace rocksdb_js

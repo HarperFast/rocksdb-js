@@ -62,18 +62,28 @@ void TransactionLogHandle::close() {
 	}
 }
 
-void TransactionLogHandle::query() {
+uint64_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
 	auto store = this->store.lock();
-	if (!store) {
-		// store was closed/destroyed, try to get or create a new one
-		auto dbHandle = this->dbHandle.lock();
-		if (!dbHandle) {
-			throw std::runtime_error("Database has been closed");
-		}
-		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-		this->store = store; // update weak_ptr to point to new store
-	}
-	store->query();
+	if (store) return store->getLogFileSize(sequenceNumber);
+	return 0;
+}
+
+std::weak_ptr<MemoryMap> TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
+	auto store = this->store.lock();
+	if (store) return store->getMemoryMap(sequenceNumber);
+	return std::weak_ptr<MemoryMap>(); // nullptr
+}
+
+LogPosition TransactionLogHandle::findPosition(double timestamp) {
+	auto store = this->store.lock();
+	if (store) return store->findPositionByTimestamp(timestamp);
+	return { 0, 0 };
+}
+
+std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
+	auto store = this->store.lock();
+	if (store) return store->getLastCommittedPosition();
+	return std::weak_ptr<LogPosition>(); // nullptr
 }
 
 } // namespace rocksdb_js

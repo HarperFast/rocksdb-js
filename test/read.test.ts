@@ -1,9 +1,3 @@
-// note: msgpackr/pack.d.ts is missing these const exports
-declare module 'msgpackr/pack' {
-  export const REUSE_BUFFER_MODE: number;
-  export const RESET_BUFFER_MODE: number;
-}
-
 import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
 import { Encoder } from 'msgpackr';
