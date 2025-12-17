@@ -78,7 +78,7 @@ public:
 		// Track flush job by job_id
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
-			DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted unable to find job id=\n",
+			DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted unable to find job id=%d\n",
 				desc.get(), flush_info.job_id)
 		} else {
 			// we find the highest sequence number; this represents the overall sequence
