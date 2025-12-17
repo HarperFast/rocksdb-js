@@ -8,7 +8,7 @@ describe('Optimistic Transaction Specific Behavior', () => {
 
 		setTimeout(() => db?.put('foo', 'bar2'));
 
-		let transaction = new Transaction(db.store);
+		const transaction = new Transaction(db.store);
 		let initialValue = await db.get('foo', { transaction });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		try {
