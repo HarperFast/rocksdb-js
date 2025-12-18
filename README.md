@@ -813,6 +813,14 @@ Returns an object containing all of the information in the log file.
   - `length: number` The size of the entry data.
   - `timestamp: number` The entry timestamp.
 
+### `shutdown(): void`
+
+The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to finish, for all open databases. It is highly recommended to call this in a `process` `exit` event listener (on the main thread), to ensure that all data is flushed to disk before the process exits:
+```typescript
+import { shutdown } from '@harperdb/rocksdb-js';
+process.on('exit', shutdown);
+```
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction`

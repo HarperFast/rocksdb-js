@@ -197,5 +197,4 @@ export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const version: string = binding.version;
-
-process.on('exit', binding.shutdown);
+export const shutdown: () => void = binding.shutdown;
