@@ -15,20 +15,33 @@ jobs:
       matrix:
         platform:
           - runner: macos-latest
+            name: darwin-arm64
             target: arm64
           - runner: macos-latest
+            name: darwin-x64
             target: x64
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04-arm
+            name: linux-arm64
             target: arm64
           - runner: ubuntu-latest
+            name: linux-x64
             target: x64
+          - runner: windows-11-arm
+            name: win32-arm64
+            target: arm64
           - runner: windows-latest
+            name: win32-x64
             target: x64
-    name: Build on ${{ matrix.platform.runner }} for ${{ matrix.platform.target }}
+    name: Build on ${{ matrix.platform.runner }} for ${{ matrix.platform.name }} (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
 
       - name: Setup node
         uses: actions/setup-node@v6
@@ -41,28 +54,34 @@ jobs:
         with:
           gh-token: ${{ secrets.GH_TOKEN }}
 
-      - name: Build
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Build binding
+        shell: bash
         run: pnpm build
 
-      - name: Test Binding
-        run: pnpm test:release-binding
+      - name: Test binding
+        shell: bash
+        run: node scripts/test-binding.mjs
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: bindings-${{ matrix.platform.target }}
+          name: ${{ matrix.platform.name }}
           path: |
             build/Release/rocksdb-js.node
           if-no-files-found: error
 
   publish:
+    name: Publish packages
     runs-on: ubuntu-latest
     needs: build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
 
       - name: Setup node
         uses: actions/setup-node@v6
@@ -81,25 +100,29 @@ jobs:
           path: artifacts
 
       - name: List artifacts
-        run: ls -la artifacts
+        shell: bash
+        run: find artifacts -ls
 
       - name: Get package.json info
         id: get-package-info
+        shell: bash
         run: |
           echo "name=$(node -p "require('./package.json').name")" >> $GITHUB_OUTPUT
           echo "homepage=$(node -p "require('./package.json').homepage")" >> $GITHUB_OUTPUT
           echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      - name: Publish rocksdb-js platform specific bindings to npm
+      - name: Publish bindings to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
-        run: node scripts/publish.mjs
+        shell: bash
+        run: node scripts/publish-bindings.mjs
 
-      - name: Publish rocksdb-js to npm
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --tag ${{ github.event.release.prerelease && 'next' || 'latest' }}
+        shell: bash
+        run: pnpm publish --access public --no-git-checks --tag ${{ github.event.release.prerelease && 'next' || 'latest' }}
 
       - name: Send Slack notification
         uses: slackapi/slack-github-action@v2.0.0
@@ -122,7 +145,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ needs.check.outputs.version }}"
+                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ steps.get-package-info.outputs.version }}"
                   }
                 }
               ]

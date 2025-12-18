@@ -19,6 +19,4 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.gh-token }}
       run: pnpm install --ignore-scripts

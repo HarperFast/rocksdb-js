@@ -145,6 +145,7 @@ const nativeExtRE = /\.node$/;
 function locateBinding(): string {
 	const baseDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
+	// check build directory
 	for (const type of ['Release', 'Debug'] as const) {
 		try {
 			const dir = join(baseDir, 'build', type);
@@ -160,25 +161,11 @@ function locateBinding(): string {
 	}
 
 	// the following lines are non-trivial to test, so we'll ignore them
-	/* v8 ignore next 17 -- @preserve */
-
-	// check prebuilds
-	try {
-		for (const target of readdirSync(join(baseDir, 'prebuilds'))) {
-			const [platform, arch] = target.split('-');
-			if (platform === process.platform && arch === process.arch) {
-				for (const binding of readdirSync(join(baseDir, 'prebuilds', target))) {
-					if (nativeExtRE.test(binding)) {
-						return resolve(join(baseDir, 'prebuilds', target, binding));
-					}
-				}
-			}
-		}
-	} catch {}
+	/* v8 ignore next 10 -- @preserve */
 
 	// check node_modules
 	try {
-		const path = join(baseDir, 'node_modules', `@harperdb/rocksdb-js-${process.platform}-${process.arch}`, 'build', 'Release', 'rocksdb-js.node');
+		const path = join(baseDir, 'node_modules', '@harperfast', `rocksdb-js-${process.platform}-${process.arch}`, 'build', 'Release', 'rocksdb-js.node');
 		if (existsSync(path)) {
 			return resolve(path);
 		}

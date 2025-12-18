@@ -27,22 +27,17 @@
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts",
     "lint": "oxlint",
-    "prepublishOnly": "pnpm build:bundle && pnpm prebuild",
-    "prebuild": "echo 'TODO'",
+    "prepublishOnly": "pnpm build",
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
     "test": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
-    "test:release-binding": "node scripts/test-release-binding.mjs",
     "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
     "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
     "type-check": "tsc --noEmit"
   },
   "files": [
-    "binding.gyp",
-    "dist",
-    "src/binding",
-    "vendor"
+    "dist"
   ],
   "dependencies": {
     "@harperdb/extended-iterable": "1.0.1",
@@ -76,9 +71,28 @@
   "rocksdb": {
     "version": "10.4.2"
   },
+  "homepage": "https://github.com/HarperFast/rocksdb-js",
+  "bugs": [
+    {
+      "type": "link",
+      "url": "https://github.com/HarperFast/rocksdb-js/issues"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HarperFast/rocksdb-js"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "msgpackr-extract"
     ]
+  },
+  "optionalDependencies": {
+    "@harperfast/rocksdb-js-darwin-arm64": "0.0.0",
+    "@harperfast/rocksdb-js-darwin-x64": "0.0.0",
+    "@harperfast/rocksdb-js-linux-arm64": "0.0.0",
+    "@harperfast/rocksdb-js-linux-x64": "0.0.0",
+    "@harperfast/rocksdb-js-win32-arm64": "0.0.0",
+    "@harperfast/rocksdb-js-win32-x64": "0.0.0"
   }
 }
