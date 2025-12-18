@@ -215,13 +215,7 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD()
 	UNWRAP_DB_HANDLE_AND_OPEN()
 
-	rocksdb::Status status = (*dbHandle)->descriptor->flush();
-
-	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Flush failed")
-		::napi_throw(env, error);
-		return nullptr;
-	}
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(), "Flush failed")
 
 	NAPI_RETURN_UNDEFINED()
 }
