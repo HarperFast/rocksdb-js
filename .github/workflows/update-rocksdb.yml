@@ -25,7 +25,7 @@ jobs:
         id: latest-release
         run: |
           CURRENT=$(cat package.json | jq -r '.rocksdb.version')
-          RELEASE=$(curl -s https://api.github.com/repos/harperdb/rocksdb-prebuilds/releases/latest)
+          RELEASE=$(curl -s https://api.github.com/repos/harperfast/rocksdb-prebuilds/releases/latest)
           LATEST=$(echo $RELEASE | jq -r '.tag_name | sub("^v"; "")')
           RELEASE_URL=$(echo $RELEASE | jq -r '.html_url')
           if [[ "$LATEST" != "$CURRENT" ]]; then
@@ -81,7 +81,7 @@ jobs:
           title: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
           body: 'Bumps [RocksDB](${{ steps.latest-release.outputs.release_url }}) from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}.'
           commit-message: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
-          committer: 'HarperDB <noreply@harperdb.io>'
+          committer: 'HarperFast <noreply@harperdb.io>'
           branch: update-rocksdb
           delete-branch: true
           labels: 'automated, dependencies'

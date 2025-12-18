@@ -100,7 +100,7 @@ Opens the database at the given path. This must be called before performing
 any data operations.
 
 ```typescript
-import { RocksDatabase } from '@harperdb/rocksdb-js';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const db = new RocksDatabase('path/to/db');
 db.open();
@@ -329,7 +329,7 @@ are automatically committed. However, if an error is thrown during the
 callback, all database operations will be rolled back.
 
 ```typescript
-import type { Transaction } from '@harperdb/rocksdb-js';
+import type { Transaction } from '@harperfast/rocksdb-js';
 await db.transaction(async (txn: Transaction) => {
 	await txn.put('foo', 'baz');
 });
@@ -364,7 +364,7 @@ Inside a synchronous transaction, use `getSync()`, `putSync()`, and
 `removeSync()`.
 
 ```typescript
-import type { Transaction } from '@harperdb/rocksdb-js';
+import type { Transaction } from '@harperfast/rocksdb-js';
 db.transactionSync((txn: Transaction) => {
 	txn.putSync('foo', 'baz');
 });
@@ -817,7 +817,7 @@ Returns an object containing all of the information in the log file.
 
 The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to finish, for all open databases. It is highly recommended to call this in a `process` `exit` event listener (on the main thread), to ensure that all data is flushed to disk before the process exits:
 ```typescript
-import { shutdown } from '@harperdb/rocksdb-js';
+import { shutdown } from '@harperfast/rocksdb-js';
 process.on('exit', shutdown);
 ```
 
@@ -856,7 +856,7 @@ To use it, extend the default `Store` and pass in an instance of your store
 into the `RocksDatabase` constructor.
 
 ```typescript
-import { RocksDatabase, Store } from '@harperdb/rocksdb-js';
+import { RocksDatabase, Store } from '@harperfast/rocksdb-js';
 
 class MyStore extends Store {
   get(context, key, resolve, reject, txnId) {
@@ -971,7 +971,7 @@ Each of those can be built to be debug friendly.
 
 When building the native binding, it will download the appropriate prebuilt
 RocksDB library for your platform and architecture from the
-[rocksdb-prebuilds](https://github.com/HarperDB/rocksdb-prebuilds) GitHub
+[rocksdb-prebuilds](https://github.com/HarperFast/rocksdb-prebuilds) GitHub
 repository. It defaults to the pinned version in the `package.json` file. You
 can override this by setting the `ROCKSDB_VERSION` environment variable. For
 example:
