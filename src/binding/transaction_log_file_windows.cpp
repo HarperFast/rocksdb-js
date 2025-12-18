@@ -36,9 +36,6 @@ void TransactionLogFile::close() {
 }
 
 void TransactionLogFile::flush() {
-	HANDLE handleToFlush = INVALID_HANDLE_VALUE;
-	uint32_t currentSize = 0;
-
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 	uint32_t currentSize = this->size;
 	// Only flush if there's new data since the last flush
@@ -46,7 +43,7 @@ void TransactionLogFile::flush() {
 		return; // return early
 	}
 	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
-	handleToFlush = this->fileHandle;
+	HANDLE handleToFlush = this->fileHandle;
 	lock.unlock();
 
 	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
