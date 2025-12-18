@@ -9,6 +9,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
+
+      - name: Check versions
+        shell: bash
+        run: node scripts/check-versions.mjs
+
+      - name: Build
+        shell: bash
+        run: pnpm build
+
+      - name: Test
+        shell: bash
+        run: pnpm test
+
   build:
     strategy:
       fail-fast: false
