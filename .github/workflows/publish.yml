@@ -68,6 +68,7 @@ jobs:
             target: x64
     name: Build on ${{ matrix.platform.runner }} for ${{ matrix.platform.name }} (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
+    needs: preflight
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
