@@ -44,7 +44,7 @@ jobs:
       - name: Install dependencies
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Build
         env:
