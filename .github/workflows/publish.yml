@@ -27,9 +27,10 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
-        shell: bash
-        run: pnpm install --ignore-scripts --no-frozen-lockfile
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Check versions
         shell: bash
