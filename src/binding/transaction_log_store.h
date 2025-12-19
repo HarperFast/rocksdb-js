@@ -3,6 +3,7 @@
 
 #include <string>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <memory>
@@ -175,9 +176,14 @@ struct TransactionLogStore final {
 	unsigned int nextSequencePositionsCount = 0;
 
 	/**
-	 * This file is used to track how much of the transaction log has been flushed to the database.
+	 * This file stream is used to track how much of the transaction log has been flushed to the database.
 	 */
-	TransactionLogFile* flushedTrackerFile = nullptr;
+	std::ofstream flushedStateFile;
+
+	/**
+	 * The last flushed position that was written to the state file.
+	 */
+	LogPosition lastWrittenFlushedPosition = { 0, 0 };
 
 	/**
 	 * The next sequence position to use for a new transaction log entry.
@@ -214,9 +220,12 @@ struct TransactionLogStore final {
 	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
+	void databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber);
+
+	/**
+	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
+	 */
 	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
-	// TODO: We should probably implement a databaseFlushStart so we can pin the current flush sequence number in memory for better accuracy
-	// once we have added support for flush events
 
 	/**
 	 * Memory maps the transaction log file for the given sequence number.
@@ -238,6 +247,11 @@ struct TransactionLogStore final {
 	 * newer than, the provided timestamp.
 	 */
 	LogPosition findPositionByTimestamp(double timestamp);
+
+	/**
+	 * Reads and returns the last flushed position from the txn.state file.
+	 */
+	LogPosition getLastFlushedPosition();
 
 	/**
 	 * Purges transaction logs.

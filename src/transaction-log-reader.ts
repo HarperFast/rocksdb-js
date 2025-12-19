@@ -23,7 +23,7 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value(this: TransactionLog, { start, end, exactStart, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
+	value(this: TransactionLog, { start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
@@ -37,13 +37,22 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let position = 0;
 		let logBuffer = this._currentLogBuffer; // try the current one first
 
-		if (start === undefined) {
+		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
 			position = size;
 			start = 0;
 		} else {
-			// otherwise, find the log file that contains the start timestamp, and find the position within that file
-			FLOAT_TO_UINT32[0] = this._findPosition(start);
+			if (startFromLastFlushed) {
+				// read from the last flushed position
+				FLOAT_TO_UINT32[0] = this._getLastFlushed();
+				if (FLOAT_TO_UINT32[0] === 0) { // no flushes have ever occurred, go to the beginning (which is actually after the file header)
+					FLOAT_TO_UINT32[0] = this._findPosition(0);
+				}
+				start ??= 0; // if no start timestamp is specified, include all
+			} else {
+				// otherwise, find the log file that contains the start timestamp, and find the position within that file
+				FLOAT_TO_UINT32[0] = this._findPosition(start!);
+			}
 			// extract the log file ID from the 64-bit float returned by _findPosition, which is stored in the high 32 bits of the float
 			logId = UINT32_FROM_FLOAT[1];
 			// and position from the low 32 bits of the float

@@ -4,6 +4,7 @@
 #include "macros.h"
 #include "transaction_log_store.h"
 #include "util.h"
+#include "fstream"
 
 namespace rocksdb_js {
 
@@ -66,6 +67,11 @@ void TransactionLogStore::close() {
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
 		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
 		logFile->close();
+	}
+
+	// Close the state file if it's open
+	if (flushedStateFile.is_open()) {
+		flushedStateFile.close();
 	}
 
 	lock.unlock();
@@ -179,6 +185,19 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	};
 	// we iterated too far, return to the beginning position in the current log file
 	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
+}
+
+LogPosition TransactionLogStore::getLastFlushedPosition() {
+	auto stateFilePath = this->path / "txn.state";
+	std::ifstream inputFile(stateFilePath, std::ios::binary | std::ios::in);
+	LogPosition position = { 0, 0 };
+
+	if (inputFile.is_open()) {
+		inputFile.read(reinterpret_cast<char*>(&position), sizeof(position));
+		inputFile.close();
+	}
+
+	return position;
 }
 
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
@@ -457,26 +476,71 @@ bool operator>(const LogPosition a, const LogPosition b) {
 		a.logSequenceNumber > b.logSequenceNumber;
 };
 
+/**
+ * This method is called when a database flush begins, and it prepares the transaction log store for the flush.
+ * It ensures that all log files are flushed to disk before the database flush operation continues.
+ * This maintains the consistency that all entries in the database are guaranteed to have a corresponding entry in the
+ * log file (until it expires), even after crash.
+ */
+void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
+	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;
+
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		// Copy the sequence files to a vector so we can release the lock
+		logFilesToFlush.reserve(this->sequenceFiles.size());
+		for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
+			logFilesToFlush.push_back(logFile);
+		}
+	}
+
+	// Flush all log files to ensure data is synced to disk (without holding the lock)
+	for (const auto& logFile : logFilesToFlush) {
+		try {
+			logFile->flush();
+		} catch (const std::exception& e) {
+			DEBUG_LOG("%p TransactionLogStore::databaseFlushBegin ERROR: Failed to flush log file %u: %s\n", this, logFile->sequenceNumber, e.what())
+			// Continue flushing other files even if one fails
+		}
+	}
+}
+
+/**
+ * Called when a database OnFlushComplete event takes place and this will record the last position in the log file that
+ * has transactions that are fully flushed to disk in the RocksDB database and consequently do not need to be replayed
+ * after restart or crash
+ */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	LogPosition latestFlushedPosition = { 0, 0 };
+
+	LogPosition latestSequencePosition = { 0, 0 };
 	// the latest sequence number that has been flushed according to this flush update
 	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
 		SequencePosition sequencePosition = this->recentlyCommittedSequencePositions[i];
-		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestFlushedPosition) {
-			latestFlushedPosition = sequencePosition.position;
+		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestSequencePosition) {
+			latestSequencePosition = sequencePosition.position;
 		}
 	}
-	// Open the flushed tracker file if it isn't open yet. We are using the TransactionLogFile; it is not technically
-	// a "log" file, but the API provides all the functionality we need to just write a single word
-	if (!this->flushedTrackerFile) {
-		std::ostringstream oss;
-		oss << this->path << ".txnstate";
-		this->flushedTrackerFile = new TransactionLogFile(oss.str(), 0);
-		this->flushedTrackerFile->open(this->latestTimestamp);
+	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n", this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
+
+	// Only write if the position has changed
+	if (latestSequencePosition.fullPosition == lastWrittenFlushedPosition.fullPosition) {
+		return;
 	}
-	// save the position of fully flushed transaction logs (future replay will start from here)
-	this->flushedTrackerFile->writeToFile(&latestFlushedPosition, 8, 0);
+
+	// Open the state file if it isn't open yet
+	if (!flushedStateFile.is_open()) {
+		auto flushedStateFilePath = this->path / "txn.state";
+		flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+	}
+
+	// Write the position to the file
+	if (flushedStateFile.is_open()) {
+		flushedStateFile.seekp(0);
+		flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
+		flushedStateFile.flush();
+		lastWrittenFlushedPosition = latestSequencePosition;
+	}
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(

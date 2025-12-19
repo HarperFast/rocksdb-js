@@ -9,7 +9,7 @@ First build the Docker container:
 ./build.sh
 ```
 
-Go to https://github.com/HarperDB/rocksdb-js/settings/actions/runners/new?arch=x64&os=linux
+Go to https://github.com/HarperFast/rocksdb-js/settings/actions/runners/new?arch=x64&os=linux
 and locate the `--token` under the "Configure" section. Copy the token value and
 paste it into the `run.sh` script.
 

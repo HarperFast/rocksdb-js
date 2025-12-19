@@ -209,6 +209,45 @@ void DBRegistry::PurgeAll() {
 }
 
 /**
+ * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
+ */
+void DBRegistry::Shutdown() {
+	if (instance) {
+		std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
+
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size())
+
+			// Collect all descriptors to close
+			for (auto& [path, entry] : instance->databases) {
+				if (entry.descriptor) {
+					descriptorsToClose.push_back(entry.descriptor);
+				}
+			}
+		}
+
+		// Close all descriptors without holding the lock
+		for (auto& descriptor : descriptorsToClose) {
+			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str())
+			descriptor->closing.store(true);
+			// We want to ensure that all in-memory data is written to disk
+			descriptor->flush();
+			// Wait for any outstanding (background threads) operations to complete. Note that this is not setting the
+			// close_db flag since active references to the databases may still exist.
+			// Also, contrary to the suggestions of the documentation, this method alone does not seem to trigger a flush
+			rocksdb::WaitForCompactOptions options;
+			descriptor->db->WaitForCompact(options);
+		}
+
+		// Purge the registry
+		PurgeAll();
+
+		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance.get())
+	}
+}
+
+/**
  * Get the number of databases in the registry.
  */
 size_t DBRegistry::Size() {

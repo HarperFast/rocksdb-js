@@ -1,5 +1,5 @@
 {
-  "name": "@harperdb/rocksdb-js",
+  "name": "@harperfast/rocksdb-js",
   "version": "0.0.0",
   "description": "RocksDB binding for Node.js",
   "license": "Apache-2.0",
@@ -45,7 +45,7 @@
     "vendor"
   ],
   "dependencies": {
-    "@harperdb/extended-iterable": "1.0.1",
+    "@harperfast/extended-iterable": "1.0.1",
     "msgpackr": "1.11.8",
     "ordered-binary": "1.6.0"
   },

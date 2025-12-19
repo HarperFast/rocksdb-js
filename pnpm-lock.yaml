@@ -8,7 +8,7 @@ importers:
 
   .:
     dependencies:
-      '@harperdb/extended-iterable':
+      '@harperfast/extended-iterable':
         specifier: 1.0.1
         version: 1.0.1
       msgpackr:
@@ -262,8 +262,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@harperdb/extended-iterable@1.0.1':
-    resolution: {integrity: sha512-5l62w5gGFYX24ljQuDEVOlzJteJeygE/GavpvGYy9mMijxFINTy/hIX1jMJYtIUBiCWyWjv6yeXENf4gLq0VMw==}
+  '@harperfast/extended-iterable@1.0.1':
+    resolution: {integrity: sha512-FT3ZMJH/Tyg7sMaCmnawzMdM3MApZPe7YXEzC9TLb4y3XGvac62DiJgX3cl8iUNWUAb3LA6KpXOWcI5/FNT31g==}
 
   '@isaacs/balanced-match@4.0.1':
     resolution: {integrity: sha512-yzMTt9lEb8Gv7zRioUilSglI0c0smZ9k5D65677DLWLtWJaXIS3CqcGyUFByYKlnUj6TkjLVs54fBl6+TiGQDQ==}
@@ -1600,7 +1600,7 @@ snapshots:
   '@esbuild/win32-x64@0.27.2':
     optional: true
 
-  '@harperdb/extended-iterable@1.0.1': {}
+  '@harperfast/extended-iterable@1.0.1': {}
 
   '@isaacs/balanced-match@4.0.1': {}
 
