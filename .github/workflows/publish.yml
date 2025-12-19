@@ -11,7 +11,7 @@ concurrency:
 jobs:
   preflight:
     name: Preflight
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -58,7 +58,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             name: linux-arm64
             target: arm64
-          - runner: ubuntu-22.04
+          - runner: ubuntu-latest
             name: linux-x64
             target: x64
           - runner: windows-11-arm
@@ -108,7 +108,7 @@ jobs:
 
   publish:
     name: Publish packages
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: build
     steps:
       - name: Checkout repository
