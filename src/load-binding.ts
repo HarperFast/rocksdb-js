@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { BufferWithDataView, Key } from './encoding.js';
@@ -149,6 +149,7 @@ const nativeExtRE = /\.node$/;
 function locateBinding(): string {
 	const baseDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
+	// check build directory
 	for (const type of ['Release', 'Debug'] as const) {
 		try {
 			const dir = join(baseDir, 'build', type);
@@ -164,19 +165,13 @@ function locateBinding(): string {
 	}
 
 	// the following lines are non-trivial to test, so we'll ignore them
-	/* v8 ignore next 17 -- @preserve */
+	/* v8 ignore next 10 -- @preserve */
 
-	// check prebuilds
+	// check node_modules
 	try {
-		for (const target of readdirSync(join(baseDir, 'prebuilds'))) {
-			const [platform, arch] = target.split('-');
-			if (platform === process.platform && arch === process.arch) {
-				for (const binding of readdirSync(join(baseDir, 'prebuilds', target))) {
-					if (nativeExtRE.test(binding)) {
-						return resolve(join(baseDir, 'prebuilds', target, binding));
-					}
-				}
-			}
+		const path = join(baseDir, 'node_modules', '@harperfast', `rocksdb-js-${process.platform}-${process.arch}`, 'build', 'Release', 'rocksdb-js.node');
+		if (existsSync(path)) {
+			return resolve(path);
 		}
 	} catch {}
 
@@ -184,7 +179,9 @@ function locateBinding(): string {
 }
 
 const req = createRequire(import.meta.url);
-const binding = req(locateBinding());
+const bindingPath = locateBinding();
+// console.log(`Loading binding from ${bindingPath}`);
+const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const constants: {
