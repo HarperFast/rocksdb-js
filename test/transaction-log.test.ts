@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import { mkdir, readdir, writeFile, utimes } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { withResolvers } from '../src/util.js';
 import { Worker } from 'node:worker_threads';
@@ -899,6 +899,98 @@ describe('Transaction Log', () => {
 			db.open();
 			expect(db.listLogs()).toEqual(['foo']);
 			expect(existsSync(logFile)).toBe(false);
+		}));
+	});
+	describe('flushSync()', () => {
+		it('should increase the latest flushed position after flushSync calls', () => dbRunner({
+			dbOptions: [ { name: 'data1' }, { name: 'data2' } ]
+		},async ({ db, dbPath }, { db: db2 }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value, { transaction: txn });
+				db2.putSync('foo', value, { transaction: txn });
+			});
+
+			let queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[0].endTxn).toBe(true);
+
+			db.flushSync();
+			const contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			expect(u32s[1]).toBe(1);
+			expect(u32s[0]).toBeGreaterThan(1);
+
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(0);
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value, { transaction: txn });
+			});
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
+		}));
+	});
+	describe('flush()', () => {
+		it('should increase the latest flushed position after flush calls', () => dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value, { transaction: txn });
+			});
+
+			let queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
+			expect(queryResults[0].data).toEqual(value);
+			expect(queryResults[0].endTxn).toBe(true);
+
+			await db.flush();
+			let contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			let u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			expect(u32s[1]).toBe(1);
+			expect(u32s[0]).toBeGreaterThan(1);
+
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(0);
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo', value, { transaction: txn });
+			});
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(1);
+			let lastFlush: Promise<void> | undefined;
+			for (let i = 0; i < 10; i++) {
+				if (i % 3 === 1) {
+					await lastFlush;
+				}
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					db.putSync('foo' + Math.random(), Math.random(), { transaction: txn });
+				});
+				// make some of this concurrent
+				lastFlush = db.flush();
+			}
+			await lastFlush;
+			// do one last commit and flush
+			await db.transaction(async (txn) => {
+				log.addEntry(value, txn.id);
+				db.putSync('foo' + Math.random(), Math.random(), { transaction: txn });
+			});
+			// make some of this concurrent
+			await db.flush();
+
+			queryResults = Array.from(log.query({ startFromLastFlushed: true }));
+			expect(queryResults.length).toBe(0);
+			contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+			u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+			expect(u32s[1]).toBe(1);
+			expect(u32s[0]).toBeGreaterThan(200);
 		}));
 	});
 });

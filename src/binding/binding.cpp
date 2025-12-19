@@ -19,6 +19,16 @@ namespace rocksdb_js {
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, #constant, constant##Value));
 
 /**
+ * Shutdown function to ensure that we write in-memory data from all databases.
+ */
+napi_value Shutdown(napi_env env, napi_callback_info info) {
+	DBRegistry::Shutdown();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result))
+	return result;
+}
+
+/**
  * The number of active `rocksdb-js` modules.
  *
  * There can be multiple instances of this module in the same Node.js process
@@ -71,6 +81,11 @@ NAPI_MODULE_INIT() {
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+
+	// shutdown function
+	napi_value shutdownFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdown", NAPI_AUTO_LENGTH, Shutdown, nullptr, &shutdownFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdown", shutdownFn));
 
 	// constants
 	napi_value constants;

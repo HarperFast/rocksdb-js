@@ -4,7 +4,7 @@
  *
  * It will build RocksDB from source if the `ROCKSDB_PATH` environment
  * variable is set. Otherwise, it will download the latest RocksDB prebuild
- * from https://github.com/HarperDB/rocksdb-prebuilds/releases.
+ * from https://github.com/HarperFast/rocksdb-prebuilds/releases.
  *
  * To manually run this script: pnpm tsx scripts/init-rocksdb/main.ts
  */

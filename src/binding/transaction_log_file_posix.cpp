@@ -14,7 +14,7 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 {}
 
 void TransactionLogFile::close() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
+	std::lock_guard<std::mutex> lock(this->fileMutex);
 
 	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
@@ -29,6 +29,40 @@ void TransactionLogFile::close() {
 		::close(this->fd);
 		this->fd = -1;
 	}
+}
+
+void TransactionLogFile::flush() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+	uint32_t currentSize = this->size;
+	// Only flush if there's new data since the last flush
+	if (this->fd == -1 || currentSize <= this->lastFlushedSize) {
+		return; // return early
+	}
+	int fdToFlush = this->fd;
+	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
+	lock.unlock();
+	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
+		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize)
+
+	// macOS doesn't have fdatasync, use fsync instead
+	// fdatasync is faster on Linux as it doesn't sync metadata
+#ifdef __APPLE__
+	if (::fsync(fdToFlush) < 0) {
+		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fsync failed: %s (errno=%d)\n",
+			this, ::strerror(errno), errno)
+		throw std::runtime_error("Failed to flush file: " + this->path.string());
+	}
+#else
+	if (::fdatasync(fdToFlush) < 0) {
+		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fdatasync failed: %s (errno=%d)\n",
+			this, ::strerror(errno), errno)
+		throw std::runtime_error("Failed to flush file: " + this->path.string());
+	}
+#endif
+
+	// Update the last flushed size after successful sync
+	lock.lock();
+	this->lastFlushedSize = currentSize;
 }
 
 void TransactionLogFile::openFile() {

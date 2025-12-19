@@ -18,7 +18,7 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 {}
 
 void TransactionLogFile::close() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
+	std::lock_guard<std::mutex> lock(this->fileMutex);
 
 	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
@@ -33,6 +33,33 @@ void TransactionLogFile::close() {
 		::CloseHandle(this->fileHandle);
 		this->fileHandle = INVALID_HANDLE_VALUE;
 	}
+}
+
+void TransactionLogFile::flush() {
+	std::unique_lock<std::mutex> lock(this->fileMutex);
+	uint32_t currentSize = this->size;
+	// Only flush if there's new data since the last flush
+	if (this->fileHandle == INVALID_HANDLE_VALUE || currentSize <= this->lastFlushedSize) {
+		return; // return early
+	}
+	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
+	HANDLE handleToFlush = this->fileHandle;
+	lock.unlock();
+
+	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
+	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
+		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize)
+	if (!::FlushFileBuffers(handleToFlush)) {
+		DWORD error = ::GetLastError();
+		std::string errorMessage = getWindowsErrorMessage(error);
+		DEBUG_LOG("%p TransactionLogFile::flush ERROR: FlushFileBuffers failed: %s (error=%lu: %s)\n",
+			this, this->path.string().c_str(), error, errorMessage.c_str())
+		throw std::runtime_error("Failed to flush file: " + this->path.string());
+	}
+
+	// Update the last flushed size after successful sync
+	lock.lock();
+	this->lastFlushedSize = currentSize;
 }
 
 void TransactionLogFile::openFile() {

@@ -28,7 +28,7 @@ export async function getPrebuild(desiredVersion?: string): Promise<Prebuild> {
 	}
 
 	// get the latest RocksDB release
-	const response = await fetch('https://api.github.com/repos/harperdb/rocksdb-prebuilds/releases', {
+	const response = await fetch('https://api.github.com/repos/harperfast/rocksdb-prebuilds/releases', {
 		headers,
 	});
 

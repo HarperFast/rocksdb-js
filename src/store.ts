@@ -20,7 +20,7 @@ import {
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
-import { ExtendedIterable } from '@harperdb/extended-iterable';
+import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
 
 const KEY_BUFFER_SIZE = 4096;

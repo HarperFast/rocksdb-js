@@ -41,6 +41,7 @@ export type TransactionLogQueryOptions = {
 	start?: number;
 	end?: number;
 	exactStart?: boolean;
+	startFromLastFlushed?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
 };
@@ -58,6 +59,7 @@ export type TransactionLog = {
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
 
 	_findPosition(timestamp: number): number;
+	_getLastFlushed(): number;
 	_getLastCommittedPosition(): Buffer;
 	_getLogMemoryMap(logId: number): LogBuffer | undefined;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
@@ -105,6 +107,8 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
 	clearSync(batchSize?: number): number;
 	close(): void;
+	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
+	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
@@ -190,3 +194,4 @@ export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const version: string = binding.version;
+export const shutdown: () => void = binding.shutdown;
