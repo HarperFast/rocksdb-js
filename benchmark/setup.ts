@@ -5,7 +5,7 @@ import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { parentPort, Worker, workerData } from 'node:worker_threads';
 import { setImmediate as rest } from 'node:timers/promises';
-import { rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const isWindows = process.platform === 'win32';
 
@@ -61,10 +61,12 @@ export function benchmark(type: string, options: any): void {
 	}, {
 		throws: true,
 		async setup(task, mode: 'warmup' | 'run') {
-			if (type === 'rocksdb') {
-				ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
-			} else {
-				ctx = { db: lmdb.open({ dbPath, compression: true, ...dbOptions }), mode };
+			if (mode === 'warmup') { // the first setup, create the database
+				if (type === 'rocksdb') {
+					ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
+				} else {
+					ctx = { db: lmdb.open({ dbPath, compression: true, ...dbOptions }), mode };
+				}
 			}
 			if (typeof setup === 'function') {
 				await setup(ctx, task, mode);
@@ -74,11 +76,11 @@ export function benchmark(type: string, options: any): void {
 			if (typeof teardown === 'function') {
 				await teardown(ctx, task, mode);
 			}
-			if (ctx.db) {
+			if (ctx.db && mode === 'run') { // only teardown after the real run
 				const path = ctx.db.path;
-				await ctx.db.close();
+				ctx.db.close();
 				try {
-					await rm(path, { force: true, recursive: true, maxRetries: 3 });
+					rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 				} catch (err) {
 					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
@@ -332,6 +334,7 @@ export function workerBenchmark(type: string, options: any): void {
 	}, {
 		throws: true,
 		async setup(_task, mode) {
+			if (mode === 'run') return;
 			const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 
 			// launch all workers and wait for them to initialize
@@ -376,6 +379,7 @@ export function workerBenchmark(type: string, options: any): void {
 			}));
 		},
 		async teardown(_task, mode) {
+			if (mode === 'warmup') return;
 			// tell all workers to teardown and wait
 			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
 				const state = workerState[i];
@@ -423,9 +427,9 @@ export async function workerInit() {
 			}
 			if (ctx.db) {
 				// console.log('workerTeardown', workerData.benchmarkWorkerId, workerData.mode, type, path);
-				await ctx.db.close();
+				ctx.db.close();
 				try {
-					await rm(path, { force: true, recursive: true, maxRetries: 3 });
+					rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 				} catch (err) {
 					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
