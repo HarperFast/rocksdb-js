@@ -55,19 +55,16 @@ export type TransactionEntry = {
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
-	getLogFileSize(sequenceId?: number): number;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-
-	_findPosition(timestamp: number): number;
 	_getLastFlushed(): number;
 	_getLastCommittedPosition(): Buffer;
-	_getLogMemoryMap(logId: number): LogBuffer | undefined;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
-	_loadLastPosition(readUncommitted: boolean): { logId: number; size: number };
-
-	_currentLogBuffer?: LogBuffer;
-	_lastCommittedPosition?: Float64Array;
-	_logBuffers?: Map<number, WeakRef<LogBuffer>>;
+	getLogFileSize(sequenceId?: number): number;
+	_getLastCommittedPosition(): Buffer;
+	_findPosition(timestamp: number): number;
+	_lastCommittedPosition: Float64Array;
+	_logBuffers: Map<number, WeakRef<LogBuffer>>;
+	_currentLogBuffer: LogBuffer;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
