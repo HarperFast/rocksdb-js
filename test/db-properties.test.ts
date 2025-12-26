@@ -3,7 +3,6 @@ import { dbRunner } from './lib/util.js';
 console.log('start');
 describe('Database Properties', () => {
 	it('should get string property from database', () => dbRunner(async ({ db }) => {
-		throw new Error('test')
 		// Put some data to ensure the database has stats
 		await db.put('key1', 'value1');
 		await db.put('key2', 'value2');
@@ -38,7 +37,7 @@ describe('Database Properties', () => {
 		const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
 		expect(numKeys).toBeDefined();
 		expect(typeof numKeys).toBe('number');
-		expect(numKeys).toBeGreaterThanOrEqual(0);
+		expect(numKeys).toBeGreaterThan(0);
 	}));
 
 	it('should get num-files-at-level property', () => dbRunner(async ({ db }) => {
@@ -47,11 +46,11 @@ describe('Database Properties', () => {
 		await db.put('key2', 'value2');
 		await db.flush();
 
-		// Get number of files at level 0
-		const numFiles = db.getDBIntProperty('rocksdb.num-files-at-level0');
+		// Get number of files at level 0, for some reason this is a string property
+		const numFiles = +db.getDBProperty('rocksdb.num-files-at-level0');
 		expect(numFiles).toBeDefined();
 		expect(typeof numFiles).toBe('number');
-		expect(numFiles).toBeGreaterThanOrEqual(0);
+		expect(numFiles).toBeGreaterThan(0);
 	}));
 
 	it('should test blob files with num-blob-files property', () => dbRunner(async ({ db }) => {
@@ -69,7 +68,7 @@ describe('Database Properties', () => {
 		const numBlobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
 		expect(numBlobFiles).toBeDefined();
 		expect(typeof numBlobFiles).toBe('number');
-		expect(numBlobFiles).toBeGreaterThanOrEqual(0);
+		expect(numBlobFiles).toBeGreaterThan(0);
 
 		// Note: Whether blobs are actually created depends on RocksDB configuration
 		// The test verifies the method works, not necessarily that blobs are created
@@ -86,7 +85,7 @@ describe('Database Properties', () => {
 		const blobSize = db.getDBIntProperty('rocksdb.live-blob-file-size');
 		expect(blobSize).toBeDefined();
 		expect(typeof blobSize).toBe('number');
-		expect(blobSize).toBeGreaterThanOrEqual(0);
+		expect(blobSize).toBeGreaterThan(0);
 	}));
 
 	it('should get total-blob-file-size property', () => dbRunner(async ({ db }) => {
@@ -99,7 +98,7 @@ describe('Database Properties', () => {
 		const totalBlobSize = db.getDBIntProperty('rocksdb.total-blob-file-size');
 		expect(totalBlobSize).toBeDefined();
 		expect(typeof totalBlobSize).toBe('number');
-		expect(totalBlobSize).toBeGreaterThanOrEqual(0);
+		expect(totalBlobSize).toBeGreaterThan(0);
 	}));
 
 	it('should get background-errors property', () => dbRunner(async ({ db }) => {
