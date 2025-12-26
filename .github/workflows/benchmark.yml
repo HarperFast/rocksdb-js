@@ -76,7 +76,7 @@ jobs:
 
       - name: Run benchmarks
         env:
-          BENCHMARK_MODE: ${{ github.event.inputs.mode }}
+          BENCHMARK_MODE: ${{ github.event.inputs.mode || 'essential' }}
         run: pnpm bench --passWithNoTests
 
       - name: Upload benchmark results as artifact
