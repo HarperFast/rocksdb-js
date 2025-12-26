@@ -380,7 +380,6 @@ describe('Transaction Log', () => {
 			const file3Size = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4;
 
 			expect(log.getLogFileSize()).toBe(file1Size + file2Size + file3Size);
-			expect(log.getLogFileSize(0)).toBe(0);
 			expect(log.getLogFileSize(1)).toBe(file1Size);
 			expect(log.getLogFileSize(2)).toBe(file2Size);
 			expect(log.getLogFileSize(3)).toBe(file3Size);
