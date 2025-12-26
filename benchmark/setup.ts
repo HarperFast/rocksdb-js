@@ -40,7 +40,8 @@ export function benchmark(type: string, options: any): void {
 	}
 
 	const { bench, setup, teardown, dbOptions, name } = options;
-	const dbPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	// it is important to run benchmarks on a real filesystem (not a tempfs)
+	const dbPath = join('benchmark', 'data', `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	let ctx: BenchmarkContext<any>;
 
 	vitestBench(name || type, () => {
@@ -65,7 +66,7 @@ export function benchmark(type: string, options: any): void {
 				if (type === 'rocksdb') {
 					ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
 				} else {
-					ctx = { db: lmdb.open({ dbPath, compression: true, ...dbOptions }), mode };
+					ctx = { db: lmdb.open({ path: dbPath, compression: true, ...dbOptions }), mode };
 				}
 			}
 			if (typeof setup === 'function') {
@@ -442,7 +443,7 @@ export async function workerInit() {
 	if (type === 'rocksdb') {
 		ctx = { db: RocksDatabase.open(path, dbOptions) };
 	} else {
-		ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }) };
+		ctx = { db: lmdb.open({ path, ...dbOptions }) };
 	}
 	if (typeof setup === 'function') {
 		await setup(ctx);
