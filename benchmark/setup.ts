@@ -25,7 +25,8 @@ type BenchmarkOptions<T, U> = {
 	name?: string,
 	setup?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
 	timeout?: number,
-	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>
+	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
+	mode?: 'essential' | 'full'
 };
 
 export function benchmark(type: 'rocksdb', options: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>): void;
@@ -35,7 +36,8 @@ export function benchmark(type: string, options: any): void {
 		throw new Error(`Unsupported benchmark type: ${type}`);
 	}
 
-	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb')) {
+	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
+		(process.env.BENCHMARK_MODE && process.env.BENCHMARK_MODE !== 'full' && options.mode !== process.env.BENCHMARK_MODE)) {
 		return;
 	}
 
@@ -292,7 +294,8 @@ export function workerBenchmark(type: string, options: any): void {
 		throw new Error(`Unsupported benchmark type: ${type}`);
 	}
 
-	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb')) {
+	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
+		(process.env.BENCHMARK_MODE && process.env.BENCHMARK_MODE !== 'full' && options.mode !== process.env.BENCHMARK_MODE)) {
 		return;
 	}
 

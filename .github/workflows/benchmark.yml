@@ -17,6 +17,15 @@ on:
       - 'LICENSE'
       - '.gitignore'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Do you want to run the full or essential benchmark suite?'
+        default: 'full'
+        required: false
+        type: choice
+        options:
+          - 'full'
+          - 'essential'
 
 concurrency:
   cancel-in-progress: true
@@ -66,7 +75,9 @@ jobs:
         run: pnpm build
 
       - name: Run benchmarks
-        run: pnpm bench
+        env:
+          BENCHMARK_MODE: ${{ github.event.inputs.mode }}
+        run: pnpm bench --passWithNoTests
 
       - name: Upload benchmark results as artifact
         if: always() && hashFiles('benchmark-results.json') != ''

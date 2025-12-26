@@ -35,6 +35,7 @@ describe('Transaction log', () => {
 	});
 	describe('read 100 iterators while write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({
+			mode: 'essential',
 			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
@@ -56,6 +57,7 @@ describe('Transaction log', () => {
 		}));
 
 		benchmark('lmdb', concurrent({
+			mode: 'essential',
 			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();
 				ctx.index = start;
@@ -75,6 +77,7 @@ describe('Transaction log', () => {
 	});
 	describe('read one entry from random position from log with 1000 100 byte records', () => {
 		benchmark('rocksdb', {
+			mode: 'essential',
 			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
 				const log = db.useLog('0');
@@ -97,6 +100,7 @@ describe('Transaction log', () => {
 		});
 
 		benchmark('lmdb', {
+			mode: 'essential',
 			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();
 				const value = Buffer.alloc(100, 'a');
