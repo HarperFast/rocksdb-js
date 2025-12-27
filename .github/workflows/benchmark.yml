@@ -147,13 +147,12 @@ jobs:
                 comment += '_No benchmark files found_\n';
               } else {
                 for (const file of results.files) {
-                  const filename = file.filepath.split('/').pop();
-                  comment += `### ${filename}\n\n`;
-
                   if (!file.groups || file.groups.length === 0) {
-                    comment += '_No benchmark groups found_\n\n';
                     continue;
                   }
+
+                  const filename = file.filepath.split('/').pop();
+                  comment += `### ${filename}\n\n`;
 
                   for (const group of file.groups) {
                     // Extract test name from fullName (remove file path prefix)
