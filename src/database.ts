@@ -1,6 +1,6 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
-import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
+import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions, KEY_BUFFER, VALUE_BUFFER } from './store.js';
 import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { withResolvers } from './util.js';
@@ -280,6 +280,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			// already open
 			return this;
 		}
+
+		store.db.setDefaultValueBuffer(VALUE_BUFFER);
+		store.db.setDefaultKeyBuffer(KEY_BUFFER);
 
 		/**
 		 * The encoder initialization precedence is:

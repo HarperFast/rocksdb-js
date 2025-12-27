@@ -23,7 +23,7 @@ export type NativeTransaction = {
 	commitSync(): void;
 	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
 	getCount(options?: RangeOptions): number;
-	getSync(key: Key): Buffer;
+	getSync(key: Key): Buffer | number | undefined;
 	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
@@ -111,7 +111,7 @@ export type NativeDatabase = {
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: BufferWithDataView, txnId?: number): Buffer;
+	getSync(key: BufferWithDataView | number, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
@@ -125,6 +125,8 @@ export type NativeDatabase = {
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
+	setDefaultKeyBuffer(buffer: Buffer | Uint8Array | null): void;
+	setDefaultValueBuffer(buffer: Buffer | Uint8Array | null): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;

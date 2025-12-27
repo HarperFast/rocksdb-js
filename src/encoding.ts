@@ -12,7 +12,7 @@ export type EncoderFunction = new (options?: any) => Encoder;
 
 export interface Encoder {
 	copyBuffers?: boolean;
-	decode?: (buffer: Buffer) => any;
+	decode?: (buffer: Buffer, options?: { end: number }) => any;
 	encode?: (value: any, mode?: number) => Buffer; // | string;
 	Encoder?: EncoderFunction;
 	freezeData?: boolean;

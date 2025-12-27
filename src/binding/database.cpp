@@ -522,11 +522,18 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
  */
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_DB_HANDLE_AND_OPEN()
+	napi_valuetype keyType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
+	if (keyType != napi_number) {
+		::napi_throw_error(env, nullptr, "Key must be a number");
+	}
+	int32_t keyLen;
+	napi_get_value_int32(env, argv[0], &keyLen);
+	char* key = (*dbHandle)->defaultKeyBufferPtr;
 
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	std::string value;
+	rocksdb::Slice keySlice(key, keyLen);
+	rocksdb::PinnableSlice value;
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
@@ -563,6 +570,14 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
+	if ((*dbHandle)->defaultValueBufferPtr != nullptr && value.size() <= (*dbHandle)->defaultValueBufferLength) {
+		// if it fits in the default value buffer, copy the data and just return the length
+		memcpy((*dbHandle)->defaultValueBufferPtr, value.data(), value.size());
+		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result))
+		return result;
+	}
+
+	// otherwise, create a new buffer and return it
 	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 		env,
 		value.size(),
@@ -572,6 +587,52 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	))
 
 	return result;
+}
+
+/**
+ * Sets the default value buffer to be used for fast access.
+ */
+napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE()
+
+	if (argv[0] == nullptr) {
+		(*dbHandle)->defaultValueBufferPtr = nullptr;
+		(*dbHandle)->defaultValueBufferLength = 0;
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	void* data;
+	size_t length;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length))
+
+	(*dbHandle)->defaultValueBufferPtr = (char*) data;
+	(*dbHandle)->defaultValueBufferLength = length;
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+/**
+ * Sets the default key buffer to be used for fast access.
+ */
+napi_value Database::SetDefaultKeyBuffer(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE()
+
+	if (argv[0] == nullptr) {
+		(*dbHandle)->defaultKeyBufferPtr = nullptr;
+		(*dbHandle)->defaultKeyBufferLength = 0;
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	void* data;
+	size_t length;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length))
+
+	(*dbHandle)->defaultKeyBufferPtr = (char*) data;
+	(*dbHandle)->defaultKeyBufferLength = length;
+
+	NAPI_RETURN_UNDEFINED()
 }
 
 /**
@@ -985,6 +1046,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setDefaultValueBuffer", nullptr, SetDefaultValueBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setDefaultKeyBuffer", nullptr, SetDefaultKeyBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr },

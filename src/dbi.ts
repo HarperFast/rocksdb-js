@@ -193,7 +193,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 						return result;
 					}
 
-					return this.store.decodeValue(result as Buffer);
+					return this.store.decodeValue(result as BufferWithDataView);
 				}
 			);
 		}
@@ -204,7 +204,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				? undefined
 				: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
 					? result
-					: this.store.decodeValue(result as Buffer)
+					: this.store.decodeValue(result as BufferWithDataView)
 		);
 	}
 
@@ -379,7 +379,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getSync(key: Key, options?: GetOptions & T): any | undefined {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
-			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+			return bytes === undefined ? undefined : this.store.decodeValue(bytes as BufferWithDataView);
 		}
 
 		if (this.store.encoding === 'binary') {
@@ -388,7 +388,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		if (this.store.decoder) {
 			const result = this.getBinarySync(key, options);
-			return result ? this.store.decodeValue(result) : undefined;
+			return result ? this.store.decodeValue(result as BufferWithDataView) : undefined;
 		}
 
 		if (!this.store.isOpen()) {
