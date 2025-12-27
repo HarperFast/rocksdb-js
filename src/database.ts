@@ -507,7 +507,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
 				return undefined as T;
 			}
-			txn.abort();
+			try {
+				txn.abort();
+			} catch(error) {
+				// ignore if abort fails
+			}
 			throw err;
 		}
 	}
