@@ -155,6 +155,40 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Gets a RocksDB database property as a string.
+	 *
+	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.levelstats').
+	 * @returns The property value as a string.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const levelStats = db.getDBProperty('rocksdb.levelstats');
+	 * const stats = db.getDBProperty('rocksdb.stats');
+	 * ```
+	 */
+	getDBProperty(propertyName: string): string {
+		return this.store.db.getDBProperty(propertyName);
+	}
+
+	/**
+	 * Gets a RocksDB database property as an integer.
+	 *
+	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.num-blob-files').
+	 * @returns The property value as a number.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
+	 * const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
+	 * ```
+	 */
+	getDBIntProperty(propertyName: string): number {
+		return this.store.db.getDBIntProperty(propertyName);
+	}
+
+	/**
 	 * Flushes the underlying database by performing a commit or clearing any buffered operations.
 	 *
 	 * @return {void} Does not return a value.

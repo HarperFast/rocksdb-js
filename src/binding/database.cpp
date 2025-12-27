@@ -505,6 +505,75 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 }
 
 /**
+ * Gets a RocksDB database property as a string.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const levelStats = db.getDBProperty('rocksdb.levelstats');
+ * ```
+ */
+napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	NAPI_GET_STRING(argv[0], propertyName, "Property name is required")
+
+	std::string value;
+	bool success = (*dbHandle)->descriptor->db->GetProperty(
+		(*dbHandle)->column.get(),
+		propertyName,
+		&value
+	);
+
+	if (!success) {
+		::napi_throw_error(env, nullptr, "Failed to get database property");
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		value.c_str(),
+		value.length(),
+		&result
+	))
+	return result;
+}
+
+/**
+ * Gets a RocksDB database property as an integer.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
+ * ```
+ */
+napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	NAPI_GET_STRING(argv[0], propertyName, "Property name is required")
+
+	uint64_t value = 0;
+	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
+		(*dbHandle)->column.get(),
+		propertyName,
+		&value
+	);
+
+	if (!success) {
+		::napi_throw_error(env, nullptr, "Failed to get database integer property");
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, value, &result))
+	return result;
+}
+
+/**
  * Gets a value from the RocksDB database.
  *
  * @example
@@ -971,6 +1040,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },

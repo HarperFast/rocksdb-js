@@ -460,6 +460,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
+	// Define base ColumnFamilyOptions that include blob settings
+	rocksdb::ColumnFamilyOptions cfOptions;
+	cfOptions.enable_blob_files = true;
+	cfOptions.min_blob_size = 1024; // Ensure this matches your requirement
+	cfOptions.enable_blob_garbage_collection = true;
+
 	// create a shared pointer to hold the weak descriptor reference for the event listener
 	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
 	auto eventListener = std::make_shared<TransactionLogEventListener>(descriptorWeakPtr);
@@ -476,13 +482,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// database exists, use existing column families
 		for (const auto& cfName : columnFamilyNames) {
 			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str())
-			cfDescriptors.emplace_back(cfName, rocksdb::ColumnFamilyOptions());
+			cfDescriptors.emplace_back(cfName, cfOptions); // Use cfOptions here
 		}
 	} else {
 		// database doesn't exist or no column families found, use default
 		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n")
 		cfDescriptors = {
-			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions())
+			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfOptions) // Use cfOptions here
 		};
 	}
 
