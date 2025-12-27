@@ -1,0 +1,1 @@
+This directory contains benchmark database files for RocksDB-JS. It is important to run benchmarks on a real filesystem (not a tempfs). These files should be deleted after benchmarking.
