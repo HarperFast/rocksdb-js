@@ -253,7 +253,7 @@ void TransactionHandle::getCount(
  */
 rocksdb::Status TransactionHandle::getSync(
 	rocksdb::Slice& key,
-	std::string& result,
+	rocksdb::PinnableSlice& result,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	if (!this->txn) {

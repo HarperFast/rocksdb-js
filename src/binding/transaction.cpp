@@ -373,11 +373,18 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	UNWRAP_TRANSACTION_HANDLE("GetSync")
+	napi_valuetype keyType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
+	if (keyType != napi_number) {
+		::napi_throw_error(env, nullptr, "Key must be a number");
+	}
+	int32_t keyLen;
+	napi_get_value_int32(env, argv[0], &keyLen);
+	char* key = (*txnHandle)->dbHandle->defaultKeyBufferPtr;
 
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	std::string value;
+	rocksdb::Slice keySlice(key, keyLen);
+	rocksdb::PinnableSlice value;
 	rocksdb::Status status = (*txnHandle)->getSync(keySlice, value);
 
 	if (status.IsNotFound()) {
@@ -390,6 +397,13 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
+	if ((*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr && value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
+		// if it fits in the default value buffer, copy the data and just return the length
+		memcpy((*txnHandle)->dbHandle->defaultValueBufferPtr, value.data(), value.size());
+		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result))
+		return result;
+	}
+
 	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 		env,
 		value.size(),

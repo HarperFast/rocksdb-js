@@ -55,6 +55,8 @@ struct Database final {
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
+	static napi_value SetDefaultValueBuffer(napi_env env, napi_callback_info info);
+	static napi_value SetDefaultKeyBuffer(napi_env env, napi_callback_info info);
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);
 	static napi_value UseLog(napi_env env, napi_callback_info info);

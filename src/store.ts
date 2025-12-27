@@ -22,6 +22,8 @@ import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
+export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(16 * 1024);
+export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
 
 const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -263,7 +265,7 @@ export class Store {
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
 		this.freezeData = options?.freezeData ?? false;
-		this.keyBuffer = createFixedBuffer(KEY_BUFFER_SIZE);
+		this.keyBuffer = KEY_BUFFER;
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
 		this.name = options?.name ?? 'default';
@@ -304,9 +306,9 @@ export class Store {
 	 * @param value - The value to decode.
 	 * @returns The decoded value.
 	 */
-	decodeValue(value: Buffer): any {
+	decodeValue(value: BufferWithDataView): any {
 		if (value?.length > 0 && typeof this.decoder?.decode === 'function') {
-			return this.decoder.decode(value);
+			return this.decoder.decode(value, { end: value.end });
 		}
 		return value;
 	}
@@ -440,10 +442,15 @@ export class Store {
 		key: Key,
 		options?: GetOptions & DBITransactional
 	): any | undefined {
-		return context.getSync(
-			this.encodeKey(key),
+		let result = context.getSync(
+			this.encodeKey(key).end,
 			this.getTxnId(options)
 		);
+		if (typeof result === 'number') { // return a number indicates it is using the default buffer
+			VALUE_BUFFER.end = result;
+			return VALUE_BUFFER;
+		}
+		return result;
 	}
 
 	/**
