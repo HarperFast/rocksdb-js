@@ -5,6 +5,7 @@ import {
 	type UserSharedBufferCallback,
 	type NativeDatabaseOptions,
 	type TransactionLog,
+	constants,
 } from './load-binding.js';
 import {
 	Encoding,
@@ -22,6 +23,7 @@ import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
+const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_BUFFER_FLAG } = constants;
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(16 * 1024);
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
 
@@ -374,16 +376,28 @@ export class Store {
 	get(
 		context: NativeDatabase | NativeTransaction,
 		key: Key,
-		resolve: (value: Buffer) => void,
-		reject: (err: unknown) => void,
-		txnId?: number
+		alwaysCreateNewBuffer: boolean = false,
+		txnId?: number,
 	): any | undefined {
-		return context.get(
-			this.encodeKey(key),
-			resolve,
-			reject,
-			txnId
+		let keyEnd = this.encodeKey(key).end;
+		if (alwaysCreateNewBuffer) {
+			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
+		}
+		let result = context.getSync(
+			keyEnd | ONLY_IF_IN_MEMORY_CACHE_FLAG,
+			txnId,
 		);
+		if (typeof result === 'number') { // return a number indicates it is using the default buffer
+			if (result === NOT_IN_MEMORY_CACHE_FLAG) {
+				// is not in memory cache, use async get
+				return new Promise((resolve, reject) => {
+					context.get(keyEnd, resolve, reject, txnId);
+				});
+			}
+			VALUE_BUFFER.end = result;
+			return VALUE_BUFFER;
+		}
+		return result;
 	}
 
 	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions): number {
@@ -440,10 +454,15 @@ export class Store {
 	getSync(
 		context: NativeDatabase | NativeTransaction,
 		key: Key,
+		alwaysCreateNewBuffer: boolean = false,
 		options?: GetOptions & DBITransactional
 	): any | undefined {
+		let keyEnd = this.encodeKey(key).end;
+		if (alwaysCreateNewBuffer) {
+			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
+		}
 		let result = context.getSync(
-			this.encodeKey(key).end,
+			keyEnd,
 			this.getTxnId(options)
 		);
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer

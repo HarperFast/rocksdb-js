@@ -127,7 +127,7 @@ void TransactionHandle::close() {
  */
 napi_value TransactionHandle::get(
 	napi_env env,
-	rocksdb::Slice& key,
+	std::string key,
 	napi_value resolve,
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride
@@ -196,7 +196,7 @@ napi_value TransactionHandle::get(
 				state->status = state->handle->txn->Get(
 					state->readOptions,
 					state->handle->dbHandle->column.get(),
-					state->keySlice,
+					state->key,
 					&state->value
 				);
 			}
@@ -254,6 +254,7 @@ void TransactionHandle::getCount(
 rocksdb::Status TransactionHandle::getSync(
 	rocksdb::Slice& key,
 	rocksdb::PinnableSlice& result,
+	rocksdb::ReadOptions& readOptions,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	if (!this->txn) {
@@ -270,7 +271,6 @@ rocksdb::Status TransactionHandle::getSync(
 		this->txn->SetSnapshot();
 	}
 
-	auto readOptions = rocksdb::ReadOptions();
 	if (this->snapshotSet) {
 		readOptions.snapshot = this->txn->GetSnapshot();
 	}

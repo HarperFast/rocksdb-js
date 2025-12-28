@@ -219,35 +219,12 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		let result: Buffer | undefined;
-		let error: unknown | undefined;
-		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: unknown) => void | undefined;
-
-		const status = this.store.get(
+		return this.store.get(
 			this.#context,
 			key,
-			value => {
-				result = value;
-				resolve?.(value);
-			},
-			err => {
-				error = err;
-				reject?.(err);
-			},
+			true,
 			this.store.getTxnId(options)
 		);
-
-		if (error) {
-			return Promise.reject(error);
-		}
-		if (status === 0) {
-			return result;
-		}
-
-		let promise: Promise<Buffer | undefined>;
-		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
-		return promise;
 	}
 
 	/**
@@ -258,7 +235,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.getSync(this.#context, key, options);
+		return this.store.getSync(this.#context, key, true, options);
 	}
 
 	/**
@@ -276,36 +253,12 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		let result: Buffer | undefined;
-		let error: unknown | undefined;
-		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: unknown) => void | undefined;
-
-		// TODO: specify the shared buffer to write the value to
-		const status = this.store.get(
+		return this.store.get(
 			this.#context,
 			key,
-			value => {
-				result = value;
-				resolve?.(value);
-			},
-			err => {
-				error = err;
-				reject?.(err);
-			},
+			false,
 			this.store.getTxnId(options)
 		);
-
-		if (error) {
-			return Promise.reject(error);
-		}
-		if (status === 0) {
-			return result;
-		}
-
-		let promise: Promise<Buffer | undefined>;
-		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
-		return promise;
 	}
 
 	/**
@@ -321,6 +274,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return this.store.getSync(
 			this.#context,
 			key,
+			false,
 			options
 		);
 	}
@@ -396,7 +350,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		return this.store.decodeValue(
-			this.store.getSync(this.#context, key, options)
+			this.store.getSync(this.#context, key, true, options)
 		);
 	}
 

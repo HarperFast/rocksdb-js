@@ -107,11 +107,11 @@ export type NativeDatabase = {
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	get(key: number, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: BufferWithDataView | number, txnId?: number): Buffer;
+	getSync(key: number, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
@@ -187,6 +187,9 @@ export const constants: {
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
+	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	NOT_IN_MEMORY_CACHE_FLAG: number;
+	ALWAYS_CREATE_BUFFER_FLAG: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;

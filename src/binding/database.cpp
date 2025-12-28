@@ -310,12 +310,20 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+
+	napi_valuetype keyType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	if (keyType != napi_number) {
+		::napi_throw_error(env, nullptr, "Key must be a number");
+	}
+	int32_t keyLengthAndFlags;
+	NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[0], &keyLengthAndFlags))
+	// use last 24 bits for key length
+	std::string key((*dbHandle)->defaultKeyBufferPtr, keyLengthAndFlags & 0xffffff);
+
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
-	UNWRAP_DB_HANDLE_AND_OPEN()
-
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &txnIdType));
@@ -330,26 +338,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
-		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
+		return txnHandle->get(env, key, resolve, reject, *dbHandle);
 	}
 
 	rocksdb::ReadOptions readOptions;
-	readOptions.read_tier = rocksdb::kBlockCacheTier;
-
-	// try to get the value from the block cache
-	std::string value;
-	rocksdb::Status status = (*dbHandle)->descriptor->db->Get(
-		readOptions,
-		(*dbHandle)->column.get(),
-		keySlice,
-		&value
-	);
-
-	if (!status.IsIncomplete()) {
-		// found it in the block cache!
-		return resolveGetSyncResult(env, "Get failed", status, value, resolve, reject);
-	}
-
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_latin1(
 		env,
@@ -358,8 +350,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&name
 	))
 
-	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, keySlice);
+	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, key);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -376,7 +367,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 				state->status = state->handle->descriptor->db->Get(
 					state->readOptions,
 					state->handle->column.get(),
-					state->keySlice,
+					state->key,
 					&state->value
 				);
 			}
@@ -528,16 +519,20 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	if (keyType != napi_number) {
 		::napi_throw_error(env, nullptr, "Key must be a number");
 	}
-	int32_t keyLen;
-	napi_get_value_int32(env, argv[0], &keyLen);
+	int32_t keyLengthAndFlags;
+	napi_get_value_int32(env, argv[0], &keyLengthAndFlags);
 	char* key = (*dbHandle)->defaultKeyBufferPtr;
-
-	rocksdb::Slice keySlice(key, keyLen);
+	// 24 bits are for key length
+	rocksdb::Slice keySlice(key, keyLengthAndFlags & 0xffffff);
 	rocksdb::PinnableSlice value;
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+	rocksdb::ReadOptions readOptions;
+	if (keyLengthAndFlags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+		readOptions.read_tier = rocksdb::kBlockCacheTier;
+	}
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
@@ -549,10 +544,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED()
 		}
-		status = txnHandle->getSync(keySlice, value, *dbHandle);
+		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
 	} else {
 		status = (*dbHandle)->descriptor->db->Get(
-			rocksdb::ReadOptions(),
+			readOptions,
 			(*dbHandle)->column.get(),
 			keySlice,
 			&value
@@ -563,16 +558,23 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED()
 	}
 
+	napi_value result;
+	if (status.IsIncomplete()) {
+		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result))
+		return result;
+	}
+
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get failed")
 		::napi_throw(env, error);
 		return nullptr;
 	}
 
-	napi_value result;
-	if ((*dbHandle)->defaultValueBufferPtr != nullptr && value.size() <= (*dbHandle)->defaultValueBufferLength) {
+	if (!(keyLengthAndFlags & ALWAYS_CREATE_BUFFER_FLAG) &&
+			(*dbHandle)->defaultValueBufferPtr != nullptr &&
+			value.size() <= (*dbHandle)->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length
-		memcpy((*dbHandle)->defaultValueBufferPtr, value.data(), value.size());
+		::memcpy((*dbHandle)->defaultValueBufferPtr, value.data(), value.size());
 		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result))
 		return result;
 	}

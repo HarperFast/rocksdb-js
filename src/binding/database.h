@@ -10,6 +10,10 @@
 
 namespace rocksdb_js {
 
+#define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
+#define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
+#define ALWAYS_CREATE_BUFFER_FLAG 0x20000000
+
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
@@ -102,14 +106,15 @@ struct AsyncGetState final : BaseAsyncState<T> {
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
-		rocksdb::Slice& keySlice
+		std::string& key
 	) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
-		keySlice(keySlice) {}
+		key(key) {}
 
 	rocksdb::ReadOptions readOptions;
-	rocksdb::Slice keySlice;
+	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
+	std::string key;
 	std::string value;
 };
 
