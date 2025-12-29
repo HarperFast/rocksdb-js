@@ -25,6 +25,7 @@ import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
 const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_BUFFER_FLAG } = constants;
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(16 * 1024);
+const KEY_BUFFER_ARRAY_BUFFER = KEY_BUFFER.buffer;
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
 
 const KEY_BUFFER_SIZE = 4096;
@@ -379,7 +380,7 @@ export class Store {
 		alwaysCreateNewBuffer: boolean = false,
 		txnId?: number,
 	): any | undefined {
-		let keyEnd = this.encodeKey(key).end;
+		let keyEnd = getKeyEnd(this.encodeKey(key));
 		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
 			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
@@ -460,7 +461,7 @@ export class Store {
 		alwaysCreateNewBuffer: boolean = false,
 		options?: GetOptions & DBITransactional
 	): any | undefined {
-		let keyEnd = this.encodeKey(key).end;
+		let keyEnd = getKeyEnd(this.encodeKey(key));
 		if (alwaysCreateNewBuffer) {
 			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
@@ -688,6 +689,26 @@ export class Store {
 			callback
 		);
 	}
+}
+
+/**
+ * Ensure that they key has been copied into our shared buffer, and return the ending position
+ * @param keyBuffer
+ */
+function getKeyEnd(keyBuffer: BufferWithDataView): number {
+	if (keyBuffer.buffer === KEY_BUFFER_ARRAY_BUFFER) {
+		if (keyBuffer.end >= 0) {
+			return keyBuffer.end;
+		}
+		if (keyBuffer.byteOffset === 0) {
+			return keyBuffer.byteLength;
+		}
+	}
+	if (keyBuffer.length > KEY_BUFFER.length) {
+		throw new Error(`Key of length ${keyBuffer.length} is too large, maximum size: ${KEY_BUFFER.length}`);
+	}
+	KEY_BUFFER.set(keyBuffer);
+	return keyBuffer.length;
 }
 
 export interface GetOptions {
