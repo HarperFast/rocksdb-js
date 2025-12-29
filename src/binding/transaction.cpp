@@ -344,7 +344,7 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	}
 	int32_t keyLengthAndFlags;
 	NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[0], &keyLengthAndFlags))
-	// use last 24 bits for key length
+	// use last 24 bits for key length, storing in std::string so it can live through the async process
 	std::string key((*dbHandle)->defaultKeyBufferPtr, keyLengthAndFlags & 0xffffff);
 
 	return (*txnHandle)->get(env, key, resolve, reject);

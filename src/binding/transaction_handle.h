@@ -114,7 +114,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	napi_value get(
 		napi_env env,
-		std::string key,
+		std::string& key,
 		napi_value resolve,
 		napi_value reject,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr

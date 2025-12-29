@@ -380,23 +380,26 @@ export class Store {
 		txnId?: number,
 	): any | undefined {
 		let keyEnd = this.encodeKey(key).end;
-		if (alwaysCreateNewBuffer) {
+		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
 			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
+		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		let result = context.getSync(
 			keyEnd | ONLY_IF_IN_MEMORY_CACHE_FLAG,
 			txnId,
 		);
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer
 			if (result === NOT_IN_MEMORY_CACHE_FLAG) {
-				// is not in memory cache, use async get
+				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
+					// We still use the same shared buffer for the key, the native side will make a copy for the async task
 					context.get(keyEnd, resolve, reject, txnId);
 				});
 			}
+			// continue with fast path
 			VALUE_BUFFER.end = result;
 			return VALUE_BUFFER;
-		}
+		} // else it is undefined or it is a new buffer
 		return result;
 	}
 
@@ -461,6 +464,7 @@ export class Store {
 		if (alwaysCreateNewBuffer) {
 			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
+		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
 		let result = context.getSync(
 			keyEnd,
 			this.getTxnId(options)
@@ -468,7 +472,7 @@ export class Store {
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer
 			VALUE_BUFFER.end = result;
 			return VALUE_BUFFER;
-		}
+		} // else it is undefined or it is a new buffer
 		return result;
 	}
 

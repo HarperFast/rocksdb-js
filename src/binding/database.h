@@ -106,11 +106,11 @@ struct AsyncGetState final : BaseAsyncState<T> {
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
-		std::string& key
+		std::string key
 	) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
-		key(key) {}
+		key(std::move(key)) {}
 
 	rocksdb::ReadOptions readOptions;
 	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)

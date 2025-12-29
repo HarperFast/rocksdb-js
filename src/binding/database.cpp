@@ -319,7 +319,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 	int32_t keyLengthAndFlags;
 	NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[0], &keyLengthAndFlags))
-	// use last 24 bits for key length
+	// use last 24 bits for key length, stored in std::string so it can live through the async process
 	std::string key((*dbHandle)->defaultKeyBufferPtr, keyLengthAndFlags & 0xffffff);
 
 	napi_value resolve = argv[1];
@@ -350,7 +350,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&name
 	))
 
-	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, key);
+	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -522,15 +522,16 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	int32_t keyLengthAndFlags;
 	napi_get_value_int32(env, argv[0], &keyLengthAndFlags);
 	char* key = (*dbHandle)->defaultKeyBufferPtr;
-	// 24 bits are for key length
+	// 24 bits are for key length, and we store this in key slice (no copying) because we are synchronously using the key
 	rocksdb::Slice keySlice(key, keyLengthAndFlags & 0xffffff);
-	rocksdb::PinnableSlice value;
+	rocksdb::PinnableSlice value; // we can use a PinnableSlice here, so we can copy directly from the database cache to our buffer
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
 	rocksdb::ReadOptions readOptions;
 	if (keyLengthAndFlags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+		// this is used by get() so that the getSync() call will fail if the entry is not in the cache
 		readOptions.read_tier = rocksdb::kBlockCacheTier;
 	}
 
@@ -560,6 +561,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 	napi_value result;
 	if (status.IsIncomplete()) {
+		// This means we only wanted values in memory, it was not found, so return a flag indicating that
 		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result))
 		return result;
 	}
@@ -570,7 +572,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	if (!(keyLengthAndFlags & ALWAYS_CREATE_BUFFER_FLAG) &&
+	if (!(keyLengthAndFlags & ALWAYS_CREATE_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
 			(*dbHandle)->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*dbHandle)->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length
@@ -592,7 +594,11 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Sets the default value buffer to be used for fast access.
+ * Sets the default value buffer to be used for fast access. Creating new buffers (especially from C++/NAPI) is
+ * *extremely* expensive, and by using a single shared buffer, we can avoid the overhead of buffer creation, and instead
+ * copy directly from the database to the shared buffer. So this sets the value buffer that will be used for transferring
+ * smaller values to and from JavaScript to C++. Note that we generally still use new buffers for larger values, as the
+ * overhead of buffer creation is smaller compared to the cost of the copying of data.
  */
 napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
@@ -615,7 +621,10 @@ napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info
 }
 
 /**
- * Sets the default key buffer to be used for fast access.
+ * Sets the default key buffer to be used for fast access. Creating new buffers (especially from C++/NAPI) is
+ * *extremely* expensive, and by using a single shared buffer, we can avoid the overhead of buffer creation, and instead
+ * place keys directly in a shared buffer that can be reused. This sets the key buffer that is used for transferring
+ * keys to and from JavaScript to C++.
  */
 napi_value Database::SetDefaultKeyBuffer(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)

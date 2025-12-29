@@ -127,7 +127,7 @@ void TransactionHandle::close() {
  */
 napi_value TransactionHandle::get(
 	napi_env env,
-	std::string key,
+	std::string &key,
 	napi_value resolve,
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride
@@ -179,7 +179,7 @@ napi_value TransactionHandle::get(
 	))
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, key);
+	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
