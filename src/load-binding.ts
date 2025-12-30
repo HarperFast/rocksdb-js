@@ -21,9 +21,9 @@ export type NativeTransaction = {
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
-	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
+	get(key: number | Buffer, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
 	getCount(options?: RangeOptions): number;
-	getSync(key: Key): Buffer | number | undefined;
+	getSync(key: number | Buffer): Buffer | number | undefined;
 	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
@@ -107,11 +107,11 @@ export type NativeDatabase = {
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	get(key: number, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	get(key: number | Buffer, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: number, flags: number, txnId?: number): Buffer;
+	getSync(key: number| Buffer, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;

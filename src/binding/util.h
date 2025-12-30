@@ -68,6 +68,8 @@ const char* getNapiBufferFromArg(
 	const char* errorMsg
 );
 
+const rocksdb::Slice getSliceFromArg(napi_env env, napi_value arg, char* defaultBuffer, const char* errorMsg);
+
 std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {

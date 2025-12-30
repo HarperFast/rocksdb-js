@@ -336,16 +336,10 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get")
-	napi_valuetype keyType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	if (keyType != napi_number) {
-		::napi_throw_error(env, nullptr, "Key must be a number");
-	}
-	int32_t keyLengthAndFlags;
-	NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[0], &keyLengthAndFlags))
-	// use last 24 bits for key length, storing in std::string so it can live through the async process
-	std::string key((*dbHandle)->defaultKeyBufferPtr, keyLengthAndFlags & 0xffffff);
+	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer");
+	// storing in std::string so it can live through the async process
+	std::string key(keySlice.data(), keySlice.size());
 
 	return (*txnHandle)->get(env, key, resolve, reject);
 }
@@ -380,21 +374,14 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
  * Retrieves a value for the given key.
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
+	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_HANDLE("GetSync")
-	napi_valuetype keyType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
-	if (keyType != napi_number) {
-		::napi_throw_error(env, nullptr, "Key must be a number");
-	}
-	int32_t keyLengthAndFlags;
-	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &keyLengthAndFlags))
-	char* key = (*txnHandle)->dbHandle->defaultKeyBufferPtr;
-	// 24 bits are for key length
-	rocksdb::Slice keySlice(key, keyLengthAndFlags & 0xffffff);
+	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer");
+	int32_t flags;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags))
 	rocksdb::PinnableSlice value;
 	rocksdb::ReadOptions readOptions;
-	if (keyLengthAndFlags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
 		readOptions.read_tier = rocksdb::kBlockCacheTier;
 	}
 	rocksdb::Status status = (*txnHandle)->getSync(keySlice, value, readOptions);
@@ -413,7 +400,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result))
 		return result;
 	}
-	if (!(keyLengthAndFlags & ALWAYS_CREATE_BUFFER_FLAG) &&
+	if (!(flags & ALWAYS_CREATE_BUFFER_FLAG) &&
 			(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length

@@ -24,11 +24,11 @@ import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
 const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_BUFFER_FLAG } = constants;
-export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(16 * 1024);
+const KEY_BUFFER_SIZE = 4096;
+export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
 const KEY_BUFFER_ARRAY_BUFFER = KEY_BUFFER.buffer;
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
 
-const KEY_BUFFER_SIZE = 4096;
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
 const RESET_BUFFER_MODE = 1024;
 const REUSE_BUFFER_MODE = 512;
@@ -380,14 +380,14 @@ export class Store {
 		alwaysCreateNewBuffer: boolean = false,
 		txnId?: number,
 	): any | undefined {
-		let keyEnd = getKeyEnd(this.encodeKey(key));
+		let keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
 		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		let result = context.getSync(
-			keyEnd,
+			keyParam,
 			flags | ONLY_IF_IN_MEMORY_CACHE_FLAG,
 			txnId,
 		);
@@ -396,7 +396,7 @@ export class Store {
 				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
 					// We still use the same shared buffer for the key, the native side will make a copy for the async task
-					context.get(keyEnd, resolve, reject, txnId);
+					context.get(keyParam, resolve, reject, txnId);
 				});
 			}
 			// continue with fast path
@@ -463,14 +463,14 @@ export class Store {
 		alwaysCreateNewBuffer: boolean = false,
 		options?: GetOptions & DBITransactional
 	): any | undefined {
-		let keyEnd = getKeyEnd(this.encodeKey(key));
+		let keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
 		if (alwaysCreateNewBuffer) {
 			flags |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
 		let result = context.getSync(
-			keyEnd,
+			keyParam,
 			flags,
 			this.getTxnId(options)
 		);
@@ -699,7 +699,7 @@ export class Store {
  * Ensure that they key has been copied into our shared buffer, and return the ending position
  * @param keyBuffer
  */
-function getKeyEnd(keyBuffer: BufferWithDataView): number {
+function getKeyParam(keyBuffer: BufferWithDataView): number | Buffer {
 	if (keyBuffer.buffer === KEY_BUFFER_ARRAY_BUFFER) {
 		if (keyBuffer.end >= 0) {
 			return keyBuffer.end;
@@ -709,7 +709,8 @@ function getKeyEnd(keyBuffer: BufferWithDataView): number {
 		}
 	}
 	if (keyBuffer.length > KEY_BUFFER.length) {
-		throw new Error(`Key of length ${keyBuffer.length} is too large, maximum size: ${KEY_BUFFER.length}`);
+		// for larger key buffers, we pass it straight in
+		return keyBuffer;
 	}
 	KEY_BUFFER.set(keyBuffer);
 	return keyBuffer.length;

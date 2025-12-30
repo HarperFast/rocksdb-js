@@ -213,7 +213,7 @@ for (const { name, options, txnOptions } of testOptions) {
 
 		it(`${name} async should handle concurrent reads in same transaction`, () => dbRunner({
 			dbOptions: [ options, { ...options, path: generateDBPath() } ]
-		}, async ({ db }, { db: db2 }) => {
+		}, async ({ db }) => {
 			await db.transaction((transaction) => {
 				for (let i = 0; i < 100; i++) {
 					db.put(`key-${i}`, `value-${i}`, { transaction });
@@ -236,7 +236,7 @@ for (const { name, options, txnOptions } of testOptions) {
 
 		it(`${name} async should handle concurrent reads in different transactions`, () => dbRunner({
 			dbOptions: [ options, { ...options, path: generateDBPath() } ]
-		}, async ({ db }, { db: db2 }) => {
+		}, async ({ db }) => {
 			await db.transaction((transaction) => {
 				for (let i = 0; i < 100; i++) {
 					db.put(`key-${i}`, `value-${i}`, { transaction });

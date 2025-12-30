@@ -311,16 +311,9 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4)
 
-	napi_valuetype keyType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	if (keyType != napi_number) {
-		::napi_throw_error(env, nullptr, "Key must be a number");
-	}
-	int32_t keyLengthAndFlags;
-	NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[0], &keyLengthAndFlags))
-	// use last 24 bits for key length, stored in std::string so it can live through the async process
-	std::string key((*dbHandle)->defaultKeyBufferPtr, keyLengthAndFlags & 0xffffff);
+	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer");
+	std::string key(keySlice.data(), keySlice.size());
 
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
@@ -514,18 +507,10 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	napi_valuetype keyType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
-	if (keyType != napi_number) {
-		::napi_throw_error(env, nullptr, "Key must be a number");
-	}
-	int32_t keyLength;
-	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &keyLength))
+	// we store this in key slice (no copying) because we are synchronously using the key
+	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer");
 	int32_t flags;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags))
-	char* key = (*dbHandle)->defaultKeyBufferPtr;
-	// we store this in key slice (no copying) because we are synchronously using the key
-	rocksdb::Slice keySlice(key, keyLength);
 	rocksdb::PinnableSlice value; // we can use a PinnableSlice here, so we can copy directly from the database cache to our buffer
 	rocksdb::Status status;
 
@@ -539,7 +524,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
