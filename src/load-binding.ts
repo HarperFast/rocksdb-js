@@ -111,7 +111,7 @@ export type NativeDatabase = {
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: number, txnId?: number): Buffer;
+	getSync(key: number, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;

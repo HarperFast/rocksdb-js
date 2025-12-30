@@ -512,25 +512,27 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
  * ```
  */
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
+	NAPI_METHOD_ARGV(3)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 	napi_valuetype keyType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &keyType));
 	if (keyType != napi_number) {
 		::napi_throw_error(env, nullptr, "Key must be a number");
 	}
-	int32_t keyLengthAndFlags;
-	napi_get_value_int32(env, argv[0], &keyLengthAndFlags);
+	int32_t keyLength;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &keyLength))
+	int32_t flags;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags))
 	char* key = (*dbHandle)->defaultKeyBufferPtr;
-	// 24 bits are for key length, and we store this in key slice (no copying) because we are synchronously using the key
-	rocksdb::Slice keySlice(key, keyLengthAndFlags & 0xffffff);
+	// we store this in key slice (no copying) because we are synchronously using the key
+	rocksdb::Slice keySlice(key, keyLength);
 	rocksdb::PinnableSlice value; // we can use a PinnableSlice here, so we can copy directly from the database cache to our buffer
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
 	rocksdb::ReadOptions readOptions;
-	if (keyLengthAndFlags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
 		// this is used by get() so that the getSync() call will fail if the entry is not in the cache
 		readOptions.read_tier = rocksdb::kBlockCacheTier;
 	}
@@ -572,7 +574,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	if (!(keyLengthAndFlags & ALWAYS_CREATE_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
+	if (!(flags & ALWAYS_CREATE_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
 			(*dbHandle)->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*dbHandle)->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length

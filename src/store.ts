@@ -381,12 +381,14 @@ export class Store {
 		txnId?: number,
 	): any | undefined {
 		let keyEnd = getKeyEnd(this.encodeKey(key));
+		let flags = 0;
 		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
-			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
+			flags |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		let result = context.getSync(
-			keyEnd | ONLY_IF_IN_MEMORY_CACHE_FLAG,
+			keyEnd,
+			flags | ONLY_IF_IN_MEMORY_CACHE_FLAG,
 			txnId,
 		);
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer
@@ -462,12 +464,14 @@ export class Store {
 		options?: GetOptions & DBITransactional
 	): any | undefined {
 		let keyEnd = getKeyEnd(this.encodeKey(key));
+		let flags = 0;
 		if (alwaysCreateNewBuffer) {
-			keyEnd |= ALWAYS_CREATE_BUFFER_FLAG;
+			flags |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
 		let result = context.getSync(
 			keyEnd,
+			flags,
 			this.getTxnId(options)
 		);
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer
