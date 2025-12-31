@@ -596,6 +596,22 @@ export class Store {
 		);
 	}
 
+	removeRangeSync(
+		context: NativeDatabase,
+		start: Key,
+		end: Key,
+	): void {
+		if (!this.db.opened) {
+			throw new Error('Database not open');
+		}
+		let startBuffer = this.encodeKey(start);
+		let startBufferCopy = Buffer.from(startBuffer.subarray(0, startBuffer.end));
+		context.removeRangeSync(
+			startBufferCopy as BufferWithDataView,
+			this.encodeKey(end)
+		);
+	}
+
 	/**
 	 * Attempts to acquire a lock for a given key. If the lock is available,
 	 * the function returns `true` and the optional callback is never called.

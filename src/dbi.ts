@@ -1,5 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import type { NativeTransaction, TransactionLog } from './load-binding.js';
+import type { NativeDatabase, NativeTransaction, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
@@ -524,6 +524,17 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 */
 	removeSync(key: Key, options?: T): void {
 		return this.store.removeSync(this.#context, key, options as DBITransactional);
+	}
+
+	/**
+	 * Removes a range of entries from the store based on the specified start and end keys, synchronously.
+	 *
+	 * @param {Key} start - The starting key of the range to be removed (inclusive).
+	 * @param {Key} end - The ending key of the range to be removed (exclusive).
+	 * @return {void} This method does not return a value.
+	 */
+	removeRangeSync(start: Key, end: Key): void {
+		return this.store.removeRangeSync(this.#context as NativeDatabase, start, end);
 	}
 
 	/**

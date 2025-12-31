@@ -796,6 +796,43 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Deletes a range of keys from the RocksDB database.
+ */
+napi_value Database::RemoveRangeSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	NAPI_GET_BUFFER(argv[0], startKey, "Start key is required")
+	NAPI_GET_BUFFER(argv[1], endKey, "End key is required")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	rocksdb::Slice startSlice(startKey + startKeyStart, startKeyEnd - startKeyStart);
+	rocksdb::Slice endSlice(endKey + endKeyStart, endKeyEnd - endKeyStart);
+
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = (*dbHandle)->disableWAL;
+
+	rocksdb::WriteBatch batch;
+	batch.DeleteRange((*dbHandle)->column.get(), startSlice, endSlice);
+
+	// Per RocksDB documentation for TransactionDB, we must use Write() with optimizations
+	// to bypass the "NotSupported" status of the direct DeleteRange call.
+	rocksdb::TransactionDBWriteOptimizations write_optimizations;
+	write_optimizations.skip_concurrency_control = true;
+	write_optimizations.skip_duplicate_key_check = true;
+
+	auto* transaction_db = static_cast<rocksdb::TransactionDB*>((*dbHandle)->descriptor->db.get());
+	rocksdb::Status status = transaction_db->Write(writeOptions, write_optimizations, &batch);
+
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "DeleteRange failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED()
+}
+
+
+/**
  * Removes a key from the RocksDB database.
  */
 napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
@@ -967,7 +1004,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "removeRangeSync", nullptr, RemoveRangeSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+    	{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
