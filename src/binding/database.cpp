@@ -806,24 +806,26 @@ napi_value Database::RemoveRangeSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Slice startSlice(startKey + startKeyStart, startKeyEnd - startKeyStart);
 	rocksdb::Slice endSlice(endKey + endKeyStart, endKeyEnd - endKeyStart);
-
-	rocksdb::WriteOptions writeOptions;
-	writeOptions.disableWAL = (*dbHandle)->disableWAL;
-
-	rocksdb::WriteBatch batch;
-	batch.DeleteRange((*dbHandle)->column.get(), startSlice, endSlice);
-
-	// Per RocksDB documentation for TransactionDB, we must use Write() with optimizations
-	// to bypass the "NotSupported" status of the direct DeleteRange call.
-	rocksdb::TransactionDBWriteOptimizations write_optimizations;
-	write_optimizations.skip_concurrency_control = true;
-	write_optimizations.skip_duplicate_key_check = true;
-
-	auto* transaction_db = static_cast<rocksdb::TransactionDB*>((*dbHandle)->descriptor->db.get());
-	rocksdb::Status status = transaction_db->Write(writeOptions, write_optimizations, &batch);
+	// in order for DeleteFilesInRange to work, we have to compact all entries down to L1+ SST files
+	rocksdb::CompactRangeOptions compactRangeOptions;
+	rocksdb::Status status = (*dbHandle)->descriptor->db->CompactRange(compactRangeOptions, (*dbHandle)->column.get(), nullptr, nullptr);
 
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "DeleteRange failed")
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "RemoveRangeSync compaction failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
+	rocksdb::WaitForCompactOptions waitForCompactOptions;
+	status = (*dbHandle)->descriptor->db->WaitForCompact(waitForCompactOptions);
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "RemoveRangeSync WaitForCompact failed")
+		::napi_throw(env, error);
+		return nullptr;
+	}
+	status = rocksdb::DeleteFilesInRange((*dbHandle)->descriptor->db.get(), (*dbHandle)->column.get(), &startSlice, &endSlice);
+
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "RemoveRangeSync DeleteFilesInRange failed")
 		::napi_throw(env, error);
 		return nullptr;
 	}

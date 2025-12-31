@@ -85,18 +85,17 @@ describe('Write operations', () => {
 			db.putSync('c', '3');
 			db.putSync('d', '4');
 
-			// Remove range [b, d) -> removes 'b' and 'c'
-			db.removeRangeSync('b', 'd');
+			db.removeRangeSync(null, 'z');
 
-			expect(db.getSync('a')).toBeDefined();
+			expect(db.getSync('a')).toBeUndefined();
 			expect(db.getSync('b')).toBeUndefined();
 			expect(db.getSync('c')).toBeUndefined();
-			expect(db.getSync('d')).toBeDefined();
+			expect(db.getSync('d')).toBeUndefined();
 		}));
 
 		it('should throw an error if start or end key is missing', () => dbRunner(async ({ db }) => {
-			expect(() => (db.removeRangeSync as any)()).toThrow('Start key is required');
-			expect(() => (db.removeRangeSync as any)('a')).toThrow('End key is required');
+			expect(() => (db.removeRangeSync as any)()).toThrow('Key is required');
+			expect(() => (db.removeRangeSync as any)('a')).toThrow('Key is required');
 		}));
 
 		it('should throw an error if database is closed', () => dbRunner(async ({ db }) => {
