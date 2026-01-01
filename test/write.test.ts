@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src';
 
 describe('Write operations', () => {
 	describe('put()', () => {
@@ -75,32 +76,6 @@ describe('Write operations', () => {
 		it('should throw an error if database is closed', () => dbRunner(async ({ db }) => {
 			await db.close();
 			await expect((db.remove as any)()).rejects.toThrow('Database not open');
-		}));
-	});
-
-	describe('removeRangeSync()', () => {
-		it('should remove a range of keys', () => dbRunner(async ({ db }) => {
-			db.putSync('a', '1');
-			db.putSync('b', '2');
-			db.putSync('c', '3');
-			db.putSync('d', '4');
-
-			db.removeRangeSync(null, 'z');
-
-			expect(db.getSync('a')).toBeUndefined();
-			expect(db.getSync('b')).toBeUndefined();
-			expect(db.getSync('c')).toBeUndefined();
-			expect(db.getSync('d')).toBeUndefined();
-		}));
-
-		it('should throw an error if start or end key is missing', () => dbRunner(async ({ db }) => {
-			expect(() => (db.removeRangeSync as any)()).toThrow('Key is required');
-			expect(() => (db.removeRangeSync as any)('a')).toThrow('Key is required');
-		}));
-
-		it('should throw an error if database is closed', () => dbRunner(async ({ db }) => {
-			await db.close();
-			expect(() => (db.removeRangeSync as any)('a', 'z')).toThrow('Database not open');
 		}));
 	});
 });

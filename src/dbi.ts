@@ -527,17 +527,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
-	 * Removes a range of entries from the store based on the specified start and end keys, synchronously.
-	 *
-	 * @param {Key} start - The starting key of the range to be removed (inclusive).
-	 * @param {Key} end - The ending key of the range to be removed (exclusive).
-	 * @return {void} This method does not return a value.
-	 */
-	removeRangeSync(start: Key, end: Key): void {
-		return this.store.removeRangeSync(this.#context as NativeDatabase, start, end);
-	}
-
-	/**
 	 * Removes an event listener. You must specify the exact same callback that was
 	 * used in `addListener()`.
 	 *

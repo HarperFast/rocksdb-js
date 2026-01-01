@@ -55,15 +55,13 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Removes all entries from the RocksDB database by dropping the column family
- * and recreating it.
+ * Removes all entries from the RocksDB database by delete the column family
+ * files.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
- * await db.clear(); // default batch size of 10000
- *
- * await db.clear(1000); // batch size of 1000
+ * await db.clear();
  * ```
  */
 napi_value Database::Clear(napi_env env, napi_callback_info info) {
@@ -72,12 +70,6 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
-	uint32_t batchSize = 10000;
-	napi_valuetype batchSizeType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &batchSizeType));
-	if (batchSizeType == napi_number) {
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &batchSize));
-	}
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -87,7 +79,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 		&name
 	))
 
-	auto state = new AsyncClearState(env, *dbHandle, batchSize);
+	auto state = new AsyncClearState(env, *dbHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -101,7 +93,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during clear operation");
 			} else {
-				state->status = state->handle->clear(state->batchSize, state->deleted);
+				state->status = state->handle->clear();
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -116,9 +108,9 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 				if (state->status.ok()) {
-					napi_value result;
-					NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, state->deleted, &result))
-					state->callResolve(result);
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined))
+					state->callResolve(undefined);
 				} else {
 					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Clear failed")
 					state->callReject(error);
@@ -140,40 +132,24 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Removes all entries from the RocksDB database by dropping the column family
- * and recreating it.
+ * Removes all entries from the RocksDB database by compacting and deleting the files for the column family
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
- * db.clearSync(); // default batch size of 10000
- *
- * db.clearSync(1000); // batch size of 1000
+ * db.clearSync();
  * ```
  */
 napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_DB_HANDLE_AND_OPEN()
-
-	// get the batch size
-	uint32_t batchSize = 10000;
-	napi_valuetype batchSizeType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &batchSizeType));
-	if (batchSizeType == napi_number) {
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &batchSize));
-	}
-
-	uint64_t deleted = 0;
-	rocksdb::Status status = (*dbHandle)->clear(batchSize, deleted);
+	rocksdb::Status status = (*dbHandle)->clear();
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Clear failed to write batch")
 		::napi_throw(env, error);
 		return nullptr;
 	}
-
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_int64(env, deleted, &result))
-	return result;
+	NAPI_RETURN_UNDEFINED()
 }
 
 /**
@@ -795,44 +771,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
-/**
- * Deletes a range of keys from the RocksDB database.
- */
-napi_value Database::RemoveRangeSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_BUFFER(argv[0], startKey, "Start key is required")
-	NAPI_GET_BUFFER(argv[1], endKey, "End key is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
-
-	rocksdb::Slice startSlice(startKey + startKeyStart, startKeyEnd - startKeyStart);
-	rocksdb::Slice endSlice(endKey + endKeyStart, endKeyEnd - endKeyStart);
-	// in order for DeleteFilesInRange to work, we have to compact all entries down to L1+ SST files
-	rocksdb::CompactRangeOptions compactRangeOptions;
-	rocksdb::Status status = (*dbHandle)->descriptor->db->CompactRange(compactRangeOptions, (*dbHandle)->column.get(), nullptr, nullptr);
-
-	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "RemoveRangeSync compaction failed")
-		::napi_throw(env, error);
-		return nullptr;
-	}
-	rocksdb::WaitForCompactOptions waitForCompactOptions;
-	status = (*dbHandle)->descriptor->db->WaitForCompact(waitForCompactOptions);
-	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "RemoveRangeSync WaitForCompact failed")
-		::napi_throw(env, error);
-		return nullptr;
-	}
-	status = rocksdb::DeleteFilesInRange((*dbHandle)->descriptor->db.get(), (*dbHandle)->column.get(), &startSlice, &endSlice);
-
-	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "RemoveRangeSync DeleteFilesInRange failed")
-		::napi_throw(env, error);
-		return nullptr;
-	}
-
-	NAPI_RETURN_UNDEFINED()
-}
-
 
 /**
  * Removes a key from the RocksDB database.
@@ -1006,7 +944,6 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "removeRangeSync", nullptr, RemoveRangeSync, nullptr, nullptr, nullptr, napi_default, nullptr },
     	{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },

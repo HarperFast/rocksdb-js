@@ -55,7 +55,6 @@ struct Database final {
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
-	static napi_value RemoveRangeSync(napi_env env, napi_callback_info info);
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);
 	static napi_value UseLog(napi_env env, napi_callback_info info);
@@ -70,14 +69,11 @@ struct Database final {
 struct AsyncClearState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	AsyncClearState(
 		napi_env env,
-		std::shared_ptr<DBHandle> handle,
-		uint32_t batchSize
+		std::shared_ptr<DBHandle> handle
 	) :
-		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
-		batchSize(batchSize) {}
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle)
+	{}
 
-	uint64_t deleted;
-	uint32_t batchSize;
 };
 
 /**

@@ -49,12 +49,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * await db.clear(); // default batch size of 10000
-	 *
-	 * await db.clear(1000); // batch size of 1000
+	 * await db.clear();
 	 * ```
 	 */
-	clear(options?: { batchSize?: number }): Promise<number> {
+	clear(): Promise<void> {
 		if (!this.store.db.opened) {
 			return Promise.reject(new Error('Database not open'));
 		}
@@ -63,9 +61,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			this.store.encoder.structures = [];
 		}
 
-		const { resolve, reject, promise } = withResolvers<number>();
-		this.store.db.clear(resolve, reject, options?.batchSize);
-		return promise;
+		return new Promise((resolve, reject) => {
+			this.store.db.clear(resolve, reject);
+		});
 	}
 
 	/**
@@ -74,12 +72,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * db.clearSync(); // default batch size of 10000
-	 *
-	 * db.clearSync(1000); // batch size of 1000
+	 * db.clearSync();
 	 * ```
 	 */
-	clearSync(options?: { batchSize?: number }): number {
+	clearSync(): void {
 		if (!this.store.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -88,7 +84,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			this.store.encoder.structures = [];
 		}
 
-		return this.store.db.clearSync(options?.batchSize);
+		return this.store.db.clearSync();
 	}
 
 	/**

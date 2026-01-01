@@ -101,12 +101,11 @@ export type PurgeLogsOptions = {
 export type NativeDatabase = {
 	new(): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
-	clear(resolve: ResolveCallback<number>, reject: RejectCallback, batchSize?: number): void;
-	clearSync(batchSize?: number): number;
+	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
+	clearSync(): void;
 	close(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
-	removeRangeSync(start: BufferWithDataView, end: BufferWithDataView): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
