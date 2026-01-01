@@ -333,13 +333,15 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get")
+	UNWRAP_DB_HANDLE_AND_OPEN()
+	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer");
+	// storing in std::string so it can live through the async process
+	std::string key(keySlice.data(), keySlice.size());
 
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	return (*txnHandle)->get(env, keySlice, resolve, reject);
+	return (*txnHandle)->get(env, key, resolve, reject);
 }
 
 /**
@@ -372,13 +374,17 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
  * Retrieves a value for the given key.
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	NAPI_GET_BUFFER(argv[0], key, "Key is required")
+	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_HANDLE("GetSync")
-
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	std::string value;
-	rocksdb::Status status = (*txnHandle)->getSync(keySlice, value);
+	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer");
+	int32_t flags;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags))
+	rocksdb::PinnableSlice value;
+	rocksdb::ReadOptions readOptions;
+	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+		readOptions.read_tier = rocksdb::kBlockCacheTier;
+	}
+	rocksdb::Status status = (*txnHandle)->getSync(keySlice, value, readOptions);
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED()
@@ -390,6 +396,19 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	napi_value result;
+	if (status.IsIncomplete()) {
+		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result))
+		return result;
+	}
+	if (!(flags & ALWAYS_CREATE_BUFFER_FLAG) &&
+			(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
+			value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
+		// if it fits in the default value buffer, copy the data and just return the length
+		::memcpy((*txnHandle)->dbHandle->defaultValueBufferPtr, value.data(), value.size());
+		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result))
+		return result;
+	}
+
 	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 		env,
 		value.size(),

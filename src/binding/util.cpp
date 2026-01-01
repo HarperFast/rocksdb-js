@@ -436,6 +436,27 @@ const char* getNapiBufferFromArg(
 	return data;
 }
 
+const rocksdb::Slice getSliceFromArg(napi_env env, napi_value arg, char* defaultBuffer, const char* errorMsg) {
+	int32_t length;
+	char* data;
+	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
+	if (argStatus == ::napi_ok) {
+		data = defaultBuffer;
+	} if (argStatus == ::napi_number_expected) {
+		bool isBuffer;
+		NAPI_STATUS_THROWS(::napi_is_buffer(env, arg, &isBuffer));
+		if (!isBuffer) {
+			::napi_throw_error(env, nullptr, errorMsg);
+			return nullptr;
+		}
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, arg, reinterpret_cast<void**>(&data), reinterpret_cast<size_t*>(&length)))
+	} else {
+		NAPI_STATUS_THROWS(argStatus)
+	}
+	return rocksdb::Slice(data, length);
+
+}
+
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 	const std::filesystem::file_time_type& fileTime
 ) {

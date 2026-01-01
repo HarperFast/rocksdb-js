@@ -60,6 +60,7 @@ export function benchmark(type: string, options: any): void {
 		]);
 	}, {
 		throws: true,
+		time: 5000,
 		async setup(task, mode: 'warmup' | 'run') {
 			if (mode === 'warmup') { // the first setup, create the database
 				if (type === 'rocksdb') {
