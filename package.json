@@ -22,7 +22,7 @@
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
     "build:bundle": "node scripts/clean-dist.mjs && tsdown -c tsdown.config.ts",
-    "build:debug": "cross-env SKIP_MINIFY=1 pnpm build:bundle",
+    "build:bundle:minify": "cross-env MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts",
