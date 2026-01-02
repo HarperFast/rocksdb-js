@@ -11,7 +11,7 @@ const config: UserConfig = defineConfig({
 	],
 	entry: './src/index.ts',
 	format: ['es', 'cjs'],
-	minify: !process.env.SKIP_MINIFY,
+	minify: Boolean(process.env.MINIFY),
 	platform: 'node',
 	plugins: [
 		replace({
