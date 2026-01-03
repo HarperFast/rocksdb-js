@@ -191,16 +191,6 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 	return result;
 }
 
-struct MemoryMapHandle final {
-	std::shared_ptr<MemoryMap> memoryMap;
-	uint32_t originalSize;
-
-	~MemoryMapHandle() {
-		DEBUG_LOG("MemoryMapHandle::~MemoryMapHandle memoryMap=%p, originalSize=%u, ref count=%ld\n",
-			this->memoryMap.get(), this->originalSize, this->memoryMap.use_count())
-	}
-};
-
 /**
  * Gets the range of the transaction log.
  */
@@ -216,38 +206,22 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED()
 	}
 
-	auto* memoryMapHandle = new MemoryMapHandle{ memoryMap, memoryMap->fileSize };
+	// Create a shared_ptr on the heap that will be held until finalize is called
+	std::shared_ptr<MemoryMap>* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(
 		env,  // env
-		memoryMapHandle->originalSize, // length
-		memoryMapHandle->memoryMap->map, // data
+		memoryMap->fileSize, // length
+		memoryMap->map, // data
 		[](napi_env env, void* data, void* hint) { // finalize_cb
-			auto* memoryMapHandle = static_cast<MemoryMapHandle*>(hint);
+			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
 			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint)
-			int64_t memoryUsage;
-			// re-adjust back
-			::napi_adjust_external_memory(env, memoryMapHandle->originalSize, &memoryUsage);
-			delete memoryMapHandle;
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%lld\n", memoryUsage)
+			delete memoryMap;
 		},
 		memoryMapHandle, // finalize_hint
 		&result // [out] result
 	));
-
-	int64_t memoryUsage;
-	// We need to adjust the tracked external memory after creating the external buffer.
-	// More external memory "pressure" causes V8 to more aggressively garbage collect,
-	// and with lots of external memory, this can be detrimental to performance.
-	// And this should really *not* be counted as external memory, because it is
-	// a memory map of OS-owner memory, not process owned memory.
-	// However, I am doubtful this is really implemented effectively in V8, these external
-	// memory blocks do still seem to induce extra garbage collection. Still we call this,
-	// because that's what we are supposed to do, and maybe eventually V8 will handle it
-	// better, and hopefully it helps.
-	::napi_adjust_external_memory(env, static_cast<int64_t>(memoryMapHandle->originalSize) * -1, &memoryUsage);
-	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile originalSize=%u, external memory=%lld\n", memoryMapHandle->originalSize, memoryUsage);
 	return result;
 }
 
