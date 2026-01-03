@@ -25,7 +25,8 @@ type BenchmarkOptions<T, U> = {
 	name?: string,
 	setup?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
 	timeout?: number,
-	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>
+	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
+	mode?: 'essential' | 'full'
 };
 
 export function benchmark(type: 'rocksdb', options: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>): void;
@@ -35,12 +36,14 @@ export function benchmark(type: string, options: any): void {
 		throw new Error(`Unsupported benchmark type: ${type}`);
 	}
 
-	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb')) {
+	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
+		(process.env.BENCHMARK_MODE && process.env.BENCHMARK_MODE !== 'full' && options.mode !== process.env.BENCHMARK_MODE)) {
 		return;
 	}
 
 	const { bench, setup, teardown, dbOptions, name } = options;
-	const dbPath = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+	// it is important to run benchmarks on a real filesystem (not a tempfs)
+	const dbPath = join('benchmark', 'data', `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	let ctx: BenchmarkContext<any>;
 
 	vitestBench(name || type, () => {
@@ -65,7 +68,7 @@ export function benchmark(type: string, options: any): void {
 				if (type === 'rocksdb') {
 					ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
 				} else {
-					ctx = { db: lmdb.open({ dbPath, compression: true, ...dbOptions }), mode };
+					ctx = { db: lmdb.open({ path: dbPath, ...dbOptions }), mode };
 				}
 			}
 			if (typeof setup === 'function') {
@@ -291,7 +294,8 @@ export function workerBenchmark(type: string, options: any): void {
 		throw new Error(`Unsupported benchmark type: ${type}`);
 	}
 
-	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb')) {
+	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
+		(process.env.BENCHMARK_MODE && process.env.BENCHMARK_MODE !== 'full' && options.mode !== process.env.BENCHMARK_MODE)) {
 		return;
 	}
 
@@ -335,7 +339,7 @@ export function workerBenchmark(type: string, options: any): void {
 		throws: true,
 		async setup(_task, mode) {
 			if (mode === 'run') return;
-			const path = join(tmpdir(), `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
+			const path = join('benchmark', 'data', `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 
 			// launch all workers and wait for them to initialize
 			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
@@ -378,6 +382,7 @@ export function workerBenchmark(type: string, options: any): void {
 				});
 			}));
 		},
+		time: 2000,
 		async teardown(_task, mode) {
 			if (mode === 'warmup') return;
 			// tell all workers to teardown and wait
@@ -442,7 +447,7 @@ export async function workerInit() {
 	if (type === 'rocksdb') {
 		ctx = { db: RocksDatabase.open(path, dbOptions) };
 	} else {
-		ctx = { db: lmdb.open({ path, compression: true, ...dbOptions }) };
+		ctx = { db: lmdb.open({ path, ...dbOptions }) };
 	}
 	if (typeof setup === 'function') {
 		await setup(ctx);
