@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src';
 
 describe('Write operations', () => {
 	describe('put()', () => {

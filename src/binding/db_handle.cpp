@@ -22,60 +22,20 @@ DBHandle::~DBHandle() {
 /**
  * Clears all data in the database's column family.
  */
-rocksdb::Status DBHandle::clear(uint32_t batchSize, uint64_t& deleted) {
+rocksdb::Status DBHandle::clear() {
 	ASSERT_OPENED_AND_NOT_CANCELLED(this, "clear")
-
-	// create a write batch and iterator
-	rocksdb::WriteBatch batch;
-	std::unique_ptr<rocksdb::Iterator> it = std::unique_ptr<rocksdb::Iterator>(
-		this->descriptor->db->NewIterator(
-			rocksdb::ReadOptions(),
-			this->column.get()
-		)
-	);
-
-	DEBUG_LOG("%p DBHandle::Clear Starting clear with batch size %u\n", this, batchSize)
-
-	// iterate over the database and add each key to the write batch
-	rocksdb::Status status;
-	deleted = 0;
-	it->SeekToFirst();
-	bool valid = it->Valid();
-	while (valid) {
-		ASSERT_OPENED_AND_NOT_CANCELLED(this, "clear")
-
-		batch.Delete(it->key());
-		++deleted;
-		it->Next();
-		valid = it->Valid();
-
-		// if we've reached the end of the iterator or the batch is full, write the batch
-		if (!valid || batch.Count() >= batchSize) {
-			ASSERT_OPENED_AND_NOT_CANCELLED(this, "clear")
-			DEBUG_LOG("%p DBHandle::Clear Writing batch with %zu keys\n", this, batch.Count())
-
-			rocksdb::WriteOptions writeOptions;
-			writeOptions.disableWAL = this->disableWAL;
-
-			status = this->descriptor->db->Write(writeOptions, &batch);
-			if (!status.ok()) {
-				return status;
-			}
-
-			batch.Clear();
-		}
-	}
-
-	// Check one final time before compaction
-	ASSERT_OPENED_AND_NOT_CANCELLED(this, "clear")
-
 	// compact the database to reclaim space
-	return this->descriptor->db->CompactRange(
+	rocksdb::Status status = this->descriptor->db->CompactRange(
 		rocksdb::CompactRangeOptions(),
 		this->column.get(),
 		nullptr,
 		nullptr
 	);
+	if (!status.ok()) {
+		return status;
+	}
+	// it appears we do not need to call WaitForCompact for this to work
+	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->column.get(), nullptr, nullptr);
 }
 
 /**
