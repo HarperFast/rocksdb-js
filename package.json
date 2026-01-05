@@ -42,7 +42,7 @@
   "dependencies": {
     "@harperfast/extended-iterable": "1.0.1",
     "msgpackr": "1.11.8",
-    "ordered-binary": "1.6.0"
+    "ordered-binary": "1.6.1"
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
