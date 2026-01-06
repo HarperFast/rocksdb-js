@@ -206,9 +206,9 @@ describe('Transaction Log', () => {
 				let log2 = db.useLog('foo');
 				log._getMemoryMapOfFile(1);
 				let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now() + 1000, readUncommitted: true }));
-				// expect(queryResults2.length).toBe(1);
-				// queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
-				// expect(queryResults.length).toBe(1);
+				expect(queryResults2.length).toBe(1);
+				queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(queryResults.length).toBe(1);
 			} finally {
 				db.close();
 			}
