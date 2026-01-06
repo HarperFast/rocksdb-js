@@ -37,6 +37,8 @@ jobs:
         run: node scripts/check-versions.mjs
 
       - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         shell: bash
         run: pnpm build
 
@@ -91,6 +93,8 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build binding
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         shell: bash
         run: pnpm build
 
