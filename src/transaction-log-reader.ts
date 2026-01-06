@@ -99,7 +99,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
-					const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, readUncommitted ?? false);
+					const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, !!readUncommitted);
 					size = latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
@@ -169,7 +169,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					}
 					if (position >= size) {
 						// move to the next log file
-						const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, readUncommitted ?? false);
+						const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, !!readUncommitted);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
 							logBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
