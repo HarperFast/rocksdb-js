@@ -213,29 +213,37 @@ describe('Transaction Log', () => {
 		it('should be able to reuse a query iterator to resume reading a transaction log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db }) => {
-			let log = db.useLog('foo');
+			const log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
 			for (let i = 0; i < 10; i++) {
-				let queryIterator = log.query({});
-				let queryIterator2 = log.query({ start: 0 });
+				const queryIterator = log.query({});
+				const queryIterator2 = log.query({ start: 0 });
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 				});
-				expect(Array.from(queryIterator).length).toBe(1); // this should be starting after the last commit
-				expect(Array.from(queryIterator2).length).toBe(i * 11 + 1); // this should be starting after the last commit
+
+				let qiLength = Array.from(queryIterator).length;
+				let qi2Length = Array.from(queryIterator2).length;
+				expect(qiLength).toBe(1); // this should be starting after the last commit
+				expect(qi2Length).toBe(i * 11 + 1); // this should be starting after the last commit
+
 				let count = 0;
 				let count2 = 0;
-				let txnPromise;
-				for (let i = 0; i < 10; i++) {
-					txnPromise = db.transaction(async (txn) => {
+				for (let j = 0; j < 10; j++) {
+					const txnPromise = db.transaction(async (txn) => {
 						log.addEntry(value, txn.id);
 					});
-					count += Array.from(queryIterator).length;
-					count2 += Array.from(queryIterator2).length;
+					const qiLength = Array.from(queryIterator).length;
+					const qi2Length = Array.from(queryIterator2).length;
+					count += qiLength;
+					count2 += qi2Length;
 					await txnPromise;
 				}
-				count += Array.from(queryIterator).length;
-				count2 += Array.from(queryIterator2).length;
+
+				qiLength = Array.from(queryIterator).length;
+				qi2Length = Array.from(queryIterator2).length;
+				count += qiLength;
+				count2 += qi2Length;
 				expect(count).toBe(10);
 				expect(count2).toBe(10);
 			}
@@ -380,7 +388,7 @@ describe('Transaction Log', () => {
 			const file3Size = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4;
 
 			expect(log.getLogFileSize()).toBe(file1Size + file2Size + file3Size);
-			expect(log.getLogFileSize(0)).toBe(0);
+			expect(() => log.getLogFileSize(0)).toThrow('Expected sequence number to be a positive integer greater than 0');
 			expect(log.getLogFileSize(1)).toBe(file1Size);
 			expect(log.getLogFileSize(2)).toBe(file2Size);
 			expect(log.getLogFileSize(3)).toBe(file3Size);

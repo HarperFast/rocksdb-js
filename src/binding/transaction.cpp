@@ -254,6 +254,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 					state->callResolve();
 				} else {
+					DEBUG_LOG("%p Transaction::Commit Complete, but status is not ok!\n", state->handle.get())
+					state->handle->state = TransactionState::Pending;
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
 					state->callReject(error);
@@ -320,6 +322,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id)
 		(*txnHandle)->close();
 	} else {
+		(*txnHandle)->state = TransactionState::Pending;
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed")
 		NAPI_STATUS_THROWS(::napi_throw(env, error))

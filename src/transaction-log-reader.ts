@@ -23,7 +23,10 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
  * regardless of whether their timestamp is before or after the start
  */
 Object.defineProperty(TransactionLog.prototype, 'query', {
-	value(this: TransactionLog, { start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}): IterableIterator<TransactionEntry> {
+	value(
+		this: TransactionLog,
+		{ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}
+	): IterableIterator<TransactionEntry> {
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
@@ -32,10 +35,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}
 		end ??= Number.MAX_VALUE;
 
-		let { logId: latestLogId, size } = loadLastPosition(this, readUncommitted ?? false);
+		const transactionLog = this;
+		let { logId: latestLogId, size } = loadLastPosition(this, !!readUncommitted);
 		let logId = latestLogId;
 		let position = 0;
+		let dataView: DataView;
 		let logBuffer = this._currentLogBuffer; // try the current one first
+		let foundExactStart = false;
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -62,25 +68,23 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(this, logId);
-			if (logBuffer === undefined) {
-				// create a fake log buffer if we don't have any log buffer yet
-				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
-				logBuffer.dataView = new DataView(logBuffer.buffer);
-				logBuffer.logId = 0;
-				logBuffer.size = 0;
-			}
+
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
 			if (latestLogId === logId && !readUncommitted) {
 				this._currentLogBuffer = logBuffer;
 			}
+
+			if (logBuffer === undefined) {
+				// create a fake log buffer if we don't have any log buffer yet
+				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
+				logBuffer.logId = 0;
+				logBuffer.size = 0;
+			}
 		}
 
-		let dataView = logBuffer.dataView;
-		let foundExactStart = false;
-		const transactionLog = this;
-
+		dataView = logBuffer.dataView;
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
 			if (size === undefined) {
@@ -96,6 +100,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
 					const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, readUncommitted ?? false);
+					size = latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
