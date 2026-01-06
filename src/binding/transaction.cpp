@@ -254,7 +254,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 					state->callResolve();
 				} else {
-					DEBUG_LOG("%p Transaction::Commit Complete, but status is not ok!\n", state->handle.get())
 					state->handle->state = TransactionState::Pending;
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed")
