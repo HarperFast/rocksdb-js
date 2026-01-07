@@ -37,7 +37,7 @@ export function benchmark(type: string, options: any): void {
 	}
 
 	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
-		(process.env.BENCHMARK_MODE && process.env.BENCHMARK_MODE !== 'full' && options.mode !== process.env.BENCHMARK_MODE)) {
+		(process.env.BENCHMARK_MODE === 'essential' && options.mode !== 'essential')) {
 		return;
 	}
 
