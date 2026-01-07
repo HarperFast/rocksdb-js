@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
-console.log('start');
 describe('Database Properties', () => {
 	it('should get string property from database', () => dbRunner(async ({ db }) => {
 		// Put some data to ensure the database has stats
