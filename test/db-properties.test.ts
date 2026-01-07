@@ -9,7 +9,6 @@ describe('Database Properties', () => {
 
 		// Get level stats property
 		const levelStats = db.getDBProperty('rocksdb.levelstats');
-		console.log({levelStats});
 		expect(levelStats).toBeDefined();
 		expect(typeof levelStats).toBe('string');
 		expect(levelStats.length).toBeGreaterThan(0);
