@@ -509,7 +509,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 			try {
 				txn.abort();
-			} catch(error) {
+			} catch {
 				// ignore if abort fails
 			}
 			throw err;
