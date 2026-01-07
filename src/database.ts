@@ -3,7 +3,6 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
 import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
-import { withResolvers } from './util.js';
 import * as orderedBinary from 'ordered-binary';
 import type { Encoder, EncoderFunction, Key } from './encoding.js';
 

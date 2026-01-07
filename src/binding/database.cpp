@@ -55,8 +55,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Removes all entries from the RocksDB database by delete the column family
- * files.
+ *  Removes all entries in a RocksDB database column family using an uncapped range.
  *
  * @example
  * ```typescript
@@ -132,7 +131,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Removes all entries from the RocksDB database by compacting and deleting the files for the column family
+ *  Removes all entries in a RocksDB database column family using an uncapped range (synchronously).
  *
  * @example
  * ```typescript
