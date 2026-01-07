@@ -6,7 +6,6 @@ import {
 	type LMDBDatabase
 } from './setup.js';
 import type { RocksDatabase } from '../dist/index.mjs';
-import { threadId } from 'worker_threads';
 
 const DELETE_RATIO = 0.2;
 const NUM_KEYS = 5_000;
@@ -25,7 +24,6 @@ describe('Realistic write load with workers', () => {
 				ctx.log = log;
 			},
 			async bench({ db, log }) {
-				let id = Math.random();
 				for (let i = 0; i < ITERATIONS; i++) {
 					await db.transaction((txn) => {
 						const key = Math.floor(Math.random() * NUM_KEYS).toString();

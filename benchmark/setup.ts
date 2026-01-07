@@ -1,5 +1,4 @@
 import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
@@ -68,7 +67,7 @@ export function benchmark(type: string, options: any): void {
 				if (type === 'rocksdb') {
 					ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
 				} else {
-					ctx = { db: lmdb.open({ path: dbPath, ...dbOptions }), mode };
+					ctx = { db: lmdb.open({ path: dbPath, compression: true, ...dbOptions }), mode };
 				}
 			}
 			if (typeof setup === 'function') {
