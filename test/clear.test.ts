@@ -37,8 +37,12 @@ describe('Clear', () => {
 			// await expect(promise).rejects.toThrow('Database closed during clear operation');
 			promise.catch(() => {});// silence expected error (that might happen depending on timing)
 		}), 10_000);
-		it('should only remove entries in one column family', () => dbRunner(async ({ db, dbPath }) => {
-			const db2 = RocksDatabase.open(dbPath, { name: 'second'});
+		it('should only remove entries in one column family', () => dbRunner({
+			dbOptions: [
+				{},
+				{ name: 'second' }
+			]
+		}, async ({ db }, { db: db2 }) => {
 			for (let i = 0; i < 10; i++) {
 				db.putSync(i, i);
 				db2.putSync(i, i);
