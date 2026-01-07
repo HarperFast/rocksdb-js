@@ -216,6 +216,13 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 	auto memoryMap = this->getMemoryMap(mapSize);
 
+	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
+	// to indicate the timestamp comes after this logfile
+	if (!memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this)
+		return 0xFFFFFFFF;
+	}
+
 	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;
 	// We begin by indexing the file, so we can use fast ordered std::map access O(log n). We only need to index the file

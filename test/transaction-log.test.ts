@@ -192,42 +192,46 @@ describe('Transaction Log', () => {
 		}));
 
 		it('should query a transaction log after re-opening database', () => dbRunner(async ({ db, dbPath }) => {
-			let log = db.useLog('foo');
-			const value = Buffer.alloc(10, 'a');
-			const startTime = Date.now() - 1000;
-			await db.transaction(async (txn) => {
-				log.addEntry(value, txn.id);
-			});
-			let queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
-			expect(queryResults.length).toBe(1);
-			db.close();
-			db = RocksDatabase.open(dbPath);
-			let log2 = db.useLog('foo');
-			log._getMemoryMapOfFile(1);
-			let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now() + 1000, readUncommitted: true }));
-			expect(queryResults2.length).toBe(1);
-			queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
-			expect(queryResults.length).toBe(1);
+			try {
+				let log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const startTime = Date.now() - 1000;
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+				let queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(queryResults.length).toBe(1);
+				db.close();
+				db = RocksDatabase.open(dbPath);
+				let log2 = db.useLog('foo');
+				log._getMemoryMapOfFile(1);
+				let queryResults2 = Array.from(log2.query({ start: startTime, end: Date.now() + 1000, readUncommitted: true }));
+				expect(queryResults2.length).toBe(1);
+				queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(queryResults.length).toBe(1);
+			} finally {
+				db.close();
+			}
 		}));
 
 		it('should be able to reuse a query iterator to resume reading a transaction log', () => dbRunner({
 			dbOptions: [{ transactionLogMaxSize: 1000 }],
 		}, async ({ db }) => {
-			let log = db.useLog('foo');
+			const log = db.useLog('foo');
 			const value = Buffer.alloc(100, 'a');
 			for (let i = 0; i < 10; i++) {
-				let queryIterator = log.query({});
-				let queryIterator2 = log.query({ start: 0 });
+				const queryIterator = log.query({});
+				const queryIterator2 = log.query({ start: 0 });
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 				});
 				expect(Array.from(queryIterator).length).toBe(1); // this should be starting after the last commit
 				expect(Array.from(queryIterator2).length).toBe(i * 11 + 1); // this should be starting after the last commit
+
 				let count = 0;
 				let count2 = 0;
-				let txnPromise;
-				for (let i = 0; i < 10; i++) {
-					txnPromise = db.transaction(async (txn) => {
+				for (let j = 0; j < 10; j++) {
+					const txnPromise = db.transaction(async (txn) => {
 						log.addEntry(value, txn.id);
 					});
 					count += Array.from(queryIterator).length;
@@ -380,6 +384,7 @@ describe('Transaction Log', () => {
 			const file3Size = TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4;
 
 			expect(log.getLogFileSize()).toBe(file1Size + file2Size + file3Size);
+			expect(() => log.getLogFileSize(0)).toThrow('Expected sequence number to be a positive integer greater than 0');
 			expect(log.getLogFileSize(1)).toBe(file1Size);
 			expect(log.getLogFileSize(2)).toBe(file2Size);
 			expect(log.getLogFileSize(3)).toBe(file3Size);
@@ -900,6 +905,7 @@ describe('Transaction Log', () => {
 			expect(existsSync(logFile)).toBe(false);
 		}));
 	});
+
 	describe('flushSync()', () => {
 		it('should increase the latest flushed position after flushSync calls', () => dbRunner({
 			dbOptions: [ { name: 'data1' }, { name: 'data2' } ]
@@ -934,6 +940,7 @@ describe('Transaction Log', () => {
 			expect(queryResults.length).toBe(1);
 		}));
 	});
+
 	describe('flush()', () => {
 		it('should increase the latest flushed position after flush calls', () => dbRunner(async ({ db, dbPath }) => {
 			const log = db.useLog('foo');

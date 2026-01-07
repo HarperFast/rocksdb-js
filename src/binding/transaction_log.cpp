@@ -206,8 +206,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED()
 	}
 
-	// Create a shared_ptr on the heap that will be held until finalize is called
-	std::shared_ptr<MemoryMap>* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
+	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(
@@ -215,13 +214,14 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		memoryMap->fileSize, // length
 		memoryMap->map, // data
 		[](napi_env env, void* data, void* hint) { // finalize_cb
-			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
 			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint)
+			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
 			delete memoryMap;
 		},
 		memoryMapHandle, // finalize_hint
 		&result // [out] result
 	));
+
 	return result;
 }
 

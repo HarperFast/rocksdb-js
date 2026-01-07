@@ -197,6 +197,14 @@ void TransactionLogFile::openFile() {
 }
 
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
+	// Different runtimes handle this differently - Node.js/Bun tolerate it,
+	// but Deno stalls. Return nullptr for empty files.
+	if (fileSize == 0) {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		return nullptr;
+	}
+
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			// existing memory map will work
