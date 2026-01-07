@@ -17,6 +17,15 @@ on:
       - 'LICENSE'
       - '.gitignore'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Do you want to run the full or essential benchmark suite?'
+        default: 'full'
+        required: false
+        type: choice
+        options:
+          - 'full'
+          - 'essential'
 
 concurrency:
   cancel-in-progress: true
@@ -66,6 +75,8 @@ jobs:
         run: pnpm build
 
       - name: Run benchmarks
+        env:
+          BENCHMARK_MODE: ${{ github.event.inputs.mode || 'essential' }}
         run: pnpm bench
 
       - name: Upload benchmark results as artifact
@@ -136,13 +147,12 @@ jobs:
                 comment += '_No benchmark files found_\n';
               } else {
                 for (const file of results.files) {
-                  const filename = file.filepath.split('/').pop();
-                  comment += `### ${filename}\n\n`;
-
                   if (!file.groups || file.groups.length === 0) {
-                    comment += '_No benchmark groups found_\n\n';
                     continue;
                   }
+
+                  const filename = file.filepath.split('/').pop();
+                  comment += `### ${filename}\n\n`;
 
                   for (const group of file.groups) {
                     // Extract test name from fullName (remove file path prefix)
