@@ -118,6 +118,10 @@ describe('Database Properties', () => {
 
 	it('should throw error for invalid string property', () => dbRunner(async ({ db }) => {
 		expect(() => {
+			db.getDBProperty(undefined as any);
+		}).toThrow('Property name is required');
+
+		expect(() => {
 			db.getDBProperty('invalid.property.name.that.does.not.exist');
 		}).toThrow('Failed to get database property');
 	}));
