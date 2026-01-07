@@ -944,7 +944,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
-    	{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
