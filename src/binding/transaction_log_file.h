@@ -219,6 +219,8 @@ struct MemoryMap final {
 	 **/
 	uint32_t fileSize = 0;
 
+	std::atomic<uint32_t> refCount{0};
+
 	MemoryMap(void* map, uint32_t mapSize)
 		: map(map), mapSize(mapSize), fileSize(mapSize) {}
 

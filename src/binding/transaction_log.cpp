@@ -224,30 +224,35 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		memoryMapHandle->originalSize, // length
 		memoryMapHandle->memoryMap->map, // data
 		[](napi_env env, void* data, void* hint) { // finalize_cb
-			auto* memoryMapHandle = static_cast<MemoryMapHandle*>(hint);
 			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint)
-			int64_t memoryUsage;
-			// re-adjust back
-			::napi_adjust_external_memory(env, memoryMapHandle->originalSize, &memoryUsage);
+			auto* memoryMapHandle = static_cast<MemoryMapHandle*>(hint);
+			auto refCount = --memoryMapHandle->memoryMap->refCount;
+			if (refCount == 0) {
+				int64_t memoryUsage;
+				::napi_adjust_external_memory(env, static_cast<int64_t>(memoryMapHandle->originalSize) * -1, &memoryUsage);
+				DEBUG_LOG("TransactionLog::GetMemoryMapOfFile Adjusting external memory by %lld, originalSize=%u, external memory=%lld\n", static_cast<int64_t>(memoryMapHandle->originalSize) * -1, memoryMapHandle->originalSize, memoryUsage);
+			}
 			delete memoryMapHandle;
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile cleanup external memory=%lld\n", memoryUsage)
 		},
 		memoryMapHandle, // finalize_hint
 		&result // [out] result
 	));
 
-	int64_t memoryUsage;
-	// We need to adjust the tracked external memory after creating the external buffer.
-	// More external memory "pressure" causes V8 to more aggressively garbage collect,
-	// and with lots of external memory, this can be detrimental to performance.
-	// And this should really *not* be counted as external memory, because it is
-	// a memory map of OS-owner memory, not process owned memory.
-	// However, I am doubtful this is really implemented effectively in V8, these external
-	// memory blocks do still seem to induce extra garbage collection. Still we call this,
-	// because that's what we are supposed to do, and maybe eventually V8 will handle it
-	// better, and hopefully it helps.
-	::napi_adjust_external_memory(env, static_cast<int64_t>(memoryMapHandle->originalSize) * -1, &memoryUsage);
-	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile originalSize=%u, external memory=%lld\n", memoryMapHandle->originalSize, memoryUsage);
+	auto refCount = ++memoryMap->refCount;
+	if (refCount == 1) {
+		int64_t memoryUsage;
+		// We need to adjust the tracked external memory after creating the external buffer.
+		// More external memory "pressure" causes V8 to more aggressively garbage collect,
+		// and with lots of external memory, this can be detrimental to performance.
+		// And this should really *not* be counted as external memory, because it is
+		// a memory map of OS-owner memory, not process owned memory.
+		// However, I am doubtful this is really implemented effectively in V8, these external
+		// memory blocks do still seem to induce extra garbage collection. Still we call this,
+		// because that's what we are supposed to do, and maybe eventually V8 will handle it
+		// better, and hopefully it helps.
+		::napi_adjust_external_memory(env, static_cast<int64_t>(memoryMapHandle->originalSize), &memoryUsage);
+		DEBUG_LOG("TransactionLog::GetMemoryMapOfFile Adjusting external memory by %lld, originalSize=%u, external memory=%lld\n", static_cast<int64_t>(memoryMapHandle->originalSize), memoryMapHandle->originalSize, memoryUsage);
+	}
 	return result;
 }
 

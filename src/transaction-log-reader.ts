@@ -81,10 +81,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
 				logBuffer.logId = 0;
 				logBuffer.size = 0;
+				logBuffer.dataView = new DataView(logBuffer.buffer);
 			}
 		}
 
 		dataView = logBuffer.dataView;
+
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
 			if (size === undefined) {
