@@ -1,5 +1,5 @@
 import { when, withResolvers, type MaybePromise } from './util.js';
-import type { NativeDatabase, NativeTransaction, TransactionLog } from './load-binding.js';
+import type { NativeTransaction, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
