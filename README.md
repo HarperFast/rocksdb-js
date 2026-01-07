@@ -231,6 +231,26 @@ await promise;
 console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
 ```
 
+### `db.getDBProperty(propertyName: string): string`
+Gets a RocksDB database property as a string.
+- `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.levelstats'`.
+```typescript
+const db = RocksDatabase.open('/path/to/database');
+const levelStats = db.getDBProperty('rocksdb.levelstats');
+const stats = db.getDBProperty('rocksdb.stats');
+```
+
+
+### `db.getDBIntProperty(propertyName: string): number`
+Gets a RocksDB database property as an integer.
+- `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.num-blob-files'`.
+```typescript
+const db = RocksDatabase.open('/path/to/database');
+const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
+const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
+```
+
+
 ### `db.getRange(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves a range of keys and their values. Supports both synchronous and
