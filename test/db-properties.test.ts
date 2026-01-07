@@ -128,6 +128,10 @@ describe('Database Properties', () => {
 
 	it('should throw error for invalid integer property', () => dbRunner(async ({ db }) => {
 		expect(() => {
+			db.getDBIntProperty(undefined as any);
+		}).toThrow('Property name is required');
+		
+		expect(() => {
 			db.getDBIntProperty('invalid.property.name.that.does.not.exist');
 		}).toThrow('Failed to get database integer property');
 	}));
