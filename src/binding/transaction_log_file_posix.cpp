@@ -107,6 +107,14 @@ void TransactionLogFile::openFile() {
 }
 
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+	// mmap with length 0 has undefined behavior according to POSIX.
+	// Different runtimes handle this differently - Node.js/Bun tolerate it,
+	// but Deno stalls. Return nullptr for empty or too-small files.
+	if (fileSize == 0) {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		return nullptr;
+	}
+
 	if (!this->memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);

@@ -2,8 +2,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
-import { rm } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export function generateDBPath(): string {
@@ -82,6 +81,8 @@ export async function dbRunner(
 			}
 			databases.push({ db, dbPath: path });
 		}
+
+		await testFn(...databases);
 	} finally {
 		for (const { db } of databases.reverse()) {
 			db?.close();
@@ -90,14 +91,12 @@ export async function dbRunner(
 		if (globalThis.gc) {
 			globalThis.gc();
 			await delay(100);
-			globalThis.gc();
-			await delay(100);
 		}
 
 		if (!process.env.KEEP_FILES) {
 			for (const dbPath of dbPaths) {
 				try {
-					await rm(dbPath, { force: true, recursive: true, maxRetries: 10, retryDelay: 250 });
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 2, retryDelay: 250 });
 				} catch (err) {
 					console.error(`Error removing database: ${dbPath}: ${err}`);
 				}
