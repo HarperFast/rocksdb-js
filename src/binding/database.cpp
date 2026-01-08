@@ -55,15 +55,12 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Removes all entries from the RocksDB database by dropping the column family
- * and recreating it.
+ *  Removes all entries in a RocksDB database column family using an uncapped range.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
- * await db.clear(); // default batch size of 10000
- *
- * await db.clear(1000); // batch size of 1000
+ * await db.clear();
  * ```
  */
 napi_value Database::Clear(napi_env env, napi_callback_info info) {
@@ -72,12 +69,6 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
-	uint32_t batchSize = 10000;
-	napi_valuetype batchSizeType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &batchSizeType));
-	if (batchSizeType == napi_number) {
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &batchSize));
-	}
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -87,7 +78,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 		&name
 	))
 
-	auto state = new AsyncClearState(env, *dbHandle, batchSize);
+	auto state = new AsyncClearState(env, *dbHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
 
@@ -101,7 +92,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during clear operation");
 			} else {
-				state->status = state->handle->clear(state->batchSize, state->deleted);
+				state->status = state->handle->clear();
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -116,9 +107,9 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
 
 				if (state->status.ok()) {
-					napi_value result;
-					NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, state->deleted, &result))
-					state->callResolve(result);
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined))
+					state->callResolve(undefined);
 				} else {
 					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Clear failed")
 					state->callReject(error);
@@ -140,40 +131,24 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Removes all entries from the RocksDB database by dropping the column family
- * and recreating it.
+ *  Removes all entries in a RocksDB database column family using an uncapped range (synchronously).
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
- * db.clearSync(); // default batch size of 10000
- *
- * db.clearSync(1000); // batch size of 1000
+ * db.clearSync();
  * ```
  */
 napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_DB_HANDLE_AND_OPEN()
-
-	// get the batch size
-	uint32_t batchSize = 10000;
-	napi_valuetype batchSizeType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &batchSizeType));
-	if (batchSizeType == napi_number) {
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &batchSize));
-	}
-
-	uint64_t deleted = 0;
-	rocksdb::Status status = (*dbHandle)->clear(batchSize, deleted);
+	rocksdb::Status status = (*dbHandle)->clear();
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Clear failed to write batch")
 		::napi_throw(env, error);
 		return nullptr;
 	}
-
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_int64(env, deleted, &result))
-	return result;
+	NAPI_RETURN_UNDEFINED()
 }
 
 /**
@@ -485,6 +460,75 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, timestamp, &result))
+	return result;
+}
+
+/**
+ * Gets a RocksDB database property as a string.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const levelStats = db.getDBProperty('rocksdb.levelstats');
+ * ```
+ */
+napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	NAPI_GET_STRING(argv[0], propertyName, "Property name is required")
+
+	std::string value;
+	bool success = (*dbHandle)->descriptor->db->GetProperty(
+		(*dbHandle)->column.get(),
+		propertyName,
+		&value
+	);
+
+	if (!success) {
+		::napi_throw_error(env, nullptr, "Failed to get database property");
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		value.c_str(),
+		value.length(),
+		&result
+	))
+	return result;
+}
+
+/**
+ * Gets a RocksDB database property as an integer.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
+ * ```
+ */
+napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	NAPI_GET_STRING(argv[0], propertyName, "Property name is required")
+
+	uint64_t value = 0;
+	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
+		(*dbHandle)->column.get(),
+		propertyName,
+		&value
+	);
+
+	if (!success) {
+		::napi_throw_error(env, nullptr, "Failed to get database integer property");
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, value, &result))
 	return result;
 }
 
@@ -854,6 +898,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED()
 }
 
+
 /**
  * Removes a key from the RocksDB database.
  */
@@ -1030,6 +1075,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },

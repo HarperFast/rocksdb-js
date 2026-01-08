@@ -1,4 +1,5 @@
 benchmark-results.json
+benchmark/data
 build
 /coverage
 deps

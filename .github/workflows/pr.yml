@@ -70,6 +70,8 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
       - name: Run tests on Node.js ${{ matrix.node }}
@@ -103,6 +105,8 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
       - name: Run tests on Bun
@@ -136,6 +140,8 @@ jobs:
           gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
       - name: Run tests on Deno

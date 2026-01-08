@@ -12,6 +12,7 @@ describe('Transaction log with workers', () => {
 
 	describe('write log with 100 byte records', () => {
 		benchmark('rocksdb', concurrent({
+			mode: 'essential',
 			numWorkers: 4,
 			async setup(ctx: BenchmarkContext<RocksDatabase>) {
 				const db = ctx.db;
@@ -26,6 +27,7 @@ describe('Transaction log with workers', () => {
 		}));
 
 		benchmark('lmdb', concurrent({
+			mode: 'essential',
 			numWorkers: 4,
 			async setup(ctx: BenchmarkContext<LMDBDatabase>) {
 				let start = Date.now();

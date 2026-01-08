@@ -81,6 +81,7 @@ export async function dbRunner(
 			}
 			databases.push({ db, dbPath: path });
 		}
+
 		await testFn(...databases);
 	} finally {
 		for (const { db } of databases.reverse()) {

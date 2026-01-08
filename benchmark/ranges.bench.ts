@@ -23,6 +23,7 @@ function setupRangeTestData(ctx: any, datasetSize: number) {
 describe('getRange()', () => {
 	describe('small range (100 records, 50 range)', () => {
 		benchmark('rocksdb', {
+			mode: 'essential',
 			setup(ctx) {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
@@ -32,6 +33,7 @@ describe('getRange()', () => {
 		});
 
 		benchmark('lmdb', {
+			mode: 'essential',
 			setup(ctx) {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},

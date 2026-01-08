@@ -19,6 +19,7 @@ describe('getSync()', () => {
 		}
 
 		benchmark('rocksdb', {
+			mode: 'essential',
 			setup,
 			bench({ data, db }) {
 				for (const key of data) {
@@ -28,6 +29,7 @@ describe('getSync()', () => {
 		});
 
 		benchmark('lmdb', {
+			mode: 'essential',
 			setup,
 			bench({ data, db }) {
 				for (const key of data) {
@@ -46,6 +48,7 @@ describe('getSync()', () => {
 		}
 
 		benchmark('rocksdb', {
+			mode: 'essential',
 			setup,
 			bench({ data, db }) {
 				for (const key of data) {
@@ -55,6 +58,7 @@ describe('getSync()', () => {
 		});
 
 		benchmark('lmdb', {
+			mode: 'essential',
 			setup,
 			bench({ data, db }) {
 				for (const key of data) {

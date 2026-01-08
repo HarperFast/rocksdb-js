@@ -3,7 +3,6 @@ import { DBI, type DBITransactional } from './dbi.js';
 import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions, KEY_BUFFER, VALUE_BUFFER } from './store.js';
 import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
-import { withResolvers } from './util.js';
 import * as orderedBinary from 'ordered-binary';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 
@@ -49,12 +48,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * await db.clear(); // default batch size of 10000
-	 *
-	 * await db.clear(1000); // batch size of 1000
+	 * await db.clear();
 	 * ```
 	 */
-	clear(options?: { batchSize?: number }): Promise<number> {
+	clear(): Promise<void> {
 		if (!this.store.db.opened) {
 			return Promise.reject(new Error('Database not open'));
 		}
@@ -63,9 +60,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			this.store.encoder.structures = [];
 		}
 
-		const { resolve, reject, promise } = withResolvers<number>();
-		this.store.db.clear(resolve, reject, options?.batchSize);
-		return promise;
+		return new Promise((resolve, reject) => {
+			this.store.db.clear(resolve, reject);
+		});
 	}
 
 	/**
@@ -74,12 +71,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * db.clearSync(); // default batch size of 10000
-	 *
-	 * db.clearSync(1000); // batch size of 1000
+	 * db.clearSync();
 	 * ```
 	 */
-	clearSync(options?: { batchSize?: number }): number {
+	clearSync(): void {
 		if (!this.store.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -88,7 +83,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			this.store.encoder.structures = [];
 		}
 
-		return this.store.db.clearSync(options?.batchSize);
+		return this.store.db.clearSync();
 	}
 
 	/**
@@ -152,6 +147,40 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	getOldestSnapshotTimestamp(): number {
 		return this.store.db.getOldestSnapshotTimestamp();
+	}
+
+	/**
+	 * Gets a RocksDB database property as a string.
+	 *
+	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.levelstats').
+	 * @returns The property value as a string.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const levelStats = db.getDBProperty('rocksdb.levelstats');
+	 * const stats = db.getDBProperty('rocksdb.stats');
+	 * ```
+	 */
+	getDBProperty(propertyName: string): string {
+		return this.store.db.getDBProperty(propertyName);
+	}
+
+	/**
+	 * Gets a RocksDB database property as an integer.
+	 *
+	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.num-blob-files').
+	 * @returns The property value as a number.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
+	 * const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
+	 * ```
+	 */
+	getDBIntProperty(propertyName: string): number {
+		return this.store.db.getDBIntProperty(propertyName);
 	}
 
 	/**
@@ -510,7 +539,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
 				return undefined as T;
 			}
-			txn.abort();
+			try {
+				txn.abort();
+			} catch {
+				// ignore if abort fails
+			}
 			throw err;
 		}
 	}

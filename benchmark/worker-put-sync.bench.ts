@@ -59,6 +59,7 @@ describe('putSync()', () => {
 
 	describe('random keys - small key size (100 records, 10 workers)', () => {
 		benchmark('rocksdb', {
+			mode: 'essential',
 			numWorkers: 10,
 			setup(ctx) {
 				ctx.data = generateRandomKeys(SMALL_DATASET);
@@ -71,6 +72,7 @@ describe('putSync()', () => {
 		});
 
 		benchmark('lmdb', {
+			mode: 'essential',
 			numWorkers: 10,
 			setup(ctx) {
 				ctx.data = generateRandomKeys(SMALL_DATASET);
