@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest';
 import { expect } from 'vitest';
 import { dbRunner } from './lib/util.js';
-import { BufferWithDataView } from '../src/encoding';
+import type { BufferWithDataView } from '../src/encoding';
 
 describe('Encoder', () => {
 	class CustomEncoder {
