@@ -442,7 +442,7 @@ const rocksdb::Slice getSliceFromArg(napi_env env, napi_value arg, char* default
 	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
 	if (argStatus == ::napi_ok) {
 		data = defaultBuffer;
-	} if (argStatus == ::napi_number_expected) {
+	} else if (argStatus == ::napi_number_expected) {
 		bool isBuffer;
 		NAPI_STATUS_THROWS(::napi_is_buffer(env, arg, &isBuffer));
 		if (!isBuffer) {
