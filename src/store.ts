@@ -400,6 +400,23 @@ export class Store {
 		return context.getCount(options, this.getTxnId(options));
 	}
 
+	getApproximateCount(context: NativeDatabase, options?: RangeOptions): number {
+		let startBuffer: Buffer | undefined;
+		let endBuffer: Buffer | undefined;
+
+		if (options?.start !== undefined) {
+			const start = this.encodeKey(options.start);
+			startBuffer = Buffer.from(start.subarray(start.start, start.end));
+		}
+
+		if (options?.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			endBuffer = Buffer.from(end.subarray(end.start, end.end));
+		}
+
+		return context.getApproximateCount(startBuffer, endBuffer);
+	}
+
 	getRange(
 		context: NativeDatabase | NativeTransaction,
 		options?: IteratorOptions & DBITransactional
