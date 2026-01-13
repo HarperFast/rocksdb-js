@@ -284,6 +284,7 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): number;
+	getApproximateCount(startKey?: Buffer, endKey?: Buffer): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
