@@ -463,7 +463,7 @@ export class Store {
 		alwaysCreateNewBuffer: boolean = false,
 		options?: GetOptions & DBITransactional
 	): any | undefined {
-		let keyParam = getKeyParam(this.encodeKey(key));
+		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
 		if (alwaysCreateNewBuffer) {
 			flags |= ALWAYS_CREATE_BUFFER_FLAG;
