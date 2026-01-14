@@ -469,7 +469,7 @@ export class Store {
 			flags |= ALWAYS_CREATE_BUFFER_FLAG;
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
-		let result = context.getSync(
+		const result = context.getSync(
 			keyParam,
 			flags,
 			this.getTxnId(options)
