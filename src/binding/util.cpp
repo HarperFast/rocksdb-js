@@ -441,8 +441,10 @@ const rocksdb::Slice getSliceFromArg(napi_env env, napi_value arg, char* default
 	char* data;
 	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
 	if (argStatus == ::napi_ok) {
+		// utilize the default shared buffer, if we have a number as a length
 		data = defaultBuffer;
 	} else if (argStatus == ::napi_number_expected) {
+		// otherwise, see if we can accept a buffer
 		bool isBuffer;
 		NAPI_STATUS_THROWS(::napi_is_buffer(env, arg, &isBuffer));
 		if (!isBuffer) {

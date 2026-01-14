@@ -268,12 +268,21 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Gets a value from the RocksDB database.
+ * Asynchronously gets a value from the RocksDB database. The first argument, that specifies the key, can be a buffer or a number
+ * indicating the length of the key that was written to the shared buffer.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
  * const value = await db.get('foo');
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const b = Buffer.alloc(1024);
+ * db.setDefaultKeyBuffer(b);
+ * b.utf8Write('foo');
+ * const value = await db.get(3);
  * ```
  *
  * @example
@@ -533,19 +542,28 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Gets a value from the RocksDB database.
+ * Synchronously gets a value from the RocksDB database. The first argument, that specifies the key, can be a buffer or a number
+ * indicating the length of the key that was written to the shared buffer.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
- * const value = await db.get('foo');
+ * const value = db.getSync('foo');
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const b = Buffer.alloc(1024);
+ * db.setDefaultKeyBuffer(b);
+ * b.utf8Write('foo');
+ * const value = db.getSync(3);
  * ```
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
  * const txnId = 123;
- * const value = await db.get('foo', txnId);
+ * const value = db.getSync('foo', txnId);
  * ```
  */
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
@@ -603,7 +621,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	if (!(flags & ALWAYS_CREATE_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
+	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
 			(*dbHandle)->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*dbHandle)->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length
@@ -635,7 +653,7 @@ napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_DB_HANDLE()
 
-	if (argv[0] == nullptr) {
+	if (argc == 0) {
 		(*dbHandle)->defaultValueBufferPtr = nullptr;
 		(*dbHandle)->defaultValueBufferLength = 0;
 		NAPI_RETURN_UNDEFINED()

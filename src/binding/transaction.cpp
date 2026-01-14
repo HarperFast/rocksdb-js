@@ -331,7 +331,24 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Retrieves a value for the given key.
+ * Asynchronously gets a value through the transaction. The first argument, that specifies the key, can be a buffer or a number
+ * indicating the length of the key that was written to the shared buffer.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const txn = new NativeTransaction(db);
+ * const value = await txn.get('foo');
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const txn = new NativeTransaction(db);
+ * const b = Buffer.alloc(1024);
+ * db.setDefaultKeyBuffer(b);
+ * b.utf8Write('foo');
+ * const value = await txn.get(3);
+ * ```
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
@@ -373,7 +390,24 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Retrieves a value for the given key.
+ * Synchronously gets a value through the transaction. The first argument, that specifies the key, can be a buffer or a number
+ * indicating the length of the key that was written to the shared buffer.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const txn = new NativeTransaction(db);
+ * const value = txn.getSync('foo');
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const txn = new NativeTransaction(db);
+ * const b = Buffer.alloc(1024);
+ * db.setDefaultKeyBuffer(b);
+ * b.utf8Write('foo');
+ * const value = txn.getSync(3);
+ * ```
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
@@ -402,7 +436,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result))
 		return result;
 	}
-	if (!(flags & ALWAYS_CREATE_BUFFER_FLAG) &&
+	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&
 			(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length

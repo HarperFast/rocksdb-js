@@ -23,7 +23,7 @@ import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
-const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_BUFFER_FLAG } = constants;
+const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } = constants;
 const KEY_BUFFER_SIZE = 4096;
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
 const KEY_BUFFER_ARRAY_BUFFER = KEY_BUFFER.buffer;
@@ -383,7 +383,7 @@ export class Store {
 		let keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
 		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
-			flags |= ALWAYS_CREATE_BUFFER_FLAG;
+			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		let result = context.getSync(
@@ -466,7 +466,7 @@ export class Store {
 		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
 		if (alwaysCreateNewBuffer) {
-			flags |= ALWAYS_CREATE_BUFFER_FLAG;
+			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
 		const result = context.getSync(

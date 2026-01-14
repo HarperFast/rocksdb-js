@@ -12,7 +12,7 @@ namespace rocksdb_js {
 
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
-#define ALWAYS_CREATE_BUFFER_FLAG 0x20000000
+#define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
 
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
