@@ -46,11 +46,11 @@
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "25.0.7",
+    "@types/node": "25.0.8",
     "@vitest/coverage-v8": "4.0.17",
     "cross-env": "10.1.0",
     "dotenv": "17.2.3",
-    "lefthook": "2.0.14",
+    "lefthook": "2.0.15",
     "lmdb": "3.4.4",
     "node-gyp": "12.1.0",
     "oxlint": "1.39.0",
