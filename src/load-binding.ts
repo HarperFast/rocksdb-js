@@ -108,6 +108,7 @@ export type NativeDatabase = {
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	getApproximateCount(startKey?: Buffer, endKey?: Buffer): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number;
 	getDBProperty(propertyName: string): string;

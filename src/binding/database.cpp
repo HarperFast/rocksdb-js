@@ -148,6 +148,9 @@ napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
 		::napi_throw(env, error);
 		return nullptr;
 	}
+	// Clear the cached mean entry size since all data has been removed
+	(*dbHandle)->descriptor->cachedMeanEntrySize.store(-1.0);
+	(*dbHandle)->descriptor->writesSinceLastCache.store(0);
 	NAPI_RETURN_UNDEFINED()
 }
 
@@ -433,6 +436,173 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	}
 
 	DEBUG_LOG("%p Database::GetCount count=%llu\n", dbHandle->get(), count)
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result))
+	return result;
+}
+
+/**
+ * Gets the approximate number of keys within a range using RocksDB size approximation.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const total = db.getApproximateCount(startBuffer, endBuffer);
+ * ```
+ */
+napi_value Database::GetApproximateCount(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2)
+	UNWRAP_DB_HANDLE_AND_OPEN()
+
+	uint64_t count = 0;
+
+	// Check if start key is provided
+	napi_valuetype startType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &startType));
+	bool hasStartKey = (startType != napi_undefined && startType != napi_null);
+
+	// Check if end key is provided
+	napi_valuetype endType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &endType));
+	bool hasEndKey = (endType != napi_undefined && endType != napi_null);
+
+	// If no range is specified, fall back to GetIntProperty for total estimate
+	if (!hasStartKey && !hasEndKey) {
+		(*dbHandle)->descriptor->db->GetIntProperty(
+			(*dbHandle)->column.get(),
+			"rocksdb.estimate-num-keys",
+			&count
+		);
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result))
+		return result;
+	}
+
+	// Get start and end key buffers
+	char* startKey = nullptr;
+	size_t startKeyLength = 0;
+	char* endKey = nullptr;
+	size_t endKeyLength = 0;
+
+	if (hasStartKey) {
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&startKey), &startKeyLength));
+	}
+
+	if (hasEndKey) {
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&endKey), &endKeyLength));
+	}
+
+	// Calculate or retrieve cached mean entry size using table properties
+	double meanSize = (*dbHandle)->descriptor->cachedMeanEntrySize.load();
+	if (meanSize < 0) {
+		// Calculate mean size from table properties for better accuracy
+		rocksdb::TablePropertiesCollection props;
+		rocksdb::Status propStatus = (*dbHandle)->descriptor->db->GetPropertiesOfAllTables(
+			(*dbHandle)->column.get(),
+			&props
+		);
+
+		uint64_t totalEntries = 0;
+		uint64_t totalSize = 0;
+
+		if (propStatus.ok() && !props.empty()) {
+			// Use actual table properties for accurate mean size
+			for (const auto& prop : props) {
+				totalEntries += prop.second->num_entries;
+				totalSize += prop.second->data_size;
+			}
+
+			if (totalEntries > 0) {
+				meanSize = static_cast<double>(totalSize) / static_cast<double>(totalEntries);
+				(*dbHandle)->descriptor->cachedMeanEntrySize.store(meanSize);
+				(*dbHandle)->descriptor->writesSinceLastCache.store(0);
+			}
+		}
+
+		// Fall back to simple estimate if table properties unavailable
+		if (meanSize < 0) {
+			uint64_t tableSize = 0;
+			uint64_t memtableSize = 0;
+			uint64_t totalKeys = 0;
+			bool sizeSuccess = (*dbHandle)->descriptor->db->GetIntProperty(
+				(*dbHandle)->column.get(),
+				rocksdb::DB::Properties::kLiveSstFilesSize,
+				&tableSize
+			);
+			sizeSuccess = (*dbHandle)->descriptor->db->GetIntProperty(
+				(*dbHandle)->column.get(),
+				rocksdb::DB::Properties::kCurSizeAllMemTables,
+				&memtableSize
+			);
+			tableSize += memtableSize;
+			bool keysSuccess = (*dbHandle)->descriptor->db->GetIntProperty(
+				(*dbHandle)->column.get(),
+				rocksdb::DB::Properties::kEstimateNumKeys,
+				&totalKeys
+			);
+
+			if (sizeSuccess && keysSuccess && totalKeys > 0) {
+				meanSize = static_cast<double>(tableSize) / static_cast<double>(totalKeys);
+				(*dbHandle)->descriptor->cachedMeanEntrySize.store(meanSize);
+				(*dbHandle)->descriptor->writesSinceLastCache.store(0);
+			} else {
+				// Fall back to iteration if we can't calculate mean size
+				DBIteratorOptions itOptions;
+				if (hasStartKey) {
+					itOptions.startKeyStr = startKey;
+					itOptions.startKeyStart = 0;
+					itOptions.startKeyEnd = startKeyLength;
+				}
+				if (hasEndKey) {
+					itOptions.endKeyStr = endKey;
+					itOptions.endKeyStart = 0;
+					itOptions.endKeyEnd = endKeyLength;
+				}
+				std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
+				while (itHandle->iterator->Valid()) {
+					++count;
+					itHandle->iterator->Next();
+				}
+				napi_value result;
+				NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result))
+				return result;
+			}
+		}
+	}
+
+	// Get approximate size of the range
+	rocksdb::SizeApproximationOptions options;
+	options.include_memtables = true;
+	options.files_size_error_margin = 0.1;
+
+	rocksdb::Range range;
+	rocksdb::Slice startSlice(hasStartKey ? startKey : "",
+	                          hasStartKey ? startKeyLength : 0);
+	rocksdb::Slice endSlice(hasEndKey ? endKey : "",
+	                        hasEndKey ? endKeyLength : 0);
+	range.start = startSlice;
+	range.limit = endSlice;
+
+	uint64_t size = 0;
+	rocksdb::Status s = (*dbHandle)->descriptor->db->GetApproximateSizes(
+		options,
+		(*dbHandle)->column.get(),
+		&range,
+		1,
+		&size
+	);
+
+	if (!s.ok()) {
+		std::string errorMsg = "GetApproximateCount failed: " + s.ToString();
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		NAPI_RETURN_UNDEFINED()
+	}
+
+	// Calculate estimated number of entries from SST files
+	if (meanSize > 0) {
+		count = static_cast<uint64_t>(static_cast<double>(size) / meanSize);
+	}
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result))
@@ -836,6 +1006,13 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	// Smart cache invalidation: only clear after 100 writes
+	uint64_t writes = (*dbHandle)->descriptor->writesSinceLastCache.fetch_add(1) + 1;
+	if (writes >= 100) {
+		(*dbHandle)->descriptor->cachedMeanEntrySize.store(-1.0);
+		(*dbHandle)->descriptor->writesSinceLastCache.store(0);
+	}
+
 	NAPI_RETURN_UNDEFINED()
 }
 
@@ -880,6 +1057,13 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Remove failed")
 		::napi_throw(env, error);
 		return nullptr;
+	}
+
+	// Smart cache invalidation: only clear after 100 writes
+	uint64_t writes = (*dbHandle)->descriptor->writesSinceLastCache.fetch_add(1) + 1;
+	if (writes >= 100) {
+		(*dbHandle)->descriptor->cachedMeanEntrySize.store(-1.0);
+		(*dbHandle)->descriptor->writesSinceLastCache.store(0);
 	}
 
 	NAPI_RETURN_UNDEFINED()
@@ -1015,6 +1199,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getApproximateCount", nullptr, GetApproximateCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
