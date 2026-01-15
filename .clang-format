@@ -1,0 +1,11 @@
+AlignAfterOpenBracket: false
+AlignEscapedNewlines: DontAlign
+AllowAllArgumentsOnNextLine: true
+BinPackArguments: false
+BinPackParameters: OnePerLine
+BreakBeforeCloseBracketFunction: true
+ColumnLimit: 0
+IndentWidth: 4
+PointerAlignment: Left
+TabWidth: 4
+UseTab: Always
