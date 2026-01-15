@@ -10,10 +10,8 @@
   "json": {
   },
   "markdown": {
-    "indentWidth": 2,
-    "lineWidth": 80,
-    "scriptFormatter": "dprint",
-    "useTabs": false
+    "lineWidth": 100,
+    "textWrap": "always"
   },
   "toml": {
   },
