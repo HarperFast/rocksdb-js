@@ -1,6 +1,6 @@
-import { describe } from 'vitest';
-import { benchmark, generateTestData } from './setup.js'
 import { ABORT } from 'lmdb';
+import { describe } from 'vitest';
+import { benchmark, generateTestData } from './setup.js';
 
 describe('transaction sync', () => {
 	const SMALL_DATASET = 100;
@@ -20,7 +20,7 @@ describe('transaction sync', () => {
 							txn.putSync(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -31,7 +31,7 @@ describe('transaction sync', () => {
 							db.putSync(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -48,7 +48,7 @@ describe('transaction sync', () => {
 							txn.putSync(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -59,7 +59,7 @@ describe('transaction sync', () => {
 							db.putSync(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 		});
 
@@ -78,7 +78,7 @@ describe('transaction sync', () => {
 							txn.putSync(key, `modified-${existing}`);
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -91,7 +91,7 @@ describe('transaction sync', () => {
 							db.putSync(key, `modified-${existing}`);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -108,7 +108,7 @@ describe('transaction sync', () => {
 							txn.putSync(`${item.key}-${i}`, item.value);
 						});
 					}));
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -119,7 +119,7 @@ describe('transaction sync', () => {
 							db.putSync(`${item.key}-${i}`, item.value);
 						});
 					}));
-				}
+				},
 			});
 		});
 
@@ -137,7 +137,7 @@ describe('transaction sync', () => {
 						}
 						txn.abort();
 					});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -149,7 +149,7 @@ describe('transaction sync', () => {
 						}
 						return ABORT;
 					});
-				}
+				},
 			});
 		});
 
@@ -166,7 +166,7 @@ describe('transaction sync', () => {
 							txn.putSync(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 
 			benchmark('rocksdb', {
@@ -177,7 +177,7 @@ describe('transaction sync', () => {
 							txn.putSync(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -194,7 +194,7 @@ describe('transaction sync', () => {
 							db.putSync(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -205,7 +205,7 @@ describe('transaction sync', () => {
 							db.putSync(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -213,13 +213,13 @@ describe('transaction sync', () => {
 			benchmark('rocksdb', {
 				bench({ db }) {
 					db.transactionSync(() => {});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
 				bench({ db }) {
 					db.transactionSync(() => {});
-				}
+				},
 			});
 		});
 
@@ -242,7 +242,7 @@ describe('transaction sync', () => {
 							}
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -256,7 +256,7 @@ describe('transaction sync', () => {
 							}
 						});
 					}
-				}
+				},
 			});
 		});
 	});
@@ -276,7 +276,7 @@ describe('transaction sync', () => {
 							txn.putSync(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -287,7 +287,7 @@ describe('transaction sync', () => {
 							db.putSync(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 	});

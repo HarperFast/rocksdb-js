@@ -1,10 +1,14 @@
 {
   "typescript": {
     "arguments.trailingCommas": "never",
-    "lineWidth": 90,
+    "lineWidth": 100,
+    "operatorPosition": "maintain",
     "parameters.trailingCommas": "never",
+    "preferSingleLine": true,
     "quoteStyle": "preferSingle",
+    "singleBodyPosition": "nextLine",
     "trailingCommas": "onlyMultiLine",
+    "useBraces": "always",
     "useTabs": true
   },
   "json": {

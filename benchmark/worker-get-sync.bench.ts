@@ -1,7 +1,7 @@
 import {
 	generateRandomKeys,
+	workerBenchmark as benchmark,
 	workerDescribe as describe,
-	workerBenchmark as benchmark
 } from './setup.js';
 
 describe('Worker', () => {
@@ -21,7 +21,7 @@ describe('Worker', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -30,7 +30,7 @@ describe('Worker', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -49,7 +49,7 @@ describe('Worker', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -59,7 +59,7 @@ describe('Worker', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -78,7 +78,7 @@ describe('Worker', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -88,7 +88,7 @@ describe('Worker', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 });

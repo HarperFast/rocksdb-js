@@ -1,12 +1,12 @@
 {
-	"$schema": "./node_modules/oxlint/configuration_schema.json",
-	"plugins": ["import", "typescript", "unicorn"],
-	"env": {
-		"node": true,
-		"mocha": true
-	},
-	"rules": {
-		"no-console": "off",
-		"typescript/no-this-alias": "off"
-	}
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["import", "typescript", "unicorn"],
+  "env": {
+    "node": true,
+    "mocha": true
+  },
+  "rules": {
+    "no-console": "off",
+    "typescript/no-this-alias": "off"
+  }
 }

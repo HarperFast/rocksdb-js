@@ -12,11 +12,18 @@
  * NODE_AUTH_TOKEN=... TAG=latest node scripts/publish-bindings.mjs
  */
 
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { dirname, join, relative, resolve } from 'node:path';
+import {
+	copyFileSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 if (!process.env.NODE_AUTH_TOKEN) {
 	throw new Error('NODE_AUTH_TOKEN environment variable is not set');
@@ -57,24 +64,26 @@ console.log();
 for (const target of Object.keys(bindings)) {
 	const [platform, arch] = target.split('-');
 	const packageName = `${packageJson.name}-${target}`;
-	const pkgJson = JSON.stringify({
-		name: packageName,
-		version: packageJson.version,
-		description: `${target} binding for ${name}`,
-		license: packageJson.license,
-		main: bindingFilename,
-		exports: {
-			'.': bindingFilename
+	const pkgJson = JSON.stringify(
+		{
+			name: packageName,
+			version: packageJson.version,
+			description: `${target} binding for ${name}`,
+			license: packageJson.license,
+			main: bindingFilename,
+			exports: { '.': bindingFilename },
+			files: [bindingFilename],
+			preferUnplugged: true,
+			engines: packageJson.engines,
+			os: [platform],
+			cpu: [arch],
+			homepage: packageJson.homepage,
+			bugs: packageJson.bugs,
+			repository: packageJson.repository,
 		},
-		files: [ bindingFilename ],
-		preferUnplugged: true,
-		engines: packageJson.engines,
-		os: [ platform ],
-		cpu: [ arch ],
-		homepage: packageJson.homepage,
-		bugs: packageJson.bugs,
-		repository: packageJson.repository
-	}, null, 2);
+		null,
+		2
+	);
 
 	console.log('Publishing:', pkgJson);
 
@@ -82,16 +91,22 @@ for (const target of Object.keys(bindings)) {
 	mkdirSync(tmpDir, { recursive: true });
 
 	copyFileSync(bindings[target], join(tmpDir, bindingFilename));
-	writeFileSync(join(tmpDir, 'README.md'), `# ${name}-${target}\n\n` +
-		`${target} binding for [${name}](https://npmjs.com/package/${packageJson.name}).`);
+	writeFileSync(
+		join(tmpDir, 'README.md'),
+		`# ${name}-${target}\n\n`
+			+ `${target} binding for [${name}](https://npmjs.com/package/${packageJson.name}).`
+	);
 	writeFileSync(join(tmpDir, 'package.json'), pkgJson);
-	writeFileSync(join(tmpDir, '.npmrc'), `//registry.npmjs.org/:_authToken=${process.env.NODE_AUTH_TOKEN}\n`);
+	writeFileSync(
+		join(tmpDir, '.npmrc'),
+		`//registry.npmjs.org/:_authToken=${process.env.NODE_AUTH_TOKEN}\n`
+	);
 
 	try {
 		execFileSync('pnpm', ['publish', '--access', 'public', '--tag', tag], {
 			cwd: tmpDir,
 			stdio: 'inherit',
-			env: { ...process.env, FORCE_COLOR: '1' }
+			env: { ...process.env, FORCE_COLOR: '1' },
 		});
 	} catch (error) {
 		console.error(`Failed to publish ${packageName}:`, error);

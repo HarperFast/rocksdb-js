@@ -1,10 +1,20 @@
-import { Transaction } from './transaction.js';
-import { DBI, type DBITransactional } from './dbi.js';
-import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
-import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import * as orderedBinary from 'ordered-binary';
+import { DBI, type DBITransactional } from './dbi.js';
 import type { Encoder, EncoderFunction, Key } from './encoding.js';
+import {
+	config,
+	type PurgeLogsOptions,
+	type RocksDatabaseConfig,
+	type TransactionOptions,
+} from './load-binding.js';
+import {
+	type ArrayBufferWithNotify,
+	Store,
+	type StoreOptions,
+	type UserSharedBufferOptions,
+} from './store.js';
+import { Transaction } from './transaction.js';
 
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
@@ -13,7 +23,7 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	 * @default 'default'
 	 */
 	name?: string;
-};
+}
 
 /**
  * The main class for interacting with a RocksDB database.
@@ -29,10 +39,7 @@ export interface RocksDatabaseOptions extends StoreOptions {
  * ```
  */
 export class RocksDatabase extends DBI<DBITransactional> {
-	constructor(
-		pathOrStore: string | Store,
-		options?: RocksDatabaseOptions
-	) {
+	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions) {
 		if (typeof pathOrStore === 'string') {
 			super(new Store(pathOrStore, options));
 		} else if (pathOrStore instanceof Store) {
@@ -202,10 +209,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	getStats() {
-		return {
-			free: {},
-			root: {},
-		};
+		return { free: {}, root: {} };
 	}
 
 	/**
@@ -226,7 +230,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const buffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
 	 */
-	getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?: UserSharedBufferOptions): ArrayBufferWithNotify {
+	getUserSharedBuffer(
+		key: Key,
+		defaultBuffer: ArrayBuffer,
+		options?: UserSharedBufferOptions
+	): ArrayBufferWithNotify {
 		return this.store.getUserSharedBuffer(key, defaultBuffer, options);
 	}
 
@@ -283,10 +291,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * ```
 	 */
-	static open(
-		pathOrStore: string | Store,
-		options?: RocksDatabaseOptions
-	): RocksDatabase {
+	static open(pathOrStore: string | Store, options?: RocksDatabaseOptions): RocksDatabase {
 		return new RocksDatabase(pathOrStore, options).open();
 	}
 
@@ -325,8 +330,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		} else if (typeof EncoderClass === 'function') {
 			store.encoder = null;
 		} else if (
-			typeof store.encoder?.encode !== 'function' &&
-			(!store.encoding || store.encoding === 'msgpack')
+			typeof store.encoder?.encode !== 'function'
+			&& (!store.encoding || store.encoding === 'msgpack')
 		) {
 			store.encoding = 'msgpack';
 			EncoderClass = MsgpackEncoder;
@@ -344,7 +349,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					const buffer = this.getBinarySync(sharedStructuresKey);
 					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
 				};
-				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
+				opts.saveStructures = (
+					structures: any,
+					isCompatible: boolean | ((existingStructures: any) => boolean)
+				) => {
 					return this.transactionSync((txn: Transaction) => {
 						// note: we need to get a fresh copy of the shared structures,
 						// so we don't want to use the transaction's getBinarySync()
@@ -363,20 +371,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					});
 				};
 			}
-			store.encoder = new EncoderClass({
-				...opts,
-				...store.encoder
-			});
+			store.encoder = new EncoderClass({ ...opts, ...store.encoder });
 			store.decoder = store.encoder;
 		} else if (typeof store.encoder?.encode === 'function') {
 			if (!store.decoder) {
 				store.decoder = store.encoder;
 			}
 		} else if (store.encoding === 'ordered-binary') {
-			store.encoder = {
-				readKey: orderedBinary.readKey,
-				writeKey: orderedBinary.writeKey,
-			};
+			store.encoder = { readKey: orderedBinary.readKey, writeKey: orderedBinary.writeKey };
 			store.decoder = store.encoder;
 		}
 
@@ -387,7 +389,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				encode: (value: any, _mode?: number): Buffer => {
 					const bytesWritten = store.writeKey(value, store.encodeBuffer, 0);
 					return store.encodeBuffer.subarray(0, bytesWritten);
-				}
+				},
 			};
 			store.encoder.copyBuffers = true;
 		}
@@ -437,7 +439,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	async transaction<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): Promise<T | PromiseLike<T>> {
+	async transaction<T>(
+		callback: (txn: Transaction) => T | PromiseLike<T>,
+		options?: TransactionOptions
+	): Promise<T | PromiseLike<T>> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -491,7 +496,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * });
 	 * ```
 	 */
-	transactionSync<T>(callback: (txn: Transaction) => T | PromiseLike<T>, options?: TransactionOptions): T | PromiseLike<T> | undefined {
+	transactionSync<T>(
+		callback: (txn: Transaction) => T | PromiseLike<T>,
+		options?: TransactionOptions
+	): T | PromiseLike<T> | undefined {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
@@ -515,7 +523,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		// despite being 'sync', we need to support async operations
-		if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
+		if (
+			result && typeof result === 'object' && 'then' in result && typeof result.then === 'function'
+		) {
 			return result.then((value) => {
 				try {
 					txn.commitSync();

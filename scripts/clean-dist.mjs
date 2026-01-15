@@ -8,10 +8,10 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const distPath = join(__dirname, '..', 'dist');
 
 try {
-  rmSync(distPath, { recursive: true, force: true });
+	rmSync(distPath, { recursive: true, force: true });
 } catch (error) {
-  // Ignore if directory doesn't exist
-  if (error.code !== 'ENOENT') {
-    throw error;
-  }
+	// Ignore if directory doesn't exist
+	if (error.code !== 'ENOENT') {
+		throw error;
+	}
 }
