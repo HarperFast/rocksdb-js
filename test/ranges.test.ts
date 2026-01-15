@@ -184,6 +184,25 @@ describe('Ranges', () => {
 			expect(['e', 'd', 'c', 'b', 'a']).toEqual(returnedKeys);
 		}));
 
+		it('should get iterate in reverse with start and end', () => dbRunner(async ({ db }) => {
+			for (const key of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+				await db.put(key, `value ${key}`);
+			}
+
+			const opts = {
+				start: 'b', // not exclusive start
+				end: 'f', // not inclusive end
+				reverse: true
+			};
+
+			const returnedKeys: Key[] = [];
+			for (const { key, value } of db.getRange(opts)) {
+				returnedKeys.push(key);
+				expect(value).toBe(db.getSync(key));
+			}
+			expect(['e', 'd', 'c', 'b']).toEqual(returnedKeys);
+		}));
+
 		it('should include end key', () => dbRunner(async ({ db }) => {
 			for (const key of ['a', 'b', 'c', 'd', 'e']) {
 				await db.put(key, `value ${key}`);
