@@ -22,13 +22,6 @@ export default defineConfig({
 		globals: false,
 		include: ['stress-test/**/*.stress.test.ts'],
 		pool: 'threads',
-		poolOptions: {
-			threads: {
-				// NOTE: by default, Vitest will run tests in parallel, but
-				// single threaded mode is useful for debugging:
-				// singleThread: true
-			}
-		},
 		reporters: ['verbose'],
 		silent: false,
 		testTimeout: 5 * 60 * 1000, // 5 minutes
