@@ -22,7 +22,7 @@
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
     "build:bundle": "node scripts/clean-dist.mjs && tsdown -c tsdown.config.ts",
-    "build:debug": "cross-env SKIP_MINIFY=1 pnpm build:bundle",
+    "build:bundle:minify": "cross-env MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts",
@@ -48,22 +48,22 @@
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "25.0.3",
-    "@vitest/coverage-v8": "4.0.16",
+    "@types/node": "25.0.8",
+    "@vitest/coverage-v8": "4.0.17",
     "cross-env": "10.1.0",
     "dotenv": "17.2.3",
     "dprint": "0.51.1",
-    "lefthook": "2.0.13",
+    "lefthook": "2.0.15",
     "lmdb": "3.4.4",
     "node-gyp": "12.1.0",
-    "oxlint": "1.38.0",
+    "oxlint": "1.39.0",
     "prebuildify": "6.0.1",
     "semver": "7.7.3",
-    "tsdown": "0.18.4",
+    "tsdown": "0.19.0",
     "tslib": "2.8.1",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
-    "vitest": "4.0.16"
+    "vitest": "4.0.17"
   },
   "engines": {
     "node": ">=18"

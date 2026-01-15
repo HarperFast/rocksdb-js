@@ -8,7 +8,7 @@ const config: UserConfig = defineConfig({
 	external: ['msgpackr', 'ordered-binary'],
 	entry: './src/index.ts',
 	format: ['es', 'cjs'],
-	minify: !process.env.SKIP_MINIFY,
+	minify: Boolean(process.env.MINIFY),
 	platform: 'node',
 	plugins: [replace({ preventAssignment: true, values: { 'ROCKSDB_JS_VERSION': version } })],
 	sourcemap: true,
