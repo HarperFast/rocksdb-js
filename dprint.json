@@ -10,14 +10,12 @@
   "json": {
   },
   "markdown": {
-  },
-  "toml": {
-  },
-  "markup": {
     "indentWidth": 2,
     "lineWidth": 80,
     "scriptFormatter": "dprint",
     "useTabs": false
+  },
+  "toml": {
   },
   "yaml": {
     "quotes": "preferSingle"
@@ -31,7 +29,6 @@
     "https://plugins.dprint.dev/markdown-0.20.0.wasm",
     "https://plugins.dprint.dev/toml-0.7.0.wasm",
     "https://plugins.dprint.dev/typescript-0.95.13.wasm",
-    "https://plugins.dprint.dev/g-plane/markup_fmt-v0.25.3.wasm",
     "https://plugins.dprint.dev/g-plane/pretty_yaml-v0.6.0.wasm",
     "https://plugins.dprint.dev/exec-0.6.0.json@a054130d458f124f9b5c91484833828950723a5af3f8ff2bd1523bd47b83b364"
   ]
