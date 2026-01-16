@@ -1,6 +1,6 @@
 import { DBI } from './dbi';
-import { Store } from './store.js';
 import { NativeTransaction, type TransactionOptions } from './load-binding.js';
+import { Store } from './store.js';
 
 /**
  * Provides transaction level operations to a transaction callback.
@@ -37,11 +37,7 @@ export class Transaction extends DBI {
 				this.#txn.commit(resolve, reject);
 			});
 		} finally {
-			this.notify('aftercommit', {
-				next: null,
-				last: null,
-				txnId: this.#txn.id
-			});
+			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
 		}
 	}
 
@@ -53,11 +49,7 @@ export class Transaction extends DBI {
 			this.notify('beforecommit');
 			this.#txn.commitSync();
 		} finally {
-			this.notify('aftercommit', {
-				next: null,
-				last: null,
-				txnId: this.#txn.id
-			});
+			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
 		}
 	}
 

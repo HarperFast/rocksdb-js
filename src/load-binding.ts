@@ -1,9 +1,9 @@
-import { dirname, join, resolve } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { BufferWithDataView, Key } from './encoding.js';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { Context } from './store.js';
 
 export type TransactionOptions = {
@@ -31,11 +31,7 @@ export type NativeTransaction = {
 	useLog(name: string | number): TransactionLog;
 };
 
-export type LogBuffer = Buffer & {
-	dataView: DataView;
-	logId: number;
-	size: number;
-};
+export type LogBuffer = Buffer & { dataView: DataView; logId: number; size: number };
 
 export type TransactionLogQueryOptions = {
 	start?: number;
@@ -46,11 +42,7 @@ export type TransactionLogQueryOptions = {
 	exclusiveStart?: boolean;
 };
 
-export type TransactionEntry = {
-	timestamp: number;
-	data: Buffer;
-	endTxn: boolean;
-};
+export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
@@ -93,10 +85,7 @@ type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
 
-export type PurgeLogsOptions = {
-	destroy?: boolean;
-	name?: string;
-};
+export type PurgeLogsOptions = { destroy?: boolean; name?: string };
 
 export type NativeDatabase = {
 	new(): NativeDatabase;
@@ -107,22 +96,28 @@ export type NativeDatabase = {
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	get(
+		key: BufferWithDataView,
+		resolve: ResolveCallback<Buffer>,
+		reject: RejectCallback,
+		txnId?: number
+	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number;
 	getDBProperty(propertyName: string): string;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getSync(key: BufferWithDataView, txnId?: number): Buffer;
-	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
+	getUserSharedBuffer(
+		key: BufferWithDataView,
+		defaultBuffer: ArrayBuffer,
+		callback?: UserSharedBufferCallback
+	): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];
 	opened: boolean;
-	open(
-		path: string,
-		options?: NativeDatabaseOptions
-	): void;
+	open(path: string, options?: NativeDatabaseOptions): void;
 	purgeLogs(options?: PurgeLogsOptions): string[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
@@ -133,9 +128,7 @@ export type NativeDatabase = {
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = {
-	blockCacheSize?: number;
-};
+export type RocksDatabaseConfig = { blockCacheSize?: number };
 
 const nativeExtRE = /\.node$/;
 
@@ -159,7 +152,7 @@ function locateBinding(): string {
 				}
 			}
 
-		/* v8 ignore next -- @preserve */
+			/* v8 ignore next -- @preserve */
 		} catch {}
 	}
 
@@ -168,7 +161,15 @@ function locateBinding(): string {
 
 	// check node_modules
 	try {
-		const path = join(baseDir, 'node_modules', '@harperfast', `rocksdb-js-${process.platform}-${process.arch}`, 'build', 'Release', 'rocksdb-js.node');
+		const path = join(
+			baseDir,
+			'node_modules',
+			'@harperfast',
+			`rocksdb-js-${process.platform}-${process.arch}`,
+			'build',
+			'Release',
+			'rocksdb-js.node'
+		);
 		if (existsSync(path)) {
 			return resolve(path);
 		}

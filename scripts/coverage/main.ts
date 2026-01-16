@@ -3,19 +3,17 @@
  * easier on the eyes at night. In other words, dark mode.
  */
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
 
 const child = spawnSync(process.execPath, [
 	'--expose-gc',
 	'./node_modules/vitest/vitest.mjs',
 	'--coverage',
 	...process.argv.slice(2),
-], {
-	stdio: 'inherit',
-});
+], { stdio: 'inherit' });
 if (child.status !== 0) {
 	process.exit(child.status);
 }
@@ -71,9 +69,7 @@ const css = `<style type="text/css">
 	}
 </style>`;
 
-const dirs: string[] = [
-	resolve(fileURLToPath(import.meta.url), '../../../coverage')
-];
+const dirs: string[] = [resolve(fileURLToPath(import.meta.url), '../../../coverage')];
 
 for (let dir = dirs.shift(); dir; dir = dirs.shift()) {
 	if (existsSync(dir)) {

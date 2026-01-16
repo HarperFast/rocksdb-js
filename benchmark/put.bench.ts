@@ -14,7 +14,7 @@ describe('put', () => {
 				for (const item of data) {
 					await db.put(item.key, item.value);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -25,7 +25,7 @@ describe('put', () => {
 				for (const item of data) {
 					await db.put(item.key, item.value);
 				}
-			}
+			},
 		});
 	});
 
@@ -43,7 +43,7 @@ describe('put', () => {
 				for (const item of data) {
 					await db.put(item.key, item.value);
 				}
-			}
+			},
 		});
 
 		benchmark('rocksdb', {
@@ -53,7 +53,7 @@ describe('put', () => {
 				for (const item of data) {
 					db.putSync(item.key, item.value);
 				}
-			}
+			},
 		});
 	});
 });

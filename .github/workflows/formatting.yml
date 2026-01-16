@@ -1,0 +1,53 @@
+name: Fix Formatting
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  format:
+    name: Fix Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-deps
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
+
+      - name: Fix formatting
+        run: pnpm format:fix
+
+      - name: Pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          title: 'chore(style): fix formatting'
+          body: 'Fixes formatting issues in the codebase.'
+          commit-message: 'chore(style): fix formatting'
+          committer: 'HarperFast <noreply@harperdb.io>'
+          branch: fix-formatting
+          delete-branch: true
+          labels: 'automated'

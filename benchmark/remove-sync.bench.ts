@@ -23,7 +23,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -32,7 +32,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -50,7 +50,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -59,7 +59,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -76,7 +76,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('rocksdb', {
@@ -91,7 +91,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -109,7 +109,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -118,13 +118,13 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 	});
 
 	describe('random access pattern (100 records)', () => {
 		function setup(ctx) {
-			const data = generateTestData(SMALL_DATASET, 20, 100)
+			const data = generateTestData(SMALL_DATASET, 20, 100);
 			for (const item of data) {
 				ctx.db.putSync(item.key, item.value);
 			}
@@ -138,7 +138,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -147,7 +147,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -162,7 +162,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -171,7 +171,7 @@ describe('removeSync()', () => {
 				for (const key of data) {
 					db.removeSync(key);
 				}
-			}
+			},
 		});
 	});
 });

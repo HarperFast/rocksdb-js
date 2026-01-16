@@ -1,7 +1,7 @@
-import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 const packageJson = JSON.parse(readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8'));
@@ -14,7 +14,9 @@ if (releaseTag) {
 	console.log(`Release tag: ${releaseTag}\n`);
 	const tagVersion = releaseTag.startsWith('v') ? releaseTag.slice(1) : releaseTag;
 	if (tagVersion !== version) {
-		console.error(`ERROR: Release tag version "${tagVersion}" does not match package.json version "${version}"!`);
+		console.error(
+			`ERROR: Release tag version "${tagVersion}" does not match package.json version "${version}"!`
+		);
 		process.exit(1);
 	}
 }
@@ -22,8 +24,9 @@ console.log('Optional dependencies:', optionalDependencies);
 console.log();
 
 // check that the optional dependencies have the same version as the main package
-const mismatched = Object.entries(optionalDependencies)
-	.filter(([_key, value]) => value !== version);
+const mismatched = Object.entries(optionalDependencies).filter(([_key, value]) =>
+	value !== version
+);
 if (mismatched.length > 0) {
 	for (const [key, value] of mismatched) {
 		console.error(`ERROR: Version mismatch for ${key}: ${value} !== ${version}`);

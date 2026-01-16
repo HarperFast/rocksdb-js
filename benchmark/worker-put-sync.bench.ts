@@ -1,7 +1,7 @@
 import {
 	generateRandomKeys,
+	workerBenchmark as benchmark,
 	workerDescribe as describe,
-	workerBenchmark as benchmark
 } from './setup.js';
 
 describe('putSync()', () => {
@@ -16,7 +16,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -27,7 +27,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 	});
 
@@ -41,7 +41,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -53,7 +53,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 	});
 
@@ -68,7 +68,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -81,7 +81,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 	});
 });

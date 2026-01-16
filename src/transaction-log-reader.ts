@@ -1,9 +1,9 @@
 import {
-	TransactionLog,
-	type LogBuffer,
 	constants,
-	TransactionLogQueryOptions,
+	type LogBuffer,
 	TransactionEntry,
+	TransactionLog,
+	TransactionLogQueryOptions,
 } from './load-binding.js';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
@@ -25,7 +25,8 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
 Object.defineProperty(TransactionLog.prototype, 'query', {
 	value(
 		this: TransactionLog,
-		{ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }: TransactionLogQueryOptions = {}
+		{ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }:
+			TransactionLogQueryOptions = {}
 	): IterableIterator<TransactionEntry> {
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
@@ -95,17 +96,23 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}
 
 		return {
-			[Symbol.iterator](): IterableIterator<TransactionEntry> { return this; },
+			[Symbol.iterator](): IterableIterator<TransactionEntry> {
+				return this;
+			},
 			next() {
 				let timestamp: number;
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
-					const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, !!readUncommitted);
+					const { logId: latestLogId, size: latestSize } = loadLastPosition(
+						transactionLog,
+						!!readUncommitted
+					);
 					size = latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
-						size = logBuffer!.size ?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+						size = logBuffer!.size
+							?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
@@ -113,7 +120,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							logBuffer = nextLogBuffer;
 							if (latestLogId > logBuffer!.logId) {
 								// it is non-current log file, we can safely use or cache the size
-								size = logBuffer!.size ?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+								size = logBuffer!.size
+									?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 							} else {
 								size = latestSize; // use the latest position from loadLastPosition
 							}
@@ -127,8 +135,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					do {
 						try {
 							timestamp = dataView.getFloat64(position);
-						} catch(error) {
-							(error as Error).message += ` at position ${position} of log ${logBuffer!.logId} (size=${size}, log buffer length=${logBuffer!.length})`;
+						} catch (error) {
+							(error as Error).message += ` at position ${position} of log ${
+								logBuffer!.logId
+							} (size=${size}, log buffer length=${logBuffer!.length})`;
 							throw error;
 						}
 						// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
@@ -154,7 +164,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							matchesRange = false;
 						}
 					} else { // no exact start, so just match on conditions
-						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end;
+						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!)
+							&& timestamp < end;
 					}
 					const entryStart = position;
 					position += length;
@@ -165,13 +176,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							value: {
 								timestamp,
 								endTxn: Boolean(logBuffer![entryStart - 1] & 1),
-								data: logBuffer!.subarray(entryStart, position)
-							}
+								data: logBuffer!.subarray(entryStart, position),
+							},
 						};
 					}
 					if (position >= size) {
 						// move to the next log file
-						const { logId: latestLogId, size: latestSize } = loadLastPosition(transactionLog, !!readUncommitted);
+						const { logId: latestLogId, size: latestSize } = loadLastPosition(
+							transactionLog,
+							!!readUncommitted
+						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
 							logBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
@@ -188,9 +202,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					}
 				}
 				return { done: true, value: undefined };
-			}
+			},
 		};
-	}
+	},
 });
 
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
@@ -207,12 +221,14 @@ function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuff
 		(error as Error).message += ` (log file ID: ${logId})`;
 		throw error;
 	}
-	if (!logBuffer) return;
+	if (!logBuffer) {
+		return;
+	}
 	logBuffer.logId = logId;
 	logBuffer.dataView = new DataView(logBuffer.buffer);
 	transactionLog._logBuffers!.set(logId, new WeakRef(logBuffer)); // add to cache
 	let maxMisses = 3;
-	for (const [ logId, reference ] of transactionLog._logBuffers!) {
+	for (const [logId, reference] of transactionLog._logBuffers!) {
 		// clear out any references that have been collected
 		if (reference.deref() === undefined) {
 			transactionLog._logBuffers!.delete(logId);
@@ -223,7 +239,10 @@ function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuff
 	return logBuffer;
 }
 
-function loadLastPosition(transactionLog: TransactionLog, readUncommitted: boolean): { logId: number; size: number } {
+function loadLastPosition(
+	transactionLog: TransactionLog,
+	readUncommitted: boolean
+): { logId: number; size: number } {
 	// atomically copy the full 64-bit last committed position word to a local variable so we can read it without memory tearing
 	FLOAT_TO_UINT32[0] = transactionLog._lastCommittedPosition![0];
 	let logId = UINT32_FROM_FLOAT[1];

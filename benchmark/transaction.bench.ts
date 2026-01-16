@@ -1,6 +1,6 @@
+import { ABORT } from 'lmdb';
 import { describe } from 'vitest';
 import { benchmark, generateTestData } from './setup.js';
-import { ABORT } from 'lmdb';
 
 describe('transaction', () => {
 	const SMALL_DATASET = 100;
@@ -20,7 +20,7 @@ describe('transaction', () => {
 							await txn.put(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -31,7 +31,7 @@ describe('transaction', () => {
 							await db.put(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -48,7 +48,7 @@ describe('transaction', () => {
 							await txn.put(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -59,7 +59,7 @@ describe('transaction', () => {
 							await db.put(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 		});
 
@@ -78,7 +78,7 @@ describe('transaction', () => {
 							await txn.put(key, `modified-${existing}`);
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -91,7 +91,7 @@ describe('transaction', () => {
 							await db.put(key, `modified-${existing}`);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -108,7 +108,7 @@ describe('transaction', () => {
 							txn.putSync(`${item.key}-${i}`, item.value);
 						});
 					}));
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -119,7 +119,7 @@ describe('transaction', () => {
 							db.putSync(`${item.key}-${i}`, item.value);
 						});
 					}));
-				}
+				},
 			});
 		});
 
@@ -137,7 +137,7 @@ describe('transaction', () => {
 						}
 						txn.abort();
 					});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -149,7 +149,7 @@ describe('transaction', () => {
 						}
 						return ABORT;
 					});
-				}
+				},
 			});
 		});
 
@@ -166,7 +166,7 @@ describe('transaction', () => {
 							await txn.put(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 
 			benchmark('rocksdb', {
@@ -177,7 +177,7 @@ describe('transaction', () => {
 							await txn.put(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -194,7 +194,7 @@ describe('transaction', () => {
 							await db.put(item.key, item.value);
 						}
 					});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -205,7 +205,7 @@ describe('transaction', () => {
 							await db.put(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 
@@ -213,13 +213,13 @@ describe('transaction', () => {
 			benchmark('rocksdb', {
 				async bench({ db }) {
 					await db.transaction(async () => {});
-				}
+				},
 			});
 
 			benchmark('lmdb', {
 				async bench({ db }) {
 					await db.transaction(async () => {});
-				}
+				},
 			});
 		});
 
@@ -242,7 +242,7 @@ describe('transaction', () => {
 							}
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -256,7 +256,7 @@ describe('transaction', () => {
 							}
 						});
 					}
-				}
+				},
 			});
 		});
 	});
@@ -276,7 +276,7 @@ describe('transaction', () => {
 							await txn.put(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 
 			benchmark('lmdb', {
@@ -287,7 +287,7 @@ describe('transaction', () => {
 							await db.put(item.key, item.value);
 						});
 					}
-				}
+				},
 			});
 		});
 	});

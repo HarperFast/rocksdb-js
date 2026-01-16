@@ -24,7 +24,7 @@ describe('get()', () => {
 				for (const key of data) {
 					await db.get(key);
 				}
-			}
+			},
 		});
 
 		benchmark('rocksdb', {
@@ -39,7 +39,7 @@ describe('get()', () => {
 				for (const key of data) {
 					await db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -55,7 +55,7 @@ describe('get()', () => {
 				for (const key of data) {
 					await db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -74,7 +74,7 @@ describe('get()', () => {
 				for (const item of data) {
 					await db.get(item.key);
 				}
-			}
+			},
 		});
 
 		benchmark('rocksdb', {
@@ -84,7 +84,7 @@ describe('get()', () => {
 				for (const item of data) {
 					db.getSync(item.key);
 				}
-			}
+			},
 		});
 	});
 });

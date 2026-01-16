@@ -13,31 +13,31 @@ updates:
       # Group all other patch updates
       patch:
         patterns:
-          - "*"
+          - '*'
         update-types:
-          - "patch"
+          - 'patch'
       # Group all production minor updates
       minor-production:
-        dependency-type: "production"
+        dependency-type: 'production'
         patterns:
-          - "*"
+          - '*'
         update-types:
-          - "minor"
+          - 'minor'
       # Group all development minor updates
       minor-development:
-        dependency-type: "development"
+        dependency-type: 'development'
         patterns:
-          - "*"
+          - '*'
         update-types:
-          - "minor"
+          - 'minor'
     # Add labels to PRs
     labels:
-      - "dependencies"
-      - "automated"
+      - 'dependencies'
+      - 'automated'
     # Customize commit message
     commit-message:
-      prefix: "chore"
-      include: "scope"
+      prefix: 'chore'
+      include: 'scope'
     # Allow specific updates
     allow:
-      - dependency-type: "all"
+      - dependency-type: 'all'

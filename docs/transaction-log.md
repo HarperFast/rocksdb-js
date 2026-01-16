@@ -2,8 +2,8 @@
 
 ## Overview
 
-The transaction log system provides an append-only, binary log format for
-recording database transactions. The format is designed for:
+The transaction log system provides an append-only, binary log format for recording database
+transactions. The format is designed for:
 
 - **Durability**: Fixed size index entries for fast traversal using binary search
 - **Portability**: Big-endian encoding for platform independence
@@ -12,9 +12,9 @@ recording database transactions. The format is designed for:
 
 ## File Structure
 
-Each transaction log store consists of one or more transaction log sequence
-files. These sequence log files have a `.txnlog` extension and are rotated based
-on a configurable maximum size (default: 16MB).
+Each transaction log store consists of one or more transaction log sequence files. These sequence
+log files have a `.txnlog` extension and are rotated based on a configurable maximum size (default:
+16MB).
 
 ### Naming Convention
 
@@ -66,11 +66,11 @@ The timestamp of the most recent transaction log batch that has been written.
 
 ### Transaction Header (13 bytes)
 
-| Offset | Size | Type    | Field      | Description                    |
-|--------|------|---------|------------|--------------------------------|
-| 0      | 8    | double  | timestamp  | Timestamp transaction created  |
-| 8      | 4    | uint32  | entrySize  | Size of the entry data         |
-| 12     | 1    | uint8   | flags      | Transaction flags              |
+| Offset | Size | Type   | Field     | Description                   |
+| ------ | ---- | ------ | --------- | ----------------------------- |
+| 0      | 8    | double | timestamp | Timestamp transaction created |
+| 8      | 4    | uint32 | entrySize | Size of the entry data        |
+| 12     | 1    | uint8  | flags     | Transaction flags             |
 
 #### `timestamp`
 
@@ -92,8 +92,7 @@ Transaction entry related flags.
 
 ### Endianness
 
-All multi-byte numeric values are stored in **big-endian** (network byte order)
-format:
+All multi-byte numeric values are stored in **big-endian** (network byte order) format:
 
 - **uint64**: Most significant byte first
 - **uint32**: Most significant byte first
@@ -103,19 +102,19 @@ This ensures the format is portable across different CPU architectures.
 
 ### Timestamps
 
-All timestamps are stored as 64-bit doubles representing milliseconds since the
-Unix epoch (January 1, 1970 00:00:00 UTC).
+All timestamps are stored as 64-bit doubles representing milliseconds since the Unix epoch (January
+1, 1970 00:00:00 UTC).
 
 ## Transaction Buffering
 
-The transaction log system buffers multiple log entries before committing them
-when the associated transaction is committed.
+The transaction log system buffers multiple log entries before committing them when the associated
+transaction is committed.
 
 ```javascript
 const log = db.useLog('example');
 await db.transaction((txn) => {
-  log.addEntry(Buffer.from('some data'), txn.id);
-  log.addEntry(Buffer.from('some more data'), txn.id);
+	log.addEntry(Buffer.from('some data'), txn.id);
+	log.addEntry(Buffer.from('some more data'), txn.id);
 });
 ```
 
@@ -123,10 +122,8 @@ await db.transaction((txn) => {
 
 - Log entries are buffered in memory per transaction ID
 - Multiple transactions can be buffered concurrently
-- Buffered log entries are NOT written to disk until right before the
-  transaction is committed
-- If the transaction log handle is garbage collected, buffered (uncommitted)
-  log entries are lost
+- Buffered log entries are NOT written to disk until right before the transaction is committed
+- If the transaction log handle is garbage collected, buffered (uncommitted) log entries are lost
 - Calling `addEntry()` with an unknown transaction ID throws an error
 
 ## Usage Examples
@@ -140,7 +137,7 @@ const db = RocksDatabase.open('/tmp/mydb');
 const log = db.useLog('example');
 
 await db.transaction((txn) => {
-  log.addEntry(Buffer.from('some data'), txn.id);
+	log.addEntry(Buffer.from('some data'), txn.id);
 });
 ```
 
@@ -164,10 +161,10 @@ const log1 = db.useLog('log1');
 const log2 = db.useLog('log2');
 
 await db.transaction((txn) => {
-  log1.addEntry(Buffer.from('some data'), txn.id);
-  log1.addEntry(Buffer.from('some more data'), txn.id);
+	log1.addEntry(Buffer.from('some data'), txn.id);
+	log1.addEntry(Buffer.from('some more data'), txn.id);
 
-  log2.addEntry(Buffer.from('some data'), txn.id);
+	log2.addEntry(Buffer.from('some data'), txn.id);
 });
 ```
 
@@ -175,9 +172,9 @@ await db.transaction((txn) => {
 
 ```javascript
 await db.transaction((txn) => {
-  const log = txn.useLog('log1');
-  log.addEntry(Buffer.from('some data'));
-  log.addEntry(Buffer.from('some more data'));
+	const log = txn.useLog('log1');
+	log.addEntry(Buffer.from('some data'));
+	log.addEntry(Buffer.from('some more data'));
 });
 ```
 
@@ -185,10 +182,9 @@ await db.transaction((txn) => {
 
 ### Memory Management
 
-- Transaction buffering is managed by the `TransactionLogHandle`, not the
-  `TransactionLogStore`
-- When a JavaScript `TransactionLog` object is garbage collected, its handle is
-  destroyed and all buffered transaction data is automatically freed
+- Transaction buffering is managed by the `TransactionLogHandle`, not the `TransactionLogStore`
+- When a JavaScript `TransactionLog` object is garbage collected, its handle is destroyed and all
+  buffered transaction data is automatically freed
 - The `TransactionLogStore` is long-lived and does not hold transaction buffers
 
 ### Thread Safety
@@ -199,8 +195,8 @@ await db.transaction((txn) => {
 
 ### File Rotation
 
-- Log files are automatically rotated when either the index or data file reaches
-  their configured maximum sizes
+- Log files are automatically rotated when either the index or data file reaches their configured
+  maximum sizes
 - Rotation happens on the next write after the size limit is exceeded
 - Old log files can be automatically purged based on retention policy
 
@@ -212,11 +208,10 @@ await db.transaction((txn) => {
 
 ## Reading The Transaction Log
 
-Log entries are not guaranteed to be in order, but are guaranteed to have a
-monotonic timestamp. When reading the transaction log file, each transaction
-entry header must be read, then sorted and indexed. Using this index, queries can
-find all entries within a time range using a binary search and seek to get the
-associated entry data.
+Log entries are not guaranteed to be in order, but are guaranteed to have a monotonic timestamp.
+When reading the transaction log file, each transaction entry header must be read, then sorted and
+indexed. Using this index, queries can find all entries within a time range using a binary search
+and seek to get the associated entry data.
 
 ### Sequential Read
 
@@ -256,19 +251,18 @@ for each log entry
 
 ## Max Age and Automatic Rotation
 
-In addition to max file size, if a log file hasn't been written to in more than
-a certain amount of time, it will rotate to the next sequence log file. This
-max age is a percentage of the retention period.
+In addition to max file size, if a log file hasn't been written to in more than a certain amount of
+time, it will rotate to the next sequence log file. This max age is a percentage of the retention
+period.
 
-The default retention period is 3 days and the default max age is 75% of the
-retention period for a threshold period of 18 hours. If a log file hasn't been
-written to in the past 18 hours, it will start a new file.
+The default retention period is 3 days and the default max age is 75% of the retention period for a
+threshold period of 18 hours. If a log file hasn't been written to in the past 18 hours, it will
+start a new file.
 
 ## Performance Considerations
 
 - **Max File Size**: 16MB soft limit
-- **Batching**: Use transactions to batch multiple actions into fewer disk
-  writes using `writev()`
+- **Batching**: Use transactions to batch multiple actions into fewer disk writes using `writev()`
 - **Zero-Copy**: The format supports memory-mapped I/O for efficient reading
 
 ## Limitations

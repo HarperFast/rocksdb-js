@@ -1,6 +1,6 @@
-import { RocksDatabase } from '../../src/index.js';
-import { parentPort, workerData } from 'node:worker_threads';
 import { setTimeout as delay } from 'node:timers/promises';
+import { parentPort, workerData } from 'node:worker_threads';
+import { RocksDatabase } from '../../src/index.js';
 
 const db = RocksDatabase.open(workerData.path);
 
