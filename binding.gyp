@@ -70,6 +70,8 @@
 					},
 					'xcode_settings': {
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+						'MACOSX_DEPLOYMENT_TARGET': '26.0',
+						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
 					}
 				}]
 			],
@@ -119,6 +121,7 @@
 					},
 					'xcode_settings': {
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
 						'OTHER_CFLAGS': ['-g', '--coverage'],
 						'OTHER_LDFLAGS': ['--coverage']
 					}
