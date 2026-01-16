@@ -486,14 +486,7 @@ export class Store {
 	 * returns it.
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
-		let txnId: number | undefined;
-		if (options && typeof options === 'object' && 'transaction' in options) {
-			txnId = (options.transaction as Transaction)?.id;
-			if (txnId === undefined) {
-				throw new TypeError('Invalid transaction');
-			}
-		}
-		return txnId;
+		return ((options as DBITransactional)?.transaction as Transaction)?.id;
 	}
 
 	/**
