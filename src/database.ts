@@ -1,10 +1,10 @@
 import { Transaction } from './transaction.js';
 import { DBI, type DBITransactional } from './dbi.js';
-import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
+import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions, KEY_BUFFER, VALUE_BUFFER } from './store.js';
 import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import * as orderedBinary from 'ordered-binary';
-import type { Encoder, EncoderFunction, Key } from './encoding.js';
+import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
@@ -310,6 +310,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			return this;
 		}
 
+		store.db.setDefaultValueBuffer(VALUE_BUFFER);
+		store.db.setDefaultKeyBuffer(KEY_BUFFER);
+
 		/**
 		 * The encoder initialization precedence is:
 		 * 1. encoder.Encoder
@@ -342,7 +345,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			if (sharedStructuresKey) {
 				opts.getStructures = (): any => {
 					const buffer = this.getBinarySync(sharedStructuresKey);
-					return buffer && store.decoder?.decode ? store.decoder.decode(buffer) : undefined;
+					return buffer && store.decoder?.decode ? store.decoder.decode(buffer as BufferWithDataView) : undefined;
 				};
 				opts.saveStructures = (structures: any, isCompatible: boolean | ((existingStructures: any) => boolean)) => {
 					return this.transactionSync((txn: Transaction) => {
@@ -350,7 +353,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 						// so we don't want to use the transaction's getBinarySync()
 						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
 						const existingStructures = existingStructuresBuffer && store.decoder?.decode
-							? store.decoder.decode(existingStructuresBuffer)
+							? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
 							: undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
@@ -392,14 +395,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			store.encoder.copyBuffers = true;
 		}
 
-		if (store.decoder?.needsStableBuffer !== true) {
+		if (store.decoder && store.decoder.needsStableBuffer !== true) {
 			store.decoderCopies = true;
 		}
 
 		if (store.decoder?.readKey && !store.decoder.decode) {
-			store.decoder.decode = (buffer: Buffer): any => {
+			store.decoder.decode = (buffer: BufferWithDataView): any => {
 				if (store.decoder?.readKey) {
-					return store.decoder.readKey(buffer, 0, buffer.length);
+					return store.decoder.readKey(buffer, 0, buffer.end);
 				}
 				return buffer;
 			};

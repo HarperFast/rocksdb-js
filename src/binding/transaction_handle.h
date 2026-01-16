@@ -114,7 +114,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	napi_value get(
 		napi_env env,
-		rocksdb::Slice& key,
+		std::string& key,
 		napi_value resolve,
 		napi_value reject,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
@@ -137,7 +137,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	rocksdb::Status getSync(
 		rocksdb::Slice& key,
-		std::string& result,
+		rocksdb::PinnableSlice& result,
+		rocksdb::ReadOptions& readOptions,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
 

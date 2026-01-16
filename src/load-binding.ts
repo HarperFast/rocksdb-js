@@ -21,9 +21,10 @@ export type NativeTransaction = {
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
-	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
+	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
+	get(keyLengthOrKeyBuffer: number | Buffer, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
 	getCount(options?: RangeOptions): number;
-	getSync(key: Key): Buffer;
+	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
 	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
@@ -107,13 +108,14 @@ export type NativeDatabase = {
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
+	get(keyLengthOrKeyBuffer: number | Buffer, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number;
 	getDBProperty(propertyName: string): string;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: BufferWithDataView, txnId?: number): Buffer;
+	getSync(keyLengthOrKeyBuffer: number| Buffer, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
@@ -127,6 +129,12 @@ export type NativeDatabase = {
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
+	// Provide a buffer that is used as the default/shared buffer for keys, where functions that provide a key can do so by assigning the key to the shared buffer and providing the length.
+	// A null value will reset the buffer.
+	setDefaultKeyBuffer(buffer: Buffer | Uint8Array | null): void;
+	// Provide a buffer that is used as the default/shared buffer for value, where functions that use or return a value can do so by assigning the value to the shared buffer and providing/returning the length.
+	// A null value will reset the buffer.
+	setDefaultValueBuffer(buffer: Buffer | Uint8Array | null): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
@@ -187,6 +195,9 @@ export const constants: {
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
+	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	NOT_IN_MEMORY_CACHE_FLAG: number;
+	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;

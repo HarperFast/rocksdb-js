@@ -61,6 +61,17 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::unordered_map<std::string, napi_ref> logRefs;
 
+	/**
+	 * The shared default value buffer and its length.
+	 */
+	char* defaultValueBufferPtr = nullptr;
+	size_t defaultValueBufferLength = 0;
+	/**
+	 * The shared default key buffer and its length.
+	 */
+	char* defaultKeyBufferPtr = nullptr;
+	size_t defaultKeyBufferLength = 0;
+
 	DBHandle(napi_env env, napi_ref exportsRef);
 	~DBHandle();
 
