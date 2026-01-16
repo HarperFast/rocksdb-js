@@ -356,7 +356,10 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get")
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer");
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
 	// storing in std::string so it can live through the async process
 	std::string key(keySlice.data(), keySlice.size());
 
@@ -412,7 +415,10 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2)
 	UNWRAP_TRANSACTION_HANDLE("GetSync")
-	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer");
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
 	int32_t flags;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags))
 	rocksdb::PinnableSlice value;

@@ -74,7 +74,7 @@ const char* getNapiBufferFromArg(
  * as a slice. This provides a flexible way to handle a buffer that can leverage shared buffers with only passing a number
  * for high-performance, as well as a buffer for the flexibility of larger buffer.
  */
-const rocksdb::Slice getSliceFromArg(napi_env env, napi_value arg, char* defaultBuffer, const char* errorMsg);
+bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char* defaultBuffer, const char* errorMsg);
 
 std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 

@@ -81,6 +81,11 @@ describe('Read Operations', () => {
 		it('should throw an error if key is not specified', () => dbRunner(async ({ db }) => {
 			expect(() => (db.getSync as any)()).toThrow('Key is required');
 		}));
+
+		it('should throw an error if setting default buffers to null', () => dbRunner(async ({ db }) => {
+			expect(() => db.store.db.setDefaultKeyBuffer(null)).toThrow('Invalid argument');
+			expect(() => db.store.db.setDefaultValueBuffer(null)).toThrow('Invalid argument');
+		}));
 	});
 
 	describe('getBinary()', () => {

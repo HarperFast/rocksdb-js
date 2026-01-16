@@ -296,7 +296,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4)
 
 	UNWRAP_DB_HANDLE_AND_OPEN()
-	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer");
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
 	std::string key(keySlice.data(), keySlice.size());
 
 	napi_value resolve = argv[1];
@@ -570,7 +573,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3)
 	UNWRAP_DB_HANDLE_AND_OPEN()
 	// we store this in key slice (no copying) because we are synchronously using the key
-	rocksdb::Slice keySlice = rocksdb_js::getSliceFromArg(env, argv[0], (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer");
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
 	int32_t flags;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags))
 	rocksdb::PinnableSlice value; // we can use a PinnableSlice here, so we can copy directly from the database cache to our buffer
@@ -678,12 +684,6 @@ napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info
 napi_value Database::SetDefaultKeyBuffer(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1)
 	UNWRAP_DB_HANDLE()
-
-	if (argv[0] == nullptr) {
-		(*dbHandle)->defaultKeyBufferPtr = nullptr;
-		(*dbHandle)->defaultKeyBufferLength = 0;
-		NAPI_RETURN_UNDEFINED()
-	}
 
 	void* data;
 	size_t length;
