@@ -165,6 +165,18 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::mutex transactionLogMutex;
 
+	/**
+	 * Cached mean entry size for approximate count calculations.
+	 * Initialized to -1 to indicate it hasn't been calculated yet.
+	 */
+	std::atomic<double> cachedMeanEntrySize{-1.0};
+
+	/**
+	 * Counter for writes since last cache calculation.
+	 * Used to trigger cache invalidation after a threshold of writes.
+	 */
+	std::atomic<uint64_t> writesSinceLastCache{0};
+
 private:
     DBDescriptor(
         const std::string& path,

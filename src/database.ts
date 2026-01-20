@@ -1,5 +1,5 @@
 import { Transaction } from './transaction.js';
-import { DBI, type DBITransactional } from './dbi.js';
+import { DBI, type DBITransactional, type RangeOptions } from './dbi.js';
 import { Store, type UserSharedBufferOptions, type ArrayBufferWithNotify, type StoreOptions } from './store.js';
 import { config, type PurgeLogsOptions, type RocksDatabaseConfig, type TransactionOptions } from './load-binding.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
@@ -147,6 +147,31 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	getOldestSnapshotTimestamp(): number {
 		return this.store.db.getOldestSnapshotTimestamp();
+	}
+
+	/**
+	 * Returns an approximate count of keys within the specified range using
+	 * RocksDB's size approximation API. This method is much faster than
+	 * `getKeysCount()` for large ranges but returns an estimate rather than
+	 * an exact count.
+	 *
+	 * The method caches the mean entry size for better performance on
+	 * subsequent calls.
+	 *
+	 * @param options - The range options.
+	 * @returns An approximate number of keys within the range.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * // Get approximate total count
+	 * const total = db.getApproximateKeysCount();
+	 * // Get approximate count for a range
+	 * const range = db.getApproximateKeysCount({ start: 'a', end: 'z' });
+	 * ```
+	 */
+	getApproximateKeysCount(options?: RangeOptions): number {
+		return this.store.getApproximateCount(this.store.db, options);
 	}
 
 	/**

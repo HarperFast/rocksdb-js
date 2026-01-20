@@ -187,12 +187,38 @@ for (const key of db.getKeys()) {
 
 ### `db.getKeysCount(options?: RangeOptions): number`
 
-Retrieves the number of keys within a range.
+Retrieves the exact number of keys within a range by iterating through the database.
 
 ```typescript
 const total = db.getKeysCount();
 const range = db.getKeysCount({ start: 'a', end: 'z' });
 ```
+
+### `db.getApproximateKeysCount(options?: RangeOptions): number`
+
+Returns an approximate count of keys within the specified range using RocksDB's size approximation API. This method is much faster than `getKeysCount()` for large ranges but returns an estimate rather than an exact count.
+
+**Key Features:**
+- Uses `GetApproximateSizes()` for SST files and `GetApproximateMemTableStats()` for memtable data
+- Calculates mean entry size from table properties for better accuracy
+- Caches the mean entry size for optimal performance on subsequent calls
+- Smart cache invalidation: only recalculates after 100 write operations (or immediately on clear)
+
+```typescript
+// Get approximate total count
+const total = db.getApproximateKeysCount();
+
+// Get approximate count for a range
+const range = db.getApproximateKeysCount({ start: 'user:', end: 'user;' });
+
+// With only start key
+const fromKey = db.getApproximateKeysCount({ start: 'item-1000' });
+
+// With only end key
+const toKey = db.getApproximateKeysCount({ end: 'item-5000' });
+```
+
+**Performance Note:** For large datasets (>10,000 keys), `getApproximateKeysCount()` is typically significantly faster than `getKeysCount()` while providing reasonable accuracy (typically within ±20% of the exact count). The method includes recent writes in memtables for better accuracy.
 
 ### `db.getMonotonicTimestamp(): number`
 
