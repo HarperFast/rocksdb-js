@@ -10,12 +10,11 @@ namespace rocksdb_js {
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
 
-
-struct JobTracker
-{
+struct JobTracker final {
 	int columnFamilyCount = 0;
 	rocksdb::SequenceNumber flushedSequence = 0;
 };
+
 /**
  * Custom event listener that handles flush completion events and notifies
  * transaction log stores to track what has been flushed to the database.
@@ -61,6 +60,7 @@ public:
 
 
 	}
+
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
 		if (!descriptorPtr) {
 			return;
@@ -159,6 +159,28 @@ DBDescriptor::~DBDescriptor() {
 	this->transactions.clear();
 	this->columns.clear();
 	this->db.reset();
+}
+
+void DBDescriptor::close() {
+	// check if already closing
+	if (this->closing.exchange(true)) {
+		DEBUG_LOG("%p DBDescriptor::close Already closing \"%s\"\n", this, this->path.c_str())
+		return;
+	}
+
+	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
+		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size())
+
+	// We want to ensure that all in-memory data is written to disk
+	this->flush();
+
+	// Wait for any outstanding (background threads) operations to complete.
+	// Note that this is not setting the RocksDB `close_db` flag since active
+	// references to the databases may still exist. Also, contrary to the
+	// suggestions of the documentation, this method alone does not seem to
+	// trigger a flush
+	rocksdb::WaitForCompactOptions options;
+	this->db->WaitForCompact(options);
 }
 
 /**

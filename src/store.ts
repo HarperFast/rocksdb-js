@@ -447,6 +447,17 @@ export class Store {
 			options.end = Buffer.from(end.subarray(end.start, end.end));
 		}
 
+		if (options.reverse) {
+			// reverse the start and end keys
+			const start = options.start;
+			options.start = options.end;
+			options.end = start;
+
+			// reverse the exclusive start and end flags
+			options.exclusiveStart = options.exclusiveStart ?? true;
+			options.inclusiveEnd = options.inclusiveEnd ?? true;
+		}
+
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
 			new DBIterator(

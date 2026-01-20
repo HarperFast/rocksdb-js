@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
 import type { Key } from '../src/encoding.js';
+import type { IteratorOptions } from '../src/dbi.js';
 
 describe('Ranges', () => {
 	describe('getRange()', () => {
@@ -182,6 +183,35 @@ describe('Ranges', () => {
 				expect(value).toBe(db.getSync(key));
 			}
 			expect(['e', 'd', 'c', 'b', 'a']).toEqual(returnedKeys);
+		}));
+
+		it('should get iterate in reverse with start and end', () => dbRunner(async ({ db }) => {
+			for (const key of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+				await db.put(key, `value ${key}`);
+			}
+
+			const opts: IteratorOptions = {
+				start: 'f',
+				end: 'b',
+				reverse: true
+			};
+
+			let returnedKeys: Key[] = [];
+			for (const { key, value } of db.getRange(opts)) {
+				returnedKeys.push(key);
+				expect(value).toBe(db.getSync(key));
+			}
+			expect(['f', 'e', 'd', 'c']).toEqual(returnedKeys);
+
+			opts.exclusiveStart = false;
+			opts.inclusiveEnd = false;
+
+			returnedKeys= [];
+			for (const { key, value } of db.getRange(opts)) {
+				returnedKeys.push(key);
+				expect(value).toBe(db.getSync(key));
+			}
+			expect(['e', 'd', 'c', 'b']).toEqual(returnedKeys);
 		}));
 
 		it('should include end key', () => dbRunner(async ({ db }) => {
