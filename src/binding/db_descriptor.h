@@ -179,6 +179,9 @@ public:
     static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
     ~DBDescriptor();
 
+	void close();
+	bool isClosing() const { return this->closing.load(); }
+
 	void attach(Closable* closable);
 	void detach(Closable* closable);
 

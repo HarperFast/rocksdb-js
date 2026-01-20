@@ -55,7 +55,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		if (weakDescriptor.use_count() <= 1) {
 			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str())
 			if (auto descriptor = weakDescriptor.lock()) {
-				descriptor->closing.store(true);
+				descriptor->close();
 			}
 			instance->databases.erase(path);
 
@@ -116,7 +116,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	entry.condition->wait(lock, [&]() {
 		if (entry.descriptor) {
 			descriptor = entry.descriptor;
-			if (descriptor->closing.load()) {
+			if (descriptor->isClosing()) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str())
 				descriptor.reset();
 				return false; // keep waiting
@@ -230,14 +230,7 @@ void DBRegistry::Shutdown() {
 		// Close all descriptors without holding the lock
 		for (auto& descriptor : descriptorsToClose) {
 			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str())
-			descriptor->closing.store(true);
-			// We want to ensure that all in-memory data is written to disk
-			descriptor->flush();
-			// Wait for any outstanding (background threads) operations to complete. Note that this is not setting the
-			// close_db flag since active references to the databases may still exist.
-			// Also, contrary to the suggestions of the documentation, this method alone does not seem to trigger a flush
-			rocksdb::WaitForCompactOptions options;
-			descriptor->db->WaitForCompact(options);
+			descriptor->close();
 		}
 
 		// Purge the registry
