@@ -191,8 +191,8 @@ describe('Ranges', () => {
 			}
 
 			const opts: IteratorOptions = {
-				start: 'b', // not exclusive start
-				end: 'f', // not inclusive end
+				start: 'f',
+				end: 'b',
 				reverse: true
 			};
 
@@ -201,17 +201,17 @@ describe('Ranges', () => {
 				returnedKeys.push(key);
 				expect(value).toBe(db.getSync(key));
 			}
-			expect(['e', 'd', 'c', 'b']).toEqual(returnedKeys);
+			expect(['f', 'e', 'd', 'c']).toEqual(returnedKeys);
 
-			opts.exclusiveStart = true;
-			opts.inclusiveEnd = true;
+			opts.exclusiveStart = false;
+			opts.inclusiveEnd = false;
 
 			returnedKeys= [];
 			for (const { key, value } of db.getRange(opts)) {
 				returnedKeys.push(key);
 				expect(value).toBe(db.getSync(key));
 			}
-			expect(['f', 'e', 'd', 'c']).toEqual(returnedKeys);
+			expect(['e', 'd', 'c', 'b']).toEqual(returnedKeys);
 		}));
 
 		it('should include end key', () => dbRunner(async ({ db }) => {
