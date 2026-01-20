@@ -165,41 +165,92 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_object(env, &result))
 
 	if (itHandle->iterator->Valid()) {
-		NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone))
-
-		napi_value key;
-		napi_value value;
-
 		rocksdb::Slice keySlice = itHandle->iterator->key();
-		NAPI_STATUS_THROWS(::napi_create_buffer_copy(
-			env,
-			keySlice.size(),
-			keySlice.data(),
-			nullptr,
-			&key
-		))
 
-		NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue))
-		NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key))
+		// Check if this is the last item and should be skipped (reverse + exclusiveStart + key equals startKey)
+		if (itHandle->reverse && itHandle->exclusiveStart &&
+		    itHandle->startKey.size() > 0 && keySlice.compare(itHandle->startKey) == 0) {
+			// Peek ahead to check if this is the last item
+			itHandle->iterator->Prev();
+			if (!itHandle->iterator->Valid()) {
+				// This is the last item and it equals startKey, skip it
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone))
+				NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue))
+			} else {
+				// Not the last item, restore position and continue normally
+				itHandle->iterator->Next();
 
-		if (itHandle->values) {
-			rocksdb::Slice valueSlice = itHandle->iterator->value();
-			// TODO: use a shared buffer
+				// Re-read key and value after restoring position
+				rocksdb::Slice restoredKeySlice = itHandle->iterator->key();
+
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone))
+
+				napi_value key;
+				napi_value value;
+
+				NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+					env,
+					restoredKeySlice.size(),
+					restoredKeySlice.data(),
+					nullptr,
+					&key
+				))
+
+				NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue))
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key))
+
+				if (itHandle->values) {
+					rocksdb::Slice valueSlice = itHandle->iterator->value();
+					// TODO: use a shared buffer
+					NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+						env,
+						valueSlice.size(),
+						valueSlice.data(),
+						nullptr,
+						&value
+					))
+
+					NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value))
+				}
+
+				itHandle->iterator->Prev();
+			}
+		} else {
+			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone))
+
+			napi_value key;
+			napi_value value;
+
 			NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 				env,
-				valueSlice.size(),
-				valueSlice.data(),
+				keySlice.size(),
+				keySlice.data(),
 				nullptr,
-				&value
+				&key
 			))
 
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value))
-		}
+			NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue))
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key))
 
-		if (itHandle->reverse) {
-			itHandle->iterator->Prev();
-		} else {
-			itHandle->iterator->Next();
+			if (itHandle->values) {
+				rocksdb::Slice valueSlice = itHandle->iterator->value();
+				// TODO: use a shared buffer
+				NAPI_STATUS_THROWS(::napi_create_buffer_copy(
+					env,
+					valueSlice.size(),
+					valueSlice.data(),
+					nullptr,
+					&value
+				))
+
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value))
+			}
+
+			if (itHandle->reverse) {
+				itHandle->iterator->Prev();
+			} else {
+				itHandle->iterator->Next();
+			}
 		}
 	} else {
 		if (!itHandle->iterator->status().ok()) {
