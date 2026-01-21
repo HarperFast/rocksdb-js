@@ -193,6 +193,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED();
 	}
 
+	// Create a shared_ptr on the heap that will be held until finalize is called
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;

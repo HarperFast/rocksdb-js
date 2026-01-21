@@ -1,5 +1,5 @@
 import type { IteratorOptions } from './dbi.js';
-import type { Key } from './encoding.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { Store } from './store.js';
 
 export interface DBIteratorValue<T> {
@@ -39,7 +39,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		const value: Partial<DBIteratorValue<T>> = {};
 		value.key = this.store.decodeKey(result.value.key as Buffer);
 		if (this.#includeValues) {
-			value.value = this.store.decodeValue(result.value.value as Buffer);
+			value.value = this.store.decodeValue(result.value.value as BufferWithDataView);
 		}
 
 		return {

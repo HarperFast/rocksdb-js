@@ -211,6 +211,54 @@ for (const { name, options, txnOptions } of testOptions) {
 			expect(await db2.get('foo2')).toBe('baz3');
 		}));
 
+		it(`${name} async should handle concurrent reads in same transaction`, () => dbRunner({
+			dbOptions: [ options, { ...options, path: generateDBPath() } ]
+		}, async ({ db }) => {
+			await db.transaction((transaction) => {
+				for (let i = 0; i < 100; i++) {
+					db.put(`key-${i}`, `value-${i}`, { transaction });
+				}
+			});
+			await db.flush();
+			// memtable is flushed, no data should be in block cache
+			let promises: Promise<string | undefined>[] = [];
+			await db.transaction(async (transaction) => {
+				for (let i = 0; i < 100; i++) {
+					let result = db.get(`key-${i}`, { transaction });
+					promises.push(result);
+				}
+				const results = await Promise.all(promises);
+				for (let i = 0; i < 100; i++) {
+					expect(results[i]).toBe(`value-${i}`);
+				}
+			});
+		}));
+
+		it(`${name} async should handle concurrent reads in different transactions`, () => dbRunner({
+			dbOptions: [ options, { ...options, path: generateDBPath() } ]
+		}, async ({ db }) => {
+			await db.transaction((transaction) => {
+				for (let i = 0; i < 100; i++) {
+					db.put(`key-${i}`, `value-${i}`, { transaction });
+				}
+			});
+			await db.flush();
+			// memtable is flushed, no data should be in block cache
+			let promises: Promise<string | undefined>[] = [];
+			let txnPromises: Promise<void>[] = [];
+			for (let i = 0; i < 100; i++) {
+				txnPromises.push(db.transaction((transaction) => {
+					let result = db.get(`key-${i}`, { transaction });
+					promises.push(result);
+				}) as Promise<void>);
+			}
+			const results = await Promise.all(promises);
+			for (let i = 0; i < 100; i++) {
+				expect(results[i]).toBe(`value-${i}`);
+			}
+			await Promise.all(txnPromises);
+		}));
+
 		it(`${name} async should close transaction and iterator if getRange throws`, () => dbRunner({
 			dbOptions: [ options ]
 		}, async ({ db }) => {

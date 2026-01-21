@@ -70,6 +70,14 @@ const char* getNapiBufferFromArg(
 	const char* errorMsg
 );
 
+/**
+ * This utility function is designed to support an argument that can be either a buffer that is translated to a slice,
+ * or a number that is used as the length of the key if it was written into the shared buffer, which is then returned
+ * as a slice. This provides a flexible way to handle a buffer that can leverage shared buffers with only passing a number
+ * for high-performance, as well as a buffer for the flexibility of larger buffer.
+ */
+bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char* defaultBuffer, const char* errorMsg);
+
 std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {

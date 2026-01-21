@@ -268,12 +268,21 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Gets a value from the RocksDB database.
+ * Asynchronously gets a value from the RocksDB database. The first argument, that specifies the key, can be a buffer or a number
+ * indicating the length of the key that was written to the shared buffer.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
  * const value = await db.get('foo');
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const b = Buffer.alloc(1024);
+ * db.setDefaultKeyBuffer(b);
+ * b.utf8Write('foo');
+ * const value = await db.get(3);
  * ```
  *
  * @example
@@ -285,12 +294,16 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4);
-	NAPI_GET_BUFFER(argv[0], key, "Key is required");
+
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
+	std::string key(keySlice.data(), keySlice.size());
+
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
-	UNWRAP_DB_HANDLE_AND_OPEN();
-
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &txnIdType));
@@ -305,26 +318,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		return txnHandle->get(env, keySlice, resolve, reject, *dbHandle);
+		return txnHandle->get(env, key, resolve, reject, *dbHandle);
 	}
 
 	rocksdb::ReadOptions readOptions;
-	readOptions.read_tier = rocksdb::kBlockCacheTier;
-
-	// try to get the value from the block cache
-	std::string value;
-	rocksdb::Status status = (*dbHandle)->descriptor->db->Get(
-		readOptions,
-		(*dbHandle)->column.get(),
-		keySlice,
-		&value
-	);
-
-	if (!status.IsIncomplete()) {
-		// found it in the block cache!
-		return resolveGetSyncResult(env, "Get failed", status, value, resolve, reject);
-	}
-
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_latin1(
 		env,
@@ -333,8 +330,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, keySlice);
+	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -351,7 +347,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 				state->status = state->handle->descriptor->db->Get(
 					state->readOptions,
 					state->handle->column.get(),
-					state->keySlice,
+					state->key,
 					&state->value
 				);
 			}
@@ -549,36 +545,54 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Gets a value from the RocksDB database.
+ * Synchronously gets a value from the RocksDB database. The first argument, that specifies the key, can be a buffer or a number
+ * indicating the length of the key that was written to the shared buffer.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
- * const value = await db.get('foo');
+ * const value = db.getSync('foo');
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const b = Buffer.alloc(1024);
+ * db.setDefaultKeyBuffer(b);
+ * b.utf8Write('foo');
+ * const value = db.getSync(3);
  * ```
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
  * const txnId = 123;
- * const value = await db.get('foo', txnId);
+ * const value = db.getSync('foo', txnId);
  * ```
  */
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
-	NAPI_GET_BUFFER(argv[0], key, "Key is required");
+	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	std::string value;
+	// we store this in key slice (no copying) because we are synchronously using the key
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
+	int32_t flags;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags));
+	rocksdb::PinnableSlice value; // we can use a PinnableSlice here, so we can copy directly from the database cache to our buffer
 	rocksdb::Status status;
 
 	napi_valuetype txnIdType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
+	rocksdb::ReadOptions readOptions;
+	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+		// this is used by get() so that the getSync() call will fail if the entry is not in the cache
+		readOptions.read_tier = rocksdb::kBlockCacheTier;
+	}
 
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -586,10 +600,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		status = txnHandle->getSync(keySlice, value, *dbHandle);
+		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
 	} else {
 		status = (*dbHandle)->descriptor->db->Get(
-			rocksdb::ReadOptions(),
+			readOptions,
 			(*dbHandle)->column.get(),
 			keySlice,
 			&value
@@ -600,13 +614,29 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
+	napi_value result;
+	if (status.IsIncomplete()) {
+		// This means we only wanted values in memory, it was not found, so return a flag indicating that
+		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result));
+		return result;
+	}
+
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get failed");
 		::napi_throw(env, error);
 		return nullptr;
 	}
 
-	napi_value result;
+	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
+			(*dbHandle)->defaultValueBufferPtr != nullptr &&
+			value.size() <= (*dbHandle)->defaultValueBufferLength) {
+		// if it fits in the default value buffer, copy the data and just return the length
+		::memcpy((*dbHandle)->defaultValueBufferPtr, value.data(), value.size());
+		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result));
+		return result;
+	}
+
+	// otherwise, create a new buffer and return it
 	NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 		env,
 		value.size(),
@@ -619,13 +649,60 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Sets the default value buffer to be used for fast access. Creating new buffers (especially from C++/NAPI) is
+ * *extremely* expensive, and by using a single shared buffer, we can avoid the overhead of buffer creation, and instead
+ * copy directly from the database to the shared buffer. So this sets the value buffer that will be used for transferring
+ * smaller values to and from JavaScript to C++. Note that we generally still use new buffers for larger values, as the
+ * overhead of buffer creation is smaller compared to the cost of the copying of data.
+ */
+napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE();
+
+	if (argc == 0) {
+		(*dbHandle)->defaultValueBufferPtr = nullptr;
+		(*dbHandle)->defaultValueBufferLength = 0;
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	void* data;
+	size_t length;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length));
+
+	(*dbHandle)->defaultValueBufferPtr = (char*) data;
+	(*dbHandle)->defaultValueBufferLength = length;
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Sets the default key buffer to be used for fast access. Creating new buffers (especially from C++/NAPI) is
+ * *extremely* expensive, and by using a single shared buffer, we can avoid the overhead of buffer creation, and instead
+ * place keys directly in a shared buffer that can be reused. This sets the key buffer that is used for transferring
+ * keys to and from JavaScript to C++.
+ */
+napi_value Database::SetDefaultKeyBuffer(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE();
+
+	void* data;
+	size_t length;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length));
+
+	(*dbHandle)->defaultKeyBufferPtr = (char*) data;
+	(*dbHandle)->defaultKeyBufferLength = length;
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Gets or creates a buffer that an be shared across worker threads.
  */
 napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
-	std::string keyStr(key + keyStart, keyEnd - keyStart);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	// if we have a callback, add it as a listener
 	napi_ref callbackRef = nullptr;
@@ -1032,6 +1109,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setDefaultValueBuffer", nullptr, SetDefaultValueBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setDefaultKeyBuffer", nullptr, SetDefaultKeyBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr },

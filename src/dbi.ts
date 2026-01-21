@@ -1,4 +1,4 @@
-import { when, withResolvers, type MaybePromise } from './util.js';
+import { when, type MaybePromise } from './util.js';
 import type { NativeTransaction, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
 import type { BufferWithDataView, Key } from './encoding.js';
@@ -193,7 +193,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 						return result;
 					}
 
-					return this.store.decodeValue(result as Buffer);
+					return this.store.decodeValue(result as BufferWithDataView);
 				}
 			);
 		}
@@ -204,7 +204,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				? undefined
 				: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
 					? result
-					: this.store.decodeValue(result as Buffer)
+					: this.store.decodeValue(result as BufferWithDataView)
 		);
 	}
 
@@ -219,35 +219,12 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		let result: Buffer | undefined;
-		let error: unknown | undefined;
-		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: unknown) => void | undefined;
-
-		const status = this.store.get(
+		return this.store.get(
 			this.#context,
 			key,
-			value => {
-				result = value;
-				resolve?.(value);
-			},
-			err => {
-				error = err;
-				reject?.(err);
-			},
+			true,
 			this.store.getTxnId(options)
 		);
-
-		if (error) {
-			return Promise.reject(error);
-		}
-		if (status === 0) {
-			return result;
-		}
-
-		let promise: Promise<Buffer | undefined>;
-		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
-		return promise;
 	}
 
 	/**
@@ -258,7 +235,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.getSync(this.#context, key, options);
+		return this.store.getSync(this.#context, key, true, options);
 	}
 
 	/**
@@ -276,36 +253,12 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		let result: Buffer | undefined;
-		let error: unknown | undefined;
-		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: unknown) => void | undefined;
-
-		// TODO: specify the shared buffer to write the value to
-		const status = this.store.get(
+		return this.store.get(
 			this.#context,
 			key,
-			value => {
-				result = value;
-				resolve?.(value);
-			},
-			err => {
-				error = err;
-				reject?.(err);
-			},
+			false,
 			this.store.getTxnId(options)
 		);
-
-		if (error) {
-			return Promise.reject(error);
-		}
-		if (status === 0) {
-			return result;
-		}
-
-		let promise: Promise<Buffer | undefined>;
-		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
-		return promise;
 	}
 
 	/**
@@ -321,6 +274,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return this.store.getSync(
 			this.#context,
 			key,
+			false,
 			options
 		);
 	}
@@ -379,7 +333,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getSync(key: Key, options?: GetOptions & T): any | undefined {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
-			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+			return bytes === undefined ? undefined : this.store.decodeValue(bytes as BufferWithDataView);
 		}
 
 		if (this.store.encoding === 'binary') {
@@ -388,7 +342,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		if (this.store.decoder) {
 			const result = this.getBinarySync(key, options);
-			return result ? this.store.decodeValue(result) : undefined;
+			return result ? this.store.decodeValue(result as BufferWithDataView) : undefined;
 		}
 
 		if (!this.store.isOpen()) {
@@ -396,7 +350,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		return this.store.decodeValue(
-			this.store.getSync(this.#context, key, options)
+			this.store.getSync(this.#context, key, true, options)
 		);
 	}
 
