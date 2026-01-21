@@ -497,7 +497,14 @@ export class Store {
 	 * returns it.
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
-		return ((options as DBITransactional)?.transaction as Transaction)?.id;
+		let txnId: number | undefined;
+		if ((options as DBITransactional)?.transaction) {
+			txnId = (options as DBITransactional).transaction!.id;
+			if (txnId === undefined) {
+				throw new TypeError('Invalid transaction');
+			}
+		}
+		return txnId;
 	}
 
 	/**
