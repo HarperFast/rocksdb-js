@@ -48,7 +48,7 @@ TransactionLogStore::TransactionLogStore(
 }
 
 TransactionLogStore::~TransactionLogStore() {
-	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str())
+	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str());
 	this->close();
 }
 
@@ -57,15 +57,15 @@ void TransactionLogStore::close() {
 	bool expected = false;
 	if (!this->isClosing.compare_exchange_strong(expected, true)) {
 		// already closing, return early
-		DEBUG_LOG("%p TransactionLogStore::close Already closing, skipping \"%s\"\n", this, this->name.c_str())
+		DEBUG_LOG("%p TransactionLogStore::close Already closing, skipping \"%s\"\n", this, this->name.c_str());
 		return;
 	}
 
 	std::unique_lock<std::mutex> lock(this->writeMutex);
 	std::unique_lock<std::mutex> dataSetsLock(this->dataSetsMutex);
-	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str())
+	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str());
 	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
-		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str());
 		logFile->close();
 	}
 
@@ -86,7 +86,7 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 
 	if (!logFile) {
 		DEBUG_LOG("%p TransactionLogStore::getLogFile No long file found, creating store \"%s\" (seq=%u)\n",
-			this, this->path.string().c_str(), sequenceNumber)
+			this, this->path.string().c_str(), sequenceNumber);
 
 		// ensure the directory exists before creating the file (should already exist)
 		DEBUG_LOG("%p TransactionLogStore::getLogFile Creating directory: %s\n", this, this->path.string().c_str());
@@ -208,7 +208,7 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size())
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size());
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
@@ -228,21 +228,21 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
 				// file was deleted or doesn't exist
-				DEBUG_LOG("%p TransactionLogStore::purge File no longer exists: %s\n", this, logFile->path.string().c_str())
+				DEBUG_LOG("%p TransactionLogStore::purge File no longer exists: %s\n", this, logFile->path.string().c_str());
 				continue;
 			} catch (const std::exception& e) {
-				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what())
+				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
 				continue;
 			} catch (...) {
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::purge Unknown error getting last write time for file %s: %s\n",
-					this, logFile->path.string().c_str(), errorMsg.c_str())
+					this, logFile->path.string().c_str(), errorMsg.c_str());
 				continue;
 			}
 		}
 
-		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str());
 
 		// delete the log file
 		auto removed = logFile->removeFile();
@@ -264,17 +264,17 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
 			if (std::filesystem::exists(this->path)) {
-				DEBUG_LOG("%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str())
+				DEBUG_LOG("%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str());
 				std::filesystem::remove(this->path);
-				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str())
+				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str());
 			}
 		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what())
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what());
 		} catch (...) {
 			auto eptr = std::current_exception();
 			std::string errorMsg = getExceptionMessage(eptr);
 			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log directory %s: %s\n",
-				this, this->path.string().c_str(), errorMsg.c_str())
+				this, this->path.string().c_str(), errorMsg.c_str());
 		}
 	}
 }
@@ -299,19 +299,19 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	}
 
 	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
-		this, path.string().c_str(), sequenceNumber)
+		this, path.string().c_str(), sequenceNumber);
 }
 
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (timestamp=%llu)\n",
-		this, batch.entries.size(), this->name.c_str(), batch.timestamp)
+		this, batch.entries.size(), this->name.c_str(), batch.timestamp);
 
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	logPosition = this->nextLogPosition;
 
 	if (batch.timestamp > this->latestTimestamp) {
-		DEBUG_LOG("%p TransactionLogStore::writeBatch Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp)
+		DEBUG_LOG("%p TransactionLogStore::writeBatch Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp);
 		this->latestTimestamp = batch.timestamp;
 	}
 
@@ -331,7 +331,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 					}
 					break;
 				} catch (const std::exception& e) {
-					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what())
+					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
 					// move to next sequence number and try again
 					logFile = nullptr;
 				}
@@ -341,7 +341,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			// this prevents infinite loops when file open fails (even with maxIndexSize=0)
 			if (logFile == nullptr || this->maxFileSize > 0) {
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Rotating to next sequence for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
-					this, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize)
+					this, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				logFile = nullptr;
 			}
@@ -354,13 +354,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// ensure we have a valid log file before writing
 		if (!logFile) {
-			DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str())
+			DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str());
 			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Checking if log file is older than threshold (%f) for store \"%s\"\n",
-			this, this->maxAgeThreshold, this->name.c_str())
+			this, this->maxAgeThreshold, this->name.c_str());
 		if (this->maxAgeThreshold > 0) {
 			try {
 				auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -370,40 +370,40 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				auto now = std::chrono::system_clock::now();
 				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastWriteTime);
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:        %f\n",
-					this, this->maxAgeThreshold)
+					this, this->maxAgeThreshold);
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Retention duration:       %lld ms\n",
-					this, this->retentionMs.count())
+					this, this->retentionMs.count());
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Threshold duration:       %lld ms\n",
-					this, thresholdDuration.count())
+					this, thresholdDuration.count());
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Log file last write time: %lld ms\n",
-					this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count())
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count());
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Now:                      %lld ms\n",
-					this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count())
+					this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
 				DEBUG_LOG("%p TransactionLogStore::writeBatch File age:                 %lld ms\n",
-					this, fileAgeMs.count())
+					this, fileAgeMs.count());
 				if (fileAgeMs >= thresholdDuration) {
 					DEBUG_LOG("%p TransactionLogStore::writeBatch Log file is older than threshold (%lld ms >= %lld ms), rotating to next file for store \"%s\"\n",
-						this, fileAgeMs.count(), thresholdDuration.count(), this->name.c_str())
+						this, fileAgeMs.count(), thresholdDuration.count(), this->name.c_str());
 					this->currentSequenceNumber = this->nextSequenceNumber++;
 					continue;
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
 				// file was deleted or doesn't exist yet
 				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: File no longer exists or not yet created: %s - %s\n",
-					this, logFile->path.string().c_str(), e.what())
+					this, logFile->path.string().c_str(), e.what());
 				// rotate to next file to avoid using a problematic file
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to get last write time for file %s: %s\n",
-					this, logFile->path.string().c_str(), e.what())
+					this, logFile->path.string().c_str(), e.what());
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
 			} catch (...) {
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Unknown error getting last write time for file %s: %s\n",
-					this, logFile->path.string().c_str(), errorMsg.c_str())
+					this, logFile->path.string().c_str(), errorMsg.c_str());
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
 			}
@@ -412,25 +412,25 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		uint32_t sizeBefore = logFile->size;
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Writing to log file for store \"%s\" (seq=%u, size=%u, maxIndexSize=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxFileSize)
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxFileSize);
 
 		// write as much as possible to this file
 		logFile->writeEntries(batch, this->maxFileSize);
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size)
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size);
 
 		// if no progress was made, rotate to the next file to avoid infinite loop
 		if (logFile->size == sizeBefore) {
-			DEBUG_LOG("%p TransactionLogStore::writeBatch No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			DEBUG_LOG("%p TransactionLogStore::writeBatch No progress made (size unchanged), rotating to next file for store \"%s\"\n", this, this->name.c_str());
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		} else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
 			// we've reached or exceeded the max size, rotate to the next file
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Log file reached max size, rotating to next file for store \"%s\"\n", this, this->name.c_str());
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		} else if (!batch.isComplete()) {
 			// we've written some entries, but the batch is not complete, rotate to the next file
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str())
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str());
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
 		this->nextLogPosition = { logFile->size, this->currentSequenceNumber };
@@ -438,7 +438,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 	uncommittedTransactionPositions.insert(this->nextLogPosition);
 
-	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this)
+	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
 }
 
 void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {
@@ -499,7 +499,8 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
 		try {
 			logFile->flush();
 		} catch (const std::exception& e) {
-			DEBUG_LOG("%p TransactionLogStore::databaseFlushBegin ERROR: Failed to flush log file %u: %s\n", this, logFile->sequenceNumber, e.what())
+			DEBUG_LOG("%p TransactionLogStore::databaseFlushBegin ERROR: Failed to flush log file %u: %s\n",
+				this, logFile->sequenceNumber, e.what());
 			// Continue flushing other files even if one fails
 		}
 	}
@@ -521,7 +522,8 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 			latestSequencePosition = sequencePosition.position;
 		}
 	}
-	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n", this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
+	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n",
+		this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
 
 	// Only write if the position has changed
 	if (latestSequencePosition.fullPosition == lastWrittenFlushedPosition.fullPosition) {
@@ -582,18 +584,18 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 						if (delta.count() > 0) {
 							// file is too old, remove it
 							DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
-								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count())
+								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count());
 							try {
 								DEBUG_LOG("%p TransactionLogStore::load Removing expired file: %s\n", store.get(), filePath.string().c_str());
 								std::filesystem::remove(filePath);
 							} catch (const std::filesystem::filesystem_error& e) {
 								DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
-									store.get(), filePath.string().c_str(), e.what())
+									store.get(), filePath.string().c_str(), e.what());
 							}
 							continue;
 						} else {
 							DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
-								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1)
+								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1);
 						}
 					}
 
@@ -601,20 +603,20 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
-					store.get(), e.what())
+					store.get(), e.what());
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
-					store.get(), e.what())
+					store.get(), e.what());
 			} catch (...) {
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",
-					store.get(), errorMsg.c_str())
+					store.get(), errorMsg.c_str());
 			}
 		}
 	} catch (const std::filesystem::filesystem_error& e) {
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
-			store.get(), e.what())
+			store.get(), e.what());
 	}
 	store->uncommittedTransactionPositions.insert(store->nextLogPosition);
 

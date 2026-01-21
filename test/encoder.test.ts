@@ -1,5 +1,6 @@
 import { describe, it } from 'vitest';
 import { expect } from 'vitest';
+import type { BufferWithDataView } from '../src/encoding';
 import { dbRunner } from './lib/util.js';
 
 describe('Encoder', () => {
@@ -8,8 +9,8 @@ describe('Encoder', () => {
 			return Buffer.from(value);
 		}
 
-		decode(value: Buffer) {
-			return value.toString();
+		decode(value: BufferWithDataView) {
+			return value.subarray(value.start, value.end).toString();
 		}
 	}
 
@@ -25,8 +26,8 @@ describe('Encoder', () => {
 			{ dbOptions: [{ encoder: { encode: (value: any) => Buffer.from(value) } }] },
 			async ({ db }) => {
 				await db.put('foo', 'bar');
-				const value: Buffer = await db.get('foo');
-				expect(value.equals(Buffer.from('bar'))).toBe(true);
+				const value: BufferWithDataView = await db.get('foo');
+				expect(value.subarray(value.start, value.end).equals(Buffer.from('bar'))).toBe(true);
 			}
 		));
 
@@ -58,7 +59,7 @@ describe('Encoder', () => {
 				await db.put('foo', 'bar');
 				const value = await db.get('foo');
 				expect(value).toBeInstanceOf(Buffer);
-				expect(value.equals(Buffer.from('bar'))).toBe(true);
+				expect(value.subarray(value.start, value.end).equals(Buffer.from('bar'))).toBe(true);
 			}
 		));
 

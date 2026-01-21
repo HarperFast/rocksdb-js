@@ -62,6 +62,9 @@ jobs:
             git push origin --delete $BRANCH_NAME || true
           fi
 
+          # Prune stale remote-tracking branches
+          git fetch --prune origin
+
       - name: Update package.json
         if: steps.latest-release.outputs.should_update == 'true'
         run: |

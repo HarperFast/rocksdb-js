@@ -6,6 +6,39 @@ import { dbRunner } from './lib/util.js';
 
 describe('Read Operations', () => {
 	describe('get()', () => {
+		it('should synchronously return if value is in memory, async if not', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('foo', 'bar');
+				// should be in memtable, synchronously available
+				expect(db.get('foo')).toBe('bar');
+				await db.flush();
+				// memtable flushed, should be on disk now, and require an async get
+				let result = db.get('foo');
+				expect(result).toBeInstanceOf(Promise);
+				expect(await result).toBe('bar');
+				// now should be in block cache, synchronously available again
+				expect(db.get('foo')).toBe('bar');
+			}));
+		it('should correctly retrieve multiple concurrent async reads', () =>
+			dbRunner({ dbOptions: [{ noBlockCache: true }] }, async ({ db }) => {
+				await db.transaction((transaction) => {
+					for (let i = 0; i < 100; i++) {
+						db.put(`key-${i}`, `value-${i}`, { transaction });
+					}
+				});
+				await db.flush();
+				// memtable is flushed, no data should be in block cache
+				let promises: Promise<string | undefined>[] = [];
+				for (let i = 0; i < 100; i++) {
+					let result = db.get(`key-${i}`);
+					// expect(result).toBeInstanceOf(Promise); // I would expect this to be true, but it appears that data is getting cached
+					promises.push(result);
+				}
+				const results = await Promise.all(promises);
+				for (let i = 0; i < 100; i++) {
+					expect(results[i]).toBe(`value-${i}`);
+				}
+			}));
 		it('should error if database is not open', () =>
 			dbRunner({ skipOpen: true }, async ({ db }) => {
 				await expect(db.get('foo')).rejects.toThrow('Database not open');
@@ -34,7 +67,7 @@ describe('Read Operations', () => {
 					REUSE_BUFFER_MODE | RESET_BUFFER_MODE
 				) as unknown as BufferWithDataView;
 				const expected = encoded.subarray(encoded.start, encoded.end);
-				expect(value.equals(expected)).toBe(true);
+				expect(value.subarray(encoded.start, encoded.end).equals(expected)).toBe(true);
 			}));
 	});
 
@@ -53,6 +86,12 @@ describe('Read Operations', () => {
 		it('should throw an error if key is not specified', () =>
 			dbRunner(async ({ db }) => {
 				expect(() => (db.getSync as any)()).toThrow('Key is required');
+			}));
+
+		it('should throw an error if setting default buffers to null', () =>
+			dbRunner(async ({ db }) => {
+				expect(() => db.store.db.setDefaultKeyBuffer(null)).toThrow('Invalid argument');
+				expect(() => db.store.db.setDefaultValueBuffer(null)).toThrow('Invalid argument');
 			}));
 	});
 

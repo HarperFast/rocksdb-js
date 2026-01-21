@@ -10,12 +10,11 @@ namespace rocksdb_js {
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
 static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
 
-
-struct JobTracker
-{
+struct JobTracker final {
 	int columnFamilyCount = 0;
 	rocksdb::SequenceNumber flushedSequence = 0;
 };
+
 /**
  * Custom event listener that handles flush completion events and notifies
  * transaction log stores to track what has been flushed to the database.
@@ -48,7 +47,7 @@ public:
 			tracker.flushedSequence = flushedSequence;
 			this->jobTrackers[flush_info.job_id] = tracker;
 			DEBUG_LOG("%p TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n",
-				desc.get(), (unsigned long long)flushedSequence)
+				desc.get(), (unsigned long long)flushedSequence);
 
 			std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
 			for (auto& [name, store] : desc->transactionLogStores) {
@@ -61,6 +60,7 @@ public:
 
 
 	}
+
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
 		if (!descriptorPtr) {
 			return;
@@ -79,7 +79,7 @@ public:
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
 			DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted unable to find job id=%d\n",
-				desc.get(), flush_info.job_id)
+				desc.get(), flush_info.job_id);
 		} else {
 			// we find the highest sequence number; this represents the overall sequence
 			// number for the flush job
@@ -131,13 +131,13 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
-		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size())
+		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
 	while (!this->closables.empty()) {
 		Closable* handle = *this->closables.begin();
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing closable %p\n", this, handle)
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing closable %p\n", this, handle);
 		this->closables.erase(handle);
 
 		// release the mutex before calling close() to avoid a deadlock
@@ -148,9 +148,9 @@ DBDescriptor::~DBDescriptor() {
 
 	if (!this->transactionLogStores.empty()) {
 		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size())
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size());
 		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str())
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str());
 			transactionLogStore->close();
 		}
 		this->transactionLogStores.clear();
@@ -159,6 +159,28 @@ DBDescriptor::~DBDescriptor() {
 	this->transactions.clear();
 	this->columns.clear();
 	this->db.reset();
+}
+
+void DBDescriptor::close() {
+	// check if already closing
+	if (this->closing.exchange(true)) {
+		DEBUG_LOG("%p DBDescriptor::close Already closing \"%s\"\n", this, this->path.c_str());
+		return;
+	}
+
+	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
+		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
+
+	// We want to ensure that all in-memory data is written to disk
+	this->flush();
+
+	// Wait for any outstanding (background threads) operations to complete.
+	// Note that this is not setting the RocksDB `close_db` flag since active
+	// references to the databases may still exist. Also, contrary to the
+	// suggestions of the documentation, this method alone does not seem to
+	// trigger a flush
+	rocksdb::WaitForCompactOptions options;
+	this->db->WaitForCompact(options);
 }
 
 /**
@@ -202,8 +224,8 @@ void DBDescriptor::lockCall(
 	);
 
 	if (!isNewLock) {
-		DEBUG_LOG("%p DBDescriptor::lockCall callback queued for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::lockCall callback queued for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 		return;
 	}
 
@@ -212,8 +234,8 @@ void DBDescriptor::lockCall(
 	auto lockHandle = this->locks.find(key);
 
 	if (lockHandle == this->locks.end()) {
-		DEBUG_LOG("%p DBDescriptor::lockCall no lock found for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::lockCall no lock found for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 		return;
 	}
 
@@ -223,16 +245,16 @@ void DBDescriptor::lockCall(
 	bool expected = false;
 	if (!handle->isRunning.compare_exchange_strong(expected, true)) {
 		// another callback is already running
-		DEBUG_LOG("%p DBDescriptor::lockCall another callback is already running for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::lockCall another callback is already running for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 		return;
 	}
 
 	// we now "own" the execution for this key
 	if (handle->threadsafeCallbacks.empty()) {
 		handle->isRunning.store(false);
-		DEBUG_LOG("%p DBDescriptor::lockCall no callbacks left, removing lock for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::lockCall no callbacks left, removing lock for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 		// remove the empty lock handle from the map
 		this->locks.erase(key);
 		return;
@@ -247,13 +269,13 @@ void DBDescriptor::lockCall(
 	locksMutex.unlock();
 
 	if (!threadsafeCallback) {
-		DEBUG_LOG("%p DBDescriptor::lockCall threadsafe lock callback is null for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::lockCall threadsafe lock callback is null for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 		return;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key:", this)
-	DEBUG_LOG_KEY_LN(key)
+	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key:", this);
+	DEBUG_LOG_KEY_LN(key);
 
 	// create callback data that includes the key for completion and deferred promise
 	auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
@@ -289,25 +311,25 @@ void DBDescriptor::lockEnqueueCallback(
 
 	if (lockHandleIterator == this->locks.end()) {
 		// no lock found
-		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 		lockHandle = std::make_shared<LockHandle>(owner, env);
 		this->locks.emplace(key, lockHandle);
 		if (isNewLock != nullptr) {
 			*isNewLock = true;
 		}
 		if (skipEnqueueIfNewLock) {
-			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback skipping enqueue because lock already exists\n", this)
+			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback skipping enqueue because lock already exists\n", this);
 			return;
 		}
 	} else {
-		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback lock found for key %s\n", this, key.c_str())
+		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback lock found for key %s\n", this, key.c_str());
 		lockHandle = lockHandleIterator->second;
 	}
 
 	// lock found
 	napi_valuetype type;
-	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, callback, &type))
+	NAPI_STATUS_THROWS_VOID(::napi_typeof(env, callback, &type));
 	if (type == napi_function) {
 		napi_value resource_name;
 		NAPI_STATUS_THROWS_VOID(::napi_create_string_latin1(
@@ -315,7 +337,7 @@ void DBDescriptor::lockEnqueueCallback(
 			"rocksdb-js.lock",
 			NAPI_AUTO_LENGTH,
 			&resource_name
-		))
+		));
 
 		napi_threadsafe_function threadsafeCallback;
 		NAPI_STATUS_THROWS_VOID(::napi_create_threadsafe_function(
@@ -330,10 +352,10 @@ void DBDescriptor::lockEnqueueCallback(
 			nullptr,            // context
 			callJsCallback,     // call_js_cb
 			&threadsafeCallback // [out] callback
-		))
+		));
 
-		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback enqueuing callback %p\n", this, threadsafeCallback)
-		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback))
+		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback enqueuing callback %p\n", this, threadsafeCallback);
+		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback));
 
 		// Create LockCallback and add to queue
 		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred));
@@ -347,7 +369,7 @@ bool DBDescriptor::lockExistsByKey(std::string& key) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	auto lockHandle = this->locks.find(key);
 	bool exists = lockHandle != this->locks.end();
-	DEBUG_LOG("%p DBDescriptor::hasLock %s lock for key \"%s\"\n", this, exists ? "found" : "not found", key.c_str())
+	DEBUG_LOG("%p DBDescriptor::hasLock %s lock for key \"%s\"\n", this, exists ? "found" : "not found", key.c_str());
 	return exists;
 }
 
@@ -363,23 +385,23 @@ bool DBDescriptor::lockReleaseByKey(std::string& key) {
 
 		if (lockHandle == this->locks.end()) {
 			// no lock found
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByKey no lock found\n", this)
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByKey no lock found\n", this);
 			return false;
 		}
 
 		// lock found, remove it
 		threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
-		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey removing lock\n", this)
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey removing lock\n", this);
 		this->locks.erase(key);
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling %zu unlock callbacks\n", this, threadsafeCallbacks.size());
 
 	// call the callbacks in order, but stop if any callback fails
 	while (!threadsafeCallbacks.empty()) {
 		auto lockCallback = threadsafeCallbacks.front();
 		threadsafeCallbacks.pop();
-		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling callback %p\n", this, lockCallback.callback)
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling callback %p\n", this, lockCallback.callback);
 		napi_status status = ::napi_call_threadsafe_function(lockCallback.callback, nullptr, napi_tsfn_blocking);
 		if (status == napi_closing) {
 			continue;
@@ -398,11 +420,11 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 
 	{
 		std::lock_guard<std::mutex> lock(this->locksMutex);
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner)
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner);
 		for (auto it = this->locks.begin(); it != this->locks.end();) {
 			auto lockOwner = it->second->owner.lock();
 			if (!lockOwner || lockOwner.get() == owner) {
-				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size())
+				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size());
 				// move all callbacks from the queue
 				while (!it->second->threadsafeCallbacks.empty()) {
 					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
@@ -415,11 +437,11 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 		}
 	}
 
-	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling %zu unlock callbacks\n", this, threadsafeCallbacks.size())
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling %zu unlock callbacks\n", this, threadsafeCallbacks.size());
 
 	// call the callbacks in order, but stop if any callback fails
 	for (auto& callback : threadsafeCallbacks) {
-		DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling callback %p\n", this, callback)
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner calling callback %p\n", this, callback);
 		napi_status status = ::napi_call_threadsafe_function(callback, nullptr, napi_tsfn_blocking);
 		if (status == napi_closing) {
 			continue;
@@ -433,7 +455,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  */
 std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
 	std::string name = options.name.empty() ? "default" : options.name;
-	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\")\n", path.c_str(), name.c_str())
+	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\")\n", path.c_str(), name.c_str());
 
 	// set or disable the block cache
 	rocksdb::BlockBasedTableOptions tableOptions;
@@ -476,17 +498,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::vector<std::string> columnFamilyNames;
 
 	// try to list existing column families
-	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str())
+	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
 		// database exists, use existing column families
 		for (const auto& cfName : columnFamilyNames) {
-			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str())
+			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str());
 			cfDescriptors.emplace_back(cfName, cfOptions); // Use cfOptions here
 		}
 	} else {
 		// database doesn't exist or no column families found, use default
-		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n")
+		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n");
 		cfDescriptors = {
 			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfOptions) // Use cfOptions here
 		};
@@ -502,23 +524,23 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		txndbOptions.transaction_lock_timeout = 10000;
 
 		rocksdb::TransactionDB* rdb;
-		DEBUG_LOG("DBDescriptor::open Opening pessimistic transaction db for \"%s\"\n", path.c_str())
+		DEBUG_LOG("DBDescriptor::open Opening pessimistic transaction db for \"%s\"\n", path.c_str());
 		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
-			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
+			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw std::runtime_error(status.ToString().c_str());
 		}
-		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str())
+		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	} else {
 		rocksdb::OptimisticTransactionDB* rdb;
-		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str())
+		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
-			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str())
+			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw std::runtime_error(status.ToString().c_str());
 		}
-		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str())
+		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	}
 
@@ -534,7 +556,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		columns[options.name] = rocksdb_js::createRocksDBColumnFamily(db, options.name);
 	}
 
-	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str())
+	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns)));
 
 	// set the weak pointer for the event listener
@@ -579,7 +601,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
 		if (it->second != txnHandle) {
-			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %u mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get())
+			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %u mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
 	}
@@ -614,7 +636,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		// builds, so we need to use the `maybe_unused` attribute and this will
 		// be optimized out in release builds
 		[[maybe_unused]] auto msg = e.what();
-		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to acquire lock (key=\"%s\"): %s\n", this, key.c_str(), msg)
+		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to acquire lock (key=\"%s\"): %s\n", this, key.c_str(), msg);
 		return; // mutex is invalid, descriptor is likely being destroyed
 	}
 
@@ -635,14 +657,14 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		bool expected = false;
 		if (!handle->isRunning.compare_exchange_strong(expected, true)) {
 			// another callback is already running
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete another callback is already running (key=\"%s\")\n", this, key.c_str())
+			DEBUG_LOG("%p DBDescriptor::onCallbackComplete another callback is already running (key=\"%s\")\n", this, key.c_str());
 			return;
 		}
 
 		// we now "own" the execution for this key
 		if (handle->threadsafeCallbacks.empty()) {
 			handle->isRunning.store(false);
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete no callbacks left (key=\"%s\"), removing lock\n", this, key.c_str())
+			DEBUG_LOG("%p DBDescriptor::onCallbackComplete no callbacks left (key=\"%s\"), removing lock\n", this, key.c_str());
 			// remove the empty lock handle from the map
 			this->locks.erase(key);
 			return;
@@ -655,7 +677,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		// release the mutex before calling the callback to avoid holding locks during callback execution
 		lock.unlock();
 
-		DEBUG_LOG("%p DBDescriptor::onCallbackComplete calling callback %p (key=\"%s\")\n", this, callback, key.c_str())
+		DEBUG_LOG("%p DBDescriptor::onCallbackComplete calling callback %p (key=\"%s\")\n", this, callback, key.c_str());
 
 		// create callback data that includes the key for completion and deferred promise
 		auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
@@ -675,7 +697,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 		// builds, so we need to use the `maybe_unused` attribute and this will
 		// be optimized out in release builds
 		[[maybe_unused]] auto msg = e.what();
-		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to fire next callback (key=\"%s\"): %s\n", this, key.c_str(), msg)
+		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to fire next callback (key=\"%s\"): %s\n", this, key.c_str(), msg);
 	}
 }
 
@@ -684,23 +706,26 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
  */
 #ifdef DEBUG
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
-		{ \
+		do { \
 			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
 			rocksdb_js::debugLog("callJsCallback() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
-		}
+		} while (0)
 #else
-	#define CALL_JS_CB_DEBUG_LOG(msg, ...)
+	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
+		do { \
+			; \
+		} while (0)
 #endif
 
 #define CALL_JS_CB_NAPI_STATUS_CHECK(call, code, msg, ...) \
-	{ \
+	do { \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
 			CALL_JS_CB_DEBUG_LOG(msg, ##__VA_ARGS__); \
 			code; \
 			return; \
 		} \
-	}
+	} while (0)
 
 /**
  * Custom wrapper used by `napi_call_threadsafe_function()` to call user-
@@ -726,7 +751,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	// get the callback data from the function's data
 	LockCallbackCompletionData* callbackData = static_cast<LockCallbackCompletionData*>(data);
 	if (callbackData == nullptr) {
-		DEBUG_LOG("callJsCallback callbackData is nullptr - calling js callback\n")
+		DEBUG_LOG("callJsCallback callbackData is nullptr - calling js callback\n");
 		// this is a tryLock callback - call it without completion callback
 		napi_value global;
 		napi_status status = ::napi_get_global(env, &global);
@@ -765,14 +790,14 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 					delete callbackData;
 				}
 
-				NAPI_RETURN_UNDEFINED()
+				NAPI_RETURN_UNDEFINED();
 			},
 			callbackData,
 			&completionCallback
 		),
 		delete callbackData,
 		"failed to create completion callback"
-	)
+	);
 
 	// call the original callback without any arguments
 	napi_value global;
@@ -780,10 +805,10 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 		::napi_get_global(env, &global),
 		delete callbackData,
 		"napi_get_global() failed"
-	)
+	);
 
 	napi_value result;
-	DEBUG_LOG("callJsCallback calling js callback (key=\"%s\")\n", callbackData->key.c_str())
+	DEBUG_LOG("callJsCallback calling js callback (key=\"%s\")\n", callbackData->key.c_str());
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_call_function(env, global, jsCallback, 0, nullptr, &result),
 		{
@@ -793,7 +818,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 			delete callbackData;
 		},
 		"napi_call_function() failed"
-	)
+	);
 
 	// check if the result is a Promise
 	napi_value promiseCtor;
@@ -805,7 +830,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 		}
 		delete callbackData,
 		"failed to get Promise constructor"
-	)
+	);
 
 	bool isPromise;
 	CALL_JS_CB_NAPI_STATUS_CHECK(
@@ -816,10 +841,10 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 		}
 		delete callbackData,
 		"napi_instanceof() failed"
-	)
+	);
 
 	if (!isPromise) {
-		DEBUG_LOG("callJsCallback result is not a Promise, completing immediately (key=\"%s\")\n", callbackData->key.c_str())
+		DEBUG_LOG("callJsCallback result is not a Promise, completing immediately (key=\"%s\")\n", callbackData->key.c_str());
 
 		// If this is a withLock call with a deferred promise, resolve it
 		if (callbackData->deferred != nullptr) {
@@ -835,7 +860,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 		return;
 	}
 
-	DEBUG_LOG("callJsCallback result is a Promise, attaching .then() callback (key=\"%s\")\n", callbackData->key.c_str())
+	DEBUG_LOG("callJsCallback result is a Promise, attaching .then() callback (key=\"%s\")\n", callbackData->key.c_str());
 
 	// get the 'then' method from the promise
 	napi_value thenMethod;
@@ -846,7 +871,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 		}
 		delete callbackData,
 		"failed to get .then() method"
-	)
+	);
 
 	// create resolve and reject callbacks that both complete the lock
 	// we need to store the shared_ptr in a way N-API callbacks can access it
@@ -862,7 +887,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 				napi_value result;
 				::napi_get_undefined(env, &result);
 
-				DEBUG_LOG("callJsCallback promise resolve callback\n")
+				DEBUG_LOG("callJsCallback promise resolve callback\n");
 
 				void* data;
 				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
@@ -902,7 +927,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 			delete resolveDataPtr;
 		},
 		"failed to create resolve callback"
-	)
+	);
 
 	// create reject callback - shared_ptr handles safe sharing between resolve/reject
 	auto* rejectDataPtr = new std::shared_ptr<LockCallbackCompletionData>(callbackDataPtr);
@@ -959,7 +984,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 			delete resolveDataPtr;
 		},
 		"failed to create reject callback"
-	)
+	);
 
 	// call `promise.then(resolveCallback, rejectCallback)` for key "key"
 	napi_value thenArgs[] = { resolveCallback, rejectCallback };
@@ -974,7 +999,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 			delete rejectDataPtr;
 		},
 		"failed to call .then()"
-	)
+	);
 }
 
 /**
@@ -986,14 +1011,14 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
 
 	if (auto descriptor = finalizeData->descriptor.lock()) {
-		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get())
-		DEBUG_LOG_KEY(finalizeData->key)
+		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get());
+		DEBUG_LOG_KEY(finalizeData->key);
 		DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
 
 		if (finalizeData->callbackRef) {
 			napi_value callback;
 			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
-				DEBUG_LOG("%p userSharedBufferFinalize removing listener", descriptor.get())
+				DEBUG_LOG("%p userSharedBufferFinalize removing listener", descriptor.get());
 				descriptor->removeListener(env, finalizeData->key, callback);
 			}
 		}
@@ -1008,13 +1033,13 @@ static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
 			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
 			if (finalizeData->sharedData.use_count() <= 2) {
 				descriptor->userSharedBuffers.erase(key);
-				DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key:", descriptor.get())
-				DEBUG_LOG_KEY_LN(key)
+				DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key:", descriptor.get());
+				DEBUG_LOG_KEY_LN(key);
 			}
 		}
 	} else {
-		DEBUG_LOG("userSharedBufferFinalize descriptor was already destroyed for key:")
-		DEBUG_LOG_KEY_LN(finalizeData->key)
+		DEBUG_LOG("userSharedBufferFinalize descriptor was already destroyed for key:");
+		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 
 	delete finalizeData;
@@ -1063,14 +1088,14 @@ napi_value DBDescriptor::getUserSharedBuffer(
 			defaultBuffer,
 			&data,
 			&size
-		))
+		));
 
-		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size)
+		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
 		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size)
-	DEBUG_LOG_KEY_LN(key)
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size);
+	DEBUG_LOG_KEY_LN(key);
 
 	// create finalize data that holds the key, a weak reference to this
 	// descriptor, and a shared_ptr to keep the data alive
@@ -1084,23 +1109,23 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		userSharedBufferFinalize, // finalize_cb
 		finalizeData,             // finalize_hint
 		&result                   // [out] result
-	))
+	));
 	return result;
 }
 
 #define NAPI_STATUS_THROWS_FREE_DATA(call) \
-	{ \
+	do { \
 		napi_status status = (call); \
 		if (status != napi_ok) { \
 			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
 			::napi_throw_error(env, nullptr, errorStr.c_str()); \
-			DEBUG_LOG("callListenerCallback error: %s\n", errorStr.c_str()) \
+			DEBUG_LOG("callListenerCallback error: %s\n", errorStr.c_str()); \
 			if (listenerData) { \
 				delete listenerData; \
 			} \
 			return; \
 		} \
-	}
+	} while (0)
 
 /**
  * Custom wrapper used by `napi_call_threadsafe_function()` to call user-
@@ -1116,7 +1141,7 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 	napi_value* argv = nullptr;
 	napi_value global;
 
-	NAPI_STATUS_THROWS_FREE_DATA(::napi_get_global(env, &global))
+	NAPI_STATUS_THROWS_FREE_DATA(::napi_get_global(env, &global));
 
 	if (listenerData != nullptr) {
 		// only deserialize the emitted data if it exists
@@ -1124,16 +1149,16 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 		napi_value parse;
 		napi_value jsonString;
 		napi_value arrayArgs;
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, global, "JSON", &json))
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, json, "parse", &parse))
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_create_string_utf8(env, listenerData->args.c_str(), listenerData->args.length(), &jsonString))
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, json, parse, 1, &jsonString, &arrayArgs))
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_array_length(env, arrayArgs, &argc))
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, global, "JSON", &json));
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, json, "parse", &parse));
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_create_string_utf8(env, listenerData->args.c_str(), listenerData->args.length(), &jsonString));;
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, json, parse, 1, &jsonString, &arrayArgs));
+		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_array_length(env, arrayArgs, &argc));
 
 		// need to convert from a js array to an array of napi values
 		argv = new napi_value[argc];
 		for (uint32_t i = 0; i < argc; i++) {
-			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_element(env, arrayArgs, i, &argv[i]))
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_element(env, arrayArgs, i, &argv[i]));
 		}
 
 		delete listenerData;
@@ -1142,7 +1167,7 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 
 	// call the listener
 	napi_value result;
-	NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, global, jsCallback, argc, argv, &result))
+	NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, global, jsCallback, argc, argv, &result));
 }
 
 /**
@@ -1159,7 +1184,7 @@ napi_ref DBDescriptor::addListener(
 	std::weak_ptr<DBHandle> owner
 ) {
 	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
+	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type));
 	if (type != napi_function) {
 		::napi_throw_error(env, nullptr, "Callback must be a function");
 		return nullptr;
@@ -1171,7 +1196,7 @@ napi_ref DBDescriptor::addListener(
 		"rocksdb-js.listener",
 		NAPI_AUTO_LENGTH,
 		&resource_name
-	))
+	));
 
 	napi_threadsafe_function threadsafeCallback;
 	NAPI_STATUS_THROWS(::napi_create_threadsafe_function(
@@ -1186,9 +1211,9 @@ napi_ref DBDescriptor::addListener(
 		nullptr,              // context
 		callListenerCallback, // call_js_cb
 		&threadsafeCallback   // [out] callback
-	))
+	));
 
-	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, threadsafeCallback))
+	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, threadsafeCallback));
 
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
@@ -1197,12 +1222,12 @@ napi_ref DBDescriptor::addListener(
 	}
 
 	napi_ref callbackRef;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef))
+	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef));
 	it->second.emplace_back(std::make_shared<ListenerCallback>(env, threadsafeCallback, callbackRef, owner));
 
-	DEBUG_LOG("%p DBDescriptor::addListener added listener for key:", this)
+	DEBUG_LOG("%p DBDescriptor::addListener added listener for key:", this);
 	DEBUG_LOG_KEY(key);
-	DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size())
+	DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size());
 
 	return callbackRef;
 }
@@ -1238,8 +1263,8 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 				delete data;
 			}
 
-			DEBUG_LOG("%p DBDescriptor::notify key has no listeners:", this)
-			DEBUG_LOG_KEY_LN(key)
+			DEBUG_LOG("%p DBDescriptor::notify key has no listeners:", this);
+			DEBUG_LOG_KEY_LN(key);
 
 			return false;
 		}
@@ -1251,8 +1276,8 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 		}
 
 		DEBUG_LOG("%p DBDescriptor::notify calling %zu listener%s for key:",
-			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s")
-		DEBUG_LOG_KEY_LN(key)
+			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
+		DEBUG_LOG_KEY_LN(key);
 	}
 
 	for (auto& weakListener : listenersToCall) {
@@ -1289,8 +1314,8 @@ napi_value DBDescriptor::listeners(napi_env env, std::string& key) {
 		count = it->second.size();
 	}
 
-	DEBUG_LOG("%p DBDescriptor::listeners key has %zu listener%s:", this, count, count == 1 ? "" : "s")
-	DEBUG_LOG_KEY_LN(key)
+	DEBUG_LOG("%p DBDescriptor::listeners key has %zu listener%s:", this, count, count == 1 ? "" : "s");
+	DEBUG_LOG_KEY_LN(key);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(count), &result));
@@ -1306,7 +1331,7 @@ napi_value DBDescriptor::listeners(napi_env env, std::string& key) {
  */
 napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_value callback) {
 	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type))
+	NAPI_STATUS_THROWS(::napi_typeof(env, callback, &type));
 	if (type != napi_function) {
 		::napi_throw_error(env, nullptr, "Callback must be a function");
 		return nullptr;
@@ -1324,14 +1349,14 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 			}
 
 			napi_value fn;
-			NAPI_STATUS_THROWS(::napi_get_reference_value((*listener)->env, (*listener)->callbackRef, &fn))
+			NAPI_STATUS_THROWS(::napi_get_reference_value((*listener)->env, (*listener)->callbackRef, &fn));
 			bool isEqual = false;
-			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual))
+			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual));
 			if (isEqual) {
 				listener = it->second.erase(listener);
-				DEBUG_LOG("%p DBDescriptor::removeListener removed listener for key:", this)
+				DEBUG_LOG("%p DBDescriptor::removeListener removed listener for key:", this);
 				DEBUG_LOG_KEY(key);
-				DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size())
+				DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size());
 				found = true;
 				break;
 			}
@@ -1340,13 +1365,13 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 		}
 
 		if (it->second.empty()) {
-			DEBUG_LOG("%p DBDescriptor::removeListener All listeners removed, removing key:", this)
+			DEBUG_LOG("%p DBDescriptor::removeListener All listeners removed, removing key:", this);
 			DEBUG_LOG_KEY_LN(key);
 			this->listenerCallbacks.erase(it);
 		}
 	} else {
-		DEBUG_LOG("%p DBDescriptor::removeListener No listeners found for key:", this)
-		DEBUG_LOG_KEY_LN(key)
+		DEBUG_LOG("%p DBDescriptor::removeListener No listeners found for key:", this);
+		DEBUG_LOG_KEY_LN(key);
 	}
 
 	napi_value result;
@@ -1362,7 +1387,7 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 
-	DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listeners for owner %p\n", this, owner)
+	DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listeners for owner %p\n", this, owner);
 
 	for (auto keyIt = this->listenerCallbacks.begin(); keyIt != this->listenerCallbacks.end(); ) {
 		auto& listeners = keyIt->second;
@@ -1374,7 +1399,7 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 					auto sharedOwner = callback->owner.lock();
 					bool shouldRemove = (sharedOwner.get() == owner) || callback->owner.expired();
 					if (shouldRemove) {
-						DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener", owner)
+						DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener", owner);
 						// note: can't safely log key here as we're in iterator
 					}
 					return shouldRemove;
@@ -1384,7 +1409,7 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 
 		// remove the key entirely if no listeners remain
 		if (listeners.empty()) {
-			DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing empty key\n", this)
+			DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing empty key\n", this);
 			keyIt = this->listenerCallbacks.erase(keyIt);
 		} else {
 			++keyIt;
@@ -1398,7 +1423,7 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
  */
 void DBDescriptor::discoverTransactionLogStores() {
 	if (this->transactionLogsPath.empty() || !std::filesystem::exists(this->transactionLogsPath)) {
-		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogStores No transaction logs path set or directory does not exist\n", this)
+		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogStores No transaction logs path set or directory does not exist\n", this);
 		return;
 	}
 
@@ -1430,7 +1455,7 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogStores.size(), &result));
 
-	DEBUG_LOG("%p DBDescriptor::listTransactionLogStores Returning %u transaction log store names\n", this, this->transactionLogStores.size())
+	DEBUG_LOG("%p DBDescriptor::listTransactionLogStores Returning %u transaction log store names\n", this, this->transactionLogStores.size());
 	for (auto& log : this->transactionLogStores) {
 		napi_value name;
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, log.second->name.c_str(), log.second->name.length(), &name));
@@ -1445,13 +1470,13 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
 	bool destroy = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy))
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
 
 	std::string name;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name))
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
 
 	napi_value removed;
-	NAPI_STATUS_THROWS(::napi_create_array(env, &removed))
+	NAPI_STATUS_THROWS(::napi_create_array(env, &removed));
 
 	size_t i = 0;
 	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
@@ -1479,10 +1504,10 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 			std::filesystem::remove_all(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",
-				this, store->path.string().c_str(), e.what())
+				this, store->path.string().c_str(), e.what());
 		} catch (...) {
 			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Unknown error removing log directory %s\n",
-				this, store->path.string().c_str())
+				this, store->path.string().c_str());
 		}
 		this->transactionLogStores.erase(store->name);
 	}
@@ -1501,13 +1526,13 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 
 	auto it = this->transactionLogStores.find(name);
 	if (it != this->transactionLogStores.end()) {
-		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str())
+		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str());
 		return it->second;
 	}
 
 	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
 	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store \"%s\"\n",
-		this, name.c_str())
+		this, name.c_str());
 
 	// ensure the directory exists
 	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating directory: %s\n", this, logDirectory.string().c_str());

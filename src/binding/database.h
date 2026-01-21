@@ -10,16 +10,22 @@
 
 namespace rocksdb_js {
 
+#define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
+#define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
+#define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
+
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
 
 #define UNWRAP_DB_HANDLE_AND_OPEN() \
-	UNWRAP_DB_HANDLE() \
-	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-		::napi_throw_error(env, nullptr, "Database not open"); \
-		NAPI_RETURN_UNDEFINED() \
-	}
+	UNWRAP_DB_HANDLE(); \
+	do { \
+		if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+			::napi_throw_error(env, nullptr, "Database not open"); \
+			NAPI_RETURN_UNDEFINED(); \
+		} \
+	} while (0)
 
 /**
  * The `NativeDatabase` JavaScript class implementation.
@@ -57,6 +63,8 @@ struct Database final {
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
+	static napi_value SetDefaultValueBuffer(napi_env env, napi_callback_info info);
+	static napi_value SetDefaultKeyBuffer(napi_env env, napi_callback_info info);
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);
 	static napi_value UseLog(napi_env env, napi_callback_info info);
@@ -99,14 +107,15 @@ struct AsyncGetState final : BaseAsyncState<T> {
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
-		rocksdb::Slice& keySlice
+		std::string key
 	) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
-		keySlice(keySlice) {}
+		key(std::move(key)) {}
 
 	rocksdb::ReadOptions readOptions;
-	rocksdb::Slice keySlice;
+	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
+	std::string key;
 	std::string value;
 };
 
@@ -126,7 +135,7 @@ void resolveGetResult(
 	AsyncGetState<T>* state
 ) {
 	napi_value global;
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
 		napi_value result;
@@ -134,12 +143,12 @@ void resolveGetResult(
 			napi_get_undefined(env, &result);
 		} else {
 			// TODO: when in "fast" mode, use the shared buffer
-			NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->value.size(), state->value.data(), nullptr, &result))
+			NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->value.size(), state->value.data(), nullptr, &result));
 		}
 
 		state->callResolve(result);
 	} else {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed");
 		state->callReject(error);
 	}
 }
