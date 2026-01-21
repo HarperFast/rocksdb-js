@@ -17,11 +17,11 @@ namespace rocksdb_js {
  * ```
  */
 napi_value Database::AddListener(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	NAPI_METHOD_ARGV(2);
+	NAPI_GET_STRING(argv[0], key, "Event is required");
+	UNWRAP_DB_HANDLE_AND_OPEN();
 	(*dbHandle)->addListener(env, key, argv[1]);
-	NAPI_RETURN_UNDEFINED()
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -39,19 +39,19 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Notify(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	NAPI_METHOD_ARGV(2);
+	NAPI_GET_STRING(argv[0], key, "Event is required");
+	UNWRAP_DB_HANDLE_AND_OPEN();
 	napi_value result;
 	DEBUG_LOG("Database::Notify calling notify env=%p args=%p\n", env, argv[1]);
 	ListenerData* data = nullptr;
 
 	// need to serialize the args to a string
 	bool isArray = false;
-	NAPI_STATUS_THROWS(::napi_is_array(env, argv[1], &isArray))
+	NAPI_STATUS_THROWS(::napi_is_array(env, argv[1], &isArray));
 	if (isArray) {
 		uint32_t argc = 0;
-		NAPI_STATUS_THROWS(::napi_get_array_length(env, argv[1], &argc))
+		NAPI_STATUS_THROWS(::napi_get_array_length(env, argv[1], &argc));
 		if (argc > 0) {
 			napi_value global;
 			napi_value json;
@@ -89,9 +89,9 @@ napi_value Database::Notify(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Listeners(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	NAPI_METHOD_ARGV(1);
+	NAPI_GET_STRING(argv[0], key, "Event is required");
+	UNWRAP_DB_HANDLE_AND_OPEN();
 	return (*dbHandle)->descriptor->listeners(env, key);
 }
 
@@ -107,9 +107,9 @@ napi_value Database::Listeners(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	NAPI_GET_STRING(argv[0], key, "Event is required")
-	UNWRAP_DB_HANDLE_AND_OPEN()
+	NAPI_METHOD_ARGV(2);
+	NAPI_GET_STRING(argv[0], key, "Event is required");
+	UNWRAP_DB_HANDLE_AND_OPEN();
 	return (*dbHandle)->descriptor->removeListener(env, key, argv[1]);
 }
 

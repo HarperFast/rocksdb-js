@@ -9,26 +9,13 @@
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&txnLogHandle))) \
-	if (!txnLogHandle || !(*txnLogHandle)) { \
-		::napi_throw_error(env, nullptr, fnName " failed: TransactionLog has already been closed"); \
-		return nullptr; \
-	}
-
-#define GET_CTOR_STRING_ARG(from, to, errorMsg) \
-	std::string to; \
-	{ \
-		napi_valuetype type; \
-		NAPI_STATUS_THROWS(::napi_typeof(env, from, &type)); \
-		if (type != napi_string) { \
-			::napi_throw_error(env, nullptr, errorMsg); \
+	do { \
+		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&txnLogHandle))); \
+		if (!txnLogHandle || !(*txnLogHandle)) { \
+			::napi_throw_error(env, nullptr, fnName " failed: TransactionLog has already been closed"); \
 			return nullptr; \
 		} \
-		size_t length = 0; \
-		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, from, nullptr, 0, &length)); \
-		to.resize(length, '\0'); \
-		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, from, to.data(), length + 1, &length)); \
-	}
+	} while (0)
 
 namespace rocksdb_js {
 
@@ -47,25 +34,25 @@ namespace rocksdb_js {
  * ```
  */
 napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("TransactionLog", 2)
+	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("TransactionLog", 2);
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
-	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance")
+	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance");
 
-	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required")
+	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required");
 
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
 		std::make_shared<TransactionLogHandle>(*dbHandle, name)
 	);
 
-	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get())
+	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get());
 
 	NAPI_STATUS_THROWS(::napi_wrap(
 		env,
 		jsThis,
 		reinterpret_cast<void*>(txnLogHandle),
 		[](napi_env env, void* data, void* hint) {
-			DEBUG_LOG("TransactionLog::Constructor NativeTransactionLog GC'd txnLogHandle=%p\n", data)
+			DEBUG_LOG("TransactionLog::Constructor NativeTransactionLog GC'd txnLogHandle=%p\n", data);
 			auto* txnLogHandle = static_cast<std::shared_ptr<TransactionLogHandle>*>(data);
 			if (txnLogHandle) {
 				(*txnLogHandle)->close();
@@ -91,8 +78,8 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2)
-	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry")
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry");
 
 	bool isBuffer;
 	bool isArrayBuffer;
@@ -140,18 +127,18 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	NAPI_RETURN_UNDEFINED()
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
  * Get the size of a sequenced log file.
  */
 napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize")
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLogFileSize");
 	uint32_t sequenceNumber = 0;
 	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 	if (type == napi_number) {
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 		if (sequenceNumber == 0) {
@@ -174,12 +161,12 @@ struct PositionHandle {
  * Return a buffer with the status of the sequenced log file.
  */
 napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition")
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastCommittedPosition");
 	auto lastCommittedPosition = (*txnLogHandle)->getLastCommittedPosition().lock();
 
 	if (!lastCommittedPosition) {
-		NAPI_RETURN_UNDEFINED()
+		NAPI_RETURN_UNDEFINED();
 	}
 
 	napi_value result;
@@ -195,15 +182,15 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
  * Gets the range of the transaction log.
  */
 napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile")
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetMemoryMapOfFile");
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 
 	auto memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
-		NAPI_RETURN_UNDEFINED()
+		NAPI_RETURN_UNDEFINED();
 	}
 
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
@@ -214,7 +201,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		memoryMap->fileSize, // length
 		memoryMap->map, // data
 		[](napi_env env, void* data, void* hint) { // finalize_cb
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint)
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
 			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
 			delete memoryMap;
 		},
@@ -229,8 +216,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
  * Find the position in the transaction logs with a transaction equal to or greater than the provided timestamp.
  */
 napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition")
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition");
 	double timestamp = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
 	LogPosition position = (*txnLogHandle)->findPosition(timestamp);
@@ -243,8 +230,8 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
  * Get the last flushed position from the txn.state file.
  */
 napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastFlushed")
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetLastFlushed");
 	LogPosition position = (*txnLogHandle)->getLastFlushed();
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
@@ -268,7 +255,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 	constexpr size_t len = sizeof("TransactionLog") - 1;
 
 	napi_ref exportsRef;
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef))
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef));
 
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
@@ -280,9 +267,9 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,                  // properties array
 		&ctor                        // [out] constructor
-	))
+	));
 
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor));
 }
 
 } // namespace rocksdb_js

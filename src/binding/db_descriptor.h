@@ -283,7 +283,7 @@ struct LockHandle final {
 		while (!threadsafeCallbacks.empty()) {
 			LockCallback lockCallback = threadsafeCallbacks.front();
 			threadsafeCallbacks.pop();
-			::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
+			NAPI_STATUS_THROWS_VOID(::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release));
 		}
 	}
 
@@ -425,13 +425,13 @@ struct ListenerCallback final {
 
 	~ListenerCallback() {
 		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p, threadsafeCallback=%p\n",
-			this, this->callbackRef, this->threadsafeCallback)
+			this, this->callbackRef, this->threadsafeCallback);
 		this->release();
 	}
 
 	void release() {
 		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p, threadsafeCallback=%p\n",
-			this, this->callbackRef, this->threadsafeCallback)
+			this, this->callbackRef, this->threadsafeCallback);
 
 		if (this->callbackRef && this->env) {
 			::napi_delete_reference(this->env, this->callbackRef);
