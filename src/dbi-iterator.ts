@@ -5,7 +5,7 @@ import type { Store } from './store.js';
 export interface DBIteratorValue<T> {
 	key: Key;
 	value: T;
-};
+}
 
 /**
  * Wraps an iterator, namely the `NativeIterator` class, and decodes the key
@@ -16,11 +16,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	store: Store;
 	#includeValues: boolean;
 
-	constructor(
-		iterator: Iterator<DBIteratorValue<T>>,
-		store: Store,
-		options?: IteratorOptions & T
-	) {
+	constructor(iterator: Iterator<DBIteratorValue<T>>, store: Store, options?: IteratorOptions & T) {
 		this.iterator = iterator;
 		this.store = store;
 		this.#includeValues = options?.values ?? true;
@@ -42,10 +38,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 			value.value = this.store.decodeValue(result.value.value as BufferWithDataView);
 		}
 
-		return {
-			done: false,
-			value: value as DBIteratorValue<T>
-		};
+		return { done: false, value: value as DBIteratorValue<T> };
 	}
 
 	return(value?: any): IteratorResult<DBIteratorValue<T>, any> {

@@ -1,42 +1,54 @@
-import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
-import { join } from 'node:path';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
-import { parentPort, Worker, workerData } from 'node:worker_threads';
-import { setImmediate as rest } from 'node:timers/promises';
 import { rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { setImmediate as rest } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { parentPort, Worker, workerData } from 'node:worker_threads';
+import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
+
 const isWindows = process.platform === 'win32';
 
-const vitestBench = workerData?.benchmarkWorkerId ? () => {
-	throw new Error('Workers should not be directly calling vitest\'s bench()');
-} : (await import('vitest')).bench;
+const vitestBench = workerData?.benchmarkWorkerId
+	? () => {
+		throw new Error("Workers should not be directly calling vitest's bench()");
+	}
+	: (await import('vitest')).bench;
 
 export type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
 export interface BenchmarkContext<T> extends Record<string, any> {
 	db: T;
-};
+}
 
 type BenchmarkOptions<T, U> = {
-	bench: (ctx: BenchmarkContext<T>) => void | Promise<void>,
-	dbOptions?: U,
-	name?: string,
-	setup?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
-	timeout?: number,
-	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>,
-	mode?: 'essential' | 'full'
+	bench: (ctx: BenchmarkContext<T>) => void | Promise<void>;
+	dbOptions?: U;
+	name?: string;
+	setup?: (ctx: BenchmarkContext<T>) => void | Promise<void>;
+	timeout?: number;
+	teardown?: (ctx: BenchmarkContext<T>) => void | Promise<void>;
+	mode?: 'essential' | 'full';
 };
 
-export function benchmark(type: 'rocksdb', options: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>): void;
-export function benchmark(type: 'lmdb', options: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>): void;
+export function benchmark(
+	type: 'rocksdb',
+	options: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>
+): void;
+export function benchmark(
+	type: 'lmdb',
+	options: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>
+): void;
 export function benchmark(type: string, options: any): void {
 	if (type !== 'rocksdb' && type !== 'lmdb') {
 		throw new Error(`Unsupported benchmark type: ${type}`);
 	}
 
-	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
-		(process.env.BENCHMARK_MODE === 'essential' && options.mode !== 'essential')) {
+	if (
+		(process.env.ROCKSDB_ONLY && type !== 'rocksdb')
+		|| (process.env.LMDB_ONLY && type !== 'lmdb')
+		|| (process.env.BENCHMARK_MODE === 'essential' && options.mode !== 'essential')
+	) {
 		return;
 	}
 
@@ -58,7 +70,7 @@ export function benchmark(type: string, options: any): void {
 				timer = setTimeout(() => {
 					reject(new Error('Benchmark timed out'));
 				}, options.timeout || 60_000);
-			})
+			}),
 		]);
 	}, {
 		throws: true,
@@ -88,7 +100,7 @@ export function benchmark(type: string, options: any): void {
 					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 				}
 			}
-		}
+		},
 	});
 }
 
@@ -214,11 +226,7 @@ function describeShim(name: string, fn: () => void) {
 	let suite: WorkerSuite | undefined = suites[name];
 
 	if (!suite) {
-		suite = {
-			name,
-			benchmarks: [],
-			suites: {}
-		};
+		suite = { name, benchmarks: [], suites: {} };
 		suites[name] = suite;
 	}
 
@@ -245,7 +253,7 @@ export const workerDescribe = await (async () => {
 			},
 			todo() {
 				throw new Error('todo not supported in worker');
-			}
+			},
 		});
 	}
 
@@ -294,8 +302,11 @@ export function workerBenchmark(type: string, options: any): void {
 		throw new Error(`Unsupported benchmark type: ${type}`);
 	}
 
-	if ((process.env.ROCKSDB_ONLY && type !== 'rocksdb') || (process.env.LMDB_ONLY && type !== 'lmdb') ||
-		(process.env.BENCHMARK_MODE === 'essential' && options.mode !== 'essential')) {
+	if (
+		(process.env.ROCKSDB_ONLY && type !== 'rocksdb')
+		|| (process.env.LMDB_ONLY && type !== 'lmdb')
+		|| (process.env.BENCHMARK_MODE === 'essential' && options.mode !== 'essential')
+	) {
 		return;
 	}
 
@@ -304,14 +315,24 @@ export function workerBenchmark(type: string, options: any): void {
 	Error.prepareStackTrace = (_, stack) => stack;
 	const stack = new Error().stack as any;
 	Error.prepareStackTrace = originalPrepareStackTrace;
-	const benchmarkFile = stack.map(frame => frame.getFileName()).find(frame => frame.endsWith('.bench.ts'));
+	const benchmarkFile = stack.map(frame => frame.getFileName()).find(frame =>
+		frame.endsWith('.bench.ts')
+	);
 
 	let { bench, dbOptions, name, numWorkers, setup, teardown } = options;
 	numWorkers = Math.max(numWorkers || 1, 1);
 	const benchmarkName = name || type;
 	const suite = workerCurrentSuites[workerCurrentSuites.length - 1];
 	if (suite) {
-		suite.benchmarks.push({ bench, dbOptions, name: benchmarkName, numWorkers, setup, teardown, type });
+		suite.benchmarks.push({
+			bench,
+			dbOptions,
+			name: benchmarkName,
+			numWorkers,
+			setup,
+			teardown,
+			type,
+		});
 	}
 
 	if (workerData?.benchmarkWorkerId) {
@@ -322,7 +343,7 @@ export function workerBenchmark(type: string, options: any): void {
 	const workerState: WorkerState[] = [];
 	const workerPayload = {
 		suites: workerCurrentSuites.map(suite => suite.name),
-		benchmark: benchmarkName
+		benchmark: benchmarkName,
 	};
 
 	vitestBench(benchmarkName, async () => {
@@ -338,7 +359,9 @@ export function workerBenchmark(type: string, options: any): void {
 	}, {
 		throws: true,
 		async setup(_task, mode) {
-			if (mode === 'run') return;
+			if (mode === 'run') {
+				return;
+			}
 			const path = join('benchmark', 'data', `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 
 			// launch all workers and wait for them to initialize
@@ -349,7 +372,7 @@ export function workerBenchmark(type: string, options: any): void {
 						benchmarkFile: pathToFileURL(benchmarkFile).toString(),
 						benchmarkWorkerId: i + 1,
 						mode,
-						path
+						path,
 					});
 					// important! these promises need to be referenced as
 					// properties of `state` because they are reset by reference
@@ -357,7 +380,7 @@ export function workerBenchmark(type: string, options: any): void {
 						worker,
 						benchPromise: withResolvers<void>(),
 						exitPromise: withResolvers<void>(),
-						teardownPromise: withResolvers<void>()
+						teardownPromise: withResolvers<void>(),
 					};
 					workerState[i] = state;
 					worker.on('error', reject);
@@ -384,7 +407,9 @@ export function workerBenchmark(type: string, options: any): void {
 		},
 		time: 2000,
 		async teardown(_task, mode) {
-			if (mode === 'warmup') return;
+			if (mode === 'warmup') {
+				return;
+			}
 			// tell all workers to teardown and wait
 			await Promise.all(Array.from({ length: numWorkers }, (_, i) => {
 				const state = workerState[i];
@@ -397,7 +422,7 @@ export function workerBenchmark(type: string, options: any): void {
 				workerState[i].teardownPromise = withResolvers<void>();
 				return workerState[i].exitPromise.promise;
 			}));
-		}
+		},
 	});
 }
 
@@ -484,13 +509,13 @@ export function workerLaunch(workerData: Record<string, any> = {}) {
 	// Node.js 18 and older doesn't properly eval ESM code
 	const majorVersion = parseInt(process.versions.node.split('.')[0]);
 	const script = majorVersion < 20
-		?	`
+		? `
 			const tsx = require('tsx/cjs/api');
 			tsx.require(${JSON.stringify(workerData.benchmarkFile)}, __dirname);
 			const { workerInit } = tsx.require('./benchmark/setup.ts', __dirname);
 			workerInit();
 			`
-		:	`
+		: `
 			import { register } from 'tsx/esm/api';
 			register();
 			import(${JSON.stringify(workerData.benchmarkFile)})
@@ -498,13 +523,7 @@ export function workerLaunch(workerData: Record<string, any> = {}) {
 				.then(module => module.workerInit());
 			`;
 
-	return new Worker(
-		script,
-		{
-			eval: true,
-			workerData,
-		}
-	);
+	return new Worker(script, { eval: true, workerData });
 }
 
 function withResolvers<T>() {
@@ -513,16 +532,18 @@ function withResolvers<T>() {
 		resolve = res;
 		reject = rej;
 	});
-	return {
-		resolve,
-		reject,
-		promise
-	};
+	return { resolve, reject, promise };
 }
 
-export function concurrent(suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
-export function concurrent(suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
-export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & HasConcurrencyOptions): S {
+export function concurrent(
+	suite: BenchmarkOptions<RocksDatabase, RocksDatabaseOptions> & HasConcurrencyOptions
+): BenchmarkOptions<RocksDatabase, RocksDatabaseOptions>;
+export function concurrent(
+	suite: BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions> & HasConcurrencyOptions
+): BenchmarkOptions<LMDBDatabase, lmdb.RootDatabaseOptions>;
+export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(
+	suite: S & HasConcurrencyOptions
+): S {
 	let index = 0;
 	const concurrencyMaximum = suite.concurrencyMaximum ?? 8;
 	let currentlyExecuting: Promise<void>[] = Array(concurrencyMaximum);
@@ -545,7 +566,11 @@ export function concurrent<T, U, S extends BenchmarkOptions<T, U>>(suite: S & Ha
 			await Promise.all(currentlyExecuting);
 			// any more tearing down
 			return suite.teardown?.(ctx);
-		}
-	}
+		},
+	};
 }
-type HasConcurrencyOptions = { concurrencyMaximum?: number, numWorkers?: number, restEachTurn?: boolean };
+type HasConcurrencyOptions = {
+	concurrencyMaximum?: number;
+	numWorkers?: number;
+	restEachTurn?: boolean;
+};

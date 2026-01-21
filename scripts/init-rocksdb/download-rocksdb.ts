@@ -7,20 +7,22 @@ import { pipeline } from 'node:stream';
 import { promisify } from 'node:util';
 import type { Prebuild } from './get-prebuild';
 
-const platformMap: Record<string, string> = {
-	win32: 'windows',
-};
+const platformMap: Record<string, string> = { win32: 'windows' };
 
 const streamPipeline = promisify(pipeline);
 
 export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise<void> {
-	let filename = `rocksdb-${prebuild.version}-${platformMap[process.platform] || process.platform}-${process.arch}`;
+	let filename = `rocksdb-${prebuild.version}-${
+		platformMap[process.platform] || process.platform
+	}-${process.arch}`;
 	let [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 	if (!asset) {
 		// try the old filename
 		platformMap.darwin = 'osx';
-		filename = `rocksdb-${prebuild.version}-${process.arch}-${platformMap[process.platform] || process.platform}`;
-		([asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename)));
+		filename = `rocksdb-${prebuild.version}-${process.arch}-${
+			platformMap[process.platform] || process.platform
+		}`;
+		[asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 		if (!asset) {
 			throw new Error('No asset found');
 		}

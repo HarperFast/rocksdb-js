@@ -72,7 +72,7 @@ export function parseDuration(duration: number | string): number {
 export function when<T>(
 	subject: MaybePromise<T> | MaybePromiseFunction<T>,
 	callback?: (value: T) => MaybePromise<T>,
-	errback?: (reason: any) => T,
+	errback?: (reason: any) => T
 ): MaybePromise<T> {
 	try {
 		let result: MaybePromise<T>;
@@ -110,9 +110,5 @@ export function withResolvers<T>(): {
 		resolve = res;
 		reject = rej;
 	});
-	return {
-		resolve,
-		reject,
-		promise
-	};
+	return { resolve, reject, promise };
 }

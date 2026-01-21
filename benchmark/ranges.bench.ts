@@ -1,5 +1,5 @@
 import { describe } from 'vitest';
-import { benchmark, generateTestData, generateSequentialKeys } from './setup.js';
+import { benchmark, generateSequentialKeys, generateTestData } from './setup.js';
 
 const SMALL_DATASET = 100;
 const RANGE_SIZE = 50;
@@ -28,8 +28,9 @@ describe('getRange()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -38,8 +39,9 @@ describe('getRange()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 	});
 
@@ -50,8 +52,9 @@ describe('getRange()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db }) {
-				for (const _entry of db.getRange()) {}
-			}
+				for (const _entry of db.getRange()) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -60,8 +63,9 @@ describe('getRange()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db }) {
-				for (const _entry of db.getRange()) {}
-			}
+				for (const _entry of db.getRange()) {
+				}
+			},
 		});
 
 		benchmark('rocksdb', {
@@ -70,8 +74,9 @@ describe('getRange()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -80,8 +85,9 @@ describe('getRange()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 	});
 });
@@ -93,8 +99,9 @@ describe('getKeys()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _key of db.getKeys({ start: startKey, end: endKey })) {}
-			}
+				for (const _key of db.getKeys({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -102,8 +109,9 @@ describe('getKeys()', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _key of db.getKeys({ start: startKey, end: endKey })) {}
-			}
+				for (const _key of db.getKeys({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 	});
 });
@@ -115,12 +123,9 @@ describe('Reverse iteration', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({
-					start: startKey,
-					end: endKey,
-					reverse: true
-				})) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey, reverse: true })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -128,12 +133,9 @@ describe('Reverse iteration', () => {
 				setupRangeTestData(ctx, SMALL_DATASET);
 			},
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({
-					start: startKey,
-					end: endKey,
-					reverse: true
-				})) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey, reverse: true })) {
+				}
+			},
 		});
 	});
 
@@ -146,16 +148,18 @@ describe('Reverse iteration', () => {
 			name: 'forward',
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('rocksdb', {
 			name: 'reverse',
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey, reverse: true })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey, reverse: true })) {
+				}
+			},
 		});
 	});
 });
@@ -176,15 +180,17 @@ describe('Range query patterns', () => {
 		benchmark('rocksdb', {
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 	});
 });
@@ -210,15 +216,17 @@ describe('Sparse data patterns', () => {
 		benchmark('rocksdb', {
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 	});
 
@@ -242,15 +250,17 @@ describe('Sparse data patterns', () => {
 		benchmark('rocksdb', {
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 
 		benchmark('lmdb', {
 			setup,
 			bench({ db, startKey, endKey }) {
-				for (const _entry of db.getRange({ start: startKey, end: endKey })) {}
-			}
+				for (const _entry of db.getRange({ start: startKey, end: endKey })) {
+				}
+			},
 		});
 	});
 });

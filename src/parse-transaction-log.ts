@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, statSync, type Stats } from 'node:fs';
+import { closeSync, openSync, readSync, type Stats, statSync } from 'node:fs';
 import { constants } from './load-binding.js';
 
 const { TRANSACTION_LOG_TOKEN } = constants;
@@ -46,7 +46,11 @@ export function parseTransactionLog(path: string): TransactionLog {
 		const bytesRead = readSync(fileHandle, buffer, 0, numBytes, fileOffset);
 		fileOffset += bytesRead;
 		if (bytesRead !== numBytes) {
-			throw new Error(`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset}, file size: ${size}, file path: ${path}, buffer: ${buffer.toString('hex')}`);
+			throw new Error(
+				`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset}, file size: ${size}, file path: ${path}, buffer: ${
+					buffer.toString('hex')
+				}`
+			);
 		}
 		return buffer;
 	};

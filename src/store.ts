@@ -1,29 +1,30 @@
+import { ExtendedIterable } from '@harperfast/extended-iterable';
+import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
+import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
-	NativeDatabase,
-	NativeIterator,
-	NativeTransaction,
-	type UserSharedBufferCallback,
-	type NativeDatabaseOptions,
-	type TransactionLog,
-	constants,
-} from './load-binding.js';
-import {
+	type BufferWithDataView,
+	createFixedBuffer,
+	type Encoder,
 	Encoding,
 	initKeyEncoder,
-	createFixedBuffer,
-	type BufferWithDataView,
-	type Encoder,
 	type Key,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
 } from './encoding.js';
-import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
-import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
-import { ExtendedIterable } from '@harperfast/extended-iterable';
+import {
+	constants,
+	NativeDatabase,
+	type NativeDatabaseOptions,
+	NativeIterator,
+	NativeTransaction,
+	type TransactionLog,
+	type UserSharedBufferCallback,
+} from './load-binding.js';
 import { parseDuration } from './util.js';
 
-const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } = constants;
+const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } =
+	constants;
 const KEY_BUFFER_SIZE = 4096;
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
@@ -39,18 +40,14 @@ export type Context = NativeDatabase | NativeTransaction;
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions extends Omit<NativeDatabaseOptions,
-	| 'mode'
-	| 'transactionLogRetentionMs'
-> {
+export interface StoreOptions
+	extends Omit<NativeDatabaseOptions, 'mode' | 'transactionLogRetentionMs'>
+{
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
 	freezeData?: boolean;
-	keyEncoder?: {
-		readKey?: ReadKeyFunction<Key>;
-		writeKey?: WriteKeyFunction;
-	};
+	keyEncoder?: { readKey?: ReadKeyFunction<Key>; writeKey?: WriteKeyFunction };
 	keyEncoding?: KeyEncoding;
 	// mapSize?: number;
 	// maxDbs?: number;
@@ -87,17 +84,12 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions,
 /**
  * Options for the `getUserSharedBuffer()` method.
  */
-export type UserSharedBufferOptions = {
-	callback?: UserSharedBufferCallback;
-};
+export type UserSharedBufferOptions = { callback?: UserSharedBufferCallback };
 
 /**
  * The return type of `getUserSharedBuffer()`.
  */
-export type ArrayBufferWithNotify = ArrayBuffer & {
-	cancel: () => void;
-	notify: () => void;
-};
+export type ArrayBufferWithNotify = ArrayBuffer & { cancel: () => void; notify: () => void };
 
 /**
  * A store wraps the `NativeDatabase` binding and database settings so that a
@@ -349,10 +341,7 @@ export class Store {
 
 		if (typeof this.encoder?.encode === 'function') {
 			if (this.encoder.copyBuffers) {
-				return this.encoder.encode(
-					value,
-					REUSE_BUFFER_MODE | RESET_BUFFER_MODE
-				);
+				return this.encoder.encode(value, REUSE_BUFFER_MODE | RESET_BUFFER_MODE);
 			}
 
 			const valueBuffer = this.encoder.encode(value);
@@ -377,7 +366,7 @@ export class Store {
 		context: NativeDatabase | NativeTransaction,
 		key: Key,
 		alwaysCreateNewBuffer: boolean = false,
-		txnId?: number,
+		txnId?: number
 	): any | undefined {
 		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
@@ -385,11 +374,7 @@ export class Store {
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
-		const result = context.getSync(
-			keyParam,
-			flags | ONLY_IF_IN_MEMORY_CACHE_FLAG,
-			txnId,
-		);
+		const result = context.getSync(keyParam, flags | ONLY_IF_IN_MEMORY_CACHE_FLAG, txnId);
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer
 			if (result === NOT_IN_MEMORY_CACHE_FLAG) {
 				// is not in memory cache, use async get since this will involve disk access
@@ -479,11 +464,7 @@ export class Store {
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
-		const result = context.getSync(
-			keyParam,
-			flags,
-			this.getTxnId(options)
-		);
+		const result = context.getSync(keyParam, flags, this.getTxnId(options));
 		if (typeof result === 'number') { // return a number indicates it is using the default buffer
 			VALUE_BUFFER.end = result;
 			return VALUE_BUFFER;
@@ -596,7 +577,7 @@ export class Store {
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
-			transactionLogsPath: this.transactionLogsPath
+			transactionLogsPath: this.transactionLogsPath,
 		});
 
 		return false;
@@ -619,11 +600,7 @@ export class Store {
 		// overwriting this method's encoded key!
 		const valueBuffer = this.encodeValue(value);
 
-		context.putSync(
-			this.encodeKey(key),
-			valueBuffer,
-			this.getTxnId(options)
-		);
+		context.putSync(this.encodeKey(key), valueBuffer, this.getTxnId(options));
 	}
 
 	removeSync(
@@ -635,10 +612,7 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
-		context.removeSync(
-			this.encodeKey(key),
-			this.getTxnId(options)
-		);
+		context.removeSync(this.encodeKey(key), this.getTxnId(options));
 	}
 
 	/**
@@ -676,10 +650,7 @@ export class Store {
 	 * @param name - The name of the transaction log.
 	 * @returns The transaction log.
 	 */
-	useLog(
-		context: NativeDatabase | NativeTransaction,
-		name: string | number
-	): TransactionLog {
+	useLog(context: NativeDatabase | NativeTransaction, name: string | number): TransactionLog {
 		if (typeof name !== 'string' && typeof name !== 'number') {
 			throw new TypeError('Log name must be a string or number');
 		}
@@ -698,10 +669,7 @@ export class Store {
 			return Promise.reject(new TypeError('Callback must be a function'));
 		}
 
-		return this.db.withLock(
-			this.encodeKey(key),
-			callback
-		);
+		return this.db.withLock(this.encodeKey(key), callback);
 	}
 }
 
@@ -740,4 +708,4 @@ export interface PutOptions {
 	instructedWrite?: boolean;
 	noDupData?: boolean;
 	noOverwrite?: boolean;
-};
+}

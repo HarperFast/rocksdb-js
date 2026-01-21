@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { RocksDatabase } from '../src/index.js';
-import { Context, Store, type PutOptions } from '../src/store.js';
-import { generateDBPath } from './lib/util.js';
 import type { Key } from 'ordered-binary';
+import { describe, expect, it } from 'vitest';
 import type { DBITransactional } from '../src/dbi.js';
+import { RocksDatabase } from '../src/index.js';
+import { Context, type PutOptions, Store } from '../src/store.js';
+import { generateDBPath } from './lib/util.js';
 
 describe('Custom Store', () => {
 	it('should use a custom store', async () => {

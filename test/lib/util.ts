@@ -1,9 +1,9 @@
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 
 export function generateDBPath(): string {
 	const testDir = join(tmpdir(), 'rocksdb-js-tests');
@@ -11,10 +11,7 @@ export function generateDBPath(): string {
 	return join(testDir, `testdb-${randomBytes(8).toString('hex')}`);
 }
 
-type TestDB = {
-	db: RocksDatabase;
-	dbPath: string;
-};
+type TestDB = { db: RocksDatabase; dbPath: string };
 
 type TestOptions = {
 	dbOptions?: (RocksDatabaseOptions & { path?: string } | undefined)[];
@@ -53,10 +50,7 @@ type TestFn = (...databases: TestDB[]) => void | Promise<void>;
  * }));
  * ```
  */
-export async function dbRunner(
-	options: TestOptions | TestFn,
-	test?: TestFn
-): Promise<void> {
+export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Promise<void> {
 	let testFn: TestFn;
 	if (typeof options === 'function') {
 		testFn = options;

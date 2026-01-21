@@ -9,15 +9,15 @@
  * To manually run this script: pnpm tsx scripts/init-rocksdb/main.ts
  */
 
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
 import { config } from 'dotenv';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import semver from 'semver';
 import { buildRocksDBFromSource } from './build-rocksdb-from-source';
+import { downloadRocksDB } from './download-rocksdb';
 import { getCurrentVersion } from './get-current-version';
 import { getPrebuild } from './get-prebuild';
-import { downloadRocksDB } from './download-rocksdb';
-import { readFileSync } from 'node:fs';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 

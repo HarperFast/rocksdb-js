@@ -3,7 +3,7 @@ name: Update RocksDB
 on:
   workflow_dispatch:
   repository_dispatch:
-    types: [ new-rocksdb-prebuild ]
+    types: [new-rocksdb-prebuild]
 
 permissions:
   contents: read
@@ -78,7 +78,7 @@ jobs:
 
       - name: Pull request
         if: steps.latest-release.outputs.should_update == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GH_TOKEN }}
           title: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
