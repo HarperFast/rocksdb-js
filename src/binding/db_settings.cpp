@@ -50,8 +50,8 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
  * ```
  */
 napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	
+	NAPI_METHOD_ARGV(1);
+
 	DBSettings& settings = DBSettings::getInstance();
 	napi_value params = argv[0];
 
@@ -70,7 +70,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	NAPI_RETURN_UNDEFINED()
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**

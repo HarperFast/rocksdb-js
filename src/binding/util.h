@@ -27,12 +27,14 @@
 namespace rocksdb_js {
 
 #define RANGE_CHECK(condition, errorMsg, rval) \
-	if (condition) { \
-		std::stringstream ss; \
-		ss << errorMsg; \
-		::napi_throw_range_error(env, nullptr, ss.str().c_str()); \
-		return rval; \
-	}
+	do { \
+		if (condition) { \
+			std::stringstream ss; \
+			ss << errorMsg; \
+			::napi_throw_range_error(env, nullptr, ss.str().c_str()); \
+			return rval; \
+		} \
+	} while (0)
 
 struct Closable {
 	virtual ~Closable() = default;
@@ -114,9 +116,9 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 				end = length;
 			}
 
-			RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", napi_invalid_arg)
-			RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", napi_invalid_arg)
-			RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", napi_invalid_arg)
+			RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", napi_invalid_arg);
+			RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", napi_invalid_arg);
+			RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", napi_invalid_arg);
 
 			to.assign(buf + start, end - start);
 			return napi_ok;
@@ -295,16 +297,16 @@ struct BaseAsyncState {
 
 	void deleteAsyncWork() {
 		if (this->asyncWork != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work %p\n", this, this->asyncWork)
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Deleting async work %p\n", this, this->asyncWork);
 			napi_status status = ::napi_delete_async_work(this->env, this->asyncWork);
 			if (status == napi_ok) {
-				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Successfully deleted async work\n", this)
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Successfully deleted async work\n", this);
 				this->asyncWork = nullptr;
 			} else {
-				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Failed to delete async work (status=%d)\n", this, status)
+				DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Failed to delete async work (status=%d)\n", this, status);
 			}
 		} else {
-			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work was already null!\n", this)
+			DEBUG_LOG("%p BaseAsyncState::~BaseAsyncState Async work was already null!\n", this);
 		}
 	}
 
@@ -316,14 +318,14 @@ struct BaseAsyncState {
 	 */
 	void callResolve(napi_value result = nullptr) {
 		if (this->resolveRef == nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::callResolve resolveRef is null\n", this)
+			DEBUG_LOG("%p BaseAsyncState::callResolve resolveRef is null\n", this);
 			return;
 		}
 
 		if (this->rejectRef != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::callResolve Deleting usused reject reference\n", this)
+			DEBUG_LOG("%p BaseAsyncState::callResolve Deleting usused reject reference\n", this);
 			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
-			DEBUG_LOG("%p BaseAsyncState::callResolve Reject reference deleted successfully\n", this)
+			DEBUG_LOG("%p BaseAsyncState::callResolve Reject reference deleted successfully\n", this);
 			this->rejectRef = nullptr;
 		}
 
@@ -331,16 +333,16 @@ struct BaseAsyncState {
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_global(this->env, &global), "Failed to get global object");
 
 		napi_value resolve;
-		DEBUG_LOG("%p BaseAsyncState::callResolve Getting resolve from reference...\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callResolve Getting resolve from reference...\n", this);
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_reference_value(this->env, this->resolveRef, &resolve), "Failed to get reference to resolve function");
 
-		DEBUG_LOG("%p BaseAsyncState::callResolve Calling resolve function...\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callResolve Calling resolve function...\n", this);
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, resolve, result ? 1 : 0, result ? &result : nullptr, nullptr), "Failed to call resolve function");
-		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve function completed successfully\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve function completed successfully\n", this);
 
-		DEBUG_LOG("%p BaseAsyncState::callResolve Deleting resolve reference\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callResolve Deleting resolve reference\n", this);
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
-		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve reference deleted successfully\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve reference deleted successfully\n", this);
 		this->resolveRef = nullptr;
 	}
 
@@ -352,54 +354,48 @@ struct BaseAsyncState {
 	 */
 	void callReject(napi_value error) {
 		if (this->rejectRef == nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::callReject rejectRef is null\n", this)
+			DEBUG_LOG("%p BaseAsyncState::callReject rejectRef is null\n", this);
 			return;
 		}
 
 		if (this->resolveRef != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::callReject Deleting usused resolve reference\n", this)
+			DEBUG_LOG("%p BaseAsyncState::callReject Deleting usused resolve reference\n", this);
 			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
-			DEBUG_LOG("%p BaseAsyncState::callReject Resolve reference deleted successfully\n", this)
+			DEBUG_LOG("%p BaseAsyncState::callReject Resolve reference deleted successfully\n", this);
 			this->resolveRef = nullptr;
 		}
 
 		napi_value global;
-		NAPI_STATUS_THROWS_VOID(::napi_get_global(this->env, &global))
+		NAPI_STATUS_THROWS_VOID(::napi_get_global(this->env, &global));
 
 		napi_value reject;
-		DEBUG_LOG("%p BaseAsyncState::callReject Getting reject from reference...\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callReject Getting reject from reference...\n", this);
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_reference_value(this->env, this->rejectRef, &reject), "Failed to get reference to reject function");
 
-		DEBUG_LOG("%p BaseAsyncState::callReject Calling reject function...\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callReject Calling reject function...\n", this);
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, reject, 1, &error, nullptr), "Failed to call reject function");
-		DEBUG_LOG("%p BaseAsyncState::callReject Reject function completed successfully\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callReject Reject function completed successfully\n", this);
 
-		DEBUG_LOG("%p BaseAsyncState::callReject Deleting reject reference\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callReject Deleting reject reference\n", this);
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
-		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this)
+		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this);
 		this->rejectRef = nullptr;
 	}
 
 	void signalExecuteCompleted() {
 		if (!this->completed.load()) {
-			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Unregistering async work\n", this)
+			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Unregistering async work\n", this);
 			if (this->handle) {
 				this->handle->unregisterAsyncWork();
 			} else {
-				DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Handle is null\n", this)
+				DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Handle is null\n", this);
 			}
 			this->completed.store(true);
 		} else {
-			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Execute already completed\n", this)
+			DEBUG_LOG("%p BaseAsyncState::signalExecuteCompleted Execute already completed\n", this);
 		}
 	}
 };
-
-#define ASSERT_OPENED_AND_NOT_CANCELLED(handle, operation) \
-	if (!handle->opened() || handle->isCancelled()) { \
-		DEBUG_LOG("%p Database closed during %s operation\n", handle, operation) \
-		return rocksdb::Status::Aborted("Database closed during " operation " operation"); \
-	}
 
 /**
  * Base class for managing async work tasks. All handles that are passed into
@@ -454,10 +450,10 @@ struct AsyncWorkHandle {
 	void unregisterAsyncWork() {
 		auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
 		if (activeAsyncWorkCount > 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount)
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount);
 		} else if (activeAsyncWorkCount == 0) {
 			// notify if all work is complete
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this)
+			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
 			this->asyncWorkComplete.notify_one();
 		}
 	}
@@ -485,21 +481,21 @@ struct AsyncWorkHandle {
 		auto activeAsyncWorkCount = this->activeAsyncWorkCount.load();
 
 		if (activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion no async work to wait for\n", this)
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion no async work to wait for\n", this);
 			return;
 		}
 
 		while (activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, activeAsyncWorkCount)
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, activeAsyncWorkCount);
 				return;
 			}
 
 			auto remainingTime = timeout - elapsed;
 			auto waitTime = std::min(pollInterval, remainingTime);
 
-			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %u active work items\n", this, activeAsyncWorkCount)
+			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %u active work items\n", this, activeAsyncWorkCount);
 
 			// wait for either all work to be unregistered OR all execute handlers to complete
 			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
@@ -509,7 +505,7 @@ struct AsyncWorkHandle {
 			});
 
 			if (completed) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion all async work execution completed\n", this)
+				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion all async work execution completed\n", this);
 				return;
 			}
 		}

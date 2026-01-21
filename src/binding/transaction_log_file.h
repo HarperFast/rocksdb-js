@@ -223,7 +223,7 @@ struct MemoryMap final {
 		: map(map), mapSize(mapSize), fileSize(mapSize) {}
 
 	~MemoryMap() {
-		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize)
+		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize);
 #ifdef PLATFORM_WINDOWS
 		if (this->map != nullptr) {
 			::UnmapViewOfFile(this->map);
