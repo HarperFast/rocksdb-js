@@ -19,11 +19,13 @@ namespace rocksdb_js {
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
 
 #define UNWRAP_DB_HANDLE_AND_OPEN() \
-	UNWRAP_DB_HANDLE() \
-	if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-		::napi_throw_error(env, nullptr, "Database not open"); \
-		NAPI_RETURN_UNDEFINED() \
-	}
+	UNWRAP_DB_HANDLE(); \
+	do { \
+		if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
+			::napi_throw_error(env, nullptr, "Database not open"); \
+			NAPI_RETURN_UNDEFINED(); \
+		} \
+	} while (0)
 
 /**
  * The `NativeDatabase` JavaScript class implementation.
@@ -133,7 +135,7 @@ void resolveGetResult(
 	AsyncGetState<T>* state
 ) {
 	napi_value global;
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
 		napi_value result;
@@ -141,12 +143,12 @@ void resolveGetResult(
 			napi_get_undefined(env, &result);
 		} else {
 			// TODO: when in "fast" mode, use the shared buffer
-			NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->value.size(), state->value.data(), nullptr, &result))
+			NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->value.size(), state->value.data(), nullptr, &result));
 		}
 
 		state->callResolve(result);
 	} else {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed")
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Get failed");
 		state->callReject(error);
 	}
 }

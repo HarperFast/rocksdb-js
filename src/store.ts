@@ -20,13 +20,12 @@ import {
 } from './encoding.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
-import { Transaction } from './transaction.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { parseDuration } from './util.js';
+
 const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } = constants;
 const KEY_BUFFER_SIZE = 4096;
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
-const KEY_BUFFER_ARRAY_BUFFER = KEY_BUFFER.buffer;
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
 
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
@@ -380,13 +379,13 @@ export class Store {
 		alwaysCreateNewBuffer: boolean = false,
 		txnId?: number,
 	): any | undefined {
-		let keyParam = getKeyParam(this.encodeKey(key));
+		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
 		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
-		let result = context.getSync(
+		const result = context.getSync(
 			keyParam,
 			flags | ONLY_IF_IN_MEMORY_CACHE_FLAG,
 			txnId,
@@ -711,7 +710,7 @@ export class Store {
  * @param keyBuffer
  */
 function getKeyParam(keyBuffer: BufferWithDataView): number | Buffer {
-	if (keyBuffer.buffer === KEY_BUFFER_ARRAY_BUFFER) {
+	if (keyBuffer.buffer === KEY_BUFFER.buffer) {
 		if (keyBuffer.end >= 0) {
 			return keyBuffer.end;
 		}

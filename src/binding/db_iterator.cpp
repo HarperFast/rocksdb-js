@@ -47,7 +47,7 @@ napi_status DBIteratorOptions::initFromNapiObject(napi_env env, napi_value optio
 	this->readOptions.tailing = false;
 	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, options, "tailing", this->readOptions.tailing), napi_invalid_arg);
 
-	NAPI_ASSERT_OBJECT_OR_UNDEFINED(options, "Invalid options")
+	NAPI_ASSERT_OBJECT_OR_UNDEFINED(options, "Invalid options");
 	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getKeyFromProperty(env, options, "start", "Invalid start key", this->startKeyStr, this->startKeyStart, this->startKeyEnd), napi_invalid_arg);
 	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getKeyFromProperty(env, options, "end", "Invalid end key", this->endKeyStr, this->endKeyStart, this->endKeyEnd), napi_invalid_arg);
 
@@ -62,17 +62,17 @@ napi_status DBIteratorOptions::initFromNapiObject(napi_env env, napi_value optio
  * @returns The new `NativeIterator` object.
  */
 napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Iterator", 2)
+	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Iterator", 2);
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
 	napi_value exports;
-	NAPI_STATUS_THROWS(::napi_get_reference_value(env, exportsRef, &exports))
+	NAPI_STATUS_THROWS(::napi_get_reference_value(env, exportsRef, &exports));
 
 	napi_value databaseCtor;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor))
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor));
 
 	bool isDatabase = false;
-	NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], databaseCtor, &isDatabase))
+	NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], databaseCtor, &isDatabase));
 
 	napi_value options = argv[1];
 	DBIteratorOptions itOptions;
@@ -86,37 +86,37 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 
 	if (isDatabase) {
 		std::shared_ptr<DBHandle>* dbHandle = nullptr;
-		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&dbHandle)))
-		DEBUG_LOG("DBIterator::Constructor Initializing transaction handle with Database instance (dbHandle=%p)\n", (*dbHandle).get())
+		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&dbHandle)));
+		DEBUG_LOG("DBIterator::Constructor Initializing transaction handle with Database instance (dbHandle=%p)\n", (*dbHandle).get());
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) {
 			::napi_throw_error(env, nullptr, "Database not open");
 			return nullptr;
 		}
 		itHandle = new DBIteratorHandle(*dbHandle, itOptions);
 	} else {
-		DEBUG_LOG("DBIterator::Constructor Using existing transaction handle\n")
+		DEBUG_LOG("DBIterator::Constructor Using existing transaction handle\n");
 		napi_value transactionCtor;
-		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor))
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor));
 
 		bool isTransaction = false;
-		NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], transactionCtor, &isTransaction))
+		NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], transactionCtor, &isTransaction));
 
 		if (isTransaction) {
-			DEBUG_LOG("DBIterator::Constructor Received Transaction instance\n")
+			DEBUG_LOG("DBIterator::Constructor Received Transaction instance\n");
 			std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
-			NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)))
+			NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)));
 			itHandle = new DBIteratorHandle((*txnHandle).get(), itOptions);
-			DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", txnHandle, itHandle->dbHandle->descriptor.get())
+			DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", txnHandle, itHandle->dbHandle->descriptor.get());
 		} else {
 			napi_valuetype type;
-			NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
+			NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 			std::string errorMsg = "Invalid context, expected Database or Transaction instance, got type " + std::to_string(type);
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			return nullptr;
 		}
 	}
 
-	DEBUG_LOG("DBIterator::Constructor itHandle=%p\n", itHandle)
+	DEBUG_LOG("DBIterator::Constructor itHandle=%p\n", itHandle);
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
@@ -124,7 +124,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			jsThis,
 			reinterpret_cast<void*>(itHandle),
 			[](napi_env env, void* data, void* hint) {
-				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd itHandle=%p\n", data)
+				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd itHandle=%p\n", data);
 				DBIteratorHandle* itHandle = reinterpret_cast<DBIteratorHandle*>(data);
 				delete itHandle;
 			},
@@ -142,11 +142,13 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 
 #define UNWRAP_ITERATOR_HANDLE(fnName) \
 	DBIteratorHandle* itHandle = nullptr; \
-	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))) \
-	if (!itHandle || itHandle->iterator == nullptr) { \
-		::napi_throw_error(env, nullptr, fnName " failed: Iterator not initialized"); \
-		return nullptr; \
-	}
+	do { \
+		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
+		if (!itHandle || itHandle->iterator == nullptr) { \
+			::napi_throw_error(env, nullptr, fnName " failed: Iterator not initialized"); \
+			return nullptr; \
+		} \
+	} while (0)
 
 /**
  * Advances the iterator to the next key/value pair.
@@ -156,13 +158,13 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
  * @returns The next key/value pair.
  */
 napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_ITERATOR_HANDLE("Next")
+	NAPI_METHOD();
+	UNWRAP_ITERATOR_HANDLE("Next");
 
 	napi_value result;
 	napi_value resultDone;
 	napi_value resultValue;
-	NAPI_STATUS_THROWS(::napi_create_object(env, &result))
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
 
 	if (itHandle->iterator->Valid()) {
 		rocksdb::Slice keySlice = itHandle->iterator->key();
@@ -174,8 +176,8 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 			itHandle->iterator->Prev();
 			if (!itHandle->iterator->Valid()) {
 				// This is the last item and it equals startKey, skip it
-				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone))
-				NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue))
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone));
+				NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue));
 			} else {
 				// Not the last item, restore position and continue normally
 				itHandle->iterator->Next();
@@ -183,7 +185,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 				// Re-read key and value after restoring position
 				rocksdb::Slice restoredKeySlice = itHandle->iterator->key();
 
-				NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone))
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone));
 
 				napi_value key;
 				napi_value value;
@@ -194,10 +196,10 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 					restoredKeySlice.data(),
 					nullptr,
 					&key
-				))
+				));
 
-				NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue))
-				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key))
+				NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key));
 
 				if (itHandle->values) {
 					rocksdb::Slice valueSlice = itHandle->iterator->value();
@@ -208,15 +210,15 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 						valueSlice.data(),
 						nullptr,
 						&value
-					))
+					));
 
-					NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value))
+					NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value));
 				}
 
 				itHandle->iterator->Prev();
 			}
 		} else {
-			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone))
+			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone));
 
 			napi_value key;
 			napi_value value;
@@ -227,10 +229,10 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 				keySlice.data(),
 				nullptr,
 				&key
-			))
+			));
 
-			NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue))
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key))
+			NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key));
 
 			if (itHandle->values) {
 				rocksdb::Slice valueSlice = itHandle->iterator->value();
@@ -241,9 +243,9 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 					valueSlice.data(),
 					nullptr,
 					&value
-				))
+				));
 
-				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value))
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value));
 			}
 
 			if (itHandle->reverse) {
@@ -259,12 +261,12 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 			DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", itHandle);
 		}
 
-		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone))
-		NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue))
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone));
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue));
 	}
 
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", resultDone))
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", resultValue))
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", resultDone));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", resultValue));
 
 	return result;
 }
@@ -277,28 +279,28 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
  * @returns An iterator done result.
  */
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1)
-	UNWRAP_ITERATOR_HANDLE("Return")
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_ITERATOR_HANDLE("Return");
 
-	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", itHandle)
+	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", itHandle);
 
 	itHandle->close();
 
 	napi_value result;
 	napi_value done;
 	napi_value value;
-	NAPI_STATUS_THROWS(::napi_create_object(env, &result))
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &done))
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &done));
 
 	napi_valuetype type;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type))
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 	if (type == napi_undefined) {
-		NAPI_STATUS_THROWS(::napi_get_undefined(env, &value))
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &value));
 	} else {
 		value = argv[0];
 	}
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", done))
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", value))
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", done));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", value));
 
 	return result;
 }
@@ -311,10 +313,10 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
  * @returns An iterator done result.
  */
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
-	NAPI_METHOD()
-	UNWRAP_ITERATOR_HANDLE("Throw")
+	NAPI_METHOD();
+	UNWRAP_ITERATOR_HANDLE("Throw");
 
-	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", itHandle)
+	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", itHandle);
 
 	// Note: There shouldn't be any need to abort the transaction here since the error
 	// will bubble up to the transaction callback handler and abort the transaction.
@@ -324,11 +326,11 @@ napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	napi_value result;
 	napi_value done;
 	napi_value value;
-	NAPI_STATUS_THROWS(::napi_create_object(env, &result))
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &done))
-	NAPI_STATUS_THROWS(::napi_get_undefined(env, &value))
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", done))
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", value))
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &done));
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "done", done));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "value", value));
 	return result;
 }
 
@@ -345,10 +347,10 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 	auto className = "Iterator";
 	constexpr size_t len = sizeof("Iterator") - 1;
 
-	DEBUG_LOG("DBIterator::Init exports=%p\n", exports)
+	DEBUG_LOG("DBIterator::Init exports=%p\n", exports);
 
 	napi_ref exportsRef;
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef))
+	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef));
 
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
@@ -360,9 +362,9 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,              // properties array
 		&ctor                    // [out] constructor
-	))
+	));
 
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor))
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor));
 }
 
 }

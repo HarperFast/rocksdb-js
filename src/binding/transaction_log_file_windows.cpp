@@ -23,13 +23,13 @@ void TransactionLogFile::close() {
 	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
-			this, this->path.string().c_str(), this->memoryMap.use_count())
+			this, this->path.string().c_str(), this->memoryMap.use_count());
 		this->memoryMap.reset();
 	}
 
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (handle=%p)\n",
-			this, this->path.string().c_str(), this->fileHandle)
+			this, this->path.string().c_str(), this->fileHandle);
 		::CloseHandle(this->fileHandle);
 		this->fileHandle = INVALID_HANDLE_VALUE;
 	}
@@ -48,12 +48,12 @@ void TransactionLogFile::flush() {
 
 	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
-		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize)
+		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize);
 	if (!::FlushFileBuffers(handleToFlush)) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: FlushFileBuffers failed: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			this, this->path.string().c_str(), error, errorMessage.c_str());
 		throw std::runtime_error("Failed to flush file: " + this->path.string());
 	}
 
@@ -64,11 +64,11 @@ void TransactionLogFile::flush() {
 
 void TransactionLogFile::openFile() {
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
-		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str());
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str())
+	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
 	// ensure parent directory exists (may have been deleted by purge())
 	auto parentPath = this->path.parent_path();
@@ -78,7 +78,7 @@ void TransactionLogFile::openFile() {
 			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
-				this, parentPath.string().c_str(), e.what())
+				this, parentPath.string().c_str(), e.what());
 			throw std::runtime_error("Failed to create parent directory: " + parentPath.string());
 		}
 	}
@@ -101,7 +101,7 @@ void TransactionLogFile::openFile() {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			this, this->path.string().c_str(), error, errorMessage.c_str());
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
 	}
 
@@ -162,7 +162,7 @@ void TransactionLogFile::openFile() {
 				);
 				if (result != ERROR_SUCCESS) {
 					DEBUG_LOG("%p TransactionLogFile::openFile Failed to set file permissions: %s (error=%lu)\n",
-						this, this->path.string().c_str(), result)
+						this, this->path.string().c_str(), result);
 				}
 				::LocalFree(newDacl);
 			}
@@ -179,7 +179,7 @@ void TransactionLogFile::openFile() {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to get file size: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			this, this->path.string().c_str(), error, errorMessage.c_str());
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = static_cast<size_t>(fileSize.QuadPart);
@@ -231,7 +231,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str())
+				this, this->path.string().c_str(), error, errorMessage.c_str());
 			return nullptr;
 		}
 
@@ -242,7 +242,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str())
+				this, this->path.string().c_str(), error, errorMessage.c_str());
 			return nullptr;
 		}
 
@@ -251,7 +251,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetEndOfFile: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str())
+				this, this->path.string().c_str(), error, errorMessage.c_str());
 			return nullptr;
 		}
 
@@ -260,7 +260,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to restore position: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str())
+				this, this->path.string().c_str(), error, errorMessage.c_str());
 			return nullptr;
 		}
 	}
@@ -270,7 +270,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to CreateFileMapping: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			this, this->path.string().c_str(), error, errorMessage.c_str());
 		return nullptr;
 	}
 
@@ -281,7 +281,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to MapViewOfFile: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str())
+			this, this->path.string().c_str(), error, errorMessage.c_str());
 		::CloseHandle(mh);
 		return nullptr;
 	}
@@ -314,7 +314,7 @@ bool TransactionLogFile::removeFile() {
 
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (handle=%p)\n",
-			this, this->path.string().c_str(), this->fileHandle)
+			this, this->path.string().c_str(), this->fileHandle);
 		::CloseHandle(this->fileHandle);
 		this->fileHandle = INVALID_HANDLE_VALUE;
 	}
@@ -322,12 +322,12 @@ bool TransactionLogFile::removeFile() {
 	auto removed = std::filesystem::remove(this->path);
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
-			this, this->path.string().c_str())
+			this, this->path.string().c_str());
 		return false;
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
-		this, this->path.string().c_str())
+		this, this->path.string().c_str());
 	return true;
 }
 
@@ -341,7 +341,7 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile SetFilePointer failed (error=%lu: %s)\n",
-			this, error, errorMessage.c_str())
+			this, error, errorMessage.c_str());
 		return -1;
 	}
 
@@ -367,7 +367,7 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
-				this, error, errorMessage.c_str(), i, iovcnt)
+				this, error, errorMessage.c_str(), i, iovcnt);
 			// if we've written some data but this write failed, return what we
 			// wrote; otherwise return -1 to indicate error
 			return totalBytesWritten > 0 ? totalBytesWritten : -1;

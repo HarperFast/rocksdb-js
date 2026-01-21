@@ -24,7 +24,7 @@ namespace rocksdb_js {
 napi_value Shutdown(napi_env env, napi_callback_info info) {
 	DBRegistry::Shutdown();
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result))
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
 }
 
@@ -57,13 +57,13 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
-			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n")
+			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n");
 			rocksdb_js::DBRegistry::PurgeAll();
-			DEBUG_LOG("Binding::Init env cleanup done\n")
+			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
-			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n")
+			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
 		} else {
-			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount)
+			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
 		}
 	}, nullptr));
 

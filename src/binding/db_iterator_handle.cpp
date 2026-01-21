@@ -14,7 +14,7 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values)
 {
-	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get())
+	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
 
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
@@ -37,7 +37,7 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values)
 {
-	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", txnHandle, dbHandle->descriptor.get())
+	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", txnHandle, dbHandle->descriptor.get());
 	this->init(options);
 
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
@@ -55,7 +55,7 @@ DBIteratorHandle::~DBIteratorHandle() {
 }
 
 void DBIteratorHandle::close() {
-	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get())
+	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
 	if (this->iterator) {
 		if (this->dbHandle && this->dbHandle->descriptor) {
 			this->dbHandle->descriptor->detach(this);
@@ -70,10 +70,10 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		this->startKey = rocksdb::Slice(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
 		options.readOptions.iterate_lower_bound = &this->startKey;
 
-		DEBUG_LOG("%p DBIteratorHandle::init Start key:", this)
-		DEBUG_LOG_KEY_LN(this->startKey)
+		DEBUG_LOG("%p DBIteratorHandle::init Start key:", this);
+		DEBUG_LOG_KEY_LN(this->startKey);
 	} else {
-		DEBUG_LOG("%p DBIteratorHandle::init No start key\n", this)
+		DEBUG_LOG("%p DBIteratorHandle::init No start key\n", this);
 	}
 
 	if (options.endKeyStr != nullptr) {
@@ -84,10 +84,10 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		this->endKey = rocksdb::Slice(this->endKeyStr);
 		options.readOptions.iterate_upper_bound = &this->endKey;
 
-		DEBUG_LOG("%p DBIteratorHandle::init End key:", this)
-		DEBUG_LOG_KEY_LN(this->endKey)
+		DEBUG_LOG("%p DBIteratorHandle::init End key:", this);
+		DEBUG_LOG_KEY_LN(this->endKey);
 	} else {
-		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this)
+		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this);
 	}
 
 	this->dbHandle->descriptor->attach(this);

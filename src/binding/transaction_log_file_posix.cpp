@@ -19,13 +19,13 @@ void TransactionLogFile::close() {
 	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
-			this, this->path.string().c_str(), this->memoryMap.use_count())
+			this, this->path.string().c_str(), this->memoryMap.use_count());
 		this->memoryMap.reset();
 	}
 
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (fd=%d)\n",
-			this, this->path.string().c_str(), this->fd)
+			this, this->path.string().c_str(), this->fd);
 		::close(this->fd);
 		this->fd = -1;
 	}
@@ -42,20 +42,20 @@ void TransactionLogFile::flush() {
 	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
 	lock.unlock();
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
-		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize)
+		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize);
 
 	// macOS doesn't have fdatasync, use fsync instead
 	// fdatasync is faster on Linux as it doesn't sync metadata
 #ifdef __APPLE__
 	if (::fsync(fdToFlush) < 0) {
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fsync failed: %s (errno=%d)\n",
-			this, ::strerror(errno), errno)
+			this, ::strerror(errno), errno);
 		throw std::runtime_error("Failed to flush file: " + this->path.string());
 	}
 #else
 	if (::fdatasync(fdToFlush) < 0) {
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fdatasync failed: %s (errno=%d)\n",
-			this, ::strerror(errno), errno)
+			this, ::strerror(errno), errno);
 		throw std::runtime_error("Failed to flush file: " + this->path.string());
 	}
 #endif
@@ -67,11 +67,11 @@ void TransactionLogFile::flush() {
 
 void TransactionLogFile::openFile() {
 	if (this->fd >= 0) {
-		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str())
+		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str());
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str())
+	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
 	// ensure parent directory exists (may have been deleted by purge())
 	auto parentPath = this->path.parent_path();
@@ -81,7 +81,7 @@ void TransactionLogFile::openFile() {
 			rocksdb_js::tryCreateDirectory(parentPath);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
-				this, parentPath.string().c_str(), e.what())
+				this, parentPath.string().c_str(), e.what());
 			throw std::runtime_error("Failed to create parent directory: " + parentPath.string());
 		}
 	}
@@ -90,7 +90,7 @@ void TransactionLogFile::openFile() {
 	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
-			this, this->path.string().c_str(), errno)
+			this, this->path.string().c_str(), errno);
 		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
 	}
 
@@ -98,12 +98,12 @@ void TransactionLogFile::openFile() {
 	struct stat st;
 	if (::fstat(this->fd, &st) < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to get file size: %s (error=%d)\n",
-			this, this->path.string().c_str(), errno)
+			this, this->path.string().c_str(), errno);
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
 	this->size = st.st_size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",
-		this, this->path.string().c_str(), this->size)
+		this, this->path.string().c_str(), this->size);
 }
 
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
@@ -119,7 +119,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
 		if (map == MAP_FAILED) {
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno))
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
 		// If successful, return a MemoryMap object for tracking references.
@@ -145,13 +145,13 @@ bool TransactionLogFile::removeFile() {
 
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
-			this, this->path.string().c_str())
+			this, this->path.string().c_str());
 		this->memoryMap.reset();
 	}
 
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (fd=%d)\n",
-			this, this->path.string().c_str(), this->fd)
+			this, this->path.string().c_str(), this->fd);
 		::close(this->fd);
 		this->fd = -1;
 	}
@@ -160,12 +160,12 @@ bool TransactionLogFile::removeFile() {
 	auto removed = std::filesystem::remove(this->path);
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",
-			this, this->path.string().c_str())
+			this, this->path.string().c_str());
 		return false;
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
-		this, this->path.string().c_str())
+		this, this->path.string().c_str());
 	return true;
 }
 
@@ -187,7 +187,7 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 
 		if (written < 0) {
 			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile writev failed: errno=%d (%s)\n",
-				this, errno, strerror(errno))
+				this, errno, strerror(errno));
 			return -1;
 		}
 
