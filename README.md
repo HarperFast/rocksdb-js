@@ -146,9 +146,8 @@ console.log(entriesRemoved); // 10
 
 ### `db.drop(): Promise<void>`
 
-Removes all entries in the database and when the database is not the default
-(e.g. database was not opened with a `name`), it will drop the underlying
-column family when the database is closed.
+Removes all entries in the database. If the database was opened with a `name`,
+the database will be deleted on close.
 
 ```typescript
 const db = RocksDatabase.open('path/to/db', { name: 'users' });

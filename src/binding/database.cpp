@@ -65,7 +65,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Clear(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(3);
+	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	napi_value resolve = argv[0];
@@ -180,7 +180,49 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Drops the RocksDB database column family.
+ * Drops the RocksDB database column family asynchronously. If the column family
+ * is the default, it will clear the database instead.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await db.drop();
+ * ```
+ */
+napi_value Database::Drop(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	if ((*dbHandle)->column->GetName() == "default") {
+		return Database::Clear(env, info);
+	}
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	napi_value global;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
+
+	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
+	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get());
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to drop database");
+		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
+			env, global, reject, 1, &error, nullptr
+		), "Failed to call reject function");
+		return nullptr;
+	}
+
+	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
+		env, global, resolve, 0, nullptr, nullptr
+	), "Failed to call resolve function");
+	DEBUG_LOG("%p Database::Drop dropped database\n", dbHandle->get());
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Drops the RocksDB database column family. If the column family is the
+ * default, it will clear the database instead.
  *
  * @example
  * ```typescript
@@ -193,18 +235,12 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->column->GetName() == "default") {
-		rocksdb::Status status = (*dbHandle)->clear();
-		if (!status.ok()) {
-			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to clear database");
-			::napi_throw(env, error);
-			return nullptr;
-		}
-	} else {
-		DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
-		ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get()), "Failed to drop database");
-		DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
+		return Database::ClearSync(env, info);
 	}
 
+	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get()), "Failed to drop database");
+	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -1120,6 +1156,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
