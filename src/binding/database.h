@@ -43,6 +43,7 @@ struct Database final {
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
+	static napi_value DropSync(napi_env env, napi_callback_info info);
 	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);

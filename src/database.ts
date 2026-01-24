@@ -125,11 +125,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// committed
 
 	async drop(): Promise<void> {
-		//
+		return this.store.db.dropSync();
 	}
 
 	dropSync(): void {
-		//
+		return this.store.db.dropSync();
 	}
 
 	get encoder(): Encoder | null {

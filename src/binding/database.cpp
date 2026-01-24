@@ -55,7 +55,8 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
- *  Removes all entries in a RocksDB database column family using an uncapped range.
+ * Removes all entries in a RocksDB database column family using an uncapped
+ * range.
  *
  * @example
  * ```typescript
@@ -131,7 +132,8 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 }
 
 /**
- *  Removes all entries in a RocksDB database column family using an uncapped range (synchronously).
+ * Removes all entries in a RocksDB database column family using an uncapped
+ * range (synchronously).
  *
  * @example
  * ```typescript
@@ -144,7 +146,7 @@ napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	rocksdb::Status status = (*dbHandle)->clear();
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Clear failed to write batch");
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to clear database");
 		::napi_throw(env, error);
 		return nullptr;
 	}
@@ -172,6 +174,35 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 		DEBUG_LOG("%p Database::Close closed database\n", dbHandle->get());
 	} else {
 		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get());
+	}
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Drops the RocksDB database column family.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.dropSync();
+ * ```
+ */
+napi_value Database::DropSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	if ((*dbHandle)->column->GetName() == "default") {
+		rocksdb::Status status = (*dbHandle)->clear();
+		if (!status.ok()) {
+			ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to clear database");
+			::napi_throw(env, error);
+			return nullptr;
+		}
+	} else {
+		DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
+		ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get()), "Failed to drop database");
+		DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	}
 
 	NAPI_RETURN_UNDEFINED();
@@ -1089,6 +1120,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
