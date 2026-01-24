@@ -112,7 +112,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
 					state->callResolve(undefined);
 				} else {
-					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Clear failed");
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Failed to clear database");
 					state->callReject(error);
 				}
 			}
