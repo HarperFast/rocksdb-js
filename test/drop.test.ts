@@ -53,4 +53,39 @@ describe('Drop', () => {
 			db.open();
 			expect(db.getSync('key')).toBeUndefined();
 		}));
+
+	it('should drop a column family with two database instances', () =>
+		dbRunner({
+			dbOptions: [{ name: 'test' }, { name: 'test' }],
+		}, async ({ db: db1 }, { db: db2 }) => {
+			db1.putSync('key', 'value');
+			db2.putSync('key2', 'value2');
+			expect(db1.getSync('key')).toBe('value');
+			expect(db2.getSync('key2')).toBe('value2');
+			await db1.drop();
+			expect(db1.getSync('key')).toBe('value');
+			expect(db2.getSync('key2')).toBe('value2');
+
+			// close db1, db2 will keep column family alive
+			db1.close();
+			db1.open();
+			expect(db1.getSync('key')).toBe('value');
+			expect(db2.getSync('key2')).toBe('value2');
+
+			// close db1 and reopen it, then do the same to db2, keeping column family alive
+			db1.close();
+			db1.open();
+			db2.close();
+			db2.open();
+			expect(db1.getSync('key')).toBe('value');
+			expect(db2.getSync('key2')).toBe('value2');
+
+			// close both databases, column family should be deleted
+			db1.close();
+			db2.close();
+			db1.open();
+			db2.open();
+			expect(db1.getSync('key')).toBeUndefined();
+			expect(db2.getSync('key2')).toBeUndefined();
+		}));
 });
