@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@harperfast/extended-iterable':
-        specifier: 1.0.1
-        version: 1.0.1
+        specifier: 1.0.3
+        version: 1.0.3
       msgpackr:
         specifier: 1.11.8
         version: 1.11.8
@@ -337,8 +337,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@harperfast/extended-iterable@1.0.1':
-    resolution: {integrity: sha512-FT3ZMJH/Tyg7sMaCmnawzMdM3MApZPe7YXEzC9TLb4y3XGvac62DiJgX3cl8iUNWUAb3LA6KpXOWcI5/FNT31g==}
+  '@harperfast/extended-iterable@1.0.3':
+    resolution: {integrity: sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw==}
 
   '@isaacs/balanced-match@4.0.1':
     resolution: {integrity: sha512-yzMTt9lEb8Gv7zRioUilSglI0c0smZ9k5D65677DLWLtWJaXIS3CqcGyUFByYKlnUj6TkjLVs54fBl6+TiGQDQ==}
@@ -1109,8 +1109,8 @@ packages:
     resolution: {integrity: sha512-+Y2DqovevLkb6DrSQ6SXTYLEd6kvlRbhsxzgJrk7BUfOVA/mt21ak6pFDZDKxiAczHMWxrb02kXBTSTIA0O94A==}
     hasBin: true
 
-  lru-cache@11.2.4:
-    resolution: {integrity: sha512-B5Y16Jr9LB9dHVkh6ZevG+vAbOsNOYCX+sXvFWFu7B3Iz5mijW3zdbMyhsh8ANd2mSWBYdJgnqi+mL7/LrOPYg==}
+  lru-cache@11.2.5:
+    resolution: {integrity: sha512-vFrFJkWtJvJnD5hg+hJvVE8Lh/TcMzKnTgCWmtBipwI5yLX/iX+5UB2tfuyODF5E7k9xEzMdYgGqaSb1c0c5Yw==}
     engines: {node: 20 || >=22}
 
   magic-string@0.30.21:
@@ -1287,8 +1287,8 @@ packages:
     resolution: {integrity: sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow==}
     engines: {node: '>= 4'}
 
-  rolldown-plugin-dts@0.21.5:
-    resolution: {integrity: sha512-tS3jz7Fq1FWx5Jqih7pZ3zH4Bsnu+VYH5aY7e9o7Joxu5hi9ApMULmM+LVIGxoGVjjMjZGFMEcbdiZ17j/5eNA==}
+  rolldown-plugin-dts@0.21.6:
+    resolution: {integrity: sha512-gePhzvZJRB0JIb/NyngEsMt3FPQtM4BXCLkxz7u1ggge2PmlZ7uOwmHjeBEsBiBRjOY12SdtEl7BmI3T1779ZA==}
     engines: {node: '>=20.19.0'}
     peerDependencies:
       '@ts-macro/tsc': ^0.3.6
@@ -1740,7 +1740,7 @@ snapshots:
   '@esbuild/win32-x64@0.27.2':
     optional: true
 
-  '@harperfast/extended-iterable@1.0.1': {}
+  '@harperfast/extended-iterable@1.0.3': {}
 
   '@isaacs/balanced-match@4.0.1': {}
 
@@ -1817,7 +1817,7 @@ snapshots:
       agent-base: 7.1.4
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
-      lru-cache: 11.2.4
+      lru-cache: 11.2.5
       socks-proxy-agent: 8.0.5
     transitivePeerDependencies:
       - supports-color
@@ -2141,7 +2141,7 @@ snapshots:
       '@npmcli/fs': 5.0.0
       fs-minipass: 3.0.3
       glob: 13.0.0
-      lru-cache: 11.2.4
+      lru-cache: 11.2.5
       minipass: 7.1.2
       minipass-collect: 2.0.1
       minipass-flush: 1.0.5
@@ -2394,7 +2394,7 @@ snapshots:
       '@lmdb/lmdb-win32-arm64': 3.4.4
       '@lmdb/lmdb-win32-x64': 3.4.4
 
-  lru-cache@11.2.4: {}
+  lru-cache@11.2.5: {}
 
   magic-string@0.30.21:
     dependencies:
@@ -2548,7 +2548,7 @@ snapshots:
 
   path-scurry@2.0.1:
     dependencies:
-      lru-cache: 11.2.4
+      lru-cache: 11.2.5
       minipass: 7.1.2
 
   pathe@2.0.3: {}
@@ -2596,7 +2596,7 @@ snapshots:
 
   retry@0.12.0: {}
 
-  rolldown-plugin-dts@0.21.5(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3):
+  rolldown-plugin-dts@0.21.6(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3):
     dependencies:
       '@babel/generator': 8.0.0-beta.4
       '@babel/parser': 8.0.0-beta.4
@@ -2763,7 +2763,7 @@ snapshots:
       obug: 2.1.1
       picomatch: 4.0.3
       rolldown: 1.0.0-rc.1
-      rolldown-plugin-dts: 0.21.5(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3)
+      rolldown-plugin-dts: 0.21.6(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3)
       semver: 7.7.3
       tinyexec: 1.0.2
       tinyglobby: 0.2.15
