@@ -42,7 +42,7 @@
     "dist"
   ],
   "dependencies": {
-    "@harperfast/extended-iterable": "1.0.1",
+    "@harperfast/extended-iterable": "1.0.3",
     "msgpackr": "1.11.8",
     "ordered-binary": "1.6.1"
   },
@@ -54,7 +54,7 @@
     "dotenv": "17.2.3",
     "dprint": "0.51.1",
     "lefthook": "2.0.15",
-    "lmdb": "3.4.4",
+    "lmdb": "3.5.0",
     "node-gyp": "12.1.0",
     "oxlint": "1.41.0",
     "prebuildify": "6.0.1",

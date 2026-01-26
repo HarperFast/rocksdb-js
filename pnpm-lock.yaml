@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@harperfast/extended-iterable':
-        specifier: 1.0.1
-        version: 1.0.1
+        specifier: 1.0.3
+        version: 1.0.3
       msgpackr:
         specifier: 1.11.8
         version: 1.11.8
@@ -40,8 +40,8 @@ importers:
         specifier: 2.0.15
         version: 2.0.15
       lmdb:
-        specifier: 3.4.4
-        version: 3.4.4
+        specifier: 3.5.0
+        version: 3.5.0
       node-gyp:
         specifier: 12.1.0
         version: 12.1.0
@@ -337,8 +337,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@harperfast/extended-iterable@1.0.1':
-    resolution: {integrity: sha512-FT3ZMJH/Tyg7sMaCmnawzMdM3MApZPe7YXEzC9TLb4y3XGvac62DiJgX3cl8iUNWUAb3LA6KpXOWcI5/FNT31g==}
+  '@harperfast/extended-iterable@1.0.3':
+    resolution: {integrity: sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw==}
 
   '@isaacs/balanced-match@4.0.1':
     resolution: {integrity: sha512-yzMTt9lEb8Gv7zRioUilSglI0c0smZ9k5D65677DLWLtWJaXIS3CqcGyUFByYKlnUj6TkjLVs54fBl6+TiGQDQ==}
@@ -365,38 +365,33 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@lmdb/lmdb-darwin-arm64@3.4.4':
-    resolution: {integrity: sha512-XaKL705gDWd6XVls3ATDj13ZdML/LqSIxwgnYpG8xTzH2ifArx8fMMDdvqGE/Emd+W6R90W2fveZcJ0AyS8Y0w==}
+  '@lmdb/lmdb-darwin-arm64@3.5.0':
+    resolution: {integrity: sha512-NOgnhUSpkcj/FRKp1WVPub1zsZw/qi//KG/IvYMbtFtzU2gvrTXVvXuv53iZNNqUkmau5J2nkEL4qllTVCC/Aw==}
     cpu: [arm64]
     os: [darwin]
 
-  '@lmdb/lmdb-darwin-x64@3.4.4':
-    resolution: {integrity: sha512-GPHGEVcwJlkD01GmIr7B4kvbIcUDS2+kBadVEd7lU4can1RZaZQLDDBJRrrNfS2Kavvl0VLI/cMv7UASAXGrww==}
+  '@lmdb/lmdb-darwin-x64@3.5.0':
+    resolution: {integrity: sha512-e4zPXHb7TVv6c3rI0CHPAbq3Nk5gXwjtUaViejUtfDJ7DPR/HXdZqrwc/Vy2QanWlEHfkEleDTiIt5tV7nI29g==}
     cpu: [x64]
     os: [darwin]
 
-  '@lmdb/lmdb-linux-arm64@3.4.4':
-    resolution: {integrity: sha512-mALqr7DE42HsiwVTKpQWxacjHoJk+e9p00RWIJqTACh/hpucxp/0lK/XMh5XzWnU/TDCZLukq1+vNqnNumTP/Q==}
+  '@lmdb/lmdb-linux-arm64@3.5.0':
+    resolution: {integrity: sha512-Og9rk5dg5OLamLUCbAGmmLD5Q1IDd0Hj0j9UdMHQdnRpc8aPcDh+dOUwMdQDnkdidO8slfFKEWxdnsuX6SXaNQ==}
     cpu: [arm64]
     os: [linux]
 
-  '@lmdb/lmdb-linux-arm@3.4.4':
-    resolution: {integrity: sha512-cmev5/dZr5ACKri9f6GU6lZCXTjMhV72xujlbOhFCgFXrt4W0TxGsmY8kA1BITvH60JBKE50cSxsiulybAbrrw==}
+  '@lmdb/lmdb-linux-arm@3.5.0':
+    resolution: {integrity: sha512-eR/CerA7Zj+l0UC4x0+iaanoCrzIPyL7eX+id6X8i20s94Gtwj2Q4ongnIJhGNrLGIT0zYtmcqdI6E9eVc7PFw==}
     cpu: [arm]
     os: [linux]
 
-  '@lmdb/lmdb-linux-x64@3.4.4':
-    resolution: {integrity: sha512-QjLs8OcmCNcraAcLoZyFlo0atzBJniQLLwhtR+ymQqS5kLYpV5RqwriL87BW+ZiR9ZiGgZx3evrz5vnWPtJ1fQ==}
+  '@lmdb/lmdb-linux-x64@3.5.0':
+    resolution: {integrity: sha512-8O3Slm5aDyvJPTBGQBC/CG6lSc0KjkW8wuJnwV1FMMN9A/wtLB7lFL7JjvXyxv4QVpCB1vjRGHffT/c0THUCDg==}
     cpu: [x64]
     os: [linux]
 
-  '@lmdb/lmdb-win32-arm64@3.4.4':
-    resolution: {integrity: sha512-tr/pwHDlZ33forLGAr0tI04cRmP4SgF93yHbb+2zvZiDEyln5yMHhbKDySxY66aUOkhvBvTuHq9q/3YmTj6ZHQ==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@lmdb/lmdb-win32-x64@3.4.4':
-    resolution: {integrity: sha512-KRzfocJzB/mgoTCqnMawuLSKheHRVTqWfSmouIgYpFs6Hx4zvZSvsZKSCEb5gHmICy7qsx9l06jk3MFTtiFVAQ==}
+  '@lmdb/lmdb-win32-x64@3.5.0':
+    resolution: {integrity: sha512-T0npY4EEQLDkUOCEKZbT9cndbffc2PlINE5brUF9oG6qMCiHRxv0rN7VLPapvwHk5wGHOG6P/NwKEJDJpM8pIw==}
     cpu: [x64]
     os: [win32]
 
@@ -1105,12 +1100,12 @@ packages:
     resolution: {integrity: sha512-sl5rePO6UUOLKp6Ci+MMKOc86zicBaPUCvSw2Cq4gCAgTmxpxhIjhz7LOu2ObYerVRPpTq3gvzPTjI71UotjnA==}
     hasBin: true
 
-  lmdb@3.4.4:
-    resolution: {integrity: sha512-+Y2DqovevLkb6DrSQ6SXTYLEd6kvlRbhsxzgJrk7BUfOVA/mt21ak6pFDZDKxiAczHMWxrb02kXBTSTIA0O94A==}
+  lmdb@3.5.0:
+    resolution: {integrity: sha512-X2+3CucH5JIqYznreDOa9AAFPm2ll5L+N54inqaiFUwl8aaBW1jSuokZ6adBLfGnKLdCQVtPHHKUtpaLURT0kA==}
     hasBin: true
 
-  lru-cache@11.2.4:
-    resolution: {integrity: sha512-B5Y16Jr9LB9dHVkh6ZevG+vAbOsNOYCX+sXvFWFu7B3Iz5mijW3zdbMyhsh8ANd2mSWBYdJgnqi+mL7/LrOPYg==}
+  lru-cache@11.2.5:
+    resolution: {integrity: sha512-vFrFJkWtJvJnD5hg+hJvVE8Lh/TcMzKnTgCWmtBipwI5yLX/iX+5UB2tfuyODF5E7k9xEzMdYgGqaSb1c0c5Yw==}
     engines: {node: 20 || >=22}
 
   magic-string@0.30.21:
@@ -1287,8 +1282,8 @@ packages:
     resolution: {integrity: sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow==}
     engines: {node: '>= 4'}
 
-  rolldown-plugin-dts@0.21.5:
-    resolution: {integrity: sha512-tS3jz7Fq1FWx5Jqih7pZ3zH4Bsnu+VYH5aY7e9o7Joxu5hi9ApMULmM+LVIGxoGVjjMjZGFMEcbdiZ17j/5eNA==}
+  rolldown-plugin-dts@0.21.6:
+    resolution: {integrity: sha512-gePhzvZJRB0JIb/NyngEsMt3FPQtM4BXCLkxz7u1ggge2PmlZ7uOwmHjeBEsBiBRjOY12SdtEl7BmI3T1779ZA==}
     engines: {node: '>=20.19.0'}
     peerDependencies:
       '@ts-macro/tsc': ^0.3.6
@@ -1740,7 +1735,7 @@ snapshots:
   '@esbuild/win32-x64@0.27.2':
     optional: true
 
-  '@harperfast/extended-iterable@1.0.1': {}
+  '@harperfast/extended-iterable@1.0.3': {}
 
   '@isaacs/balanced-match@4.0.1': {}
 
@@ -1766,25 +1761,22 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lmdb/lmdb-darwin-arm64@3.4.4':
+  '@lmdb/lmdb-darwin-arm64@3.5.0':
     optional: true
 
-  '@lmdb/lmdb-darwin-x64@3.4.4':
+  '@lmdb/lmdb-darwin-x64@3.5.0':
     optional: true
 
-  '@lmdb/lmdb-linux-arm64@3.4.4':
+  '@lmdb/lmdb-linux-arm64@3.5.0':
     optional: true
 
-  '@lmdb/lmdb-linux-arm@3.4.4':
+  '@lmdb/lmdb-linux-arm@3.5.0':
     optional: true
 
-  '@lmdb/lmdb-linux-x64@3.4.4':
+  '@lmdb/lmdb-linux-x64@3.5.0':
     optional: true
 
-  '@lmdb/lmdb-win32-arm64@3.4.4':
-    optional: true
-
-  '@lmdb/lmdb-win32-x64@3.4.4':
+  '@lmdb/lmdb-win32-x64@3.5.0':
     optional: true
 
   '@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.3':
@@ -1817,7 +1809,7 @@ snapshots:
       agent-base: 7.1.4
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
-      lru-cache: 11.2.4
+      lru-cache: 11.2.5
       socks-proxy-agent: 8.0.5
     transitivePeerDependencies:
       - supports-color
@@ -2141,7 +2133,7 @@ snapshots:
       '@npmcli/fs': 5.0.0
       fs-minipass: 3.0.3
       glob: 13.0.0
-      lru-cache: 11.2.4
+      lru-cache: 11.2.5
       minipass: 7.1.2
       minipass-collect: 2.0.1
       minipass-flush: 1.0.5
@@ -2378,23 +2370,23 @@ snapshots:
       lefthook-windows-arm64: 2.0.15
       lefthook-windows-x64: 2.0.15
 
-  lmdb@3.4.4:
+  lmdb@3.5.0:
     dependencies:
+      '@harperfast/extended-iterable': 1.0.3
       msgpackr: 1.11.8
       node-addon-api: 6.1.0
       node-gyp-build-optional-packages: 5.2.2
       ordered-binary: 1.6.1
       weak-lru-cache: 1.2.2
     optionalDependencies:
-      '@lmdb/lmdb-darwin-arm64': 3.4.4
-      '@lmdb/lmdb-darwin-x64': 3.4.4
-      '@lmdb/lmdb-linux-arm': 3.4.4
-      '@lmdb/lmdb-linux-arm64': 3.4.4
-      '@lmdb/lmdb-linux-x64': 3.4.4
-      '@lmdb/lmdb-win32-arm64': 3.4.4
-      '@lmdb/lmdb-win32-x64': 3.4.4
+      '@lmdb/lmdb-darwin-arm64': 3.5.0
+      '@lmdb/lmdb-darwin-x64': 3.5.0
+      '@lmdb/lmdb-linux-arm': 3.5.0
+      '@lmdb/lmdb-linux-arm64': 3.5.0
+      '@lmdb/lmdb-linux-x64': 3.5.0
+      '@lmdb/lmdb-win32-x64': 3.5.0
 
-  lru-cache@11.2.4: {}
+  lru-cache@11.2.5: {}
 
   magic-string@0.30.21:
     dependencies:
@@ -2548,7 +2540,7 @@ snapshots:
 
   path-scurry@2.0.1:
     dependencies:
-      lru-cache: 11.2.4
+      lru-cache: 11.2.5
       minipass: 7.1.2
 
   pathe@2.0.3: {}
@@ -2596,7 +2588,7 @@ snapshots:
 
   retry@0.12.0: {}
 
-  rolldown-plugin-dts@0.21.5(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3):
+  rolldown-plugin-dts@0.21.6(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3):
     dependencies:
       '@babel/generator': 8.0.0-beta.4
       '@babel/parser': 8.0.0-beta.4
@@ -2763,7 +2755,7 @@ snapshots:
       obug: 2.1.1
       picomatch: 4.0.3
       rolldown: 1.0.0-rc.1
-      rolldown-plugin-dts: 0.21.5(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3)
+      rolldown-plugin-dts: 0.21.6(@typescript/native-preview@7.0.0-dev.20251014.1)(rolldown@1.0.0-rc.1)(typescript@5.9.3)
       semver: 7.7.3
       tinyexec: 1.0.2
       tinyglobby: 0.2.15
