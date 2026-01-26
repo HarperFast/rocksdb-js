@@ -42,7 +42,7 @@
     "dist"
   ],
   "dependencies": {
-    "@harperfast/extended-iterable": "1.0.1",
+    "@harperfast/extended-iterable": "1.0.3",
     "msgpackr": "1.11.8",
     "ordered-binary": "1.6.1"
   },
