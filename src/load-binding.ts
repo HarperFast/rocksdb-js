@@ -98,6 +98,8 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
+	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;

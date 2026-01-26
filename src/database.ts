@@ -125,11 +125,21 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// committed
 
 	async drop(): Promise<void> {
-		//
+		if (!this.store.db.opened) {
+			return Promise.reject(new Error('Database not open'));
+		}
+
+		return new Promise((resolve, reject) => {
+			this.store.db.drop(resolve, reject);
+		});
 	}
 
 	dropSync(): void {
-		//
+		if (!this.store.db.opened) {
+			throw new Error('Database not open');
+		}
+
+		return this.store.db.dropSync();
 	}
 
 	get encoder(): Encoder | null {

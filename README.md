@@ -144,6 +144,27 @@ const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
 ```
 
+### `db.drop(): Promise<void>`
+
+Removes all entries in the database. If the database was opened with a `name`,
+the database will be deleted on close.
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { name: 'users' });
+await db.drop();
+db.close();
+```
+
+### `db.dropSync(): void`
+
+Synchronous version of `db.drop()`.
+
+```typescript
+const db = RocksDatabase.open('path/to/db');
+db.dropSync();
+db.close();
+```
+
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
 Retreives the value for a given key. If the key does not exist, it will resolve `undefined`.
