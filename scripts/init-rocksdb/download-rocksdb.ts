@@ -20,7 +20,7 @@ export async function downloadRocksDB(
 	const { arch } = process;
 	let platform = platformMap[process.platform] || process.platform;
 
-	let filename = `rocksdb-${version}-${platform}-${arch}${runtime}`;
+	const filename = `rocksdb-${version}-${platform}-${arch}${runtime || ''}`;
 	let [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 
 	if (!asset) {
@@ -28,8 +28,8 @@ export async function downloadRocksDB(
 		if (process.platform === 'darwin') {
 			platform = 'osx';
 		}
-		filename = `rocksdb-${version}-${arch}-${platform}`;
-		[asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
+		const oldFilename = `rocksdb-${version}-${arch}-${platform}`;
+		[asset] = prebuild.assets.filter((asset) => asset.name.startsWith(oldFilename));
 		if (!asset) {
 			throw new Error(`Asset ${filename} not found`);
 		}
