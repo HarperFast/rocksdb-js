@@ -45,7 +45,7 @@ try {
 		currentVersion && desiredVersion && semver.eq(currentVersion.version, desiredVersion) &&
 		(!currentVersion.runtime || currentVersion.runtime === runtime)
 	) {
-		console.log(`No update needed, RocksDB ${currentVersion} is already installed.`);
+		console.log(`No update needed, RocksDB ${currentVersion.version} is already installed.`);
 		process.exit(0);
 	}
 
