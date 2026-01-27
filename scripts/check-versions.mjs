@@ -40,7 +40,9 @@ if (child.status !== 0) {
 	if (child.stderr.includes('404')) {
 		console.log(`${packageJson.name} has not been published to npm yet.\n`);
 	} else {
-		console.error(`ERROR: Failed to check if ${packageJson.name}@${version} has already been published to npm!`);
+		console.error(
+			`ERROR: Failed to check if ${packageJson.name}@${version} has already been published to npm!`
+		);
 		console.error(child.stdout);
 		console.error(child.stderr);
 		process.exit(1);
