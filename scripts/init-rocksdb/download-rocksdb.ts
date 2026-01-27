@@ -1,6 +1,6 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream';
@@ -11,11 +11,14 @@ const platformMap: Record<string, string> = { win32: 'windows' };
 
 const streamPipeline = promisify(pipeline);
 
-export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise<void> {
+export async function downloadRocksDB(
+	prebuild: Prebuild,
+	dest: string,
+	runtime: string | undefined
+): Promise<void> {
 	const { version } = prebuild;
 	const { arch } = process;
 	let platform = platformMap[process.platform] || process.platform;
-	const runtime = process.platform === 'linux' ? `-${process.env.LIBC || 'glibc'}` : undefined;
 
 	let filename = `rocksdb-${version}-${platform}-${arch}${runtime}`;
 	let [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
@@ -65,6 +68,11 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise
 		}
 
 		console.log('Extraction complete');
+
+		await writeFile(
+			join(dest, 'rocksdb.json'),
+			JSON.stringify({ version, platform, arch, runtime }, null, 2)
+		);
 	} finally {
 		await rm(tmpFile, { force: true });
 		await rm(tmpFile.replace(/\.xz$/, ''), { force: true });
