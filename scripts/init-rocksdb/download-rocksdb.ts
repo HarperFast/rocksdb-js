@@ -14,7 +14,7 @@ const streamPipeline = promisify(pipeline);
 export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise<void> {
 	const { version } = prebuild;
 	const { arch } = process;
-	const platform = platformMap[process.platform] || process.platform;
+	let platform = platformMap[process.platform] || process.platform;
 	const runtime = process.platform === 'linux' ? `-${process.env.LIBC || 'glibc'}` : undefined;
 
 	let filename = `rocksdb-${version}-${platform}-${arch}${runtime}`;
@@ -22,11 +22,13 @@ export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise
 
 	if (!asset) {
 		// try the old filename
-		platformMap.darwin = 'osx';
+		if (process.platform === 'darwin') {
+			platform = 'osx';
+		}
 		filename = `rocksdb-${version}-${arch}-${platform}`;
 		[asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 		if (!asset) {
-			throw new Error('No asset found');
+			throw new Error(`Asset ${filename} not found`);
 		}
 	}
 
