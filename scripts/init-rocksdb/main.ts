@@ -35,12 +35,12 @@ try {
 	}
 
 	const currentVersion = getCurrentVersion();
-	const runtime = process.platform === 'linux' ? `-${process.env.LIBC || 'glibc'}` : undefined;
+	const runtime = process.platform === 'linux' ? `-${process.env.ROCKSDB_LIBC || 'glibc'}` : undefined;
 	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
 	const desiredVersion = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || undefined;
 
 	if (
-		currentVersion && desiredVersion && semver.equal(currentVersion.version, desiredVersion) &&
+		currentVersion && desiredVersion && semver.eq(currentVersion.version, desiredVersion) &&
 		(!currentVersion.runtime || currentVersion.runtime === runtime)
 	) {
 		console.log(`No update needed, RocksDB ${currentVersion} is already installed.`);

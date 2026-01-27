@@ -992,7 +992,7 @@ to the pinned version in the `package.json` file. You can override this by setti
 `ROCKSDB_VERSION` environment variable. For example:
 
 ```bash
-ROCKSDB_VERSION=9.10.0 pnpm build
+ROCKSDB_VERSION=10.9.1 pnpm build
 ```
 
 You may also specify `latest` to use the latest prebuilt version.
@@ -1005,7 +1005,16 @@ Optionally, you may also create a `.env` file in the root of the project to spec
 settings. For example:
 
 ```bash
-echo "ROCKSDB_VERSION=9.10.0" >> .env
+echo "ROCKSDB_VERSION=10.9.1" >> .env
+```
+
+### Linux C runtime versions
+
+When you compile `rocksdb-js`, you can specify the `ROCKSDB_LIBC` environment variable to choose
+either `glibc` (default) or `musl`.
+
+```bash
+ROCKSDB_LIBC=musl pnpm rebuild
 ```
 
 ### Building RocksDB from Source

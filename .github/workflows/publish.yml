@@ -105,7 +105,7 @@ jobs:
       - name: Build binding
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          LIBC: ${{ matrix.platform.libc }}
+          ROCKSDB_LIBC: ${{ matrix.platform.libc }}
         shell: bash
         run: pnpm build
 
