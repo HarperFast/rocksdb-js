@@ -1,8 +1,8 @@
-import { when, withResolvers, type MaybePromise } from './util.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { NativeTransaction, TransactionLog } from './load-binding.js';
 import type { Context, GetOptions, PutOptions, Store } from './store.js';
-import type { BufferWithDataView, Key } from './encoding.js';
 import type { Transaction } from './transaction.js';
+import { type MaybePromise, when } from './util.js';
 
 export interface RocksDBOptions {
 	/**
@@ -124,11 +124,11 @@ export interface IteratorOptions extends RangeOptions {
 	 * When `true`, the iterator will only return the values.
 	 */
 	valuesOnly?: boolean;
-};
+}
 
 export interface DBITransactional {
 	transaction?: Transaction;
-};
+}
 
 /**
  * The base class for all database operations. This base class is shared by
@@ -182,29 +182,27 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 */
 	get(key: Key, options?: GetOptions & T): MaybePromise<any | undefined> {
 		if (this.store.decoderCopies) {
-			return when(
-				() => this.getBinaryFast(key, options),
-				result => {
-					if (result === undefined) {
-						return undefined;
-					}
-
-					if (options?.skipDecode) {
-						return result;
-					}
-
-					return this.store.decodeValue(result as Buffer);
+			return when(() => this.getBinaryFast(key, options), result => {
+				if (result === undefined) {
+					return undefined;
 				}
-			);
+
+				if (options?.skipDecode) {
+					return result;
+				}
+
+				return this.store.decodeValue(result as BufferWithDataView);
+			});
 		}
 
 		return when(
 			() => this.getBinary(key, options),
-			result => result === undefined
-				? undefined
-				: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
+			result =>
+				result === undefined
+					? undefined
+					: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
 					? result
-					: this.store.decodeValue(result as Buffer)
+					: this.store.decodeValue(result as BufferWithDataView)
 		);
 	}
 
@@ -219,35 +217,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		let result: Buffer | undefined;
-		let error: unknown | undefined;
-		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: unknown) => void | undefined;
-
-		const status = this.store.get(
-			this.#context,
-			key,
-			value => {
-				result = value;
-				resolve?.(value);
-			},
-			err => {
-				error = err;
-				reject?.(err);
-			},
-			this.store.getTxnId(options)
-		);
-
-		if (error) {
-			return Promise.reject(error);
-		}
-		if (status === 0) {
-			return result;
-		}
-
-		let promise: Promise<Buffer | undefined>;
-		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
-		return promise;
+		return this.store.get(this.#context, key, true, this.store.getTxnId(options));
 	}
 
 	/**
@@ -258,7 +228,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.getSync(this.#context, key, options);
+		return this.store.getSync(this.#context, key, true, options);
 	}
 
 	/**
@@ -276,36 +246,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		let result: Buffer | undefined;
-		let error: unknown | undefined;
-		let resolve: (value: Buffer | undefined) => void | undefined;
-		let reject: (error: unknown) => void | undefined;
-
-		// TODO: specify the shared buffer to write the value to
-		const status = this.store.get(
-			this.#context,
-			key,
-			value => {
-				result = value;
-				resolve?.(value);
-			},
-			err => {
-				error = err;
-				reject?.(err);
-			},
-			this.store.getTxnId(options)
-		);
-
-		if (error) {
-			return Promise.reject(error);
-		}
-		if (status === 0) {
-			return result;
-		}
-
-		let promise: Promise<Buffer | undefined>;
-		({ resolve, reject, promise } = withResolvers<Buffer | undefined>());
-		return promise;
+		return this.store.get(this.#context, key, false, this.store.getTxnId(options));
 	}
 
 	/**
@@ -318,21 +259,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.getSync(
-			this.#context,
-			key,
-			options
-		);
+		return this.store.getSync(this.#context, key, false, options);
 	}
 
 	/**
 	 * Retrieves all keys within a range.
 	 */
 	getKeys(options?: IteratorOptions & T): any | undefined {
-		return this.store.getRange(this.#context, {
-			...options,
-			values: false
-		}).map(item => item.key);
+		return this.store.getRange(this.#context, { ...options, values: false }).map(item => item.key);
 	}
 
 	/**
@@ -379,7 +313,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getSync(key: Key, options?: GetOptions & T): any | undefined {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
-			return bytes === undefined ? undefined : this.store.decodeValue(bytes as Buffer);
+			return bytes === undefined ? undefined : this.store.decodeValue(bytes as BufferWithDataView);
 		}
 
 		if (this.store.encoding === 'binary') {
@@ -388,22 +322,20 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		if (this.store.decoder) {
 			const result = this.getBinarySync(key, options);
-			return result ? this.store.decodeValue(result) : undefined;
+			return result ? this.store.decodeValue(result as BufferWithDataView) : undefined;
 		}
 
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
 
-		return this.store.decodeValue(
-			this.store.getSync(this.#context, key, options)
-		);
+		return this.store.decodeValue(this.store.getSync(this.#context, key, true, options));
 	}
 
 	/**
 	 * Gets the number of listeners for the given key.
 	 *
-	 	* @param event - The event name to get the listeners for.
+	 * @param event - The event name to get the listeners for.
 	 * @returns The number of listeners for the given key.
 	 */
 	listeners(event: string | BufferWithDataView): number {

@@ -25,7 +25,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -35,7 +35,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -54,7 +54,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -64,7 +64,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -81,7 +81,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('rocksdb', {
@@ -96,7 +96,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -114,7 +114,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -123,13 +123,13 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
 	describe('random access pattern (100 records)', () => {
 		function setup(ctx) {
-			const data = generateTestData(SMALL_DATASET, 20, 100)
+			const data = generateTestData(SMALL_DATASET, 20, 100);
 			for (const item of data) {
 				ctx.db.putSync(item.key, item.value);
 			}
@@ -143,7 +143,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -152,7 +152,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -167,7 +167,7 @@ describe('getSync()', () => {
 				for (let i = 0; i < 1000; i++) {
 					db.getSync('test-key');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -176,7 +176,7 @@ describe('getSync()', () => {
 				for (let i = 0; i < 1000; i++) {
 					db.get('test-key');
 				}
-			}
+			},
 		});
 	});
 
@@ -191,7 +191,7 @@ describe('getSync()', () => {
 				for (let i = 0; i < 1000; i++) {
 					db.getSync(`non-existent-key-${i}`);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -200,7 +200,7 @@ describe('getSync()', () => {
 				for (let i = 0; i < 1000; i++) {
 					db.get(`non-existent-key-${i}`);
 				}
-			}
+			},
 		});
 	});
 
@@ -220,7 +220,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -229,7 +229,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -249,7 +249,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -258,7 +258,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 
@@ -278,7 +278,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.getSync(key);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -287,7 +287,7 @@ describe('getSync()', () => {
 				for (const key of data) {
 					db.get(key);
 				}
-			}
+			},
 		});
 	});
 });

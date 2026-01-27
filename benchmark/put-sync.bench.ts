@@ -13,7 +13,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -24,7 +24,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 	});
 
@@ -43,7 +43,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value-updated');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -52,7 +52,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value-updated');
 				}
-			}
+			},
 		});
 	});
 
@@ -65,7 +65,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -76,7 +76,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value');
 				}
-			}
+			},
 		});
 	});
 
@@ -95,7 +95,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value-updated');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -104,7 +104,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value-updated');
 				}
-			}
+			},
 		});
 	});
 
@@ -120,7 +120,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value-updated');
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -134,7 +134,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, 'test-value-updated');
 				}
-			}
+			},
 		});
 	});
 
@@ -151,7 +151,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, value);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -160,7 +160,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, value);
 				}
-			}
+			},
 		});
 	});
 
@@ -177,7 +177,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, value);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -186,7 +186,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, value);
 				}
-			}
+			},
 		});
 	});
 
@@ -203,7 +203,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, value);
 				}
-			}
+			},
 		});
 
 		benchmark('lmdb', {
@@ -212,7 +212,7 @@ describe('putSync()', () => {
 				for (const key of data) {
 					db.putSync(key, value);
 				}
-			}
+			},
 		});
 	});
 });

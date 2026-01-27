@@ -67,7 +67,7 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 		case napi_null: fprintf(stderr, "null"); break;
 		case napi_boolean: {
 			bool result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_bool(env, value, &result))
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_bool(env, value, &result));
 			if (result) {
 				fprintf(stderr, "true");
 			} else {
@@ -77,28 +77,28 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 		}
 		case napi_number: {
 			double result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_double(env, value, &result))
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_double(env, value, &result));
 			fprintf(stderr, "%f", result);
 			break;
 		}
 		case napi_string: {
 			char buffer[1024];
 			size_t result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, value, buffer, sizeof(buffer), &result))
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, value, buffer, sizeof(buffer), &result));
 			fprintf(stderr, "\"%s\"", buffer);
 			break;
 		}
 		case napi_function:
 		case napi_symbol: {
 			napi_value toStringFn;
-			NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, value, "toString", &toStringFn))
+			NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, value, "toString", &toStringFn));
 
 			napi_value resultValue;
 			NAPI_STATUS_THROWS_VOID(::napi_call_function(env, value, toStringFn, 0, nullptr, &resultValue));
 
 			char buffer[128];
 			size_t result;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, resultValue, buffer, sizeof(buffer), &result))
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, resultValue, buffer, sizeof(buffer), &result));
 
 			fprintf(stderr, "%s", buffer);
 			break;
@@ -108,14 +108,14 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 			NAPI_STATUS_THROWS_VOID(::napi_is_array(env, value, &isArray));
 			if (isArray) {
 				uint32_t length;
-				NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, value, &length))
+				NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, value, &length));
 
 				fprintf(stderr, "[");
 				if (length > 0) {
 					fprintf(stderr, "\n");
 					for (uint32_t i = 0; i < length; i++) {
 						napi_value element;
-						NAPI_STATUS_THROWS_VOID(::napi_get_element(env, value, i, &element))
+						NAPI_STATUS_THROWS_VOID(::napi_get_element(env, value, i, &element));
 						debugLogNapiValue(env, element, indent + 1);
 						if (i < length - 1) {
 							fprintf(stderr, ", // %u\n", i);
@@ -127,23 +127,23 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 				fprintf(stderr, "]");
 			} else {
 				napi_value properties;
-				NAPI_STATUS_THROWS_VOID(::napi_get_property_names(env, value, &properties))
+				NAPI_STATUS_THROWS_VOID(::napi_get_property_names(env, value, &properties));
 				uint32_t length;
-				NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, properties, &length))
+				NAPI_STATUS_THROWS_VOID(::napi_get_array_length(env, properties, &length));
 
 				fprintf(stderr, "{");
 				if (length > 0) {
 					fprintf(stderr, "\n");
 					for (uint32_t i = 0; i < length; i++) {
 						napi_value propertyName;
-						NAPI_STATUS_THROWS_VOID(::napi_get_element(env, properties, i, &propertyName))
+						NAPI_STATUS_THROWS_VOID(::napi_get_element(env, properties, i, &propertyName));
 
 						char nameBuffer[1024];
 						size_t nameLength;
-						NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, propertyName, nameBuffer, sizeof(nameBuffer), &nameLength))
+						NAPI_STATUS_THROWS_VOID(::napi_get_value_string_utf8(env, propertyName, nameBuffer, sizeof(nameBuffer), &nameLength));
 
 						napi_value propertyValue;
-						NAPI_STATUS_THROWS_VOID(::napi_get_property(env, value, propertyName, &propertyValue))
+						NAPI_STATUS_THROWS_VOID(::napi_get_property(env, value, propertyName, &propertyValue));
 
 						for (uint16_t i = 0; i < indent; i++) {
 							fprintf(stderr, "  ");
@@ -168,7 +168,7 @@ void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent, bool isO
 		case napi_bigint: {
 			int64_t result;
 			bool lossless;
-			NAPI_STATUS_THROWS_VOID(::napi_get_value_bigint_int64(env, value, &result, &lossless))
+			NAPI_STATUS_THROWS_VOID(::napi_get_value_bigint_int64(env, value, &result, &lossless));
 			if (lossless) {
 				fprintf(stderr, "%" PRId64, result);
 			} else {
@@ -306,7 +306,7 @@ static const char* errorCodeStrings[] = {
  * Creates a new JavaScript error object from a RocksDB status.
  */
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error) {
-	ROCKSDB_STATUS_FORMAT_ERROR(status, msg)
+	ROCKSDB_STATUS_FORMAT_ERROR(status, msg);
 
 	napi_value global;
 	napi_value objectCtor;
@@ -316,11 +316,11 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 	napi_value errorCode;
 	napi_value errorMsg;
 
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto))
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto));
 
 	const char* codeStr;
 	switch (status.code()) {
@@ -341,14 +341,14 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 		case rocksdb::Status::Code::kColumnFamilyDropped: codeStr = errorCodeStrings[15]; break;
 		default: codeStr = errorCodeStrings[0]; break;
 	}
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, codeStr, NAPI_AUTO_LENGTH, &errorCode))
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, codeStr, NAPI_AUTO_LENGTH, &errorCode));
 
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg))
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg));
 
 	napi_value createArgs[1] = { errorProto };
-	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error))
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode))
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg))
+	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg));
 }
 
 /**
@@ -363,19 +363,19 @@ void createJSError(napi_env env, const char* code, const char* message, napi_val
 	napi_value errorCode;
 	napi_value errorMsg;
 
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor))
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto))
+	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor));
+	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto));
 
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &errorCode))
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &errorMsg))
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &errorCode));
+	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &errorMsg));
 
 	napi_value createArgs[1] = { errorProto };
-	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error))
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode))
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg))
+	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg));
 }
 
 /**
@@ -424,9 +424,9 @@ const char* getNapiBufferFromArg(
 		end = length;
 	}
 
-	RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", nullptr)
-	RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", nullptr)
-	RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", nullptr)
+	RANGE_CHECK(start > end, "Buffer start greater than end (start=" << start << ", end=" << end << ")", nullptr);
+	RANGE_CHECK(start > length, "Buffer start greater than length (start=" << start << ", length=" << length << ")", nullptr);
+	RANGE_CHECK(end > length, "Buffer end greater than length (end=" << end << ", length=" << length << ")", nullptr);
 
 	if (data == nullptr) {
 		// data is null because the buffer is empty
@@ -434,6 +434,29 @@ const char* getNapiBufferFromArg(
 	}
 
 	return data;
+}
+
+bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char* defaultBuffer, const char* errorMsg) {
+	int32_t length;
+	char* data;
+	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
+	if (argStatus == napi_ok) {
+		// utilize the default shared buffer, if we have a number as a length
+		data = defaultBuffer;
+	} else {
+		// otherwise, see if we can accept a buffer
+		bool isBuffer;
+		NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, arg, &isBuffer), false);
+		if (!isBuffer) {
+			::napi_throw_error(env, nullptr, errorMsg);
+			return false;
+		}
+		size_t bufferLength;
+		NAPI_STATUS_THROWS_RVAL(::napi_get_buffer_info(env, arg, reinterpret_cast<void**>(&data), &bufferLength), false);
+		length = static_cast<int32_t>(bufferLength);
+	}
+	result = rocksdb::Slice(data, length);
+	return true;
 }
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(

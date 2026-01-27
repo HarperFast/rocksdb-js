@@ -1,6 +1,6 @@
-import { RocksDatabase } from '../../src/index.js';
-import { parentPort, workerData } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
+import { parentPort, workerData } from 'node:worker_threads';
+import { RocksDatabase } from '../../src/index.js';
 
 parentPort?.on('message', event => {
 	if (event.runTransactions10k) {

@@ -106,18 +106,18 @@ void TransactionHandle::close() {
 	this->txn = nullptr;
 
 	if (this->jsDatabaseRef != nullptr) {
-		DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this)
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database")
-		DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this)
+		DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this);
+		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database");
+		DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this);
 		this->jsDatabaseRef = nullptr;
 	} else {
-		DEBUG_LOG("%p TransactionHandle::close jsDatabaseRef is already null\n", this)
+		DEBUG_LOG("%p TransactionHandle::close jsDatabaseRef is already null\n", this);
 	}
 
 	// the transaction should already be removed from the registry when
 	// committing/aborting  so we don't need to call transactionRemove here to
 	// avoid race conditions and bad_weak_ptr errors
-	DEBUG_LOG("%p TransactionHandle::close Transaction should already be removed from registry\n", this)
+	DEBUG_LOG("%p TransactionHandle::close Transaction should already be removed from registry\n", this);
 
 	this->dbHandle.reset();
 }
@@ -127,7 +127,7 @@ void TransactionHandle::close() {
  */
 napi_value TransactionHandle::get(
 	napi_env env,
-	rocksdb::Slice& key,
+	std::string &key,
 	napi_value resolve,
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride
@@ -138,7 +138,7 @@ napi_value TransactionHandle::get(
 	}
 
 	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::get Transaction is not in pending state (state=%d)\n", this, this->state)
+		DEBUG_LOG("%p TransactionHandle::get Transaction is not in pending state (state=%d)\n", this, this->state);
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
@@ -176,12 +176,12 @@ napi_value TransactionHandle::get(
 		"transaction.get",
 		NAPI_AUTO_LENGTH,
 		&name
-	))
+	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, key);
-	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef))
-	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef))
+	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(
 		env,       // node_env
@@ -196,7 +196,7 @@ napi_value TransactionHandle::get(
 				state->status = state->handle->txn->Get(
 					state->readOptions,
 					state->handle->dbHandle->column.get(),
-					state->keySlice,
+					state->key,
 					&state->value
 				);
 			}
@@ -220,9 +220,9 @@ napi_value TransactionHandle::get(
 	// register the async work with the transaction handle
 	this->registerAsyncWork();
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork))
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus))
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
 	return returnStatus;
 }
 
@@ -253,7 +253,8 @@ void TransactionHandle::getCount(
  */
 rocksdb::Status TransactionHandle::getSync(
 	rocksdb::Slice& key,
-	std::string& result,
+	rocksdb::PinnableSlice& result,
+	rocksdb::ReadOptions& readOptions,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	if (!this->txn) {
@@ -261,7 +262,7 @@ rocksdb::Status TransactionHandle::getSync(
 	}
 
 	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::getSync Transaction is not in pending state (state=%d)\n", this, this->state)
+		DEBUG_LOG("%p TransactionHandle::getSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -270,7 +271,6 @@ rocksdb::Status TransactionHandle::getSync(
 		this->txn->SetSnapshot();
 	}
 
-	auto readOptions = rocksdb::ReadOptions();
 	if (this->snapshotSet) {
 		readOptions.snapshot = this->txn->GetSnapshot();
 	}
@@ -295,7 +295,7 @@ rocksdb::Status TransactionHandle::putSync(
 	}
 
 	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, this->state)
+		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -321,7 +321,7 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, this->state)
+		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 

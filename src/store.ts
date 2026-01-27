@@ -1,29 +1,34 @@
+import { ExtendedIterable } from '@harperfast/extended-iterable';
+import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
+import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
-	NativeDatabase,
-	NativeIterator,
-	NativeTransaction,
-	type UserSharedBufferCallback,
-	type NativeDatabaseOptions,
-	type TransactionLog,
-} from './load-binding.js';
-import {
+	type BufferWithDataView,
+	createFixedBuffer,
+	type Encoder,
 	Encoding,
 	initKeyEncoder,
-	createFixedBuffer,
-	type BufferWithDataView,
-	type Encoder,
 	type Key,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
 } from './encoding.js';
-import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
-import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
-import { Transaction } from './transaction.js';
-import { ExtendedIterable } from '@harperfast/extended-iterable';
+import {
+	constants,
+	NativeDatabase,
+	type NativeDatabaseOptions,
+	NativeIterator,
+	NativeTransaction,
+	type TransactionLog,
+	type UserSharedBufferCallback,
+} from './load-binding.js';
 import { parseDuration } from './util.js';
 
+const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } =
+	constants;
 const KEY_BUFFER_SIZE = 4096;
+export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
+export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
+
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
 const RESET_BUFFER_MODE = 1024;
 const REUSE_BUFFER_MODE = 512;
@@ -35,18 +40,14 @@ export type Context = NativeDatabase | NativeTransaction;
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions extends Omit<NativeDatabaseOptions,
-	| 'mode'
-	| 'transactionLogRetentionMs'
-> {
+export interface StoreOptions
+	extends Omit<NativeDatabaseOptions, 'mode' | 'transactionLogRetentionMs'>
+{
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
 	freezeData?: boolean;
-	keyEncoder?: {
-		readKey?: ReadKeyFunction<Key>;
-		writeKey?: WriteKeyFunction;
-	};
+	keyEncoder?: { readKey?: ReadKeyFunction<Key>; writeKey?: WriteKeyFunction };
 	keyEncoding?: KeyEncoding;
 	// mapSize?: number;
 	// maxDbs?: number;
@@ -83,17 +84,12 @@ export interface StoreOptions extends Omit<NativeDatabaseOptions,
 /**
  * Options for the `getUserSharedBuffer()` method.
  */
-export type UserSharedBufferOptions = {
-	callback?: UserSharedBufferCallback;
-};
+export type UserSharedBufferOptions = { callback?: UserSharedBufferCallback };
 
 /**
  * The return type of `getUserSharedBuffer()`.
  */
-export type ArrayBufferWithNotify = ArrayBuffer & {
-	cancel: () => void;
-	notify: () => void;
-};
+export type ArrayBufferWithNotify = ArrayBuffer & { cancel: () => void; notify: () => void };
 
 /**
  * A store wraps the `NativeDatabase` binding and database settings so that a
@@ -263,7 +259,7 @@ export class Store {
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
 		this.freezeData = options?.freezeData ?? false;
-		this.keyBuffer = createFixedBuffer(KEY_BUFFER_SIZE);
+		this.keyBuffer = KEY_BUFFER;
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
 		this.name = options?.name ?? 'default';
@@ -304,9 +300,9 @@ export class Store {
 	 * @param value - The value to decode.
 	 * @returns The decoded value.
 	 */
-	decodeValue(value: Buffer): any {
+	decodeValue(value: BufferWithDataView): any {
 		if (value?.length > 0 && typeof this.decoder?.decode === 'function') {
-			return this.decoder.decode(value);
+			return this.decoder.decode(value, { end: value.end });
 		}
 		return value;
 	}
@@ -345,10 +341,7 @@ export class Store {
 
 		if (typeof this.encoder?.encode === 'function') {
 			if (this.encoder.copyBuffers) {
-				return this.encoder.encode(
-					value,
-					REUSE_BUFFER_MODE | RESET_BUFFER_MODE
-				);
+				return this.encoder.encode(value, REUSE_BUFFER_MODE | RESET_BUFFER_MODE);
 			}
 
 			const valueBuffer = this.encoder.encode(value);
@@ -372,16 +365,29 @@ export class Store {
 	get(
 		context: NativeDatabase | NativeTransaction,
 		key: Key,
-		resolve: (value: Buffer) => void,
-		reject: (err: unknown) => void,
+		alwaysCreateNewBuffer: boolean = false,
 		txnId?: number
 	): any | undefined {
-		return context.get(
-			this.encodeKey(key),
-			resolve,
-			reject,
-			txnId
-		);
+		const keyParam = getKeyParam(this.encodeKey(key));
+		let flags = 0;
+		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
+			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
+		}
+		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
+		const result = context.getSync(keyParam, flags | ONLY_IF_IN_MEMORY_CACHE_FLAG, txnId);
+		if (typeof result === 'number') { // return a number indicates it is using the default buffer
+			if (result === NOT_IN_MEMORY_CACHE_FLAG) {
+				// is not in memory cache, use async get since this will involve disk access
+				return new Promise((resolve, reject) => {
+					// We still use the same shared buffer for the key, the native side will make a copy for the async task
+					context.get(keyParam, resolve, reject, txnId);
+				});
+			}
+			// continue with fast path
+			VALUE_BUFFER.end = result;
+			return VALUE_BUFFER;
+		} // else it is undefined or it is a new buffer
+		return result;
 	}
 
 	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions): number {
@@ -425,6 +431,17 @@ export class Store {
 			options.end = Buffer.from(end.subarray(end.start, end.end));
 		}
 
+		if (options.reverse) {
+			// reverse the start and end keys
+			const start = options.start;
+			options.start = options.end;
+			options.end = start;
+
+			// reverse the exclusive start and end flags
+			options.exclusiveStart = options.exclusiveStart ?? true;
+			options.inclusiveEnd = options.inclusiveEnd ?? true;
+		}
+
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
 			new DBIterator(
@@ -438,12 +455,21 @@ export class Store {
 	getSync(
 		context: NativeDatabase | NativeTransaction,
 		key: Key,
+		alwaysCreateNewBuffer: boolean = false,
 		options?: GetOptions & DBITransactional
 	): any | undefined {
-		return context.getSync(
-			this.encodeKey(key),
-			this.getTxnId(options)
-		);
+		const keyParam = getKeyParam(this.encodeKey(key));
+		let flags = 0;
+		if (alwaysCreateNewBuffer) {
+			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
+		}
+		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
+		const result = context.getSync(keyParam, flags, this.getTxnId(options));
+		if (typeof result === 'number') { // return a number indicates it is using the default buffer
+			VALUE_BUFFER.end = result;
+			return VALUE_BUFFER;
+		} // else it is undefined or it is a new buffer
+		return result;
 	}
 
 	/**
@@ -452,8 +478,8 @@ export class Store {
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
-		if (options && typeof options === 'object' && 'transaction' in options) {
-			txnId = (options.transaction as Transaction)?.id;
+		if ((options as DBITransactional)?.transaction) {
+			txnId = (options as DBITransactional).transaction!.id;
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');
 			}
@@ -551,7 +577,7 @@ export class Store {
 			transactionLogRetentionMs: this.transactionLogRetention
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
-			transactionLogsPath: this.transactionLogsPath
+			transactionLogsPath: this.transactionLogsPath,
 		});
 
 		return false;
@@ -574,11 +600,7 @@ export class Store {
 		// overwriting this method's encoded key!
 		const valueBuffer = this.encodeValue(value);
 
-		context.putSync(
-			this.encodeKey(key),
-			valueBuffer,
-			this.getTxnId(options)
-		);
+		context.putSync(this.encodeKey(key), valueBuffer, this.getTxnId(options));
 	}
 
 	removeSync(
@@ -590,10 +612,7 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
-		context.removeSync(
-			this.encodeKey(key),
-			this.getTxnId(options)
-		);
+		context.removeSync(this.encodeKey(key), this.getTxnId(options));
 	}
 
 	/**
@@ -631,10 +650,7 @@ export class Store {
 	 * @param name - The name of the transaction log.
 	 * @returns The transaction log.
 	 */
-	useLog(
-		context: NativeDatabase | NativeTransaction,
-		name: string | number
-	): TransactionLog {
+	useLog(context: NativeDatabase | NativeTransaction, name: string | number): TransactionLog {
 		if (typeof name !== 'string' && typeof name !== 'number') {
 			throw new TypeError('Log name must be a string or number');
 		}
@@ -653,11 +669,29 @@ export class Store {
 			return Promise.reject(new TypeError('Callback must be a function'));
 		}
 
-		return this.db.withLock(
-			this.encodeKey(key),
-			callback
-		);
+		return this.db.withLock(this.encodeKey(key), callback);
 	}
+}
+
+/**
+ * Ensure that they key has been copied into our shared buffer, and return the ending position
+ * @param keyBuffer
+ */
+function getKeyParam(keyBuffer: BufferWithDataView): number | Buffer {
+	if (keyBuffer.buffer === KEY_BUFFER.buffer) {
+		if (keyBuffer.end >= 0) {
+			return keyBuffer.end;
+		}
+		if (keyBuffer.byteOffset === 0) {
+			return keyBuffer.byteLength;
+		}
+	}
+	if (keyBuffer.length > KEY_BUFFER.length) {
+		// for larger key buffers, we pass it straight in
+		return keyBuffer;
+	}
+	KEY_BUFFER.set(keyBuffer);
+	return keyBuffer.length;
 }
 
 export interface GetOptions {
@@ -674,4 +708,4 @@ export interface PutOptions {
 	instructedWrite?: boolean;
 	noDupData?: boolean;
 	noOverwrite?: boolean;
-};
+}

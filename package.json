@@ -26,6 +26,8 @@
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts",
+    "format": "dprint check",
+    "format:fix": "dprint fmt",
     "lint": "oxlint",
     "prepublishOnly": "pnpm build",
     "rebuild": "node-gyp rebuild",
@@ -40,27 +42,28 @@
     "dist"
   ],
   "dependencies": {
-    "@harperfast/extended-iterable": "1.0.1",
+    "@harperfast/extended-iterable": "1.0.3",
     "msgpackr": "1.11.8",
     "ordered-binary": "1.6.1"
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "25.0.9",
-    "@vitest/coverage-v8": "4.0.17",
+    "@types/node": "25.0.10",
+    "@vitest/coverage-v8": "4.0.18",
     "cross-env": "10.1.0",
     "dotenv": "17.2.3",
+    "dprint": "0.51.1",
     "lefthook": "2.0.15",
-    "lmdb": "3.4.4",
+    "lmdb": "3.5.0",
     "node-gyp": "12.1.0",
     "oxlint": "1.41.0",
     "prebuildify": "6.0.1",
     "semver": "7.7.3",
-    "tsdown": "0.19.0",
+    "tsdown": "0.20.1",
     "tslib": "2.8.1",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
-    "vitest": "4.0.17"
+    "vitest": "4.0.18"
   },
   "engines": {
     "node": ">=18"

@@ -8,11 +8,11 @@ export interface BufferWithDataView extends Buffer {
 	end: number;
 }
 
-export type EncoderFunction = new (options?: any) => Encoder;
+export type EncoderFunction = new(options?: any) => Encoder;
 
 export interface Encoder {
 	copyBuffers?: boolean;
-	decode?: (buffer: Buffer) => any;
+	decode?: (buffer: BufferWithDataView, options?: { end: number }) => any;
 	encode?: (value: any, mode?: number) => Buffer; // | string;
 	Encoder?: EncoderFunction;
 	freezeData?: boolean;
@@ -47,11 +47,7 @@ export type WriteKeyFunction = (key: Key, target: BufferWithDataView, start: num
 export function initKeyEncoder(
 	requestedKeyEncoding?: KeyEncoding | undefined,
 	keyEncoder?: KeyEncoder | undefined
-): {
-	keyEncoding: KeyEncoding;
-	readKey: ReadKeyFunction<Key>;
-	writeKey: WriteKeyFunction;
-} {
+): { keyEncoding: KeyEncoding; readKey: ReadKeyFunction<Key>; writeKey: WriteKeyFunction } {
 	const keyEncoding: KeyEncoding = requestedKeyEncoding ?? 'ordered-binary';
 
 	if (keyEncoder) {

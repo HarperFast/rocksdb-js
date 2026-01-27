@@ -1,9 +1,9 @@
-import { dirname, join, resolve } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { BufferWithDataView, Key } from './encoding.js';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { BufferWithDataView, Key } from './encoding.js';
 import type { Context } from './store.js';
 
 export type TransactionOptions = {
@@ -21,9 +21,14 @@ export type NativeTransaction = {
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
-	get(key: Key, resolve: (value: Buffer) => void, reject: (err: Error) => void): number;
+	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
+	get(
+		keyLengthOrKeyBuffer: number | Buffer,
+		resolve: (value: Buffer) => void,
+		reject: (err: Error) => void
+	): number;
 	getCount(options?: RangeOptions): number;
-	getSync(key: Key): Buffer;
+	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
 	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
@@ -31,11 +36,7 @@ export type NativeTransaction = {
 	useLog(name: string | number): TransactionLog;
 };
 
-export type LogBuffer = Buffer & {
-	dataView: DataView;
-	logId: number;
-	size: number;
-};
+export type LogBuffer = Buffer & { dataView: DataView; logId: number; size: number };
 
 export type TransactionLogQueryOptions = {
 	start?: number;
@@ -46,11 +47,7 @@ export type TransactionLogQueryOptions = {
 	exclusiveStart?: boolean;
 };
 
-export type TransactionEntry = {
-	timestamp: number;
-	data: Buffer;
-	endTxn: boolean;
-};
+export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
 
 export type TransactionLog = {
 	new(name: string): TransactionLog;
@@ -93,10 +90,7 @@ type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
 
-export type PurgeLogsOptions = {
-	destroy?: boolean;
-	name?: string;
-};
+export type PurgeLogsOptions = { destroy?: boolean; name?: string };
 
 export type NativeDatabase = {
 	new(): NativeDatabase;
@@ -104,38 +98,51 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
+	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	flushSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	get(key: BufferWithDataView, resolve: ResolveCallback<Buffer>, reject: RejectCallback, txnId?: number): number;
+	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
+	get(
+		keyLengthOrKeyBuffer: number | Buffer,
+		resolve: ResolveCallback<Buffer>,
+		reject: RejectCallback,
+		txnId?: number
+	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number;
 	getDBProperty(propertyName: string): string;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getSync(key: BufferWithDataView, txnId?: number): Buffer;
-	getUserSharedBuffer(key: BufferWithDataView, defaultBuffer: ArrayBuffer, callback?: UserSharedBufferCallback): ArrayBuffer;
+	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
+	getUserSharedBuffer(
+		key: BufferWithDataView,
+		defaultBuffer: ArrayBuffer,
+		callback?: UserSharedBufferCallback
+	): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];
 	opened: boolean;
-	open(
-		path: string,
-		options?: NativeDatabaseOptions
-	): void;
+	open(path: string, options?: NativeDatabaseOptions): void;
 	purgeLogs(options?: PurgeLogsOptions): string[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
+	// Provide a buffer that is used as the default/shared buffer for keys, where functions that provide a key can do so by assigning the key to the shared buffer and providing the length.
+	// A null value will reset the buffer.
+	setDefaultKeyBuffer(buffer: Buffer | Uint8Array | null): void;
+	// Provide a buffer that is used as the default/shared buffer for value, where functions that use or return a value can do so by assigning the value to the shared buffer and providing/returning the length.
+	// A null value will reset the buffer.
+	setDefaultValueBuffer(buffer: Buffer | Uint8Array | null): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = {
-	blockCacheSize?: number;
-};
+export type RocksDatabaseConfig = { blockCacheSize?: number };
 
 const nativeExtRE = /\.node$/;
 
@@ -159,7 +166,7 @@ function locateBinding(): string {
 				}
 			}
 
-		/* v8 ignore next -- @preserve */
+			/* v8 ignore next -- @preserve */
 		} catch {}
 	}
 
@@ -168,7 +175,15 @@ function locateBinding(): string {
 
 	// check node_modules
 	try {
-		const path = join(baseDir, 'node_modules', '@harperfast', `rocksdb-js-${process.platform}-${process.arch}`, 'build', 'Release', 'rocksdb-js.node');
+		const path = join(
+			baseDir,
+			'node_modules',
+			'@harperfast',
+			`rocksdb-js-${process.platform}-${process.arch}`,
+			'build',
+			'Release',
+			'rocksdb-js.node'
+		);
 		if (existsSync(path)) {
 			return resolve(path);
 		}
@@ -187,6 +202,9 @@ export const constants: {
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
+	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	NOT_IN_MEMORY_CACHE_FLAG: number;
+	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
