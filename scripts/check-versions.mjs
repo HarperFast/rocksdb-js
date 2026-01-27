@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,9 +35,19 @@ if (mismatched.length > 0) {
 }
 
 // check that the version hasn't already been published to npm
-const published = execFileSync('npm', ['view', packageJson.name, 'version']);
-if (published.toString().trim() === version) {
-	console.error(`ERROR: Version ${version} has already been published to npm!`);
+const child = spawnSync('npm', ['view', packageJson.name, 'version'], { encoding: 'utf8' });
+if (child.status !== 0) {
+	if (child.stderr.includes('404')) {
+		console.log(`${packageJson.name} has not been published to npm yet.\n`);
+	} else {
+		console.error(`ERROR: Failed to check if ${packageJson.name}@${version} has already been published to npm!`);
+		console.error(child.stdout);
+		console.error(child.stderr);
+		process.exit(1);
+	}
+}
+if (child.stdout.trim() === version) {
+	console.error(`ERROR: ${packageJson.name}@${version} has already been published to npm!`);
 	process.exit(1);
 }
 
