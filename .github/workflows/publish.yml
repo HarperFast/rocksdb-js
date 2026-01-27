@@ -27,10 +27,11 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Setup dependencies
-        uses: ./.github/actions/setup-deps
-        with:
-          gh-token: ${{ secrets.GH_TOKEN }}
+      - name: Install dependencies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Check versions
         shell: bash
@@ -97,10 +98,11 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Setup dependencies
-        uses: ./.github/actions/setup-deps
-        with:
-          gh-token: ${{ secrets.GH_TOKEN }}
+      - name: Install dependencies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Build binding
         env:
@@ -140,10 +142,11 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Setup dependencies
-        uses: ./.github/actions/setup-deps
-        with:
-          gh-token: ${{ secrets.GH_TOKEN }}
+      - name: Install dependencies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Download artifact
         uses: actions/download-artifact@v7
