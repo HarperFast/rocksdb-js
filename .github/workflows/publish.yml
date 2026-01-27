@@ -58,10 +58,20 @@ jobs:
             name: darwin-x64
             target: x64
           - runner: ubuntu-24.04-arm
-            name: linux-arm64
+            name: linux-arm64-glibc
+            libc: glibc
             target: arm64
           - runner: ubuntu-latest
-            name: linux-x64
+            name: linux-x64-glibc
+            libc: glibc
+            target: x64
+          - runner: ubuntu-24.04-arm
+            name: linux-arm64-musl
+            libc: musl
+            target: arm64
+          - runner: ubuntu-latest
+            name: linux-x64-musl
+            libc: musl
             target: x64
           - runner: windows-11-arm
             name: win32-arm64
@@ -95,6 +105,7 @@ jobs:
       - name: Build binding
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ROCKSDB_LIBC: ${{ matrix.platform.libc }}
         shell: bash
         run: pnpm build
 

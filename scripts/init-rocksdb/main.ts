@@ -34,24 +34,32 @@ try {
 		process.exit(0);
 	}
 
-	const currentVersion: string | undefined = getCurrentVersion();
-
+	const currentVersion = getCurrentVersion();
+	const runtime = process.platform === 'linux'
+		? `-${process.env.ROCKSDB_LIBC || 'glibc'}`
+		: undefined;
 	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
 	const desiredVersion = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || undefined;
 
-	if (currentVersion && desiredVersion && semver.gte(currentVersion, desiredVersion)) {
+	if (
+		currentVersion && desiredVersion && semver.eq(currentVersion.version, desiredVersion) &&
+		(!currentVersion.runtime || currentVersion.runtime === runtime)
+	) {
 		console.log(`No update needed, RocksDB ${currentVersion} is already installed.`);
 		process.exit(0);
 	}
 
 	const prebuild = await getPrebuild(desiredVersion);
 
-	if (currentVersion && semver.lte(prebuild.version, currentVersion)) {
+	if (
+		currentVersion && semver.lte(prebuild.version, currentVersion.version) &&
+		(!currentVersion.runtime || currentVersion.runtime === runtime)
+	) {
 		console.log(`No update needed, latest version ${prebuild.version} is active.`);
 		process.exit(0);
 	}
 
-	await downloadRocksDB(prebuild, dest);
+	await downloadRocksDB(prebuild, dest, runtime);
 } catch (error) {
 	console.error(error);
 	process.exit(1);

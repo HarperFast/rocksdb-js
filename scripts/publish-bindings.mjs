@@ -62,28 +62,26 @@ for (const dep of Object.keys(packageJson.optionalDependencies)) {
 console.log();
 
 for (const target of Object.keys(bindings)) {
-	const [platform, arch] = target.split('-');
+	const [platform, arch, libc] = target.split('-');
 	const packageName = `${packageJson.name}-${target}`;
-	const pkgJson = JSON.stringify(
-		{
-			name: packageName,
-			version: packageJson.version,
-			description: `${target} binding for ${name}`,
-			license: packageJson.license,
-			main: bindingFilename,
-			exports: { '.': bindingFilename },
-			files: [bindingFilename],
-			preferUnplugged: true,
-			engines: packageJson.engines,
-			os: [platform],
-			cpu: [arch],
-			homepage: packageJson.homepage,
-			bugs: packageJson.bugs,
-			repository: packageJson.repository,
-		},
-		null,
-		2
-	);
+	const pkgInfo = {
+		name: packageName,
+		version: packageJson.version,
+		description: `${target} binding for ${name}`,
+		license: packageJson.license,
+		homepage: packageJson.homepage,
+		bugs: packageJson.bugs,
+		repository: packageJson.repository,
+		main: bindingFilename,
+		exports: { '.': bindingFilename },
+		files: [bindingFilename],
+		preferUnplugged: true,
+		engines: packageJson.engines,
+		os: [platform],
+		cpu: [arch],
+		libc: libc ? [libc] : undefined,
+	};
+	const pkgJson = JSON.stringify(pkgInfo, null, 2);
 
 	console.log('Publishing:', pkgJson);
 

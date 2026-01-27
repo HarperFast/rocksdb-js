@@ -1,4 +1,5 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,6 +171,29 @@ function locateBinding(): string {
 		} catch {}
 	}
 
+	// determine the Linux C runtime
+	let runtime = '';
+	if (process.platform === 'linux') {
+		let isMusl = false;
+		try {
+			isMusl = readFileSync('/usr/bin/ldd', 'utf8').includes('musl');
+		} catch {
+			if (typeof process.report?.getReport === 'function') {
+				process.report.excludeEnv = true;
+				const report = process.report.getReport() as unknown as {
+					header?: { glibcVersionRuntime?: string };
+					sharedObjects?: string[];
+				};
+				isMusl = (!report?.header || !report.header.glibcVersionRuntime) &&
+					Array.isArray(report?.sharedObjects) && report.sharedObjects.some(obj =>
+						obj.includes('libc.musl-') || obj.includes('ld-musl-')
+					);
+			}
+			isMusl = isMusl || execSync('ldd --version', { encoding: 'utf8' }).includes('musl');
+		}
+		runtime = isMusl ? '-musl' : '-glibc';
+	}
+
 	// the following lines are non-trivial to test, so we'll ignore them
 	/* v8 ignore next 10 -- @preserve */
 
@@ -179,9 +203,7 @@ function locateBinding(): string {
 			baseDir,
 			'node_modules',
 			'@harperfast',
-			`rocksdb-js-${process.platform}-${process.arch}`,
-			'build',
-			'Release',
+			`rocksdb-js-${process.platform}-${process.arch}${runtime}`,
 			'rocksdb-js.node'
 		);
 		if (existsSync(path)) {
