@@ -69,7 +69,7 @@
     "node": ">=18"
   },
   "rocksdb": {
-    "version": "10.4.2"
+    "version": "10.9.1"
   },
   "homepage": "https://github.com/HarperFast/rocksdb-js",
   "bugs": [
@@ -90,8 +90,10 @@
   "optionalDependencies": {
     "@harperfast/rocksdb-js-darwin-arm64": "0.0.0",
     "@harperfast/rocksdb-js-darwin-x64": "0.0.0",
-    "@harperfast/rocksdb-js-linux-arm64": "0.0.0",
-    "@harperfast/rocksdb-js-linux-x64": "0.0.0",
+    "@harperfast/rocksdb-js-linux-arm64-glibc": "0.0.0",
+    "@harperfast/rocksdb-js-linux-x64-glibc": "0.0.0",
+    "@harperfast/rocksdb-js-linux-arm64-musl": "0.0.0",
+    "@harperfast/rocksdb-js-linux-x64-musl": "0.0.0",
     "@harperfast/rocksdb-js-win32-arm64": "0.0.0",
     "@harperfast/rocksdb-js-win32-x64": "0.0.0"
   }

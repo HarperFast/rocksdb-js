@@ -12,16 +12,18 @@ const platformMap: Record<string, string> = { win32: 'windows' };
 const streamPipeline = promisify(pipeline);
 
 export async function downloadRocksDB(prebuild: Prebuild, dest: string): Promise<void> {
-	let filename = `rocksdb-${prebuild.version}-${
-		platformMap[process.platform] || process.platform
-	}-${process.arch}`;
+	const { version } = prebuild;
+	const { arch } = process;
+	const platform = platformMap[process.platform] || process.platform;
+	const runtime = process.platform === 'linux' ? `-${process.env.LIBC || 'glibc'}` : undefined;
+
+	let filename = `rocksdb-${version}-${platform}-${arch}${runtime}`;
 	let [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
+
 	if (!asset) {
 		// try the old filename
 		platformMap.darwin = 'osx';
-		filename = `rocksdb-${prebuild.version}-${process.arch}-${
-			platformMap[process.platform] || process.platform
-		}`;
+		filename = `rocksdb-${version}-${arch}-${platform}`;
 		[asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
 		if (!asset) {
 			throw new Error('No asset found');
