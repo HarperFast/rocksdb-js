@@ -204,8 +204,6 @@ function locateBinding(): string {
 			'node_modules',
 			'@harperfast',
 			`rocksdb-js-${process.platform}-${process.arch}${runtime}`,
-			'build',
-			'Release',
 			'rocksdb-js.node'
 		);
 		if (existsSync(path)) {
