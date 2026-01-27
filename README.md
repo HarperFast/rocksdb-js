@@ -146,8 +146,8 @@ console.log(entriesRemoved); // 10
 
 ### `db.drop(): Promise<void>`
 
-Removes all entries in the database. If the database was opened with a `name`,
-the database will be deleted on close.
+Removes all entries in the database. If the database was opened with a `name`, the database will be
+deleted on close.
 
 ```typescript
 const db = RocksDatabase.open('path/to/db', { name: 'users' });
