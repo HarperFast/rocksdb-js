@@ -146,6 +146,7 @@ export type NativeDatabase = {
 export type RocksDatabaseConfig = { blockCacheSize?: number };
 
 const nativeExtRE = /\.node$/;
+const req = createRequire(import.meta.url);
 
 /**
  * Locates the native binding in the `build` directory, then the `prebuilds`
@@ -199,22 +200,12 @@ function locateBinding(): string {
 
 	// check node_modules
 	try {
-		const path = join(
-			baseDir,
-			'node_modules',
-			'@harperfast',
-			`rocksdb-js-${process.platform}-${process.arch}${runtime}`,
-			'rocksdb-js.node'
-		);
-		if (existsSync(path)) {
-			return resolve(path);
-		}
+		return require.resolve(`@harperfast/rocksdb-js-${process.platform}-${process.arch}${runtime}`);
 	} catch {}
 
 	throw new Error('Unable to locate rocksdb-js native binding');
 }
 
-const req = createRequire(import.meta.url);
 const bindingPath = locateBinding();
 // console.log(`Loading binding from ${bindingPath}`);
 const binding = req(bindingPath);
