@@ -31,7 +31,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm install --ignore-scripts --no-frozen-lockfile
+        run: pnpm install --ignore-scripts
 
       - name: Check versions
         shell: bash
@@ -102,7 +102,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm install --ignore-scripts --no-frozen-lockfile
+        run: pnpm install --ignore-scripts
 
       - name: Build binding
         env:
@@ -146,7 +146,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm install --ignore-scripts --no-frozen-lockfile
+        run: pnpm install --ignore-scripts
 
       - name: Download artifact
         uses: actions/download-artifact@v7
