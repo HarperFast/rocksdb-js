@@ -21,4 +21,4 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.gh-token }}
-      run: pnpm install --ignore-scripts --no-frozen-lockfile
+      run: pnpm install --ignore-scripts
