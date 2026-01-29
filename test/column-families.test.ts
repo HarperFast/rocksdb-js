@@ -8,6 +8,8 @@ describe('Column Families', () => {
 			await db2.put('foo', 'bar2');
 			expect(db.get('foo')).toBe('bar');
 			expect(db2.get('foo')).toBe('bar2');
+			expect(db.name).toBe('default');
+			expect(db2.name).toBe('foo');
 		}));
 
 	it('should reuse same instance for same column family', () =>
@@ -15,5 +17,7 @@ describe('Column Families', () => {
 			await db.put('foo', 'bar');
 			expect(db.get('foo')).toBe('bar');
 			expect(db2.get('foo')).toBe('bar');
+			expect(db.name).toBe('foo');
+			expect(db2.name).toBe('foo');
 		}));
 });

@@ -41,6 +41,11 @@ export interface RocksDatabaseOptions extends StoreOptions {
  * ```
  */
 export class RocksDatabase extends DBI<DBITransactional> {
+	/**
+	 * The name of the database.
+	 */
+	#name: string;
+
 	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions) {
 		if (typeof pathOrStore === 'string') {
 			super(new Store(pathOrStore, options));
@@ -49,6 +54,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		} else {
 			throw new TypeError('Invalid database path or store');
 		}
+		this.#name = options?.name ?? 'default';
 	}
 
 	/**
@@ -289,6 +295,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	listLogs(): string[] {
 		return this.store.listLogs();
+	}
+
+	/**
+	 * The name of the database.
+	 */
+	get name(): string {
+		return this.#name;
 	}
 
 	/**
