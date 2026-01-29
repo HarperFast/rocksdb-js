@@ -55,7 +55,7 @@ jobs:
           - runner: macos-latest
             name: darwin-arm64
             target: arm64
-          - runner: macos-latest
+          - runner: macos-15-intel
             name: darwin-x64
             target: x64
           - runner: ubuntu-24.04-arm
