@@ -40,6 +40,10 @@ jobs:
       - name: Fix formatting
         run: pnpm format:fix
 
+      - name: Reset pnpm-lock.yaml
+        shell: bash
+        run: git checkout -- pnpm-lock.yaml
+
       - name: Pull request
         uses: peter-evans/create-pull-request@v8
         with:
