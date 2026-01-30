@@ -99,6 +99,7 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;

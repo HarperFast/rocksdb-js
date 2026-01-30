@@ -180,6 +180,35 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Destroys the RocksDB database.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.destroy();
+ * ```
+ */
+napi_value Database::Destroy(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE();
+
+	if (*dbHandle) {
+		try {
+			DBRegistry::DestroyDB((*dbHandle)->path);
+		} catch (const std::exception& e) {
+			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
+			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		}
+	} else {
+		::napi_throw_error(env, nullptr, "Invalid database handle");
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Drops the RocksDB database column family asynchronously. If the column family
  * is the default, it will clear the database instead.
  *
@@ -1156,6 +1185,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },

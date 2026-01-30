@@ -70,6 +70,43 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 }
 
 /**
+ * Destroy a RocksDB database.
+ *
+ * @param path - The path to the database to destroy.
+ */
+void DBRegistry::DestroyDB(const std::string& path) {
+	if (!instance) {
+		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
+		return;
+	}
+
+	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
+
+	// need to close all databases for this path
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		for (auto& [path, entry] : instance->databases) {
+			if (entry.descriptor && entry.descriptor->path == path) {
+				descriptorsToClose.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptorsToClose) {
+		instance->databases.erase(descriptor->path);
+		descriptor->close();
+		descriptor.reset();
+	}
+
+	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
+	if (!status.ok()) {
+		throw std::runtime_error(status.ToString().c_str());
+	}
+}
+
+/**
  * Initialize the singleton instance of the registry.
  */
  void DBRegistry::Init() {

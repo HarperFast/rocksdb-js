@@ -101,6 +101,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->column = std::move(handleParams->column);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
+	this->path = path;
 	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
 }
 

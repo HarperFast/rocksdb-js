@@ -35,6 +35,11 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
 	/**
+	 * The path of the database.
+	 */
+	std::string path;
+
+	/**
 	 * Whether to disable WAL.
 	 */
 	bool disableWAL = false;

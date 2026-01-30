@@ -130,6 +130,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	// committed
 
+	destroy(): void {
+		this.store.db.destroy();
+	}
+
 	async drop(): Promise<void> {
 		if (!this.store.db.opened) {
 			return Promise.reject(new Error('Database not open'));
