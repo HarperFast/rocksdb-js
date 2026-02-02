@@ -106,12 +106,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
 			NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)));
 			itHandle = new DBIteratorHandle((*txnHandle).get(), itOptions);
-			auto descriptor = itHandle->dbHandle->descriptor.lock();
-			if (descriptor) {
-				DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", txnHandle, descriptor.get());
-			} else {
-				DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor is null\n", txnHandle);
-			}
+			DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", txnHandle, itHandle->dbHandle->descriptor.get());
 		} else {
 			napi_valuetype type;
 			NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));

@@ -68,8 +68,7 @@ napi_value Database::Notify(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	UNWRAP_DB_DESCRIPTOR();
-	bool notified = descriptor->notify(key, data);
+	bool notified = (*dbHandle)->descriptor->notify(key, data);
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, notified, &result));
 	return result;
 }
@@ -93,8 +92,7 @@ napi_value Database::Listeners(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
-	return descriptor->listeners(env, key);
+	return (*dbHandle)->descriptor->listeners(env, key);
 }
 
 /**
@@ -112,8 +110,7 @@ napi_value Database::RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
-	return descriptor->removeListener(env, key, argv[1]);
+	return (*dbHandle)->descriptor->removeListener(env, key, argv[1]);
 }
 
 } // namespace rocksdb_js

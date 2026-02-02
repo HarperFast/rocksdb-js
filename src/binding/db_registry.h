@@ -64,6 +64,7 @@ private:
 
 public:
 	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+	static void DebugLogDescriptorRefs();
 	static void DestroyDB(const std::string& path);
 	static void Init();
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);

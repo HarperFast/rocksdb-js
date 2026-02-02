@@ -66,8 +66,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	UNWRAP_DB_DESCRIPTOR();
-	if (descriptor->closing.load()) {
+	if ((*dbHandle)->descriptor->closing.load()) {
 		::napi_throw_error(env, nullptr, "Database is closing!");
 		return nullptr;
 	}
@@ -83,14 +82,14 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		std::make_shared<TransactionHandle>(*dbHandle, env, jsDatabaseRef, disableSnapshot)
 	);
 
-	descriptor->transactionAdd(*txnHandle);
+	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 
 	DEBUG_LOG(
 		"%p Transaction::Constructor Initializing transaction %u (dbHandle=%p, dbDescriptor=%p, use_count=%ld)\n",
 		(*txnHandle).get(),
 		(*txnHandle)->id,
 		(*txnHandle)->dbHandle.get(),
-		descriptor.get(),
+		(*txnHandle)->dbHandle->descriptor.get(),
 		(*txnHandle)->dbHandle.use_count()
 	);
 
@@ -206,13 +205,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
-				auto descriptor = txnHandle->dbHandle->descriptor.lock();
-				if (!descriptor) {
-					DEBUG_LOG("%p Transaction::Commit ERROR: Database closed during transaction commit operation\n", txnHandle.get());
-					state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-					return;
-				}
-
+				auto descriptor = txnHandle->dbHandle->descriptor;
 				LogPosition committedPosition; // To record the log position of the committed transaction, for tracking of visible commits available in transaction log
 
 				if (txnHandle->logEntryBatch) {
@@ -316,22 +309,17 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
-	auto descriptor = (*txnHandle)->dbHandle->descriptor.lock();
-	if (!descriptor) {
-		NAPI_THROW_JS_ERROR("ERR_DATABASE_CLOSED", "Database closed during transaction commit operation");
-	}
-
 	if ((*txnHandle)->logEntryBatch) {
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
-			store->commitFinished(committedPosition, descriptor->db->GetLatestSequenceNumber());
+			store->commitFinished(committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
 		}
 	}
 
 	if (status.ok()) {
 		DEBUG_LOG("%p Transaction::CommitSync Emitted committed event (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
 		(*txnHandle)->state = TransactionState::Committed;
-		descriptor->notify("committed", nullptr);
+		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
 		(*txnHandle)->close();
@@ -588,16 +576,10 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	auto descriptor = (*txnHandle)->dbHandle->descriptor.lock();
-	if (!descriptor) {
-		::napi_throw_error(env, nullptr, "Database closed during transaction use log operation");
-		return nullptr;
-	}
-
 	// resolve the store and bind if not already bound
 	std::shared_ptr<TransactionLogStore> store;
 	try {
-		store = descriptor->resolveTransactionLogStore(name);
+		store = (*txnHandle)->dbHandle->descriptor->resolveTransactionLogStore(name);
 	} catch (const std::runtime_error& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;

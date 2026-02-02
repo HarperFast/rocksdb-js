@@ -10,11 +10,7 @@ TransactionLogHandle::TransactionLogHandle(
 	const std::string& logName
 ): dbHandle(dbHandle), logName(logName), transactionId(0) {
 	DEBUG_LOG("%p TransactionLogHandle::TransactionLogHandle Creating TransactionLogHandle \"%s\"\n", this, logName.c_str());
-	auto descriptor = dbHandle->descriptor.lock();
-	if (!descriptor) {
-		throw std::runtime_error("Database has been closed");
-	}
-	this->store = descriptor->resolveTransactionLogStore(logName);
+	this->store = dbHandle->descriptor->resolveTransactionLogStore(logName);
 }
 
 TransactionLogHandle::~TransactionLogHandle() {
@@ -32,12 +28,7 @@ void TransactionLogHandle::addEntry(
 		throw std::runtime_error("Database has been closed");
 	}
 
-	auto descriptor = dbHandle->descriptor.lock();
-	if (!descriptor) {
-		throw std::runtime_error("Database has been closed");
-	}
-
-	auto txnHandle = descriptor->transactionGet(transactionId);
+	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
 	if (!txnHandle) {
 		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %u not found\n", this, transactionId);
 		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
@@ -47,7 +38,7 @@ void TransactionLogHandle::addEntry(
 	if (!store) {
 		// store was closed/destroyed, try to get or create a new one
 		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str());
-		store = descriptor->resolveTransactionLogStore(this->logName);
+		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
 		this->store = store; // update weak_ptr to point to new store
 	}
 

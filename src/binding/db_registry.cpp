@@ -22,23 +22,22 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		return;
 	}
 
-	auto descriptor = handle->descriptor.lock();
-	if (!descriptor) {
+	DBRegistry::DebugLogDescriptorRefs();
+
+	if (!handle->descriptor) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get());
 		return;
 	}
 
-	std::string path = descriptor->path;
-	std::weak_ptr<DBDescriptor> weakDescriptor;
-	std::shared_ptr<std::condition_variable> pathCondition;
+	std::string path = handle->descriptor->path;
+	DBRegistryEntry* entry = nullptr;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto entryIterator = instance->databases.find(path);
 		if (entryIterator != instance->databases.end()) {
-			weakDescriptor = entryIterator->second.descriptor;
-			pathCondition = entryIterator->second.condition;
-			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), path.c_str(), weakDescriptor.use_count());
+			entry = &entryIterator->second;
+			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), path.c_str(), entry->descriptor.use_count());
 		} else {
 			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), path.c_str());
 		}
@@ -47,27 +46,38 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), weakDescriptor.use_count());
+	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry->descriptor.use_count());
 
 	// re-acquire the mutex to check and potentially remove the descriptor
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		// since the registry itself always has a ref, we need to check for ref count 1
-		if (weakDescriptor.use_count() <= 1) {
+		if (entry->descriptor.use_count() <= 1) {
 			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str());
-			if (auto descriptor = weakDescriptor.lock()) {
-				descriptor->close();
-			}
+			entry->descriptor->close();
 			instance->databases.erase(path);
 
 			// notify only waiters for this specific path
-			if (pathCondition) {
-				pathCondition->notify_all();
+			if (entry->condition) {
+				entry->condition->notify_all();
 			}
 		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor is still active (ref count = %ld)\n", instance.get(), weakDescriptor.use_count());
+			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor is still active (ref count = %ld)\n", instance.get(), entry->descriptor.use_count());
 		}
 	}
+}
+
+/**
+ * Debug log the reference count of all descriptors in the registry.
+ */
+void DBRegistry::DebugLogDescriptorRefs() {
+#ifdef DEBUG
+	std::lock_guard<std::mutex> lock(instance->databasesMutex);
+	DEBUG_LOG("DBRegistry::DebugLogDescriptorRefs %d descriptor%s in registry:\n", instance->databases.size(), instance->databases.size() == 1 ? "" : "s");
+	for (auto& [path, entry] : instance->databases) {
+		DEBUG_LOG("  %p for \"%s\" (ref count = %ld)\n", entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
+	}
+#endif
 }
 
 /**
@@ -176,10 +186,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// wait for any closing database on this specific path to be fully removed before proceeding
 	entry.condition->wait(lock, [&]() {
 		if (entry.descriptor) {
-			descriptor = entry.descriptor;
-			if (descriptor->isClosing()) {
+			if (entry.descriptor->isClosing()) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
-				descriptor.reset();
+				entry.descriptor.reset();
 				return false; // keep waiting
 			}
 			return true; // database exists and is not closing
@@ -191,13 +200,13 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// 1. descriptor is set to a valid, non-closing database, or
 	// 2. descriptor is nullptr (database doesn't exist)
 
-	if (descriptor) {
+	if (entry.descriptor) {
 		// database exists and is not closing, proceed with existing logic
 		// check if the database is already open with a different mode
-		if (options.mode != descriptor->mode) {
+		if (options.mode != entry.descriptor->mode) {
 			throw std::runtime_error(
 				"Database already open in '" +
-				(descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
+				(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
 				"' mode"
 			);
 		}
@@ -207,7 +216,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 		// manually copy the columns because we don't know which ones are valid
 		bool columnExists = false;
-		for (auto& column : descriptor->columns) {
+		for (auto& column : entry.descriptor->columns) {
 			columns[column.first] = column.second;
 			if (column.first == name) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" already exists\n", instance.get(), name.c_str());
@@ -216,14 +225,13 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 		if (!columnExists) {
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
-			columns[name] = rocksdb_js::createRocksDBColumnFamily(descriptor->db, name);
-			descriptor->columns[name] = columns[name];
+			columns[name] = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);
+			entry.descriptor->columns[name] = columns[name];
 		}
 	} else {
-		descriptor = DBDescriptor::open(path, options);	// store the descriptor in the existing entry
-		entry.descriptor = descriptor;
-		columns = descriptor->columns;
-		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), descriptor.get(), path.c_str(), descriptor.use_count());
+		entry.descriptor = DBDescriptor::open(path, options);	// store the descriptor in the existing entry
+		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
+		columns = entry.descriptor->columns;
 	}
 
 	// handle the column family
@@ -239,8 +247,8 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		column = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(descriptor, column);
-	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandleParams %p for \"%s\"\n", instance.get(), handle.get(), path.c_str());
+	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(entry.descriptor, column);
+	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandleParams %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
 	return handle;
 }
 

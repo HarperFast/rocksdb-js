@@ -28,24 +28,19 @@ TransactionHandle::TransactionHandle(
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;
 
-	auto descriptor = dbHandle->descriptor.lock();
-	if (!descriptor) {
-		throw std::runtime_error("Database closed during transaction constructor");
-	}
-
-	if (descriptor->mode == DBMode::Pessimistic) {
-		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
+	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
+		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
 		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
-	} else if (descriptor->mode == DBMode::Optimistic) {
-		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
+	} else if (dbHandle->descriptor->mode == DBMode::Optimistic) {
+		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::OptimisticTransactionOptions txnOptions;
 		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
 
-	this->id = descriptor->transactionGetNextId();
+	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 }
@@ -240,11 +235,7 @@ void TransactionHandle::getCount(
 
 	// if we don't have a start or end key, we can just get the estimated number of keys
 	if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
-		auto descriptor = dbHandle->descriptor.lock();
-		if (!descriptor) {
-			throw std::runtime_error("Database closed during transaction get count operation");
-		}
-		descriptor->db->GetIntProperty(
+		dbHandle->descriptor->db->GetIntProperty(
 			dbHandle->column.get(),
 			"rocksdb.estimate-num-keys",
 			&count
@@ -308,12 +299,7 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	auto descriptor = this->dbHandle->descriptor.lock();
-	if (!descriptor) {
-		return rocksdb::Status::Aborted("Database closed during transaction put operation");
-	}
-
-	if (!this->disableSnapshot && !this->snapshotSet && descriptor->mode == DBMode::Pessimistic) {
+	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
 	}
@@ -339,12 +325,7 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	auto descriptor = this->dbHandle->descriptor.lock();
-	if (!descriptor) {
-		return rocksdb::Status::Aborted("Database closed during transaction remove operation");
-	}
-
-	if (!this->disableSnapshot && !this->snapshotSet && descriptor->mode == DBMode::Pessimistic) {
+	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
 	}

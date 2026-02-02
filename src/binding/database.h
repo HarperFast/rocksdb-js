@@ -27,16 +27,6 @@ namespace rocksdb_js {
 		} \
 	} while (0)
 
-#define UNWRAP_DB_DESCRIPTOR() \
-	std::shared_ptr<DBDescriptor> descriptor; \
-	do { \
-		descriptor = (*dbHandle)->descriptor.lock(); \
-		if (!descriptor) { \
-			::napi_throw_error(env, nullptr, "Database not open"); \
-			return nullptr; \
-		} \
-	} while (0)
-
 /**
  * The `NativeDatabase` JavaScript class implementation.
  *

@@ -168,10 +168,10 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE();
 
-	if (*dbHandle) {
-		DEBUG_LOG("%p Database::Close closing database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
+	if (*dbHandle && (*dbHandle)->descriptor) {
+		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
 		DBRegistry::CloseDB(*dbHandle);
-		DEBUG_LOG("%p Database::Close closed database\n", dbHandle->get());
+		DEBUG_LOG("%p Database::Close Closed database\n", dbHandle->get());
 	} else {
 		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get());
 	}
@@ -232,20 +232,8 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	napi_value global;
 	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 
-	auto descriptor = (*dbHandle)->descriptor.lock();
-	if (!descriptor) {
-		napi_value error;
-		napi_value errorMsg;
-		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, "Database not open", NAPI_AUTO_LENGTH, &errorMsg));
-		NAPI_STATUS_THROWS(::napi_create_error(env, nullptr, errorMsg, &error));
-		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
-			env, global, reject, 1, &error, nullptr
-		), "Failed to call reject function");
-		return nullptr;
-	}
-
-	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), descriptor->path.c_str());
-	rocksdb::Status status = descriptor->db->DropColumnFamily((*dbHandle)->column.get());
+	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
+	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get());
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to drop database");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -279,10 +267,8 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 		return Database::ClearSync(env, info);
 	}
 
-	UNWRAP_DB_DESCRIPTOR();
-
-	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), descriptor->path.c_str());
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(descriptor->db->DropColumnFamily((*dbHandle)->column.get()), "Failed to drop database");
+	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get()), "Failed to drop database");
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
 }
@@ -299,8 +285,9 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE(descriptor->flush(), "Flush failed");
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(), "Flush failed");
+
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -342,12 +329,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
 			} else {
-				auto descriptor = state->handle->descriptor.lock();
-				if (descriptor) {
-					state->status = descriptor->flush();
-				} else {
-					state->status = rocksdb::Status::Aborted("Database closed during flush operation");
-				}
+				state->status = state->handle->descriptor->flush();
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -426,8 +408,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
 
-		UNWRAP_DB_DESCRIPTOR();
-		auto txnHandle = descriptor->transactionGet(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Get failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
@@ -459,17 +440,12 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during get operation");
 			} else {
-				auto descriptor = state->handle->descriptor.lock();
-				if (descriptor) {
-					state->status = descriptor->db->Get(
-						state->readOptions,
-						state->handle->column.get(),
-						state->key,
-						&state->value
-					);
-				} else {
-					state->status = rocksdb::Status::Aborted("Database closed during get operation");
-				}
+				state->status = state->handle->descriptor->db->Get(
+					state->readOptions,
+					state->handle->column.get(),
+					state->key,
+					&state->value
+				);
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -509,7 +485,6 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	DBIteratorOptions itOptions;
 	itOptions.initFromNapiObject(env, argv[0]);
@@ -524,7 +499,7 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
 
-		auto txnHandle = descriptor->transactionGet(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Get count failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
@@ -534,7 +509,7 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	} else {
 		// if we don't have a start or end key, we can just get the estimated number of keys
 		if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
-			descriptor->db->GetIntProperty(
+			(*dbHandle)->descriptor->db->GetIntProperty(
 				(*dbHandle)->column.get(),
 				"rocksdb.estimate-num-keys",
 				&count
@@ -578,10 +553,9 @@ napi_value Database::GetMonotonicTimestamp(napi_env env, napi_callback_info info
 napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	uint64_t timestamp = 0;
-	bool success = descriptor->db->GetIntProperty(
+	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
 		(*dbHandle)->column.get(),
 		"rocksdb.oldest-snapshot-time",
 		&timestamp
@@ -609,12 +583,11 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	NAPI_GET_STRING(argv[0], propertyName, "Property name is required");
 
 	std::string value;
-	bool success = descriptor->db->GetProperty(
+	bool success = (*dbHandle)->descriptor->db->GetProperty(
 		(*dbHandle)->column.get(),
 		propertyName,
 		&value
@@ -647,12 +620,11 @@ napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	NAPI_GET_STRING(argv[0], propertyName, "Property name is required");
 
 	uint64_t value = 0;
-	bool success = descriptor->db->GetIntProperty(
+	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
 		(*dbHandle)->column.get(),
 		propertyName,
 		&value
@@ -696,7 +668,6 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	// we store this in key slice (no copying) because we are synchronously using the key
 	rocksdb::Slice keySlice;
@@ -720,7 +691,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
 
-		auto txnHandle = descriptor->transactionGet(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
@@ -728,7 +699,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
 	} else {
-		status = descriptor->db->Get(
+		status = (*dbHandle)->descriptor->db->Get(
 			readOptions,
 			(*dbHandle)->column.get(),
 			keySlice,
@@ -828,7 +799,6 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_METHOD_ARGV(3);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	// if we have a callback, add it as a listener
@@ -839,14 +809,14 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 		if (type == napi_function) {
 			DEBUG_LOG("Database::GetUserSharedBuffer key start=%u end=%u:\n", keyStart, keyEnd);
 			DEBUG_LOG_KEY_LN(keyStr);
-			callbackRef = descriptor->addListener(env, keyStr, argv[2], *dbHandle);
+			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;
 		}
 	}
 
-	return descriptor->getUserSharedBuffer(env, keyStr, argv[1], callbackRef);
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, argv[1], callbackRef);
 }
 
 /**
@@ -862,10 +832,9 @@ napi_value Database::HasLock(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	bool hasLock = descriptor->lockExistsByKey(keyStr);
+	bool hasLock = (*dbHandle)->descriptor->lockExistsByKey(keyStr);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(
@@ -894,8 +863,7 @@ napi_value Database::IsOpen(napi_env env, napi_callback_info info) {
 napi_value Database::ListLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
-	return descriptor->listTransactionLogStores(env);
+	return (*dbHandle)->descriptor->listTransactionLogStores(env);
 }
 
 /**
@@ -983,9 +951,8 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
-	return descriptor->purgeTransactionLogs(env, argv[0]);
+	return (*dbHandle)->descriptor->purgeTransactionLogs(env, argv[0]);
 }
 
 /**
@@ -996,7 +963,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	rocksdb::Status status;
 
@@ -1016,7 +982,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
 
-		auto txnHandle = descriptor->transactionGet(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Put sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
@@ -1030,7 +996,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	} else {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
-		status = descriptor->db->Put(
+		status = (*dbHandle)->descriptor->db->Put(
 			writeOptions,
 			(*dbHandle)->column.get(),
 			keySlice,
@@ -1055,7 +1021,6 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	rocksdb::Status status;
 
@@ -1068,7 +1033,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
 
-		auto txnHandle = descriptor->transactionGet(txnId);
+		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
@@ -1078,7 +1043,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	} else {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
-		status = descriptor->db->Delete(
+		status = (*dbHandle)->descriptor->db->Delete(
 			writeOptions,
 			(*dbHandle)->column.get(),
 			keySlice
@@ -1115,13 +1080,12 @@ napi_value Database::TryLock(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	napi_value result;
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 	bool isNewLock = false;
 
-	descriptor->lockEnqueueCallback(
+	(*dbHandle)->descriptor->lockEnqueueCallback(
 		env,       // env
 		keyStr,    // key
 		argv[1],   // callback
@@ -1157,11 +1121,10 @@ napi_value Database::Unlock(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	UNWRAP_DB_DESCRIPTOR();
 
 	napi_value result;
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	bool unlocked = descriptor->lockReleaseByKey(keyStr);
+	bool unlocked = (*dbHandle)->descriptor->lockReleaseByKey(keyStr);
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, unlocked, &result));
 	return result;
 }
@@ -1209,8 +1172,7 @@ napi_value Database::WithLock(napi_env env, napi_callback_info info) {
 	}
 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
-	UNWRAP_DB_DESCRIPTOR();
-	descriptor->lockCall(env, keyStr, argv[1], deferred, *dbHandle);
+	(*dbHandle)->descriptor->lockCall(env, keyStr, argv[1], deferred, *dbHandle);
 
 	return promise;
 }

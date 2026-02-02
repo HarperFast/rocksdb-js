@@ -27,7 +27,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	/**
 	 * The RocksDB database descriptor
 	 */
-	std::weak_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<DBDescriptor> descriptor;
 
 	/**
 	 * The RocksDB column family handle.

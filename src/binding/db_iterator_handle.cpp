@@ -17,13 +17,8 @@ DBIteratorHandle::DBIteratorHandle(
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
 
-	auto descriptor = dbHandle->descriptor.lock();
-	if (!descriptor) {
-		throw std::runtime_error("Database closed during iterator constructor");
-	}
-
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
-		descriptor->db->NewIterator(
+		dbHandle->descriptor->db->NewIterator(
 			options.readOptions,
 			dbHandle->column.get()
 		)
@@ -42,12 +37,7 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values)
 {
-	auto descriptor = dbHandle->descriptor.lock();
-	if (descriptor) {
-		DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", txnHandle, descriptor.get());
-	} else {
-		DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor is null\n", txnHandle);
-	}
+	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", txnHandle, dbHandle->descriptor.get());
 	this->init(options);
 
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
@@ -65,13 +55,10 @@ DBIteratorHandle::~DBIteratorHandle() {
 }
 
 void DBIteratorHandle::close() {
+	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
 	if (this->iterator) {
-		if (this->dbHandle) {
-			auto descriptor = this->dbHandle->descriptor.lock();
-			DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), descriptor.get());
-			if (descriptor) {
-				descriptor->detach(this);
-			}
+		if (this->dbHandle && this->dbHandle->descriptor) {
+			this->dbHandle->descriptor->detach(this);
 		}
 		this->iterator->Reset();
 		this->iterator.reset();
@@ -103,11 +90,7 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this);
 	}
 
-	auto descriptor = this->dbHandle->descriptor.lock();
-	if (!descriptor) {
-		throw std::runtime_error("Database closed during iterator init");
-	}
-	descriptor->attach(this);
+	this->dbHandle->descriptor->attach(this);
 }
 
 void DBIteratorHandle::seek(DBIteratorOptions& options) {
