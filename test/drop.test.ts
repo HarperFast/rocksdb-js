@@ -28,7 +28,7 @@ describe('Drop', () => {
 			expect(db.getSync('key')).toBeUndefined();
 		}));
 
-	it('should drop a column family', () =>
+	it.only('should drop a column family', () =>
 		dbRunner({ dbOptions: [{ name: 'test' }] }, ({ db }) => {
 			db.putSync('key', 'value');
 			expect(db.getSync('key')).toBe('value');

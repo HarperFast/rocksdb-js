@@ -98,7 +98,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			this.store.encoder.structures = [];
 		}
 
-		return this.store.db.clearSync();
+		this.store.db.clearSync();
 	}
 
 	/**

@@ -22,12 +22,13 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		return;
 	}
 
-	if (!handle->descriptor) {
+	auto descriptor = handle->descriptor.lock();
+	if (!descriptor) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get());
 		return;
 	}
 
-	std::string path = handle->descriptor->path;
+	std::string path = descriptor->path;
 	std::weak_ptr<DBDescriptor> weakDescriptor;
 	std::shared_ptr<std::condition_variable> pathCondition;
 
@@ -82,28 +83,51 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
-	std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
+	std::shared_ptr<DBDescriptor> descriptor;
 
-	// need to close all databases for this path
+	// Find and remove the descriptor from the registry
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		for (auto& [path, entry] : instance->databases) {
-			if (entry.descriptor && entry.descriptor->path == path) {
-				descriptorsToClose.push_back(entry.descriptor);
-			}
+		auto it = instance->databases.find(path);
+		if (it != instance->databases.end()) {
+			descriptor = it->second.descriptor;
+			instance->databases.erase(it);
+			DEBUG_LOG("%p DBRegistry::DestroyDB Found and removed descriptor from registry (ref count = %ld)\n",
+				instance.get(), descriptor ? descriptor.use_count() : 0);
 		}
 	}
 
-	for (auto& descriptor : descriptorsToClose) {
-		instance->databases.erase(descriptor->path);
+	if (descriptor) {
+		// Close all closables (iterators, transactions, handles) attached to this descriptor
+		// This should release all DBHandle references
+		DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
+			instance.get(), descriptor.use_count());
 		descriptor->close();
+
+		// After closing, check if there are still lingering references
+		// Should only be our local reference (= 1) at this point
+		size_t refCountAfterClose = descriptor.use_count();
+		if (refCountAfterClose > 1) {
+			std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 1) +
+				" reference(s) still held after closing all handles. This may indicate handles not properly closed or JavaScript objects not yet garbage collected.";
+			DEBUG_LOG("%p DBRegistry::DestroyDB Error: %s\n", instance.get(), errorMsg.c_str());
+			throw std::runtime_error(errorMsg);
+		}
+
+		// Release our reference to the descriptor
+		// This will trigger the destructor which properly closes the DB
+		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor reference\n", instance.get());
 		descriptor.reset();
 	}
 
+	// Now the database lock should be released, safe to destroy
+	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
 	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
 	if (!status.ok()) {
 		throw std::runtime_error(status.ToString().c_str());
 	}
+
+	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
 }
 
 /**

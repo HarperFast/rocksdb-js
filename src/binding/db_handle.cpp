@@ -9,7 +9,7 @@ namespace rocksdb_js {
  * Creates a new DBHandle.
  */
 DBHandle::DBHandle(napi_env env, napi_ref exportsRef)
-	: descriptor(nullptr), env(env), exportsRef(exportsRef) {}
+	: env(env), exportsRef(exportsRef) {}
 
 /**
  * Close the DBHandle and destroy it.
@@ -29,7 +29,12 @@ rocksdb::Status DBHandle::clear() {
 	}
 
 	// compact the database to reclaim space
-	rocksdb::Status status = this->descriptor->db->CompactRange(
+	auto descriptor = this->descriptor.lock();
+	if (!descriptor) {
+		return rocksdb::Status::OK();
+	}
+
+	rocksdb::Status status = descriptor->db->CompactRange(
 		rocksdb::CompactRangeOptions(),
 		this->column.get(),
 		nullptr,
@@ -39,14 +44,17 @@ rocksdb::Status DBHandle::clear() {
 		return status;
 	}
 	// it appears we do not need to call WaitForCompact for this to work
-	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->column.get(), nullptr, nullptr);
+	return rocksdb::DeleteFilesInRange(descriptor->db.get(), this->column.get(), nullptr, nullptr);
 }
 
 /**
  * Closes the DBHandle.
  */
 void DBHandle::close() {
-	DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, this->descriptor.get(), this->descriptor.use_count());
+	auto descriptor = this->descriptor.lock();
+	if (descriptor) {
+		DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, descriptor.get(), descriptor.use_count());
+	}
 
 	// cancel all active async work before closing
 	this->cancelAllAsyncWork();
@@ -59,11 +67,19 @@ void DBHandle::close() {
 		this->column.reset();
 	}
 
-	if (this->descriptor) {
+	if (descriptor) {
 		// clean up listeners owned by this handle before releasing locks
-		this->descriptor->removeListenersByOwner(this);
+		// These operations are safe even if the descriptor is closing
+		descriptor->removeListenersByOwner(this);
+		descriptor->lockReleaseByOwner(this);
 
-		this->descriptor->lockReleaseByOwner(this);
+		// unregister from the descriptor's closables set
+		descriptor->detach(this);
+
+		// release our reference to the descriptor
+		descriptor.reset();
+
+		// reset the weak pointer
 		this->descriptor.reset();
 	}
 
@@ -85,9 +101,12 @@ void DBHandle::close() {
  * @param callback The callback to call when the event is emitted.
  */
 napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
-	return this->descriptor->addListener(env, key, callback, weak_from_this());
+	auto descriptor = this->descriptor.lock();
+	if (!descriptor) {
+		return nullptr;
+	}
+	return descriptor->addListener(env, key, callback, weak_from_this());
 }
-
 
 /**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties
@@ -102,14 +121,22 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
 	this->path = path;
-	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
+
+	// Register this handle with the descriptor so it can be closed when the descriptor is closed
+	auto descriptor = this->descriptor.lock();
+	if (descriptor) {
+		descriptor->attach(this);
+	}
+
+	// at this point, the DBDescriptor has at least 1 ref: the registry and this handle
 }
 
 /**
  * Checks if the referenced database is opened.
  */
 bool DBHandle::opened() const {
-	if (this->descriptor && this->descriptor->db) {
+	auto descriptor = this->descriptor.lock();
+	if (descriptor && descriptor->db) {
 		return true;
 	}
 	return false;
