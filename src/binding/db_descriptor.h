@@ -166,17 +166,17 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex transactionLogMutex;
 
 private:
-    DBDescriptor(
-        const std::string& path,
-        const DBOptions& options,
-        std::shared_ptr<rocksdb::DB> db,
-        std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
-    );
+	DBDescriptor(
+		const std::string& path,
+		const DBOptions& options,
+		std::shared_ptr<rocksdb::DB> db,
+		std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
+	);
 
 	void discoverTransactionLogStores();
 
 public:
-    static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
+	static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
 	~DBDescriptor();
 
 	void close();
@@ -388,8 +388,8 @@ struct ListenerCallback final {
 	 */
 	std::weak_ptr<DBHandle> owner;
 
-    ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef, std::weak_ptr<DBHandle> owner = {})
-        : env(env), threadsafeCallback(tsfn), callbackRef(callbackRef), owner(owner) {}
+	ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef, std::weak_ptr<DBHandle> owner = {})
+		: env(env), threadsafeCallback(tsfn), callbackRef(callbackRef), owner(owner) {}
 
 	// move constructor
 	ListenerCallback(ListenerCallback&& other) noexcept
