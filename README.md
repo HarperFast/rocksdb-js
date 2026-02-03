@@ -156,6 +156,16 @@ const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
 ```
 
+### `db.destroy(): void`
+
+Completely removes a database based on the `db` instance's path including all data, column families,
+and files on disk.
+
+```typescript
+db.destroy();
+console.log(fs.existsSync(db.path)); // false
+```
+
 ### `db.drop(): Promise<void>`
 
 Removes all entries in the database. If the database was opened with a `name`, the database will be
