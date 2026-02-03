@@ -125,6 +125,10 @@ DBDescriptor::DBDescriptor(
 	transactionLogsPath(options.transactionLogsPath)
 {}
 
+/**
+ * Destroy the database descriptor and any resources associated to it
+ * (transactions, iterators, etc).
+ */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
 	this->close();
