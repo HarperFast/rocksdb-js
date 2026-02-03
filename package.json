@@ -56,7 +56,7 @@
     "lefthook": "2.0.16",
     "lmdb": "3.5.1",
     "node-gyp": "12.2.0",
-    "oxlint": "1.42.0",
+    "oxlint": "1.43.0",
     "prebuildify": "6.0.1",
     "semver": "7.7.3",
     "tsdown": "0.20.1",
@@ -69,7 +69,7 @@
     "node": ">=18"
   },
   "rocksdb": {
-    "version": "10.9.1"
+    "version": "10.10.1"
   },
   "homepage": "https://github.com/HarperFast/rocksdb-js",
   "bugs": [
