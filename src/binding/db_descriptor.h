@@ -176,6 +176,7 @@ private:
 	void discoverTransactionLogStores();
 
 public:
+	~DBDescriptor();
     static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
 
 	void close();

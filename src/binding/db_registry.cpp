@@ -50,11 +50,12 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 
 	// re-acquire the mutex to check and potentially remove the descriptor
 	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		// since the registry itself always has a ref, we need to check for ref count 1
 		if (entry->descriptor.use_count() <= 1) {
 			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str());
 			entry->descriptor->close();
+
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			instance->databases.erase(path);
 
 			// notify only waiters for this specific path
