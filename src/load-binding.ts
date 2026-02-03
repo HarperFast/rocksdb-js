@@ -207,6 +207,19 @@ function locateBinding(): string {
 	throw new Error('Unable to locate rocksdb-js native binding');
 }
 
+export type RegistryStatusDB = {
+	path: string;
+	refCount: number;
+	columnFamilies: string[];
+	transactions: number;
+	closables: number;
+	locks: number;
+	userSharedBuffers: number;
+	listenerCallbacks: number;
+};
+
+export type RegistryStatus = RegistryStatusDB[];
+
 const bindingPath = locateBinding();
 // console.log(`Loading binding from ${bindingPath}`);
 const binding = req(bindingPath);
@@ -224,5 +237,6 @@ export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
-export const version: string = binding.version;
+export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
+export const version: string = binding.version;

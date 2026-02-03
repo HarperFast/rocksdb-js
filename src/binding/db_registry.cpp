@@ -141,13 +141,79 @@ void DBRegistry::DestroyDB(const std::string& path) {
 }
 
 /**
+ * Get the status of the database registry.
+ *
+ * @param env - The environment of the Node.js process.
+ * @param info - The callback info.
+ * @return A JavaScript object with the database registry status.
+ */
+napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_array(env, &result));
+
+	if (instance) {
+		std::unique_lock<std::mutex> lock(instance->databasesMutex);
+
+		size_t i = 0;
+		for (auto& [path, entry] : instance->databases) {
+			napi_value database;
+			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
+			napi_value pathValue;
+			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, path.c_str(), path.size(), &pathValue));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
+			napi_value modeValue;
+			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
+			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, mode.c_str(), mode.size(), &modeValue));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "mode", modeValue));
+			napi_value refCount;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor.use_count()), &refCount));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
+			napi_value columnFamilies;
+			NAPI_STATUS_THROWS(::napi_create_array(env, &columnFamilies));
+			size_t j = 0;
+			for (auto& [name, column] : entry.descriptor->columns) {
+				napi_value nameValue;
+				NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &nameValue));
+				NAPI_STATUS_THROWS(::napi_set_element(env, columnFamilies, j, nameValue));
+				j++;
+			}
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
+			napi_value transactions;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->transactions.size()), &transactions));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactions", transactions));
+			napi_value closables;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->closables.size()), &closables));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closables", closables));
+			napi_value locks;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
+			napi_value userSharedBuffers;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->userSharedBuffers.size()), &userSharedBuffers));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "userSharedBuffers", userSharedBuffers));
+			napi_value listenerCallbacks;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->listenerCallbacks.size()), &listenerCallbacks));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "listenerCallbacks", listenerCallbacks));
+			NAPI_STATUS_THROWS(::napi_set_element(env, result, i, database));
+			i++;
+		}
+	}
+
+	return result;
+}
+
+/**
  * Initialize the singleton instance of the registry.
  */
- void DBRegistry::Init() {
+void DBRegistry::Init(napi_env env, napi_value exports) {
 	if (!instance) {
 		instance = std::unique_ptr<DBRegistry>(new DBRegistry());
 		DEBUG_LOG("%p DBRegistry::Initialize Initialized DBRegistry\n", instance.get());
 	}
+
+	napi_value registryStatusFn;
+	NAPI_STATUS_THROWS_VOID(::napi_create_function(env, "registryStatus", NAPI_AUTO_LENGTH, DBRegistry::RegistryStatus, nullptr, &registryStatusFn));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "registryStatus", registryStatusFn));
 }
 
 /**

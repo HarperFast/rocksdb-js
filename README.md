@@ -857,6 +857,24 @@ Returns an object containing all of the information in the log file.
   - `length: number` The size of the entry data.
   - `timestamp: number` The entry timestamp.
 
+### `registryStatus(): RegistryStatus`
+
+Returns an array containing that status of all active RocksDB instances.
+
+- `path: string` The database path.
+- `refCount: number` The number of JavaScript database instances plus the registry's reference.
+- `columnFamiles: string[]` A list of the database's column families.
+- `transactions: number` The count of active transactions.
+- `closables: number` The count of active database, transactions, and iterators.
+- `locks: number` The count of active locks.
+- `userSharedBuffers: number` The count of active user shared buffers.
+- `listenerCallbacks: number` The count of in-flight callbacks.
+
+```typescript
+import { registryStatus } from '@harperfast/rocksdb-js';
+console.log(registryStatus());
+```
+
 ### `shutdown(): void`
 
 The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to
