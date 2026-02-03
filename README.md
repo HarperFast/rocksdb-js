@@ -886,6 +886,15 @@ import { shutdown } from '@harperfast/rocksdb-js';
 process.on('exit', shutdown);
 ```
 
+### `versions: { 'rocksdb': string; 'rocksdb-js': string }`
+
+Returns the `rocksdb-js` and RocksDB version.
+
+```typescript
+import { versions } from '@harperfast/rocksdb-js';
+console.log(versions); // { "rocksdb": "10.10.1", "rocksdb-js": "0.1.2" }
+```
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction` instance and the native

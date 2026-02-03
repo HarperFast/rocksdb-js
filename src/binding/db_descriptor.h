@@ -93,7 +93,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Set of closables to be closed when the descriptor is closed.
 	 */
-	std::set<Closable*> closables;
+	std::map<Closable*, std::weak_ptr<Closable>> closables;
 
 	/**
 	 * Mutex to protect the locks map.
@@ -182,8 +182,8 @@ public:
 	void close();
 	bool isClosing() const { return this->closing.load(); }
 
-	void attach(Closable* closable);
-	void detach(Closable* closable);
+	void attach(std::shared_ptr<Closable> closable);
+	void detach(std::shared_ptr<Closable> closable);
 
 	void lockCall(
 		napi_env env,
