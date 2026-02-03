@@ -138,6 +138,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		throw std::runtime_error(status.ToString().c_str());
 	}
 
+	// remove the database directory including transaction logs
+	std::filesystem::remove_all(path);
+
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
 }
 
