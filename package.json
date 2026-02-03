@@ -25,7 +25,7 @@
     "build:bundle:minify": "cross-env MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint",
     "clean": "node-gyp clean",
-    "coverage": "tsx scripts/coverage/main.ts",
+    "coverage": "tsx scripts/coverage/main.ts --no-file-parallelism",
     "format": "dprint check",
     "format:fix": "dprint fmt",
     "lint": "oxlint",
