@@ -69,7 +69,7 @@
     "node": ">=18"
   },
   "rocksdb": {
-    "version": "10.9.1"
+    "version": "10.10.1"
   },
   "homepage": "https://github.com/HarperFast/rocksdb-js",
   "bugs": [
