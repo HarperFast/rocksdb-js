@@ -172,20 +172,24 @@ jobs:
 
       - name: Bump versions
         shell: bash
-        run: node scripts/bump-versions.mjs ${{ steps.version.outputs.version }}
+        run: node scripts/bump-versions.mjs ${{ needs.preflight.outputs.version }}
 
-      - name: Commit package.json
+      - name: Configure git
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          set -e
-          set -o pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
+
+      - name: Commit package.json
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
           git add package.json
-          git commit -m "v${{ steps.version.outputs.version }}"
+          git commit -m "v${{ needs.preflight.outputs.version }}"
           git push origin main
 
       - name: Get package.json info
@@ -213,11 +217,11 @@ jobs:
         timeout-minutes: 5
         run: |
           sleep 10
-          while ! pnpm view ${{ steps.get-package-info.outputs.name }}@${{ steps.version.outputs.version }} > /dev/null 2>&1; do
-            echo "Waiting for npm to publish ${{ steps.get-package-info.outputs.name }}@${{ steps.version.outputs.version }}..."
+          while ! pnpm view ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }} > /dev/null 2>&1; do
+            echo "Waiting for npm to publish ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}..."
             sleep 10
           done
-          echo "npm has published ${{ steps.get-package-info.outputs.name }}@${{ steps.version.outputs.version }}"
+          echo "npm has published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}"
 
       - name: Update pnpm-lock.yaml
         env:
@@ -227,14 +231,9 @@ jobs:
 
       - name: Commit pnpm-lock.yaml
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
           git add pnpm-lock.yaml
-          git commit -m "chore(package): update pnpm-lock.yaml after publishing ${{ steps.version.outputs.version }}"
+          git commit -m "chore(package): update pnpm-lock.yaml after publishing ${{ needs.preflight.outputs.version }}"
           git push origin main
 
       - name: Send Slack notification
@@ -245,20 +244,20 @@ jobs:
           payload: |
             {
               "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
-              "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ steps.version.outputs.version }}",
+              "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}",
               "blocks": [
                 {
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ steps.version.outputs.version }}"
+                    "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ steps.version.outputs.version }}"
+                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ needs.preflight.outputs.version }}"
                   }
                 }
               ]
