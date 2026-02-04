@@ -444,6 +444,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * The status of the database.
+	 */
+	get status(): 'open' | 'closed' {
+		return this.store.isOpen() ? 'open' : 'closed';
+	}
+
+	/**
 	 * Executes all operations in the callback as a single transaction.
 	 *
 	 * @param callback - A async function that receives the transaction as an argument.

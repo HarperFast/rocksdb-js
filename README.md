@@ -91,6 +91,26 @@ RocksDatabase.config({
 });
 ```
 
+### `db.isOpen(): boolean`
+
+Returns `true` if the database is open, otherwise false.
+
+```typescript
+console.log(db.isOpen()); // true or false
+```
+
+### `db.name: string`
+
+Returns the database column family's name.
+
+```typescript
+const db = new RocksDatabase('path/to/db');
+console.log(db.name); // 'default'
+
+const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+console.log(db.name); // 'users'
+```
+
 ### `db.open(): RocksDatabase`
 
 Opens the database at the given path. This must be called before performing any data operations.
@@ -108,16 +128,12 @@ There's also a static `open()` method for convenience that performs the same thi
 const db = RocksDatabase.open('path/to/db');
 ```
 
-### `db.name: string`
+### `db.status: 'opened' | 'closed'`
 
-Returns the database column family's name.
+Returns a string `'opened'` or `'closed'` indicating if the database is opened or closed.
 
 ```typescript
-const db = new RocksDatabase('path/to/db');
-console.log(db.name); // 'default'
-
-const db2 = new RocksDatabase('path/to/db', { name: 'users' });
-console.log(db.name); // 'users'
+console.log(db.status);
 ```
 
 ## Data Operations
