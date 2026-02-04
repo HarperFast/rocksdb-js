@@ -194,6 +194,9 @@ void DBDescriptor::close() {
 
 /**
  * Registers a database resource to be closed when the descriptor is closed.
+ *
+ * Important: The closable must be same smart_ptr that is napi-wrapped and
+ * bound to the JavaScript class counterpart.
  */
 void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);

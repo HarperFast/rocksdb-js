@@ -936,6 +936,10 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
+
+		// now that the database is open and the dbHandle has a reference to
+		// the descriptor, we can attach the database instance's smart_ptr to
+		// the descriptor so it gets cleaned up when the descriptor is closed
 		(*dbHandle)->descriptor->attach(*dbHandle);
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());

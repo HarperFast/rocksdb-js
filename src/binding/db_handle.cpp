@@ -103,6 +103,10 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->disableWAL = options.disableWAL;
 	this->path = path;
 
+	// Note: We cannot attach this handle to the descriptor because we don't
+	// have the smart pointer to the dbHandle instance, so the caller needs to
+	// do it.
+
 	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
 }
 

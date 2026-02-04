@@ -22,7 +22,9 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		return;
 	}
 
+#ifdef DEBUG
 	DBRegistry::DebugLogDescriptorRefs();
+#endif
 
 	if (!handle->descriptor) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get());
@@ -73,15 +75,15 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 /**
  * Debug log the reference count of all descriptors in the registry.
  */
-void DBRegistry::DebugLogDescriptorRefs() {
 #ifdef DEBUG
+void DBRegistry::DebugLogDescriptorRefs() {
 	std::lock_guard<std::mutex> lock(instance->databasesMutex);
 	DEBUG_LOG("DBRegistry::DebugLogDescriptorRefs %d descriptor%s in registry:\n", instance->databases.size(), instance->databases.size() == 1 ? "" : "s");
 	for (auto& [path, entry] : instance->databases) {
 		DEBUG_LOG("  %p for \"%s\" (ref count = %ld)\n", entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
 	}
-#endif
 }
+#endif
 
 /**
  * Destroy a RocksDB database.
