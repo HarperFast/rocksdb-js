@@ -5,6 +5,7 @@ describe('Lifecycle', () => {
 	it('should open and close database', () =>
 		dbRunner({ skipOpen: true }, async ({ db }) => {
 			expect(db.isOpen()).toBe(false);
+			expect(db.status).toBe('closed');
 
 			db.close(); // noop
 
@@ -12,11 +13,13 @@ describe('Lifecycle', () => {
 			db.open(); // noop
 
 			expect(db.isOpen()).toBe(true);
+			expect(db.status).toBe('open');
 			expect(db.get('foo')).toBeUndefined();
 
 			db.close();
 
 			expect(db.isOpen()).toBe(false);
+			expect(db.status).toBe('closed');
 
 			await expect(db.get('foo')).rejects.toThrow('Database not open');
 		}));

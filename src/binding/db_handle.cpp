@@ -20,6 +20,17 @@ DBHandle::~DBHandle() {
 }
 
 /**
+ * Adds an listener to the database descriptor.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key.
+ * @param callback The callback to call when the event is emitted.
+ */
+napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
+	return this->descriptor->addListener(env, key, callback, weak_from_this());
+}
+
+/**
  * Clears all data in the database's column family.
  */
 rocksdb::Status DBHandle::clear() {
@@ -62,8 +73,9 @@ void DBHandle::close() {
 	if (this->descriptor) {
 		// clean up listeners owned by this handle before releasing locks
 		this->descriptor->removeListenersByOwner(this);
-
 		this->descriptor->lockReleaseByOwner(this);
+
+		// release our reference to the descriptor
 		this->descriptor.reset();
 	}
 
@@ -78,18 +90,6 @@ void DBHandle::close() {
 }
 
 /**
- * Adds an listener to the database descriptor.
- *
- * @param env The environment of the current callback.
- * @param key The key.
- * @param callback The callback to call when the event is emitted.
- */
-napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
-	return this->descriptor->addListener(env, key, callback, weak_from_this());
-}
-
-
-/**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties
  * to this DBHandle.
  *
@@ -101,6 +101,12 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->column = std::move(handleParams->column);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
+	this->path = path;
+
+	// Note: We cannot attach this handle to the descriptor because we don't
+	// have the smart pointer to the dbHandle instance, so the caller needs to
+	// do it.
+
 	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
 }
 

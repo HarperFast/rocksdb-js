@@ -91,6 +91,26 @@ RocksDatabase.config({
 });
 ```
 
+### `db.isOpen(): boolean`
+
+Returns `true` if the database is open, otherwise false.
+
+```typescript
+console.log(db.isOpen()); // true or false
+```
+
+### `db.name: string`
+
+Returns the database column family's name.
+
+```typescript
+const db = new RocksDatabase('path/to/db');
+console.log(db.name); // 'default'
+
+const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+console.log(db.name); // 'users'
+```
+
 ### `db.open(): RocksDatabase`
 
 Opens the database at the given path. This must be called before performing any data operations.
@@ -108,16 +128,12 @@ There's also a static `open()` method for convenience that performs the same thi
 const db = RocksDatabase.open('path/to/db');
 ```
 
-### `db.name: string`
+### `db.status: 'opened' | 'closed'`
 
-Returns the database column family's name.
+Returns a string `'opened'` or `'closed'` indicating if the database is opened or closed.
 
 ```typescript
-const db = new RocksDatabase('path/to/db');
-console.log(db.name); // 'default'
-
-const db2 = new RocksDatabase('path/to/db', { name: 'users' });
-console.log(db.name); // 'users'
+console.log(db.status);
 ```
 
 ## Data Operations
@@ -154,6 +170,16 @@ for (let i = 0; i < 10; i++) {
 }
 const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
+```
+
+### `db.destroy(): void`
+
+Completely removes a database based on the `db` instance's path including all data, column families,
+and files on disk.
+
+```typescript
+db.destroy();
+console.log(fs.existsSync(db.path)); // false
 ```
 
 ### `db.drop(): Promise<void>`
@@ -847,6 +873,24 @@ Returns an object containing all of the information in the log file.
   - `length: number` The size of the entry data.
   - `timestamp: number` The entry timestamp.
 
+### `registryStatus(): RegistryStatus`
+
+Returns an array containing that status of all active RocksDB instances.
+
+- `path: string` The database path.
+- `refCount: number` The number of JavaScript database instances plus the registry's reference.
+- `columnFamiles: string[]` A list of the database's column families.
+- `transactions: number` The count of active transactions.
+- `closables: number` The count of active database, transactions, and iterators.
+- `locks: number` The count of active locks.
+- `userSharedBuffers: number` The count of active user shared buffers.
+- `listenerCallbacks: number` The count of in-flight callbacks.
+
+```typescript
+import { registryStatus } from '@harperfast/rocksdb-js';
+console.log(registryStatus());
+```
+
 ### `shutdown(): void`
 
 The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to
@@ -856,6 +900,15 @@ listener (on the main thread), to ensure that all data is flushed to disk before
 ```typescript
 import { shutdown } from '@harperfast/rocksdb-js';
 process.on('exit', shutdown);
+```
+
+### `versions: { 'rocksdb': string; 'rocksdb-js': string }`
+
+Returns the `rocksdb-js` and RocksDB version.
+
+```typescript
+import { versions } from '@harperfast/rocksdb-js';
+console.log(versions); // { "rocksdb": "10.10.1", "rocksdb-js": "0.1.2" }
 ```
 
 ## Custom Store

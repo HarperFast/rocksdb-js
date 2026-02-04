@@ -51,7 +51,7 @@ NAPI_MODULE_INIT() {
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
 	// initialize the registry
-	DBRegistry::Init();
+	rocksdb_js::DBRegistry::Init(env, exports);
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
