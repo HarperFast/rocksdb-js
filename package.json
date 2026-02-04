@@ -53,7 +53,7 @@
     "cross-env": "10.1.0",
     "dotenv": "17.2.3",
     "dprint": "0.51.1",
-    "lefthook": "2.0.16",
+    "lefthook": "2.1.0",
     "lmdb": "3.5.1",
     "node-gyp": "12.2.0",
     "oxlint": "1.43.0",
