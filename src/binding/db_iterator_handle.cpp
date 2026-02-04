@@ -57,9 +57,6 @@ DBIteratorHandle::~DBIteratorHandle() {
 void DBIteratorHandle::close() {
 	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
 	if (this->iterator) {
-		if (this->dbHandle && this->dbHandle->descriptor) {
-			this->dbHandle->descriptor->detach(this);
-		}
 		this->iterator->Reset();
 		this->iterator.reset();
 	}
@@ -89,8 +86,6 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 	} else {
 		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this);
 	}
-
-	this->dbHandle->descriptor->attach(this);
 }
 
 void DBIteratorHandle::seek(DBIteratorOptions& options) {

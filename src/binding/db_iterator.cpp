@@ -1,4 +1,5 @@
 #include "db_handle.h"
+#include "db_descriptor.h"
 #include "db_iterator.h"
 #include "db_iterator_handle.h"
 #include "macros.h"
@@ -82,7 +83,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	DBIteratorHandle* itHandle = nullptr;
+	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr;
 
 	if (isDatabase) {
 		std::shared_ptr<DBHandle>* dbHandle = nullptr;
@@ -92,7 +93,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, "Database not open");
 			return nullptr;
 		}
-		itHandle = new DBIteratorHandle(*dbHandle, itOptions);
+		itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>(*dbHandle, itOptions));
 	} else {
 		DEBUG_LOG("DBIterator::Constructor Using existing transaction handle\n");
 		napi_value transactionCtor;
@@ -105,8 +106,8 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			DEBUG_LOG("DBIterator::Constructor Received Transaction instance\n");
 			std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
 			NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)));
-			itHandle = new DBIteratorHandle((*txnHandle).get(), itOptions);
-			DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", txnHandle, itHandle->dbHandle->descriptor.get());
+			itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>((*txnHandle).get(), itOptions));
+			DEBUG_LOG("DBIterator::Constructor txnHandle=%p descriptor=%p\n", (*txnHandle).get(), (*itHandle)->dbHandle->descriptor.get());
 		} else {
 			napi_valuetype type;
 			NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
@@ -114,6 +115,11 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			return nullptr;
 		}
+	}
+
+	// attach this iterator to the descriptor so it gets cleaned up when the descriptor is closed
+	if ((*itHandle)->dbHandle && (*itHandle)->dbHandle->descriptor) {
+		(*itHandle)->dbHandle->descriptor->attach(*itHandle);
 	}
 
 	DEBUG_LOG("DBIterator::Constructor itHandle=%p\n", itHandle);
@@ -125,7 +131,13 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			reinterpret_cast<void*>(itHandle),
 			[](napi_env env, void* data, void* hint) {
 				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd itHandle=%p\n", data);
-				DBIteratorHandle* itHandle = reinterpret_cast<DBIteratorHandle*>(data);
+				auto* itHandle = static_cast<std::shared_ptr<DBIteratorHandle>*>(data);
+				if (*itHandle) {
+					if ((*itHandle)->dbHandle && (*itHandle)->dbHandle->descriptor) {
+						(*itHandle)->dbHandle->descriptor->detach(*itHandle);
+					}
+					(*itHandle)->close();
+				}
 				delete itHandle;
 			},
 			nullptr, // finalize_hint
@@ -141,10 +153,10 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 }
 
 #define UNWRAP_ITERATOR_HANDLE(fnName) \
-	DBIteratorHandle* itHandle = nullptr; \
+	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
 	do { \
 		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
-		if (!itHandle || itHandle->iterator == nullptr) { \
+		if (!itHandle || (*itHandle)->iterator == nullptr) { \
 			::napi_throw_error(env, nullptr, fnName " failed: Iterator not initialized"); \
 			return nullptr; \
 		} \
@@ -166,24 +178,24 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	napi_value resultValue;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
 
-	if (itHandle->iterator->Valid()) {
-		rocksdb::Slice keySlice = itHandle->iterator->key();
+	if ((*itHandle)->iterator->Valid()) {
+		rocksdb::Slice keySlice = (*itHandle)->iterator->key();
 
 		// Check if this is the last item and should be skipped (reverse + exclusiveStart + key equals startKey)
-		if (itHandle->reverse && itHandle->exclusiveStart &&
-		    itHandle->startKey.size() > 0 && keySlice.compare(itHandle->startKey) == 0) {
+		if ((*itHandle)->reverse && (*itHandle)->exclusiveStart &&
+		    (*itHandle)->startKey.size() > 0 && keySlice.compare((*itHandle)->startKey) == 0) {
 			// Peek ahead to check if this is the last item
-			itHandle->iterator->Prev();
-			if (!itHandle->iterator->Valid()) {
+			(*itHandle)->iterator->Prev();
+			if (!(*itHandle)->iterator->Valid()) {
 				// This is the last item and it equals startKey, skip it
 				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone));
 				NAPI_STATUS_THROWS(::napi_get_undefined(env, &resultValue));
 			} else {
 				// Not the last item, restore position and continue normally
-				itHandle->iterator->Next();
+				(*itHandle)->iterator->Next();
 
 				// Re-read key and value after restoring position
-				rocksdb::Slice restoredKeySlice = itHandle->iterator->key();
+				rocksdb::Slice restoredKeySlice = (*itHandle)->iterator->key();
 
 				NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone));
 
@@ -201,8 +213,8 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key));
 
-				if (itHandle->values) {
-					rocksdb::Slice valueSlice = itHandle->iterator->value();
+				if ((*itHandle)->values) {
+					rocksdb::Slice valueSlice = (*itHandle)->iterator->value();
 					// TODO: use a shared buffer
 					NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 						env,
@@ -215,7 +227,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 					NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value));
 				}
 
-				itHandle->iterator->Prev();
+				(*itHandle)->iterator->Prev();
 			}
 		} else {
 			NAPI_STATUS_THROWS(::napi_get_boolean(env, false, &resultDone));
@@ -234,8 +246,8 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_create_object(env, &resultValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "key", key));
 
-			if (itHandle->values) {
-				rocksdb::Slice valueSlice = itHandle->iterator->value();
+			if ((*itHandle)->values) {
+				rocksdb::Slice valueSlice = (*itHandle)->iterator->value();
 				// TODO: use a shared buffer
 				NAPI_STATUS_THROWS(::napi_create_buffer_copy(
 					env,
@@ -248,17 +260,17 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, resultValue, "value", value));
 			}
 
-			if (itHandle->reverse) {
-				itHandle->iterator->Prev();
+			if ((*itHandle)->reverse) {
+				(*itHandle)->iterator->Prev();
 			} else {
-				itHandle->iterator->Next();
+				(*itHandle)->iterator->Next();
 			}
 		}
 	} else {
-		if (!itHandle->iterator->status().ok()) {
-			DEBUG_LOG("%p DBIterator::Next iterator not valid/ok: %s\n", itHandle, itHandle->iterator->status().ToString().c_str());
+		if (!(*itHandle)->iterator->status().ok()) {
+			DEBUG_LOG("%p DBIterator::Next iterator not valid/ok: %s\n", itHandle, (*itHandle)->iterator->status().ToString().c_str());
 		} else {
-			DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", itHandle);
+			DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", (*itHandle).get());
 		}
 
 		NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &resultDone));
@@ -282,9 +294,9 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_ITERATOR_HANDLE("Return");
 
-	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", itHandle);
+	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", (*itHandle).get());
 
-	itHandle->close();
+	(*itHandle)->close();
 
 	napi_value result;
 	napi_value done;
@@ -316,12 +328,12 @@ napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_ITERATOR_HANDLE("Throw");
 
-	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", itHandle);
+	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", (*itHandle).get());
 
 	// Note: There shouldn't be any need to abort the transaction here since the error
 	// will bubble up to the transaction callback handler and abort the transaction.
 
-	itHandle->close();
+	(*itHandle)->close();
 
 	napi_value result;
 	napi_value done;

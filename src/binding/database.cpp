@@ -169,11 +169,40 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE();
 
 	if (*dbHandle && (*dbHandle)->descriptor) {
-		DEBUG_LOG("%p Database::Close closing database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
+		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
 		DBRegistry::CloseDB(*dbHandle);
-		DEBUG_LOG("%p Database::Close closed database\n", dbHandle->get());
+		DEBUG_LOG("%p Database::Close Closed database\n", dbHandle->get());
 	} else {
 		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get());
+	}
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Destroys the RocksDB database.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.destroy();
+ * ```
+ */
+napi_value Database::Destroy(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE();
+
+	if (*dbHandle) {
+		try {
+			DBRegistry::DestroyDB((*dbHandle)->path);
+		} catch (const std::exception& e) {
+			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
+			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		}
+	} else {
+		::napi_throw_error(env, nullptr, "Invalid database handle");
+		return nullptr;
 	}
 
 	NAPI_RETURN_UNDEFINED();
@@ -639,6 +668,7 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+
 	// we store this in key slice (no copying) because we are synchronously using the key
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
@@ -906,6 +936,11 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
+
+		// now that the database is open and the dbHandle has a reference to
+		// the descriptor, we can attach the database instance's smart_ptr to
+		// the descriptor so it gets cleaned up when the descriptor is closed
+		(*dbHandle)->descriptor->attach(*dbHandle);
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
 		::napi_throw_error(env, nullptr, e.what());
@@ -1156,6 +1191,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },

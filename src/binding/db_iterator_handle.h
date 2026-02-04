@@ -14,7 +14,7 @@ namespace rocksdb_js {
  * A handle that owns the RocksDB iterator and is used to clean up the iterator
  * when the Iterator JS object is garbage collected.
  */
-struct DBIteratorHandle final : Closable {
+struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DBIteratorHandle> {
 	/**
 	 * Initializes the iterator handle using a database handle.
 	 */

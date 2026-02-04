@@ -130,37 +130,14 @@ DBDescriptor::DBDescriptor(
  * (transactions, iterators, etc).
  */
 DBDescriptor::~DBDescriptor() {
-	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
-		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
-
-	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
-
-	while (!this->closables.empty()) {
-		Closable* handle = *this->closables.begin();
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing closable %p\n", this, handle);
-		this->closables.erase(handle);
-
-		// release the mutex before calling close() to avoid a deadlock
-		txnsLock.unlock();
-		handle->close();
-		txnsLock.lock();
-	}
-
-	if (!this->transactionLogStores.empty()) {
-		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size());
-		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str());
-			transactionLogStore->close();
-		}
-		this->transactionLogStores.clear();
-	}
-
-	this->transactions.clear();
-	this->columns.clear();
-	this->db.reset();
+	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
+	this->close();
 }
 
+/**
+ * Close the database descriptor and any resources associated with it
+ * (transactions, iterators, etc).
+ */
 void DBDescriptor::close() {
 	// check if already closing
 	if (this->closing.exchange(true)) {
@@ -181,23 +158,58 @@ void DBDescriptor::close() {
 	// trigger a flush
 	rocksdb::WaitForCompactOptions options;
 	this->db->WaitForCompact(options);
+
+	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
+
+	// Close all handles that still exist and reset their descriptor references
+	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
+		if (auto closable = it->second.lock()) {
+			// Remove from map before closing to avoid re-entrant detach() calls
+			it = this->closables.erase(it);
+
+			// Release mutex during close to avoid deadlocks
+			txnsLock.unlock();
+			closable->close();
+			txnsLock.lock();
+		} else {
+			// Handle was already GC'd, just remove the expired weak_ptr
+			it = this->closables.erase(it);
+		}
+	}
+
+	if (!this->transactionLogStores.empty()) {
+		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size());
+		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str());
+			transactionLogStore->close();
+		}
+		this->transactionLogStores.clear();
+	}
+
+	this->transactions.clear();
+	this->columns.clear();
+	this->db.reset();
 }
 
 /**
  * Registers a database resource to be closed when the descriptor is closed.
+ *
+ * Important: The closable must be same smart_ptr that is napi-wrapped and
+ * bound to the JavaScript class counterpart.
  */
-void DBDescriptor::attach(Closable* closable) {
+void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	this->closables.insert(closable);
+	this->closables[closable.get()] = std::weak_ptr<Closable>(closable);
 }
 
 /**
  * Unregisters a database resource from being closed when the descriptor is
  * closed.
  */
-void DBDescriptor::detach(Closable* closable) {
+void DBDescriptor::detach(std::shared_ptr<Closable> closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	this->closables.erase(closable);
+	this->closables.erase(closable.get());
 }
 
 /**
@@ -573,7 +585,7 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
 	auto id = txnHandle->id;
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->transactions.emplace(id, txnHandle);
-	this->closables.insert(txnHandle.get());
+	this->closables[txnHandle.get()] = std::weak_ptr<Closable>(txnHandle);
 }
 
 /**

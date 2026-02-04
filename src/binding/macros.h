@@ -26,7 +26,7 @@
 		} while (0)
 	#define DEBUG_LOG_KEY_LN(key) \
 		do { \
-			DEBUG_LOG_KEY(key) \
+			DEBUG_LOG_KEY(key); \
 			::fprintf(stderr, "\n"); \
 		} while (0)
 	#define DEBUG_LOG_MSG(msg, ...) \

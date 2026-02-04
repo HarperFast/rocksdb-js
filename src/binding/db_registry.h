@@ -64,9 +64,14 @@ private:
 
 public:
 	static void CloseDB(const std::shared_ptr<DBHandle> handle);
-	static void Init();
+#ifdef DEBUG
+	static void DebugLogDescriptorRefs();
+#endif
+	static void DestroyDB(const std::string& path);
+	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
+	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void Shutdown();
 	static size_t Size();
 };
