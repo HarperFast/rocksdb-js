@@ -230,7 +230,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         shell: bash
-        run: pnpm install
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Commit pnpm-lock.yaml
         shell: bash
