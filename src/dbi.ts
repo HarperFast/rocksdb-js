@@ -1,6 +1,6 @@
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { NativeTransaction, TransactionLog } from './load-binding.js';
-import type { Context, GetOptions, PutOptions, Store } from './store.js';
+import type { GetOptions, PutOptions, Store, StoreContext } from './store.js';
 import type { Transaction } from './transaction.js';
 import { type MaybePromise, when } from './util.js';
 
@@ -140,7 +140,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * The RocksDB context for `get()`, `put()`, and `remove()`.
 	 */
-	#context: Context;
+	#context: StoreContext;
 
 	/**
 	 * The database store instance. The store instance is tied to the database
@@ -266,7 +266,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Retrieves all keys within a range.
 	 */
 	getKeys(options?: IteratorOptions & T): any | undefined {
-		return this.store.getRange(this.#context, { ...options, values: false }).map(item => item.key);
+		return this.store.getKeys(this.#context, options);
 	}
 
 	/**
@@ -282,7 +282,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getKeysCount(options?: RangeOptions & T): number {
-		return this.store.getCount(this.#context, options);
+		return this.store.getKeysCount(this.#context, options);
 	}
 
 	/**
@@ -438,7 +438,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	async remove(key: Key, options?: T): Promise<void> {
-		return this.store.removeSync(this.#context, key, options as DBITransactional);
+		return this.store.removeSync(this.#context, key, options);
 	}
 
 	/**
@@ -455,7 +455,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	removeSync(key: Key, options?: T): void {
-		return this.store.removeSync(this.#context, key, options as DBITransactional);
+		return this.store.removeSync(this.#context, key, options);
 	}
 
 	/**
