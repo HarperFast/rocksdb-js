@@ -29,6 +29,12 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Install dependencies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
+
       - name: Determine version from the release tag
         id: version
         shell: bash
@@ -43,12 +49,6 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Install dependencies
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Build
         env:
