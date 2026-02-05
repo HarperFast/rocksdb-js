@@ -12,6 +12,8 @@ jobs:
   preflight:
     name: Preflight
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -27,15 +29,26 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Determine version from the release tag
+        id: version
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          echo "Tag: ${{ github.event.release.tag_name }}"
+          VERSION=$(echo "${{ github.event.release.tag_name }}" | sed 's/^v//')
+          echo "Version: $VERSION"
+          if ! pnpm semver $VERSION; then
+            echo "ERROR: Invalid version $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Install dependencies
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm install --ignore-scripts --no-frozen-lockfile
-
-      - name: Check versions
-        shell: bash
-        run: node scripts/check-versions.mjs
 
       - name: Build
         env:
@@ -157,13 +170,34 @@ jobs:
         shell: bash
         run: find artifacts -ls
 
+      - name: Bump versions
+        shell: bash
+        run: node scripts/bump-versions.mjs ${{ needs.preflight.outputs.version }}
+
+      - name: Configure git
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
+
+      - name: Commit package.json
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          git add package.json
+          git commit -m "v${{ needs.preflight.outputs.version }}"
+          git push origin main
+
       - name: Get package.json info
         id: get-package-info
         shell: bash
         run: |
           echo "name=$(node -p "require('./package.json').name")" >> $GITHUB_OUTPUT
           echo "homepage=$(node -p "require('./package.json').homepage")" >> $GITHUB_OUTPUT
-          echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Publish bindings to npm
         env:
@@ -178,6 +212,30 @@ jobs:
         shell: bash
         run: pnpm publish --access public --no-git-checks --tag ${{ github.event.release.prerelease && 'next' || 'latest' }}
 
+      - name: Wait for npm to publish
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          sleep 10
+          while ! pnpm view ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }} > /dev/null 2>&1; do
+            echo "Waiting for npm to publish ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}..."
+            sleep 10
+          done
+          echo "npm has published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}"
+
+      - name: Update pnpm-lock.yaml
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        shell: bash
+        run: pnpm install
+
+      - name: Commit pnpm-lock.yaml
+        shell: bash
+        run: |
+          git add pnpm-lock.yaml
+          git commit -m "chore(package): update pnpm-lock.yaml after publishing ${{ needs.preflight.outputs.version }}"
+          git push origin main
+
       - name: Send Slack notification
         uses: slackapi/slack-github-action@v2.0.0
         with:
@@ -186,20 +244,20 @@ jobs:
           payload: |
             {
               "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
-              "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ steps.get-package-info.outputs.version }}",
+              "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}",
               "blocks": [
                 {
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ steps.get-package-info.outputs.version }}"
+                    "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ steps.get-package-info.outputs.version }}"
+                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ needs.preflight.outputs.version }}"
                   }
                 }
               ]
