@@ -304,13 +304,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->state = TransactionState::Committing;
 
-	LogPosition committedPosition;  // To record the log position of the committed transaction, for tracking of visible commits available in transaction log
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
-			store->writeBatch(*(*txnHandle)->logEntryBatch, committedPosition);
+			store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id);
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
@@ -319,10 +318,13 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
-	if ((*txnHandle)->logEntryBatch) {
+	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && !status.IsBusy()) {
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
-			store->commitFinished(committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+			store->commitFinished((*txnHandle)->committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+		} else {
+			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
+			status = rocksdb::Status::Aborted("Log store not found for transaction");
 		}
 	}
 
@@ -334,6 +336,13 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
 		(*txnHandle)->close();
 	} else {
+		if (status.IsBusy()) {
+			// clear/delete the previous transaction and create a new transaction so that it can be retried
+			(*txnHandle)->txn->ClearSnapshot();
+			delete (*txnHandle)->txn;
+			(*txnHandle)->logEntryBatch = nullptr;
+			(*txnHandle)->createTransaction();
+		}
 		(*txnHandle)->state = TransactionState::Pending;
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
