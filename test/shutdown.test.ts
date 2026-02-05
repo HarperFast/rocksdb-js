@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { dbRunner } from './lib/util.js';
 import { registryStatus, shutdown } from '../src/index.js';
+import { dbRunner } from './lib/util.js';
 
 describe('Shutdown', () => {
 	it('should shutdown rocksdb-js', () =>
-		dbRunner({
-			dbOptions: [{}, { name: 'test' }],
-		}, async ({ db }, { db: db2 }) => {
+		dbRunner({ dbOptions: [{}, { name: 'test' }] }, async ({ db }, { db: db2 }) => {
 			expect(db.isOpen()).toBe(true);
 			expect(db2.isOpen()).toBe(true);
 			let status = registryStatus();
