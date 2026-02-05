@@ -223,7 +223,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = txnHandle->txn->Commit();
 				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
 					auto store = txnHandle->boundLogStore.lock();
-					store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
+					if (store) {
+						store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
+					}
 				}
 
 				if (state->status.ok()) {
@@ -233,7 +235,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				} else if (state->status.IsBusy()) {
 					// clear/delete the previous transaction and create a new transaction so that it can be retried
 					txnHandle->txn->ClearSnapshot();
-					delete txnHandle->txn;
+					//delete txnHandle->txn;
 					txnHandle->logEntryBatch = nullptr;
 					txnHandle->createTransaction();
 				}
