@@ -206,7 +206,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			} else {
 				auto descriptor = txnHandle->dbHandle->descriptor;
-				LogPosition committedPosition; // To record the log position of the committed transaction, for tracking of visible commits available in transaction log
 
 				if (txnHandle->logEntryBatch) {
 					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
@@ -214,7 +213,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
 						// write the batch to the store
-						store->writeBatch(*txnHandle->logEntryBatch, committedPosition);
+						store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
 					} else {
 						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
 						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -222,15 +221,21 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				}
 
 				state->status = txnHandle->txn->Commit();
-				if (txnHandle->logEntryBatch) {
+				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
 					auto store = txnHandle->boundLogStore.lock();
-					store->commitFinished(committedPosition, descriptor->db->GetLatestSequenceNumber());
+					store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
 				}
 
 				if (state->status.ok()) {
 					DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id);
 					txnHandle->state = TransactionState::Committed;
 					descriptor->notify("committed", nullptr);
+				} else if (state->status.IsBusy()) {
+					// clear/delete the previous transaction and create a new transaction so that it can be retried
+					txnHandle->txn->ClearSnapshot();
+					delete txnHandle->txn;
+					txnHandle->logEntryBatch = nullptr;
+					txnHandle->createTransaction();
 				}
 			}
 			// signal that execute handler is complete
