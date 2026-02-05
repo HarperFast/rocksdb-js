@@ -127,7 +127,7 @@ describe('Transaction Log', () => {
 	});
 
 	describe('Transaction log visibility after commits', () => {
-		it.skip('Should not treat transaction logs as visible until successfully committed', () =>
+		it('Should not treat transaction logs as visible until successfully committed', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				db.putSync('key1', 'value1');
