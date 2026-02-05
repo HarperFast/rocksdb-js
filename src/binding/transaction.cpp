@@ -225,6 +225,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
 						store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
+					} else {
+						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
+						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
 					}
 				}
 
@@ -235,7 +238,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				} else if (state->status.IsBusy()) {
 					// clear/delete the previous transaction and create a new transaction so that it can be retried
 					txnHandle->txn->ClearSnapshot();
-					//delete txnHandle->txn;
+					delete txnHandle->txn;
 					txnHandle->logEntryBatch = nullptr;
 					txnHandle->createTransaction();
 				}

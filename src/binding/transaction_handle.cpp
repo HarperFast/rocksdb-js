@@ -23,7 +23,8 @@ TransactionHandle::TransactionHandle(
 	disableSnapshot(disableSnapshot),
 	snapshotSet(false),
 	state(TransactionState::Pending),
-	txn(nullptr) {
+	txn(nullptr),
+	committedPosition(0, 0) {
 	this->createTransaction();
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
