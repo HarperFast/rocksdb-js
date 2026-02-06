@@ -140,7 +140,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	/**
 	 * The RocksDB context for `get()`, `put()`, and `remove()`.
 	 */
-	#context: StoreContext;
+	context: StoreContext;
 
 	/**
 	 * The database store instance. The store instance is tied to the database
@@ -163,7 +163,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		// protected properties
 		this.store = store;
 
-		this.#context = transaction || store.db;
+		this.context = transaction || store.db;
 	}
 
 	/**
@@ -217,7 +217,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		return this.store.get(this.#context, key, true, this.store.getTxnId(options));
+		return this.store.get(this.context, key, true, this.store.getTxnId(options));
 	}
 
 	/**
@@ -228,7 +228,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.getSync(this.#context, key, true, options);
+		return this.store.getSync(this.context, key, true, options);
 	}
 
 	/**
@@ -246,7 +246,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		return this.store.get(this.#context, key, false, this.store.getTxnId(options));
+		return this.store.get(this.context, key, false, this.store.getTxnId(options));
 	}
 
 	/**
@@ -259,14 +259,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.getSync(this.#context, key, false, options);
+		return this.store.getSync(this.context, key, false, options);
 	}
 
 	/**
 	 * Retrieves all keys within a range.
 	 */
 	getKeys(options?: IteratorOptions & T): any | undefined {
-		return this.store.getKeys(this.#context, options);
+		return this.store.getKeys(this.context, options);
 	}
 
 	/**
@@ -282,7 +282,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getKeysCount(options?: RangeOptions & T): number {
-		return this.store.getKeysCount(this.#context, options);
+		return this.store.getKeysCount(this.context, options);
 	}
 
 	/**
@@ -303,7 +303,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getRange(options?: IteratorOptions & T): any | undefined {
-		return this.store.getRange(this.#context, options);
+		return this.store.getRange(this.context, options);
 	}
 
 	/**
@@ -329,7 +329,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			throw new Error('Database not open');
 		}
 
-		return this.store.decodeValue(this.store.getSync(this.#context, key, true, options));
+		return this.store.decodeValue(this.store.getSync(this.context, key, true, options));
 	}
 
 	/**
@@ -404,7 +404,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	async put(key: Key, value: any, options?: PutOptions & T): Promise<void> {
-		return this.store.putSync(this.#context, key, value, options);
+		return this.store.putSync(this.context, key, value, options);
 	}
 
 	/**
@@ -421,7 +421,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	putSync(key: Key, value: any, options?: PutOptions & T): void {
-		return this.store.putSync(this.#context, key, value, options);
+		return this.store.putSync(this.context, key, value, options);
 	}
 
 	/**
@@ -438,7 +438,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	async remove(key: Key, options?: T): Promise<void> {
-		return this.store.removeSync(this.#context, key, options);
+		return this.store.removeSync(this.context, key, options);
 	}
 
 	/**
@@ -455,7 +455,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	removeSync(key: Key, options?: T): void {
-		return this.store.removeSync(this.#context, key, options);
+		return this.store.removeSync(this.context, key, options);
 	}
 
 	/**
@@ -476,6 +476,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @returns The transaction log.
 	 */
 	useLog(name: string | number): TransactionLog {
-		return this.store.useLog(this.#context, name);
+		return this.store.useLog(this.context, name);
 	}
 }
