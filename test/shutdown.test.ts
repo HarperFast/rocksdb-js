@@ -142,7 +142,7 @@ describe('Shutdown', () => {
 				dbPath,
 			], {
 				env: { ...process.env, DO_FORK: '1' },
-				// stdio: 'inherit',
+				stdio: 'inherit',
 			});
 			child.on('close', (code) => {
 				try {
