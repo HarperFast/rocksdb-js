@@ -132,13 +132,13 @@ describe('Shutdown', () => {
 		await mkdir(dbPath, { recursive: true });
 
 		await new Promise<void>((resolve, reject) => {
-			const child = spawn(process.execPath, [
-				'node_modules/tsx/dist/cli.mjs',
-				join(__dirname, 'fixtures', 'fork-shutdown.mts'),
-				dbPath,
-			], {
+			const args = process.versions.bun || process.versions.deno
+				? [join(__dirname, 'fixtures', 'fork-shutdown.mts'), dbPath]
+				: ['node_modules/tsx/dist/cli.mjs', join(__dirname, 'fixtures', 'fork-shutdown.mts'), dbPath];
+
+			const child = spawn(process.execPath, args, {
 				env: { ...process.env, DO_FORK: '1' },
-				stdio: 'inherit',
+				// stdio: 'inherit',
 			});
 			child.on('close', (code) => {
 				try {
