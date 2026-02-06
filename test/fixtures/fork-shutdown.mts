@@ -22,7 +22,7 @@ if (parentPid) {
 	while (true) {
 		try {
 			process.kill(parentPid, 0);
-		} catch (err: Error & { code: string } | unknown) {
+		} catch {
 			console.log('parent is dead');
 			break;
 		}
