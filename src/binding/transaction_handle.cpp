@@ -32,6 +32,8 @@ TransactionHandle::TransactionHandle(
 }
 
 void TransactionHandle::createTransaction(){
+	this->snapshotSet = false; // snapshot flag so it will be reapplied
+
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;
 
