@@ -158,10 +158,10 @@ describe('Transaction Log', () => {
 					fullTransactionCompletions.push(fullTxnCompletion);
 				}
 				let transactionResults = await Promise.allSettled(firstTransactionCompletions);
-				expect(transactionResults.filter(result => result.status === 'rejected').length).toBeGreaterThanOrEqual(1); // at least one should succeed
-				expect(Array.from(log.query({ start: 0 })).length).toBeLessThan(3); // The entries should not be all visible at this point
-				await Promise.all(fullTransactionCompletions); // wait for the retries to finish
-				expect(Array.from(log.query({ start: 0 })).length).toBe(3); // should have a maximum of one transaction that is visible
+				expect(transactionResults.filter(result => result.status === 'rejected').length).toBeGreaterThanOrEqual(1); // at least one should fail
+				expect(Array.from(log.query({ start: 0 })).length).toBeLessThan(3); // The entries should not be all visible at this point (only one)
+				await Promise.all(fullTransactionCompletions); // wait for all the retries to finish
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3); // now all the transactions should be visible in the log
 			})
 		);
 	});
