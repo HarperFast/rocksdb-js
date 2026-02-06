@@ -927,6 +927,8 @@ The default `Store` contains the following methods which can be overridden:
 - `encodeValue(value)`
 - `get(context, key, resolve, reject, txnId?)`
 - `getCount(context, options?, txnId?)`
+- `getKeys(context, options?)`
+- `getKeysCount(context, options?)`
 - `getRange(context, options?)`
 - `getSync(context, key, options?)`
 - `getUserSharedBuffer(key, defaultBuffer?)`

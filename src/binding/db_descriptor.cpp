@@ -148,17 +148,6 @@ void DBDescriptor::close() {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
 		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
 
-	// We want to ensure that all in-memory data is written to disk
-	this->flush();
-
-	// Wait for any outstanding (background threads) operations to complete.
-	// Note that this is not setting the RocksDB `close_db` flag since active
-	// references to the databases may still exist. Also, contrary to the
-	// suggestions of the documentation, this method alone does not seem to
-	// trigger a flush
-	rocksdb::WaitForCompactOptions options;
-	this->db->WaitForCompact(options);
-
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
 	// Close all handles that still exist and reset their descriptor references
@@ -189,6 +178,18 @@ void DBDescriptor::close() {
 
 	this->transactions.clear();
 	this->columns.clear();
+
+	// We want to ensure that all in-memory data is written to disk
+	this->flush();
+
+	// Wait for any outstanding (background threads) operations to complete.
+	// Note that this is not setting the RocksDB `close_db` flag since active
+	// references to the databases may still exist. Also, contrary to the
+	// suggestions of the documentation, this method alone does not seem to
+	// trigger a flush
+	rocksdb::WaitForCompactOptions options;
+	this->db->WaitForCompact(options);
+
 	this->db.reset();
 }
 

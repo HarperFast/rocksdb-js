@@ -35,7 +35,12 @@ const REUSE_BUFFER_MODE = 512;
 const SAVE_BUFFER_SIZE = 8192;
 // const WRITE_BUFFER_SIZE = 65536;
 
-export type Context = NativeDatabase | NativeTransaction;
+export type StoreContext = NativeDatabase | NativeTransaction;
+export type StoreGetOptions = GetOptions & DBITransactional;
+export type StoreIteratorOptions = IteratorOptions & DBITransactional;
+export type StorePutOptions = PutOptions & DBITransactional;
+export type StoreRangeOptions = RangeOptions & DBITransactional;
+export type StoreRemoveOptions = DBITransactional | unknown;
 
 /**
  * Options for the `Store` class.
@@ -363,7 +368,7 @@ export class Store {
 	}
 
 	get(
-		context: NativeDatabase | NativeTransaction,
+		context: StoreContext,
 		key: Key,
 		alwaysCreateNewBuffer: boolean = false,
 		txnId?: number
@@ -390,7 +395,7 @@ export class Store {
 		return result;
 	}
 
-	getCount(context: NativeDatabase | NativeTransaction, options?: RangeOptions): number {
+	getCount(context: StoreContext, options?: StoreRangeOptions): number {
 		options = { ...options };
 
 		if (options?.start !== undefined) {
@@ -406,9 +411,17 @@ export class Store {
 		return context.getCount(options, this.getTxnId(options));
 	}
 
+	getKeys(context: StoreContext, options?: StoreIteratorOptions): any | undefined {
+		return this.getRange(context, { ...options, values: false }).map(item => item.key);
+	}
+
+	getKeysCount(context: StoreContext, options?: StoreRangeOptions): number {
+		return this.getCount(context, options);
+	}
+
 	getRange(
-		context: NativeDatabase | NativeTransaction,
-		options?: IteratorOptions & DBITransactional
+		context: StoreContext,
+		options?: StoreIteratorOptions
 	): ExtendedIterable<DBIteratorValue<any>> {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
@@ -453,10 +466,10 @@ export class Store {
 	}
 
 	getSync(
-		context: NativeDatabase | NativeTransaction,
+		context: StoreContext,
 		key: Key,
 		alwaysCreateNewBuffer: boolean = false,
-		options?: GetOptions & DBITransactional
+		options?: StoreGetOptions
 	): any | undefined {
 		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
@@ -583,12 +596,7 @@ export class Store {
 		return false;
 	}
 
-	putSync(
-		context: NativeDatabase | NativeTransaction,
-		key: Key,
-		value: any,
-		options?: PutOptions & DBITransactional
-	): void {
+	putSync(context: StoreContext, key: Key, value: any, options?: StorePutOptions): void {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -603,11 +611,7 @@ export class Store {
 		context.putSync(this.encodeKey(key), valueBuffer, this.getTxnId(options));
 	}
 
-	removeSync(
-		context: NativeDatabase | NativeTransaction,
-		key: Key,
-		options?: DBITransactional | undefined
-	): void {
+	removeSync(context: StoreContext, key: Key, options?: StoreRemoveOptions): void {
 		if (!this.db.opened) {
 			throw new Error('Database not open');
 		}
@@ -650,7 +654,7 @@ export class Store {
 	 * @param name - The name of the transaction log.
 	 * @returns The transaction log.
 	 */
-	useLog(context: NativeDatabase | NativeTransaction, name: string | number): TransactionLog {
+	useLog(context: StoreContext, name: string | number): TransactionLog {
 		if (typeof name !== 'string' && typeof name !== 'number') {
 			throw new TypeError('Log name must be a string or number');
 		}

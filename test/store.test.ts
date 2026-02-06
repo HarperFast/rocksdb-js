@@ -1,9 +1,8 @@
 import { rm } from 'node:fs/promises';
 import type { Key } from 'ordered-binary';
 import { describe, expect, it } from 'vitest';
-import type { DBITransactional } from '../src/dbi.js';
 import { RocksDatabase } from '../src/index.js';
-import { Context, type PutOptions, Store } from '../src/store.js';
+import { Store, StoreContext, type StorePutOptions } from '../src/store.js';
 import { generateDBPath } from './lib/util.js';
 
 describe('Custom Store', () => {
@@ -11,7 +10,7 @@ describe('Custom Store', () => {
 		class CustomStore extends Store {
 			putCalled = false;
 
-			put(context: Context, key: Key, value: any, options?: PutOptions & DBITransactional) {
+			put(context: StoreContext, key: Key, value: any, options?: StorePutOptions) {
 				this.putCalled = true;
 				return super.putSync(context, key, value, options);
 			}
