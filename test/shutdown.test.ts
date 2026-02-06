@@ -132,7 +132,12 @@ describe('Shutdown', () => {
 		await mkdir(dbPath, { recursive: true });
 
 		await new Promise<void>((resolve, reject) => {
-			const child = spawn('node_modules/.bin/tsx', [
+			// On Windows, executables in node_modules/.bin/ have .cmd extension
+			const tsxBin = process.platform === 'win32'
+				? 'node_modules/.bin/tsx.cmd'
+				: 'node_modules/.bin/tsx';
+
+			const child = spawn(tsxBin, [
 				join(__dirname, 'fixtures', 'fork-shutdown.mts'),
 				dbPath,
 			], {
