@@ -100,6 +100,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	std::weak_ptr<TransactionLogStore> boundLogStore;
 
+	/**
+	 * The position of the beginning of the log entries that were written for this transaction.
+	 * This is used for tracking of visible commits available in transaction log, once the transaction is successfully committed.
+	 */
+	LogPosition committedPosition;
+
 	TransactionHandle(
 		std::shared_ptr<DBHandle> dbHandle,
 		napi_env env,
@@ -107,6 +113,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		bool disableSnapshot = false
 	);
 	~TransactionHandle();
+
+	void createTransaction();
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 

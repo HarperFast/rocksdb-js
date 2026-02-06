@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
-import { RocksDatabase } from '../src/index.js';
+import { RocksDatabase, Transaction } from '../src/index.js';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';
@@ -124,6 +124,46 @@ describe('Transaction Log', () => {
 				expect(buffer).toBeDefined();
 				expect(buffer?.subarray(0, 4).toString()).toBe('WOOF');
 			}));
+	});
+
+	describe('Transaction log visibility after commits', () => {
+		it('Should not treat transaction logs as visible until successfully committed', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				db.putSync('key1', 'value1');
+				let firstTransactionCompletions: Promise<void>[] = [];
+				let fullTransactionCompletions: Promise<void>[] = [];
+				for (let i = 0; i < 3; i++) {
+					let transaction = new Transaction(db.store);
+					let firstTxnCommit = (async () => {
+						db.getSync('key1', { transaction });
+						const value = Buffer.alloc(10, i.toString());
+						log.addEntry(value, transaction.id);
+						await delay(10);
+						// should be a conflicted write
+						db.putSync('key1', 'updated' + i, { transaction });
+						await transaction.commit();
+					})();
+					firstTransactionCompletions.push(firstTxnCommit);
+					const catchFailedCommit = async (error) => {
+						if (error.code === 'ERR_BUSY') {
+							db.getSync('key1', { transaction });
+							await delay(10);
+							db.putSync('key1', 'updated' + i, { transaction });
+							await transaction.commit().catch(catchFailedCommit);
+						} else throw error;
+					};
+					let fullTxnCompletion = firstTxnCommit.catch(catchFailedCommit);
+
+					fullTransactionCompletions.push(fullTxnCompletion);
+				}
+				let transactionResults = await Promise.allSettled(firstTransactionCompletions);
+				expect(transactionResults.filter(result => result.status === 'rejected').length).toBeGreaterThanOrEqual(1); // at least one should fail
+				expect(Array.from(log.query({ start: 0 })).length).toBeLessThan(3); // The entries should not be all visible at this point (only one)
+				await Promise.all(fullTransactionCompletions); // wait for all the retries to finish
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3); // now all the transactions should be visible in the log
+			})
+		);
 	});
 
 	describe('query() from TransactionLog', () => {
