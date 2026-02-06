@@ -132,17 +132,13 @@ describe('Shutdown', () => {
 		await mkdir(dbPath, { recursive: true });
 
 		await new Promise<void>((resolve, reject) => {
-			// On Windows, executables in node_modules/.bin/ have .cmd extension
-			const tsxBin = process.platform === 'win32'
-				? 'node_modules/.bin/tsx.cmd'
-				: 'node_modules/.bin/tsx';
-
-			const child = spawn(tsxBin, [
+			const child = spawn(process.execPath, [
+				'node_modules/tsx/dist/cli.mjs',
 				join(__dirname, 'fixtures', 'fork-shutdown.mts'),
 				dbPath,
 			], {
 				env: { ...process.env, DO_FORK: '1' },
-				stdio: 'inherit',
+				// stdio: 'inherit',
 			});
 			child.on('close', (code) => {
 				try {
