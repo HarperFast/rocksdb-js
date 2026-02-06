@@ -124,7 +124,7 @@ describe('Shutdown', () => {
 			}
 		}));
 
-	it.only('should spawn process that opens 20 databases, shutdown on exit, forks, an open them again', async () => {
+	it('should spawn process that opens 20 databases, shutdown on exit, forks, an open them again', async () => {
 		const dbPath = generateDBPath();
 		await mkdir(dbPath, { recursive: true });
 
@@ -134,7 +134,7 @@ describe('Shutdown', () => {
 					...process.env,
 					DO_FORK: '1',
 				},
-				stdio: 'inherit',
+				// stdio: 'inherit',
 			});
 			child.on('close', (code) => {
 				try {
