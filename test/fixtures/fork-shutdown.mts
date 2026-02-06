@@ -1,8 +1,8 @@
 import { fork } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { RocksDatabase, shutdown } from '../../src/index.js';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { RocksDatabase, shutdown } from '../../src/index.js';
 
 if (process.argv.length < 3) {
 	throw new Error('Missing database path');
@@ -51,12 +51,9 @@ process.on('exit', () => {
 if (process.env.DO_FORK) {
 	delete process.env.DO_FORK;
 	const __dirname = dirname(fileURLToPath(import.meta.url));
-	console.log('forking')
+	console.log('forking');
 	fork(join(__dirname, 'fork-shutdown.mts'), [dbPath], {
-		env: {
-			...process.env,
-			PARENT_PID: process.pid.toString(),
-		},
+		env: { ...process.env, PARENT_PID: process.pid.toString() },
 		stdio: 'inherit',
 	});
 } else {
