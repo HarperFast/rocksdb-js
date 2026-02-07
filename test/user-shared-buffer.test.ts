@@ -45,6 +45,23 @@ describe('User Shared Buffer', () => {
 				expect(getNextId()).toBe(3n);
 			}));
 
+		it('should have separate buffers for separate stores', () =>
+			dbRunner(
+				{ dbOptions: [{ name: 'one' }, { name: 'two' }] },
+				async ({ db }, { db: db2 }) => {
+					const incrementer = new BigInt64Array(
+						db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+					);
+					incrementer[0] = 1n;
+					const incrementer2 = new BigInt64Array(
+						db2.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+					);
+					incrementer2[0] = 2n;
+
+					expect(incrementer[0]).toBe(1n);
+					expect(incrementer2[0]).toBe(2n);
+			}));
+
 		it('should notify callbacks', () =>
 			dbRunner(async ({ db }) => {
 				const sharedNumber = new Float64Array(1);
