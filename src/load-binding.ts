@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IteratorOptions, RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
-import type { Context } from './store.js';
+import type { StoreContext } from './store.js';
 
 export type TransactionOptions = {
 	/**
@@ -66,7 +66,7 @@ export type TransactionLog = {
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {
-	constructor(context: Context, options: IteratorOptions);
+	constructor(context: StoreContext, options: IteratorOptions);
 	next(): IteratorResult<T>;
 	return(): IteratorResult<T>;
 	throw(): IteratorResult<T>;
