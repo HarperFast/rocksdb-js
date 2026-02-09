@@ -37,10 +37,17 @@ jobs:
           echo "current=$CURRENT" >> $GITHUB_OUTPUT
           echo "release_url=$RELEASE_URL" >> $GITHUB_OUTPUT
 
+      - name: Generate GitHub token
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Cleanup existing PRs
         if: steps.latest-release.outputs.should_update == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: |
           git fetch origin
           BRANCH_NAME="update-rocksdb"
@@ -80,7 +87,7 @@ jobs:
         if: steps.latest-release.outputs.should_update == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.github-token.outputs.token }}
           title: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'
           body: 'Bumps [RocksDB](${{ steps.latest-release.outputs.release_url }}) from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}.'
           commit-message: 'chore(deps): bump RocksDB prebuild from ${{ steps.latest-release.outputs.current }} to ${{ steps.latest-release.outputs.latest }}'

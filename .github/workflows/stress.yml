@@ -41,14 +41,21 @@ jobs:
           restore-keys: |
             stress-rocksdb-
 
+      - name: Generate GitHub token
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Install dependencies
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Build
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: pnpm build
 
       - name: Run stress tests
