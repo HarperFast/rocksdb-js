@@ -32,10 +32,17 @@ jobs:
           node-version: 24
           cache: 'pnpm'
 
+      - name: Generate GitHub token
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
-          gh-token: ${{ secrets.GH_TOKEN }}
+          gh-token: ${{ steps.github-token.outputs.token }}
 
       - name: Fix formatting
         run: pnpm format:fix
@@ -47,7 +54,7 @@ jobs:
       - name: Pull request
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.github-token.outputs.token }}
           title: 'chore(style): fix formatting'
           body: 'Fixes formatting issues in the codebase.'
           commit-message: 'chore(style): fix formatting'

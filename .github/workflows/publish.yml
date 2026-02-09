@@ -29,10 +29,17 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Generate GitHub token
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Install dependencies
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Determine version from the release tag
@@ -52,7 +59,7 @@ jobs:
 
       - name: Build
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         shell: bash
         run: pnpm build
 
@@ -111,15 +118,22 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Generate GitHub token
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Install dependencies
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Build binding
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
           ROCKSDB_LIBC: ${{ matrix.platform.libc }}
         shell: bash
         run: pnpm build
@@ -158,10 +172,17 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Generate GitHub token
+        id: github-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Install dependencies
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Download artifact
@@ -180,7 +201,7 @@ jobs:
       - name: Configure git
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -228,7 +249,7 @@ jobs:
 
       - name: Update pnpm-lock.yaml
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
         shell: bash
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
