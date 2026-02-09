@@ -21,13 +21,29 @@ TransactionHandle::TransactionHandle(
 	env(env),
 	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
-	snapshotSet(false),
 	state(TransactionState::Pending),
-	txn(nullptr)
-{
+	txn(nullptr),
+	committedPosition(0, 0) {
+	this->resetTransaction();
+	this->id = this->dbHandle->descriptor->transactionGetNextId();
+
+	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+}
+
+void TransactionHandle::resetTransaction(){
+	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	if (this->txn) {
+		this->txn->ClearSnapshot();
+		delete this->txn;
+	}
+
+	this->logEntryBatch = nullptr;
+	this->snapshotSet = false; // snapshot flag so it will be reapplied
+
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;
 
+	auto dbHandle = this->dbHandle;
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
@@ -40,9 +56,6 @@ TransactionHandle::TransactionHandle(
 		throw std::runtime_error("Invalid database");
 	}
 
-	this->id = this->dbHandle->descriptor->transactionGetNextId();
-
-	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 }
 
 /**
