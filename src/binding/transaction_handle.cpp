@@ -24,13 +24,13 @@ TransactionHandle::TransactionHandle(
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
-	this->createTransaction();
+	this->resetTransaction();
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 }
 
-void TransactionHandle::createTransaction(){
+void TransactionHandle::resetTransaction(){
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	if (this->txn) {
 		this->txn->ClearSnapshot();

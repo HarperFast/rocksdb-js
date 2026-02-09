@@ -114,7 +114,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 	~TransactionHandle();
 
-	void createTransaction();
+	void resetTransaction();
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 

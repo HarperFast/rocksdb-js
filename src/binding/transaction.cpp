@@ -237,10 +237,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					descriptor->notify("committed", nullptr);
 				} else if (state->status.IsBusy()) {
 					// clear/delete the previous transaction and create a new transaction so that it can be retried
-					txnHandle->txn->ClearSnapshot();
-					delete txnHandle->txn;
-					txnHandle->logEntryBatch = nullptr;
-					txnHandle->createTransaction();
+					txnHandle->resetTransaction();
 				}
 			}
 			// signal that execute handler is complete
@@ -338,10 +335,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	} else {
 		if (status.IsBusy()) {
 			// clear/delete the previous transaction and create a new transaction so that it can be retried
-			(*txnHandle)->txn->ClearSnapshot();
-			delete (*txnHandle)->txn;
-			(*txnHandle)->logEntryBatch = nullptr;
-			(*txnHandle)->createTransaction();
+			(*txnHandle)->resetTransaction();
 		}
 		(*txnHandle)->state = TransactionState::Pending;
 		napi_value error;
