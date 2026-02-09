@@ -32,6 +32,13 @@ TransactionHandle::TransactionHandle(
 }
 
 void TransactionHandle::createTransaction(){
+	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	if (this->txn) {
+		this->txn->ClearSnapshot();
+		delete this->txn;
+	}
+
+	this->logEntryBatch = nullptr;
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	rocksdb::WriteOptions writeOptions;
