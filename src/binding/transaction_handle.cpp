@@ -55,7 +55,6 @@ void TransactionHandle::resetTransaction(){
 	} else {
 		throw std::runtime_error("Invalid database");
 	}
-
 }
 
 /**
