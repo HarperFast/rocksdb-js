@@ -32,17 +32,10 @@ jobs:
           node-version: 24
           cache: 'pnpm'
 
-      - name: Generate GitHub token
-        id: github-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
-          gh-token: ${{ steps.github-token.outputs.token }}
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Check
         run: pnpm check
@@ -71,21 +64,14 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: 'pnpm'
 
-      - name: Generate GitHub token
-        id: github-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
-          gh-token: ${{ steps.github-token.outputs.token }}
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
         env:
-          GH_TOKEN: ${{ steps.github-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
       - name: Run tests on Node.js ${{ matrix.node }}
@@ -113,21 +99,14 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Generate GitHub token
-        id: github-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
-          gh-token: ${{ steps.github-token.outputs.token }}
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
         env:
-          GH_TOKEN: ${{ steps.github-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
       - name: Run tests on Bun
@@ -155,21 +134,14 @@ jobs:
         with:
           deno-version: latest
 
-      - name: Generate GitHub token
-        id: github-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
         with:
-          gh-token: ${{ steps.github-token.outputs.token }}
+          gh-token: ${{ secrets.GH_TOKEN }}
 
       - name: Build
         env:
-          GH_TOKEN: ${{ steps.github-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
       - name: Run tests on Deno
