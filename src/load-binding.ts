@@ -53,16 +53,16 @@ export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolea
 export type TransactionLog = {
 	new(name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
-	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_getLastFlushed(): number;
-	_getLastCommittedPosition(): Buffer;
-	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
 	getLogFileSize(sequenceId?: number): number;
-	_getLastCommittedPosition(): Buffer;
+	path: string;
+	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
+	_currentLogBuffer: LogBuffer;
 	_findPosition(timestamp: number): number;
+	_getLastCommittedPosition(): Buffer;
+	_getLastFlushed(): number;
+	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
 	_lastCommittedPosition: Float64Array;
 	_logBuffers: Map<number, WeakRef<LogBuffer>>;
-	_currentLogBuffer: LogBuffer;
 };
 
 export declare class NativeIteratorCls<T> implements Iterator<T> {

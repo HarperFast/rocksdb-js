@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -9,7 +9,7 @@ import { RocksDatabase, Transaction } from '../src/index.js';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
+import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
 
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
@@ -26,6 +26,7 @@ describe('Transaction Log', () => {
 
 				const fooLog = db.useLog('foo');
 				expect(fooLog).toBeDefined();
+				expect(fooLog.path).toBe(join(dbPath, 'transaction_logs', 'foo'));
 
 				const barLog = db.useLog('bar');
 				expect(barLog).toBeDefined();
@@ -103,6 +104,58 @@ describe('Transaction Log', () => {
 					);
 				});
 			}));
+
+		it('should isolate transaction logs between different database paths', () =>
+			dbRunner(
+				{ dbOptions: [{ path: generateDBPath() }, { path: generateDBPath() }] },
+				async ({ db, dbPath }, { db: db2, dbPath: dbPath2 }) => {
+					expect(dbPath).not.toBe(dbPath2);
+
+					const value = Buffer.alloc(10000, 'a');
+					const log1 = db.useLog('foo');
+					for (let i = 0; i < 20; i++) {
+						await db.transaction(async (txn) => {
+							log1.addEntry(value, txn.id);
+						});
+					}
+
+					expect(db.listLogs()).toContain('foo');
+					expect(db2.listLogs()).not.toContain('foo');
+
+					const getSize = async (logPath: string) => {
+						let size = 0;
+						for (const file of await readdir(logPath)) {
+							const info = await stat(join(logPath, file)).catch(() => undefined);
+							if (info) {
+								size += info.size;
+							}
+						}
+						return size;
+					};
+
+					let size = await getSize(join(dbPath, 'transaction_logs', 'foo'));
+					expect(size).toBe(
+						TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 20
+					);
+
+					const log2 = db2.useLog('foo');
+					for (let i = 0; i < 20; i++) {
+						await db2.transaction(async (txn) => {
+							log2.addEntry(value, txn.id);
+						});
+					}
+
+					size = await getSize(join(dbPath, 'transaction_logs', 'foo'));
+					expect(size).toBe(
+						TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 20
+					);
+
+					size = await getSize(join(dbPath2, 'transaction_logs', 'foo'));
+					expect(size).toBe(
+						TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 20
+					);
+				}
+			));
 	});
 
 	describe('_getLastCommittedPosition()/_getMemoryMapOfFile', () => {
