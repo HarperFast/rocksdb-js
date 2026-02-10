@@ -240,16 +240,32 @@ napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info)
 }
 
 /**
+ * Get the path to the transaction log store for this log.
+ */
+napi_value TransactionLog::GetPath(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetPath");
+	auto store = (*txnLogHandle)->store.lock();
+	if (store) {
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, store->path.string().c_str(), store->path.string().size(), &result));
+		return result;
+	}
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Initializes the `NativeTransactionLog` JavaScript class.
  */
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "path", nullptr, nullptr, GetPath, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "_getLastFlushed", nullptr, GetLastFlushed, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getLastFlushed", nullptr, GetLastFlushed, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
 	auto className = "TransactionLog";

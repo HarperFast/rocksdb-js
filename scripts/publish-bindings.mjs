@@ -81,7 +81,7 @@ for (const target of Object.keys(bindings)) {
 		cpu: [arch],
 		libc: libc ? [libc] : undefined,
 	};
-	const pkgJson = JSON.stringify(pkgInfo, null, 2);
+	const pkgJson = JSON.stringify(pkgInfo, null, 2) + '\n';
 
 	console.log('Publishing:', pkgJson);
 
@@ -94,7 +94,7 @@ for (const target of Object.keys(bindings)) {
 		`# ${name}-${target}\n\n`
 			+ `${target} binding for [${name}](https://npmjs.com/package/${packageJson.name}).`
 	);
-	writeFileSync(join(tmpDir, 'package.json'), pkgJson);
+	writeFileSync(join(tmpDir, 'package.json'), pkgJson, 'utf8');
 	writeFileSync(
 		join(tmpDir, '.npmrc'),
 		`//registry.npmjs.org/:_authToken=${process.env.NODE_AUTH_TOKEN}\n`

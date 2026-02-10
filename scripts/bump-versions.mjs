@@ -30,6 +30,10 @@ for (const key of Object.keys(packageJson.optionalDependencies)) {
 	}
 }
 
-writeFileSync(resolve(__dirname, '..', 'package.json'), JSON.stringify(packageJson, null, 2));
+writeFileSync(
+	resolve(__dirname, '..', 'package.json'),
+	JSON.stringify(packageJson, null, 2) + '\n',
+	'utf8'
+);
 
 console.log(`🎉 Bumped version from ${currentVersion} to ${newVersion}`);
