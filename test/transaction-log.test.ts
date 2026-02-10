@@ -15,7 +15,7 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
-		it.only('should detect existing transaction logs', () =>
+		it('should detect existing transaction logs', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				await mkdir(join(dbPath, 'transaction_logs', 'foo'), { recursive: true });
 				await writeFile(join(dbPath, 'transaction_logs', 'foo', '1.txnlog'), '');
