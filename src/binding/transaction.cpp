@@ -320,7 +320,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (store) {
 			store->commitFinished((*txnHandle)->committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
 		} else {
-			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
+			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", (*txnHandle).get(), (*txnHandle)->committedPosition.logSequenceNumber, (*txnHandle)->id);
 			status = rocksdb::Status::Aborted("Log store not found for transaction");
 		}
 	}
