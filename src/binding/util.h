@@ -264,6 +264,14 @@ void tryCreateDirectory(
 );
 
 /**
+ * Computes an MD5 hash of a string, compatible with Node.js crypto.createHash('md5').
+ *
+ * @param input - The string to hash.
+ * @returns A hexadecimal string representation of the MD5 hash.
+ */
+std::string computeMD5Hash(const std::string& input);
+
+/**
  * Base class for async state.
  */
 template<typename T>

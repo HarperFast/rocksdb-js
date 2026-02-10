@@ -713,6 +713,9 @@ db.flushSync();
 A user controlled API for logging transactions. This API is designed to be generic so that you can
 log gets, puts, and deletes, but also arbitrary entries.
 
+Transaction logs are unique to the database path allowing different column families in the same
+database to share the transaction log store.
+
 ### `db.listLogs(): string[]`
 
 Returns an array of log store names.
@@ -768,6 +771,7 @@ to disk right before the transaction is committed. You may add multiple enties p
 underlying architecture is thread safe.
 
 - `log.addEntry()`
+- `log.path`
 - `log.query()`
 
 #### `log.addEntry(data, transactionId): void`
@@ -798,6 +802,15 @@ await db.transaction(async (txn) => {
 Note that the `TransactionLog` class also has internal methods `_getMemoryMapOfFile`,
 `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in
 any version.
+
+#### `log.path: string`
+
+Returns the path to the transaction log store files.
+
+```typescript
+const log = db.useLog('foo');
+console.log(log.path);
+```
 
 #### `log.query(options?): IterableIterator<TransactionLogEntry>`
 

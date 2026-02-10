@@ -3,8 +3,10 @@
 #include <cstdarg>
 #include <ctime>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <node_api.h>
+#include <openssl/evp.h>
 #include <string>
 #include <sstream>
 #include <thread>
@@ -547,6 +549,41 @@ void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perm
 	}
 
 	throw std::runtime_error("Failed to create directory: " + path.string());
+}
+
+std::string computeMD5Hash(const std::string& input) {
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned int digestLength = 0;
+
+	EVP_MD_CTX* context = EVP_MD_CTX_new();
+	if (context == nullptr) {
+		throw std::runtime_error("Failed to create EVP_MD_CTX");
+	}
+
+	if (EVP_DigestInit_ex(context, EVP_md5(), nullptr) != 1) {
+		EVP_MD_CTX_free(context);
+		throw std::runtime_error("Failed to initialize MD5 digest");
+	}
+
+	if (EVP_DigestUpdate(context, input.c_str(), input.length()) != 1) {
+		EVP_MD_CTX_free(context);
+		throw std::runtime_error("Failed to update MD5 digest");
+	}
+
+	if (EVP_DigestFinal_ex(context, digest, &digestLength) != 1) {
+		EVP_MD_CTX_free(context);
+		throw std::runtime_error("Failed to finalize MD5 digest");
+	}
+
+	EVP_MD_CTX_free(context);
+
+	std::ostringstream result;
+	result << std::hex << std::setfill('0');
+	for (unsigned int i = 0; i < digestLength; i++) {
+		result << std::setw(2) << static_cast<unsigned int>(digest[i]);
+	}
+
+	return result.str();
 }
 
 }

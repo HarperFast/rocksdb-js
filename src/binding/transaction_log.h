@@ -10,12 +10,13 @@ namespace rocksdb_js {
  */
 struct TransactionLog final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
-	static napi_value GetMemoryMapOfFile(napi_env env, napi_callback_info info);
+	static napi_value AddEntry(napi_env env, napi_callback_info info);
 	static napi_value FindPosition(napi_env env, napi_callback_info info);
+	static napi_value GetLastCommittedPosition(napi_env env, napi_callback_info info);
 	static napi_value GetLastFlushed(napi_env env, napi_callback_info info);
 	static napi_value GetLogFileSize(napi_env env, napi_callback_info info);
-	static napi_value GetLastCommittedPosition(napi_env env, napi_callback_info info);
-	static napi_value AddEntry(napi_env env, napi_callback_info info);
+	static napi_value GetMemoryMapOfFile(napi_env env, napi_callback_info info);
+	static napi_value GetPath(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
 };
