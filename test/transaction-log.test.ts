@@ -151,19 +151,21 @@ describe('Transaction Log', () => {
 							await delay(10);
 							db.putSync('key1', 'updated' + i, { transaction });
 							await transaction.commit().catch(catchFailedCommit);
-						} else throw error;
+						} else {
+							throw error;
+						}
 					};
 					let fullTxnCompletion = firstTxnCommit.catch(catchFailedCommit);
 
 					fullTransactionCompletions.push(fullTxnCompletion);
 				}
 				let transactionResults = await Promise.allSettled(firstTransactionCompletions);
-				expect(transactionResults.filter(result => result.status === 'rejected').length).toBeGreaterThanOrEqual(1); // at least one should fail
+				expect(transactionResults.filter(result => result.status === 'rejected').length)
+					.toBeGreaterThanOrEqual(1); // at least one should fail
 				expect(Array.from(log.query({ start: 0 })).length).toBeLessThan(3); // The entries should not be all visible at this point (only one)
 				await Promise.all(fullTransactionCompletions); // wait for all the retries to finish
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3); // now all the transactions should be visible in the log
-			})
-		);
+			}));
 	});
 
 	describe('query() from TransactionLog', () => {
