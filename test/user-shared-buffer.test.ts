@@ -1,9 +1,9 @@
-import { setTimeout as delay } from 'node:timers/promises';
-import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
 import type { BufferWithDataView } from '../src/encoding.js';
 import { withResolvers } from '../src/util.js';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
+import { describe, expect, it } from 'vitest';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -102,59 +102,63 @@ describe('User Shared Buffer', () => {
 			20000
 		);
 
-		it('should share buffer across worker threads', () =>
-			dbRunner(async ({ db, dbPath }) => {
-				const incrementer = new BigInt64Array(
-					db.getUserSharedBuffer('next-id-worker', new BigInt64Array(1).buffer)
-				);
-				incrementer[0] = 1n;
+		it(
+			'should share buffer across worker threads',
+			() =>
+				dbRunner(async ({ db, dbPath }) => {
+					const incrementer = new BigInt64Array(
+						db.getUserSharedBuffer('next-id-worker', new BigInt64Array(1).buffer)
+					);
+					incrementer[0] = 1n;
 
-				const getNextId = () => Atomics.add(incrementer, 0, 1n);
+					const getNextId = () => Atomics.add(incrementer, 0, 1n);
 
-				const worker = new Worker(
-					createWorkerBootstrapScript('./test/workers/user-shared-buffer-worker.mts'),
-					{ eval: true, workerData: { path: dbPath } }
-				);
+					const worker = new Worker(
+						createWorkerBootstrapScript('./test/workers/user-shared-buffer-worker.mts'),
+						{ eval: true, workerData: { path: dbPath } }
+					);
 
-				let resolver = withResolvers<void>();
+					let resolver = withResolvers<void>();
 
-				await new Promise<void>((resolve, reject) => {
-					worker.on('error', reject);
-					worker.on('message', event => {
-						try {
-							if (event.started) {
-								resolve();
-							} else if (event.nextId) {
-								resolver.resolve(event.nextId);
+					await new Promise<void>((resolve, reject) => {
+						worker.on('error', reject);
+						worker.on('message', (event) => {
+							try {
+								if (event.started) {
+									resolve();
+								} else if (event.nextId) {
+									resolver.resolve(event.nextId);
+								}
+							} catch (error) {
+								reject(error);
 							}
-						} catch (error) {
-							reject(error);
-						}
+						});
+						worker.on('exit', () => resolver.resolve());
 					});
-					worker.on('exit', () => resolver.resolve());
-				});
 
-				expect(getNextId()).toBe(1n);
-				expect(getNextId()).toBe(2n);
+					expect(getNextId()).toBe(1n);
+					expect(getNextId()).toBe(2n);
 
-				worker.postMessage({ increment: true });
-				await expect(resolver.promise).resolves.toBe(3n);
-				expect(getNextId()).toBe(4n);
+					worker.postMessage({ increment: true });
+					await expect(resolver.promise).resolves.toBe(3n);
+					expect(getNextId()).toBe(4n);
 
-				resolver = withResolvers<void>();
-				worker.postMessage({ close: true });
+					resolver = withResolvers<void>();
+					worker.postMessage({ close: true });
 
-				if (process.versions.deno) {
-					// deno doesn't emit an `exit` event when the worker quits, but
-					// `terminate()` will trigger the `exit` event
-					await delay(100);
-					worker.terminate();
-				}
+					if (process.versions.deno) {
+						// deno doesn't emit an `exit` event when the worker quits, but
+						// `terminate()` will trigger the `exit` event
+						await delay(100);
+						worker.terminate();
+					}
 
-				await resolver.promise;
+					await resolver.promise;
 
-				expect(getNextId()).toBe(5n);
-			}), 10000);
+					expect(getNextId()).toBe(5n);
+				}),
+			10000
+		);
 
 		it('should throw an error if the default buffer is not an ArrayBuffer', () =>
 			dbRunner(async ({ db }) => {
@@ -182,8 +186,9 @@ describe('User Shared Buffer', () => {
 
 		it('should error if callback is not a function', () =>
 			dbRunner(async ({ db }) => {
-				expect(() => db.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any }))
-					.toThrow('Callback must be a function');
+				expect(() =>
+					db.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any })
+				).toThrow('Callback must be a function');
 			}));
 	});
 });

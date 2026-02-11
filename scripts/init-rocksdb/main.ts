@@ -9,15 +9,15 @@
  * To manually run this script: pnpm tsx scripts/init-rocksdb/main.ts
  */
 
+import { buildRocksDBFromSource } from './build-rocksdb-from-source';
+import { downloadRocksDB } from './download-rocksdb';
+import { getCurrentVersion } from './get-current-version';
+import { getPrebuild } from './get-prebuild';
 import { config } from 'dotenv';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import semver from 'semver';
-import { buildRocksDBFromSource } from './build-rocksdb-from-source';
-import { downloadRocksDB } from './download-rocksdb';
-import { getCurrentVersion } from './get-current-version';
-import { getPrebuild } from './get-prebuild';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 
@@ -35,14 +35,15 @@ try {
 	}
 
 	const currentVersion = getCurrentVersion();
-	const runtime = process.platform === 'linux'
-		? `-${process.env.ROCKSDB_LIBC || 'glibc'}`
-		: undefined;
+	const runtime =
+		process.platform === 'linux' ? `-${process.env.ROCKSDB_LIBC || 'glibc'}` : undefined;
 	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
 	const desiredVersion = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || undefined;
 
 	if (
-		currentVersion && desiredVersion && semver.eq(currentVersion.version, desiredVersion) &&
+		currentVersion &&
+		desiredVersion &&
+		semver.eq(currentVersion.version, desiredVersion) &&
 		(!currentVersion.runtime || currentVersion.runtime === runtime)
 	) {
 		console.log(`No update needed, RocksDB ${currentVersion.version} is already installed.`);
@@ -52,7 +53,8 @@ try {
 	const prebuild = await getPrebuild(desiredVersion);
 
 	if (
-		currentVersion && semver.lte(prebuild.version, currentVersion.version) &&
+		currentVersion &&
+		semver.lte(prebuild.version, currentVersion.version) &&
 		(!currentVersion.runtime || currentVersion.runtime === runtime)
 	) {
 		console.log(`No update needed, latest version ${prebuild.version} is active.`);

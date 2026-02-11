@@ -1,13 +1,13 @@
-import { parentPort, workerData } from 'node:worker_threads';
 import { RocksDatabase } from '../../src/index.js';
+import { parentPort, workerData } from 'node:worker_threads';
 
 const db = RocksDatabase.open(workerData.path);
 
-db.addListener('parent-event', value => {
+db.addListener('parent-event', (value) => {
 	parentPort?.postMessage({ parentEvent: value });
 });
 
-parentPort?.on('message', event => {
+parentPort?.on('message', (event) => {
 	if (event.notify) {
 		db.notify('worker-event', 'foo');
 	} else if (event.close) {

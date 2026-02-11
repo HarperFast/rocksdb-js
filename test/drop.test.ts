@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Drop', () => {
 	it('should error if database is not open', () =>

@@ -1,11 +1,11 @@
+import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { BufferWithDataView, Key } from './encoding.js';
+import type { StoreContext } from './store.js';
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { IteratorOptions, RangeOptions } from './dbi.js';
-import type { BufferWithDataView, Key } from './encoding.js';
-import type { StoreContext } from './store.js';
 
 export type TransactionOptions = {
 	/**
@@ -18,7 +18,7 @@ export type TransactionOptions = {
 
 export type NativeTransaction = {
 	id: number;
-	new(context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
+	new (context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
@@ -51,7 +51,7 @@ export type TransactionLogQueryOptions = {
 export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
 
 export type TransactionLog = {
-	new(name: string): TransactionLog;
+	new (name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
 	path: string;
@@ -94,7 +94,7 @@ export type UserSharedBufferCallback = () => void;
 export type PurgeLogsOptions = { destroy?: boolean; name?: string };
 
 export type NativeDatabase = {
-	new(): NativeDatabase;
+	new (): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
@@ -186,9 +186,11 @@ function locateBinding(): string {
 					header?: { glibcVersionRuntime?: string };
 					sharedObjects?: string[];
 				};
-				isMusl = (!report?.header || !report.header.glibcVersionRuntime) &&
-					Array.isArray(report?.sharedObjects) && report.sharedObjects.some(obj =>
-						obj.includes('libc.musl-') || obj.includes('ld-musl-')
+				isMusl =
+					(!report?.header || !report.header.glibcVersionRuntime) &&
+					Array.isArray(report?.sharedObjects) &&
+					report.sharedObjects.some(
+						(obj) => obj.includes('libc.musl-') || obj.includes('ld-musl-')
 					);
 			}
 			isMusl = isMusl || execSync('ldd --version', { encoding: 'utf8' }).includes('musl');

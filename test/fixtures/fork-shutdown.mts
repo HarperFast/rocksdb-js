@@ -1,8 +1,8 @@
+import { RocksDatabase, shutdown } from '../../src/index.js';
 import { fork } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { RocksDatabase, shutdown } from '../../src/index.js';
 
 if (process.argv.length < 3) {
 	throw new Error('Missing database path');

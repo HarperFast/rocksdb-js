@@ -1,5 +1,5 @@
-import { describe } from 'vitest';
 import { benchmark, generateSequentialKeys, generateTestData } from './setup.js';
+import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;
 const RANGE_SIZE = 50;

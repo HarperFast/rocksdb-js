@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import type { IteratorOptions } from '../src/dbi.js';
 import type { Key } from '../src/encoding.js';
 import { dbRunner } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Ranges', () => {
 	describe('getRange()', () => {
@@ -83,7 +83,7 @@ describe('Ranges', () => {
 
 				const opts = { start: 'b', end: 'd' };
 
-				await db.transaction(async txn => {
+				await db.transaction(async (txn) => {
 					const returnedKeys: Key[] = [];
 					for await (const { key, value } of txn.getRange(opts)) {
 						returnedKeys.push(key);
@@ -101,7 +101,7 @@ describe('Ranges', () => {
 
 				const opts = { start: 'b', end: 'd' };
 
-				await db.transaction(async txn => {
+				await db.transaction(async (txn) => {
 					const returnedKeys: Key[] = [];
 					for await (const { key, value } of txn.getRange(opts)) {
 						returnedKeys.push(key);
@@ -211,10 +211,14 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange({ end: 'c', inclusiveEnd: true });
-				expect(Array.from(iter)).toEqual([{ key: 'a', value: 'value a' }, {
-					key: 'b',
-					value: 'value b',
-				}, { key: 'c', value: 'value c' }]);
+				expect(Array.from(iter)).toEqual([
+					{ key: 'a', value: 'value a' },
+					{
+						key: 'b',
+						value: 'value b',
+					},
+					{ key: 'c', value: 'value c' },
+				]);
 			}));
 
 		it('should exclude start key', () =>
@@ -239,9 +243,15 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange({ values: false });
-				expect(Array.from(iter)).toEqual([{ key: 'a' }, { key: 'b' }, { key: 'c' }, { key: 'd' }, {
-					key: 'e',
-				}]);
+				expect(Array.from(iter)).toEqual([
+					{ key: 'a' },
+					{ key: 'b' },
+					{ key: 'c' },
+					{ key: 'd' },
+					{
+						key: 'e',
+					},
+				]);
 			}));
 
 		it('should error if database is not open', () =>
@@ -277,7 +287,7 @@ describe('Ranges', () => {
 					await db.put(key, `value ${key}`);
 				}
 
-				await db.transaction(async txn => {
+				await db.transaction(async (txn) => {
 					const iter = txn.getKeys();
 					expect(Array.from(iter)).toEqual(['a', 'b', 'c', 'd', 'e']);
 				});
@@ -289,7 +299,7 @@ describe('Ranges', () => {
 					await db.put(key, `value ${key}`);
 				}
 
-				await db.transaction(async txn => {
+				await db.transaction(async (txn) => {
 					const iter = txn.getKeys();
 					expect(Array.from(iter)).toEqual(['a', 'b', 'c', 'd', 'e']);
 				});
@@ -382,7 +392,7 @@ describe('Ranges', () => {
 					await db.put(key, `value ${key}`);
 				}
 
-				await db.transaction(async txn => {
+				await db.transaction(async (txn) => {
 					let count = txn.getKeysCount();
 					expect(count).toBe(5);
 
@@ -423,7 +433,7 @@ describe('Ranges', () => {
 					await db.put(key, `value ${key}`);
 				}
 
-				await db.transaction(async txn => {
+				await db.transaction(async (txn) => {
 					let count = txn.getKeysCount();
 					expect(count).toBe(5);
 
@@ -564,8 +574,11 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const filtered = iter.filter(item => ((item.value as number) % 2 === 0));
-				expect(Array.from(filtered)).toEqual([{ key: 'a', value: 0 }, { key: 'c', value: 2 }]);
+				const filtered = iter.filter((item) => (item.value as number) % 2 === 0);
+				expect(Array.from(filtered)).toEqual([
+					{ key: 'a', value: 0 },
+					{ key: 'c', value: 2 },
+				]);
 			}));
 	});
 
@@ -591,7 +604,7 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const flattened = iter.flatMap(item => [item.value, item.value]);
+				const flattened = iter.flatMap((item) => [item.value, item.value]);
 				expect(Array.from(flattened)).toEqual([
 					'value a',
 					'value a',
@@ -612,7 +625,7 @@ describe('Ranges', () => {
 
 				const iter = db.getRange();
 				const values: string[] = [];
-				iter.forEach(item => values.push(item.value as string));
+				iter.forEach((item) => values.push(item.value as string));
 				expect(values).toEqual(['value a', 'value b', 'value c', 'value d', 'value e']);
 			}));
 	});
@@ -625,7 +638,7 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const mapped = iter.map(item => {
+				const mapped = iter.map((item) => {
 					return { ...item, value: `${item.value}!` };
 				});
 
@@ -647,14 +660,16 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const mapped = iter.map(item => {
-					if (item.value === 'value c') {
-						throw new Error('found c');
-					}
-					return { ...item, value: `${item.value}!` };
-				}).mapError(error => {
-					return new Error(`Error: ${(error as Error).message}`);
-				});
+				const mapped = iter
+					.map((item) => {
+						if (item.value === 'value c') {
+							throw new Error('found c');
+						}
+						return { ...item, value: `${item.value}!` };
+					})
+					.mapError((error) => {
+						return new Error(`Error: ${(error as Error).message}`);
+					});
 
 				expect(Array.from(mapped)).toEqual([
 					{ key: 'a', value: 'value a!' },
@@ -689,10 +704,13 @@ describe('Ranges', () => {
 
 				const iter = db.getRange();
 				const sliced = iter.slice(1, 3);
-				expect(Array.from(sliced)).toEqual([{ key: 'b', value: 'value b' }, {
-					key: 'c',
-					value: 'value c',
-				}]);
+				expect(Array.from(sliced)).toEqual([
+					{ key: 'b', value: 'value b' },
+					{
+						key: 'c',
+						value: 'value c',
+					},
+				]);
 			}));
 	});
 
@@ -734,14 +752,20 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const results = iter.map((item, index) => {
-					return { ...item, value: `${item.value}${index % 2 === 0 ? '!' : ''}` };
-				}).filter(item => item.value.endsWith('!'));
+				const results = iter
+					.map((item, index) => {
+						return { ...item, value: `${item.value}${index % 2 === 0 ? '!' : ''}` };
+					})
+					.filter((item) => item.value.endsWith('!'));
 
-				expect(Array.from(results)).toEqual([{ key: 'a', value: 'value a!' }, {
-					key: 'c',
-					value: 'value c!',
-				}, { key: 'e', value: 'value e!' }]);
+				expect(Array.from(results)).toEqual([
+					{ key: 'a', value: 'value a!' },
+					{
+						key: 'c',
+						value: 'value c!',
+					},
+					{ key: 'e', value: 'value e!' },
+				]);
 			}));
 
 		it('should map error', () =>
@@ -751,12 +775,14 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const results = iter.map((item, index) => {
-					if (index === 1) {
-						throw new Error('test');
-					}
-					return { ...item, value: `${item.value}${index % 2 === 0 ? '!' : ''}` };
-				}).mapError(error => error);
+				const results = iter
+					.map((item, index) => {
+						if (index === 1) {
+							throw new Error('test');
+						}
+						return { ...item, value: `${item.value}${index % 2 === 0 ? '!' : ''}` };
+					})
+					.mapError((error) => error);
 
 				const arr = Array.from(results);
 				expect(arr.length).toEqual(5);
@@ -794,9 +820,11 @@ describe('Ranges', () => {
 				}
 
 				const iter = db.getRange();
-				const results = iter.map(item => {
-					return { ...item, value: `${item.value}!` };
-				}).mapError(error => error);
+				const results = iter
+					.map((item) => {
+						return { ...item, value: `${item.value}!` };
+					})
+					.mapError((error) => error);
 
 				const iterator = results[Symbol.iterator]();
 				expect(iterator.return?.()).toEqual({ done: true, value: undefined });

@@ -19,15 +19,21 @@
   "experimentalSortPackageJson": true,
   "ignorePatterns": [],
   "insertFinalNewline": true,
-  "lineWidth": 100,
   "objectWrap": "preserve",
+  "overrides": [
+    {
+      "files": ["**/*.json"],
+      "options": {
+        "useTabs": false,
+        "tabWidth": 2
+      }
+    }
+  ],
   "printWidth": 100,
   "proseWrap": "preserve",
   "quoteProps": "as-needed",
   "semi": true,
-  "singleAttributePerLine": false,
   "singleQuote": true,
-  "tabWidth": 2,
-  "trailingComma": "all",
+  "trailingComma": "es5",
   "useTabs": true
 }

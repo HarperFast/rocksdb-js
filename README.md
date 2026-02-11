@@ -217,7 +217,7 @@ synchronously instead of returning a promise.
 
 ```typescript
 const result = db.get('foo');
-const value = result instanceof Promise ? (await result) : result;
+const value = result instanceof Promise ? await result : result;
 assert.equal(result, 'foo');
 ```
 
@@ -675,11 +675,11 @@ available.
 await Promise.all([
 	db.withLock('key', () => {
 		console.log('first lock blocking for 100ms');
-		return new Promise(resolve => setTimeout(resolve, 100));
+		return new Promise((resolve) => setTimeout(resolve, 100));
 	}),
 	db.withLock('key', () => {
 		console.log('second lock blocking for 100ms');
-		return new Promise(resolve => setTimeout(resolve, 100));
+		return new Promise((resolve) => setTimeout(resolve, 100));
 	}),
 	db.withLock('key', () => {
 		console.log('third lock acquired');
@@ -851,7 +851,7 @@ for (const entry of iter) {
 	console.log(entry);
 }
 
-const lastHour = Date.now() - (60 * 60 * 1000);
+const lastHour = Date.now() - 60 * 60 * 1000;
 const rangeIter = log.query({ start: lastHour, end: Date.now() });
 for (const entry of rangeIter) {
 	console.log(entry.timestamp, entry.data);

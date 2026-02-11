@@ -1,7 +1,7 @@
+import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
-import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 
 describe('Lock', () => {
 	describe('tryLock()', () => {
@@ -26,22 +26,28 @@ describe('Lock', () => {
 				expect(db.unlock('foo')).toBe(false);
 
 				let unlockCounter = 0;
-				expect(db.tryLock('foo', () => {
-					unlockCounter++;
-				})).toBe(true);
+				expect(
+					db.tryLock('foo', () => {
+						unlockCounter++;
+					})
+				).toBe(true);
 
 				const promises = [
-					new Promise<void>(resolve => {
-						expect(db.tryLock('foo', () => {
-							unlockCounter++;
-							resolve();
-						})).toBe(false);
+					new Promise<void>((resolve) => {
+						expect(
+							db.tryLock('foo', () => {
+								unlockCounter++;
+								resolve();
+							})
+						).toBe(false);
 					}),
-					new Promise<void>(resolve => {
-						expect(db.tryLock('foo', () => {
-							unlockCounter++;
-							resolve();
-						})).toBe(false);
+					new Promise<void>((resolve) => {
+						expect(
+							db.tryLock('foo', () => {
+								unlockCounter++;
+								resolve();
+							})
+						).toBe(false);
 					}),
 				];
 
@@ -56,9 +62,11 @@ describe('Lock', () => {
 		it('should lock in a lock', () =>
 			dbRunner(async ({ db }) => {
 				expect(db.tryLock('foo', () => {})).toBe(true);
-				expect(db.tryLock('foo', () => {
-					expect(db.tryLock('foo', () => {})).toBe(true);
-				})).toBe(false);
+				expect(
+					db.tryLock('foo', () => {
+						expect(db.tryLock('foo', () => {})).toBe(true);
+					})
+				).toBe(false);
 				expect(db.unlock('foo')).toBe(true);
 				await delay(100);
 				expect(db.unlock('foo')).toBe(true);
@@ -94,7 +102,7 @@ describe('Lock', () => {
 
 				await new Promise<void>((resolve, reject) => {
 					worker.on('error', reject);
-					worker.on('message', event => {
+					worker.on('message', (event) => {
 						try {
 							if (event.started) {
 								expect(event.hasLock).toBe(true);
@@ -111,25 +119,27 @@ describe('Lock', () => {
 				expect(db.hasLock('foo')).toBe(true); // main thread has lock
 
 				db.unlock('foo'); // worker should be waiting for lock
-				await new Promise<void>(resolve => onWorkerLock = resolve); // wait for worker to lock
+				await new Promise<void>((resolve) => (onWorkerLock = resolve)); // wait for worker to lock
 
-				expect(db.tryLock('foo', () => {
-					spy();
-					onWorkerUnlock();
-				})).toBe(false);
+				expect(
+					db.tryLock('foo', () => {
+						spy();
+						onWorkerUnlock();
+					})
+				).toBe(false);
 
 				worker.postMessage({ unlock: true });
-				await new Promise<void>(resolve => onWorkerUnlock = resolve); // wait for worker to unlock
+				await new Promise<void>((resolve) => (onWorkerUnlock = resolve)); // wait for worker to unlock
 
 				expect(spy).toHaveBeenCalledTimes(1);
 				expect(db.hasLock('foo')).toBe(false);
 
 				worker.postMessage({ lock: true });
-				await new Promise<void>(resolve => onWorkerLock = resolve); // wait for worker to lock
+				await new Promise<void>((resolve) => (onWorkerLock = resolve)); // wait for worker to lock
 
 				expect(db.hasLock('foo')).toBe(true); // worker has lock
 
-				await new Promise<void>(resolve => {
+				await new Promise<void>((resolve) => {
 					expect(db.tryLock('foo', () => resolve())).toBe(false);
 					worker.postMessage({ close: true });
 				});
@@ -233,7 +243,7 @@ describe('Lock', () => {
 
 				await new Promise<void>((resolve, reject) => {
 					worker.on('error', reject);
-					worker.on('message', event => {
+					worker.on('message', (event) => {
 						try {
 							if (event.started) {
 								expect(event.hasLock).toBe(true);
@@ -252,7 +262,7 @@ describe('Lock', () => {
 
 				expect(db.hasLock('foo')).toBe(true); // worker thread has lock
 
-				await new Promise<void>(resolve => onWorkerUnlock = resolve); // wait for worker to unlock
+				await new Promise<void>((resolve) => (onWorkerUnlock = resolve)); // wait for worker to unlock
 
 				// queue up 3 locks: 2 immediate, 1 delayed so the worker can
 				// sneak in and lock before the 3rd one

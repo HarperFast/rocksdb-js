@@ -1,3 +1,4 @@
+import type { Prebuild } from './get-prebuild';
 import { execFileSync, execSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -5,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream';
 import { promisify } from 'node:util';
-import type { Prebuild } from './get-prebuild';
 
 const platformMap: Record<string, string> = { win32: 'windows' };
 

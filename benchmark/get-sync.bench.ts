@@ -1,4 +1,3 @@
-import { describe } from 'vitest';
 import {
 	benchmark,
 	generateRandomKeys,
@@ -6,6 +5,7 @@ import {
 	generateTestData,
 	randomString,
 } from './setup.js';
+import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;
 
@@ -134,7 +134,7 @@ describe('getSync()', () => {
 				ctx.db.putSync(item.key, item.value);
 			}
 
-			ctx.data = data.map(item => item.key).sort(() => Math.random() - 0.5);
+			ctx.data = data.map((item) => item.key).sort(() => Math.random() - 0.5);
 		}
 
 		benchmark('rocksdb', {
