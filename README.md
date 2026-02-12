@@ -896,7 +896,6 @@ Returns an array containing that status of all active RocksDB instances.
 - `transactions: number` The count of active transactions.
 - `closables: number` The count of active database, transactions, and iterators.
 - `locks: number` The count of active locks.
-- `userSharedBuffers: number` The count of active user shared buffers.
 - `listenerCallbacks: number` The count of in-flight callbacks.
 
 ```typescript

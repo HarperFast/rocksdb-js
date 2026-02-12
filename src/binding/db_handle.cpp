@@ -5,6 +5,9 @@
 
 namespace rocksdb_js {
 
+// forward declarations
+static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
+
 /**
  * Creates a new DBHandle.
  */
@@ -65,6 +68,15 @@ void DBHandle::close() {
 	// wait for all async work to complete before closing
 	this->waitForAsyncWorkCompletion();
 
+	// clean up user shared buffers
+	std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
+	for (auto& [key, sharedData] : this->userSharedBuffers) {
+		DEBUG_LOG("%p DBHandle::close Removing user shared buffer for key:", this);
+		DEBUG_LOG_KEY_LN(key);
+		sharedData.reset();
+	}
+	this->userSharedBuffers.clear();
+
 	// decrement the reference count on the column and descriptor
 	if (this->column) {
 		this->column.reset();
@@ -87,6 +99,74 @@ void DBHandle::close() {
 	this->logRefs.clear();
 
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this);
+}
+
+/**
+ * Creates a new user shared buffer or returns an existing one.
+ *
+ * @param env The environment of the current callback.
+ * @param key The key of the user shared buffer.
+ * @param defaultBuffer The default buffer to use if the user shared buffer does
+ * not exist.
+ * @param callbackRef An optional callback reference to remove the listener when
+ * the user shared buffer is garbage collected.
+ * @returns The user shared buffer.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * const userSharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
+ * ```
+ */
+napi_value DBHandle::getUserSharedBuffer(
+	napi_env env,
+	std::string& key,
+	napi_value defaultBuffer,
+	napi_ref callbackRef
+) {
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
+	if (!isArrayBuffer) {
+		::napi_throw_error(env, nullptr, "Default buffer must be an ArrayBuffer");
+		return nullptr;
+	}
+
+	std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
+
+	auto it = this->userSharedBuffers.find(key);
+	if (it == this->userSharedBuffers.end()) {
+		// shared buffer does not exist, create it
+		void* data;
+		size_t size;
+
+		NAPI_STATUS_THROWS(::napi_get_arraybuffer_info(
+			env,
+			defaultBuffer,
+			&data,
+			&size
+		));
+
+		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
+		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+	}
+
+	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size);
+	DEBUG_LOG_KEY_LN(key);
+
+	// create finalize data that holds the key, a weak reference to this
+	// descriptor, and a shared_ptr to keep the data alive
+	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), it->second, callbackRef);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
+		env,
+		it->second->data,         // data
+		it->second->size,         // size
+		userSharedBufferFinalize, // finalize_cb
+		finalizeData,             // finalize_hint
+		&result                   // [out] result
+	));
+	return result;
 }
 
 /**
@@ -176,6 +256,49 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
 	this->logRefs.emplace(name, ref);
 
 	return instance;
+}
+
+/**
+ * Finalize callback for when the user shared ArrayBuffer is garbage collected.
+ * It removes the corresponding entry from the `userSharedBuffers` map to and
+ * calls the finalize function, which removes the event listener, if applicable.
+ */
+static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
+	DEBUG_LOG("userSharedBufferFinalize data=%p hint=%p\n", data, hint);
+	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
+
+	if (auto dbHandle = finalizeData->dbHandle.lock()) {
+		DEBUG_LOG("%p userSharedBufferFinalize for key:", dbHandle.get());
+		DEBUG_LOG_KEY(finalizeData->key);
+		DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
+
+		if (finalizeData->callbackRef) {
+			napi_value callback;
+			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
+				DEBUG_LOG("%p userSharedBufferFinalize removing listener", dbHandle.get());
+				dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
+			}
+		}
+
+		std::string key = finalizeData->key;
+
+		std::lock_guard<std::mutex> lock(dbHandle->userSharedBuffersMutex);
+		auto it = dbHandle->userSharedBuffers.find(key);
+		if (it != dbHandle->userSharedBuffers.end() && it->second == finalizeData->sharedData) {
+			// check if this shared_ptr is about to become the last reference
+			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
+			if (finalizeData->sharedData.use_count() <= 2) {
+				dbHandle->userSharedBuffers.erase(key);
+				DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key:", dbHandle.get());
+				DEBUG_LOG_KEY_LN(key);
+			}
+		}
+	} else {
+		DEBUG_LOG("userSharedBufferFinalize dbHandle was already destroyed for key:");
+		DEBUG_LOG_KEY_LN(finalizeData->key);
+	}
+
+	delete finalizeData;
 }
 
 } // namespace rocksdb_js

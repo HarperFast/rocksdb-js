@@ -272,10 +272,21 @@ void DBRegistry::PurgeAll() {
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 #ifdef DEBUG
 		size_t initialSize = instance->databases.size();
+		DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), instance->databases.size());
+		uint32_t i = 0;
 #endif
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
-			DEBUG_LOG("%p DBRegistry::PurgeAll Purging \"%s\"\n", instance.get(), it->first.c_str());
+			auto descriptor = it->second.descriptor;
+			if (descriptor) {
+				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.c_str(), descriptor.use_count());
+				descriptor->close();
+			} else {
+				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Descriptor is null\n", instance.get(), i);
+			}
 			it = instance->databases.erase(it);
+#ifdef DEBUG
+			++i;
+#endif
 		}
 #ifdef DEBUG
 		size_t currentSize = instance->databases.size();
@@ -337,9 +348,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value locks;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
-			napi_value userSharedBuffers;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->userSharedBuffers.size()), &userSharedBuffers));
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "userSharedBuffers", userSharedBuffers));
 			napi_value listenerCallbacks;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->listenerCallbacks.size()), &listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "listenerCallbacks", listenerCallbacks));

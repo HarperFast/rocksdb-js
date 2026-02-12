@@ -24,8 +24,6 @@ struct ListenerCallback;
 struct ListenerData;
 struct LockHandle;
 struct TransactionHandle;
-struct UserSharedBufferData;
-struct UserSharedBufferFinalizeData;
 
 /**
  * Custom deleter for RocksDB that calls WaitForCompact with close_db=true
@@ -111,16 +109,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
-
-	/**
-	 * Map of user shared buffers by key.
-	 */
-	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
-
-	/**
-	 * Mutex to protect the user shared buffers map.
-	 */
-	std::mutex userSharedBuffersMutex;
 
 	/**
 	 * Map of listener callbacks by key.
@@ -210,13 +198,6 @@ public:
 	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
 	uint32_t transactionGetNextId();
-
-	napi_value getUserSharedBuffer(
-		napi_env env,
-		std::string& key,
-		napi_value defaultBuffer,
-		napi_ref callbackRef = nullptr
-	);
 
 	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
 	bool notify(std::string key, ListenerData* data);
@@ -309,45 +290,6 @@ struct LockHandle final {
 	 * The environment of the current callback.
 	 */
 	napi_env env;
-};
-
-/**
- * Contains the buffer and buffer size for a user shared buffer.
- */
-struct UserSharedBufferData final {
-	UserSharedBufferData(void* sourceData, size_t size) : size(size) {
-		this->data = new char[size];
-		::memcpy(this->data, sourceData, size);
-	}
-
-	~UserSharedBufferData() {
-		delete[] this->data;
-	}
-
-	// delete copy constructor and copy assignment to prevent accidental copying
-	UserSharedBufferData(const UserSharedBufferData&) = delete;
-	UserSharedBufferData& operator=(const UserSharedBufferData&) = delete;
-
-	char* data;
-	size_t size;
-};
-
-/**
- * Finalize data for user shared buffer ArrayBuffers to clean up map entries
- * when the ArrayBuffer is garbage collected.
- */
-struct UserSharedBufferFinalizeData final {
-	UserSharedBufferFinalizeData(
-		const std::string& k,
-		std::weak_ptr<DBDescriptor> d,
-		std::shared_ptr<UserSharedBufferData> data,
-		napi_ref callbackRef = nullptr
-	) : key(k), descriptor(d), sharedData(data), callbackRef(callbackRef) {}
-
-	std::string key;
-	std::weak_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<UserSharedBufferData> sharedData;
-	napi_ref callbackRef;
 };
 
 /**
