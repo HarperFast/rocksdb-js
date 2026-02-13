@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import type { BufferWithDataView } from '../src/encoding.js';
 import { withResolvers } from '../src/util.js';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
@@ -45,10 +45,25 @@ describe('User Shared Buffer', () => {
 				expect(getNextId()).toBe(3n);
 			}));
 
+		it('should have separate buffers for each database instance', () =>
+			dbRunner({ dbOptions: [{ name: 'one' }, { name: 'two' }] }, async ({ db }, { db: db2 }) => {
+				const incrementer = new BigInt64Array(
+					db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+				);
+				incrementer[0] = 1n;
+				const incrementer2 = new BigInt64Array(
+					db2.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+				);
+				incrementer2[0] = 2n;
+
+				expect(incrementer[0]).toBe(1n);
+				expect(incrementer2[0]).toBe(2n);
+			}));
+
 		it('should notify callbacks', () =>
 			dbRunner(async ({ db }) => {
 				const sharedNumber = new Float64Array(1);
-				await new Promise<void>((resolve) => {
+				await new Promise<void>(resolve => {
 					const sharedBuffer = db.getUserSharedBuffer('with-callback', sharedNumber.buffer, {
 						callback() {
 							// wait so notify() returns true
@@ -64,14 +79,14 @@ describe('User Shared Buffer', () => {
 			() =>
 				dbRunner(async ({ db }) => {
 					const sharedNumber = new Float64Array(1);
-					let weakRef;
+					let weakRef: WeakRef<ArrayBuffer> | undefined;
 
 					const encodedKey = db.store.encodeKey('with-callback2');
 					const key = Buffer.from(
 						encodedKey.subarray(encodedKey.start, encodedKey.end)
 					) as BufferWithDataView;
 
-					await new Promise<void>((resolve) => {
+					await new Promise<void>(resolve => {
 						expect(db.listeners(key)).toBe(0);
 						const sharedBuffer = db.getUserSharedBuffer('with-callback2', sharedNumber.buffer, {
 							callback() {
@@ -91,6 +106,7 @@ describe('User Shared Buffer', () => {
 						await delay(250);
 					}
 
+					assert(weakRef);
 					expect(weakRef.deref()).toBeUndefined();
 					const listenerCount = db.listeners(key);
 					if (listenerCount > 0) {
@@ -102,59 +118,63 @@ describe('User Shared Buffer', () => {
 			20000
 		);
 
-		it('should share buffer across worker threads', () =>
-			dbRunner(async ({ db, dbPath }) => {
-				const incrementer = new BigInt64Array(
-					db.getUserSharedBuffer('next-id-worker', new BigInt64Array(1).buffer)
-				);
-				incrementer[0] = 1n;
+		it(
+			'should share buffer across worker threads with same database',
+			() =>
+				dbRunner(async ({ db, dbPath }) => {
+					const incrementer = new BigInt64Array(
+						db.getUserSharedBuffer('next-id-worker', new BigInt64Array(1).buffer)
+					);
+					incrementer[0] = 1n;
 
-				const getNextId = () => Atomics.add(incrementer, 0, 1n);
+					const getNextId = () => Atomics.add(incrementer, 0, 1n);
 
-				const worker = new Worker(
-					createWorkerBootstrapScript('./test/workers/user-shared-buffer-worker.mts'),
-					{ eval: true, workerData: { path: dbPath } }
-				);
+					const worker = new Worker(
+						createWorkerBootstrapScript('./test/workers/user-shared-buffer-worker.mts'),
+						{ eval: true, workerData: { path: dbPath } }
+					);
 
-				let resolver = withResolvers<void>();
+					let resolver = withResolvers<void>();
 
-				await new Promise<void>((resolve, reject) => {
-					worker.on('error', reject);
-					worker.on('message', event => {
-						try {
-							if (event.started) {
-								resolve();
-							} else if (event.nextId) {
-								resolver.resolve(event.nextId);
+					await new Promise<void>((resolve, reject) => {
+						worker.on('error', reject);
+						worker.on('message', event => {
+							try {
+								if (event.started) {
+									resolve();
+								} else if (event.nextId) {
+									resolver.resolve(event.nextId);
+								}
+							} catch (error) {
+								reject(error);
 							}
-						} catch (error) {
-							reject(error);
-						}
+						});
+						worker.on('exit', () => resolver.resolve());
 					});
-					worker.on('exit', () => resolver.resolve());
-				});
 
-				expect(getNextId()).toBe(1n);
-				expect(getNextId()).toBe(2n);
+					expect(getNextId()).toBe(1n);
+					expect(getNextId()).toBe(2n);
 
-				worker.postMessage({ increment: true });
-				await expect(resolver.promise).resolves.toBe(3n);
-				expect(getNextId()).toBe(4n);
+					worker.postMessage({ increment: true });
+					await expect(resolver.promise).resolves.toBe(3n);
+					expect(getNextId()).toBe(4n);
 
-				resolver = withResolvers<void>();
-				worker.postMessage({ close: true });
+					resolver = withResolvers<void>();
+					worker.postMessage({ close: true });
 
-				if (process.versions.deno) {
-					// deno doesn't emit an `exit` event when the worker quits, but
-					// `terminate()` will trigger the `exit` event
-					await delay(100);
-					worker.terminate();
-				}
+					if (process.versions.deno) {
+						// deno doesn't emit an `exit` event when the worker quits, but
+						// `terminate()` will trigger the `exit` event
+						await delay(100);
+						worker.terminate();
+					}
 
-				await resolver.promise;
+					await resolver.promise;
 
-				expect(getNextId()).toBe(5n);
-			}), 10000);
+					expect(getNextId()).toBe(5n);
+				}),
+			10000
+		);
 
 		it('should throw an error if the default buffer is not an ArrayBuffer', () =>
 			dbRunner(async ({ db }) => {

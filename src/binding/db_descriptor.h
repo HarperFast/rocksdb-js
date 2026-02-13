@@ -19,6 +19,7 @@
 namespace rocksdb_js {
 
 // forward declarations
+struct ColumnFamilyDescriptor;
 struct DBDescriptor;
 struct ListenerCallback;
 struct ListenerData;
@@ -70,7 +71,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Map of column family name to column family handle.
 	 */
-	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	/**
 	 * Map of transaction id to transaction handle.
@@ -111,16 +112,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
-
-	/**
-	 * Map of user shared buffers by key.
-	 */
-	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
-
-	/**
-	 * Mutex to protect the user shared buffers map.
-	 */
-	std::mutex userSharedBuffersMutex;
 
 	/**
 	 * Map of listener callbacks by key.
@@ -170,7 +161,7 @@ private:
 		const std::string& path,
 		const DBOptions& options,
 		std::shared_ptr<rocksdb::DB> db,
-		std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
+		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns
 	);
 
 	void discoverTransactionLogStores();
@@ -211,9 +202,20 @@ public:
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
 	uint32_t transactionGetNextId();
 
+	/**
+	 * Creates a new user shared buffer or returns an existing one.
+	 *
+	 * @param env The environment of the current callback.
+	 * @param key The key of the user shared buffer.
+	 * @param defaultBuffer The default buffer to use if the user shared buffer does
+	 * not exist.
+	 * @param callbackRef An optional callback reference to remove the listener when
+	 * the user shared buffer is garbage collected.
+	 */
 	napi_value getUserSharedBuffer(
 		napi_env env,
 		std::string& key,
+		std::shared_ptr<DBHandle> dbHandle,
 		napi_value defaultBuffer,
 		napi_ref callbackRef = nullptr
 	);
@@ -315,6 +317,16 @@ struct LockHandle final {
  * Contains the buffer and buffer size for a user shared buffer.
  */
 struct UserSharedBufferData final {
+	/**
+	 * The data of the user shared buffer.
+	 */
+	char* data;
+
+	/**
+	 * The size of the user shared buffer.
+	 */
+	size_t size;
+
 	UserSharedBufferData(void* sourceData, size_t size) : size(size) {
 		this->data = new char[size];
 		::memcpy(this->data, sourceData, size);
@@ -327,9 +339,6 @@ struct UserSharedBufferData final {
 	// delete copy constructor and copy assignment to prevent accidental copying
 	UserSharedBufferData(const UserSharedBufferData&) = delete;
 	UserSharedBufferData& operator=(const UserSharedBufferData&) = delete;
-
-	char* data;
-	size_t size;
 };
 
 /**
@@ -337,17 +346,19 @@ struct UserSharedBufferData final {
  * when the ArrayBuffer is garbage collected.
  */
 struct UserSharedBufferFinalizeData final {
+	std::string key;
+	std::weak_ptr<DBHandle> dbHandle;
+	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
+	std::weak_ptr<UserSharedBufferData> sharedData;
+	napi_ref callbackRef;
+
 	UserSharedBufferFinalizeData(
 		const std::string& k,
-		std::weak_ptr<DBDescriptor> d,
-		std::shared_ptr<UserSharedBufferData> data,
+		std::weak_ptr<DBHandle> d,
+		std::weak_ptr<ColumnFamilyDescriptor> c,
+		std::weak_ptr<UserSharedBufferData> data,
 		napi_ref callbackRef = nullptr
-	) : key(k), descriptor(d), sharedData(data), callbackRef(callbackRef) {}
-
-	std::string key;
-	std::weak_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<UserSharedBufferData> sharedData;
-	napi_ref callbackRef;
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
 };
 
 /**
@@ -388,61 +399,57 @@ struct ListenerCallback final {
 	 */
 	std::weak_ptr<DBHandle> owner;
 
-	ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef, std::weak_ptr<DBHandle> owner = {})
-		: env(env), threadsafeCallback(tsfn), callbackRef(callbackRef), owner(owner) {}
+	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<DBHandle> owner)
+		: env(env), threadsafeCallback(nullptr), callbackRef(callbackRef), owner(owner) {}
+};
 
-	// move constructor
-	ListenerCallback(ListenerCallback&& other) noexcept
-		: env(other.env), threadsafeCallback(other.threadsafeCallback), callbackRef(other.callbackRef), owner(std::move(other.owner)) {
-		other.env = nullptr;
-		other.threadsafeCallback = nullptr;
-		other.callbackRef = 0;
+/**
+ * Contains the column family handle and map of user shared buffers.
+ */
+struct ColumnFamilyDescriptor final {
+	/**
+	 * The column family handle.
+	 */
+	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+
+	/**
+	 * Map of user shared buffers by key.
+	 */
+	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
+
+	/**
+	 * Mutex to protect the user shared buffers map.
+	 */
+	std::mutex userSharedBuffersMutex;
+
+	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
+
+	~ColumnFamilyDescriptor() {
+		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor", this);
 	}
 
-	// move assignment operator
-	ListenerCallback& operator=(ListenerCallback&& other) noexcept {
-		if (this != &other) {
-			// clean up current resources first
-			this->release();
+	void releaseUserSharedBuffer(const std::string& key, std::shared_ptr<UserSharedBufferData> sharedData) {
+		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer releasing user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
+		DEBUG_LOG_KEY_LN(key);
 
-			// transfer ownership
-			env = other.env;
-			threadsafeCallback = other.threadsafeCallback;
-			callbackRef = other.callbackRef;
-			owner = std::move(other.owner);
+		std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
+		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer locked user shared buffers map (size: %ld)", this, this->userSharedBuffers.size());
+		auto iter = this->userSharedBuffers.find(key);
+		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer created iterator", this);
+		if (iter != this->userSharedBuffers.end() && iter->second == sharedData) {
+			DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer found user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
+			DEBUG_LOG_KEY_LN(key);
 
-			// invalidate source
-			other.env = nullptr;
-			other.threadsafeCallback = nullptr;
-			other.callbackRef = nullptr;
-		}
-		return *this;
-	}
-
-	// delete copy constructor and copy assignment to prevent accidental copying
-	ListenerCallback(const ListenerCallback&) = delete;
-	ListenerCallback& operator=(const ListenerCallback&) = delete;
-
-	~ListenerCallback() {
-		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p, threadsafeCallback=%p\n",
-			this, this->callbackRef, this->threadsafeCallback);
-		this->release();
-	}
-
-	void release() {
-		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p, threadsafeCallback=%p\n",
-			this, this->callbackRef, this->threadsafeCallback);
-
-		if (this->callbackRef && this->env) {
-			::napi_delete_reference(this->env, this->callbackRef);
-			this->callbackRef = nullptr;
-		}
-
-		if (this->threadsafeCallback) {
-			// don't explicitly release the threadsafe function - let Node.js
-			// clean it up when the environment shuts down to avoid crashes from
-			// pending calls
-			this->threadsafeCallback = nullptr;
+			// check if this shared_ptr is about to become the last reference
+			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
+			if (sharedData.use_count() <= 2) {
+				this->userSharedBuffers.erase(key);
+				DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer removed user shared buffer for key:", this);
+				DEBUG_LOG_KEY_LN(key);
+			}
+		} else {
+			DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer user shared buffer not found for key:", this);
+			DEBUG_LOG_KEY_LN(key);
 		}
 	}
 };
