@@ -127,15 +127,17 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 struct UserSharedBufferFinalizeData final {
 	std::string key;
 	std::weak_ptr<DBHandle> dbHandle;
+	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
 	std::weak_ptr<UserSharedBufferData> sharedData;
 	napi_ref callbackRef;
 
 	UserSharedBufferFinalizeData(
 		const std::string& k,
 		std::weak_ptr<DBHandle> d,
+		std::weak_ptr<ColumnFamilyDescriptor> c,
 		std::weak_ptr<UserSharedBufferData> data,
 		napi_ref callbackRef = nullptr
-	) : key(k), dbHandle(d), sharedData(data), callbackRef(callbackRef) {}
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
 };
 
 } // namespace rocksdb_js

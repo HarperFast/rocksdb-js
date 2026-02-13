@@ -150,10 +150,11 @@ napi_value DBHandle::getUserSharedBuffer(
 	DEBUG_LOG_KEY_LN(key);
 
 	// create finalize data that holds the key, a weak reference to this
-	// descriptor, and a shared_ptr to keep the data alive
+	// descriptor, the column descriptor, and a shared_ptr to keep the data alive
 	auto* finalizeData = new UserSharedBufferFinalizeData(
 		key,
 		weak_from_this(),
+		std::weak_ptr<ColumnFamilyDescriptor>(columnDescriptor),
 		std::weak_ptr<UserSharedBufferData>(userSharedBuffer),
 		callbackRef
 	);
@@ -283,16 +284,21 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 			}
 			finalizeData->callbackRef = nullptr;
 		}
+	} else {
+		DEBUG_LOG("userSharedBufferFinalize dbHandle was already destroyed for key:");
+		DEBUG_LOG_KEY_LN(finalizeData->key);
+	}
 
+	if (auto columnDescriptor = finalizeData->columnDescriptor.lock()) {
 		if (auto sharedData = finalizeData->sharedData.lock()) {
-			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", dbHandle.get(), dbHandle->columnDescriptor->column.get());
+			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", columnDescriptor.get(), columnDescriptor->column.get());
 			DEBUG_LOG_KEY(finalizeData->key);
 			DEBUG_LOG_MSG(" (use_count: %ld)\n", sharedData ? sharedData.use_count() : 0);
-			dbHandle->columnDescriptor->releaseUserSharedBuffer(finalizeData->key, sharedData);
+			columnDescriptor->releaseUserSharedBuffer(finalizeData->key, sharedData);
 			finalizeData->sharedData.reset();
 		}
 	} else {
-		DEBUG_LOG("userSharedBufferFinalize dbHandle was already destroyed for key:");
+		DEBUG_LOG("userSharedBufferFinalize columnDescriptor was already destroyed for key:");
 		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 
