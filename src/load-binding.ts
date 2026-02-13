@@ -193,7 +193,8 @@ function locateBinding(): string {
 					);
 			}
 			try {
-				isMusl = isMusl || execSync('ldd --version', { encoding: 'utf8', stdio: 'pipe' }).includes('musl');
+				isMusl = isMusl ||
+					execSync('ldd --version', { encoding: 'utf8', stdio: 'pipe' }).includes('musl');
 			} catch {
 				// ldd may not exist on some systems such as Docker Hardened Images
 			}
