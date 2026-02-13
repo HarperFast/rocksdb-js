@@ -839,10 +839,10 @@ describe('Transaction Log', () => {
 						log.addEntry(Buffer.alloc(10, 'a'), txn.id);
 					});
 
-					await delay(200);
+					await delay(250);
 
-					// we should be in the second half of the retention period and
-					// trigger a new file rotation
+					// File should now be 250ms old, exceeding the rotation threshold of
+					// 200ms (2000ms retention × (1 - 0.9 threshold) = 200ms)
 					await db.transaction(async (txn) => {
 						log.addEntry(Buffer.alloc(10, 'a'), txn.id);
 					});

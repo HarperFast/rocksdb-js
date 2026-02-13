@@ -12,7 +12,7 @@ describe('Shutdown', () => {
 			expect(db2.isOpen()).toBe(true);
 			let status = registryStatus();
 			expect(status.length).toBe(1);
-			expect(status[0].columnFamilies.length).toBe(2);
+			expect(Object.keys(status[0].columnFamilies).length).toBe(2);
 			shutdown();
 			expect(db.isOpen()).toBe(false);
 			expect(db2.isOpen()).toBe(false);
@@ -25,7 +25,7 @@ describe('Shutdown', () => {
 			expect(db.isOpen()).toBe(true);
 			let status = registryStatus();
 			expect(status.length).toBe(1);
-			expect(status[0].columnFamilies.length).toBe(1);
+			expect(Object.keys(status[0].columnFamilies).length).toBe(1);
 			shutdown();
 			expect(db.isOpen()).toBe(false);
 			status = registryStatus();

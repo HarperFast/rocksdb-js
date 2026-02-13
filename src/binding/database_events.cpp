@@ -20,7 +20,7 @@ napi_value Database::AddListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	(*dbHandle)->addListener(env, key, argv[1]);
+	(*dbHandle)->descriptor->addListener(env, key, argv[1], *dbHandle);
 	NAPI_RETURN_UNDEFINED();
 }
 

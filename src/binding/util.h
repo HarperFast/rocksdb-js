@@ -47,7 +47,7 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
-void debugLog(const bool showThreadId, const char* msg, ...);
+void debugLog(const bool showTimestamp, const char* msg, ...);
 
 void debugLogNapiValue(napi_env env, napi_value value, uint16_t indent = 0, bool isObject = false);
 

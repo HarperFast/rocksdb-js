@@ -29,10 +29,10 @@ struct DBRegistryEntry final {
 
 struct DBHandleParams final {
 	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
 
-	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<rocksdb::ColumnFamilyHandle> column)
-		: descriptor(std::move(descriptor)), column(std::move(column)) {}
+	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor)
+		: descriptor(std::move(descriptor)), columnDescriptor(std::move(columnDescriptor)) {}
 };
 
 /**

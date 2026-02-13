@@ -20,7 +20,7 @@ DBIteratorHandle::DBIteratorHandle(
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
 		dbHandle->descriptor->db->NewIterator(
 			options.readOptions,
-			dbHandle->column.get()
+			dbHandle->getColumnFamilyHandle()
 		)
 	);
 
@@ -43,7 +43,7 @@ DBIteratorHandle::DBIteratorHandle(
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
 		txnHandle->txn->GetIterator(
 			options.readOptions,
-			txnHandle->dbHandle->column.get()
+			txnHandle->dbHandle->getColumnFamilyHandle()
 		)
 	);
 
@@ -64,7 +64,8 @@ void DBIteratorHandle::close() {
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {
 	if (options.startKeyStr != nullptr) {
-		this->startKey = rocksdb::Slice(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
+		this->startKeyStr = std::string(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
+		this->startKey = rocksdb::Slice(this->startKeyStr);
 		options.readOptions.iterate_lower_bound = &this->startKey;
 
 		DEBUG_LOG("%p DBIteratorHandle::init Start key:", this);

@@ -8,7 +8,6 @@ namespace rocksdb_js {
 
 // forward declarations
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
-static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
 
 struct JobTracker final {
 	int columnFamilyCount = 0;
@@ -113,7 +112,7 @@ DBDescriptor::DBDescriptor(
 	const std::string& path,
 	const DBOptions& options,
 	std::shared_ptr<rocksdb::DB> db,
-	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>&& columns
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns
 ):
 	path(path),
 	mode(options.mode),
@@ -529,7 +528,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
 	std::shared_ptr<rocksdb::DB> db;
-	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	if (options.mode == DBMode::Pessimistic) {
 		rocksdb::TransactionDBOptions txndbOptions;
@@ -560,13 +559,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// figure out if desired column family exists and if not create it
 	bool columnExists = false;
 	for (size_t n = 0; n < cfHandles.size(); ++n) {
-		columns[cfDescriptors[n].name] = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
+		auto column = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
+		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+		columns[cfDescriptors[n].name] = columnDescriptor;
 		if (cfDescriptors[n].name == options.name) {
 			columnExists = true;
 		}
 	}
 	if (!columnExists) {
-		columns[options.name] = rocksdb_js::createRocksDBColumnFamily(db, options.name);
+		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name);
+		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+		columns[options.name] = columnDescriptor;
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
@@ -721,7 +724,7 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
 		do { \
 			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
-			rocksdb_js::debugLog("callJsCallback() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
+			rocksdb_js::debugLog(true, "callJsCallback() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
 		} while (0)
 #else
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
@@ -1020,64 +1023,50 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
  * It removes the corresponding entry from the `userSharedBuffers` map to and
  * calls the finalize function, which removes the event listener, if applicable.
  */
-static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
+static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
 
-	if (auto descriptor = finalizeData->descriptor.lock()) {
-		DEBUG_LOG("%p userSharedBufferFinalize for key:", descriptor.get());
-		DEBUG_LOG_KEY(finalizeData->key);
-		DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
-
+	if (auto dbHandle = finalizeData->dbHandle.lock()) {
+		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle=%p\n", dbHandle.get());
 		if (finalizeData->callbackRef) {
 			napi_value callback;
 			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
-				DEBUG_LOG("%p userSharedBufferFinalize removing listener", descriptor.get());
-				descriptor->removeListener(env, finalizeData->key, callback);
+				DEBUG_LOG("%p userSharedBufferFinalize removing listener for key:", dbHandle.get());
+				DEBUG_LOG_KEY_LN(finalizeData->key);
+				if (dbHandle->descriptor) {
+					DEBUG_LOG("%p userSharedBufferFinalize descriptor is still alive %p", dbHandle.get(), dbHandle->descriptor.get());
+					dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
+				} else {
+					DEBUG_LOG("%p userSharedBufferFinalize descriptor is not alive %p", dbHandle.get(), dbHandle->descriptor.get());
+				}
 			}
-		}
-
-		std::string key = finalizeData->key;
-		std::weak_ptr<DBDescriptor> weakDesc = descriptor;
-
-		std::lock_guard<std::mutex> lock(descriptor->userSharedBuffersMutex);
-		auto it = descriptor->userSharedBuffers.find(key);
-		if (it != descriptor->userSharedBuffers.end() && it->second == finalizeData->sharedData) {
-			// check if this shared_ptr is about to become the last reference
-			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
-			if (finalizeData->sharedData.use_count() <= 2) {
-				descriptor->userSharedBuffers.erase(key);
-				DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key:", descriptor.get());
-				DEBUG_LOG_KEY_LN(key);
-			}
+			finalizeData->callbackRef = nullptr;
 		}
 	} else {
-		DEBUG_LOG("userSharedBufferFinalize descriptor was already destroyed for key:");
+		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle was already destroyed for key:");
+		DEBUG_LOG_KEY_LN(finalizeData->key);
+	}
+
+	if (auto columnDescriptor = finalizeData->columnDescriptor.lock()) {
+		if (auto sharedData = finalizeData->sharedData.lock()) {
+			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", columnDescriptor.get(), columnDescriptor->column.get());
+			DEBUG_LOG_KEY(finalizeData->key);
+			DEBUG_LOG_MSG(" (use_count: %ld)\n", sharedData ? sharedData.use_count() : 0);
+			columnDescriptor->releaseUserSharedBuffer(finalizeData->key, sharedData);
+			finalizeData->sharedData.reset();
+		}
+	} else {
+		DEBUG_LOG("userSharedBufferFinalize columnDescriptor was already destroyed for key:");
 		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 
 	delete finalizeData;
 }
 
-/**
- * Creates a new user shared buffer or returns an existing one.
- *
- * @param env The environment of the current callback.
- * @param key The key of the user shared buffer.
- * @param defaultBuffer The default buffer to use if the user shared buffer does
- * not exist.
- * @param callbackRef An optional callback reference to remove the listener when
- * the user shared buffer is garbage collected.
- * @returns The user shared buffer.
- *
- * @example
- * ```typescript
- * const db = new NativeDatabase();
- * const userSharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(10));
- * ```
- */
 napi_value DBDescriptor::getUserSharedBuffer(
 	napi_env env,
 	std::string& key,
+	std::shared_ptr<DBHandle> dbHandle,
 	napi_value defaultBuffer,
 	napi_ref callbackRef
 ) {
@@ -1088,10 +1077,10 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		return nullptr;
 	}
 
-	std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
+	std::lock_guard<std::mutex> lock(dbHandle->columnDescriptor->userSharedBuffersMutex);
 
-	auto it = this->userSharedBuffers.find(key);
-	if (it == this->userSharedBuffers.end()) {
+	auto userSharedBufferIter = dbHandle->columnDescriptor->userSharedBuffers.find(key);
+	if (userSharedBufferIter == dbHandle->columnDescriptor->userSharedBuffers.end()) {
 		// shared buffer does not exist, create it
 		void* data;
 		size_t size;
@@ -1103,22 +1092,32 @@ napi_value DBDescriptor::getUserSharedBuffer(
 			&size
 		));
 
-		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
-		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+		DEBUG_LOG("%p DBHandle::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
+		userSharedBufferIter = dbHandle->columnDescriptor->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+	} else {
+		DEBUG_LOG("%p DBHandle::getUserSharedBuffer User shared buffer already initialized for key:", this);
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size);
+	auto userSharedBuffer = userSharedBufferIter->second;
+
+	DEBUG_LOG("%p DBHandle::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, userSharedBuffer->size);
 	DEBUG_LOG_KEY_LN(key);
 
 	// create finalize data that holds the key, a weak reference to this
-	// descriptor, and a shared_ptr to keep the data alive
-	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), it->second, callbackRef);
+	// descriptor, the column descriptor, and a shared_ptr to keep the data alive
+	auto* finalizeData = new UserSharedBufferFinalizeData(
+		key,
+		std::weak_ptr<DBHandle>(dbHandle),
+		std::weak_ptr<ColumnFamilyDescriptor>(dbHandle->columnDescriptor),
+		std::weak_ptr<UserSharedBufferData>(userSharedBuffer),
+		callbackRef
+	);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
 		env,
-		it->second->data,         // data
-		it->second->size,         // size
+		userSharedBuffer->data,   // data
+		userSharedBuffer->size,   // size
 		userSharedBufferFinalize, // finalize_cb
 		finalizeData,             // finalize_hint
 		&result                   // [out] result
@@ -1144,7 +1143,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
  * Custom wrapper used by `napi_call_threadsafe_function()` to call user-
  * defined event listener callback functions.
  */
-static void callListenerCallback(napi_env env, napi_value jsCallback, void* context, void* data) {
+static void callListenerCallback(napi_env env, napi_value jsCallback, void* unusedContext, void* data) {
 	if (env == nullptr || jsCallback == nullptr) {
 		return;
 	}
@@ -1157,30 +1156,47 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* cont
 	NAPI_STATUS_THROWS_FREE_DATA(::napi_get_global(env, &global));
 
 	if (listenerData != nullptr) {
-		// only deserialize the emitted data if it exists
-		napi_value json;
-		napi_value parse;
-		napi_value jsonString;
-		napi_value arrayArgs;
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, global, "JSON", &json));
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, json, "parse", &parse));
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_create_string_utf8(env, listenerData->args.c_str(), listenerData->args.length(), &jsonString));;
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, json, parse, 1, &jsonString, &arrayArgs));
-		NAPI_STATUS_THROWS_FREE_DATA(::napi_get_array_length(env, arrayArgs, &argc));
+		DEBUG_LOG("callListenerCallback deserializing listenerData (listenerData=%p)\n", listenerData);
 
-		// need to convert from a js array to an array of napi values
-		argv = new napi_value[argc];
-		for (uint32_t i = 0; i < argc; i++) {
-			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_element(env, arrayArgs, i, &argv[i]));
+		// only deserialize the emitted data if it exists and is not empty
+		if (!listenerData->args.empty()) {
+			napi_value json;
+			napi_value parse;
+			napi_value jsonString;
+			napi_value arrayArgs;
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, global, "JSON", &json));
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_named_property(env, json, "parse", &parse));
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_create_string_utf8(env, listenerData->args.c_str(), listenerData->args.length(), &jsonString));;
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, json, parse, 1, &jsonString, &arrayArgs));
+			NAPI_STATUS_THROWS_FREE_DATA(::napi_get_array_length(env, arrayArgs, &argc));
+
+			// need to convert from a js array to an array of napi values
+			argv = new napi_value[argc];
+			for (uint32_t i = 0; i < argc; i++) {
+				NAPI_STATUS_THROWS_FREE_DATA(::napi_get_element(env, arrayArgs, i, &argv[i]));
+			}
+		} else {
+			DEBUG_LOG("callListenerCallback listenerData has empty args\n");
 		}
 
 		delete listenerData;
 		listenerData = nullptr;
+	} else {
+		DEBUG_LOG("callListenerCallback listenerData is nullptr\n");
 	}
 
 	// call the listener
 	napi_value result;
-	NAPI_STATUS_THROWS_FREE_DATA(::napi_call_function(env, global, jsCallback, argc, argv, &result));
+	DEBUG_LOG("callListenerCallback calling listener callback\n");
+	napi_status status = ::napi_call_function(env, global, jsCallback, argc, argv, &result);
+	if (status != napi_ok) {
+		DEBUG_LOG("callListenerCallback failed to call listener callback (status=%d)\n", status);
+		std::string errorStr = rocksdb_js::getNapiExtendedError(env, status);
+		DEBUG_LOG("callListenerCallback error: %s\n", errorStr.c_str());
+		::napi_throw_error(env, nullptr, errorStr.c_str());
+	} else {
+		DEBUG_LOG("callListenerCallback called listener callback successfully!\n");
+	}
 }
 
 /**
@@ -1211,32 +1227,40 @@ napi_ref DBDescriptor::addListener(
 		&resource_name
 	));
 
-	napi_threadsafe_function threadsafeCallback;
-	NAPI_STATUS_THROWS(::napi_create_threadsafe_function(
-		env,                  // env
-		callback,             // func
-		nullptr,              // async_resource
-		resource_name,        // async_resource_name
-		0,                    // max_queue_size
-		1,                    // initial_thread_count
-		nullptr,              // thread_finalize_data
-		nullptr,              // thread_finalize_callback
-		nullptr,              // context
-		callListenerCallback, // call_js_cb
-		&threadsafeCallback   // [out] callback
-	));
+	napi_ref callbackRef;
+	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef));
 
-	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, threadsafeCallback));
+	auto listenerCallback = std::make_shared<ListenerCallback>(env, callbackRef, owner);
+
+	napi_status status = ::napi_create_threadsafe_function(
+		env,                    // env
+		callback,               // func
+		nullptr,                // async_resource
+		resource_name,          // async_resource_name
+		0,                      // max_queue_size
+		1,                      // initial_thread_count
+		nullptr,                // thread_finalize_data
+		nullptr,                // thread_finalize_callback
+		nullptr,                // context
+		callListenerCallback,   // call_js_cb
+		&listenerCallback->threadsafeCallback // [out] callback
+	);
+
+	if (status != napi_ok) {
+		DEBUG_LOG("%p DBDescriptor::addListener failed to create threadsafe function (status=%d)\n", this, status);
+		napi_status status = ::napi_delete_reference(env, callbackRef);
+		if (status != napi_ok) {
+			DEBUG_LOG("%p DBDescriptor::addListener failed to delete reference (status=%d)\n", this, status);
+		}
+		return nullptr;
+	}
 
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
 	if (it == this->listenerCallbacks.end()) {
 		it = this->listenerCallbacks.emplace(key, std::vector<std::shared_ptr<ListenerCallback>>()).first;
 	}
-
-	napi_ref callbackRef;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef));
-	it->second.emplace_back(std::make_shared<ListenerCallback>(env, threadsafeCallback, callbackRef, owner));
+	it->second.push_back(listenerCallback);
 
 	DEBUG_LOG("%p DBDescriptor::addListener added listener for key:", this);
 	DEBUG_LOG_KEY(key);
@@ -1264,12 +1288,11 @@ napi_ref DBDescriptor::addListener(
  * ```
  */
 bool DBDescriptor::notify(std::string key, ListenerData* data) {
-	std::vector<std::weak_ptr<ListenerCallback>> listenersToCall;
-
+	// copy the listeners to avoid holding the mutex during callback execution
+	std::vector<std::shared_ptr<ListenerCallback>> listenersToCall;
 	{
 		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 		auto it = this->listenerCallbacks.find(key);
-
 		if (it == this->listenerCallbacks.end()) {
 			// clean up the original data since we made copies
 			if (data) {
@@ -1282,23 +1305,39 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 			return false;
 		}
 
-		// copy weak pointers to avoid holding the mutex during callback execution
 		listenersToCall.reserve(it->second.size());
 		for (auto& listener : it->second) {
-			listenersToCall.push_back(std::weak_ptr<ListenerCallback>(listener));
+			listenersToCall.push_back(listener);
 		}
-
-		DEBUG_LOG("%p DBDescriptor::notify calling %zu listener%s for key:",
-			this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
-		DEBUG_LOG_KEY_LN(key);
 	}
 
-	for (auto& weakListener : listenersToCall) {
-		if (auto listener = weakListener.lock()) {
-			// create a separate copy of data for each listener to avoid double-delete
-			ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
-			if (listener->threadsafeCallback) {
-				::napi_call_threadsafe_function(listener->threadsafeCallback, listenerData, napi_tsfn_blocking);
+	DEBUG_LOG("%p DBDescriptor::notify calling %zu listener%s for key:",
+		this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
+	DEBUG_LOG_KEY_LN(key);
+
+	for (auto& listener : listenersToCall) {
+		// create a separate copy of data for each listener to avoid double-delete
+		ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
+		if (listener->threadsafeCallback) {
+			DEBUG_LOG("%p DBDescriptor::notify calling threadsafeCallback for key:", this);
+			DEBUG_LOG_KEY_LN(key);
+
+			// Acquire a ref to keep the callback alive during this call
+			napi_status status = ::napi_call_threadsafe_function(listener->threadsafeCallback, listenerData, napi_tsfn_blocking);
+			if (status != napi_ok) {
+				DEBUG_LOG("%p DBDescriptor::notify failed to call threadsafeCallback (status=%d)\n", this, status);
+				if (listenerData) {
+					delete listenerData;
+				}
+			} else {
+				DEBUG_LOG("%p DBDescriptor::notify called threadsafeCallback for key successfully!", this);
+				DEBUG_LOG_KEY_LN(key);
+			}
+		} else {
+			DEBUG_LOG("%p DBDescriptor::notify threadsafeCallback is null for key:", this);
+			DEBUG_LOG_KEY_LN(key);
+			if (listenerData) {
+				delete listenerData;
 			}
 		}
 	}
@@ -1307,6 +1346,9 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 	if (data) {
 		delete data;
 	}
+
+	DEBUG_LOG("%p DBDescriptor::notify finished calling %zu listener%s for key:", this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
+	DEBUG_LOG_KEY_LN(key);
 
 	return true;
 }
@@ -1366,6 +1408,35 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 			bool isEqual = false;
 			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual));
 			if (isEqual) {
+				// release the threadsafe callback
+				if ((*listener)->threadsafeCallback) {
+					DEBUG_LOG("%p DBDescriptor::removeListener deleting threadsafe callback for key:", this);
+					DEBUG_LOG_KEY_LN(key);
+					napi_status status = ::napi_release_threadsafe_function((*listener)->threadsafeCallback, napi_tsfn_release);
+					(*listener)->threadsafeCallback = nullptr;
+					if (status != napi_ok) {
+						DEBUG_LOG("%p DBDescriptor::notify failed to release threadsafeCallback (status=%d)\n", this, status);
+					} else {
+						DEBUG_LOG("%p DBDescriptor::notify released threadsafeCallback for key successfully!", this);
+						DEBUG_LOG_KEY_LN(key);
+					}
+					(*listener)->threadsafeCallback = nullptr;
+				} else {
+					DEBUG_LOG("%p DBDescriptor::removeListener threadsafeCallback is null for key:", this);
+					DEBUG_LOG_KEY_LN(key);
+				}
+
+				// delete the callback reference
+				napi_status status = ::napi_delete_reference((*listener)->env, (*listener)->callbackRef);
+				if (status != napi_ok) {
+					DEBUG_LOG("%p DBDescriptor::removeListener failed to delete callback reference (status=%d) for key:", this, status);
+					DEBUG_LOG_KEY_LN(key);
+				} else {
+					DEBUG_LOG("%p DBDescriptor::removeListener deleted callback reference for key:", this);
+					DEBUG_LOG_KEY_LN(key);
+				}
+
+				// remove the listener from the list
 				listener = it->second.erase(listener);
 				DEBUG_LOG("%p DBDescriptor::removeListener removed listener for key:", this);
 				DEBUG_LOG_KEY(key);
@@ -1378,12 +1449,12 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 		}
 
 		if (it->second.empty()) {
-			DEBUG_LOG("%p DBDescriptor::removeListener All listeners removed, removing key:", this);
+			DEBUG_LOG("%p DBDescriptor::removeListener all listeners removed and removing key:", this);
 			DEBUG_LOG_KEY_LN(key);
 			this->listenerCallbacks.erase(it);
 		}
 	} else {
-		DEBUG_LOG("%p DBDescriptor::removeListener No listeners found for key:", this);
+		DEBUG_LOG("%p DBDescriptor::removeListener no listeners found for key:", this);
 		DEBUG_LOG_KEY_LN(key);
 	}
 
@@ -1408,11 +1479,12 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 		// remove listeners owned by this handle
 		listeners.erase(
 			std::remove_if(listeners.begin(), listeners.end(),
-				[owner](const std::shared_ptr<ListenerCallback>& callback) {
+				[this, owner](const std::shared_ptr<ListenerCallback>& callback) {
+					(void)this; // suppress unused warning for release builds
 					auto sharedOwner = callback->owner.lock();
 					bool shouldRemove = (sharedOwner.get() == owner) || callback->owner.expired();
 					if (shouldRemove) {
-						DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener", owner);
+						DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener for owner %p\n", this, owner);
 						// note: can't safely log key here as we're in iterator
 					}
 					return shouldRemove;
@@ -1566,8 +1638,8 @@ rocksdb::Status DBDescriptor::flush() {
 	// Convert columns map to vector of ColumnFamilyHandle*
 	std::vector<rocksdb::ColumnFamilyHandle*> columnHandles;
 	columnHandles.reserve(this->columns.size());
-	for (const auto& [name, handle] : this->columns) {
-		columnHandles.push_back(handle.get());
+	for (const auto& [name, columnDescriptor] : this->columns) {
+		columnHandles.push_back(columnDescriptor->column.get());
 	}
 	// Perform flush
 	rocksdb::FlushOptions flushOptions;

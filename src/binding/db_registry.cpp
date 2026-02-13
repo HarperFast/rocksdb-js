@@ -180,7 +180,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Using registry\n", instance.get());
 
-	std::unordered_map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> columns;
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
@@ -228,17 +228,19 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 		// manually copy the columns because we don't know which ones are valid
 		bool columnExists = false;
-		for (auto& column : entry.descriptor->columns) {
-			columns[column.first] = column.second;
-			if (column.first == name) {
+		for (auto& it : entry.descriptor->columns) {
+			columns[it.first] = it.second;
+			if (it.first == name) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" already exists\n", instance.get(), name.c_str());
 				columnExists = true;
 			}
 		}
 		if (!columnExists) {
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
-			columns[name] = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);
-			entry.descriptor->columns[name] = columns[name];
+			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);
+			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+			columns[name] = columnDescriptor;
+			entry.descriptor->columns[name] = columnDescriptor;
 		}
 	} else {
 		entry.descriptor = DBDescriptor::open(path, options);	// store the descriptor in the existing entry
@@ -247,19 +249,19 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	}
 
 	// handle the column family
-	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
 	auto colIterator = columns.find(name);
 	if (colIterator != columns.end()) {
 		// column family already exists
 		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" found\n", instance.get(), name.c_str());
-		column = colIterator->second;
+		columnDescriptor = colIterator->second;
 	} else {
 		// use the default column family
 		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" not found, using \"default\"\n", instance.get(), name.c_str());
-		column = columns[rocksdb::kDefaultColumnFamilyName];
+		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(entry.descriptor, column);
+	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(entry.descriptor, columnDescriptor);
 	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandleParams %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
 	return handle;
 }
@@ -272,10 +274,19 @@ void DBRegistry::PurgeAll() {
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 #ifdef DEBUG
 		size_t initialSize = instance->databases.size();
+		DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), instance->databases.size());
+		uint32_t i = 0;
 #endif
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
-			DEBUG_LOG("%p DBRegistry::PurgeAll Purging \"%s\"\n", instance.get(), it->first.c_str());
+			auto descriptor = it->second.descriptor;
+			if (descriptor) {
+				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.c_str(), descriptor.use_count());
+				descriptor->close();
+			}
 			it = instance->databases.erase(it);
+#ifdef DEBUG
+			++i;
+#endif
 		}
 #ifdef DEBUG
 		size_t currentSize = instance->databases.size();
@@ -319,13 +330,16 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor.use_count()), &refCount));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
 			napi_value columnFamilies;
-			NAPI_STATUS_THROWS(::napi_create_array(env, &columnFamilies));
-			size_t j = 0;
-			for (auto& [name, column] : entry.descriptor->columns) {
-				napi_value nameValue;
-				NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &nameValue));
-				NAPI_STATUS_THROWS(::napi_set_element(env, columnFamilies, j, nameValue));
-				j++;
+			NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
+			for (auto& [name, columnDescriptor] : entry.descriptor->columns) {
+				napi_value columnDescriptorValue;
+				NAPI_STATUS_THROWS(::napi_create_object(env, &columnDescriptorValue));
+
+				napi_value userSharedBuffers;
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size()), &userSharedBuffers));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnDescriptorValue, "userSharedBuffers", userSharedBuffers));
+
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, name.c_str(), columnDescriptorValue));
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
 			napi_value transactions;
@@ -337,9 +351,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value locks;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
-			napi_value userSharedBuffers;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->userSharedBuffers.size()), &userSharedBuffers));
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "userSharedBuffers", userSharedBuffers));
 			napi_value listenerCallbacks;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->listenerCallbacks.size()), &listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "listenerCallbacks", listenerCallbacks));

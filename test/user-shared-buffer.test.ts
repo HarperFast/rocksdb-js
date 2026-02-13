@@ -3,7 +3,7 @@ import { withResolvers } from '../src/util.js';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -45,6 +45,21 @@ describe('User Shared Buffer', () => {
 				expect(getNextId()).toBe(3n);
 			}));
 
+		it('should have separate buffers for each database instance', () =>
+			dbRunner({ dbOptions: [{ name: 'one' }, { name: 'two' }] }, async ({ db }, { db: db2 }) => {
+				const incrementer = new BigInt64Array(
+					db.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+				);
+				incrementer[0] = 1n;
+				const incrementer2 = new BigInt64Array(
+					db2.getUserSharedBuffer('next-id', new BigInt64Array(1).buffer)
+				);
+				incrementer2[0] = 2n;
+
+				expect(incrementer[0]).toBe(1n);
+				expect(incrementer2[0]).toBe(2n);
+			}));
+
 		it('should notify callbacks', () =>
 			dbRunner(async ({ db }) => {
 				const sharedNumber = new Float64Array(1);
@@ -64,7 +79,7 @@ describe('User Shared Buffer', () => {
 			() =>
 				dbRunner(async ({ db }) => {
 					const sharedNumber = new Float64Array(1);
-					let weakRef;
+					let weakRef: WeakRef<ArrayBuffer> | undefined;
 
 					const encodedKey = db.store.encodeKey('with-callback2');
 					const key = Buffer.from(
@@ -91,6 +106,7 @@ describe('User Shared Buffer', () => {
 						await delay(250);
 					}
 
+					assert(weakRef);
 					expect(weakRef.deref()).toBeUndefined();
 					const listenerCount = db.listeners(key);
 					if (listenerCount > 0) {
@@ -103,7 +119,7 @@ describe('User Shared Buffer', () => {
 		);
 
 		it(
-			'should share buffer across worker threads',
+			'should share buffer across worker threads with same database',
 			() =>
 				dbRunner(async ({ db, dbPath }) => {
 					const incrementer = new BigInt64Array(

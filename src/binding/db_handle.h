@@ -7,6 +7,7 @@
 #include <string>
 #include <node_api.h>
 #include "rocksdb/db.h"
+#include "db_descriptor.h"
 #include "db_options.h"
 #include "transaction_log_store.h"
 #include "util.h"
@@ -14,6 +15,7 @@
 namespace rocksdb_js {
 
 // forward declarations
+struct ColumnFamilyDescriptor;
 struct DBDescriptor;
 
 /**
@@ -30,9 +32,9 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::shared_ptr<DBDescriptor> descriptor;
 
 	/**
-	 * The RocksDB column family handle.
+	 * The RocksDB column family descriptor.
 	 */
-	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
 
 	/**
 	 * The path of the database.
@@ -71,6 +73,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	char* defaultValueBufferPtr = nullptr;
 	size_t defaultValueBufferLength = 0;
+
 	/**
 	 * The shared default key buffer and its length.
 	 */
@@ -80,7 +83,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	DBHandle(napi_env env, napi_ref exportsRef);
 	~DBHandle();
 
-	napi_ref addListener(napi_env env, std::string key, napi_value callback);
 	rocksdb::Status clear();
 	void close();
 	napi_value get(
@@ -90,6 +92,10 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 		napi_value reject,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
+
+	rocksdb::ColumnFamilyHandle* getColumnFamilyHandle() const;
+	std::string getColumnFamilyName() const;
+
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
 	void unrefLog(const std::string& name);

@@ -20,17 +20,6 @@ DBHandle::~DBHandle() {
 }
 
 /**
- * Adds an listener to the database descriptor.
- *
- * @param env The environment of the current callback.
- * @param key The key.
- * @param callback The callback to call when the event is emitted.
- */
-napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
-	return this->descriptor->addListener(env, key, callback, weak_from_this());
-}
-
-/**
  * Clears all data in the database's column family.
  */
 rocksdb::Status DBHandle::clear() {
@@ -42,7 +31,7 @@ rocksdb::Status DBHandle::clear() {
 	// compact the database to reclaim space
 	rocksdb::Status status = this->descriptor->db->CompactRange(
 		rocksdb::CompactRangeOptions(),
-		this->column.get(),
+		this->columnDescriptor->column.get(),
 		nullptr,
 		nullptr
 	);
@@ -50,7 +39,7 @@ rocksdb::Status DBHandle::clear() {
 		return status;
 	}
 	// it appears we do not need to call WaitForCompact for this to work
-	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->column.get(), nullptr, nullptr);
+	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr);
 }
 
 /**
@@ -66,8 +55,8 @@ void DBHandle::close() {
 	this->waitForAsyncWorkCompletion();
 
 	// decrement the reference count on the column and descriptor
-	if (this->column) {
-		this->column.reset();
+	if (this->columnDescriptor) {
+		this->columnDescriptor.reset();
 	}
 
 	if (this->descriptor) {
@@ -89,6 +78,14 @@ void DBHandle::close() {
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this);
 }
 
+rocksdb::ColumnFamilyHandle* DBHandle::getColumnFamilyHandle() const {
+	return this->columnDescriptor->column.get();
+}
+
+std::string DBHandle::getColumnFamilyName() const {
+	return this->columnDescriptor->column->GetName();
+}
+
 /**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties
  * to this DBHandle.
@@ -98,7 +95,7 @@ void DBHandle::close() {
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handleParams = DBRegistry::OpenDB(path, options);
-	this->column = std::move(handleParams->column);
+	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
 	this->path = path;
