@@ -7,6 +7,7 @@
 #include <string>
 #include <node_api.h>
 #include "rocksdb/db.h"
+#include "db_descriptor.h"
 #include "db_options.h"
 #include "transaction_log_store.h"
 #include "util.h"
@@ -14,6 +15,7 @@
 namespace rocksdb_js {
 
 // forward declarations
+struct ColumnFamilyDescriptor;
 struct DBDescriptor;
 struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
@@ -32,9 +34,9 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::shared_ptr<DBDescriptor> descriptor;
 
 	/**
-	 * The RocksDB column family handle.
+	 * The RocksDB column family descriptor.
 	 */
-	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
 
 	/**
 	 * The path of the database.
@@ -80,16 +82,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	char* defaultKeyBufferPtr = nullptr;
 	size_t defaultKeyBufferLength = 0;
 
-	/**
-	 * Map of user shared buffers by key.
-	 */
-	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
-
-	/**
-	 * Mutex to protect the user shared buffers map.
-	 */
-	std::mutex userSharedBuffersMutex;
-
 	DBHandle(napi_env env, napi_ref exportsRef);
 	~DBHandle();
 
@@ -102,6 +94,8 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 		napi_value reject,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
+
+	rocksdb::ColumnFamilyHandle* getRocksDBColumnFamilyHandle() const;
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
@@ -127,42 +121,21 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 };
 
 /**
- * Contains the buffer and buffer size for a user shared buffer.
- */
-struct UserSharedBufferData final {
-	UserSharedBufferData(void* sourceData, size_t size) : size(size) {
-		this->data = new char[size];
-		::memcpy(this->data, sourceData, size);
-	}
-
-	~UserSharedBufferData() {
-		delete[] this->data;
-	}
-
-	// delete copy constructor and copy assignment to prevent accidental copying
-	UserSharedBufferData(const UserSharedBufferData&) = delete;
-	UserSharedBufferData& operator=(const UserSharedBufferData&) = delete;
-
-	char* data;
-	size_t size;
-};
-
-/**
  * Finalize data for user shared buffer ArrayBuffers to clean up map entries
  * when the ArrayBuffer is garbage collected.
  */
 struct UserSharedBufferFinalizeData final {
+	std::string key;
+	std::weak_ptr<DBHandle> dbHandle;
+	std::weak_ptr<UserSharedBufferData> sharedData;
+	napi_ref callbackRef;
+
 	UserSharedBufferFinalizeData(
 		const std::string& k,
 		std::weak_ptr<DBHandle> d,
-		std::shared_ptr<UserSharedBufferData> data,
+		std::weak_ptr<UserSharedBufferData> data,
 		napi_ref callbackRef = nullptr
 	) : key(k), dbHandle(d), sharedData(data), callbackRef(callbackRef) {}
-
-	std::string key;
-	std::weak_ptr<DBHandle> dbHandle;
-	std::shared_ptr<UserSharedBufferData> sharedData;
-	napi_ref callbackRef;
 };
 
 } // namespace rocksdb_js

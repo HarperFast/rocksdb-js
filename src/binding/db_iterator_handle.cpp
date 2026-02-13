@@ -20,7 +20,7 @@ DBIteratorHandle::DBIteratorHandle(
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
 		dbHandle->descriptor->db->NewIterator(
 			options.readOptions,
-			dbHandle->column.get()
+			dbHandle->getRocksDBColumnFamilyHandle()
 		)
 	);
 
@@ -43,7 +43,7 @@ DBIteratorHandle::DBIteratorHandle(
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
 		txnHandle->txn->GetIterator(
 			options.readOptions,
-			txnHandle->dbHandle->column.get()
+			txnHandle->dbHandle->getRocksDBColumnFamilyHandle()
 		)
 	);
 

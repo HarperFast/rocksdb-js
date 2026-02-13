@@ -892,7 +892,8 @@ Returns an array containing that status of all active RocksDB instances.
 
 - `path: string` The database path.
 - `refCount: number` The number of JavaScript database instances plus the registry's reference.
-- `columnFamiles: string[]` A list of the database's column families.
+- `columnFamiles: object` A map of column family names and their their info.
+  - `userSharedBuffers: number` The count of active user shared buffers.
 - `transactions: number` The count of active transactions.
 - `closables: number` The count of active database, transactions, and iterators.
 - `locks: number` The count of active locks.

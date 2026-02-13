@@ -6,7 +6,7 @@
 namespace rocksdb_js {
 
 // forward declarations
-static void userSharedBufferFinalize(napi_env env, void* data, void* hint);
+static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint);
 
 /**
  * Creates a new DBHandle.
@@ -34,7 +34,7 @@ rocksdb::Status DBHandle::clear() {
 	// compact the database to reclaim space
 	rocksdb::Status status = this->descriptor->db->CompactRange(
 		rocksdb::CompactRangeOptions(),
-		this->column.get(),
+		this->columnDescriptor->column.get(),
 		nullptr,
 		nullptr
 	);
@@ -42,7 +42,7 @@ rocksdb::Status DBHandle::clear() {
 		return status;
 	}
 	// it appears we do not need to call WaitForCompact for this to work
-	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->column.get(), nullptr, nullptr);
+	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr);
 }
 
 /**
@@ -57,18 +57,9 @@ void DBHandle::close() {
 	// wait for all async work to complete before closing
 	this->waitForAsyncWorkCompletion();
 
-	// clean up user shared buffers
-	std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
-	for (auto& [key, sharedData] : this->userSharedBuffers) {
-		DEBUG_LOG("%p DBHandle::close Removing user shared buffer for key:", this);
-		DEBUG_LOG_KEY_LN(key);
-		sharedData.reset();
-	}
-	this->userSharedBuffers.clear();
-
 	// decrement the reference count on the column and descriptor
-	if (this->column) {
-		this->column.reset();
+	if (this->columnDescriptor) {
+		this->columnDescriptor.reset();
 	}
 
 	if (this->descriptor) {
@@ -88,6 +79,10 @@ void DBHandle::close() {
 	this->logRefs.clear();
 
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this);
+}
+
+rocksdb::ColumnFamilyHandle* DBHandle::getRocksDBColumnFamilyHandle() const {
+	return this->columnDescriptor->column.get();
 }
 
 /**
@@ -120,10 +115,18 @@ napi_value DBHandle::getUserSharedBuffer(
 		return nullptr;
 	}
 
-	std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
+	auto columnDescriptorIter = this->descriptor->columns.find(this->columnDescriptor->column->GetName());
+	if (columnDescriptorIter == this->descriptor->columns.end()) {
+		// this should never happen
+		::napi_throw_error(env, nullptr, "Column family not found");
+		return nullptr;
+	}
+	auto columnDescriptor = columnDescriptorIter->second;
 
-	auto it = this->userSharedBuffers.find(key);
-	if (it == this->userSharedBuffers.end()) {
+	std::lock_guard<std::mutex> lock(columnDescriptor->userSharedBuffersMutex);
+
+	auto userSharedBufferIter = columnDescriptor->userSharedBuffers.find(key);
+	if (userSharedBufferIter == columnDescriptor->userSharedBuffers.end()) {
 		// shared buffer does not exist, create it
 		void* data;
 		size_t size;
@@ -135,22 +138,31 @@ napi_value DBHandle::getUserSharedBuffer(
 			&size
 		));
 
-		DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
-		it = this->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+		DEBUG_LOG("%p DBHandle::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
+		userSharedBufferIter = columnDescriptor->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+	} else {
+		DEBUG_LOG("%p DBHandle::getUserSharedBuffer User shared buffer already initialized for key:", this);
 	}
 
-	DEBUG_LOG("%p DBDescriptor::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, it->second->size);
+	auto userSharedBuffer = userSharedBufferIter->second;
+
+	DEBUG_LOG("%p DBHandle::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, userSharedBuffer->size);
 	DEBUG_LOG_KEY_LN(key);
 
 	// create finalize data that holds the key, a weak reference to this
 	// descriptor, and a shared_ptr to keep the data alive
-	auto* finalizeData = new UserSharedBufferFinalizeData(key, weak_from_this(), it->second, callbackRef);
+	auto* finalizeData = new UserSharedBufferFinalizeData(
+		key,
+		weak_from_this(),
+		std::weak_ptr<UserSharedBufferData>(userSharedBuffer),
+		callbackRef
+	);
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
 		env,
-		it->second->data,         // data
-		it->second->size,         // size
+		userSharedBuffer->data,   // data
+		userSharedBuffer->size,   // size
 		userSharedBufferFinalize, // finalize_cb
 		finalizeData,             // finalize_hint
 		&result                   // [out] result
@@ -167,7 +179,7 @@ napi_value DBHandle::getUserSharedBuffer(
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handleParams = DBRegistry::OpenDB(path, options);
-	this->column = std::move(handleParams->column);
+	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
 	this->path = path;
@@ -252,35 +264,32 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
  * It removes the corresponding entry from the `userSharedBuffers` map to and
  * calls the finalize function, which removes the event listener, if applicable.
  */
-static void userSharedBufferFinalize(napi_env env, void* data, void* hint) {
-	DEBUG_LOG("userSharedBufferFinalize data=%p hint=%p\n", data, hint);
+static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
+	DEBUG_LOG("userSharedBufferFinalize garbage collected finalizeData=%p\n", finalizeData);
 
 	if (auto dbHandle = finalizeData->dbHandle.lock()) {
-		DEBUG_LOG("%p userSharedBufferFinalize for key:", dbHandle.get());
-		DEBUG_LOG_KEY(finalizeData->key);
-		DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData ? finalizeData->sharedData.use_count() : 0);
-
 		if (finalizeData->callbackRef) {
 			napi_value callback;
 			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
-				DEBUG_LOG("%p userSharedBufferFinalize removing listener", dbHandle.get());
-				dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
+				DEBUG_LOG("%p userSharedBufferFinalize removing listener for key:", dbHandle.get());
+				DEBUG_LOG_KEY_LN(finalizeData->key);
+				if (dbHandle->descriptor) {
+					DEBUG_LOG("%p userSharedBufferFinalize descriptor is still alive %p", dbHandle.get(), dbHandle->descriptor.get());
+					dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
+				} else {
+					DEBUG_LOG("%p userSharedBufferFinalize descriptor is not alive %p", dbHandle.get(), dbHandle->descriptor.get());
+				}
 			}
+			finalizeData->callbackRef = nullptr;
 		}
 
-		std::string key = finalizeData->key;
-
-		std::lock_guard<std::mutex> lock(dbHandle->userSharedBuffersMutex);
-		auto it = dbHandle->userSharedBuffers.find(key);
-		if (it != dbHandle->userSharedBuffers.end() && it->second == finalizeData->sharedData) {
-			// check if this shared_ptr is about to become the last reference
-			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
-			if (finalizeData->sharedData.use_count() <= 2) {
-				dbHandle->userSharedBuffers.erase(key);
-				DEBUG_LOG("%p userSharedBufferFinalize removed user shared buffer for key:", dbHandle.get());
-				DEBUG_LOG_KEY_LN(key);
-			}
+		if (auto sharedData = finalizeData->sharedData.lock()) {
+			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", dbHandle.get(), dbHandle->columnDescriptor->column.get());
+			DEBUG_LOG_KEY(finalizeData->key);
+			DEBUG_LOG_MSG(" (use_count: %ld)\n", sharedData ? sharedData.use_count() : 0);
+			dbHandle->columnDescriptor->releaseUserSharedBuffer(finalizeData->key, sharedData);
+			finalizeData->sharedData.reset();
 		}
 	} else {
 		DEBUG_LOG("userSharedBufferFinalize dbHandle was already destroyed for key:");

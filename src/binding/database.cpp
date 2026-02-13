@@ -168,7 +168,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE();
 
-	if (*dbHandle && (*dbHandle)->descriptor) {
+	if (*dbHandle) {
 		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
 		DBRegistry::CloseDB(*dbHandle);
 		DEBUG_LOG("%p Database::Close Closed database\n", dbHandle->get());
@@ -222,7 +222,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	if ((*dbHandle)->column->GetName() == "default") {
+	if ((*dbHandle)->columnDescriptor->column->GetName() == "default") {
 		return Database::Clear(env, info);
 	}
 
@@ -232,8 +232,8 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	napi_value global;
 	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 
-	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get());
+	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
+	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getRocksDBColumnFamilyHandle());
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to drop database");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -263,12 +263,12 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	if ((*dbHandle)->column->GetName() == "default") {
+	if ((*dbHandle)->columnDescriptor->column->GetName() == "default") {
 		return Database::ClearSync(env, info);
 	}
 
-	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->descriptor->path.c_str());
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->column.get()), "Failed to drop database");
+	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getRocksDBColumnFamilyHandle()), "Failed to drop database");
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
 }
@@ -442,7 +442,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			} else {
 				state->status = state->handle->descriptor->db->Get(
 					state->readOptions,
-					state->handle->column.get(),
+					state->handle->getRocksDBColumnFamilyHandle(),
 					state->key,
 					&state->value
 				);
@@ -510,7 +510,7 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 		// if we don't have a start or end key, we can just get the estimated number of keys
 		if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
 			(*dbHandle)->descriptor->db->GetIntProperty(
-				(*dbHandle)->column.get(),
+				(*dbHandle)->getRocksDBColumnFamilyHandle(),
 				"rocksdb.estimate-num-keys",
 				&count
 			);
@@ -556,7 +556,7 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 
 	uint64_t timestamp = 0;
 	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
-		(*dbHandle)->column.get(),
+		(*dbHandle)->getRocksDBColumnFamilyHandle(),
 		"rocksdb.oldest-snapshot-time",
 		&timestamp
 	);
@@ -588,7 +588,7 @@ napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 
 	std::string value;
 	bool success = (*dbHandle)->descriptor->db->GetProperty(
-		(*dbHandle)->column.get(),
+		(*dbHandle)->getRocksDBColumnFamilyHandle(),
 		propertyName,
 		&value
 	);
@@ -625,7 +625,7 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 
 	uint64_t value = 0;
 	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
-		(*dbHandle)->column.get(),
+		(*dbHandle)->getRocksDBColumnFamilyHandle(),
 		propertyName,
 		&value
 	);
@@ -701,7 +701,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	} else {
 		status = (*dbHandle)->descriptor->db->Get(
 			readOptions,
-			(*dbHandle)->column.get(),
+			(*dbHandle)->getRocksDBColumnFamilyHandle(),
 			keySlice,
 			&value
 		);
@@ -1003,7 +1003,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		status = (*dbHandle)->descriptor->db->Put(
 			writeOptions,
-			(*dbHandle)->column.get(),
+			(*dbHandle)->getRocksDBColumnFamilyHandle(),
 			keySlice,
 			valueSlice
 		);
@@ -1050,7 +1050,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		status = (*dbHandle)->descriptor->db->Delete(
 			writeOptions,
-			(*dbHandle)->column.get(),
+			(*dbHandle)->getRocksDBColumnFamilyHandle(),
 			keySlice
 		);
 	}
