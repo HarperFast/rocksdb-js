@@ -7,7 +7,6 @@
 #include <string>
 #include <node_api.h>
 #include "rocksdb/db.h"
-#include "db_descriptor.h"
 #include "db_options.h"
 #include "transaction_log_store.h"
 #include "util.h"
@@ -17,8 +16,6 @@ namespace rocksdb_js {
 // forward declarations
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
-struct UserSharedBufferData;
-struct UserSharedBufferFinalizeData;
 
 /**
  * Handle for a RocksDB database and the selected column family. This handle is
@@ -95,49 +92,13 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
 
-	rocksdb::ColumnFamilyHandle* getRocksDBColumnFamilyHandle() const;
-
-	/**
-	 * Creates a new user shared buffer or returns an existing one.
-	 *
-	 * @param env The environment of the current callback.
-	 * @param key The key of the user shared buffer.
-	 * @param defaultBuffer The default buffer to use if the user shared buffer does
-	 * not exist.
-	 * @param callbackRef An optional callback reference to remove the listener when
-	 * the user shared buffer is garbage collected.
-	 */
-	napi_value getUserSharedBuffer(
-		napi_env env,
-		std::string& key,
-		napi_value defaultBuffer,
-		napi_ref callbackRef = nullptr
-	);
+	rocksdb::ColumnFamilyHandle* getColumnFamilyHandle() const;
+	std::string getColumnFamilyName() const;
 
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
 	void unrefLog(const std::string& name);
 	napi_value useLog(napi_env env, napi_value jsDatabase, std::string& name);
-};
-
-/**
- * Finalize data for user shared buffer ArrayBuffers to clean up map entries
- * when the ArrayBuffer is garbage collected.
- */
-struct UserSharedBufferFinalizeData final {
-	std::string key;
-	std::weak_ptr<DBHandle> dbHandle;
-	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
-	std::weak_ptr<UserSharedBufferData> sharedData;
-	napi_ref callbackRef;
-
-	UserSharedBufferFinalizeData(
-		const std::string& k,
-		std::weak_ptr<DBHandle> d,
-		std::weak_ptr<ColumnFamilyDescriptor> c,
-		std::weak_ptr<UserSharedBufferData> data,
-		napi_ref callbackRef = nullptr
-	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
 };
 
 } // namespace rocksdb_js

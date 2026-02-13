@@ -172,7 +172,7 @@ napi_value TransactionHandle::get(
 
 	rocksdb::Status status = this->txn->Get(
 		readOptions,
-		dbHandle->getRocksDBColumnFamilyHandle(),
+		dbHandle->getColumnFamilyHandle(),
 		key,
 		&value
 	);
@@ -207,7 +207,7 @@ napi_value TransactionHandle::get(
 			} else {
 				state->status = state->handle->txn->Get(
 					state->readOptions,
-					state->handle->dbHandle->getRocksDBColumnFamilyHandle(),
+					state->handle->dbHandle->getColumnFamilyHandle(),
 					state->key,
 					&state->value
 				);
@@ -248,7 +248,7 @@ void TransactionHandle::getCount(
 	// if we don't have a start or end key, we can just get the estimated number of keys
 	if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
 		dbHandle->descriptor->db->GetIntProperty(
-			dbHandle->getRocksDBColumnFamilyHandle(),
+			dbHandle->getColumnFamilyHandle(),
 			"rocksdb.estimate-num-keys",
 			&count
 		);
@@ -288,7 +288,7 @@ rocksdb::Status TransactionHandle::getSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	auto column = dbHandle->getRocksDBColumnFamilyHandle();
+	auto column = dbHandle->getColumnFamilyHandle();
 
 	// TODO: should this be GetForUpdate?
 	return this->txn->Get(readOptions, column, key, &result);
@@ -317,7 +317,7 @@ rocksdb::Status TransactionHandle::putSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	auto column = dbHandle->getRocksDBColumnFamilyHandle();
+	auto column = dbHandle->getColumnFamilyHandle();
 	return this->txn->Put(column, key, value);
 }
 
@@ -343,7 +343,7 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	auto column = dbHandle->getRocksDBColumnFamilyHandle();
+	auto column = dbHandle->getColumnFamilyHandle();
 	return this->txn->Delete(column, key);
 }
 

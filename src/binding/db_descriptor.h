@@ -26,6 +26,7 @@ struct ListenerData;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
+struct UserSharedBufferFinalizeData;
 
 /**
  * Custom deleter for RocksDB that calls WaitForCompact with close_db=true
@@ -201,6 +202,25 @@ public:
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
 	uint32_t transactionGetNextId();
 
+	/**
+	 * Creates a new user shared buffer or returns an existing one.
+	 *
+	 * @param env The environment of the current callback.
+	 * @param key The key of the user shared buffer.
+	 * @param defaultBuffer The default buffer to use if the user shared buffer does
+	 * not exist.
+	 * @param callbackRef An optional callback reference to remove the listener when
+	 * the user shared buffer is garbage collected.
+	 */
+	napi_value getUserSharedBuffer(
+		napi_env env,
+		std::string& key,
+		std::weak_ptr<DBHandle> dbHandle,
+		std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor,
+		napi_value defaultBuffer,
+		napi_ref callbackRef = nullptr
+	);
+
 	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
 	bool notify(std::string key, ListenerData* data);
 	napi_value listeners(napi_env env, std::string& key);
@@ -292,6 +312,26 @@ struct LockHandle final {
 	 * The environment of the current callback.
 	 */
 	napi_env env;
+};
+
+/**
+ * Finalize data for user shared buffer ArrayBuffers to clean up map entries
+ * when the ArrayBuffer is garbage collected.
+ */
+struct UserSharedBufferFinalizeData final {
+	std::string key;
+	std::weak_ptr<DBHandle> dbHandle;
+	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
+	std::weak_ptr<UserSharedBufferData> sharedData;
+	napi_ref callbackRef;
+
+	UserSharedBufferFinalizeData(
+		const std::string& k,
+		std::weak_ptr<DBHandle> d,
+		std::weak_ptr<ColumnFamilyDescriptor> c,
+		std::weak_ptr<UserSharedBufferData> data,
+		napi_ref callbackRef = nullptr
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
 };
 
 /**

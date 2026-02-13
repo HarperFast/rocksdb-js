@@ -1018,6 +1018,114 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	);
 }
 
+/**
+ * Finalize callback for when the user shared ArrayBuffer is garbage collected.
+ * It removes the corresponding entry from the `userSharedBuffers` map to and
+ * calls the finalize function, which removes the event listener, if applicable.
+ */
+static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
+	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
+	DEBUG_LOG("userSharedBufferFinalize garbage collected finalizeData=%p\n", finalizeData);
+
+	if (auto dbHandle = finalizeData->dbHandle.lock()) {
+		if (finalizeData->callbackRef) {
+			napi_value callback;
+			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
+				DEBUG_LOG("%p userSharedBufferFinalize removing listener for key:", dbHandle.get());
+				DEBUG_LOG_KEY_LN(finalizeData->key);
+				if (dbHandle->descriptor) {
+					DEBUG_LOG("%p userSharedBufferFinalize descriptor is still alive %p", dbHandle.get(), dbHandle->descriptor.get());
+					dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
+				} else {
+					DEBUG_LOG("%p userSharedBufferFinalize descriptor is not alive %p", dbHandle.get(), dbHandle->descriptor.get());
+				}
+			}
+			finalizeData->callbackRef = nullptr;
+		}
+	} else {
+		DEBUG_LOG("userSharedBufferFinalize dbHandle was already destroyed for key:");
+		DEBUG_LOG_KEY_LN(finalizeData->key);
+	}
+
+	if (auto columnDescriptor = finalizeData->columnDescriptor.lock()) {
+		if (auto sharedData = finalizeData->sharedData.lock()) {
+			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", columnDescriptor.get(), columnDescriptor->column.get());
+			DEBUG_LOG_KEY(finalizeData->key);
+			DEBUG_LOG_MSG(" (use_count: %ld)\n", sharedData ? sharedData.use_count() : 0);
+			columnDescriptor->releaseUserSharedBuffer(finalizeData->key, sharedData);
+			finalizeData->sharedData.reset();
+		}
+	} else {
+		DEBUG_LOG("userSharedBufferFinalize columnDescriptor was already destroyed for key:");
+		DEBUG_LOG_KEY_LN(finalizeData->key);
+	}
+
+	delete finalizeData;
+}
+
+napi_value DBDescriptor::getUserSharedBuffer(
+	napi_env env,
+	std::string& key,
+	std::weak_ptr<DBHandle> dbHandle,
+	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor,
+	napi_value defaultBuffer,
+	napi_ref callbackRef
+) {
+	bool isArrayBuffer;
+	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
+	if (!isArrayBuffer) {
+		::napi_throw_error(env, nullptr, "Default buffer must be an ArrayBuffer");
+		return nullptr;
+	}
+
+	std::lock_guard<std::mutex> lock(columnDescriptor->userSharedBuffersMutex);
+
+	auto userSharedBufferIter = columnDescriptor->userSharedBuffers.find(key);
+	if (userSharedBufferIter == columnDescriptor->userSharedBuffers.end()) {
+		// shared buffer does not exist, create it
+		void* data;
+		size_t size;
+
+		NAPI_STATUS_THROWS(::napi_get_arraybuffer_info(
+			env,
+			defaultBuffer,
+			&data,
+			&size
+		));
+
+		DEBUG_LOG("%p DBHandle::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
+		userSharedBufferIter = columnDescriptor->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+	} else {
+		DEBUG_LOG("%p DBHandle::getUserSharedBuffer User shared buffer already initialized for key:", this);
+	}
+
+	auto userSharedBuffer = userSharedBufferIter->second;
+
+	DEBUG_LOG("%p DBHandle::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, userSharedBuffer->size);
+	DEBUG_LOG_KEY_LN(key);
+
+	// create finalize data that holds the key, a weak reference to this
+	// descriptor, the column descriptor, and a shared_ptr to keep the data alive
+	auto* finalizeData = new UserSharedBufferFinalizeData(
+		key,
+		dbHandle,
+		std::weak_ptr<ColumnFamilyDescriptor>(columnDescriptor),
+		std::weak_ptr<UserSharedBufferData>(userSharedBuffer),
+		callbackRef
+	);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_external_arraybuffer(
+		env,
+		userSharedBuffer->data,   // data
+		userSharedBuffer->size,   // size
+		userSharedBufferFinalize, // finalize_cb
+		finalizeData,             // finalize_hint
+		&result                   // [out] result
+	));
+	return result;
+}
+
 #define NAPI_STATUS_THROWS_FREE_DATA(call) \
 	do { \
 		napi_status status = (call); \
