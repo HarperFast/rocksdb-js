@@ -1361,14 +1361,10 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 
 	// clean up the original data since we made copies
 	if (data) {
-		DEBUG_LOG("%p DBDescriptor::notify deleting listenerData for key:", this);
-		DEBUG_LOG_KEY_LN(key);
 		delete data;
-		DEBUG_LOG("%p DBDescriptor::notify deleted listenerData for key:", this);
-		DEBUG_LOG_KEY_LN(key);
 	}
 
-	DEBUG_LOG("%p DBDescriptor::notify finished calling listeners for key:", this);
+	DEBUG_LOG("%p DBDescriptor::notify finished calling %zu listener%s for key:", this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
 	DEBUG_LOG_KEY_LN(key);
 
 	return true;
@@ -1429,6 +1425,7 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 			bool isEqual = false;
 			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual));
 			if (isEqual) {
+				// release the threadsafe callback
 				if ((*listener)->threadsafeCallback) {
 					DEBUG_LOG("%p DBDescriptor::removeListener deleting threadsafe callback for key:", this);
 					DEBUG_LOG_KEY_LN(key);
@@ -1446,6 +1443,7 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 					DEBUG_LOG_KEY_LN(key);
 				}
 
+				// delete the callback reference
 				napi_status status = ::napi_delete_reference((*listener)->env, (*listener)->callbackRef);
 				if (status != napi_ok) {
 					DEBUG_LOG("%p DBDescriptor::removeListener failed to delete callback reference (status=%d) for key:", this, status);
@@ -1455,6 +1453,7 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 					DEBUG_LOG_KEY_LN(key);
 				}
 
+				// remove the listener from the list
 				listener = it->second.erase(listener);
 				DEBUG_LOG("%p DBDescriptor::removeListener removed listener for key:", this);
 				DEBUG_LOG_KEY(key);
