@@ -816,14 +816,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 		}
 	}
 
-	return (*dbHandle)->descriptor->getUserSharedBuffer(
-		env,
-		keyStr,
-		*dbHandle,
-		(*dbHandle)->columnDescriptor,
-		argv[1],
-		callbackRef
-	);
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, *dbHandle, argv[1], callbackRef);
 }
 
 /**

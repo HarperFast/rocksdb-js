@@ -215,8 +215,7 @@ public:
 	napi_value getUserSharedBuffer(
 		napi_env env,
 		std::string& key,
-		std::weak_ptr<DBHandle> dbHandle,
-		std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor,
+		std::shared_ptr<DBHandle> dbHandle,
 		napi_value defaultBuffer,
 		napi_ref callbackRef = nullptr
 	);

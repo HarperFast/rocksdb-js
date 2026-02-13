@@ -1066,8 +1066,7 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 napi_value DBDescriptor::getUserSharedBuffer(
 	napi_env env,
 	std::string& key,
-	std::weak_ptr<DBHandle> dbHandle,
-	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor,
+	std::shared_ptr<DBHandle> dbHandle,
 	napi_value defaultBuffer,
 	napi_ref callbackRef
 ) {
@@ -1078,10 +1077,10 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		return nullptr;
 	}
 
-	std::lock_guard<std::mutex> lock(columnDescriptor->userSharedBuffersMutex);
+	std::lock_guard<std::mutex> lock(dbHandle->columnDescriptor->userSharedBuffersMutex);
 
-	auto userSharedBufferIter = columnDescriptor->userSharedBuffers.find(key);
-	if (userSharedBufferIter == columnDescriptor->userSharedBuffers.end()) {
+	auto userSharedBufferIter = dbHandle->columnDescriptor->userSharedBuffers.find(key);
+	if (userSharedBufferIter == dbHandle->columnDescriptor->userSharedBuffers.end()) {
 		// shared buffer does not exist, create it
 		void* data;
 		size_t size;
@@ -1094,7 +1093,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		));
 
 		DEBUG_LOG("%p DBHandle::getUserSharedBuffer Initializing user shared buffer with default buffer size: %zu\n", this, size);
-		userSharedBufferIter = columnDescriptor->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
+		userSharedBufferIter = dbHandle->columnDescriptor->userSharedBuffers.emplace(key, std::make_shared<UserSharedBufferData>(data, size)).first;
 	} else {
 		DEBUG_LOG("%p DBHandle::getUserSharedBuffer User shared buffer already initialized for key:", this);
 	}
@@ -1108,8 +1107,8 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	// descriptor, the column descriptor, and a shared_ptr to keep the data alive
 	auto* finalizeData = new UserSharedBufferFinalizeData(
 		key,
-		dbHandle,
-		std::weak_ptr<ColumnFamilyDescriptor>(columnDescriptor),
+		std::weak_ptr<DBHandle>(dbHandle),
+		std::weak_ptr<ColumnFamilyDescriptor>(dbHandle->columnDescriptor),
 		std::weak_ptr<UserSharedBufferData>(userSharedBuffer),
 		callbackRef
 	);
