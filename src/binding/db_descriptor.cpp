@@ -1088,6 +1088,21 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* unus
 	}
 }
 
+static void finalizeListenerCallback(napi_env env, void* finalizeData, void* unusedFinalizeHint) {
+	DEBUG_LOG("finalizeListenerCallback deleting listenerCallback (finalizeData=%p)\n", finalizeData);
+	auto data = static_cast<std::shared_ptr<ListenerCallback>*>(finalizeData);
+	if (data) {
+		napi_status status = ::napi_delete_reference(env, (*data)->callbackRef);
+		if (status != napi_ok) {
+			DEBUG_LOG("finalizeListenerCallback failed to delete reference (status=%d)\n", status);
+		}
+		DEBUG_LOG("finalizeListenerCallback deleting listenerCallback (data=%p)\n", data->get());
+		delete data;
+	} else {
+		DEBUG_LOG("finalizeListenerCallback data is nullptr\n");
+	}
+}
+
 /**
  * Adds an listener to the database descriptor.
  *
@@ -1116,36 +1131,48 @@ napi_ref DBDescriptor::addListener(
 		&resource_name
 	));
 
-	napi_threadsafe_function threadsafeCallback;
-	NAPI_STATUS_THROWS(::napi_create_threadsafe_function(
-		env,                  // env
-		callback,             // func
-		nullptr,              // async_resource
-		resource_name,        // async_resource_name
-		0,                    // max_queue_size
-		1,                    // initial_thread_count
-		nullptr,              // thread_finalize_data
-		nullptr,              // thread_finalize_callback
-		nullptr,              // context
-		callListenerCallback, // call_js_cb
-		&threadsafeCallback   // [out] callback
-	));
+	napi_ref callbackRef;
+	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef));
 
-	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, threadsafeCallback));
+	auto listenerCallback = std::make_shared<ListenerCallback>(env, callbackRef, owner);
+	auto* finalizeData = new std::shared_ptr<ListenerCallback>(listenerCallback);
+
+	napi_status status = ::napi_create_threadsafe_function(
+		env,                      // env
+		callback,                 // func
+		nullptr,                  // async_resource
+		resource_name,            // async_resource_name
+		0,                        // max_queue_size
+		1,                        // initial_thread_count
+		finalizeData,             // thread_finalize_data
+		finalizeListenerCallback, // thread_finalize_callback
+		nullptr,                  // context
+		callListenerCallback,     // call_js_cb
+		&listenerCallback->threadsafeCallback // [out] callback
+	);
+
+	if (status != napi_ok) {
+		DEBUG_LOG("%p DBDescriptor::addListener failed to create threadsafe function (status=%d)\n", this, status);
+		napi_status status = ::napi_delete_reference(env, callbackRef);
+		if (status != napi_ok) {
+			DEBUG_LOG("%p DBDescriptor::addListener failed to delete reference (status=%d)\n", this, status);
+		}
+		delete finalizeData;
+		return nullptr;
+	}
 
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
 	if (it == this->listenerCallbacks.end()) {
 		it = this->listenerCallbacks.emplace(key, std::vector<std::shared_ptr<ListenerCallback>>()).first;
 	}
-
-	napi_ref callbackRef;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef));
-	it->second.emplace_back(std::make_shared<ListenerCallback>(env, threadsafeCallback, callbackRef, owner));
+	it->second.emplace_back(listenerCallback);
 
 	DEBUG_LOG("%p DBDescriptor::addListener added listener for key:", this);
 	DEBUG_LOG_KEY(key);
-	DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size());
+#ifdef DEBUG
+	fprintf(stderr, " (listeners=%zu)\n", it->second.size());
+#endif
 
 	return callbackRef;
 }
@@ -1213,9 +1240,16 @@ bool DBDescriptor::notify(std::string key, ListenerData* data) {
 					if (listenerData) {
 						delete listenerData;
 					}
-					continue;
 				} else {
 					DEBUG_LOG("%p DBDescriptor::notify called threadsafeCallback for key successfully!", this);
+					DEBUG_LOG_KEY_LN(key);
+				}
+				status = ::napi_release_threadsafe_function(listener->threadsafeCallback, napi_tsfn_release);
+				listener->threadsafeCallback = nullptr;
+				if (status != napi_ok) {
+					DEBUG_LOG("%p DBDescriptor::notify failed to release threadsafeCallback (status=%d)\n", this, status);
+				} else {
+					DEBUG_LOG("%p DBDescriptor::notify released threadsafeCallback for key successfully!", this);
 					DEBUG_LOG_KEY_LN(key);
 				}
 			} else {

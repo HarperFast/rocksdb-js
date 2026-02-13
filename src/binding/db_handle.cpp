@@ -23,17 +23,6 @@ DBHandle::~DBHandle() {
 }
 
 /**
- * Adds an listener to the database descriptor.
- *
- * @param env The environment of the current callback.
- * @param key The key.
- * @param callback The callback to call when the event is emitted.
- */
-napi_ref DBHandle::addListener(napi_env env, std::string key, napi_value callback) {
-	return this->descriptor->addListener(env, key, callback, weak_from_this());
-}
-
-/**
  * Clears all data in the database's column family.
  */
 rocksdb::Status DBHandle::clear() {

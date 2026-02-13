@@ -307,17 +307,77 @@ struct ListenerData final {
  * and callback reference. The callback reference is used to remove the listener
  * callback and the env is used for cleanup.
  */
+// struct ListenerCallback final {
+// 	/**
+// 	 * The environment of the current callback.
+// 	 */
+// 	napi_env env;
+
+// 	/**
+// 	 * The callback reference of the current callback. This is used to remove
+// 	 * the listener callback.
+// 	 */
+// 	napi_ref callbackRef;
+
+// 	/**
+// 	 * The DBHandle that owns this listener (weak reference to avoid cycles).
+// 	 */
+// 	std::weak_ptr<DBHandle> owner;
+
+// 	ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef, std::weak_ptr<DBHandle> owner = {})
+// 		: env(env), callbackRef(callbackRef), owner(owner) {}
+
+// 	// move constructor
+// 	ListenerCallback(ListenerCallback&& other) noexcept
+// 		: env(other.env), callbackRef(other.callbackRef), owner(std::move(other.owner)) {
+// 		other.env = nullptr;
+// 		other.callbackRef = 0;
+// 	}
+
+// 	// move assignment operator
+// 	ListenerCallback& operator=(ListenerCallback&& other) noexcept {
+// 		if (this != &other) {
+// 			// clean up current resources first
+// 			this->release();
+
+// 			// transfer ownership
+// 			env = other.env;
+// 			callbackRef = other.callbackRef;
+// 			owner = std::move(other.owner);
+
+// 			// invalidate source
+// 			other.env = nullptr;
+// 			other.callbackRef = nullptr;
+// 		}
+// 		return *this;
+// 	}
+
+// 	// delete copy constructor and copy assignment to prevent accidental copying
+// 	ListenerCallback(const ListenerCallback&) = delete;
+// 	ListenerCallback& operator=(const ListenerCallback&) = delete;
+
+// 	~ListenerCallback() {
+// 		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p\n",
+// 			this, this->callbackRef);
+// 		this->release();
+// 	}
+
+// 	void release() {
+// 		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p\n",
+// 			this, this->callbackRef);
+
+// 		if (this->callbackRef && this->env) {
+// 			::napi_delete_reference(this->env, this->callbackRef);
+// 			this->callbackRef = nullptr;
+// 		}
+// 	}
+// };
+
 struct ListenerCallback final {
 	/**
 	 * The environment of the current callback.
 	 */
 	napi_env env;
-
-	/**
-	 * The threadsafe function of the current callback. This is what is
-	 * actually called when the event is emitted.
-	 */
-	napi_threadsafe_function threadsafeCallback;
 
 	/**
 	 * The callback reference of the current callback. This is used to remove
@@ -330,61 +390,27 @@ struct ListenerCallback final {
 	 */
 	std::weak_ptr<DBHandle> owner;
 
-	ListenerCallback(napi_env env, napi_threadsafe_function tsfn, napi_ref callbackRef, std::weak_ptr<DBHandle> owner = {})
-		: env(env), threadsafeCallback(tsfn), callbackRef(callbackRef), owner(owner) {}
+	/**
+	 * The threadsafe function of the current callback. This is what is actually called when the
+	 * event is emitted.
+	 */
+	napi_threadsafe_function threadsafeCallback;
 
-	// move constructor
-	ListenerCallback(ListenerCallback&& other) noexcept
-		: env(other.env), threadsafeCallback(other.threadsafeCallback), callbackRef(other.callbackRef), owner(std::move(other.owner)) {
-		other.env = nullptr;
-		other.threadsafeCallback = nullptr;
-		other.callbackRef = 0;
-	}
-
-	// move assignment operator
-	ListenerCallback& operator=(ListenerCallback&& other) noexcept {
-		if (this != &other) {
-			// clean up current resources first
-			this->release();
-
-			// transfer ownership
-			env = other.env;
-			threadsafeCallback = other.threadsafeCallback;
-			callbackRef = other.callbackRef;
-			owner = std::move(other.owner);
-
-			// invalidate source
-			other.env = nullptr;
-			other.threadsafeCallback = nullptr;
-			other.callbackRef = nullptr;
-		}
-		return *this;
-	}
-
-	// delete copy constructor and copy assignment to prevent accidental copying
-	ListenerCallback(const ListenerCallback&) = delete;
-	ListenerCallback& operator=(const ListenerCallback&) = delete;
+	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<DBHandle> owner)
+		: env(env), callbackRef(callbackRef), owner(owner), threadsafeCallback(nullptr) {}
 
 	~ListenerCallback() {
-		DEBUG_LOG("%p ListenerCallback::~ListenerCallback callbackRef=%p, threadsafeCallback=%p\n",
-			this, this->callbackRef, this->threadsafeCallback);
-		this->release();
-	}
-
-	void release() {
-		DEBUG_LOG("%p ListenerCallback::release callbackRef=%p, threadsafeCallback=%p\n",
-			this, this->callbackRef, this->threadsafeCallback);
-
-		if (this->callbackRef && this->env) {
-			::napi_delete_reference(this->env, this->callbackRef);
-			this->callbackRef = nullptr;
-		}
-
 		if (this->threadsafeCallback) {
-			// don't explicitly release the threadsafe function - let Node.js
-			// clean it up when the environment shuts down to avoid crashes from
-			// pending calls
+			DEBUG_LOG("%p ListenerCallback::~ListenerCallback has not been released!\n", this);
+			napi_status status = ::napi_unref_threadsafe_function(this->env, this->threadsafeCallback);
+			if (status != napi_ok) {
+				DEBUG_LOG("%p ListenerCallback::~ListenerCallback failed to unref threadsafe function (status=%d)\n", this, status);
+			} else {
+				DEBUG_LOG("%p ListenerCallback::~ListenerCallback released threadsafe function successfully!\n", this);
+			}
 			this->threadsafeCallback = nullptr;
+		} else {
+			DEBUG_LOG("%p ListenerCallback::~ListenerCallback threadsafe callback has already been released\n", this);
 		}
 	}
 };
