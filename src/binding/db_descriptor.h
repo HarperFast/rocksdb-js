@@ -314,6 +314,34 @@ struct LockHandle final {
 };
 
 /**
+ * Contains the buffer and buffer size for a user shared buffer.
+ */
+struct UserSharedBufferData final {
+	/**
+	 * The data of the user shared buffer.
+	 */
+	char* data;
+
+	/**
+	 * The size of the user shared buffer.
+	 */
+	size_t size;
+
+	UserSharedBufferData(void* sourceData, size_t size) : size(size) {
+		this->data = new char[size];
+		::memcpy(this->data, sourceData, size);
+	}
+
+	~UserSharedBufferData() {
+		delete[] this->data;
+	}
+
+	// delete copy constructor and copy assignment to prevent accidental copying
+	UserSharedBufferData(const UserSharedBufferData&) = delete;
+	UserSharedBufferData& operator=(const UserSharedBufferData&) = delete;
+};
+
+/**
  * Finalize data for user shared buffer ArrayBuffers to clean up map entries
  * when the ArrayBuffer is garbage collected.
  */
@@ -373,34 +401,6 @@ struct ListenerCallback final {
 
 	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<DBHandle> owner)
 		: env(env), threadsafeCallback(nullptr), callbackRef(callbackRef), owner(owner) {}
-};
-
-/**
- * Contains the buffer and buffer size for a user shared buffer.
- */
-struct UserSharedBufferData final {
-	/**
-	 * The data of the user shared buffer.
-	 */
-	char* data;
-
-	/**
-	 * The size of the user shared buffer.
-	 */
-	size_t size;
-
-	UserSharedBufferData(void* sourceData, size_t size) : size(size) {
-		this->data = new char[size];
-		::memcpy(this->data, sourceData, size);
-	}
-
-	~UserSharedBufferData() {
-		delete[] this->data;
-	}
-
-	// delete copy constructor and copy assignment to prevent accidental copying
-	UserSharedBufferData(const UserSharedBufferData&) = delete;
-	UserSharedBufferData& operator=(const UserSharedBufferData&) = delete;
 };
 
 /**
