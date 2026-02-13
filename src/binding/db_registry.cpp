@@ -282,8 +282,6 @@ void DBRegistry::PurgeAll() {
 			if (descriptor) {
 				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.c_str(), descriptor.use_count());
 				descriptor->close();
-			} else {
-				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Descriptor is null\n", instance.get(), i);
 			}
 			it = instance->databases.erase(it);
 #ifdef DEBUG

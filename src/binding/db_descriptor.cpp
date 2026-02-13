@@ -1025,9 +1025,9 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
  */
 static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
-	DEBUG_LOG("userSharedBufferFinalize garbage collected finalizeData=%p\n", finalizeData);
 
 	if (auto dbHandle = finalizeData->dbHandle.lock()) {
+		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle=%p\n", dbHandle.get());
 		if (finalizeData->callbackRef) {
 			napi_value callback;
 			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
@@ -1043,7 +1043,7 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 			finalizeData->callbackRef = nullptr;
 		}
 	} else {
-		DEBUG_LOG("userSharedBufferFinalize dbHandle was already destroyed for key:");
+		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle was already destroyed for key:");
 		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 

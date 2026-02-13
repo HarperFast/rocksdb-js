@@ -7,6 +7,7 @@
 #include <string>
 #include <node_api.h>
 #include "rocksdb/db.h"
+#include "db_descriptor.h"
 #include "db_options.h"
 #include "transaction_log_store.h"
 #include "util.h"
