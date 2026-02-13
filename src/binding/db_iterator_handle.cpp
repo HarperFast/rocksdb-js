@@ -64,7 +64,8 @@ void DBIteratorHandle::close() {
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {
 	if (options.startKeyStr != nullptr) {
-		this->startKey = rocksdb::Slice(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
+		this->startKeyStr = std::string(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
+		this->startKey = rocksdb::Slice(this->startKeyStr);
 		options.readOptions.iterate_lower_bound = &this->startKey;
 
 		DEBUG_LOG("%p DBIteratorHandle::init Start key:", this);
