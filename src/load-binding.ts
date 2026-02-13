@@ -180,6 +180,7 @@ function locateBinding(): string {
 		try {
 			isMusl = readFileSync('/usr/bin/ldd', 'utf8').includes('musl');
 		} catch {
+			// `/usr/bin/ldd` likely doesn't exist
 			if (typeof process.report?.getReport === 'function') {
 				process.report.excludeEnv = true;
 				const report = process.report.getReport() as unknown as {
@@ -193,7 +194,12 @@ function locateBinding(): string {
 						(obj) => obj.includes('libc.musl-') || obj.includes('ld-musl-')
 					);
 			}
-			isMusl = isMusl || execSync('ldd --version', { encoding: 'utf8' }).includes('musl');
+			try {
+				isMusl =
+					isMusl || execSync('ldd --version', { encoding: 'utf8', stdio: 'pipe' }).includes('musl');
+			} catch {
+				// ldd may not exist on some systems such as Docker Hardened Images
+			}
 		}
 		runtime = isMusl ? '-musl' : '-glibc';
 	}
