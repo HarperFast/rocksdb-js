@@ -119,8 +119,7 @@ describe('User Shared Buffer', () => {
 		);
 
 		it(
-			'should share buffer across worker threads with same database',
-			() =>
+			'should share buffer across worker threads with same database', () =>
 				dbRunner(async ({ db, dbPath }) => {
 					const incrementer = new BigInt64Array(
 						db.getUserSharedBuffer('next-id-worker', new BigInt64Array(1).buffer)
