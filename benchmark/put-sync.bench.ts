@@ -1,5 +1,5 @@
-import { describe } from 'vitest';
 import { benchmark, generateRandomKeys, generateSequentialKeys, randomString } from './setup.js';
+import { describe } from 'vitest';
 
 describe('putSync()', () => {
 	const SMALL_DATASET = 100;

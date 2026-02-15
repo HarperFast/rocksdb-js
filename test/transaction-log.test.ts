@@ -1,3 +1,8 @@
+import { RocksDatabase, Transaction } from '../src/index.js';
+import { constants, type TransactionLog } from '../src/load-binding.js';
+import { parseTransactionLog } from '../src/parse-transaction-log.js';
+import { withResolvers } from '../src/util.js';
+import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
@@ -5,11 +10,6 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
-import { RocksDatabase, Transaction } from '../src/index.js';
-import { constants, type TransactionLog } from '../src/load-binding.js';
-import { parseTransactionLog } from '../src/parse-transaction-log.js';
-import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
 
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
@@ -53,35 +53,33 @@ describe('Transaction Log', () => {
 				expect(db.listLogs()).toEqual(['612']);
 			}));
 
-		(globalThis.gc ? it : it.skip)(
-			'should cleanup transaction log instance on GC',
-			() =>
-				dbRunner(async ({ db }) => {
-					let weakRef: WeakRef<TransactionLog> | undefined;
+		(globalThis.gc ? it : it.skip)('should cleanup transaction log instance on GC', () =>
+			dbRunner(async ({ db }) => {
+				let weakRef: WeakRef<TransactionLog> | undefined;
 
-					await new Promise<void>((resolve) => {
-						const log = db.useLog('foo');
-						weakRef = new WeakRef(log);
-						resolve();
-					});
+				await new Promise<void>((resolve) => {
+					const log = db.useLog('foo');
+					weakRef = new WeakRef(log);
+					resolve();
+				});
 
-					assert(weakRef);
-					assert(globalThis.gc);
+				assert(weakRef);
+				assert(globalThis.gc);
 
-					// this is flaky
-					const until = Date.now() + 3000;
-					while (Date.now() < until) {
-						globalThis.gc();
-						await delay(250);
-						globalThis.gc();
-						await delay(250);
-						if (!weakRef.deref()) {
-							break;
-						}
+				// this is flaky
+				const until = Date.now() + 3000;
+				while (Date.now() < until) {
+					globalThis.gc();
+					await delay(250);
+					globalThis.gc();
+					await delay(250);
+					if (!weakRef.deref()) {
+						break;
 					}
+				}
 
-					expect(weakRef.deref()).toBeUndefined();
-				})
+				expect(weakRef.deref()).toBeUndefined();
+			})
 		);
 
 		it('should error if log already bound to a transaction', () =>
@@ -213,8 +211,9 @@ describe('Transaction Log', () => {
 					fullTransactionCompletions.push(fullTxnCompletion);
 				}
 				let transactionResults = await Promise.allSettled(firstTransactionCompletions);
-				expect(transactionResults.filter(result => result.status === 'rejected').length)
-					.toBeGreaterThanOrEqual(1); // at least one should fail
+				expect(
+					transactionResults.filter((result) => result.status === 'rejected').length
+				).toBeGreaterThanOrEqual(1); // at least one should fail
 				expect(Array.from(log.query({ start: 0 })).length).toBeLessThan(3); // The entries should not be all visible at this point (only one)
 				await Promise.all(fullTransactionCompletions); // wait for all the retries to finish
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3); // now all the transactions should be visible in the log
@@ -255,8 +254,9 @@ describe('Transaction Log', () => {
 				}
 				let allTimestamps = Array.from(log.query({ start: 0 })).map(({ timestamp }) => timestamp);
 				expect(Array.from(log.query({ start: allTimestamps[1] })).length).toBe(4);
-				expect(Array.from(log.query({ start: allTimestamps[1], exclusiveStart: true })).length)
-					.toBe(3);
+				expect(
+					Array.from(log.query({ start: allTimestamps[1], exclusiveStart: true })).length
+				).toBe(3);
 				expect(Array.from(log.query({ start: allTimestamps[1], exactStart: true })).length).toBe(4);
 				expect(
 					Array.from(
@@ -282,8 +282,9 @@ describe('Transaction Log', () => {
 				expect(
 					Array.from(log.query({ start: start - 1, exactStart: true, exclusiveStart: true })).length
 				).toBe(3);
-				expect(Array.from(log.query({ start: start - 1, exactStart: true, end: start - 2 })).length)
-					.toBe(3);
+				expect(
+					Array.from(log.query({ start: start - 1, exactStart: true, end: start - 2 })).length
+				).toBe(3);
 			}));
 
 		it('should query a transaction log with multiple log instances', () =>
@@ -499,12 +500,12 @@ describe('Transaction Log', () => {
 				expect(queryResults[1].data).toEqual(value);
 				expect(queryResults[19].data).toEqual(value);
 
-				const file1Size = TRANSACTION_LOG_FILE_HEADER_SIZE
-					+ (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8;
-				const file2Size = TRANSACTION_LOG_FILE_HEADER_SIZE
-					+ (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8;
-				const file3Size = TRANSACTION_LOG_FILE_HEADER_SIZE
-					+ (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4;
+				const file1Size =
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8;
+				const file2Size =
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8;
+				const file3Size =
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4;
 
 				expect(log.getLogFileSize()).toBe(file1Size + file2Size + file3Size);
 				expect(() => log.getLogFileSize(0)).toThrow(
@@ -555,8 +556,8 @@ describe('Transaction Log', () => {
 					});
 				}
 
-				const totalSize = TRANSACTION_LOG_FILE_HEADER_SIZE
-					+ (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 2000;
+				const totalSize =
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 2000;
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 				const logFiles = await readdir(logStorePath);
 				expect(logFiles).toEqual(['1.txnlog']);
@@ -770,103 +771,110 @@ describe('Transaction Log', () => {
 				expect(queryResults.length).toBe(11);
 			}));
 
-		it('should write to same log from multiple workers', () =>
-			dbRunner(async ({ db, dbPath }) => {
-				const worker = new Worker(
-					createWorkerBootstrapScript('./test/workers/transaction-log-worker.mts'),
-					{ eval: true, workerData: { path: dbPath } }
-				);
+		it(
+			'should write to same log from multiple workers',
+			() =>
+				dbRunner(async ({ db, dbPath }) => {
+					const worker = new Worker(
+						createWorkerBootstrapScript('./test/workers/transaction-log-worker.mts'),
+						{ eval: true, workerData: { path: dbPath } }
+					);
 
-				let resolver = withResolvers<void>();
+					let resolver = withResolvers<void>();
 
-				await new Promise<void>((resolve, reject) => {
-					worker.on('error', reject);
-					worker.on('message', event => {
-						try {
-							if (event.started) {
-								resolve();
-							} else if (event.done) {
-								resolver.resolve();
+					await new Promise<void>((resolve, reject) => {
+						worker.on('error', reject);
+						worker.on('message', (event) => {
+							try {
+								if (event.started) {
+									resolve();
+								} else if (event.done) {
+									resolver.resolve();
+								}
+							} catch (error) {
+								reject(error);
 							}
-						} catch (error) {
-							reject(error);
+						});
+						worker.on('exit', () => resolver.resolve());
+					});
+
+					worker.postMessage({ addManyEntries: true, count: 1000 });
+
+					for (let i = 0; i < 1000; i++) {
+						const log = db.useLog('foo');
+						await db.transaction(async (txn) => {
+							log.addEntry(Buffer.from('hello'), txn.id);
+						});
+						if (i > 0 && i % 10 === 0) {
+							db.purgeLogs({ destroy: true });
 						}
-					});
-					worker.on('exit', () => resolver.resolve());
-				});
-
-				worker.postMessage({ addManyEntries: true, count: 1000 });
-
-				for (let i = 0; i < 1000; i++) {
-					const log = db.useLog('foo');
-					await db.transaction(async (txn) => {
-						log.addEntry(Buffer.from('hello'), txn.id);
-					});
-					if (i > 0 && i % 10 === 0) {
-						db.purgeLogs({ destroy: true });
 					}
-				}
 
-				await resolver.promise;
+					await resolver.promise;
 
-				resolver = withResolvers<void>();
-				worker.postMessage({ close: true });
+					resolver = withResolvers<void>();
+					worker.postMessage({ close: true });
 
-				if (process.versions.deno) {
-					// deno doesn't emit an `exit` event when the worker quits, but
-					// `terminate()` will trigger the `exit` event
-					await delay(100);
-					worker.terminate();
-				}
+					if (process.versions.deno) {
+						// deno doesn't emit an `exit` event when the worker quits, but
+						// `terminate()` will trigger the `exit` event
+						await delay(100);
+						worker.terminate();
+					}
 
-				await resolver.promise;
-			}), 60000);
+					await resolver.promise;
+				}),
+			60000
+		);
 
 		it('should rotate if file exceeds max age threshold', () =>
-			dbRunner({
-				dbOptions: [{ transactionLogRetention: 2000, transactionLogMaxAgeThreshold: 0.9 }],
-			}, async ({ db, dbPath }) => {
-				// we need to add the entry within 3 seconds
-				const log = db.useLog('foo');
-				await db.transaction(async (txn) => {
-					log.addEntry(Buffer.alloc(10, 'a'), txn.id);
-				});
+			dbRunner(
+				{
+					dbOptions: [{ transactionLogRetention: 2000, transactionLogMaxAgeThreshold: 0.9 }],
+				},
+				async ({ db, dbPath }) => {
+					// we need to add the entry within 3 seconds
+					const log = db.useLog('foo');
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(10, 'a'), txn.id);
+					});
 
-				await delay(250);
+					await delay(250);
 
-				// File should now be 250ms old, exceeding the rotation threshold of
-				// 200ms (2000ms retention × (1 - 0.9 threshold) = 200ms)
-				await db.transaction(async (txn) => {
-					log.addEntry(Buffer.alloc(10, 'a'), txn.id);
-				});
+					// File should now be 250ms old, exceeding the rotation threshold of
+					// 200ms (2000ms retention × (1 - 0.9 threshold) = 200ms)
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(10, 'a'), txn.id);
+					});
 
-				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
-				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
+					const logStorePath = join(dbPath, 'transaction_logs', 'foo');
+					const logFiles = await readdir(logStorePath);
+					expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
-				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
-				const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
-				const info1 = parseTransactionLog(log1Path);
-				const info2 = parseTransactionLog(log2Path);
+					const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+					const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
+					const info1 = parseTransactionLog(log1Path);
+					const info2 = parseTransactionLog(log2Path);
 
-				expect(info1.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10
-				);
-				expect(info1.version).toBe(1);
-				expect(info1.entries.length).toBe(1);
-				expect(info1.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
-				expect(info1.entries[0].length).toBe(10);
-				expect(info1.entries[0].data).toEqual(Buffer.alloc(10, 'a'));
+					expect(info1.size).toBe(
+						TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10
+					);
+					expect(info1.version).toBe(1);
+					expect(info1.entries.length).toBe(1);
+					expect(info1.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 10000);
+					expect(info1.entries[0].length).toBe(10);
+					expect(info1.entries[0].data).toEqual(Buffer.alloc(10, 'a'));
 
-				expect(info2.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10
-				);
-				expect(info2.version).toBe(1);
-				expect(info2.entries.length).toBe(1);
-				expect(info2.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
-				expect(info2.entries[0].length).toBe(10);
-				expect(info2.entries[0].data).toEqual(Buffer.alloc(10, 'a'));
-			}));
+					expect(info2.size).toBe(
+						TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10
+					);
+					expect(info2.version).toBe(1);
+					expect(info2.entries.length).toBe(1);
+					expect(info2.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+					expect(info2.entries[0].length).toBe(10);
+					expect(info2.entries[0].data).toEqual(Buffer.alloc(10, 'a'));
+				}
+			));
 
 		it('should append to existing log file', () =>
 			dbRunner(async ({ db, dbPath }) => {
@@ -975,7 +983,7 @@ describe('Transaction Log', () => {
 				expect(() => db.useLog([] as any)).toThrowError(
 					new TypeError('Log name must be a string or number')
 				);
-				await expect(db.transaction(txn => txn.useLog(undefined as any))).rejects.toThrowError(
+				await expect(db.transaction((txn) => txn.useLog(undefined as any))).rejects.toThrowError(
 					new TypeError('Log name must be a string or number')
 				);
 			}));

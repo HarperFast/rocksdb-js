@@ -1,7 +1,7 @@
-import { describe, it } from 'vitest';
-import { expect } from 'vitest';
 import type { BufferWithDataView } from '../src/encoding';
 import { dbRunner } from './lib/util.js';
+import { describe, it } from 'vitest';
+import { expect } from 'vitest';
 
 describe('Encoder', () => {
 	class CustomEncoder {
@@ -78,17 +78,22 @@ describe('Encoder', () => {
 		}));
 
 	it('should decode using readKey', () =>
-		dbRunner({
-			dbOptions: [{
-				encoding: false,
-				encoder: {
-					decode: null as any,
-					readKey: (buffer: Buffer, start: number, end?: number) => buffer.subarray(start, end),
-				},
-			}],
-		}, async ({ db }) => {
-			await db.put('foo', 'bar');
-			const value = await db.get('foo');
-			expect(value.equals(Buffer.from('bar'))).toBe(true);
-		}));
+		dbRunner(
+			{
+				dbOptions: [
+					{
+						encoding: false,
+						encoder: {
+							decode: null as any,
+							readKey: (buffer: Buffer, start: number, end?: number) => buffer.subarray(start, end),
+						},
+					},
+				],
+			},
+			async ({ db }) => {
+				await db.put('foo', 'bar');
+				const value = await db.get('foo');
+				expect(value.equals(Buffer.from('bar'))).toBe(true);
+			}
+		));
 });

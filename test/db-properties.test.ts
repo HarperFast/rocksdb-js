@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Database Properties', () => {
 	it('should get string property from database', () =>

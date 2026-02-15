@@ -91,8 +91,8 @@ for (const target of Object.keys(bindings)) {
 	copyFileSync(bindings[target], join(tmpDir, bindingFilename));
 	writeFileSync(
 		join(tmpDir, 'README.md'),
-		`# ${name}-${target}\n\n`
-			+ `${target} binding for [${name}](https://npmjs.com/package/${packageJson.name}).`
+		`# ${name}-${target}\n\n` +
+			`${target} binding for [${name}](https://npmjs.com/package/${packageJson.name}).`
 	);
 	writeFileSync(join(tmpDir, 'package.json'), pkgJson, 'utf8');
 	writeFileSync(

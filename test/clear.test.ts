@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { dbRunner } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Clear', () => {
 	describe('clear()', () => {
@@ -26,18 +26,22 @@ describe('Clear', () => {
 				expect(Array.from(db.getRange({})).length).toBe(0);
 			}));
 
-		it('should cancel clear if database closed while clearing', () =>
-			dbRunner(async ({ db }) => {
-				for (let i = 0; i < 100_000; ++i) {
-					db.putSync(`foo-${i}`, `bar-${i}`);
-				}
-				const promise = db.clear();
-				db.close();
-				// Now that we are using a fast DeleteFilesInRange operation, this expectation no longer reliable, since it normally
-				// completes before the database is closed. So we just run the test to make sure nothing crashes
-				// await expect(promise).rejects.toThrow('Database closed during clear operation');
-				promise.catch(() => {}); // silence expected error (that might happen depending on timing)
-			}), 10_000);
+		it(
+			'should cancel clear if database closed while clearing',
+			() =>
+				dbRunner(async ({ db }) => {
+					for (let i = 0; i < 100_000; ++i) {
+						db.putSync(`foo-${i}`, `bar-${i}`);
+					}
+					const promise = db.clear();
+					db.close();
+					// Now that we are using a fast DeleteFilesInRange operation, this expectation no longer reliable, since it normally
+					// completes before the database is closed. So we just run the test to make sure nothing crashes
+					// await expect(promise).rejects.toThrow('Database closed during clear operation');
+					promise.catch(() => {}); // silence expected error (that might happen depending on timing)
+				}),
+			10_000
+		);
 
 		it('should only remove entries in one column family', () =>
 			dbRunner({ dbOptions: [{}, { name: 'second' }] }, async ({ db }, { db: db2 }) => {

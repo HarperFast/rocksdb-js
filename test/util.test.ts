@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { parseDuration, when, withResolvers } from '../src/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Util', () => {
 	describe('parseDuration()', () => {
@@ -57,19 +57,21 @@ describe('Util', () => {
 		});
 
 		it('should call callback that returns a value', () => {
-			const result = when('foo', value => value.toUpperCase());
+			const result = when('foo', (value) => value.toUpperCase());
 			expect(result).toBe('FOO');
 		});
 
 		it('should call callback that returns a promise', async () => {
-			const result = await when(Promise.resolve('foo'), value => value.toUpperCase());
+			const result = await when(Promise.resolve('foo'), (value) => value.toUpperCase());
 			expect(result).toBe('FOO');
 		});
 
 		it('should call function that throws error', async () => {
-			await expect(when(() => {
-				throw new Error('foo');
-			})).rejects.toThrow('foo');
+			await expect(
+				when(() => {
+					throw new Error('foo');
+				})
+			).rejects.toThrow('foo');
 		});
 
 		it('should call function that rejects with error', async () => {
@@ -77,9 +79,11 @@ describe('Util', () => {
 		});
 
 		it('should call callback that throws error', async () => {
-			await expect(when('foo', () => {
-				throw new Error('foo');
-			})).rejects.toThrow('foo');
+			await expect(
+				when('foo', () => {
+					throw new Error('foo');
+				})
+			).rejects.toThrow('foo');
 		});
 
 		it('should call callback that rejects with error', async () => {

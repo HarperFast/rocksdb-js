@@ -1,9 +1,9 @@
+import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
 
 export function generateDBPath(): string {
 	const testDir = join(tmpdir(), 'rocksdb-js-tests');
@@ -14,7 +14,7 @@ export function generateDBPath(): string {
 type TestDB = { db: RocksDatabase; dbPath: string };
 
 type TestOptions = {
-	dbOptions?: (RocksDatabaseOptions & { path?: string } | undefined)[];
+	dbOptions?: ((RocksDatabaseOptions & { path?: string }) | undefined)[];
 	skipOpen?: boolean;
 };
 

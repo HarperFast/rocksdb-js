@@ -1,10 +1,10 @@
-import { describe } from 'vitest';
 import {
 	benchmark,
 	generateRandomKeys,
 	generateSequentialKeys,
 	generateTestData,
 } from './setup.js';
+import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;
 

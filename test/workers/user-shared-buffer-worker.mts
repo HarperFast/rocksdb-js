@@ -1,5 +1,5 @@
-import { parentPort, workerData } from 'node:worker_threads';
 import { RocksDatabase } from '../../src/index.js';
+import { parentPort, workerData } from 'node:worker_threads';
 
 const db = RocksDatabase.open(workerData.path);
 
@@ -9,7 +9,7 @@ const incrementer = new BigInt64Array(
 
 const getNextId = () => Atomics.add(incrementer, 0, 1n);
 
-parentPort?.on('message', event => {
+parentPort?.on('message', (event) => {
 	if (event.increment) {
 		parentPort?.postMessage({ nextId: getNextId() });
 	} else if (event.close) {

@@ -1,6 +1,6 @@
+import { benchmark, generateTestData } from './setup.js';
 import { ABORT } from 'lmdb';
 import { describe } from 'vitest';
-import { benchmark, generateTestData } from './setup.js';
 
 describe('transaction sync', () => {
 	const SMALL_DATASET = 100;
@@ -103,22 +103,26 @@ describe('transaction sync', () => {
 			benchmark('rocksdb', {
 				setup,
 				async bench({ db, data }) {
-					await Promise.all(data.map(async (item, i) => {
-						db.transactionSync((txn) => {
-							txn.putSync(`${item.key}-${i}`, item.value);
-						});
-					}));
+					await Promise.all(
+						data.map(async (item, i) => {
+							db.transactionSync((txn) => {
+								txn.putSync(`${item.key}-${i}`, item.value);
+							});
+						})
+					);
 				},
 			});
 
 			benchmark('lmdb', {
 				setup,
 				async bench({ db, data }) {
-					await Promise.all(data.map(async (item, i) => {
-						db.transactionSync(() => {
-							db.putSync(`${item.key}-${i}`, item.value);
-						});
-					}));
+					await Promise.all(
+						data.map(async (item, i) => {
+							db.transactionSync(() => {
+								db.putSync(`${item.key}-${i}`, item.value);
+							});
+						})
+					);
 				},
 			});
 		});

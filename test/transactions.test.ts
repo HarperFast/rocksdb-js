@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import type { Transaction } from '../src/transaction.js';
 import { withResolvers } from '../src/util.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 const testOptions = [
 	{ name: 'optimistic' },
@@ -57,11 +57,16 @@ for (const { name, options, txnOptions } of testOptions) {
 						afterCommit.promise,
 						committed.promise,
 					])
-				).resolves.toEqual([undefined, undefined, {
-					next: null,
-					last: null,
-					txnId: expect.any(Number),
-				}, undefined]);
+				).resolves.toEqual([
+					undefined,
+					undefined,
+					{
+						next: null,
+						last: null,
+						txnId: expect.any(Number),
+					},
+					undefined,
+				]);
 			}));
 
 		it(`${name} async should remove a value`, () =>
@@ -80,10 +85,12 @@ for (const { name, options, txnOptions } of testOptions) {
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await db.put('foo', 'bar');
 
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar2');
-					throw new Error('test');
-				}, txnOptions)).rejects.toThrow('test');
+				await expect(
+					db.transaction(async (txn: Transaction) => {
+						await txn.put('foo', 'bar2');
+						throw new Error('test');
+					}, txnOptions)
+				).rejects.toThrow('test');
 
 				const value = await db.get('foo');
 				expect(value).toBe('bar');
@@ -110,7 +117,7 @@ for (const { name, options, txnOptions } of testOptions) {
 
 							await txn.put('foo', 'bar3');
 						}, txnOptions);
-					} catch (error: unknown | Error & { code: string }) {
+					} catch (error: unknown | (Error & { code: string })) {
 						expect(error).toBeInstanceOf(Error);
 						if (error instanceof Error) {
 							expect(error.message).toBe(
@@ -143,7 +150,7 @@ for (const { name, options, txnOptions } of testOptions) {
 
 							await txn.put('foo', 'bar3');
 						}, txnOptions);
-					} catch (error: unknown | Error & { code: string }) {
+					} catch (error: unknown | (Error & { code: string })) {
 						expect(error).toBeInstanceOf(Error);
 						if (error instanceof Error) {
 							expect(error.message).toBe(
@@ -231,10 +238,12 @@ for (const { name, options, txnOptions } of testOptions) {
 				let promises: Promise<string | undefined>[] = [];
 				let txnPromises: Promise<void>[] = [];
 				for (let i = 0; i < 100; i++) {
-					txnPromises.push(db.transaction((transaction) => {
-						let result = db.get(`key-${i}`, { transaction });
-						promises.push(result);
-					}) as Promise<void>);
+					txnPromises.push(
+						db.transaction((transaction) => {
+							let result = db.get(`key-${i}`, { transaction });
+							promises.push(result);
+						}) as Promise<void>
+					);
 				}
 				const results = await Promise.all(promises);
 				for (let i = 0; i < 100; i++) {
@@ -251,15 +260,17 @@ for (const { name, options, txnOptions } of testOptions) {
 
 				let txn: Transaction;
 
-				await expect(db.transaction(async (t: Transaction) => {
-					txn = t;
-					const iter = txn.getRange();
-					const results = iter.map(_item => {
-						throw new Error('test');
-					});
-					const iterator = results[Symbol.asyncIterator]();
-					await iterator.next();
-				}, txnOptions)).rejects.toThrow('test');
+				await expect(
+					db.transaction(async (t: Transaction) => {
+						txn = t;
+						const iter = txn.getRange();
+						const results = iter.map((_item) => {
+							throw new Error('test');
+						});
+						const iterator = results[Symbol.asyncIterator]();
+						await iterator.next();
+					}, txnOptions)
+				).rejects.toThrow('test');
 
 				expect(() => db.getSync('a', { transaction: txn })).toThrow('Transaction not found');
 			}));
@@ -285,31 +296,37 @@ for (const { name, options, txnOptions } of testOptions) {
 
 		it(`${name} async should commit, then throw in the callback`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar');
-					await txn.commit();
-					throw new Error('test');
-				})).rejects.toThrow('test');
+				await expect(
+					db.transaction(async (txn: Transaction) => {
+						await txn.put('foo', 'bar');
+						await txn.commit();
+						throw new Error('test');
+					})
+				).rejects.toThrow('test');
 				await expect(db.get('foo')).toBe('bar');
 			}));
 
 		it(`${name} async should commit, then error when aborting in the callback`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar');
-					await txn.commit();
-					txn.abort();
-				})).rejects.toThrow('Transaction has already been committed');
+				await expect(
+					db.transaction(async (txn: Transaction) => {
+						await txn.put('foo', 'bar');
+						await txn.commit();
+						txn.abort();
+					})
+				).rejects.toThrow('Transaction has already been committed');
 				await expect(db.get('foo')).toBe('bar');
 			}));
 
 		it(`${name} async should commit, then abort in the callback`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar');
-					await txn.commit();
-					txn.abort();
-				})).rejects.toThrow('Transaction has already been committed');
+				await expect(
+					db.transaction(async (txn: Transaction) => {
+						await txn.put('foo', 'bar');
+						await txn.commit();
+						txn.abort();
+					})
+				).rejects.toThrow('Transaction has already been committed');
 				await expect(db.get('foo')).toBe('bar');
 			}));
 
@@ -334,21 +351,25 @@ for (const { name, options, txnOptions } of testOptions) {
 
 		it(`${name} async should abort, then throw in the callback`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar');
-					txn.abort();
-					throw new Error('test');
-				})).rejects.toThrow('test');
+				await expect(
+					db.transaction(async (txn: Transaction) => {
+						await txn.put('foo', 'bar');
+						txn.abort();
+						throw new Error('test');
+					})
+				).rejects.toThrow('test');
 				await expect(db.get('foo')).toBeUndefined();
 			}));
 
 		it(`${name} async should abort, then error when aborting in the callback`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
-				await expect(db.transaction(async (txn: Transaction) => {
-					await txn.put('foo', 'bar');
-					txn.abort();
-					await txn.commit();
-				})).rejects.toThrow('Transaction has already been aborted');
+				await expect(
+					db.transaction(async (txn: Transaction) => {
+						await txn.put('foo', 'bar');
+						txn.abort();
+						await txn.commit();
+					})
+				).rejects.toThrow('Transaction has already been aborted');
 				await expect(db.get('foo')).toBeUndefined();
 			}));
 
@@ -481,7 +502,7 @@ for (const { name, options, txnOptions } of testOptions) {
 					db.transactionSync((t: Transaction) => {
 						txn = t;
 						const iter = txn.getRange();
-						const results = iter.map(_item => {
+						const results = iter.map((_item) => {
 							throw new Error('test');
 						});
 						const iterator = results[Symbol.iterator]();

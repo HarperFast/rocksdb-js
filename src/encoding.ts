@@ -8,7 +8,7 @@ export interface BufferWithDataView extends Buffer {
 	end: number;
 }
 
-export type EncoderFunction = new(options?: any) => Encoder;
+export type EncoderFunction = new (options?: any) => Encoder;
 
 export interface Encoder {
 	copyBuffers?: boolean;

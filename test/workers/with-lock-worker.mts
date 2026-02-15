@@ -1,6 +1,6 @@
+import { RocksDatabase } from '../../src/index.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parentPort, workerData } from 'node:worker_threads';
-import { RocksDatabase } from '../../src/index.js';
 
 const db = RocksDatabase.open(workerData.path);
 
@@ -14,7 +14,7 @@ async function getLock() {
 
 getLock();
 
-parentPort?.on('message', event => {
+parentPort?.on('message', (event) => {
 	if (event.lock) {
 		getLock();
 	} else if (event.close) {

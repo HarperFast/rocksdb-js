@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
 import { RocksDatabase } from '../src/index.js';
 import { dbRunner } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Block Cache', () => {
 	it('should disable block cache', () =>

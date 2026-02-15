@@ -8,12 +8,11 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const child = spawnSync(process.execPath, [
-	'--expose-gc',
-	'./node_modules/vitest/vitest.mjs',
-	'--coverage',
-	...process.argv.slice(2),
-], { stdio: 'inherit' });
+const child = spawnSync(
+	process.execPath,
+	['--expose-gc', './node_modules/vitest/vitest.mjs', '--coverage', ...process.argv.slice(2)],
+	{ stdio: 'inherit' }
+);
 if (child.status !== 0) {
 	process.exit(child.status);
 }

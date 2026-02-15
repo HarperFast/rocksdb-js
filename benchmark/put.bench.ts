@@ -1,5 +1,5 @@
-import { describe } from 'vitest';
 import { benchmark, generateTestData } from './setup.js';
+import { describe } from 'vitest';
 
 describe('put', () => {
 	const SMALL_DATASET = 100;

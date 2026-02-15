@@ -1,9 +1,9 @@
-import { setTimeout as delay } from 'node:timers/promises';
-import { Worker } from 'node:worker_threads';
-import { assert, describe, expect, it } from 'vitest';
 import type { BufferWithDataView } from '../src/encoding.js';
 import { withResolvers } from '../src/util.js';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
+import { assert, describe, expect, it } from 'vitest';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -63,7 +63,7 @@ describe('User Shared Buffer', () => {
 		it('should notify callbacks', () =>
 			dbRunner(async ({ db }) => {
 				const sharedNumber = new Float64Array(1);
-				await new Promise<void>(resolve => {
+				await new Promise<void>((resolve) => {
 					const sharedBuffer = db.getUserSharedBuffer('with-callback', sharedNumber.buffer, {
 						callback() {
 							// wait so notify() returns true
@@ -86,7 +86,7 @@ describe('User Shared Buffer', () => {
 						encodedKey.subarray(encodedKey.start, encodedKey.end)
 					) as BufferWithDataView;
 
-					await new Promise<void>(resolve => {
+					await new Promise<void>((resolve) => {
 						expect(db.listeners(key)).toBe(0);
 						const sharedBuffer = db.getUserSharedBuffer('with-callback2', sharedNumber.buffer, {
 							callback() {
@@ -138,7 +138,7 @@ describe('User Shared Buffer', () => {
 
 					await new Promise<void>((resolve, reject) => {
 						worker.on('error', reject);
-						worker.on('message', event => {
+						worker.on('message', (event) => {
 							try {
 								if (event.started) {
 									resolve();
@@ -202,8 +202,9 @@ describe('User Shared Buffer', () => {
 
 		it('should error if callback is not a function', () =>
 			dbRunner(async ({ db }) => {
-				expect(() => db.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any }))
-					.toThrow('Callback must be a function');
+				expect(() =>
+					db.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any })
+				).toThrow('Callback must be a function');
 			}));
 	});
 });

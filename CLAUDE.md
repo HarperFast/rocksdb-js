@@ -53,8 +53,7 @@ This is a Node.js binding for RocksDB that provides both TypeScript and C++ laye
 - **`database.cpp/h`** - Native database operations and async work handling
 - **`db_handle.cpp/h`** - Database handle management
 - **`transaction.cpp/h` && `transaction_handle.cpp/h`** - Native transaction implementations
--
-  - **`transaction_log*.cpp/h`** - Native transaction log store and file implementations
+- - **`transaction_log*.cpp/h`** - Native transaction log store and file implementations
 - **`db_iterator*.cpp/h`** - Iterator implementations for range queries
 - **`util.cpp/h`** - Utility functions and error handling
 

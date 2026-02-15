@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import { DBI } from '../src/dbi.js';
 import { RocksDatabase, Store } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Error Handling', () => {
 	it('should error if database path is invalid', () => {

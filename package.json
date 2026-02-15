@@ -2,7 +2,22 @@
   "name": "@harperfast/rocksdb-js",
   "version": "0.1.6",
   "description": "RocksDB binding for Node.js",
+  "homepage": "https://github.com/HarperFast/rocksdb-js",
+  "bugs": [
+    {
+      "type": "link",
+      "url": "https://github.com/HarperFast/rocksdb-js/issues"
+    }
+  ],
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HarperFast/rocksdb-js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
   "exports": {
@@ -12,8 +27,6 @@
       "require": "./dist/index.cjs"
     }
   },
-  "type": "module",
-  "gypfile": true,
   "scripts": {
     "bench": "cross-env CI=1 vitest bench --passWithNoTests --outputJson benchmark-results.json",
     "bench:bun": "cross-env CI=1 bun --bun bench",
@@ -23,11 +36,11 @@
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
     "build:bundle": "node scripts/clean-dist.mjs && tsdown -c tsdown.config.ts",
     "build:bundle:minify": "cross-env MINIFY=1 pnpm build:bundle",
-    "check": "pnpm type-check && pnpm lint",
+    "check": "pnpm type-check && pnpm lint && pnpm fmt:check",
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts --no-file-parallelism",
-    "format": "dprint check",
-    "format:fix": "dprint fmt",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "lint": "oxlint",
     "prepublishOnly": "pnpm build",
     "rebuild": "node-gyp rebuild",
@@ -38,9 +51,6 @@
     "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts --no-file-parallelism",
     "type-check": "tsc --noEmit"
   },
-  "files": [
-    "dist"
-  ],
   "dependencies": {
     "@harperfast/extended-iterable": "1.0.3",
     "msgpackr": "1.11.8",
@@ -52,10 +62,10 @@
     "@vitest/coverage-v8": "4.0.18",
     "cross-env": "10.1.0",
     "dotenv": "17.3.1",
-    "dprint": "0.51.1",
     "lefthook": "2.1.1",
     "lmdb": "3.5.1",
     "node-gyp": "12.2.0",
+    "oxfmt": "0.31.0",
     "oxlint": "1.47.0",
     "prebuildify": "6.0.1",
     "semver": "7.7.4",
@@ -65,36 +75,26 @@
     "typescript": "5.9.3",
     "vitest": "4.0.18"
   },
+  "optionalDependencies": {
+    "@harperfast/rocksdb-js-darwin-arm64": "0.1.6",
+    "@harperfast/rocksdb-js-darwin-x64": "0.1.6",
+    "@harperfast/rocksdb-js-linux-arm64-glibc": "0.1.6",
+    "@harperfast/rocksdb-js-linux-arm64-musl": "0.1.6",
+    "@harperfast/rocksdb-js-linux-x64-glibc": "0.1.6",
+    "@harperfast/rocksdb-js-linux-x64-musl": "0.1.6",
+    "@harperfast/rocksdb-js-win32-arm64": "0.1.6",
+    "@harperfast/rocksdb-js-win32-x64": "0.1.6"
+  },
   "engines": {
     "node": ">=18"
-  },
-  "rocksdb": {
-    "version": "10.10.1"
-  },
-  "homepage": "https://github.com/HarperFast/rocksdb-js",
-  "bugs": [
-    {
-      "type": "link",
-      "url": "https://github.com/HarperFast/rocksdb-js/issues"
-    }
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/HarperFast/rocksdb-js"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "msgpackr-extract"
     ]
   },
-  "optionalDependencies": {
-    "@harperfast/rocksdb-js-darwin-arm64": "0.1.6",
-    "@harperfast/rocksdb-js-darwin-x64": "0.1.6",
-    "@harperfast/rocksdb-js-linux-arm64-glibc": "0.1.6",
-    "@harperfast/rocksdb-js-linux-x64-glibc": "0.1.6",
-    "@harperfast/rocksdb-js-linux-arm64-musl": "0.1.6",
-    "@harperfast/rocksdb-js-linux-x64-musl": "0.1.6",
-    "@harperfast/rocksdb-js-win32-arm64": "0.1.6",
-    "@harperfast/rocksdb-js-win32-x64": "0.1.6"
+  "gypfile": true,
+  "rocksdb": {
+    "version": "10.10.1"
   }
 }

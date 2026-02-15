@@ -1,5 +1,5 @@
-import { describe } from 'vitest';
 import { benchmark, generateTestData, randomString } from './setup.js';
+import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;
 
@@ -135,10 +135,10 @@ describe('Value encoding', () => {
 
 	describe('msgpack values - numbers (100 records)', () => {
 		function setup(ctx) {
-			ctx.numbers = Array.from(
-				{ length: SMALL_DATASET },
-				(_, i) => ({ key: `num-${i}`, value: Math.random() * 1000000 })
-			);
+			ctx.numbers = Array.from({ length: SMALL_DATASET }, (_, i) => ({
+				key: `num-${i}`,
+				value: Math.random() * 1000000,
+			}));
 			for (const item of ctx.numbers) {
 				ctx.db.putSync(item.key, item.value);
 			}
@@ -165,13 +165,10 @@ describe('Value encoding', () => {
 
 	describe('msgpack values - arrays (100 records)', () => {
 		function setup(ctx) {
-			ctx.arrays = Array.from(
-				{ length: SMALL_DATASET },
-				(_, i) => ({
-					key: `arr-${i}`,
-					value: Array.from({ length: 20 }, (_, j) => `item-${i}-${j}`),
-				})
-			);
+			ctx.arrays = Array.from({ length: SMALL_DATASET }, (_, i) => ({
+				key: `arr-${i}`,
+				value: Array.from({ length: 20 }, (_, j) => `item-${i}-${j}`),
+			}));
 			for (const item of ctx.arrays) {
 				ctx.db.putSync(item.key, item.value);
 			}
@@ -198,19 +195,16 @@ describe('Value encoding', () => {
 
 	describe('msgpack values - small objects (100 records)', () => {
 		function setup(ctx) {
-			ctx.objects = Array.from(
-				{ length: SMALL_DATASET },
-				(_, i) => ({
-					key: `obj-${i}`,
-					value: {
-						id: i,
-						name: `Object ${i}`,
-						data: randomString(50),
-						timestamp: Date.now(),
-						nested: { prop1: `value-${i}`, prop2: i * 2, array: [i, i + 1, i + 2] },
-					},
-				})
-			);
+			ctx.objects = Array.from({ length: SMALL_DATASET }, (_, i) => ({
+				key: `obj-${i}`,
+				value: {
+					id: i,
+					name: `Object ${i}`,
+					data: randomString(50),
+					timestamp: Date.now(),
+					nested: { prop1: `value-${i}`, prop2: i * 2, array: [i, i + 1, i + 2] },
+				},
+			}));
 			for (const item of ctx.objects) {
 				ctx.db.putSync(item.key, item.value);
 			}
@@ -237,23 +231,20 @@ describe('Value encoding', () => {
 
 	describe('msgpack values - large objects (100 records)', () => {
 		function setup(ctx) {
-			ctx.objects = Array.from(
-				{ length: 100 },
-				(_, i) => ({
-					key: `large-${i}`,
-					value: {
-						id: i,
-						content: randomString(10_000),
-						metadata: {
-							created: new Date(),
-							tags: Array.from({ length: 100 }, (_, j) => `tag-${j}`),
-							properties: Object.fromEntries(
-								Array.from({ length: 50 }, (_, k) => [`prop${k}`, `value${k}`])
-							),
-						},
+			ctx.objects = Array.from({ length: 100 }, (_, i) => ({
+				key: `large-${i}`,
+				value: {
+					id: i,
+					content: randomString(10_000),
+					metadata: {
+						created: new Date(),
+						tags: Array.from({ length: 100 }, (_, j) => `tag-${j}`),
+						properties: Object.fromEntries(
+							Array.from({ length: 50 }, (_, k) => [`prop${k}`, `value${k}`])
+						),
 					},
-				})
-			);
+				},
+			}));
 			for (const item of ctx.objects) {
 				ctx.db.putSync(item.key, item.value);
 			}

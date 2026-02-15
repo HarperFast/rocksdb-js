@@ -1,7 +1,7 @@
-import { setImmediate as rest } from 'node:timers/promises';
-import { describe } from 'vitest';
 import type { RocksDatabase } from '../dist/index.mjs';
 import { benchmark, type BenchmarkContext, concurrent, type LMDBDatabase } from './setup.js';
+import { setImmediate as rest } from 'node:timers/promises';
+import { describe } from 'vitest';
 
 describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
@@ -48,7 +48,9 @@ describe('Transaction log', () => {
 					const db = ctx.db;
 					const log = db.useLog('0');
 					ctx.log = log;
-					ctx.iterators = Array(100).fill(null).map(() => log.query({ start: 1 }));
+					ctx.iterators = Array(100)
+						.fill(null)
+						.map(() => log.query({ start: 1 }));
 				},
 				bench({ db, iterators, log }) {
 					let _last: number | undefined;
@@ -100,7 +102,7 @@ describe('Transaction log', () => {
 					await db.transaction(async (txn) => {
 						log.addEntry(value, txn.id);
 					});
-					await new Promise(resolve => setTimeout(resolve, 1));
+					await new Promise((resolve) => setTimeout(resolve, 1));
 				}
 				ctx.duration = Date.now() - ctx.start;
 			},

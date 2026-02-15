@@ -28,7 +28,7 @@ export async function getPrebuild(desiredVersion?: string): Promise<Prebuild> {
 		);
 	}
 
-	const releases = await response.json() as GithubRelease[];
+	const releases = (await response.json()) as GithubRelease[];
 	releases.sort((a, b) => {
 		const aVersion = a.tag_name.replace(/^v/, '');
 		const bVersion = b.tag_name.replace(/^v/, '');
@@ -38,7 +38,7 @@ export async function getPrebuild(desiredVersion?: string): Promise<Prebuild> {
 	// default to the latest release
 	let prebuild: GithubRelease | undefined = releases[0];
 	if (desiredVersion && desiredVersion !== 'latest') {
-		prebuild = releases.find(release => release.tag_name === `v${desiredVersion}`);
+		prebuild = releases.find((release) => release.tag_name === `v${desiredVersion}`);
 	}
 
 	if (!prebuild) {

@@ -1,4 +1,3 @@
-import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
@@ -22,6 +21,7 @@ import {
 	type UserSharedBufferCallback,
 } from './load-binding.js';
 import { parseDuration } from './util.js';
+import { ExtendedIterable } from '@harperfast/extended-iterable';
 
 const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } =
 	constants;
@@ -45,9 +45,10 @@ export type StoreRemoveOptions = DBITransactional | unknown;
 /**
  * Options for the `Store` class.
  */
-export interface StoreOptions
-	extends Omit<NativeDatabaseOptions, 'mode' | 'transactionLogRetentionMs'>
-{
+export interface StoreOptions extends Omit<
+	NativeDatabaseOptions,
+	'mode' | 'transactionLogRetentionMs'
+> {
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
@@ -375,12 +376,14 @@ export class Store {
 	): any | undefined {
 		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
-		if (alwaysCreateNewBuffer) { // used by getBinary to force a new safe long-lived buffer
+		if (alwaysCreateNewBuffer) {
+			// used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		const result = context.getSync(keyParam, flags | ONLY_IF_IN_MEMORY_CACHE_FLAG, txnId);
-		if (typeof result === 'number') { // return a number indicates it is using the default buffer
+		if (typeof result === 'number') {
+			// return a number indicates it is using the default buffer
 			if (result === NOT_IN_MEMORY_CACHE_FLAG) {
 				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
@@ -412,7 +415,7 @@ export class Store {
 	}
 
 	getKeys(context: StoreContext, options?: StoreIteratorOptions): any | undefined {
-		return this.getRange(context, { ...options, values: false }).map(item => item.key);
+		return this.getRange(context, { ...options, values: false }).map((item) => item.key);
 	}
 
 	getKeysCount(context: StoreContext, options?: StoreRangeOptions): number {
@@ -478,7 +481,8 @@ export class Store {
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
 		const result = context.getSync(keyParam, flags, this.getTxnId(options));
-		if (typeof result === 'number') { // return a number indicates it is using the default buffer
+		if (typeof result === 'number') {
+			// return a number indicates it is using the default buffer
 			VALUE_BUFFER.end = result;
 			return VALUE_BUFFER;
 		} // else it is undefined or it is a new buffer

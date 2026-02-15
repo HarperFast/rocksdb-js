@@ -1,5 +1,5 @@
-import { parentPort, workerData } from 'node:worker_threads';
 import { RocksDatabase } from '../../src/index.js';
+import { parentPort, workerData } from 'node:worker_threads';
 
 const db = RocksDatabase.open(workerData.path);
 
@@ -11,7 +11,7 @@ function getLock() {
 
 getLock();
 
-parentPort?.on('message', event => {
+parentPort?.on('message', (event) => {
 	if (event.unlock) {
 		db.unlock('foo');
 		parentPort?.postMessage({ unlocked: true });

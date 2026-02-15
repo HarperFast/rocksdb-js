@@ -10,7 +10,7 @@ const config: UserConfig = defineConfig({
 	format: ['es', 'cjs'],
 	minify: Boolean(process.env.MINIFY),
 	platform: 'node',
-	plugins: [replace({ preventAssignment: true, values: { 'ROCKSDB_JS_VERSION': version } })],
+	plugins: [replace({ preventAssignment: true, values: { ROCKSDB_JS_VERSION: version } })],
 	sourcemap: true,
 	tsconfig: './tsconfig.build.json',
 });

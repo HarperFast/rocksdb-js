@@ -87,7 +87,7 @@ export function when<T>(
 			return result.then(callback, errback) as T;
 		}
 
-		return callback ? callback(result as T) : result as T;
+		return callback ? callback(result as T) : (result as T);
 	} catch (error) {
 		return errback ? errback(error) : Promise.reject(error);
 	}
