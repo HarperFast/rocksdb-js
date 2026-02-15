@@ -170,13 +170,12 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
-
 	napi_value result;
+	PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
 	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, LOG_POSITION_SIZE, (void*)lastCommittedPosition.get(), [](napi_env env, void* data, void* hint) {
 		PositionHandle* positionHandle = static_cast<PositionHandle*>(hint);
 		delete positionHandle;
-	}, nullptr, &result));
+	}, positionHandle, &result));
 	return result;
 }
 
