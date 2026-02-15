@@ -154,6 +154,10 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	return result;
 }
 
+struct PositionHandle {
+	std::shared_ptr<LogPosition> position;
+};
+
 /**
  * Return a buffer with the status of the sequenced log file.
  */
@@ -166,15 +170,12 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Create a copy of the position to avoid data races. The lastCommittedPosition
-	// is concurrently modified by commitFinished(), so we cannot safely expose
-	// a direct pointer to it.
-	LogPosition* positionCopy = new LogPosition(*lastCommittedPosition);
+	// PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, LOG_POSITION_SIZE, (void*)positionCopy, [](napi_env env, void* data, void* hint) {
-		LogPosition* position = static_cast<LogPosition*>(data);
-		delete position;
+	NAPI_STATUS_THROWS(::napi_create_external_buffer(env, LOG_POSITION_SIZE, (void*)lastCommittedPosition.get(), [](napi_env env, void* data, void* hint) {
+		PositionHandle* positionHandle = static_cast<PositionHandle*>(hint);
+		delete positionHandle;
 	}, nullptr, &result));
 	return result;
 }
