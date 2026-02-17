@@ -45,7 +45,7 @@ jobs:
           gh-token: ${{ steps.github-token.outputs.token }}
 
       - name: Fix formatting
-        run: pnpm format:fix
+        run: pnpm fmt
 
       - name: Reset pnpm-lock.yaml
         shell: bash

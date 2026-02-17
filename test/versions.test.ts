@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { versions } from '../src/index.js';
+import { describe, expect, it } from 'vitest';
 
 describe('versions', () => {
 	it('should get the versions', () => {

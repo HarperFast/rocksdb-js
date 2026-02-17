@@ -25,8 +25,14 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
 Object.defineProperty(TransactionLog.prototype, 'query', {
 	value(
 		this: TransactionLog,
-		{ start, end, exactStart, startFromLastFlushed, readUncommitted, exclusiveStart }:
-			TransactionLogQueryOptions = {}
+		{
+			start,
+			end,
+			exactStart,
+			startFromLastFlushed,
+			readUncommitted,
+			exclusiveStart,
+		}: TransactionLogQueryOptions = {}
 	): IterableIterator<TransactionEntry> {
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
@@ -52,7 +58,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			if (startFromLastFlushed) {
 				// read from the last flushed position
 				FLOAT_TO_UINT32[0] = this._getLastFlushed();
-				if (FLOAT_TO_UINT32[0] === 0) { // no flushes have ever occurred, go to the beginning (which is actually after the file header)
+				if (FLOAT_TO_UINT32[0] === 0) {
+					// no flushes have ever occurred, go to the beginning (which is actually after the file header)
 					FLOAT_TO_UINT32[0] = this._findPosition(0);
 				}
 				start ??= 0; // if no start timestamp is specified, include all
@@ -111,8 +118,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					size = latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
-						size = logBuffer!.size
-							?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+						size =
+							logBuffer!.size ??
+							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
@@ -120,8 +128,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							logBuffer = nextLogBuffer;
 							if (latestLogId > logBuffer!.logId) {
 								// it is non-current log file, we can safely use or cache the size
-								size = logBuffer!.size
-									?? (logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+								size =
+									logBuffer!.size ??
+									(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 							} else {
 								size = latestSize; // use the latest position from loadLastPosition
 							}
@@ -152,7 +161,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					const length = dataView.getUint32(position + 8);
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 					let matchesRange: boolean;
-					if (foundExactStart) { // already found the exact start, only need to match on remaining conditions
+					if (foundExactStart) {
+						// already found the exact start, only need to match on remaining conditions
 						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {
 						// in exact start mode, we are look for the exact identifying timestamp of the first transaction
@@ -163,9 +173,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						} else {
 							matchesRange = false;
 						}
-					} else { // no exact start, so just match on conditions
-						matchesRange = (exclusiveStart ? timestamp > start! : timestamp >= start!)
-							&& timestamp < end;
+					} else {
+						// no exact start, so just match on conditions
+						matchesRange =
+							(exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end;
 					}
 					const entryStart = position;
 					position += length;
@@ -212,7 +223,8 @@ function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuff
 		return;
 	}
 	let logBuffer = transactionLog._logBuffers!.get(logId)?.deref();
-	if (logBuffer) { // if we have a cached buffer, return it
+	if (logBuffer) {
+		// if we have a cached buffer, return it
 		return logBuffer;
 	}
 	try {
@@ -254,7 +266,8 @@ function loadLastPosition(
 		let nextLogId = logId || 1;
 		while (true) {
 			nextSize = transactionLog.getLogFileSize(nextLogId);
-			if (nextSize === 0) { // if the size is zero, there is no next log file, we are done
+			if (nextSize === 0) {
+				// if the size is zero, there is no next log file, we are done
 				break;
 			} else {
 				size = nextSize;

@@ -1,6 +1,6 @@
+import { dbRunner } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { dbRunner } from './lib/util.js';
 
 describe('getOldestSnapshotTimestamp()', () => {
 	it('should get oldest snapshot timestamp in optimistic mode', () =>

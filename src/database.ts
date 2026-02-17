@@ -1,5 +1,3 @@
-import { Encoder as MsgpackEncoder } from 'msgpackr';
-import * as orderedBinary from 'ordered-binary';
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 import {
@@ -17,6 +15,8 @@ import {
 	VALUE_BUFFER,
 } from './store.js';
 import { Transaction } from './transaction.js';
+import { Encoder as MsgpackEncoder } from 'msgpackr';
+import * as orderedBinary from 'ordered-binary';
 
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
@@ -375,9 +375,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 						// note: we need to get a fresh copy of the shared structures,
 						// so we don't want to use the transaction's getBinarySync()
 						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
-						const existingStructures = existingStructuresBuffer && store.decoder?.decode
-							? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
-							: undefined;
+						const existingStructures =
+							existingStructuresBuffer && store.decoder?.decode
+								? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
+								: undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
 								return false;
@@ -549,7 +550,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		// despite being 'sync', we need to support async operations
 		if (
-			result && typeof result === 'object' && 'then' in result && typeof result.then === 'function'
+			result &&
+			typeof result === 'object' &&
+			'then' in result &&
+			typeof result.then === 'function'
 		) {
 			return result.then((value) => {
 				try {

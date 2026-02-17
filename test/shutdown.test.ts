@@ -1,9 +1,9 @@
+import { registryStatus, shutdown } from '../src/index.js';
+import { dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { registryStatus, shutdown } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
 
 describe('Shutdown', () => {
 	it('should shutdown rocksdb-js', () =>
@@ -132,13 +132,14 @@ describe('Shutdown', () => {
 		await mkdir(dbPath, { recursive: true });
 
 		await new Promise<void>((resolve, reject) => {
-			const args = process.versions.bun || process.versions.deno
-				? [join(__dirname, 'fixtures', 'fork-shutdown.mts'), dbPath]
-				: [
-					'node_modules/tsx/dist/cli.mjs',
-					join(__dirname, 'fixtures', 'fork-shutdown.mts'),
-					dbPath,
-				];
+			const args =
+				process.versions.bun || process.versions.deno
+					? [join(__dirname, 'fixtures', 'fork-shutdown.mts'), dbPath]
+					: [
+							'node_modules/tsx/dist/cli.mjs',
+							join(__dirname, 'fixtures', 'fork-shutdown.mts'),
+							dbPath,
+						];
 
 			const child = spawn(process.execPath, args, {
 				env: { ...process.env, DO_FORK: '1' },

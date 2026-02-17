@@ -1,9 +1,9 @@
+import { withResolvers } from '../src/util.js';
+import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
 import EventEmitter, { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
-import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
 
 describe('Events', () => {
 	it('should notify to listeners', () =>
@@ -16,14 +16,14 @@ describe('Events', () => {
 
 			let resolvers = [withResolvers<void>()];
 
-			db.addListener('foo', value => {
+			db.addListener('foo', (value) => {
 				spy();
 				resolvers[0].resolve(value);
 			});
 
 			expect(db.listeners('foo')).toBe(1);
 			expect(db.notify('foo')).toBe(true);
-			await Promise.all(resolvers.map(r => r.promise));
+			await Promise.all(resolvers.map((r) => r.promise));
 			expect(spy).toHaveBeenCalledTimes(1);
 
 			resolvers = [withResolvers<void>(), withResolvers<void>()];
@@ -37,7 +37,7 @@ describe('Events', () => {
 
 			expect(db.listeners('foo')).toBe(2);
 			expect(db.notify('foo')).toBe(true);
-			await Promise.all(resolvers.map(r => r.promise));
+			await Promise.all(resolvers.map((r) => r.promise));
 			expect(spy).toHaveBeenCalledTimes(2);
 			expect(spy2).toHaveBeenCalledTimes(1);
 
@@ -47,7 +47,7 @@ describe('Events', () => {
 
 			resolvers = [withResolvers<void>()];
 			expect(db.notify('foo', 'bar')).toBe(true);
-			await expect(Promise.all(resolvers.map(r => r.promise))).resolves.toEqual(['bar']);
+			await expect(Promise.all(resolvers.map((r) => r.promise))).resolves.toEqual(['bar']);
 			expect(spy).toHaveBeenCalledTimes(3);
 			expect(spy2).toHaveBeenCalledTimes(1);
 		}));
@@ -87,9 +87,17 @@ describe('Events', () => {
 
 			resolver = withResolvers<any[]>();
 			db.notify('foo', 'bar', 1234, true, false, null, [1, 2, 3], { foo: 'bar' });
-			await expect(resolver.promise).resolves.toEqual(['bar', 1234, true, false, null, [1, 2, 3], {
-				foo: 'bar',
-			}]);
+			await expect(resolver.promise).resolves.toEqual([
+				'bar',
+				1234,
+				true,
+				false,
+				null,
+				[1, 2, 3],
+				{
+					foo: 'bar',
+				},
+			]);
 		}));
 
 	it('should notify once', () =>
@@ -108,7 +116,7 @@ describe('Events', () => {
 
 			db.notify('foo');
 			// Give time for potential second callback (shouldn't happen)
-			await new Promise(resolve => setTimeout(resolve, 50));
+			await new Promise((resolve) => setTimeout(resolve, 50));
 			expect(callCount).toBe(1);
 		}));
 
@@ -216,7 +224,7 @@ describe('Events', () => {
 				db2.notify('foo');
 
 				await Promise.race([
-					...resolvers.map(r =>
+					...resolvers.map((r) =>
 						r.promise.then(() => {
 							throw new Error('Expected listeners to not be called');
 						})
@@ -241,7 +249,7 @@ describe('Events', () => {
 
 			await new Promise<void>((resolve, reject) => {
 				worker.on('error', reject);
-				worker.on('message', event => {
+				worker.on('message', (event) => {
 					try {
 						if (event.started) {
 							resolve();
@@ -256,7 +264,7 @@ describe('Events', () => {
 			});
 
 			resolver = withResolvers<void>();
-			db.addListener('worker-event', value => resolver.resolve(value));
+			db.addListener('worker-event', (value) => resolver.resolve(value));
 			worker.postMessage({ notify: true });
 			await expect(resolver.promise).resolves.toBe('foo');
 

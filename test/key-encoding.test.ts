@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/encoding.js';
 import { RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
+import { describe, expect, it } from 'vitest';
 
 describe('Key Encoding', () => {
 	describe('uint32', () => {
@@ -67,34 +67,47 @@ describe('Key Encoding', () => {
 
 	describe('Custom key encoder', () => {
 		it('should encode key with string using custom key encoder', () =>
-			dbRunner({
-				dbOptions: [{
-					keyEncoder: {
-						readKey(key: Buffer) {
-							return JSON.parse(key.toString('utf-8'));
+			dbRunner(
+				{
+					dbOptions: [
+						{
+							keyEncoder: {
+								readKey(key: Buffer) {
+									return JSON.parse(key.toString('utf-8'));
+								},
+								writeKey(key: Key, target: Buffer, start: number) {
+									return target.write(
+										JSON.stringify(key instanceof Buffer ? key : String(key)),
+										start
+									);
+								},
+							},
 						},
-						writeKey(key: Key, target: Buffer, start: number) {
-							return target.write(JSON.stringify(key instanceof Buffer ? key : String(key)), start);
-						},
-					},
-				}],
-			}, async ({ db }) => {
-				await db.put({ foo: 'bar' } as any, 'baz');
-				const value = await db.get({ foo: 'bar' } as any);
-				expect(value).toBe('baz');
-			}));
+					],
+				},
+				async ({ db }) => {
+					await db.put({ foo: 'bar' } as any, 'baz');
+					const value = await db.get({ foo: 'bar' } as any);
+					expect(value).toBe('baz');
+				}
+			));
 
 		it('should throw an error if key has zero length', () =>
-			dbRunner({
-				dbOptions: [{
-					keyEncoder: {
-						readKey: (_key: Buffer) => Buffer.from('foo'),
-						writeKey: (_key: Key, _target: Buffer, _start: number) => 0,
-					},
-				}],
-			}, async ({ db }) => {
-				await expect(db.get('foo')).rejects.toThrow('Zero length key is not allowed');
-			}));
+			dbRunner(
+				{
+					dbOptions: [
+						{
+							keyEncoder: {
+								readKey: (_key: Buffer) => Buffer.from('foo'),
+								writeKey: (_key: Key, _target: Buffer, _start: number) => 0,
+							},
+						},
+					],
+				},
+				async ({ db }) => {
+					await expect(db.get('foo')).rejects.toThrow('Zero length key is not allowed');
+				}
+			));
 
 		it('should error if key encoder is missing readKey or writeKey', async () => {
 			const dbPath = generateDBPath();

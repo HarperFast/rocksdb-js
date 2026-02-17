@@ -182,27 +182,30 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 */
 	get(key: Key, options?: GetOptions & T): MaybePromise<any | undefined> {
 		if (this.store.decoderCopies) {
-			return when(() => this.getBinaryFast(key, options), result => {
-				if (result === undefined) {
-					return undefined;
-				}
+			return when(
+				() => this.getBinaryFast(key, options),
+				(result) => {
+					if (result === undefined) {
+						return undefined;
+					}
 
-				if (options?.skipDecode) {
-					return result;
-				}
+					if (options?.skipDecode) {
+						return result;
+					}
 
-				return this.store.decodeValue(result as BufferWithDataView);
-			});
+					return this.store.decodeValue(result as BufferWithDataView);
+				}
+			);
 		}
 
 		return when(
 			() => this.getBinary(key, options),
-			result =>
+			(result) =>
 				result === undefined
 					? undefined
-					: (this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode)
-					? result
-					: this.store.decodeValue(result as BufferWithDataView)
+					: this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode
+						? result
+						: this.store.decodeValue(result as BufferWithDataView)
 		);
 	}
 

@@ -1,6 +1,6 @@
+import { dbRunner } from './lib/util.js';
 import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { dbRunner } from './lib/util.js';
 
 describe('Destroy', () => {
 	it('should destroy a closed database', () =>
