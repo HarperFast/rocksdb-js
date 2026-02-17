@@ -28,7 +28,7 @@
     }
   },
   "scripts": {
-    "bench": "cross-env CI=1 vitest bench --passWithNoTests --outputJson benchmark-results.json",
+    "bench": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs bench --passWithNoTests --outputJson benchmark-results.json",
     "bench:bun": "cross-env CI=1 bun --bun bench",
     "bench:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
     "build": "pnpm build:bundle && pnpm rebuild",
@@ -38,17 +38,17 @@
     "build:bundle:minify": "cross-env MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint && pnpm fmt:check",
     "clean": "node-gyp clean",
-    "coverage": "tsx scripts/coverage/main.ts --no-file-parallelism",
+    "coverage": "tsx scripts/coverage/main.ts",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "lint": "oxlint",
     "prepublishOnly": "pnpm build",
     "rebuild": "node-gyp rebuild",
     "rebuild:debug": "node-gyp rebuild --coverage --debug --verbose",
-    "test": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --no-file-parallelism",
-    "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose --no-file-parallelism",
-    "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs --no-file-parallelism",
-    "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts --no-file-parallelism",
+    "test": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
+    "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs",
+    "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {

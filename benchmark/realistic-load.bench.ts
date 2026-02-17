@@ -21,17 +21,9 @@ describe('Realistic write load with workers', () => {
 				concurrencyMaximum: 32,
 				dbOptions: { disableWAL: true },
 				setup(ctx: BenchmarkContext<RocksDatabase>) {
-					process.stdout.write(
-						'SETTING UP ROCKSDB BENCHMARK: write variable records with transaction log\n'
-					);
 					const db = ctx.db;
 					const log = db.useLog('0');
 					ctx.log = log;
-				},
-				teardown() {
-					process.stdout.write(
-						'TEARING DOWN ROCKSDB BENCHMARK: write variable records with transaction log\n'
-					);
 				},
 				async bench({ db, log }) {
 					for (let i = 0; i < ITERATIONS; i++) {
@@ -64,17 +56,9 @@ describe('Realistic write load with workers', () => {
 				numWorkers: 4,
 				concurrencyMaximum: 32,
 				async setup(ctx: BenchmarkContext<LMDBDatabase>) {
-					process.stdout.write(
-						'SETTING UP LMDB BENCHMARK: write variable records with transaction log\n'
-					);
 					let start = Date.now();
 					ctx.index = start;
 					ctx.lastTime = Date.now();
-				},
-				teardown() {
-					process.stdout.write(
-						'TEARING DOWN LMDB BENCHMARK: write variable records with transaction log\n'
-					);
 				},
 				async bench(ctx: BenchmarkContext<LMDBDatabase>) {
 					const { db } = ctx;

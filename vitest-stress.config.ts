@@ -19,6 +19,7 @@ export default defineConfig({
 	test: {
 		allowOnly: true,
 		environment: 'node',
+		fileParallelism: false,
 		globals: false,
 		include: ['stress-test/**/*.stress.test.ts'],
 		pool: 'threads',

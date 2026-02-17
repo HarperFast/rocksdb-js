@@ -1,4 +1,4 @@
-import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
+import { RocksDatabase, RocksDatabaseOptions, shutdown } from '../dist/index.mjs';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -79,6 +79,7 @@ export function benchmark(type: string, options: any): void {
 			throws: true,
 			time: 5000,
 			async setup(task, mode: 'warmup' | 'run') {
+				process.stdout.write(`START SETTING UP ${type} BENCHMARK ${mode}\n`);
 				if (mode === 'warmup') {
 					// the first setup, create the database
 					if (type === 'rocksdb') {
@@ -90,8 +91,10 @@ export function benchmark(type: string, options: any): void {
 				if (typeof setup === 'function') {
 					await setup(ctx, task, mode);
 				}
+				process.stdout.write(`END SETTING UP ${type} BENCHMARK ${mode}\n`);
 			},
 			async teardown(task, mode: 'warmup' | 'run') {
+				process.stdout.write(`TEARING DOWN ${type} BENCHMARK ${mode}\n`);
 				if (typeof teardown === 'function') {
 					await teardown(ctx, task, mode);
 				}
@@ -99,12 +102,14 @@ export function benchmark(type: string, options: any): void {
 					// only teardown after the real run
 					const path = ctx.db.path;
 					ctx.db.close();
+					shutdown();
 					try {
 						rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 					} catch (err) {
 						console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 					}
 				}
+				process.stdout.write(`END TEARING DOWN ${type} BENCHMARK ${mode}\n`);
 			},
 		}
 	);
