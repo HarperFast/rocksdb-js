@@ -49,33 +49,33 @@ describe('Realistic write load with workers', () => {
 			})
 		);
 
-		benchmark(
-			'lmdb',
-			concurrent({
-				mode: 'essential',
-				numWorkers: 4,
-				concurrencyMaximum: 32,
-				async setup(ctx: BenchmarkContext<LMDBDatabase>) {
-					let start = Date.now();
-					ctx.index = start;
-					ctx.lastTime = Date.now();
-				},
-				async bench(ctx: BenchmarkContext<LMDBDatabase>) {
-					const { db } = ctx;
-					for (let i = 0; i < ITERATIONS; i++) {
-						let auditTime = (ctx.lastTime = Math.max(ctx.lastTime + 0.001, Date.now()));
-						const key = Math.floor(Math.random() * NUM_KEYS).toString();
-						if (Math.random() < DELETE_RATIO) {
-							db.put('audit' + auditTime, aaaa.subarray(0, 30));
-							await db.remove(key);
-						} else {
-							const data = aaaa.subarray(0, Math.random() * 1500);
-							db.put('audit' + auditTime, data);
-							await db.put(key, data);
-						}
-					}
-				},
-			})
-		);
+		// benchmark(
+		// 	'lmdb',
+		// 	concurrent({
+		// 		mode: 'essential',
+		// 		numWorkers: 4,
+		// 		concurrencyMaximum: 32,
+		// 		async setup(ctx: BenchmarkContext<LMDBDatabase>) {
+		// 			let start = Date.now();
+		// 			ctx.index = start;
+		// 			ctx.lastTime = Date.now();
+		// 		},
+		// 		async bench(ctx: BenchmarkContext<LMDBDatabase>) {
+		// 			const { db } = ctx;
+		// 			for (let i = 0; i < ITERATIONS; i++) {
+		// 				let auditTime = (ctx.lastTime = Math.max(ctx.lastTime + 0.001, Date.now()));
+		// 				const key = Math.floor(Math.random() * NUM_KEYS).toString();
+		// 				if (Math.random() < DELETE_RATIO) {
+		// 					db.put('audit' + auditTime, aaaa.subarray(0, 30));
+		// 					await db.remove(key);
+		// 				} else {
+		// 					const data = aaaa.subarray(0, Math.random() * 1500);
+		// 					db.put('audit' + auditTime, data);
+		// 					await db.put(key, data);
+		// 				}
+		// 			}
+		// 		},
+		// 	})
+		// );
 	});
 });
