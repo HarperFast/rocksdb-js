@@ -402,7 +402,16 @@ export function workerBenchmark(type: string, options: any): void {
 					`rocksdb-benchmark-${randomBytes(8).toString('hex')}`
 				);
 
-				await activeBenchmark;
+				let teardownTimeoutId: NodeJS.Timeout;
+				await Promise.race([
+					activeBenchmark,
+					new Promise<void>((_, reject) => {
+						teardownTimeoutId = setTimeout(
+							() => reject(new Error('Benchmark teardown timed out')),
+							30_000
+						);
+					}),
+				]).finally(() => clearTimeout(teardownTimeoutId!));
 				activeBenchmark = promise;
 
 				// launch all workers and wait for them to initialize
