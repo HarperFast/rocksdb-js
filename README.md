@@ -729,6 +729,7 @@ const names = db.listLogs();
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
 
 - `options: object`
+  - `before?: number` Remove all transaction log files older than the specified timestamp.
   - `destroy?: boolean` When `true`, deletes transaction log stores including all log sequence files
     on disk.
   - `name?: string` The name of a store to limit the purging to.

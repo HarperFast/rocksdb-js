@@ -254,11 +254,14 @@ struct TransactionLogStore final {
 	LogPosition getLastFlushedPosition();
 
 	/**
-	 * Purges transaction logs.
+	 * Purges transaction logs. By default, it deletes transaction log files older than the
+	 * retention period (3 days). If `before` is provided, it deletes transaction log files older
+	 * than the specified timestamp. If `all` is true, it deletes all transaction log files.
 	 */
 	void purge(
 		std::function<void(const std::filesystem::path&)> visitor = nullptr,
-		const bool all = false
+		const bool all = false,
+		const uint64_t before = 0
 	);
 
 	/**
