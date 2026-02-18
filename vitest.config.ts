@@ -21,6 +21,7 @@ export default defineConfig({
 		benchmark: { include: ['benchmark/**/*.bench.ts'], reporters: ['verbose'] },
 		coverage: { include: ['src/**/*.ts'], reporter: ['html', 'lcov', 'text'] },
 		environment: 'node',
+		fileParallelism: false,
 		exclude: ['stress-test/**/*.test.ts'],
 		globals: false,
 		hookTimeout: 30000,

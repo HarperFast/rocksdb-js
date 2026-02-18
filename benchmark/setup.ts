@@ -1,4 +1,4 @@
-import { RocksDatabase, RocksDatabaseOptions } from '../dist/index.mjs';
+import { RocksDatabase, RocksDatabaseOptions, shutdown } from '../dist/index.mjs';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -14,6 +14,12 @@ const vitestBench = workerData?.benchmarkWorkerId
 			throw new Error("Workers should not be directly calling vitest's bench()");
 		}
 	: (await import('vitest')).bench;
+
+/**
+ * A promise that blocks the next benchmark from starting until the current benchmark completes.
+ * `vitest bench` uses `tinybench` and for
+ */
+let activeBenchmark = Promise.resolve();
 
 export type LMDBDatabase = lmdb.RootDatabase<any, string> & { path: string };
 
@@ -55,7 +61,8 @@ export function benchmark(type: string, options: any): void {
 	const { bench, setup, teardown, dbOptions, name } = options;
 	// it is important to run benchmarks on a real filesystem (not a tempfs)
 	const dbPath = join('benchmark', 'data', `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
-	let ctx: BenchmarkContext<any>;
+	let ctx: BenchmarkContext<RocksDatabase | LMDBDatabase>;
+	const { resolve, promise } = withResolvers<void>();
 
 	vitestBench(
 		name || type,
@@ -80,11 +87,17 @@ export function benchmark(type: string, options: any): void {
 			time: 5000,
 			async setup(task, mode: 'warmup' | 'run') {
 				if (mode === 'warmup') {
+					await activeBenchmark;
+					activeBenchmark = promise;
+
 					// the first setup, create the database
 					if (type === 'rocksdb') {
 						ctx = { db: RocksDatabase.open(dbPath, dbOptions), mode };
 					} else {
-						ctx = { db: lmdb.open({ path: dbPath, compression: true, ...dbOptions }), mode };
+						ctx = {
+							db: lmdb.open({ path: dbPath, compression: true, ...dbOptions }) as LMDBDatabase,
+							mode,
+						};
 					}
 				}
 				if (typeof setup === 'function') {
@@ -92,18 +105,23 @@ export function benchmark(type: string, options: any): void {
 				}
 			},
 			async teardown(task, mode: 'warmup' | 'run') {
-				if (typeof teardown === 'function') {
-					await teardown(ctx, task, mode);
-				}
-				if (ctx.db && mode === 'run') {
-					// only teardown after the real run
-					const path = ctx.db.path;
-					ctx.db.close();
-					try {
-						rmSync(path, { force: true, recursive: true, maxRetries: 3 });
-					} catch (err) {
-						console.warn(`Benchmark teardown failed to delete db path: ${err}`);
+				try {
+					if (typeof teardown === 'function') {
+						await teardown(ctx, task, mode);
 					}
+					if (ctx.db && mode === 'run') {
+						// only teardown after the real run
+						const path = ctx.db.path;
+						await ctx.db.close();
+						shutdown();
+						rmSync(path, { force: true, recursive: true, maxRetries: 3 });
+					}
+				} catch (err) {
+					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
+				}
+
+				if (mode === 'run') {
+					resolve();
 				}
 			},
 		}
@@ -355,6 +373,7 @@ export function workerBenchmark(type: string, options: any): void {
 		suites: workerCurrentSuites.map((suite) => suite.name),
 		benchmark: benchmarkName,
 	};
+	const { resolve, promise } = withResolvers<void>();
 
 	vitestBench(
 		benchmarkName,
@@ -382,6 +401,9 @@ export function workerBenchmark(type: string, options: any): void {
 					'data',
 					`rocksdb-benchmark-${randomBytes(8).toString('hex')}`
 				);
+
+				await activeBenchmark;
+				activeBenchmark = promise;
 
 				// launch all workers and wait for them to initialize
 				await Promise.all(
@@ -431,6 +453,7 @@ export function workerBenchmark(type: string, options: any): void {
 				if (mode === 'warmup') {
 					return;
 				}
+
 				// tell all workers to teardown and wait
 				await Promise.all(
 					Array.from({ length: numWorkers }, (_, i) => {
@@ -447,6 +470,8 @@ export function workerBenchmark(type: string, options: any): void {
 						return workerState[i].exitPromise.promise;
 					})
 				);
+
+				resolve();
 			},
 		}
 	);
