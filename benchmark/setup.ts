@@ -79,6 +79,7 @@ export function benchmark(type: string, options: any): void {
 					timer = setTimeout(() => {
 						reject(new Error('Benchmark timed out'));
 					}, options.timeout || 60_000);
+					timer.unref();
 				}),
 			]);
 		},
@@ -410,6 +411,7 @@ export function workerBenchmark(type: string, options: any): void {
 							() => reject(new Error('Benchmark teardown timed out')),
 							30_000
 						);
+						teardownTimeoutId.unref();
 					}),
 				]).finally(() => clearTimeout(teardownTimeoutId!));
 				activeBenchmark = promise;
