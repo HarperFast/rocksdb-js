@@ -1554,6 +1554,9 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
  * Purges transaction logs.
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
+	uint64_t before = 0;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "before", before));
+
 	bool destroy = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
 
@@ -1575,7 +1578,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 				auto path = filePath.string();
 				NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
 				NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-			}, destroy);
+			}, destroy, before);
 
 			if (destroy) {
 				storesToRemove.push_back(store);

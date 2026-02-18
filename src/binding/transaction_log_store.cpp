@@ -200,7 +200,7 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 	return position;
 }
 
-void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all) {
+void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 
@@ -215,16 +215,20 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 
 	for (const auto& entry : this->sequenceFiles) {
 		auto& logFile = entry.second;
-
 		bool shouldPurge = all;
-		if (!shouldPurge && this->retentionMs.count() > 0) {
+
+		if (!shouldPurge && (before > 0 || this->retentionMs.count() > 0)) {
 			try {
 				auto mtime = logFile->getLastWriteTime();
-				auto now = std::chrono::system_clock::now();
-				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime);
 
-				if (fileAgeMs <= this->retentionMs) {
-					continue; // file is too new, don't purge
+				if (before > 0) {
+					auto mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(mtime.time_since_epoch()).count();
+					shouldPurge = static_cast<uint64_t>(mtimeMs) < before;
+				}
+				if (!shouldPurge && this->retentionMs.count() > 0) {
+					auto now = std::chrono::system_clock::now();
+					auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime);
+					shouldPurge = fileAgeMs > this->retentionMs;
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
 				// file was deleted or doesn't exist
@@ -240,6 +244,10 @@ void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)
 					this, logFile->path.string().c_str(), errorMsg.c_str());
 				continue;
 			}
+		}
+
+		if (!shouldPurge) {
+			continue;
 		}
 
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str());

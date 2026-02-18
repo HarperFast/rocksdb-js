@@ -11,7 +11,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
-const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
+const {
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_TOKEN,
+} = constants;
 
 describe('Transaction Log', () => {
 	describe('useLog()', () => {
@@ -1021,8 +1025,12 @@ describe('Transaction Log', () => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				const logFile = join(logDirectory, '1.txnlog');
 				await mkdir(logDirectory, { recursive: true });
-				await writeFile(logFile, '');
-				expect(existsSync(logFile)).toBe(true);
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+				await writeFile(logFile, header);
 
 				db.open();
 				expect(db.listLogs()).toEqual(['foo']);
@@ -1036,12 +1044,21 @@ describe('Transaction Log', () => {
 				const fooLogDirectory = join(dbPath, 'transaction_logs', 'foo');
 				const fooLogFile = join(fooLogDirectory, '1.txnlog');
 				await mkdir(fooLogDirectory, { recursive: true });
-				await writeFile(fooLogFile, '');
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+				await writeFile(fooLogFile, header);
 
 				const barLogDirectory = join(dbPath, 'transaction_logs', 'bar');
 				const barLogFile = join(barLogDirectory, 'bar.1.txnlog');
 				await mkdir(barLogDirectory, { recursive: true });
-				await writeFile(barLogFile, '');
+
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+				await writeFile(barLogFile, header);
 
 				db.open();
 				expect(db.listLogs().sort()).toEqual(['bar', 'foo']);
@@ -1060,7 +1077,12 @@ describe('Transaction Log', () => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				const logFile = join(logDirectory, '1.txnlog');
 				await mkdir(logDirectory, { recursive: true });
-				await writeFile(logFile, '');
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+				await writeFile(logFile, header);
 
 				const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 				await utimes(logFile, oneWeekAgo, oneWeekAgo);
@@ -1068,6 +1090,32 @@ describe('Transaction Log', () => {
 				db.open();
 				expect(db.listLogs()).toEqual(['foo']);
 				expect(existsSync(logFile)).toBe(false);
+			}));
+
+		it('should purge log files before a specific timestamp', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+				await writeFile(logFile, header);
+
+				const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+				const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+				const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+				await utimes(logFile, twoHoursAgo, twoHoursAgo);
+
+				db.open();
+				expect(db.listLogs()).toEqual(['foo']);
+				expect(existsSync(logFile)).toBe(true);
+				expect(db.purgeLogs({ before: threeHoursAgo.getTime() })).toEqual([]);
+				expect(existsSync(logFile)).toBe(true);
+				expect(db.purgeLogs({ before: oneHourAgo.getTime() })).toEqual([logFile]);
+				expect(existsSync(logDirectory)).toBe(false);
 			}));
 	});
 

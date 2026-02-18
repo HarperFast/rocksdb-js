@@ -91,7 +91,7 @@ type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
 
-export type PurgeLogsOptions = { destroy?: boolean; name?: string };
+export type PurgeLogsOptions = { before?: number; destroy?: boolean; name?: string };
 
 export type NativeDatabase = {
 	new (): NativeDatabase;
