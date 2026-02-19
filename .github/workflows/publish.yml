@@ -27,7 +27,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       - name: Generate GitHub token
         id: github-token
@@ -78,11 +78,11 @@ jobs:
           - runner: macos-15-intel
             name: darwin-x64
             target: x64
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-22.04-arm
             name: linux-arm64-glibc
             libc: glibc
             target: arm64
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             name: linux-x64-glibc
             libc: glibc
             target: x64
@@ -116,7 +116,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       - name: Generate GitHub token
         id: github-token
@@ -170,7 +170,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       - name: Generate GitHub token
         id: github-token
