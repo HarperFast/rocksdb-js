@@ -27,7 +27,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Generate GitHub token
         id: github-token
@@ -116,7 +116,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Generate GitHub token
         id: github-token
@@ -170,7 +170,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Generate GitHub token
         id: github-token
