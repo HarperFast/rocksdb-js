@@ -78,11 +78,11 @@ jobs:
           - runner: macos-15-intel
             name: darwin-x64
             target: x64
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-22.04-arm
             name: linux-arm64-glibc
             libc: glibc
             target: arm64
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             name: linux-x64-glibc
             libc: glibc
             target: x64
