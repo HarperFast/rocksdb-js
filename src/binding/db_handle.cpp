@@ -105,17 +105,22 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 		uint64_t value = 0; \
 		napi_value jsValue; \
 		bool success = this->descriptor->db->GetIntProperty(this->getColumnFamilyHandle(), name, &value); \
+		napi_status status; \
 		if (success) { \
-			NAPI_STATUS_THROWS(::napi_create_int64(env, value, &jsValue)); \
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, result, name, jsValue)); \
+			status = ::napi_create_int64(env, value, &jsValue); \
 		} else { \
-			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue)); \
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, result, name, jsValue)); \
+			status = ::napi_get_undefined(env, &jsValue); \
+		} \
+		if (status == napi_ok) { \
+			::napi_set_named_property(env, result, name, jsValue); \
 		} \
 	} while (0)
 
 napi_value DBHandle::getStats(napi_env env, bool all) {
-	napi_value result = this->descriptor->getStats(env, all);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	this->descriptor->getStats(env, all, &result);
 
 	// memtable
 	SET_INTERNAL_STAT(result, "rocksdb.num-immutable-mem-table");

@@ -224,7 +224,7 @@ public:
 	 * const stats = db.getStats();
 	 * ```
 	 */
-	napi_value getStats(napi_env env, bool all);
+	bool getStats(napi_env env, bool all, napi_value* result);
 
 	void lockCall(
 		napi_env env,

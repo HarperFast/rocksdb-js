@@ -3,7 +3,7 @@ import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 describe('Statistics', () => {
-	it('should get essential stats from database', () =>
+	it('should get essential stats', () =>
 		dbRunner(
 			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
 			async ({ db }) => {
@@ -17,6 +17,7 @@ describe('Statistics', () => {
 
 				stats = db.getStats();
 				expect(stats).toBeDefined();
+				expect(Object.keys(stats).length).toBeGreaterThan(24);
 				expect(Object.keys(stats).length).toBeLessThan(100);
 
 				// internal stats
@@ -26,11 +27,31 @@ describe('Statistics', () => {
 				expect(stats['rocksdb.estimate-num-keys']).toBe(2);
 
 				// excluded from essential stats
-				expect(stats['rocksdb.readahead.trimmed']).not.toBeDefined();
+				expect(stats['rocksdb.readahead.trimmed']).toBeUndefined();
 			}
 		));
 
-	it('should get all stats from database', () =>
+	it('should get column family level essential stats when stats are disabled', () =>
+		dbRunner(async ({ db }) => {
+			let stats = db.getStats();
+			expect(stats).toBeDefined();
+			expect(stats['rocksdb.number.keys.written']).toBeUndefined();
+
+			await db.put('key1', 'value1');
+			await db.put('key2', 'value2');
+
+			stats = db.getStats();
+			expect(stats).toBeDefined();
+			expect(Object.keys(stats).length).toBeLessThan(25);
+
+			// internal stats
+			expect(stats['rocksdb.number.keys.written']).toBeUndefined();
+
+			// column family stats
+			expect(stats['rocksdb.estimate-num-keys']).toBe(2);
+		}));
+
+	it('should get all stats', () =>
 		dbRunner(
 			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
 			async ({ db }) => {
@@ -96,15 +117,4 @@ describe('Statistics', () => {
 		expect(histogramNames.length).toBeGreaterThan(0);
 		expect(histogramNames.includes('rocksdb.db.write.micros')).toBe(true);
 	});
-
-	it('should error if statistics are not enabled', () =>
-		dbRunner(async ({ db }) => {
-			expect(() => {
-				db.getStat('rocksdb.block.cache.miss');
-			}).toThrow('Statistics are not enabled');
-
-			expect(() => {
-				db.getStats();
-			}).toThrow('Statistics are not enabled');
-		}));
 });

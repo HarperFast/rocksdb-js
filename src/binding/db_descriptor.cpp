@@ -279,14 +279,15 @@ napi_value DBDescriptor::getStat(napi_env env, const std::string& statName) {
 	NAPI_RETURN_UNDEFINED();
 }
 
-napi_value DBDescriptor::getStats(napi_env env, bool all) {
+bool DBDescriptor::getStats(napi_env env, bool all, napi_value* result) {
 	if (!this->statistics) {
-		::napi_throw_error(env, nullptr, "Statistics are not enabled");
-		NAPI_RETURN_UNDEFINED();
+		return false;
 	}
 
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+#undef NAPI_STATUS_THROWS
+#define NAPI_STATUS_THROWS(call) NAPI_STATUS_THROWS_RVAL(call, false)
+
+	NAPI_STATUS_THROWS(::napi_create_object(env, result));
 
 	if (all) {
 		// get all stats
@@ -295,7 +296,7 @@ napi_value DBDescriptor::getStats(napi_env env, bool all) {
 			NAPI_STATUS_THROWS(::napi_create_int64(env, this->statistics->getTickerCount(ticker), &value));
 			napi_value key;
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &key));
-			NAPI_STATUS_THROWS(::napi_set_property(env, result, key, value));
+			NAPI_STATUS_THROWS(::napi_set_property(env, *result, key, value));
 		}
 
 		for (const auto& [histogram, name] : rocksdb::HistogramsNameMap) {
@@ -304,70 +305,73 @@ napi_value DBDescriptor::getStats(napi_env env, bool all) {
 			napi_value key;
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &key));
 			napi_value value = buildHistogramDataObject(env, hist);
-			NAPI_STATUS_THROWS(::napi_set_property(env, result, key, value));
+			NAPI_STATUS_THROWS(::napi_set_property(env, *result, key, value));
 		}
 	} else {
 		// get essential stats
 
 		// block cache
-		SET_INT64_PROP(result, "rocksdb.block.cache.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_HIT));
-		SET_INT64_PROP(result, "rocksdb.block.cache.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_MISS));
-		SET_INT64_PROP(result, "rocksdb.block.cache.data.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_DATA_HIT));
-		SET_INT64_PROP(result, "rocksdb.block.cache.data.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_DATA_MISS));
-		SET_INT64_PROP(result, "rocksdb.block.cache.index.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_INDEX_HIT));
-		SET_INT64_PROP(result, "rocksdb.block.cache.index.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_INDEX_MISS));
-		SET_INT64_PROP(result, "rocksdb.block.cache.filter.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_FILTER_HIT));
-		SET_INT64_PROP(result, "rocksdb.block.cache.filter.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_FILTER_MISS));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_HIT));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_MISS));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.data.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_DATA_HIT));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.data.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_DATA_MISS));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.index.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_INDEX_HIT));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.index.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_INDEX_MISS));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.filter.hit", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_FILTER_HIT));
+		SET_INT64_PROP(*result, "rocksdb.block.cache.filter.miss", this->statistics->getTickerCount(rocksdb::Tickers::BLOCK_CACHE_FILTER_MISS));
 
 		// bloom filter
-		SET_INT64_PROP(result, "rocksdb.bloom.filter.useful", this->statistics->getTickerCount(rocksdb::Tickers::BLOOM_FILTER_USEFUL));
-		SET_INT64_PROP(result, "rocksdb.bloom.filter.full.positive", this->statistics->getTickerCount(rocksdb::Tickers::BLOOM_FILTER_FULL_POSITIVE));
-		SET_INT64_PROP(result, "rocksdb.bloom.filter.full.true.positive", this->statistics->getTickerCount(rocksdb::Tickers::BLOOM_FILTER_FULL_TRUE_POSITIVE));
+		SET_INT64_PROP(*result, "rocksdb.bloom.filter.useful", this->statistics->getTickerCount(rocksdb::Tickers::BLOOM_FILTER_USEFUL));
+		SET_INT64_PROP(*result, "rocksdb.bloom.filter.full.positive", this->statistics->getTickerCount(rocksdb::Tickers::BLOOM_FILTER_FULL_POSITIVE));
+		SET_INT64_PROP(*result, "rocksdb.bloom.filter.full.true.positive", this->statistics->getTickerCount(rocksdb::Tickers::BLOOM_FILTER_FULL_TRUE_POSITIVE));
 
 		// iterators
-		SET_INT64_PROP(result, "rocksdb.db.iter.bytes.read", this->statistics->getTickerCount(rocksdb::Tickers::ITER_BYTES_READ));
-		SET_INT64_PROP(result, "rocksdb.number.reseeks.iteration", this->statistics->getTickerCount(rocksdb::Tickers::NUMBER_OF_RESEEKS_IN_ITERATION));
+		SET_INT64_PROP(*result, "rocksdb.db.iter.bytes.read", this->statistics->getTickerCount(rocksdb::Tickers::ITER_BYTES_READ));
+		SET_INT64_PROP(*result, "rocksdb.number.reseeks.iteration", this->statistics->getTickerCount(rocksdb::Tickers::NUMBER_OF_RESEEKS_IN_ITERATION));
 
 		// keys
-		SET_INT64_PROP(result, "rocksdb.number.keys.read", this->statistics->getTickerCount(rocksdb::Tickers::NUMBER_KEYS_READ));
-		SET_INT64_PROP(result, "rocksdb.number.keys.written", this->statistics->getTickerCount(rocksdb::Tickers::NUMBER_KEYS_WRITTEN));
+		SET_INT64_PROP(*result, "rocksdb.number.keys.read", this->statistics->getTickerCount(rocksdb::Tickers::NUMBER_KEYS_READ));
+		SET_INT64_PROP(*result, "rocksdb.number.keys.written", this->statistics->getTickerCount(rocksdb::Tickers::NUMBER_KEYS_WRITTEN));
 
 		// values
-		SET_INT64_PROP(result, "rocksdb.bytes.read", this->statistics->getTickerCount(rocksdb::Tickers::BYTES_READ));
-		SET_INT64_PROP(result, "rocksdb.bytes.written", this->statistics->getTickerCount(rocksdb::Tickers::BYTES_WRITTEN));
+		SET_INT64_PROP(*result, "rocksdb.bytes.read", this->statistics->getTickerCount(rocksdb::Tickers::BYTES_READ));
+		SET_INT64_PROP(*result, "rocksdb.bytes.written", this->statistics->getTickerCount(rocksdb::Tickers::BYTES_WRITTEN));
 
 		// memtable
-		SET_INT64_PROP(result, "rocksdb.memtable.hit", this->statistics->getTickerCount(rocksdb::Tickers::MEMTABLE_HIT));
-		SET_INT64_PROP(result, "rocksdb.memtable.miss", this->statistics->getTickerCount(rocksdb::Tickers::MEMTABLE_MISS));
+		SET_INT64_PROP(*result, "rocksdb.memtable.hit", this->statistics->getTickerCount(rocksdb::Tickers::MEMTABLE_HIT));
+		SET_INT64_PROP(*result, "rocksdb.memtable.miss", this->statistics->getTickerCount(rocksdb::Tickers::MEMTABLE_MISS));
 
 		// transactions
-		SET_INT64_PROP(result, "rocksdb.txn.overhead.mutex.prepare", this->statistics->getTickerCount(rocksdb::Tickers::TXN_PREPARE_MUTEX_OVERHEAD));
-		SET_INT64_PROP(result, "rocksdb.txn.overhead.mutex.old.commit.map", this->statistics->getTickerCount(rocksdb::Tickers::TXN_OLD_COMMIT_MAP_MUTEX_OVERHEAD));
-		SET_INT64_PROP(result, "rocksdb.txn.overhead.mutex.snapshot", this->statistics->getTickerCount(rocksdb::Tickers::TXN_SNAPSHOT_MUTEX_OVERHEAD));
+		SET_INT64_PROP(*result, "rocksdb.txn.overhead.mutex.prepare", this->statistics->getTickerCount(rocksdb::Tickers::TXN_PREPARE_MUTEX_OVERHEAD));
+		SET_INT64_PROP(*result, "rocksdb.txn.overhead.mutex.old.commit.map", this->statistics->getTickerCount(rocksdb::Tickers::TXN_OLD_COMMIT_MAP_MUTEX_OVERHEAD));
+		SET_INT64_PROP(*result, "rocksdb.txn.overhead.mutex.snapshot", this->statistics->getTickerCount(rocksdb::Tickers::TXN_SNAPSHOT_MUTEX_OVERHEAD));
 
 		// compaction
-		SET_INT64_PROP(result, "rocksdb.compact.read.bytes", this->statistics->getTickerCount(rocksdb::Tickers::COMPACT_READ_BYTES));
-		SET_INT64_PROP(result, "rocksdb.compact.write.bytes", this->statistics->getTickerCount(rocksdb::Tickers::COMPACT_WRITE_BYTES));
-		SET_INT64_PROP(result, "rocksdb.compaction.cancelled", this->statistics->getTickerCount(rocksdb::Tickers::COMPACTION_CANCELLED));
-		SET_INT64_PROP(result, "rocksdb.stall.micros", this->statistics->getTickerCount(rocksdb::Tickers::STALL_MICROS));
+		SET_INT64_PROP(*result, "rocksdb.compact.read.bytes", this->statistics->getTickerCount(rocksdb::Tickers::COMPACT_READ_BYTES));
+		SET_INT64_PROP(*result, "rocksdb.compact.write.bytes", this->statistics->getTickerCount(rocksdb::Tickers::COMPACT_WRITE_BYTES));
+		SET_INT64_PROP(*result, "rocksdb.compaction.cancelled", this->statistics->getTickerCount(rocksdb::Tickers::COMPACTION_CANCELLED));
+		SET_INT64_PROP(*result, "rocksdb.stall.micros", this->statistics->getTickerCount(rocksdb::Tickers::STALL_MICROS));
 
 		// errors & i/o
-		SET_INT64_PROP(result, "rocksdb.no.file.errors", this->statistics->getTickerCount(rocksdb::Tickers::NO_FILE_ERRORS));
-		SET_INT64_PROP(result, "rocksdb.read.amp.estimate.useful.bytes", this->statistics->getTickerCount(rocksdb::Tickers::READ_AMP_ESTIMATE_USEFUL_BYTES));
-		SET_INT64_PROP(result, "rocksdb.read.amp.total.read.bytes", this->statistics->getTickerCount(rocksdb::Tickers::READ_AMP_TOTAL_READ_BYTES));
+		SET_INT64_PROP(*result, "rocksdb.no.file.errors", this->statistics->getTickerCount(rocksdb::Tickers::NO_FILE_ERRORS));
+		SET_INT64_PROP(*result, "rocksdb.read.amp.estimate.useful.bytes", this->statistics->getTickerCount(rocksdb::Tickers::READ_AMP_ESTIMATE_USEFUL_BYTES));
+		SET_INT64_PROP(*result, "rocksdb.read.amp.total.read.bytes", this->statistics->getTickerCount(rocksdb::Tickers::READ_AMP_TOTAL_READ_BYTES));
 
 		// histogram data
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.db.get.micros", rocksdb::Histograms::DB_GET);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.db.write.micros", rocksdb::Histograms::DB_WRITE);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.db.seek.micros", rocksdb::Histograms::DB_SEEK);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.db.flush.micros", rocksdb::Histograms::FLUSH_TIME);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.db.write.stall", rocksdb::Histograms::WRITE_STALL);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.blobdb.value.size", rocksdb::Histograms::BLOB_DB_VALUE_SIZE);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.sst.read.micros", rocksdb::Histograms::SST_READ_MICROS);
-		SET_HISTOGRAM_DATA_PROP(result, "rocksdb.compaction.times.micros", rocksdb::Histograms::COMPACTION_TIME);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.db.get.micros", rocksdb::Histograms::DB_GET);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.db.write.micros", rocksdb::Histograms::DB_WRITE);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.db.seek.micros", rocksdb::Histograms::DB_SEEK);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.db.flush.micros", rocksdb::Histograms::FLUSH_TIME);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.db.write.stall", rocksdb::Histograms::WRITE_STALL);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.blobdb.value.size", rocksdb::Histograms::BLOB_DB_VALUE_SIZE);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.sst.read.micros", rocksdb::Histograms::SST_READ_MICROS);
+		SET_HISTOGRAM_DATA_PROP(*result, "rocksdb.compaction.times.micros", rocksdb::Histograms::COMPACTION_TIME);
 	}
 
-	return result;
+#undef NAPI_STATUS_THROWS
+#define NAPI_STATUS_THROWS(call) NAPI_STATUS_THROWS_RVAL(call, nullptr)
+
+	return true;
 }
 
 /**
