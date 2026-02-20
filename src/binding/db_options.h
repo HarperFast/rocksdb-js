@@ -2,6 +2,7 @@
 #define __DB_OPTIONS_H__
 
 #include <string>
+#include <thread>
 
 namespace rocksdb_js {
 
@@ -18,14 +19,16 @@ enum class DBMode {
  * values passed in from public `open()` method.
  */
 struct DBOptions final {
-	bool disableWAL;
-	DBMode mode;
+	bool disableWAL = false;
+	bool enableStats = false;
+	DBMode mode = DBMode::Optimistic;
 	std::string name;
-	bool noBlockCache;
-	uint32_t parallelismThreads;
-	float transactionLogMaxAgeThreshold;
-	uint32_t transactionLogMaxSize;
-	uint32_t transactionLogRetentionMs;
+	bool noBlockCache = false;
+	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
+	uint8_t statsLevel = rocksdb::StatsLevel::kExceptDetailedTimers;
+	float transactionLogMaxAgeThreshold = 0.75f;
+	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
+	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	std::string transactionLogsPath;
 };
 

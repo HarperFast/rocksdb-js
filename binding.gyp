@@ -16,6 +16,7 @@
 				'src/binding/db_iterator_handle.cpp',
 				'src/binding/db_registry.cpp',
 				'src/binding/db_settings.cpp',
+				'src/binding/rocksdb_stats.cpp',
 				'src/binding/transaction_handle.cpp',
 				'src/binding/transaction.cpp',
 				'src/binding/transaction_log.cpp',

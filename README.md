@@ -10,6 +10,7 @@ A Node.js binding for the RocksDB library.
 - Transaction log system for recording transaction related data
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
+- Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
 ## Example
@@ -42,7 +43,10 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not need to exist, but the
   parent directories do.
 - `options: object` [optional]
-  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log.
+  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
+  - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
+    are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
+    Defaults to `false`.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -50,6 +54,8 @@ Creates a new database instance.
     Defaults to `1`.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
+  - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
+    overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
     `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for
     more information.
@@ -598,6 +604,99 @@ db.notify('foo');
 db.notify(1234);
 db.notify({ key: 'bar' }, { value: 'baz' });
 ```
+
+## Statistics
+
+Retrieve RocksDB statistics at runtime. You must set `enableStats: true` when calling `db.open()`.
+Statistics are captured at the database level and include all column families.
+
+RocksDB has two types of statistics: tickers and histograms. Tickers are 64-bit unsigned integers
+that measure counters. Histograms are objects containing various measurements of statistic
+distribution across all operations.
+
+```typescript
+import { RocksDatabase, stats } from '@harperfast/rocksdb-js';
+const db = RocksDatabase.open('/path/to/db', {
+	enableStats: true,
+	statsLevel: stats.StatsLevel.ExceptDetailedTimers, // default
+});
+console.log(db.getStats());
+```
+
+### `db.getStat(statName: string): number`
+
+Retrieves a single statistic value.
+
+```typescript
+console.log(db.getStat('rocksdb.block.cache.miss'));
+```
+
+### `db.getStats(all?: boolean): Object<string, number | StatsHistogramData>`
+
+Returns an object containing a curated list of column family-level properties, internal tickers
+stats, and internal histogram stats.
+
+By default, it only returns the most meaningful internal stats. When `all = true`, it returns the
+same column family-level properties, but includes all internal tickers and histogram stats.
+
+Column family and ticker stat values are 64-bit unsigned integers and histogram values are
+`StatsHistogramData` objects.
+
+```typescript
+// get essential stats
+console.log(db.getStats());
+
+// get all stats
+console.log(db.getStats(true));
+```
+
+### `stats`
+
+An object containing stat specific constants including ticker and histogram names.
+
+#### `stats.histograms`
+
+An array of internal histogram stat names.
+
+```typescript
+import { stats } from '@harperfast/rocksdb-js';
+console.log(stats.histograms);
+```
+
+#### `stats.tickers`
+
+An array of internal ticker stat names.
+
+```typescript
+import { stats } from '@harperfast/rocksdb-js';
+console.log(stats.tickers);
+```
+
+#### `stats.StatsLevel`
+
+The `stats.StatsLevel` contains constants used to set which types of skip and reduce statistic overhead.
+
+- `StatsLevel.DisableAll` Disable all metrics.
+- `StatsLevel.ExceptTickers` Disable all tickers.
+- `StatsLevel.ExceptHistogramOrTimers` Disable timer stats and skip histogram stats.
+- `StatsLevel.ExceptTimers` Skip timer stats
+- `StatsLevel.ExceptDetailedTimers` Skip time waiting for mutex locks and compression.
+- `StatsLevel.ExceptTimeForMutex` Skip time waiting for mutex locks.
+- `StatsLevel.All` Collects all stats.
+
+### `type StatsHistogramData`
+
+An object is a record with the following properties:
+
+- `average: number` A double containing the average value.
+- `count: number` An unsigned 64-bit integer containing the number of values.
+- `max: number` A double containing the maximum value.
+- `median: number` A double containing the median value.
+- `min: number` A double containing the minimum value.
+- `percentile95: number` A double containing the 95th percentile value.
+- `percentile99: number` A double containing the 99th percentile value.
+- `standardDeviation: number` A double containing the standard deviation.
+- `sum: number` An unsigned 64-bit integer containing the sum of all values.
 
 ## Exclusive Locking
 

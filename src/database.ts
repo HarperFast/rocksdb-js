@@ -2,6 +2,7 @@ import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 import {
 	config,
+	type StatsHistogramData,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type TransactionOptions,
@@ -140,7 +141,59 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this.store.encoder;
 	}
 
+	/**
+	 * Flushes the underlying database by performing a commit or clearing any buffered operations.
+	 *
+	 * @return {void} Does not return a value.
+	 */
+	flush(): Promise<void> {
+		return new Promise((resolve, reject) => this.store.db.flush(resolve, reject));
+	}
+
+	/**
+	 * Synchronously flushes the underlying database by performing a commit or clearing any buffered operations.
+	 *
+	 * @return {void} Does not return a value.
+	 */
+	flushSync(): void {
+		return this.store.db.flushSync();
+	}
+
 	// flushed
+
+	/**
+	 * Gets a RocksDB database property as an integer.
+	 *
+	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.num-blob-files').
+	 * @returns The property value as a number.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
+	 * const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
+	 * ```
+	 */
+	getDBIntProperty(propertyName: string): number {
+		return this.store.db.getDBIntProperty(propertyName);
+	}
+
+	/**
+	 * Gets a RocksDB database property as a string.
+	 *
+	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.levelstats').
+	 * @returns The property value as a string.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const levelStats = db.getDBProperty('rocksdb.levelstats');
+	 * const stats = db.getDBProperty('rocksdb.stats');
+	 * ```
+	 */
+	getDBProperty(propertyName: string): string {
+		return this.store.db.getDBProperty(propertyName);
+	}
 
 	/**
 	 * Returns the current timestamp as a monotonically increasing timestamp in
@@ -163,59 +216,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Gets a RocksDB database property as a string.
+	 * Gets a RocksDB statistic.
 	 *
-	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.levelstats').
-	 * @returns The property value as a string.
+	 * @param statName - The name of the statistic to retrieve.
+	 * @returns The statistic value.
+	 */
+	getStat(statName: string): number | StatsHistogramData {
+		return this.store.db.getStat(statName);
+	}
+
+	/**
+	 * Gets the RocksDB statistics. Requires statistics to be enabled.
 	 *
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * const levelStats = db.getDBProperty('rocksdb.levelstats');
-	 * const stats = db.getDBProperty('rocksdb.stats');
+	 * const stats = db.getStats();
 	 * ```
 	 */
-	getDBProperty(propertyName: string): string {
-		return this.store.db.getDBProperty(propertyName);
-	}
-
-	/**
-	 * Gets a RocksDB database property as an integer.
-	 *
-	 * @param propertyName - The name of the property to retrieve (e.g., 'rocksdb.num-blob-files').
-	 * @returns The property value as a number.
-	 *
-	 * @example
-	 * ```typescript
-	 * const db = RocksDatabase.open('/path/to/database');
-	 * const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
-	 * const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
-	 * ```
-	 */
-	getDBIntProperty(propertyName: string): number {
-		return this.store.db.getDBIntProperty(propertyName);
-	}
-
-	/**
-	 * Flushes the underlying database by performing a commit or clearing any buffered operations.
-	 *
-	 * @return {void} Does not return a value.
-	 */
-	flush(): Promise<void> {
-		return new Promise((resolve, reject) => this.store.db.flush(resolve, reject));
-	}
-
-	/**
-	 * Synchronously flushes the underlying database by performing a commit or clearing any buffered operations.
-	 *
-	 * @return {void} Does not return a value.
-	 */
-	flushSync(): void {
-		return this.store.db.flushSync();
-	}
-
-	getStats() {
-		return { free: {}, root: {} };
+	getStats(all = false): Record<string, number | StatsHistogramData> {
+		return this.store.db.getStats(all);
 	}
 
 	/**

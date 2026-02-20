@@ -86,6 +86,81 @@ std::string DBHandle::getColumnFamilyName() const {
 	return this->columnDescriptor->column->GetName();
 }
 
+napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
+	// check if this is an internal stat first?
+	uint64_t value = 0; \
+	bool success = this->descriptor->db->GetIntProperty(this->getColumnFamilyHandle(), statName, &value);
+	if (success) {
+		napi_value jsValue;
+		NAPI_STATUS_THROWS(::napi_create_int64(env, value, &jsValue));
+		return jsValue;
+	}
+
+	// not an internal stat, try getting it from the statistics
+	return this->descriptor->getStat(env, statName);
+}
+
+#define SET_INTERNAL_STAT(result, name) \
+	do { \
+		uint64_t value = 0; \
+		napi_value jsValue; \
+		bool success = this->descriptor->db->GetIntProperty(this->getColumnFamilyHandle(), name, &value); \
+		napi_status status; \
+		if (success) { \
+			status = ::napi_create_int64(env, value, &jsValue); \
+		} else { \
+			status = ::napi_get_undefined(env, &jsValue); \
+		} \
+		if (status == napi_ok) { \
+			::napi_set_named_property(env, result, name, jsValue); \
+		} \
+	} while (0)
+
+napi_value DBHandle::getStats(napi_env env, bool all) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	this->descriptor->getStats(env, all, &result);
+
+	// memtable
+	SET_INTERNAL_STAT(result, "rocksdb.num-immutable-mem-table");
+	SET_INTERNAL_STAT(result, "rocksdb.num-immutable-mem-table-flushed");
+	SET_INTERNAL_STAT(result, "rocksdb.mem-table-flush-pending");
+	SET_INTERNAL_STAT(result, "rocksdb.cur-size-active-mem-table");
+	SET_INTERNAL_STAT(result, "rocksdb.cur-size-all-mem-tables");
+	SET_INTERNAL_STAT(result, "rocksdb.size-all-mem-tables");
+	SET_INTERNAL_STAT(result, "rocksdb.num-entries-active-mem-table");
+	SET_INTERNAL_STAT(result, "rocksdb.num-deletes-active-mem-table");
+
+	// compaction
+	SET_INTERNAL_STAT(result, "rocksdb.compaction-pending");
+	SET_INTERNAL_STAT(result, "rocksdb.estimate-pending-compaction-bytes");
+	SET_INTERNAL_STAT(result, "rocksdb.num-running-compactions");
+	SET_INTERNAL_STAT(result, "rocksdb.num-running-flushes");
+
+	// sst
+	SET_INTERNAL_STAT(result, "rocksdb.total-sst-files-size");
+	SET_INTERNAL_STAT(result, "rocksdb.live-sst-files-size");
+	SET_INTERNAL_STAT(result, "rocksdb.estimate-num-keys");
+
+	// block cache
+	SET_INTERNAL_STAT(result, "rocksdb.block-cache-capacity");
+	SET_INTERNAL_STAT(result, "rocksdb.block-cache-usage");
+	SET_INTERNAL_STAT(result, "rocksdb.block-cache-pinned-usage");
+
+	// snapshots
+	SET_INTERNAL_STAT(result, "rocksdb.num-live-versions");
+	SET_INTERNAL_STAT(result, "rocksdb.current-super-version-number");
+	SET_INTERNAL_STAT(result, "rocksdb.oldest-snapshot-time");
+
+	// blobs
+	SET_INTERNAL_STAT(result, "rocksdb.num-blob-files");
+	SET_INTERNAL_STAT(result, "rocksdb.total-blob-file-size");
+	SET_INTERNAL_STAT(result, "rocksdb.live-blob-file-size");
+
+	return result;
+}
+
 /**
  * Has the DBRegistry open a RocksDB database and then move it's handle properties
  * to this DBHandle.
