@@ -17,6 +17,7 @@ import {
 	type NativeDatabaseOptions,
 	NativeIterator,
 	NativeTransaction,
+	StatsLevel,
 	type TransactionLog,
 	type UserSharedBufferCallback,
 } from './load-binding.js';
@@ -127,6 +128,11 @@ export class Store {
 	disableWAL: boolean;
 
 	/**
+	 * Whether to enable RocksDB statistics.
+	 */
+	enableStats: boolean;
+
+	/**
 	 * Reusable buffer for encoding values using `writeKey()` when the custom
 	 * encoder does not provide a `encode()` method.
 	 */
@@ -208,6 +214,11 @@ export class Store {
 	sharedStructuresKey?: symbol;
 
 	/**
+	 * The level of statistics to capture.
+	 */
+	statsLevel?: (typeof StatsLevel)[keyof typeof StatsLevel];
+
+	/**
 	 * The threshold for the transaction log file's last modified time to be
 	 * older than the retention period before it is rotated to the next sequence
 	 * number. A threshold of 0 means ignore age check.
@@ -261,6 +272,7 @@ export class Store {
 		this.db = new NativeDatabase();
 		this.decoder = options?.decoder ?? null;
 		this.disableWAL = options?.disableWAL ?? false;
+		this.enableStats = options?.enableStats ?? false;
 		this.encodeBuffer = createFixedBuffer(SAVE_BUFFER_SIZE);
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
@@ -276,6 +288,7 @@ export class Store {
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
+		this.statsLevel = options?.statsLevel;
 		this.transactionLogMaxAgeThreshold = options?.transactionLogMaxAgeThreshold;
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
@@ -585,10 +598,12 @@ export class Store {
 
 		this.db.open(this.path, {
 			disableWAL: this.disableWAL,
+			enableStats: this.enableStats,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			statsLevel: this.statsLevel,
 			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
 			transactionLogMaxSize: this.transactionLogMaxSize,
 			transactionLogRetentionMs: this.transactionLogRetention

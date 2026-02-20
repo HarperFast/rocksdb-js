@@ -112,12 +112,14 @@ DBDescriptor::DBDescriptor(
 	const std::string& path,
 	const DBOptions& options,
 	std::shared_ptr<rocksdb::DB> db,
-	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
+	std::shared_ptr<rocksdb::Statistics> statistics
 ):
 	path(path),
 	mode(options.mode),
 	db(db),
 	columns(std::move(columns)),
+	statistics(statistics),
 	transactionLogMaxAgeThreshold(options.transactionLogMaxAgeThreshold),
 	transactionLogMaxSize(options.transactionLogMaxSize),
 	transactionLogRetentionMs(options.transactionLogRetentionMs),
@@ -210,6 +212,65 @@ void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
 void DBDescriptor::detach(std::shared_ptr<Closable> closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	this->closables.erase(closable.get());
+}
+
+napi_value DBDescriptor::getStat(napi_env env, const std::string& statName) {
+	if (!this->statistics) {
+		::napi_throw_error(env, nullptr, "Statistics are not enabled");
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	for (const auto& [ticker, name] : rocksdb::TickersNameMap) {
+		if (name == statName) {
+			uint64_t value = this->statistics->getTickerCount(ticker);
+			napi_value result;
+			NAPI_STATUS_THROWS(::napi_create_int64(env, value, &result));
+			return result;
+		}
+	}
+
+	for (const auto& [histogram, name] : rocksdb::HistogramsNameMap) {
+		if (name == statName) {
+			rocksdb::HistogramData hist;
+			this->statistics->histogramData(histogram, &hist);
+			double value = hist.average;
+			napi_value result;
+			NAPI_STATUS_THROWS(::napi_create_double(env, value, &result));
+			return result;
+		}
+	}
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value DBDescriptor::getStats(napi_env env) {
+	if (!this->statistics) {
+		::napi_throw_error(env, nullptr, "Statistics are not enabled");
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	for (const auto& [ticker, name] : rocksdb::TickersNameMap) {
+		napi_value value;
+		NAPI_STATUS_THROWS(::napi_create_int64(env, this->statistics->getTickerCount(ticker), &value));
+		napi_value key;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &key));
+		NAPI_STATUS_THROWS(::napi_set_property(env, result, key, value));
+	}
+
+	for (const auto& [histogram, name] : rocksdb::HistogramsNameMap) {
+		rocksdb::HistogramData hist;
+		this->statistics->histogramData(histogram, &hist);
+		napi_value value;
+		NAPI_STATUS_THROWS(::napi_create_double(env, hist.average, &value));
+		napi_value key;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &key));
+		NAPI_STATUS_THROWS(::napi_set_property(env, result, key, value));
+	}
+
+	return result;
 }
 
 /**
@@ -480,18 +541,24 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	// set the database options
 	rocksdb::Options dbOptions;
+	// we could also consider some testing around using atomic_flush
+	dbOptions.atomic_flush = true; // this is necessary in order to ensure that we can track full flush jobs back to the corresponding sequence numbers
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = true;
 	dbOptions.create_missing_column_families = true;
+	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
 	dbOptions.enable_blob_files = true;
 	dbOptions.enable_blob_garbage_collection = true;
+	dbOptions.IncreaseParallelism(options.parallelismThreads);
+	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.min_blob_size = 1024;
 	dbOptions.persist_user_defined_timestamps = true;
-	dbOptions.atomic_flush = true; // this is necessary in order to ensure that we can track full flush jobs back to the corresponding sequence numbers
-	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
-	// we could also consider some testing around using atomic_flush
-	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
-	dbOptions.IncreaseParallelism(options.parallelismThreads);
+	if (options.enableStats) {
+		dbOptions.statistics = rocksdb::CreateDBStatistics();
+		dbOptions.statistics->set_stats_level(static_cast<rocksdb::StatsLevel>(options.statsLevel));
+	} else {
+		dbOptions.statistics = nullptr;
+	}
 	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// Define base ColumnFamilyOptions that include blob settings
@@ -573,7 +640,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns)));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns), dbOptions.statistics));
 
 	// set the weak pointer for the event listener
 	*descriptorWeakPtr = descriptor;

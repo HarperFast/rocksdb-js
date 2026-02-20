@@ -5,6 +5,7 @@
 #include "db_settings.h"
 #include "macros.h"
 #include "rocksdb/db.h"
+#include "rocksdb/statistics.h"
 #include "transaction.h"
 #include "transaction_log.h"
 #include "transaction_log_file.h"
@@ -13,10 +14,15 @@
 
 namespace rocksdb_js {
 
-#define EXPORT_CONSTANT(constant) \
+#define EXPORT_CONSTANT(dest, constant) \
 	napi_value constant##Value; \
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, constant, &constant##Value)); \
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, constants, #constant, constant##Value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, dest, #constant, constant##Value));
+
+#define EXPORT_STATS_LEVEL(dest, key, value) \
+	napi_value key##Value; \
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, value, &key##Value)); \
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, dest, #key, key##Value));
 
 /**
  * Shutdown function to ensure that we write in-memory data from all databases.
@@ -90,15 +96,25 @@ NAPI_MODULE_INIT() {
 	// constants
 	napi_value constants;
 	napi_create_object(env, &constants);
-
-	EXPORT_CONSTANT(TRANSACTION_LOG_TOKEN)
-	EXPORT_CONSTANT(TRANSACTION_LOG_FILE_HEADER_SIZE)
-	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_HEADER_SIZE)
-	EXPORT_CONSTANT(TRANSACTION_LOG_ENTRY_LAST_FLAG)
-	EXPORT_CONSTANT(ONLY_IF_IN_MEMORY_CACHE_FLAG)
-	EXPORT_CONSTANT(NOT_IN_MEMORY_CACHE_FLAG)
-	EXPORT_CONSTANT(ALWAYS_CREATE_NEW_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, TRANSACTION_LOG_TOKEN)
+	EXPORT_CONSTANT(constants, TRANSACTION_LOG_FILE_HEADER_SIZE)
+	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_HEADER_SIZE)
+	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_LAST_FLAG)
+	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
+	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
+	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
+
+	napi_value statsLevel;
+	napi_create_object(env, &statsLevel);
+	EXPORT_STATS_LEVEL(statsLevel, DisableAll, rocksdb::StatsLevel::kDisableAll)
+	EXPORT_STATS_LEVEL(statsLevel, ExceptTickers, rocksdb::StatsLevel::kExceptTickers)
+	EXPORT_STATS_LEVEL(statsLevel, ExceptHistogramOrTimers, rocksdb::StatsLevel::kExceptHistogramOrTimers)
+	EXPORT_STATS_LEVEL(statsLevel, ExceptTimers, rocksdb::StatsLevel::kExceptTimers)
+	EXPORT_STATS_LEVEL(statsLevel, ExceptDetailedTimers, rocksdb::StatsLevel::kExceptDetailedTimers)
+	EXPORT_STATS_LEVEL(statsLevel, ExceptTimeForMutex, rocksdb::StatsLevel::kExceptTimeForMutex)
+	EXPORT_STATS_LEVEL(statsLevel, All, rocksdb::StatsLevel::kAll)
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "StatsLevel", statsLevel));
 
 	return exports;
 }

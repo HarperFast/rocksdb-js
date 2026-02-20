@@ -214,8 +214,27 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this.store.db.flushSync();
 	}
 
-	getStats() {
-		return { free: {}, root: {} };
+	/**
+	 * Gets a RocksDB statistic.
+	 *
+	 * @param statName - The name of the statistic to retrieve.
+	 * @returns The statistic value.
+	 */
+	getStat(statName: string): number {
+		return this.store.db.getStat(statName);
+	}
+
+	/**
+	 * Gets the RocksDB statistics. Requires statistics to be enabled.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const stats = db.getStats();
+	 * ```
+	 */
+	getStats(): Record<string, number> {
+		return this.store.db.getStats();
 	}
 
 	/**

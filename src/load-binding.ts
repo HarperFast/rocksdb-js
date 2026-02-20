@@ -76,10 +76,12 @@ export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
 	disableWAL?: boolean;
+	enableStats?: boolean;
 	mode?: NativeDatabaseMode;
 	name?: string;
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
+	statsLevel?: (typeof StatsLevel)[keyof typeof StatsLevel];
 	transactionLogMaxAgeThreshold?: number;
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
@@ -117,6 +119,8 @@ export type NativeDatabase = {
 	getDBProperty(propertyName: string): string;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
+	getStat(statName: string): number;
+	getStats(): Record<string, number>;
 	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
@@ -234,12 +238,12 @@ const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const constants: {
-	TRANSACTION_LOG_TOKEN: number;
-	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
-	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
-	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
-	NOT_IN_MEMORY_CACHE_FLAG: number;
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
+	NOT_IN_MEMORY_CACHE_FLAG: number;
+	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	TRANSACTION_LOG_TOKEN: number;
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
+	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
@@ -247,4 +251,13 @@ export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
+export const StatsLevel: {
+	DisableAll: number;
+	ExceptTickers: number;
+	ExceptHistogramOrTimers: number;
+	ExceptTimers: number;
+	ExceptDetailedTimers: number;
+	ExceptTimeForMutex: number;
+	All: number;
+} = binding.StatsLevel;
 export const version: string = binding.version;

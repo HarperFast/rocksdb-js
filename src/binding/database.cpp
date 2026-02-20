@@ -571,6 +571,28 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 	return result;
 }
 
+napi_value Database::GetStat(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	NAPI_GET_STRING(argv[0], statName, "Stat name is required");
+	return (*dbHandle)->descriptor->getStat(env, statName);
+}
+
+/**
+ * Gets the RocksDB statistics. Requires statistics to be enabled.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const stats = db.getStats();
+ * ```
+ */
+napi_value Database::GetStats(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	return (*dbHandle)->descriptor->getStats(env);
+}
+
 /**
  * Gets a RocksDB database property as a string.
  *
@@ -631,7 +653,8 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 	);
 
 	if (!success) {
-		::napi_throw_error(env, nullptr, "Failed to get database integer property");
+		std::string errorMsg = "Failed to get database integer property \"" + propertyName + "\"";
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -881,58 +904,48 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], path, "Database path is required");
 	const napi_value options = argv[1];
 
-	bool disableWAL = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", disableWAL));
+	DBOptions dbHandleOptions;
 
-	std::string name;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", dbHandleOptions.disableWAL));
 
-	bool noBlockCache = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", noBlockCache));
+	// statistics
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "enableStats", dbHandleOptions.enableStats));
+	if (dbHandleOptions.enableStats) {
+		if (dbHandleOptions.statsLevel < rocksdb::StatsLevel::kDisableAll || dbHandleOptions.statsLevel > rocksdb::StatsLevel::kAll) {
+			std::string errorMsg = "Invalid stats level: " + std::to_string(dbHandleOptions.statsLevel);
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
+			return nullptr;
+		}
+		NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "statsLevel", dbHandleOptions.statsLevel));
+	}
 
 	std::string modeName;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "mode", modeName));
+	if (modeName == "pessimistic") {
+		dbHandleOptions.mode = DBMode::Pessimistic;
+	}
 
-	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", parallelismThreads));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", dbHandleOptions.name));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", dbHandleOptions.transactionLogMaxAgeThreshold));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", dbHandleOptions.transactionLogMaxSize));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", dbHandleOptions.transactionLogRetentionMs));
 
-	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", transactionLogRetentionMs));
+	std::string transactionLogsPath = (std::filesystem::path(path) / "transaction_logs").string();
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
+	dbHandleOptions.transactionLogsPath = transactionLogsPath;
 
-	float transactionLogMaxAgeThreshold = 0.75f;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", transactionLogMaxAgeThreshold));
-	if (transactionLogMaxAgeThreshold < 0.0f || transactionLogMaxAgeThreshold > 1.0f) {
+	if (dbHandleOptions.transactionLogMaxAgeThreshold < 0.0f || dbHandleOptions.transactionLogMaxAgeThreshold > 1.0f) {
 		::napi_throw_error(env, nullptr, "transactionLogMaxAgeThreshold must be between 0.0 and 1.0");
 		return nullptr;
 	}
 
-	std::string transactionLogsPath = (std::filesystem::path(path) / "transaction_logs").string();
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
-
-	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", transactionLogMaxSize));
-	if (transactionLogMaxSize > 0 && transactionLogMaxSize < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+	if (dbHandleOptions.transactionLogMaxSize > 0 && dbHandleOptions.transactionLogMaxSize < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
 		std::string errorMsg = "transactionLogMaxSize must be greater than " + std::to_string(TRANSACTION_LOG_ENTRY_HEADER_SIZE) + " bytes";
 		::napi_throw_error(env, nullptr, errorMsg.c_str());
 		return nullptr;
 	}
-
-	DBMode mode = DBMode::Optimistic;
-	if (modeName == "pessimistic") {
-		mode = DBMode::Pessimistic;
-	}
-
-	DBOptions dbHandleOptions {
-		disableWAL,
-		mode,
-		name,
-		noBlockCache,
-		parallelismThreads,
-		transactionLogMaxAgeThreshold,
-		transactionLogMaxSize,
-		transactionLogRetentionMs,
-		transactionLogsPath
-	};
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
@@ -1202,6 +1215,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getStat", nullptr, GetStat, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },

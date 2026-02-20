@@ -10,6 +10,7 @@ A Node.js binding for the RocksDB library.
 - Transaction log system for recording transaction related data
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
+- Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
 ## Example
@@ -42,7 +43,10 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not need to exist, but the
   parent directories do.
 - `options: object` [optional]
-  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log.
+  - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
+  - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
+    are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
+    Defaults to `false`.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -50,6 +54,8 @@ Creates a new database instance.
     Defaults to `1`.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
+  - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
+    overhead. Defaults to `StatsLevel.ExceptTickers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
     `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for
     more information.
@@ -598,6 +604,46 @@ db.notify('foo');
 db.notify(1234);
 db.notify({ key: 'bar' }, { value: 'baz' });
 ```
+
+## Statistics
+
+Retrieve RocksDB statistics at runtime. You must set `enableStats: true` when calling `db.open()`.
+Statistics are captured at the database level and include all column families.
+
+### `db.getStat(statName: string): number`
+
+Retrieves a single statistic value.
+
+```typescript
+console.log(db.getStat('rocksdb.block.cache.miss'));
+```
+
+### `db.getStats(): Object`
+
+Returns an object containing all stat including stats that are skipped by the `StatsLevel`.
+
+```typescript
+console.log(db.getStats());
+```
+
+### `StatsLevel`
+
+The `StatsLevel` contains constants used to set which types of skip and reduce statistic overhead.
+
+RocksDB has two types of statistics:
+
+- Tickers - 64-bit unsigned integers that measure counters.
+- Histograms - Measures distribution of a stat across all operations.
+
+- `StatsLevel.DisableAll` Disable all metrics.
+- `StatsLevel.ExceptTickers` Disable all tickers.
+- `StatsLevel.ExceptHistogramOrTimers` Disable timer stats and skip histogram stats.
+- `StatsLevel.ExceptTimers` Skip timer stats
+- `StatsLevel.ExceptDetailedTimers` Skip time waiting for mutex locks and compression.
+- `StatsLevel.ExceptTimeForMutex` Skip time waiting for mutex locks.
+- `StatsLevel.All` Collects all stats.
+
+The default stat level is `StatsLevel.ExceptDetailedTimers`.
 
 ## Exclusive Locking
 
