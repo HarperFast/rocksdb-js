@@ -4,6 +4,7 @@
 #include "db_registry.h"
 #include "db_settings.h"
 #include "macros.h"
+#include "rocksdb_stats.h"
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "transaction.h"
@@ -105,6 +106,11 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
+	// stats
+	napi_value statsObj;
+	napi_create_object(env, &statsObj);
+
+	// stats level
 	napi_value statsLevel;
 	napi_create_object(env, &statsLevel);
 	EXPORT_STATS_LEVEL(statsLevel, DisableAll, rocksdb::StatsLevel::kDisableAll)
@@ -114,7 +120,14 @@ NAPI_MODULE_INIT() {
 	EXPORT_STATS_LEVEL(statsLevel, ExceptDetailedTimers, rocksdb::StatsLevel::kExceptDetailedTimers)
 	EXPORT_STATS_LEVEL(statsLevel, ExceptTimeForMutex, rocksdb::StatsLevel::kExceptTimeForMutex)
 	EXPORT_STATS_LEVEL(statsLevel, All, rocksdb::StatsLevel::kAll)
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "StatsLevel", statsLevel));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "StatsLevel", statsLevel));
+
+	// stat names
+	napi_value statHistogramNames = getHistogramNames(env);
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "histograms", statHistogramNames));
+	napi_value statTickerNames = getTickerNames(env);
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "tickers", statTickerNames));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "stats", statsObj));
 
 	return exports;
 }

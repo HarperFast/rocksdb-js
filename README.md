@@ -55,7 +55,7 @@ Creates a new database instance.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
-    overhead. Defaults to `StatsLevel.ExceptTickers`.
+    overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
     `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for
     more information.
@@ -610,6 +610,19 @@ db.notify({ key: 'bar' }, { value: 'baz' });
 Retrieve RocksDB statistics at runtime. You must set `enableStats: true` when calling `db.open()`.
 Statistics are captured at the database level and include all column families.
 
+RocksDB has two types of statistics: tickers and histograms. Tickers are 64-bit unsigned integers
+that measure counters. Histograms are objects containing various measurements of statistic
+distribution across all operations.
+
+```typescript
+import { RocksDatabase, stats } from '@harperfast/rocksdb-js';
+const db = RocksDatabase.open('/path/to/db', {
+	enableStats: true,
+	statsLevel: stats.StatsLevel.ExceptDetailedTimers, // default
+});
+console.log(db.getStats());
+```
+
 ### `db.getStat(statName: string): number`
 
 Retrieves a single statistic value.
@@ -618,22 +631,40 @@ Retrieves a single statistic value.
 console.log(db.getStat('rocksdb.block.cache.miss'));
 ```
 
-### `db.getStats(): Object`
+### `db.getStats(): Object<string, number | StatsHistogramData>`
 
-Returns an object containing all stat including stats that are skipped by the `StatsLevel`.
+Returns an object containing all ticker and histogram stats. Ticker values are 64-bit unsigned
+integers and histogram values are `StatsHistogramData` objects.
 
 ```typescript
 console.log(db.getStats());
 ```
 
-### `StatsLevel`
+### `stats`
 
-The `StatsLevel` contains constants used to set which types of skip and reduce statistic overhead.
+An object containing stat specific constants including ticker and histogram names.
 
-RocksDB has two types of statistics:
+#### `stats.histograms`
 
-- Tickers - 64-bit unsigned integers that measure counters.
-- Histograms - Measures distribution of a stat across all operations.
+An array of histogram names.
+
+```typescript
+import { stats } from '@harperfast/rocksdb-js';
+console.log(stats.histograms);
+```
+
+#### `stats.tickers`
+
+An array of ticker names.
+
+```typescript
+import { stats } from '@harperfast/rocksdb-js';
+console.log(stats.tickers);
+```
+
+#### `stats.StatsLevel`
+
+The `stats.StatsLevel` contains constants used to set which types of skip and reduce statistic overhead.
 
 - `StatsLevel.DisableAll` Disable all metrics.
 - `StatsLevel.ExceptTickers` Disable all tickers.
@@ -643,7 +674,19 @@ RocksDB has two types of statistics:
 - `StatsLevel.ExceptTimeForMutex` Skip time waiting for mutex locks.
 - `StatsLevel.All` Collects all stats.
 
-The default stat level is `StatsLevel.ExceptDetailedTimers`.
+### `type StatsHistogramData`
+
+An object is a record with the following properties:
+
+- `average: number` A double containing the average value.
+- `count: number` An unsigned 64-bit integer containing the number of values.
+- `max: number` A double containing the maximum value.
+- `median: number` A double containing the median value.
+- `min: number` A double containing the minimum value.
+- `percentile95: number` A double containing the 95th percentile value.
+- `percentile99: number` A double containing the 99th percentile value.
+- `standardDeviation: number` A double containing the standard deviation.
+- `sum: number` An unsigned 64-bit integer containing the sum of all values.
 
 ## Exclusive Locking
 

@@ -214,6 +214,41 @@ void DBDescriptor::detach(std::shared_ptr<Closable> closable) {
 	this->closables.erase(closable.get());
 }
 
+napi_value buildHistogramDataObject(napi_env env, const rocksdb::HistogramData& hist) {
+	napi_value obj;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &obj));
+
+	napi_value value;
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.average, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "average", value));
+
+	NAPI_STATUS_THROWS(::napi_create_int64(env, hist.count, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "count", value));
+
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.max, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "max", value));
+
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.median, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "median", value));
+
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.min, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "min", value));
+
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.percentile95, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "percentile95", value));
+
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.percentile99, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "percentile99", value));
+
+	NAPI_STATUS_THROWS(::napi_create_double(env, hist.standard_deviation, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "standardDeviation", value));
+
+	NAPI_STATUS_THROWS(::napi_create_int64(env, hist.sum, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, "sum", value));
+
+	return obj;
+}
+
 napi_value DBDescriptor::getStat(napi_env env, const std::string& statName) {
 	if (!this->statistics) {
 		::napi_throw_error(env, nullptr, "Statistics are not enabled");
@@ -233,10 +268,7 @@ napi_value DBDescriptor::getStat(napi_env env, const std::string& statName) {
 		if (name == statName) {
 			rocksdb::HistogramData hist;
 			this->statistics->histogramData(histogram, &hist);
-			double value = hist.average;
-			napi_value result;
-			NAPI_STATUS_THROWS(::napi_create_double(env, value, &result));
-			return result;
+			return buildHistogramDataObject(env, hist);
 		}
 	}
 
@@ -263,10 +295,9 @@ napi_value DBDescriptor::getStats(napi_env env) {
 	for (const auto& [histogram, name] : rocksdb::HistogramsNameMap) {
 		rocksdb::HistogramData hist;
 		this->statistics->histogramData(histogram, &hist);
-		napi_value value;
-		NAPI_STATUS_THROWS(::napi_create_double(env, hist.average, &value));
 		napi_value key;
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &key));
+		napi_value value = buildHistogramDataObject(env, hist);
 		NAPI_STATUS_THROWS(::napi_set_property(env, result, key, value));
 	}
 

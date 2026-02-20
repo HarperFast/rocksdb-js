@@ -17,7 +17,7 @@ import {
 	type NativeDatabaseOptions,
 	NativeIterator,
 	NativeTransaction,
-	StatsLevel,
+	stats,
 	type TransactionLog,
 	type UserSharedBufferCallback,
 } from './load-binding.js';
@@ -216,7 +216,7 @@ export class Store {
 	/**
 	 * The level of statistics to capture.
 	 */
-	statsLevel?: (typeof StatsLevel)[keyof typeof StatsLevel];
+	statsLevel?: (typeof stats.StatsLevel)[keyof typeof stats.StatsLevel];
 
 	/**
 	 * The threshold for the transaction log file's last modified time to be

@@ -7,7 +7,8 @@ export type { Key } from './encoding.js';
 export {
 	constants,
 	registryStatus,
-	StatsLevel,
+	stats,
+	type StatsHistogramData,
 	shutdown,
 	type TransactionEntry,
 	TransactionLog,

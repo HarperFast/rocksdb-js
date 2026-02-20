@@ -183,7 +183,47 @@ public:
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
 
+
+	/**
+	 * Gets a single statistic value.
+	 *
+	 * @example
+	 * ```typescript
+	 * const stat = db.getStat('rocksdb.block.cache.miss');
+	 * ```
+	 */
 	napi_value getStat(napi_env env, const std::string& statName);
+
+	/**
+	 * Gets all ticker statistic names.
+	 *
+	 * @example
+	 * ```typescript
+	 * import { stats } from '@harperfast/rocksdb-js';
+	 * console.log(stats.tickers);
+	 * ```
+	 */
+	napi_value getStatTickerNames(napi_env env);
+
+	/**
+	 * Gets all histogram statistic names.
+	 *
+	 * @example
+	 * ```typescript
+	 * import { stats } from '@harperfast/rocksdb-js';
+	 * console.log(stats.histograms);
+	 * ```
+	 */
+	napi_value getStatHistogramNames(napi_env env);
+
+	/**
+	 * Gets all statistics.
+	 *
+	 * @example
+	 * ```typescript
+	 * const stats = db.getStats();
+	 * ```
+	 */
 	napi_value getStats(napi_env env);
 
 	void lockCall(

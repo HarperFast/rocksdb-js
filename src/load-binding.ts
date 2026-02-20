@@ -81,7 +81,7 @@ export type NativeDatabaseOptions = {
 	name?: string;
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
-	statsLevel?: (typeof StatsLevel)[keyof typeof StatsLevel];
+	statsLevel?: (typeof stats.StatsLevel)[keyof typeof stats.StatsLevel];
 	transactionLogMaxAgeThreshold?: number;
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
@@ -94,6 +94,18 @@ type RejectCallback = (err: Error) => void;
 export type UserSharedBufferCallback = () => void;
 
 export type PurgeLogsOptions = { before?: number; destroy?: boolean; name?: string };
+
+export type StatsHistogramData = {
+	average: number;
+	count: number;
+	max: number;
+	median: number;
+	min: number;
+	percentile95: number;
+	percentile99: number;
+	standardDeviation: number;
+	sum: number;
+};
 
 export type NativeDatabase = {
 	new (): NativeDatabase;
@@ -119,8 +131,8 @@ export type NativeDatabase = {
 	getDBProperty(propertyName: string): string;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
-	getStat(statName: string): number;
-	getStats(): Record<string, number>;
+	getStat(statName: string): number | StatsHistogramData;
+	getStats(): Record<string, number | StatsHistogramData>;
 	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
@@ -251,13 +263,17 @@ export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
-export const StatsLevel: {
-	DisableAll: number;
-	ExceptTickers: number;
-	ExceptHistogramOrTimers: number;
-	ExceptTimers: number;
-	ExceptDetailedTimers: number;
-	ExceptTimeForMutex: number;
-	All: number;
-} = binding.StatsLevel;
+export const stats: {
+	histograms: string[];
+	tickers: string[];
+	StatsLevel: {
+		DisableAll: number;
+		ExceptTickers: number;
+		ExceptHistogramOrTimers: number;
+		ExceptTimers: number;
+		ExceptDetailedTimers: number;
+		ExceptTimeForMutex: number;
+		All: number;
+	};
+} = binding.stats;
 export const version: string = binding.version;

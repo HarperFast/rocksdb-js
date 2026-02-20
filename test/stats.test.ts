@@ -1,18 +1,11 @@
-import { StatsLevel } from '../src/index.js';
+import { stats } from '../src/index.js';
 import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 describe('Statistics', () => {
-	it('should get statistics from database', () =>
+	it('should get all stats from database', () =>
 		dbRunner(
-			{
-				dbOptions: [
-					{
-						enableStats: true,
-						statsLevel: StatsLevel.All,
-					},
-				],
-			},
+			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
 			async ({ db }) => {
 				let stats = db.getStats();
 				expect(stats).toBeDefined();
@@ -28,6 +21,46 @@ describe('Statistics', () => {
 				expect(db.getStat('rocksdb.number.keys.written')).toBe(2);
 			}
 		));
+
+	it('should get ticker stat from database', () =>
+		dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
+			await db.put('key1', 'value1');
+			await db.put('key2', 'value2');
+
+			const stat = db.getStat('rocksdb.number.keys.written');
+			expect(stat).toBe(2);
+		}));
+
+	it('should get histogram stat from database', () =>
+		dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
+			await db.put('key1', 'value1');
+			await db.put('key2', 'value2');
+
+			const stat = db.getStat('rocksdb.db.write.micros');
+			expect(stat).toBeDefined();
+			expect(typeof stat).toBe('object');
+			expect(stat['average']).toBeGreaterThan(0);
+			expect(stat['count']).toBe(2);
+			expect(stat['max']).toBeGreaterThan(0);
+			expect(stat['median']).toBeGreaterThan(0);
+			expect(stat['min']).toBeGreaterThan(0);
+			expect(stat['percentile95']).toBeGreaterThan(0);
+			expect(stat['percentile99']).toBeGreaterThan(0);
+		}));
+
+	it('should get all ticker names', () => {
+		const tickerNames = stats.tickers;
+		expect(tickerNames).toBeDefined();
+		expect(tickerNames.length).toBeGreaterThan(0);
+		expect(tickerNames.includes('rocksdb.number.keys.written')).toBe(true);
+	});
+
+	it('should get all histogram names', () => {
+		const histogramNames = stats.histograms;
+		expect(histogramNames).toBeDefined();
+		expect(histogramNames.length).toBeGreaterThan(0);
+		expect(histogramNames.includes('rocksdb.db.write.micros')).toBe(true);
+	});
 
 	it('should error if statistics are not enabled', () =>
 		dbRunner(async ({ db }) => {
