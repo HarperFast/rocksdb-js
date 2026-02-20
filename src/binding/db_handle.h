@@ -96,6 +96,9 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	rocksdb::ColumnFamilyHandle* getColumnFamilyHandle() const;
 	std::string getColumnFamilyName() const;
 
+	napi_value getStat(napi_env env, const std::string& statName);
+	napi_value getStats(napi_env env, bool all);
+
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;
 	void unrefLog(const std::string& name);

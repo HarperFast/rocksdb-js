@@ -3,7 +3,7 @@ import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 describe('Statistics', () => {
-	it('should get all stats from database', () =>
+	it('should get essential stats from database', () =>
 		dbRunner(
 			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
 			async ({ db }) => {
@@ -17,8 +17,43 @@ describe('Statistics', () => {
 
 				stats = db.getStats();
 				expect(stats).toBeDefined();
+				expect(Object.keys(stats).length).toBeLessThan(100);
+
+				// internal stats
 				expect(stats['rocksdb.number.keys.written']).toBe(2);
-				expect(db.getStat('rocksdb.number.keys.written')).toBe(2);
+
+				// column family stats
+				expect(stats['rocksdb.estimate-num-keys']).toBe(2);
+
+				// excluded from essential stats
+				expect(stats['rocksdb.readahead.trimmed']).not.toBeDefined();
+			}
+		));
+
+	it('should get all stats from database', () =>
+		dbRunner(
+			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
+			async ({ db }) => {
+				let stats = db.getStats(true);
+				expect(stats).toBeDefined();
+				expect(stats['rocksdb.number.keys.written']).toBe(0);
+				expect(db.getStat('rocksdb.number.keys.written')).toBe(0);
+
+				await db.put('key1', 'value1');
+				await db.put('key2', 'value2');
+
+				stats = db.getStats(true);
+				expect(stats).toBeDefined();
+				expect(Object.keys(stats).length).toBeGreaterThan(100);
+
+				// internal stats
+				expect(stats['rocksdb.number.keys.written']).toBe(2);
+
+				// column family stats
+				expect(stats['rocksdb.estimate-num-keys']).toBe(2);
+
+				// all stats
+				expect(stats['rocksdb.readahead.trimmed']).toBeDefined();
 			}
 		));
 

@@ -571,28 +571,6 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 	return result;
 }
 
-napi_value Database::GetStat(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
-	UNWRAP_DB_HANDLE_AND_OPEN();
-	NAPI_GET_STRING(argv[0], statName, "Stat name is required");
-	return (*dbHandle)->descriptor->getStat(env, statName);
-}
-
-/**
- * Gets the RocksDB statistics. Requires statistics to be enabled.
- *
- * @example
- * ```typescript
- * const db = NativeDatabase.open('path/to/db');
- * const stats = db.getStats();
- * ```
- */
-napi_value Database::GetStats(napi_env env, napi_callback_info info) {
-	NAPI_METHOD();
-	UNWRAP_DB_HANDLE_AND_OPEN();
-	return (*dbHandle)->descriptor->getStats(env);
-}
-
 /**
  * Gets a RocksDB database property as a string.
  *
@@ -661,6 +639,40 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, value, &result));
 	return result;
+}
+
+/**
+ * Gets a RocksDB statistic.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const stat = db.getStat('rocksdb.block.cache.hit');
+ */
+napi_value Database::GetStat(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	NAPI_GET_STRING(argv[0], statName, "Stat name is required");
+	return (*dbHandle)->getStat(env, statName);
+}
+
+/**
+ * Gets the RocksDB statistics. Requires statistics to be enabled.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const stats = db.getStats();
+ * ```
+ */
+napi_value Database::GetStats(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	bool all = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &all));
+
+	return (*dbHandle)->getStats(env, all);
 }
 
 /**

@@ -234,8 +234,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const stats = db.getStats();
 	 * ```
 	 */
-	getStats(): Record<string, number | StatsHistogramData> {
-		return this.store.db.getStats();
+	getStats(all = false): Record<string, number | StatsHistogramData> {
+		return this.store.db.getStats(all);
 	}
 
 	/**

@@ -631,13 +631,23 @@ Retrieves a single statistic value.
 console.log(db.getStat('rocksdb.block.cache.miss'));
 ```
 
-### `db.getStats(): Object<string, number | StatsHistogramData>`
+### `db.getStats(all?: boolean): Object<string, number | StatsHistogramData>`
 
-Returns an object containing all ticker and histogram stats. Ticker values are 64-bit unsigned
-integers and histogram values are `StatsHistogramData` objects.
+Returns an object containing a curated list of column family-level properties, internal tickers
+stats, and internal histogram stats.
+
+By default, it only returns the most meaningful internal stats. When `all = true`, it returns the
+same column family-level properties, but includes all internal tickers and histogram stats.
+
+Column family and ticker stat values are 64-bit unsigned integers and histogram values are
+`StatsHistogramData` objects.
 
 ```typescript
+// get essential stats
 console.log(db.getStats());
+
+// get all stats
+console.log(db.getStats(true));
 ```
 
 ### `stats`
@@ -646,7 +656,7 @@ An object containing stat specific constants including ticker and histogram name
 
 #### `stats.histograms`
 
-An array of histogram names.
+An array of internal histogram stat names.
 
 ```typescript
 import { stats } from '@harperfast/rocksdb-js';
@@ -655,7 +665,7 @@ console.log(stats.histograms);
 
 #### `stats.tickers`
 
-An array of ticker names.
+An array of internal ticker stat names.
 
 ```typescript
 import { stats } from '@harperfast/rocksdb-js';

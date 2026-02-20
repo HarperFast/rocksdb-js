@@ -132,7 +132,7 @@ export type NativeDatabase = {
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
-	getStats(): Record<string, number | StatsHistogramData>;
+	getStats(all?: boolean): Record<string, number | StatsHistogramData>;
 	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
