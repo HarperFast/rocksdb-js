@@ -8,6 +8,7 @@
 #include <set>
 #include <functional>
 #include "rocksdb/db.h"
+#include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_util.h"
@@ -72,6 +73,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of column family name to column family handle.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
+
+	/**
+	 * The RocksDB statistics instance.
+	 */
+	std::shared_ptr<rocksdb::Statistics> statistics;
 
 	/**
 	 * Map of transaction id to transaction handle.
@@ -161,7 +167,8 @@ private:
 		const std::string& path,
 		const DBOptions& options,
 		std::shared_ptr<rocksdb::DB> db,
-		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns
+		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
+		std::shared_ptr<rocksdb::Statistics> statistics
 	);
 
 	void discoverTransactionLogStores();
@@ -175,6 +182,49 @@ public:
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
+
+
+	/**
+	 * Gets a single statistic value.
+	 *
+	 * @example
+	 * ```typescript
+	 * const stat = db.getStat('rocksdb.block.cache.miss');
+	 * ```
+	 */
+	napi_value getStat(napi_env env, const std::string& statName);
+
+	/**
+	 * Gets all ticker statistic names.
+	 *
+	 * @example
+	 * ```typescript
+	 * import { stats } from '@harperfast/rocksdb-js';
+	 * console.log(stats.tickers);
+	 * ```
+	 */
+	napi_value getStatTickerNames(napi_env env);
+
+	/**
+	 * Gets all histogram statistic names.
+	 *
+	 * @example
+	 * ```typescript
+	 * import { stats } from '@harperfast/rocksdb-js';
+	 * console.log(stats.histograms);
+	 * ```
+	 */
+	napi_value getStatHistogramNames(napi_env env);
+
+	/**
+	 * Gets all statistics.
+	 *
+	 * @example
+	 * ```typescript
+	 * const stats = db.getStats();
+	 * ```
+	 */
+	bool getStats(napi_env env, bool all, napi_value* result);
 
 	void lockCall(
 		napi_env env,
