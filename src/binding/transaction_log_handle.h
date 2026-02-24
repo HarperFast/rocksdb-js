@@ -17,7 +17,7 @@ struct TransactionLogHandle final : Closable {
 	/**
 	 * The transaction log store.
 	 */
-	std::weak_ptr<TransactionLogStore> store;
+	std::shared_ptr<TransactionLogStore> store;
 
 	/**
 	 * The name of the transaction log store.
