@@ -37,7 +37,7 @@ void TransactionHandle::resetTransaction(){
 		delete this->txn;
 	}
 
-	this->logEntryBatch = nullptr;
+	this->logEntryBatch.reset();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	rocksdb::WriteOptions writeOptions;
