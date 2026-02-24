@@ -667,6 +667,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	cfOptions.enable_blob_files = true;
 	cfOptions.min_blob_size = 1024; // Ensure this matches your requirement
 	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
 	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
