@@ -211,7 +211,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				if (txnHandle->logEntryBatch) {
 					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 						txnHandle.get(), txnHandle->id);
-					auto store = txnHandle->boundLogStore;
+					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
 						// write the batch to the store
 						store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
@@ -225,7 +225,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 				state->status = txnHandle->txn->Commit();
 				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
-					auto store = txnHandle->boundLogStore;
+					auto store = txnHandle->boundLogStore.lock();
 					if (store) {
 						store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
 					} else {
@@ -308,7 +308,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
-		auto store = (*txnHandle)->boundLogStore;
+		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
 			// free the batch after writing to avoid memory leak
@@ -322,7 +322,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
 	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && !status.IsBusy()) {
-		auto store = (*txnHandle)->boundLogStore;
+		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			store->commitFinished((*txnHandle)->committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
 		} else {
@@ -590,7 +590,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_HANDLE("UseLog");
 
 	// check if transaction is already bound to a different log store
-	auto boundStore = (*txnHandle)->boundLogStore;
+	auto boundStore = (*txnHandle)->boundLogStore.lock();
 	if (boundStore && boundStore->name != name) {
 		::napi_throw_error(env, nullptr, "Log already bound to a transaction");
 		return nullptr;

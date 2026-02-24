@@ -43,7 +43,7 @@ void TransactionLogHandle::addEntry(
 	}
 
 	// check if transaction is already bound to a different log store
-	auto boundStore = txnHandle->boundLogStore;
+	auto boundStore = txnHandle->boundLogStore.lock();
 	if (boundStore && boundStore.get() != store.get()) {
 		throw std::runtime_error("Log already bound to a transaction");
 	}

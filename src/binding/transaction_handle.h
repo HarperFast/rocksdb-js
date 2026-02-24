@@ -95,11 +95,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
-	 * A shared reference to the transaction log store this transaction is bound to.
+	 * A weak reference to the transaction log store this transaction is bound to.
 	 * Once set, a transaction can only add entries to this specific log store.
 	 * This keeps the store alive for the duration of the transaction.
 	 */
-	std::shared_ptr<TransactionLogStore> boundLogStore;
+	std::weak_ptr<TransactionLogStore> boundLogStore;
 
 	/**
 	 * The position of the beginning of the log entries that were written for this transaction.

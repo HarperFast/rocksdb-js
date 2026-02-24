@@ -72,7 +72,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 		this, entry->store->name.c_str(), this->id, entry->size);
 
 	// check if this transaction is already bound to a different log store
-	auto currentBoundStore = this->boundLogStore;
+	auto currentBoundStore = this->boundLogStore.lock();
 	if (currentBoundStore) {
 		// transaction is already bound to a log store
 		if (currentBoundStore.get() != entry->store.get()) {
