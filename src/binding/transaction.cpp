@@ -214,6 +214,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					if (store) {
 						// write the batch to the store
 						store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
+						// free the batch after writing to avoid memory leak
+						txnHandle->logEntryBatch.reset();
 					} else {
 						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
 						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -307,6 +309,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		auto store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+			// free the batch after writing to avoid memory leak
+			(*txnHandle)->logEntryBatch.reset();
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id);
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
