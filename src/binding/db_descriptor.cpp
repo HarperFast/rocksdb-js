@@ -661,7 +661,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// Define base ColumnFamilyOptions that include blob settings
 	rocksdb::ColumnFamilyOptions cfOptions;
 	cfOptions.enable_blob_files = true;
-	cfOptions.min_blob_size = 1024; // Ensure this matches your requirement
+	cfOptions.min_blob_size = 2048;
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
