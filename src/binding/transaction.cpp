@@ -139,7 +139,6 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
 	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id);
-	(*txnHandle)->dbHandle->descriptor->transactionRemove(*txnHandle);
 	(*txnHandle)->close();
 
 	NAPI_RETURN_UNDEFINED();
@@ -259,7 +258,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				if (state->status.ok()) {
 					if (state->handle) {
 						DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%u)\n", state->handle.get(), state->handle->id);
-						state->handle->dbHandle->descriptor->transactionRemove(state->handle);
 						state->handle->close();
 						DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id);
 					} else {
@@ -337,7 +335,6 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
-		(*txnHandle)->dbHandle->descriptor->transactionRemove(*txnHandle);
 		(*txnHandle)->close();
 	} else {
 		if (status.IsBusy()) {

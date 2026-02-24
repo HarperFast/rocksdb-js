@@ -97,6 +97,11 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
  * the transaction has been aborted, or when the transaction is destroyed.
  */
 void TransactionHandle::close() {
+	if (!this->dbHandle || !this->dbHandle->descriptor) {
+		return; // or throw appropriate error
+	}
+	this->dbHandle->descriptor->transactionRemove(shared_from_this());
+
 	if (!this->txn) {
 		return;
 	}
