@@ -97,7 +97,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * A weak reference to the transaction log store this transaction is bound to.
 	 * Once set, a transaction can only add entries to this specific log store.
-	 * This keeps the store alive for the duration of the transaction.
 	 */
 	std::weak_ptr<TransactionLogStore> boundLogStore;
 
