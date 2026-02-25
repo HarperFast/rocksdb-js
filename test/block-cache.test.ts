@@ -1,5 +1,6 @@
 import { RocksDatabase } from '../src/index.js';
 import { dbRunner } from './lib/util.js';
+import assert from 'node:assert';
 import { describe, expect, it } from 'vitest';
 
 describe('Block Cache', () => {
@@ -14,6 +15,16 @@ describe('Block Cache', () => {
 		dbRunner({ skipOpen: true }, async ({ db }) => {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
 			db.open();
+			assert.equal(db.getStats()['rocksdb.block-cache-capacity'], 1024 * 1024);
+			await db.put('foo', 'bar');
+			expect(db.get('foo')).toBe('bar');
+		}));
+
+	it('should enable block cache and override default size for non-default CF', () =>
+		dbRunner({ skipOpen: true, dbOptions: [{ name: 'nonDefault' }] }, async ({ db }) => {
+			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
+			db.open();
+			assert.equal(db.getStats()['rocksdb.block-cache-capacity'], 1024 * 1024);
 			await db.put('foo', 'bar');
 			expect(db.get('foo')).toBe('bar');
 		}));

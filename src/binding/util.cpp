@@ -9,6 +9,8 @@
 #include <sstream>
 #include <thread>
 #include "util.h"
+#include "rocksdb/utilities/options_util.h"
+#include "db_settings.h"
 
 namespace rocksdb_js {
 
@@ -277,7 +279,17 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
  */
 std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name) {
 	rocksdb::ColumnFamilyHandle* cfHandle;
-	rocksdb::Status status = db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), name, &cfHandle);
+	rocksdb::BlockBasedTableOptions tableOptions;
+	DBSettings& settings = DBSettings::getInstance();
+	tableOptions.block_cache = settings.getBlockCache();
+	// Define base ColumnFamilyOptions that include blob settings
+	rocksdb::ColumnFamilyOptions cfOptions;
+	cfOptions.enable_blob_files = true;
+	cfOptions.min_blob_size = 2048;
+	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+
+	rocksdb::Status status = db->CreateColumnFamily(cfOptions, name, &cfHandle);
 	if (!status.ok()) {
 		throw std::runtime_error(status.ToString().c_str());
 	}
