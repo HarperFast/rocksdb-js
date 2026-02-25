@@ -1,7 +1,6 @@
 import { RocksDatabase } from '../src/index.js';
 import { dbRunner } from './lib/util.js';
-import assert from 'node:assert';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 
 describe('Block Cache', () => {
 	it('should disable block cache', () =>
