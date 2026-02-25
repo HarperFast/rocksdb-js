@@ -34,7 +34,7 @@ void TransactionLogHandle::addEntry(
 		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
 	}
 
-	auto store = this->store;
+	auto store = this->store.lock();
 	if (!store) {
 		// store was closed/destroyed, try to get or create a new one
 		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str());
@@ -63,31 +63,31 @@ void TransactionLogHandle::close() {
 }
 
 uint64_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
-	auto store = this->store;
+	auto store = this->store.lock();
 	if (store) return store->getLogFileSize(sequenceNumber);
 	return 0;
 }
 
 std::weak_ptr<MemoryMap> TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
-	auto store = this->store;
+	auto store = this->store.lock();
 	if (store) return store->getMemoryMap(sequenceNumber);
 	return std::weak_ptr<MemoryMap>(); // nullptr
 }
 
 LogPosition TransactionLogHandle::findPosition(double timestamp) {
-	auto store = this->store;
+	auto store = this->store.lock();
 	if (store) return store->findPositionByTimestamp(timestamp);
 	return { 0, 0 };
 }
 
 LogPosition TransactionLogHandle::getLastFlushed() {
-	auto store = this->store;
+	auto store = this->store.lock();
 	if (store) return store->getLastFlushedPosition();
 	return { 0, 0 };
 }
 
 std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
-	auto store = this->store;
+	auto store = this->store.lock();
 	if (store) return store->getLastCommittedPosition();
 	return std::weak_ptr<LogPosition>(); // nullptr
 }

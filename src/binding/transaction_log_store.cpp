@@ -63,10 +63,14 @@ void TransactionLogStore::close() {
 
 	std::unique_lock<std::mutex> lock(this->writeMutex);
 	std::unique_lock<std::mutex> dataSetsLock(this->dataSetsMutex);
+	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToClose;
+
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str());
-	for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
+	for (auto it = this->sequenceFiles.begin(); it != this->sequenceFiles.end(); ) {
+		auto logFile = it->second;
 		DEBUG_LOG("%p TransactionLogStore::close Closing log file \"%s\"\n", this, logFile->path.string().c_str());
-		logFile->close();
+		logFilesToClose.push_back(logFile);
+		it = this->sequenceFiles.erase(it);
 	}
 
 	// Close the state file if it's open
@@ -76,6 +80,11 @@ void TransactionLogStore::close() {
 
 	lock.unlock();
 	dataSetsLock.unlock();
+
+	for (auto& logFile : logFilesToClose) {
+		logFile->close();
+	}
+
 	this->purge();
 }
 
