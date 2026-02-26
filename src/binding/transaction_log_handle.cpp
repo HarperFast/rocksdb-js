@@ -39,7 +39,7 @@ void TransactionLogHandle::addEntry(
 		// store was closed/destroyed, try to get or create a new one
 		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str());
 		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-		this->store = store; // update shared_ptr to point to new store
+		this->store = store; // update weak_ptr to point to new store
 	}
 
 	// check if transaction is already bound to a different log store
