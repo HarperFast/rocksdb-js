@@ -63,7 +63,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		settings.blockCacheSize = static_cast<uint32_t>(blockCacheSize);
+		settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
 
 		if (settings.blockCache) {
 			settings.blockCache->SetCapacity(blockCacheSize);

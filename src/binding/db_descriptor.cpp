@@ -648,11 +648,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.create_if_missing = true;
 	dbOptions.create_missing_column_families = true;
 	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
-	dbOptions.enable_blob_files = true;
-	dbOptions.enable_blob_garbage_collection = true;
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
-	dbOptions.min_blob_size = 1024;
 	dbOptions.persist_user_defined_timestamps = true;
 	if (options.enableStats) {
 		dbOptions.statistics = rocksdb::CreateDBStatistics();
@@ -660,13 +657,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	} else {
 		dbOptions.statistics = nullptr;
 	}
-	dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// Define base ColumnFamilyOptions that include blob settings
 	rocksdb::ColumnFamilyOptions cfOptions;
 	cfOptions.enable_blob_files = true;
-	cfOptions.min_blob_size = 1024; // Ensure this matches your requirement
+	cfOptions.min_blob_size = 2048;
 	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
 	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();

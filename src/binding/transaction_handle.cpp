@@ -37,7 +37,7 @@ void TransactionHandle::resetTransaction(){
 		delete this->txn;
 	}
 
-	this->logEntryBatch = nullptr;
+	this->logEntryBatch.reset();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	rocksdb::WriteOptions writeOptions;
@@ -97,6 +97,10 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
  * the transaction has been aborted, or when the transaction is destroyed.
  */
 void TransactionHandle::close() {
+	if (this->dbHandle && this->dbHandle->descriptor) {
+		this->dbHandle->descriptor->transactionRemove(shared_from_this());
+	}
+
 	if (!this->txn) {
 		return;
 	}

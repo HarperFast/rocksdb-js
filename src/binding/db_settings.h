@@ -17,7 +17,7 @@ private:
 
 	static std::unique_ptr<DBSettings> instance;
 
-	uint32_t blockCacheSize;
+	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
 
 public:
@@ -28,7 +28,7 @@ public:
 		return *instance;
 	}
 
-	uint32_t getBlockCacheSize() const {
+	size_t getBlockCacheSize() const {
 		return blockCacheSize;
 	}
 
