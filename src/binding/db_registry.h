@@ -47,8 +47,28 @@ private:
 	bool owns;
 public:
 	explicit unique_lock_generic(Mutex& mutex) : m(&mutex), owns(true) { m->lock(); }
-	~unique_lock_generic() { if (owns) m->unlock(); }
-	void unlock() { if (owns) { m->unlock(); owns = false; } }
+	~unique_lock_generic() { if (owns && m) m->unlock(); }
+	void unlock() { if (owns && m) { m->unlock(); owns = false; } }
+	void lock() { if (!owns && m) { m->lock(); owns = true; } }
+
+	// Move constructor
+	unique_lock_generic(unique_lock_generic&& other) noexcept : m(other.m), owns(other.owns) {
+		other.m = nullptr;
+		other.owns = false;
+	}
+
+	// Move assignment
+	unique_lock_generic& operator=(unique_lock_generic&& other) noexcept {
+		if (this != &other) {
+			if (owns && m) m->unlock();
+			m = other.m;
+			owns = other.owns;
+			other.m = nullptr;
+			other.owns = false;
+		}
+		return *this;
+	}
+
 	unique_lock_generic(const unique_lock_generic&) = delete;
 	unique_lock_generic& operator=(const unique_lock_generic&) = delete;
 };

@@ -2,6 +2,8 @@
 #include "macros.h"
 #include "util.h"
 #include "rocksdb/table.h"
+#include <thread>
+#include <chrono>
 
 namespace rocksdb_js {
 
@@ -191,17 +193,20 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	auto& entry = entryIterator->second;
 
 	// wait for any closing database on this specific path to be fully removed before proceeding
-	entry.condition->wait(lock, [&]() {
+	while (true) {
 		if (entry.descriptor) {
 			if (entry.descriptor->isClosing()) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", &instance, path.c_str());
 				entry.descriptor.reset();
-				return false; // keep waiting
+				lock.unlock();
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				lock = registry_unique_lock<RegistryMutex>(*instance.databasesMutex);
+				continue;
 			}
-			return true; // database exists and is not closing
+			break; // database exists and is not closing
 		}
-		return true; // database doesn't exist, can proceed
-	});
+		break; // database doesn't exist, can proceed
+	}
 
 	// at this point, either:
 	// 1. descriptor is set to a valid, non-closing database, or
