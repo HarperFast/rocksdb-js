@@ -81,7 +81,7 @@
 					# 'defines': ['DEBUG'],
 					'msvs_settings': {
 						'VCCLCompilerTool': {
-							'RuntimeLibrary': 2,
+							'RuntimeLibrary': 0,  # 0 = /MT (static CRT, release)
 							'ExceptionHandling': 1,
 							'AdditionalOptions!': [],
 							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
@@ -102,8 +102,7 @@
 					'ldflags': ['--coverage'],
 					'msvs_settings': {
 						'VCCLCompilerTool': {
-							# 'RuntimeLibrary': 3,
-							'RuntimeLibrary': 2,
+							'RuntimeLibrary': 1,  # 1 = /MTd (static CRT, debug)
 							'ExceptionHandling': 1,
 							'AdditionalOptions!': [],
 							# 'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
