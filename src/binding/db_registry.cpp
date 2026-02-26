@@ -31,7 +31,14 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	DBRegistryEntry* entry = nullptr;
 
 	{
-		std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+		// Debug: Check pointer validity before locking
+		DEBUG_LOG("%p DBRegistry::CloseDB About to lock mutex. instance=%p, databasesMutex=%p\n",
+			&instance, &instance, instance.databasesMutex.get());
+		if (!instance.databasesMutex) {
+			DEBUG_LOG("ERROR: databasesMutex is nullptr!\n");
+			return;
+		}
+		registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 		auto entryIterator = instance.databases.find(path);
 		if (entryIterator != instance.databases.end()) {
 			entry = &entryIterator->second;
@@ -55,7 +62,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", &instance, path.c_str());
 			entry->descriptor->close();
 
-			std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+			registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 			instance.databases.erase(path);
 
 			// notify only waiters for this specific path
@@ -74,7 +81,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 #ifdef DEBUG
 void DBRegistry::DebugLogDescriptorRefs() {
 	DBRegistry& instance = getInstance();
-	std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+	registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 	DEBUG_LOG("DBRegistry::DebugLogDescriptorRefs %d descriptor%s in registry:\n", instance.databases.size(), instance.databases.size() == 1 ? "" : "s");
 	for (auto& [path, entry] : instance.databases) {
 		DEBUG_LOG("  %p for \"%s\" (ref count = %ld)\n", entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
@@ -96,7 +103,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	// Find and remove the descriptor from the registry
 	{
-		std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+		registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 		auto it = instance.databases.find(path);
 		if (it != instance.databases.end()) {
 			descriptor = it->second.descriptor;
@@ -171,7 +178,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
-	std::unique_lock<std::mutex> lock(*instance.databasesMutex);
+	registry_unique_lock<RegistryMutex> lock(*instance.databasesMutex);
 
 	// get or create entry for this path
 	auto entryIterator = instance.databases.find(path);
@@ -259,7 +266,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
  */
 void DBRegistry::PurgeAll() {
 	DBRegistry& instance = getInstance();
-	std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+	registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 #ifdef DEBUG
 		size_t initialSize = instance.databases.size();
 		DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", &instance, instance.databases.size());
@@ -300,7 +307,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_array(env, &result));
 
 	DBRegistry& instance = getInstance();
-	std::unique_lock<std::mutex> lock(*instance.databasesMutex);
+	registry_unique_lock<RegistryMutex> lock(*instance.databasesMutex);
 
 	size_t i = 0;
 	for (auto& [path, entry] : instance.databases) {
@@ -356,7 +363,7 @@ void DBRegistry::Shutdown() {
 	std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
 
 	{
-		std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+		registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 			DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", &instance, instance.databases.size());
 
 			// Collect all descriptors to close
@@ -384,7 +391,7 @@ void DBRegistry::Shutdown() {
  */
 size_t DBRegistry::Size() {
 	DBRegistry& instance = getInstance();
-	std::lock_guard<std::mutex> lock(*instance.databasesMutex);
+	registry_lock_guard<RegistryMutex> lock(*instance.databasesMutex);
 	return instance.databases.size();
 }
 

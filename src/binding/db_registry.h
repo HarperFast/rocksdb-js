@@ -9,6 +9,59 @@
 #include "db_handle.h"
 #include "transaction.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+// Windows-compatible mutex wrapper using CRITICAL_SECTION
+// This avoids CRT compatibility issues between Node.js and native addon
+class WinMutex {
+private:
+	CRITICAL_SECTION cs;
+public:
+	WinMutex() { InitializeCriticalSection(&cs); }
+	~WinMutex() { DeleteCriticalSection(&cs); }
+	void lock() { EnterCriticalSection(&cs); }
+	void unlock() { LeaveCriticalSection(&cs); }
+	bool try_lock() { return TryEnterCriticalSection(&cs) != 0; }
+
+	WinMutex(const WinMutex&) = delete;
+	WinMutex& operator=(const WinMutex&) = delete;
+};
+
+template<typename Mutex>
+class lock_guard_generic {
+private:
+	Mutex& m;
+public:
+	explicit lock_guard_generic(Mutex& mutex) : m(mutex) { m.lock(); }
+	~lock_guard_generic() { m.unlock(); }
+	lock_guard_generic(const lock_guard_generic&) = delete;
+	lock_guard_generic& operator=(const lock_guard_generic&) = delete;
+};
+
+template<typename Mutex>
+class unique_lock_generic {
+private:
+	Mutex* m;
+	bool owns;
+public:
+	explicit unique_lock_generic(Mutex& mutex) : m(&mutex), owns(true) { m->lock(); }
+	~unique_lock_generic() { if (owns) m->unlock(); }
+	void unlock() { if (owns) { m->unlock(); owns = false; } }
+	unique_lock_generic(const unique_lock_generic&) = delete;
+	unique_lock_generic& operator=(const unique_lock_generic&) = delete;
+};
+
+using RegistryMutex = WinMutex;
+template<typename T> using registry_lock_guard = lock_guard_generic<T>;
+template<typename T> using registry_unique_lock = unique_lock_generic<T>;
+#else
+using RegistryMutex = std::mutex;
+template<typename T> using registry_lock_guard = std::lock_guard<T>;
+template<typename T> using registry_unique_lock = std::unique_lock<T>;
+#endif
+
 namespace rocksdb_js {
 
 /**
@@ -44,7 +97,7 @@ private:
 	/**
 	 * Private constructor.
 	 */
-	DBRegistry() : databasesMutex(std::make_unique<std::mutex>()) {}
+	DBRegistry() : databasesMutex(std::make_unique<RegistryMutex>()) {}
 
 	/**
 	 * Map of database path to registry entry containing both the descriptor
@@ -54,9 +107,9 @@ private:
 
 	/**
 	 * Mutex to protect the databases map.
-	 * Using unique_ptr to ensure proper initialization on Windows.
+	 * Using RegistryMutex (Windows CRITICAL_SECTION or std::mutex) to avoid CRT issues.
 	 */
-	std::unique_ptr<std::mutex> databasesMutex;
+	std::unique_ptr<RegistryMutex> databasesMutex;
 
 	/**
 	 * Get the singleton instance of the registry.
