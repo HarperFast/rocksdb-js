@@ -58,9 +58,13 @@ private:
 	std::mutex databasesMutex;
 
 	/**
-	 * The singleton instance of the registry.
+	 * Get the singleton instance of the registry.
+	 * Uses Meyer's singleton pattern for guaranteed initialization.
 	 */
-	static std::unique_ptr<DBRegistry> instance;
+	static DBRegistry& getInstance() {
+		static DBRegistry instance;
+		return instance;
+	}
 
 public:
 	static void CloseDB(const std::shared_ptr<DBHandle> handle);
