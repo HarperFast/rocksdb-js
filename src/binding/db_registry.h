@@ -44,7 +44,7 @@ private:
 	/**
 	 * Private constructor.
 	 */
-	DBRegistry() = default;
+	DBRegistry() : databasesMutex(std::make_unique<std::mutex>()) {}
 
 	/**
 	 * Map of database path to registry entry containing both the descriptor
@@ -54,8 +54,9 @@ private:
 
 	/**
 	 * Mutex to protect the databases map.
+	 * Using unique_ptr to ensure proper initialization on Windows.
 	 */
-	std::mutex databasesMutex;
+	std::unique_ptr<std::mutex> databasesMutex;
 
 	/**
 	 * Get the singleton instance of the registry.
