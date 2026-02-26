@@ -253,7 +253,7 @@ napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info)
 napi_value TransactionLog::GetPath(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetPath");
-	auto store = (*txnLogHandle)->store;
+	auto store = (*txnLogHandle)->store.lock();
 	if (store) {
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, store->path.string().c_str(), store->path.string().size(), &result));
