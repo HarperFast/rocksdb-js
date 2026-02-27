@@ -468,7 +468,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @param event - The event name to remove the listener for.
 	 * @param callback - The callback to remove.
 	 */
-	removeListener(event: string, callback: () => void): boolean {
+	removeListener(event: string, callback: (value?: any) => void): boolean {
 		return this.store.db.removeListener(event, callback);
 	}
 

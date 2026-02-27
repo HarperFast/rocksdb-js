@@ -57,6 +57,47 @@ describe('Transaction Log', () => {
 				expect(db.listLogs()).toEqual(['612']);
 			}));
 
+		it('should emit "new-transaction-log" event when a new log is created', () =>
+			dbRunner(async ({ db }) => {
+				const events: { name: string }[] = [];
+				let eventResolver: (() => void) | undefined;
+				let eventPromise = new Promise<void>((resolve) => {
+					eventResolver = resolve;
+				});
+
+				const listener = (name: string) => {
+					events.push({ name });
+					eventResolver?.();
+				};
+				db.addListener('new-transaction-log', listener);
+
+				// First call should create the log and emit the event with log name
+				const log1 = db.useLog('foo');
+				expect(log1).toBeDefined();
+				await eventPromise;
+				expect(events.length).toBe(1);
+				expect(events[0].name).toBe('foo');
+
+				// Second call should reuse existing log and not emit
+				const log2 = db.useLog('foo');
+				expect(log2).toBe(log1);
+				await delay(10); // Give time for any potential event
+				expect(events.length).toBe(1);
+
+				// Creating a different log should emit again with the new log name
+				eventPromise = new Promise<void>((resolve) => {
+					eventResolver = resolve;
+				});
+				const log3 = db.useLog('bar');
+				expect(log3).toBeDefined();
+				expect(log3).not.toBe(log1);
+				await eventPromise;
+				expect(events.length).toBe(2);
+				expect(events[1].name).toBe('bar');
+
+				db.removeListener('new-transaction-log', listener);
+			}));
+
 		(globalThis.gc ? it : it.skip)('should cleanup transaction log instance on GC', () =>
 			dbRunner(async ({ db }) => {
 				let weakRef: WeakRef<TransactionLog> | undefined;
