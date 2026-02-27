@@ -1197,6 +1197,11 @@ either `glibc` (default) or `musl`.
 ROCKSDB_LIBC=musl pnpm rebuild
 ```
 
+### Windows C runtime versions
+
+By default on Windows, `rocksdb-js` is compiled with the `/MT` flag. This will statically link the
+C runtime making the binary self-contained and portable.
+
 ### Building RocksDB from Source
 
 To build RocksDB from source, simply set the `ROCKSDB_PATH` environment variable to the path of the
