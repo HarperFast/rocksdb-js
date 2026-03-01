@@ -247,6 +247,13 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
 	NAPI_STATUS_THROWS(::napi_create_reference(env, instance, 0, &ref));
 	this->logRefs.emplace(name, ref);
 
+	// Notify that a new transaction log was created
+	// Create JSON string with log name: ["logName"]
+	std::string jsonArgs = "[\"" + name + "\"]";
+	ListenerData* data = new ListenerData(jsonArgs.size());
+	std::copy(jsonArgs.begin(), jsonArgs.end(), data->args.begin());
+	this->descriptor->notify("new-transaction-log", data);
+
 	return instance;
 }
 
