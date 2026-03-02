@@ -249,7 +249,14 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
 
 	// Notify that a new transaction log was created
 	// Create JSON string with log name: ["logName"]
-	std::string jsonArgs = "[\"" + name + "\"]";
+	std::string jsonArgs;
+	jsonArgs.reserve(name.size() + 4);
+	jsonArgs += "[\"";
+	for (char c : name) {
+		if (c == '"') jsonArgs  += '\\';
+		jsonArgs += c;
+	}
+	jsonArgs += "\"]";
 	ListenerData* data = new ListenerData(jsonArgs.size());
 	std::copy(jsonArgs.begin(), jsonArgs.end(), data->args.begin());
 	this->descriptor->notify("new-transaction-log", data);
