@@ -195,6 +195,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 
 LogPosition TransactionLogStore::getLastFlushedPosition() {
 	auto stateFilePath = this->path / "txn.state";
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	std::ifstream inputFile(stateFilePath, std::ios::binary | std::ios::in);
 	LogPosition position = { 0, 0 };
 
