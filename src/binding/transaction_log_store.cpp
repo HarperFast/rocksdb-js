@@ -61,8 +61,8 @@ void TransactionLogStore::close() {
 		return;
 	}
 
-	std::unique_lock<std::mutex> lock(this->writeMutex);
-	std::unique_lock<std::mutex> dataSetsLock(this->dataSetsMutex);
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToClose;
 
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str());
@@ -78,18 +78,15 @@ void TransactionLogStore::close() {
 		flushedStateFile.close();
 	}
 
-	lock.unlock();
-	dataSetsLock.unlock();
-
 	for (auto& logFile : logFilesToClose) {
 		logFile->close();
 	}
 
-	this->purge();
+	this->doPurge();
 }
 
 std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
-	std::unique_lock<std::mutex> lock(this->dataSetsMutex);
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(sequenceNumber);
 	std::shared_ptr<TransactionLogFile> logFile = it != this->sequenceFiles.end() ? it->second : nullptr;
 
@@ -212,7 +209,10 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
+	this->doPurge(visitor, all, before);
+}
 
+void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
 	if (this->sequenceFiles.empty()) {
 		return;
 	}
