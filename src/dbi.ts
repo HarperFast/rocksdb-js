@@ -479,8 +479,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * @returns The transaction log.
 	 */
 	useLog(name: string | number): TransactionLog {
-		if (/[\t\n\r\\/]/.test(name.toString()))
-			throw new Error(`Invalid transaction log name "${name}"`);
 		return this.store.useLog(this._context, name);
 	}
 }
