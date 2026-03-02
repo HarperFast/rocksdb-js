@@ -13,7 +13,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: deps/rocksdb
-        key: ${{ runner.os }}-rocksdb-${{ hashFiles('package.json') }}
+        key: ${{ runner.os }}-rocksdb-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'deps/rocksdb/**') }}
         restore-keys: |
           ${{ runner.os }}-rocksdb-
 
