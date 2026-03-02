@@ -20,8 +20,9 @@ export async function downloadRocksDB(
 	const { arch } = process;
 	let platform = platformMap[process.platform] || process.platform;
 
-	const filename = `rocksdb-${version}-${platform}-${arch}${runtime || ''}`;
-	let [asset] = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
+	const filename = `rocksdb-${version}-${platform}-${arch}${runtime || ''}.`;
+	const assets = prebuild.assets.filter((asset) => asset.name.startsWith(filename));
+	let asset = assets[0];
 
 	if (!asset) {
 		// try the old filename
