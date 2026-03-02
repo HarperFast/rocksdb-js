@@ -851,7 +851,10 @@ describe('Transaction Log', () => {
 							log.addEntry(Buffer.from('hello'), txn.id);
 						});
 						if (i > 0 && i % 10 === 0) {
-							db.purgeLogs({ destroy: true });
+							if (process.platform !== 'win32') {
+								// Until #438 is fixed, purgeLogs is not safe to run on Windows with multiple threads
+								db.purgeLogs({ destroy: true });
+							}
 						}
 					}
 
