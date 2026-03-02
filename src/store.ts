@@ -677,7 +677,7 @@ export class Store {
 		if (typeof name !== 'string' && typeof name !== 'number') {
 			throw new TypeError('Log name must be a string or number');
 		}
-		if (/[\t\n\r\\/]/.test(name.toString())) {
+		if (typeof name === 'string' && /[\t\n\r\\/]/.test(name)) {
 			throw new Error(`Invalid transaction log name "${name}"`);
 		}
 		return context.useLog(String(name));
