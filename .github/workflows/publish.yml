@@ -154,6 +154,8 @@ jobs:
     name: Publish packages
     runs-on: ubuntu-latest
     needs: [preflight, build]
+    outputs:
+      package-name: ${{ steps.get-package-info.outputs.name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -260,6 +262,12 @@ jobs:
           git commit -m "chore(package): update pnpm-lock.yaml after publishing ${{ needs.preflight.outputs.version }}"
           git push origin main
 
+  on-publish-success:
+    if: success() && !cancelled()
+    name: Publish success
+    needs: [preflight, publish]
+    runs-on: ubuntu-latest
+    steps:
       - name: Send Slack notification
         uses: slackapi/slack-github-action@v2.0.0
         with:
@@ -268,21 +276,74 @@ jobs:
           payload: |
             {
               "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
-              "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}",
+              "text": "${{ needs.publish.outputs.package-name }} v${{ needs.preflight.outputs.version }} has been published to npm",
               "blocks": [
                 {
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "Published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}"
+                    "text": "${{ needs.publish.outputs.package-name }} v${{ needs.preflight.outputs.version }} has been published to npm"
                   }
                 },
                 {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "https://github.com/HarperFast/rocksdb-prebuilds/releases/tag/v${{ needs.preflight.outputs.version }}"
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status* :white_check_mark:"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "Published to :npm: <https://www.npmjs.com/package/${{ needs.publish.outputs.package-name }}/v/${{ needs.preflight.outputs.version }}|${{ needs.publish.outputs.package-name }}@${{ needs.preflight.outputs.version }}>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":github: <https://github.com/HarperFast/rocksdb-js/releases/tag/v${{ github.event.release.tag_name }}|GitHub Release>"
+                    }
                   }
+                }
+              ]
+            }
+
+  on-publish-failure:
+    if: failure() && !cancelled()
+    name: Publish failure
+    needs: [preflight, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
+              "text": "${{ needs.publish.outputs.package-name }} v${{ needs.preflight.outputs.version }} npm publish failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ needs.publish.outputs.package-name }} v${{ needs.preflight.outputs.version }} npm publish failed"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status*"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":x: Failed to publish to :npm:"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Workflow run ${{ github.run_id }}>"
+                    }
+                  ]
                 }
               ]
             }
