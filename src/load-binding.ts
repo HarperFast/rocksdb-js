@@ -54,6 +54,7 @@ export type TransactionLog = {
 	new (name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
+	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
 	_currentLogBuffer: LogBuffer;
