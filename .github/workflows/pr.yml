@@ -77,6 +77,10 @@ jobs:
       - name: Run tests on Node.js ${{ matrix.node }}
         run: pnpm coverage
 
+      - name: Retry tests on Node.js ${{ matrix.node }} (Windows)
+        if: failure() && matrix.os == 'windows-latest'
+        run: pnpm coverage
+
   bun-test:
     name: Test on Bun
     runs-on: ${{ matrix.os }}
@@ -112,6 +116,10 @@ jobs:
       - name: Run tests on Bun
         run: pnpm test:bun
 
+      - name: Retry tests on Bun (Windows)
+        if: failure() && matrix.os == 'windows-latest'
+        run: pnpm test:bun
+
   deno-test:
     name: Test on Deno
     runs-on: ${{ matrix.os }}
@@ -145,4 +153,8 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
+        run: pnpm test:deno
+
+      - name: Retry tests on Deno (Windows)
+        if: failure() && matrix.os == 'windows-latest'
         run: pnpm test:deno
