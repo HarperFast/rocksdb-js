@@ -3,7 +3,6 @@
 #include "db_descriptor.h"
 #include "db_iterator_handle.h"
 #include "transaction_handle.h"
-#include "transaction_log_store.h"
 #include "macros.h"
 
 namespace rocksdb_js {
