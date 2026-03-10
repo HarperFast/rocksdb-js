@@ -345,7 +345,6 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->close();
 	} else {
 		if (status.IsBusy()) {
-			// clear/delete the previous transaction and create a new transaction so that it can be retried
 			(*txnHandle)->resetTransaction();
 		}
 		(*txnHandle)->state = TransactionState::Pending;

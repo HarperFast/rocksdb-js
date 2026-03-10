@@ -3,6 +3,7 @@
 #include "db_descriptor.h"
 #include "db_iterator_handle.h"
 #include "transaction_handle.h"
+#include "transaction_log_store.h"
 #include "macros.h"
 
 namespace rocksdb_js {
@@ -115,6 +116,13 @@ void TransactionHandle::close() {
 
 	// wait for all async work to complete before closing
 	this->waitForAsyncWorkCompletion();
+
+	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
+		auto store = this->boundLogStore.lock();
+		if (store) {
+			store->commitAborted(this->committedPosition);
+		}
+	}
 
 	// destroy the RocksDB transaction
 	this->txn->ClearSnapshot();

@@ -86,7 +86,7 @@ struct TransactionLogFile final {
 	/**
 	 * The size of the file in bytes.
 	 */
-	uint32_t size = 0;
+	std::atomic<uint32_t> size = 0;
 
 	/**
 	 * The size of the file at the last flush operation.

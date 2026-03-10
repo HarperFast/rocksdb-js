@@ -218,6 +218,12 @@ struct TransactionLogStore final {
 	void commitFinished(LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber);
 
 	/**
+	 * Cleans up after a failed commit (e.g. IsBusy) by removing the position
+	 * from the uncommitted set without recording a sequence position.
+	 */
+	void commitAborted(LogPosition position);
+
+	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
 	void databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber);
