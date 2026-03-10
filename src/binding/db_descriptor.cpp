@@ -1420,6 +1420,8 @@ napi_ref DBDescriptor::addListener(
 		return nullptr;
 	}
 
+	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, listenerCallback->threadsafeCallback));
+
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
 	if (it == this->listenerCallbacks.end()) {
