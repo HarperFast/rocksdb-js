@@ -432,13 +432,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		uint32_t sizeBefore = logFile->size;
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Writing to log file for store \"%s\" (seq=%u, size=%u, maxIndexSize=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxFileSize);
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed), this->maxFileSize);
 
 		// write as much as possible to this file
 		logFile->writeEntries(batch, this->maxFileSize);
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size);
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
 
 		// if no progress was made, rotate to the next file to avoid infinite loop
 		if (logFile->size == sizeBefore) {

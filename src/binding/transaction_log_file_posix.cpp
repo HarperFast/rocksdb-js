@@ -33,7 +33,7 @@ void TransactionLogFile::close() {
 
 void TransactionLogFile::flush() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
-	uint32_t currentSize = this->size;
+	uint32_t currentSize = this->size.load(std::memory_order_relaxed);
 	// Only flush if there's new data since the last flush
 	if (this->fd == -1 || currentSize <= this->lastFlushedSize) {
 		return; // return early
@@ -103,7 +103,7 @@ void TransactionLogFile::openFile() {
 	}
 	this->size = st.st_size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",
-		this, this->path.string().c_str(), this->size);
+		this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed));
 }
 
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
