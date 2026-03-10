@@ -458,9 +458,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			this->nextLogPosition = { logFile->size, this->currentSequenceNumber };
 		}
 	}
-
-	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+	}
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
 }
