@@ -616,7 +616,9 @@ describe('Transaction Log', () => {
 
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
-					txn.abort();
+					expect(txn.abort()).toBeUndefined();
+					// second call should detect already aborted and return `undefined`
+					expect(txn.abort()).toBeUndefined();
 				});
 
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1057,6 +1059,29 @@ describe('Transaction Log', () => {
 						new TypeError('Invalid argument, transaction id must be a non-negative integer')
 					);
 				});
+			}));
+
+		it('should error if transaction is abandoned after a failed commit', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+
+				const firstTxn = db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('hello'), txn.id);
+					await txn.put('foo', Buffer.from('hello'));
+					await delay(100);
+					// the second transaction will be complete by now, IsBusy will happen
+				});
+
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('hello2'), txn.id);
+					// this will be committed before the first transaction causing
+					// the first one to experience a IsBusy error
+					await txn.put('foo', Buffer.from('hello2'));
+				});
+
+				await expect(firstTxn).rejects.toThrow(
+					'Transaction was abandoned after writing to the transaction log'
+				);
 			}));
 	});
 
