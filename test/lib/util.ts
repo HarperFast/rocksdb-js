@@ -107,10 +107,8 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
  */
 export function createWorkerBootstrapScript(path: string): string {
 	if (process.versions.deno || process.versions.bun) {
-		return `
-			import { pathToFileURL } from 'node:url';
-			import(pathToFileURL('${path}'));
-			`;
+		// Deno runs scripts as non-module, so we need to use dynamic import()
+		return `import('node:url').then(({ pathToFileURL }) => import(pathToFileURL('${path.replace(/'/g, "\\'")}')));`;
 	}
 
 	const majorVersion = parseInt(process.versions.node.split('.')[0]);
