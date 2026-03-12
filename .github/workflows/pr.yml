@@ -140,7 +140,8 @@ jobs:
       - name: Install Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: latest
+          # Deno 2.7.5 had a bunch of worker related changes that broke under vitest
+          deno-version: 2.7.4
 
       - name: Setup dependencies
         uses: ./.github/actions/setup-deps
