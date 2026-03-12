@@ -68,19 +68,9 @@ void DBHandle::close() {
 		this->descriptor.reset();
 	}
 
-	// Clean up transaction log references and release their cached memory map buffers
-	// so that the external buffers become GC-eligible immediately. On Windows, files
-	// cannot be deleted while a MapViewOfFile is active, and the MemoryMap destructor
-	// which calls UnmapViewOfFile only runs when the external buffer is finalized by GC.
-	// Clearing _currentLogBuffer (the only strong ref to the buffer) lets GC collect it.
+	// clean up transaction log references
 	for (auto& [name, ref] : this->logRefs) {
 		DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
-		napi_value instance;
-		if (::napi_get_reference_value(this->env, ref, &instance) == napi_ok && instance != nullptr) {
-			napi_value undefined;
-			::napi_get_undefined(this->env, &undefined);
-			::napi_set_named_property(this->env, instance, "_currentLogBuffer", undefined);
-		}
 		::napi_delete_reference(this->env, ref);
 	}
 	this->logRefs.clear();
