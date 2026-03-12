@@ -218,6 +218,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		&result // [out] result
 	));
 
+	// at this point, the transaction log file and the external buffer have a ref to the memory map
+
 	return result;
 }
 
