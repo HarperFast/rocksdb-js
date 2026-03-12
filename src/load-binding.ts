@@ -57,7 +57,7 @@ export type TransactionLog = {
 	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_currentLogBuffer: WeakRef<LogBuffer>;
+	_currentLogBufferRef: WeakRef<LogBuffer>;
 	_findPosition(timestamp: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_getLastFlushed(): number;

@@ -47,7 +47,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let logId = latestLogId;
 		let position = 0;
 		let dataView: DataView;
-		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
+		let logBuffer: LogBuffer | undefined = this._currentLogBufferRef?.deref(); // try the current one first
 		let foundExactStart = false;
 
 		if (start === undefined && !startFromLastFlushed) {
@@ -81,7 +81,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
 			if (logBufferRef && latestLogId === logId && !readUncommitted) {
-				this._currentLogBuffer = logBufferRef;
+				this._currentLogBufferRef = logBufferRef;
 			}
 
 			logBuffer = logBufferRef?.deref();
