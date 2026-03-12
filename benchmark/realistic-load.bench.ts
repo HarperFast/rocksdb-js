@@ -9,6 +9,7 @@ import {
 
 const DELETE_RATIO = 0.2;
 const NUM_KEYS = 5_000;
+
 describe('Realistic write load with workers', () => {
 	const aaaa = Buffer.alloc(1500, 'a');
 	const ITERATIONS = 100;
@@ -40,7 +41,7 @@ describe('Realistic write load with workers', () => {
 								}
 							})
 							.catch((error) => {
-								if (error.code !== 'ERR_BUSY') {
+								if (error.code !== 'ERR_BUSY' && error.code !== 'ERR_TRANSACTION_ABANDONED') {
 									console.error('Error occurred during transaction:', error);
 								}
 							});
