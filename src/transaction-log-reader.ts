@@ -47,8 +47,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let logId = latestLogId;
 		let position = 0;
 		let dataView: DataView;
-		let logBuffer: LogBuffer | undefined = this._currentLogBufferRef?.deref(); // try the current one first
+		let logBuffer: LogBuffer | undefined = this._currentLogBuffer; // try the current one first
 		let foundExactStart = false;
+
+		if (logBuffer) {
+			console.log('using cached log buffer', logBuffer.logId);
+		}
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -74,17 +78,21 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
+			console.log('loading memory map', logId);
 			// if the current log buffer is not the one we want, load the memory map
-			const logBufferRef = getLogMemoryMap(this, logId);
+			logBuffer = getLogMemoryMap(this, logId);
 
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
-			if (logBufferRef && latestLogId === logId && !readUncommitted) {
-				this._currentLogBufferRef = logBufferRef;
+			if (logBuffer) {
+				console.log({ latestLogId, logId });
+			}
+			if (logBuffer && latestLogId === logId && !readUncommitted) {
+				console.log('caching log buffer', logId);
+				this._currentLogBuffer = logBuffer;
 			}
 
-			logBuffer = logBufferRef?.deref();
 			if (logBuffer === undefined) {
 				// create a fake log buffer if we don't have any log buffer yet
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
@@ -124,11 +132,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							const nextLogBufferRef = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
-							const nextLogBuffer = nextLogBufferRef.deref();
-							if (nextLogBuffer === undefined) {
-								return { done: true, value: undefined };
-							}
+							console.log('loading next memory map', logBuffer!.logId + 1);
+							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							// if (nextLogBuffer) {
+							// 	console.log('caching next log buffer', nextLogBuffer.logId);
+							// 	transactionLog._currentLogBuffer = nextLogBuffer;
+							// }
+
 							dataView = nextLogBuffer.dataView;
 							logBuffer = nextLogBuffer;
 							if (latestLogId > logBuffer!.logId) {
@@ -204,11 +214,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							const logBufferRef = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
-							logBuffer = logBufferRef?.deref();
-							if (logBuffer === undefined) {
-								return { done: true, value: undefined };
-							}
+							logBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
 							dataView = logBuffer!.dataView;
 							size = logBuffer!.size;
 							if (size == undefined) {
@@ -227,17 +233,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 	},
 });
 
-function getLogMemoryMap(
-	transactionLog: TransactionLog,
-	logId: number
-): WeakRef<LogBuffer> | undefined {
+function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
 	if (logId <= 0) {
 		return;
 	}
 	let logBuffer = transactionLog._logBuffers!.get(logId)?.deref();
 	if (logBuffer) {
 		// if we have a cached buffer, return it
-		return new WeakRef(logBuffer);
+		return logBuffer;
 	}
 	try {
 		logBuffer = transactionLog._getMemoryMapOfFile(logId);
@@ -250,8 +253,7 @@ function getLogMemoryMap(
 	}
 	logBuffer.logId = logId;
 	logBuffer.dataView = new DataView(logBuffer.buffer);
-	const weakRef = new WeakRef(logBuffer);
-	transactionLog._logBuffers!.set(logId, weakRef); // add to cache
+	transactionLog._logBuffers!.set(logId, new WeakRef(logBuffer)); // add to cache
 	let maxMisses = 3;
 	for (const [logId, reference] of transactionLog._logBuffers!) {
 		// clear out any references that have been collected
@@ -261,7 +263,7 @@ function getLogMemoryMap(
 			break;
 		}
 	}
-	return weakRef;
+	return logBuffer;
 }
 
 function loadLastPosition(
