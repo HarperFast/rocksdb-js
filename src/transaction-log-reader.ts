@@ -50,10 +50,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let logBuffer: LogBuffer | undefined = this._currentLogBuffer; // try the current one first
 		let foundExactStart = false;
 
-		if (logBuffer) {
-			console.log('using cached log buffer', logBuffer.logId);
-		}
-
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
 			position = size;
@@ -78,18 +74,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
-			console.log('loading memory map', logId);
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(this, logId);
 
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
-			if (logBuffer) {
-				console.log({ latestLogId, logId });
-			}
 			if (logBuffer && latestLogId === logId && !readUncommitted) {
-				console.log('caching log buffer', logId);
 				this._currentLogBuffer = logBuffer;
 			}
 
@@ -132,13 +123,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							console.log('loading next memory map', logBuffer!.logId + 1);
 							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
-							// if (nextLogBuffer) {
-							// 	console.log('caching next log buffer', nextLogBuffer.logId);
-							// 	transactionLog._currentLogBuffer = nextLogBuffer;
-							// }
-
 							dataView = nextLogBuffer.dataView;
 							logBuffer = nextLogBuffer;
 							if (latestLogId > logBuffer!.logId) {

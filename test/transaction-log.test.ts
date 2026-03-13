@@ -453,30 +453,6 @@ describe('Transaction Log', () => {
 				});
 				expect(Array.from(queryIterator).length).toBe(1); // latest should show up now
 			}));
-
-		it.skip('should use cached log buffer', () =>
-			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db }) => {
-				const log = db.useLog('foo');
-				const value = Buffer.alloc(250, 'a');
-				for (let i = 0; i < 20; i++) {
-					await db.transaction(async (txn) => {
-						log.addEntry(value, txn.id);
-					});
-				}
-				const queryIterator1 = log.query({ start: 0 });
-				const queryIterator2 = log.query({ start: 0 });
-				console.log(Array.from(queryIterator1).length);
-				console.log(Array.from(queryIterator2).length);
-				const queryIterator3 = log.query({ start: 0 });
-				for (let i = 0; i < 10; i++) {
-					await db.transaction(async (txn) => {
-						log.addEntry(value, txn.id);
-					});
-				}
-				console.log(Array.from(queryIterator1).length);
-				console.log(Array.from(queryIterator2).length);
-				console.log(Array.from(queryIterator3).length);
-			}));
 	});
 
 	describe('addEntry()', () => {
