@@ -300,7 +300,7 @@ jobs:
                       "type": "mrkdwn",
                       "text": ":github: <https://github.com/HarperFast/rocksdb-js/releases/tag/v${{ github.event.release.tag_name }}|GitHub Release>"
                     }
-                  }
+                  ]
                 }
               ]
             }

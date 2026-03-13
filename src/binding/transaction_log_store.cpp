@@ -103,10 +103,6 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber);
 		this->sequenceFiles[sequenceNumber] = logFile;
 		this->nextLogPosition = { 0, sequenceNumber };
-		if (this->uncommittedTransactionPositions.empty()) {
-			// initialize with the first position in the log file
-			this->uncommittedTransactionPositions.insert(this->nextLogPosition);
-		}
 	}
 
 	return logFile;
@@ -124,7 +120,7 @@ std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceN
 	}
 	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
 		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
-		logFile->size); // otherwise it is frozen, use the file size
+		logFile->size.load(std::memory_order_relaxed)); // otherwise it is frozen, use the file size
 }
 
 uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
@@ -170,7 +166,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
-		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size);
+		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size.load(std::memory_order_relaxed));
 		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
 		// we are in the correct log file to start searching
 		if (positionInLogFile > 0) {
@@ -326,7 +322,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
-	logPosition = this->nextLogPosition;
+	{
+		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
+		logPosition = this->nextLogPosition;
+		this->uncommittedTransactionPositions.insert(logPosition);
+	}
 
 	if (batch.timestamp > this->latestTimestamp) {
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp);
@@ -366,8 +366,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		}
 
 		if (!logPosition.fullPosition) {
-			// if this wasn't initialized, we do so now
+			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+			this->uncommittedTransactionPositions.erase(logPosition);
 			logPosition = this->nextLogPosition;
+			this->uncommittedTransactionPositions.insert(logPosition);
 		}
 
 		// ensure we have a valid log file before writing
@@ -430,13 +432,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		uint32_t sizeBefore = logFile->size;
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Writing to log file for store \"%s\" (seq=%u, size=%u, maxIndexSize=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size, this->maxFileSize);
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed), this->maxFileSize);
 
 		// write as much as possible to this file
 		logFile->writeEntries(batch, this->maxFileSize);
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
-			this, this->name.c_str(), logFile->sequenceNumber, logFile->size);
+			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
 
 		// if no progress was made, rotate to the next file to avoid infinite loop
 		if (logFile->size == sizeBefore) {
@@ -451,10 +453,15 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Batch is not complete, rotating to next file for store \"%s\"\n", this, this->name.c_str());
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 		}
-		this->nextLogPosition = { logFile->size, this->currentSequenceNumber };
+		{
+			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+			this->nextLogPosition = { logFile->size, this->currentSequenceNumber };
+		}
 	}
-	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
-	uncommittedTransactionPositions.insert(this->nextLogPosition);
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+	}
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
 }
@@ -485,6 +492,15 @@ void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::Se
 	}
 	// record in the array
 	this->recentlyCommittedSequencePositions[index] = sequencePosition;
+}
+
+void TransactionLogStore::commitAborted(const LogPosition position) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	this->uncommittedTransactionPositions.erase(position);
+	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
+		? this->nextLogPosition
+		: *(this->uncommittedTransactionPositions.begin());
+	*this->lastCommittedPosition = fullyCommittedPosition;
 }
 
 bool operator>(const LogPosition a, const LogPosition b) {

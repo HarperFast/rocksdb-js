@@ -475,7 +475,7 @@ struct ColumnFamilyDescriptor final {
 	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
 
 	~ColumnFamilyDescriptor() {
-		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor", this);
+		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
 	}
 
 	void releaseUserSharedBuffer(const std::string& key, std::shared_ptr<UserSharedBufferData> sharedData) {
@@ -483,9 +483,9 @@ struct ColumnFamilyDescriptor final {
 		DEBUG_LOG_KEY_LN(key);
 
 		std::lock_guard<std::mutex> lock(this->userSharedBuffersMutex);
-		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer locked user shared buffers map (size: %ld)", this, this->userSharedBuffers.size());
+		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer locked user shared buffers map (size: %ld)\n", this, this->userSharedBuffers.size());
 		auto iter = this->userSharedBuffers.find(key);
-		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer created iterator", this);
+		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer created iterator\n", this);
 		if (iter != this->userSharedBuffers.end() && iter->second == sharedData) {
 			DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer found user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
 			DEBUG_LOG_KEY_LN(key);

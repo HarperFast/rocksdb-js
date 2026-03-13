@@ -504,9 +504,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			try {
 				// in the event of a user error, we need to abort the transaction
 				txn.abort();
-			} catch (err) {
+			} catch (abortErr) {
 				// if the transaction was already aborted/committed, we can just return
-				if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
+				if (
+					abortErr instanceof Error &&
+					'code' in abortErr &&
+					abortErr.code === 'ERR_ALREADY_ABORTED'
+				) {
 					return undefined as T | PromiseLike<T>;
 				}
 			}
@@ -520,6 +524,17 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		} catch (err) {
 			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
 				return undefined as T;
+			}
+			try {
+				txn.abort();
+			} catch (abortErr) {
+				if (
+					abortErr instanceof Error &&
+					'code' in abortErr &&
+					abortErr.code === 'ERR_TRANSACTION_ABANDONED'
+				) {
+					throw abortErr;
+				}
 			}
 			throw err;
 		}

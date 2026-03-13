@@ -106,16 +106,13 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		this->timestamp = readDoubleBE(buffer);
 
 		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, timestamp=%f)\n",
-			this, this->path.string().c_str(), this->size, this->version, this->timestamp);
+			this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed), this->version, this->timestamp);
 	}
-
-	DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%u)\n",
-		this, this->path.string().c_str(), this->size);
 }
 
 void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu, bytes written=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
-		this, batch.entries.size(), batch.currentEntryIndex, batch.currentEntryBytesWritten, batch.timestamp, maxFileSize, this->size);
+		this, batch.entries.size(), batch.currentEntryIndex, batch.currentEntryBytesWritten, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
 
 	// branch based on file format version
 	if (this->version == 1) {
@@ -135,11 +132,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	if (maxFileSize > 0) {
 		if (this->size >= maxFileSize) {
 			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 File already at max size (%u >= %u), deferring to next file\n",
-				this, this->size, maxFileSize);
+				this, this->size.load(std::memory_order_relaxed), maxFileSize);
 			return;
 		}
 
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Calculating how many entries we can fit (size=%u, maxFileSize=%u)\n", this, this->size, maxFileSize);
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Calculating how many entries we can fit (size=%u, maxFileSize=%u)\n", this, this->size.load(std::memory_order_relaxed), maxFileSize);
 
 		// calculate how many entries we can fit
 		auto availableSpace = maxFileSize - this->size;
@@ -202,7 +199,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
 	this->size += static_cast<uint32_t>(bytesWritten);
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
-		this, bytesWritten, this->size, batch.currentEntryIndex, batch.currentEntryBytesWritten);
+		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex, batch.currentEntryBytesWritten);
 }
 
 /**

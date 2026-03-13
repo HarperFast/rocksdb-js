@@ -135,11 +135,17 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
+	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
+
 	(*txnHandle)->state = TransactionState::Aborted;
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
 	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->close();
+
+	if (hadLogWrites) {
+		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }

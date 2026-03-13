@@ -116,6 +116,15 @@ void TransactionHandle::close() {
 	// wait for all async work to complete before closing
 	this->waitForAsyncWorkCompletion();
 
+	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
+	// to remove the committed position from the log store
+	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
+		auto store = this->boundLogStore.lock();
+		if (store) {
+			store->commitAborted(this->committedPosition);
+		}
+	}
+
 	// destroy the RocksDB transaction
 	this->txn->ClearSnapshot();
 	delete this->txn;

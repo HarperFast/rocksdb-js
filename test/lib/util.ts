@@ -85,12 +85,16 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 		if (globalThis.gc) {
 			globalThis.gc();
 			await delay(100);
+			// Second gc() to finalize external buffers (napi_create_external_buffer
+			// C++ destructors may be deferred past the first gc cycle on some Node versions)
+			globalThis.gc();
+			await delay(50);
 		}
 
 		if (!process.env.KEEP_FILES) {
 			for (const dbPath of dbPaths) {
 				try {
-					rmSync(dbPath, { force: true, recursive: true, maxRetries: 2, retryDelay: 250 });
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 				} catch (err) {
 					console.error(`Error removing database: ${dbPath}: ${err}`);
 				}
@@ -107,10 +111,8 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
  */
 export function createWorkerBootstrapScript(path: string): string {
 	if (process.versions.deno || process.versions.bun) {
-		return `
-			import { pathToFileURL } from 'node:url';
-			import(pathToFileURL('${path}'));
-			`;
+		// Deno runs scripts as non-module, so we need to use dynamic import()
+		return `import('node:url').then(({ pathToFileURL }) => import(pathToFileURL('${path.replace(/'/g, "\\'")}')));`;
 	}
 
 	const majorVersion = parseInt(process.versions.node.split('.')[0]);

@@ -37,7 +37,7 @@ void TransactionLogFile::close() {
 
 void TransactionLogFile::flush() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
-	uint32_t currentSize = this->size;
+	uint32_t currentSize = this->size.load(std::memory_order_relaxed);
 	// Only flush if there's new data since the last flush
 	if (this->fileHandle == INVALID_HANDLE_VALUE || currentSize <= this->lastFlushedSize) {
 		return; // return early
@@ -182,17 +182,18 @@ void TransactionLogFile::openFile() {
 			this, this->path.string().c_str(), error, errorMessage.c_str());
 		throw std::runtime_error("Failed to get file size: " + this->path.string());
 	}
-	this->size = static_cast<size_t>(fileSize.QuadPart);
+	auto size = static_cast<size_t>(fileSize.QuadPart);
+	this->size = size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %zu file path: %s\n",
-		this, this->size, this->path.string().c_str());
+		this, size, this->path.string().c_str());
 	// On Windows, we have to create the full file size for memory maps, and it is zero-padded, so the act of indexing allows us to find
 	// the end, and adjust the real size accordingly.
 	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
 	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
-	if (this->size > 0) {
-		this->findPositionByTimestamp(0, this->size);
+	if (size > 0) {
+		this->findPositionByTimestamp(0, size);
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
-			this, this->size, this->path.string().c_str());
+			this, size, this->path.string().c_str());
 	}
 }
 
@@ -222,7 +223,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
 	// Check the actual file size on disk to avoid repeated expansions
-	if (fileSize > this->size) {
+	if (fileSize > this->size.load(std::memory_order_relaxed)) {
 		LARGE_INTEGER currentPos;
 		LARGE_INTEGER distanceToMove;
 		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)
@@ -337,7 +338,7 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 	}
 
 	// seek to current size before writing (file pointer may have been moved by reads)
-	if (::SetFilePointer(this->fileHandle, this->size, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+	if (::SetFilePointer(this->fileHandle, this->size.load(std::memory_order_relaxed), nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::writeBatchToFile SetFilePointer failed (error=%lu: %s)\n",
