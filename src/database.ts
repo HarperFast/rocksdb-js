@@ -19,6 +19,8 @@ import { Transaction } from './transaction.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import * as orderedBinary from 'ordered-binary';
 
+export type TransactionCallback<T> = (txn: Transaction, attempt: number) => T | PromiseLike<T>;
+
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
 	 * The column family name.
@@ -26,22 +28,6 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	 * @default 'default'
 	 */
 	name?: string;
-}
-
-export interface DBTransactionOptions extends TransactionOptions {
-	/**
-	 * The maximum number of times to retry the transaction.
-	 *
-	 * @default 3
-	 */
-	maxRetries?: number;
-
-	/**
-	 * Whether to retry the transaction if it fails with `IsBusy`.
-	 *
-	 * @default false
-	 */
-	retryOnBusy?: boolean;
 }
 
 /**
@@ -502,8 +488,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	async transaction<T>(
-		callback: (txn: Transaction, attempt: number) => T | PromiseLike<T>,
-		options?: DBTransactionOptions
+		callback: TransactionCallback<T>,
+		options?: TransactionOptions
 	): Promise<T | void> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
@@ -515,7 +501,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		this.notify('begin-transaction');
 
-		for (let attempt = 0; attempt < maxRetries; attempt++) {
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
 			try {
 				result = await callback(txn, attempt);
 			} catch (callbackErr) {
@@ -530,7 +516,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					if (commitErr.code === 'ERR_ALREADY_ABORTED') {
 						return;
 					}
-					if (commitErr.code === 'ERR_BUSY' && options?.retryOnBusy && attempt < maxRetries - 1) {
+					if (
+						commitErr.code === 'ERR_BUSY' &&
+						(options?.retryOnBusy ?? (commitErr as Error & { hasLog?: boolean }).hasLog) &&
+						attempt <= maxRetries
+					) {
 						// retry the transaction
 						continue;
 					}
@@ -559,8 +549,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	transactionSync<T>(
-		callback: (txn: Transaction, attempt: number) => T | PromiseLike<T>,
-		options?: DBTransactionOptions
+		callback: TransactionCallback<T>,
+		options?: TransactionOptions
 	): T | PromiseLike<T> | void {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
@@ -568,12 +558,15 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		const maxRetries = options?.maxRetries ?? 3;
 
-		const isRetryable = (err: unknown, attempt: number) =>
-			err instanceof Error &&
-			'code' in err &&
-			err.code === 'ERR_BUSY' &&
-			options?.retryOnBusy &&
-			attempt < maxRetries - 1;
+		const isRetryable = (err: unknown, attempt: number) => {
+			return (
+				err instanceof Error &&
+				'code' in err &&
+				err.code === 'ERR_BUSY' &&
+				(options?.retryOnBusy ?? (err as Error & { hasLog?: boolean }).hasLog) &&
+				attempt <= maxRetries
+			);
+		};
 
 		const runAttempt = (attempt: number): T | PromiseLike<T> | void => {
 			const txn = new Transaction(this.store, options);
@@ -631,7 +624,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		};
 
 		this.notify('begin-transaction');
-		return runAttempt(0);
+		return runAttempt(1);
 	}
 
 	#abortTransaction(txn: Transaction, callbackErr: Error | unknown): void {

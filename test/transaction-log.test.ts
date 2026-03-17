@@ -1065,14 +1065,17 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 
-				const firstTxn = db.transaction(async (txn, attempt) => {
-					log.addEntry(Buffer.from('hello'), txn.id);
-					await txn.put('foo', Buffer.from('hello'));
-					if (attempt === 0) {
-						await delay(50);
-						// the second transaction will be complete by now, IsBusy will happen
-					}
-				});
+				const firstTxn = db.transaction(
+					async (txn, attempt) => {
+						log.addEntry(Buffer.from('hello'), txn.id);
+						await txn.put('foo', Buffer.from('hello'));
+						if (attempt === 1) {
+							await delay(50);
+							// the second transaction will be complete by now, IsBusy will happen
+						}
+					},
+					{ retryOnBusy: false }
+				);
 
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.from('hello2'), txn.id);
@@ -1090,14 +1093,17 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 
-				const firstTxn = db.transactionSync(async (txn, attempt) => {
-					log.addEntry(Buffer.from('hello'), txn.id);
-					await txn.put('foo', Buffer.from('hello'));
-					if (attempt === 0) {
-						await delay(50);
-						// the second transaction will be complete by now, IsBusy will happen
-					}
-				});
+				const firstTxn = db.transactionSync(
+					async (txn, attempt) => {
+						log.addEntry(Buffer.from('hello'), txn.id);
+						await txn.put('foo', Buffer.from('hello'));
+						if (attempt === 1) {
+							await delay(50);
+							// the second transaction will be complete by now, IsBusy will happen
+						}
+					},
+					{ retryOnBusy: false }
+				);
 
 				db.transactionSync((txn) => {
 					log.addEntry(Buffer.from('hello2'), txn.id);
@@ -1115,17 +1121,14 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 
-				const firstTxn = db.transaction(
-					async (txn, attempt) => {
-						log.addEntry(Buffer.from('hello'), txn.id);
-						await txn.put('foo', Buffer.from('hello'));
-						if (attempt === 0) {
-							await delay(50);
-							// the second transaction will be complete by now, IsBusy will happen
-						}
-					},
-					{ retryOnBusy: true }
-				);
+				const firstTxn = db.transaction(async (txn, attempt) => {
+					log.addEntry(Buffer.from('hello'), txn.id);
+					await txn.put('foo', Buffer.from('hello'));
+					if (attempt === 1) {
+						await delay(50);
+						// the second transaction will be complete by now, IsBusy will happen
+					}
+				});
 
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.from('hello2'), txn.id);
@@ -1142,17 +1145,14 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 
-				const firstTxn = db.transactionSync(
-					async (txn, attempt) => {
-						log.addEntry(Buffer.from('hello'), txn.id);
-						await txn.put('foo', Buffer.from('hello'));
-						if (attempt === 0) {
-							await delay(50);
-							// the second transaction will be complete by now, IsBusy will happen
-						}
-					},
-					{ retryOnBusy: true }
-				);
+				const firstTxn = db.transactionSync(async (txn, attempt) => {
+					log.addEntry(Buffer.from('hello'), txn.id);
+					await txn.put('foo', Buffer.from('hello'));
+					if (attempt === 1) {
+						await delay(50);
+						// the second transaction will be complete by now, IsBusy will happen
+					}
+				});
 
 				db.transactionSync((txn) => {
 					log.addEntry(Buffer.from('hello2'), txn.id);

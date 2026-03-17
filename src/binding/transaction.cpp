@@ -153,7 +153,16 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 /**
  * State for the `Commit` async work.
  */
-typedef BaseAsyncState<std::shared_ptr<TransactionHandle>> TransactionCommitState;
+struct TransactionCommitState : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
+	bool hasLog;
+
+	TransactionCommitState(
+		napi_env env,
+		std::shared_ptr<TransactionHandle> handle
+	) :
+		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
+		hasLog(false) {}
+};
 
 /**
  * Commits the transaction.
@@ -219,6 +228,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						txnHandle.get(), txnHandle->id);
 					store = txnHandle->boundLogStore.lock();
 					if (store) {
+						state->hasLog = true;
 						// write the batch to the store
 						store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
 						// free the batch after writing to avoid memory leak
@@ -279,6 +289,11 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					state->handle->state = TransactionState::Pending;
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
+					napi_value hasLogValue;
+					napi_status status = ::napi_get_boolean(env, state->hasLog, &hasLogValue);
+					if (status == napi_ok) {
+						::napi_set_named_property(env, error, "hasLog", hasLogValue);
+					}
 					state->callReject(error);
 				}
 			}
@@ -314,12 +329,14 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	(*txnHandle)->state = TransactionState::Committing;
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;
+	bool hasLog = false;
 
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
 		store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
+			hasLog = true;
 			store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
 			// free the batch after writing to avoid memory leak
 			(*txnHandle)->logEntryBatch.reset();
@@ -359,6 +376,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->state = TransactionState::Pending;
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
+		napi_value hasLogValue;
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, hasLog, &hasLogValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 	}
 
