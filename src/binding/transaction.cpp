@@ -247,6 +247,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					txnHandle->state = TransactionState::Committed;
 					descriptor->notify("committed", nullptr);
 				} else if (state->status.IsBusy()) {
+					DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with IsBusy, resetting transaction\n", txnHandle.get());
 					// clear/delete the previous transaction and create a new transaction so that it can be retried
 					txnHandle->resetTransaction();
 				}
@@ -351,6 +352,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->close();
 	} else {
 		if (status.IsBusy()) {
+			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with IsBusy, resetting transaction\n", (*txnHandle).get());
 			// clear/delete the previous transaction and create a new transaction so that it can be retried
 			(*txnHandle)->resetTransaction();
 		}

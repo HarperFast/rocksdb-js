@@ -1,4 +1,4 @@
-import { RocksDatabase, Transaction } from '../src/index.js';
+import { RocksDatabase, Transaction, TransactionAbandonedError } from '../src/index.js';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';
@@ -1061,15 +1061,17 @@ describe('Transaction Log', () => {
 				});
 			}));
 
-		it('should error if transaction is abandoned after a failed commit', () =>
+		it('should error if async transaction is abandoned after a failed commit', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 
-				const firstTxn = db.transaction(async (txn) => {
+				const firstTxn = db.transaction(async (txn, attempt) => {
 					log.addEntry(Buffer.from('hello'), txn.id);
 					await txn.put('foo', Buffer.from('hello'));
-					await delay(100);
-					// the second transaction will be complete by now, IsBusy will happen
+					if (attempt === 0) {
+						await delay(50);
+						// the second transaction will be complete by now, IsBusy will happen
+					}
 				});
 
 				await db.transaction(async (txn) => {
@@ -1082,6 +1084,85 @@ describe('Transaction Log', () => {
 				await expect(firstTxn).rejects.toThrow(
 					'Transaction was abandoned after writing to the transaction log'
 				);
+			}));
+
+		it('should error if sync transaction is abandoned after a failed commit', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+
+				const firstTxn = db.transactionSync(async (txn, attempt) => {
+					log.addEntry(Buffer.from('hello'), txn.id);
+					await txn.put('foo', Buffer.from('hello'));
+					if (attempt === 0) {
+						await delay(50);
+						// the second transaction will be complete by now, IsBusy will happen
+					}
+				});
+
+				db.transactionSync((txn) => {
+					log.addEntry(Buffer.from('hello2'), txn.id);
+					// this will be committed before the first transaction causing
+					// the first one to experience a IsBusy error
+					txn.putSync('foo', Buffer.from('hello2'));
+				});
+
+				await expect(firstTxn).rejects.toThrow(
+					'Transaction was abandoned after writing to the transaction log'
+				);
+			}));
+
+		it('should recover from a failed async commit', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+
+				const firstTxn = db.transaction(
+					async (txn, attempt) => {
+						log.addEntry(Buffer.from('hello'), txn.id);
+						await txn.put('foo', Buffer.from('hello'));
+						if (attempt === 0) {
+							await delay(50);
+							// the second transaction will be complete by now, IsBusy will happen
+						}
+					},
+					{ retryOnBusy: true }
+				);
+
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('hello2'), txn.id);
+					// this will be committed before the first transaction causing
+					// the first one to experience a IsBusy error
+					await txn.put('foo', Buffer.from('hello2'));
+				});
+
+				await firstTxn;
+				expect(await db.get('foo')).toEqual(Buffer.from('hello'));
+			}));
+
+		it('should recover from a failed sync commit', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+
+				const firstTxn = db.transactionSync(
+					async (txn, attempt) => {
+						log.addEntry(Buffer.from('hello'), txn.id);
+						await txn.put('foo', Buffer.from('hello'));
+						if (attempt === 0) {
+							await delay(50);
+							// the second transaction will be complete by now, IsBusy will happen
+						}
+					},
+					{ retryOnBusy: true }
+				);
+
+				db.transactionSync((txn) => {
+					log.addEntry(Buffer.from('hello2'), txn.id);
+					// this will be committed before the first transaction causing
+					// the first one to experience a IsBusy error
+					txn.putSync('foo', Buffer.from('hello2'));
+				});
+
+				await firstTxn;
+				expect(await db.get('foo')).toEqual(Buffer.from('hello'));
 			}));
 	});
 

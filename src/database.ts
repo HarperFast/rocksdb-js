@@ -1,5 +1,6 @@
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
+import { TransactionAbandonedError } from './errors.js';
 import {
 	config,
 	type StatsHistogramData,
@@ -26,6 +27,22 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	 * @default 'default'
 	 */
 	name?: string;
+}
+
+export interface DBTransactionOptions extends TransactionOptions {
+	/**
+	 * The maximum number of times to retry the transaction.
+	 *
+	 * @default 3
+	 */
+	maxRetries?: number;
+
+	/**
+	 * Whether to retry the transaction if it fails with `IsBusy`.
+	 *
+	 * @default false
+	 */
+	retryOnBusy?: boolean;
 }
 
 /**
@@ -486,57 +503,42 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	async transaction<T>(
-		callback: (txn: Transaction) => T | PromiseLike<T>,
-		options?: TransactionOptions
-	): Promise<T | PromiseLike<T>> {
+		callback: (txn: Transaction, attempt: number) => T | PromiseLike<T>,
+		options?: DBTransactionOptions
+	): Promise<T | void> {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
 
+		const maxRetries = options?.maxRetries ?? 3;
 		const txn = new Transaction(this.store, options);
 		let result: T | PromiseLike<T>;
 
-		try {
-			this.notify('begin-transaction');
-			result = await callback(txn);
-		} catch (err) {
-			// either a user error or a already aborted/committed error
-			try {
-				// in the event of a user error, we need to abort the transaction
-				txn.abort();
-			} catch (abortErr) {
-				// if the transaction was already aborted/committed, we can just return
-				if (
-					abortErr instanceof Error &&
-					'code' in abortErr &&
-					abortErr.code === 'ERR_ALREADY_ABORTED'
-				) {
-					return undefined as T | PromiseLike<T>;
-				}
-			}
-			// rethrow the user error
-			throw err;
-		}
+		this.notify('begin-transaction');
 
-		try {
-			await txn.commit();
-			return result;
-		} catch (err) {
-			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-				return undefined as T;
-			}
+		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			try {
-				txn.abort();
-			} catch (abortErr) {
-				if (
-					abortErr instanceof Error &&
-					'code' in abortErr &&
-					abortErr.code === 'ERR_TRANSACTION_ABANDONED'
-				) {
-					throw abortErr;
-				}
+				result = await callback(txn, attempt);
+			} catch (callbackErr) {
+				return this.#abortTransaction(txn, callbackErr);
 			}
-			throw err;
+
+			try {
+				await txn.commit();
+				return result;
+			} catch (commitErr) {
+				if (commitErr instanceof Error && 'code' in commitErr) {
+					if (commitErr.code === 'ERR_ALREADY_ABORTED') {
+						return;
+					}
+					if (commitErr.code === 'ERR_BUSY' && options?.retryOnBusy && attempt < maxRetries - 1) {
+						// retry the transaction
+						continue;
+					}
+				}
+
+				this.#abandonTransaction(txn, commitErr);
+			}
 		}
 	}
 
@@ -558,65 +560,114 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	transactionSync<T>(
-		callback: (txn: Transaction) => T | PromiseLike<T>,
-		options?: TransactionOptions
-	): T | PromiseLike<T> | undefined {
+		callback: (txn: Transaction, attempt: number) => T | PromiseLike<T>,
+		options?: DBTransactionOptions
+	): T | PromiseLike<T> | void {
 		if (typeof callback !== 'function') {
 			throw new TypeError('Callback must be a function');
 		}
 
-		const txn = new Transaction(this.store, options);
-		let result: T | PromiseLike<T>;
-		try {
-			this.notify('begin-transaction');
-			result = callback(txn);
-		} catch (err) {
-			// either a user error or a already aborted/committed error
-			try {
-				// in the event of a user error, we need to abort the transaction
-				txn.abort();
-			} catch (err) {
-				if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-					return undefined as T;
-				}
-			}
-			throw err;
-		}
+		const maxRetries = options?.maxRetries ?? 3;
 
-		// despite being 'sync', we need to support async operations
-		if (
-			result &&
-			typeof result === 'object' &&
-			'then' in result &&
-			typeof result.then === 'function'
-		) {
-			return result.then((value) => {
-				try {
-					txn.commitSync();
-					return value as T;
-				} catch (err) {
-					if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-						return undefined as T;
+		const isRetryable = (err: unknown, attempt: number) =>
+			err instanceof Error &&
+			'code' in err &&
+			err.code === 'ERR_BUSY' &&
+			options?.retryOnBusy &&
+			attempt < maxRetries - 1;
+
+		const runAttempt = (attempt: number): T | PromiseLike<T> | void => {
+			const txn = new Transaction(this.store, options);
+			let result: T | PromiseLike<T>;
+
+			try {
+				result = callback(txn, attempt);
+			} catch (callbackErr) {
+				return this.#abortTransaction(txn, callbackErr);
+			}
+
+			// despite being 'sync', we need to support async operations
+			if (
+				result &&
+				typeof result === 'object' &&
+				'then' in result &&
+				typeof result.then === 'function'
+			) {
+				return result.then((value: T | undefined) => {
+					try {
+						txn.commitSync();
+						return value;
+					} catch (commitErr) {
+						if (
+							commitErr instanceof Error &&
+							'code' in commitErr &&
+							commitErr.code === 'ERR_ALREADY_ABORTED'
+						) {
+							return;
+						}
+						if (isRetryable(commitErr, attempt)) {
+							return runAttempt(attempt + 1) as PromiseLike<T>;
+						}
+						this.#abandonTransaction(txn, commitErr);
 					}
-					throw err;
+				}) as PromiseLike<T>;
+			}
+
+			try {
+				txn.commitSync();
+				return result;
+			} catch (commitErr) {
+				if (
+					commitErr instanceof Error &&
+					'code' in commitErr &&
+					commitErr.code === 'ERR_ALREADY_ABORTED'
+				) {
+					return;
 				}
-			});
+				if (isRetryable(commitErr, attempt)) {
+					return runAttempt(attempt + 1);
+				}
+				this.#abandonTransaction(txn, commitErr);
+			}
+		};
+
+		this.notify('begin-transaction');
+		return runAttempt(0);
+	}
+
+	#abortTransaction(txn: Transaction, callbackErr: Error | unknown): void {
+		// either a user error or a already aborted/committed error
+		try {
+			// in the event of a user error, we need to abort the transaction
+			txn.abort();
+		} catch (abortErr) {
+			if (
+				abortErr instanceof Error &&
+				'code' in abortErr &&
+				abortErr.code === 'ERR_ALREADY_ABORTED'
+			) {
+				return;
+			}
+		}
+		// rethrow the user error
+		throw callbackErr;
+	}
+
+	#abandonTransaction(txn: Transaction, commitErr: Error | unknown): void {
+		try {
+			txn.abort();
+		} catch (abortErr) {
+			if (
+				abortErr instanceof Error &&
+				'code' in abortErr &&
+				abortErr.code === 'ERR_TRANSACTION_ABANDONED'
+			) {
+				throw abortErr;
+			}
 		}
 
-		try {
-			txn.commitSync();
-			return result;
-		} catch (err) {
-			if (err instanceof Error && 'code' in err && err.code === 'ERR_ALREADY_ABORTED') {
-				return undefined as T;
-			}
-			try {
-				txn.abort();
-			} catch {
-				// ignore if abort fails
-			}
-			throw err;
-		}
+		// rethrow the original error
+		throw commitErr;
 	}
 
 	/**

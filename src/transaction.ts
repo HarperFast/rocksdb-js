@@ -36,6 +36,11 @@ export class Transaction extends DBI {
 				this.notify('beforecommit');
 				this.#txn.commit(resolve, reject);
 			});
+		} catch (err) {
+			if (err instanceof Error && 'code' in err && err.code === 'ERR_BUSY') {
+				(err as any).txn = this;
+			}
+			throw err;
 		} finally {
 			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
 		}
