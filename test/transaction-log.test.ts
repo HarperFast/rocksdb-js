@@ -1,4 +1,4 @@
-import { RocksDatabase, Transaction, TransactionAbandonedError } from '../src/index.js';
+import { RocksDatabase, Transaction } from '../src/index.js';
 import { constants, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';

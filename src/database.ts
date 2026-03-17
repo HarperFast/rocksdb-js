@@ -1,6 +1,5 @@
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
-import { TransactionAbandonedError } from './errors.js';
 import {
 	config,
 	type StatsHistogramData,
