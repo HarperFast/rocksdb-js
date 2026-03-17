@@ -191,6 +191,11 @@ void DBDescriptor::close() {
 	this->transactions.clear();
 	this->columns.clear();
 
+	{
+		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+		this->listenerCallbacks.clear();
+	}
+
 	this->db.reset();
 }
 

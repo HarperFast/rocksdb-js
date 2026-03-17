@@ -50,24 +50,22 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry->descriptor.use_count());
+	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry && entry->descriptor ? entry->descriptor.use_count() : -1);
 
-	// re-acquire the mutex to check and potentially remove the descriptor
-	{
-		// since the registry itself always has a ref, we need to check for ref count 1
-		if (entry->descriptor.use_count() <= 1) {
-			DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str());
-			entry->descriptor->close();
+	// since the registry itself always has a ref, we need to check for ref count 1
+	if (entry && entry->descriptor && entry->descriptor.use_count() <= 1) {
+		DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str());
+		entry->descriptor->close();
 
+		// re-acquire the mutex to check and potentially remove the descriptor
+		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			instance->databases.erase(path);
+		}
 
-			// notify only waiters for this specific path
-			if (entry->condition) {
-				entry->condition->notify_all();
-			}
-		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor is still active (ref count = %ld)\n", instance.get(), entry->descriptor.use_count());
+		// notify only waiters for this specific path
+		if (entry->condition) {
+			entry->condition->notify_all();
 		}
 	}
 }
@@ -78,7 +76,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 #ifdef DEBUG
 void DBRegistry::DebugLogDescriptorRefs() {
 	std::lock_guard<std::mutex> lock(instance->databasesMutex);
-	DEBUG_LOG("DBRegistry::DebugLogDescriptorRefs %d descriptor%s in registry:\n", instance->databases.size(), instance->databases.size() == 1 ? "" : "s");
+	DEBUG_LOG("DBRegistry::DebugLogDescriptorRefs %zu descriptor%s in registry:\n", instance->databases.size(), instance->databases.size() == 1 ? "" : "s");
 	for (auto& [path, entry] : instance->databases) {
 		DEBUG_LOG("  %p for \"%s\" (ref count = %ld)\n", entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
 	}
