@@ -15,7 +15,12 @@ import {
 	type UserSharedBufferOptions,
 	VALUE_BUFFER,
 } from './store.js';
-import { Transaction } from './transaction.js';
+import {
+	Transaction,
+	TransactionAbandonedError,
+	TransactionAlreadyAbortedError,
+	TransactionIsBusyError,
+} from './transaction.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import * as orderedBinary from 'ordered-binary';
 
@@ -512,18 +517,16 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				await txn.commit();
 				return result;
 			} catch (commitErr) {
-				if (commitErr instanceof Error && 'code' in commitErr) {
-					if (commitErr.code === 'ERR_ALREADY_ABORTED') {
-						return;
-					}
-					if (
-						commitErr.code === 'ERR_BUSY' &&
-						(options?.retryOnBusy ?? (commitErr as Error & { hasLog?: boolean }).hasLog) &&
-						attempt <= maxRetries
-					) {
-						// retry the transaction
-						continue;
-					}
+				if (commitErr instanceof TransactionAlreadyAbortedError) {
+					return;
+				}
+				if (
+					commitErr instanceof TransactionIsBusyError &&
+					(options?.retryOnBusy ?? commitErr.hasLog) &&
+					attempt <= maxRetries
+				) {
+					// retry the transaction
+					continue;
 				}
 
 				this.#abandonTransaction(txn, commitErr);
@@ -558,12 +561,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		const maxRetries = options?.maxRetries ?? 3;
 
-		const isRetryable = (err: unknown, attempt: number) => {
+		const isRetryable = (err: Error | unknown, attempt: number) => {
 			return (
-				err instanceof Error &&
-				'code' in err &&
-				err.code === 'ERR_BUSY' &&
-				(options?.retryOnBusy ?? (err as Error & { hasLog?: boolean }).hasLog) &&
+				err instanceof TransactionIsBusyError &&
+				(options?.retryOnBusy ?? err.hasLog) &&
 				attempt <= maxRetries
 			);
 		};
@@ -590,11 +591,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 						txn.commitSync();
 						return value;
 					} catch (commitErr) {
-						if (
-							commitErr instanceof Error &&
-							'code' in commitErr &&
-							commitErr.code === 'ERR_ALREADY_ABORTED'
-						) {
+						if (commitErr instanceof TransactionAlreadyAbortedError) {
 							return;
 						}
 						if (isRetryable(commitErr, attempt)) {
@@ -609,11 +606,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				txn.commitSync();
 				return result;
 			} catch (commitErr) {
-				if (
-					commitErr instanceof Error &&
-					'code' in commitErr &&
-					commitErr.code === 'ERR_ALREADY_ABORTED'
-				) {
+				if (commitErr instanceof TransactionAlreadyAbortedError) {
 					return;
 				}
 				if (isRetryable(commitErr, attempt)) {
@@ -633,11 +626,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			// in the event of a user error, we need to abort the transaction
 			txn.abort();
 		} catch (abortErr) {
-			if (
-				abortErr instanceof Error &&
-				'code' in abortErr &&
-				abortErr.code === 'ERR_ALREADY_ABORTED'
-			) {
+			if (abortErr instanceof TransactionAlreadyAbortedError) {
 				return;
 			}
 		}
@@ -649,11 +638,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		try {
 			txn.abort();
 		} catch (abortErr) {
-			if (
-				abortErr instanceof Error &&
-				'code' in abortErr &&
-				abortErr.code === 'ERR_TRANSACTION_ABANDONED'
-			) {
+			if (abortErr instanceof TransactionAbandonedError) {
 				throw abortErr;
 			}
 		}
