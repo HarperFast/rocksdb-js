@@ -53,6 +53,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
 			position = size;
+			if (position === 0) {
+				// if the file is empty, start after the header
+				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+			}
 			start = 0;
 		} else {
 			if (startFromLastFlushed) {
@@ -71,6 +75,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			logId = UINT32_FROM_FLOAT[1];
 			// and position from the low 32 bits of the float
 			position = UINT32_FROM_FLOAT[0];
+			if (position === 0) {
+				// if the file is empty, start after the header
+				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+			}
 		}
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
