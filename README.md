@@ -471,6 +471,9 @@ When using a transaction log and the commit fails with `ERR_BUSY`, the transacti
 a bad state and the transaction will need to be retried. If the max retries is reached or the
 transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
 
+Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
+entries are not added.
+
 ### Class: `Transaction`
 
 The transaction callback is passed in a `Transaction` instance which contains all of the same data

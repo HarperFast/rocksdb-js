@@ -25,7 +25,7 @@ export type TransactionOptions = {
 	/**
 	 * Whether to retry the transaction if it fails with `IsBusy`.
 	 *
-	 * @default false
+	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
 	 */
 	retryOnBusy?: boolean;
 };

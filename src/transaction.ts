@@ -92,6 +92,12 @@ export class Transaction extends DBI {
 		}
 	}
 
+	/**
+	 * Detect if error is an already aborted or busy error and return the appropriate error class.
+	 *
+	 * @param err - The error to check.
+	 * @returns The specialized error.
+	 */
 	#handleCommitError(err: unknown): Error {
 		if (err instanceof Error && 'code' in err) {
 			if (err.code === 'ERR_ALREADY_ABORTED') {

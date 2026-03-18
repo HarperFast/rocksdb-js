@@ -580,13 +580,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 
 			// despite being 'sync', we need to support async operations
-			if (
-				result &&
-				typeof result === 'object' &&
-				'then' in result &&
-				typeof result.then === 'function'
-			) {
-				return result.then((value: T | undefined) => {
+			if (typeof (result as PromiseLike<T>)?.then === 'function') {
+				return (result as PromiseLike<T>).then((value: T | undefined) => {
 					try {
 						txn.commitSync();
 						return value;
