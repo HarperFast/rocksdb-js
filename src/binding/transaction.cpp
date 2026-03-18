@@ -153,7 +153,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 /**
  * State for the `Commit` async work.
  */
-struct TransactionCommitState : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
+struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
 
 	TransactionCommitState(
