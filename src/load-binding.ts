@@ -14,6 +14,20 @@ export type TransactionOptions = {
 	 * @default false
 	 */
 	disableSnapshot?: boolean;
+
+	/**
+	 * The maximum number of times to retry the transaction.
+	 *
+	 * @default 3
+	 */
+	maxRetries?: number;
+
+	/**
+	 * Whether to retry the transaction if it fails with `IsBusy`.
+	 *
+	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
+	 */
+	retryOnBusy?: boolean;
 };
 
 export type NativeTransaction = {

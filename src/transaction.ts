@@ -2,6 +2,34 @@ import { DBI } from './dbi';
 import { NativeTransaction, type TransactionOptions } from './load-binding.js';
 import { Store } from './store.js';
 
+export class TransactionAlreadyAbortedError extends Error {
+	readonly code = 'ERR_ALREADY_ABORTED';
+}
+
+export class TransactionIsBusyError extends Error {
+	readonly code = 'ERR_BUSY';
+	readonly hasLog: boolean;
+	readonly txn: Transaction;
+
+	constructor(error: Error, txn: Transaction) {
+		super(error.message);
+		this.hasLog = (error as Error & { hasLog?: boolean }).hasLog ?? false;
+		this.txn = txn;
+	}
+}
+
+export class TransactionAbandonedError extends Error {
+	readonly code = 'ERR_TRANSACTION_ABANDONED';
+	readonly hasLog: boolean;
+	readonly txn: Transaction;
+
+	constructor(error: Error, txn: Transaction) {
+		super(error.message);
+		this.hasLog = (error as Error & { hasLog?: boolean }).hasLog ?? false;
+		this.txn = txn;
+	}
+}
+
 /**
  * Provides transaction level operations to a transaction callback.
  */
@@ -24,7 +52,14 @@ export class Transaction extends DBI {
 	 * Abort the transaction.
 	 */
 	abort(): void {
-		this.#txn.abort();
+		try {
+			this.#txn.abort();
+		} catch (err) {
+			if (err instanceof Error && 'code' in err && err.code === 'ERR_TRANSACTION_ABANDONED') {
+				throw new TransactionAbandonedError(err, this);
+			}
+			throw err;
+		}
 	}
 
 	/**
@@ -36,6 +71,8 @@ export class Transaction extends DBI {
 				this.notify('beforecommit');
 				this.#txn.commit(resolve, reject);
 			});
+		} catch (err) {
+			throw this.#handleCommitError(err);
 		} finally {
 			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
 		}
@@ -48,9 +85,29 @@ export class Transaction extends DBI {
 		try {
 			this.notify('beforecommit');
 			this.#txn.commitSync();
+		} catch (err) {
+			throw this.#handleCommitError(err);
 		} finally {
 			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
 		}
+	}
+
+	/**
+	 * Detect if error is an already aborted or busy error and return the appropriate error class.
+	 *
+	 * @param err - The error to check.
+	 * @returns The specialized error.
+	 */
+	#handleCommitError(err: unknown): Error {
+		if (err instanceof Error && 'code' in err) {
+			if (err.code === 'ERR_ALREADY_ABORTED') {
+				return new TransactionAlreadyAbortedError(err.message);
+			}
+			if (err.code === 'ERR_BUSY') {
+				return new TransactionIsBusyError(err, this);
+			}
+		}
+		return err as Error;
 	}
 
 	/**

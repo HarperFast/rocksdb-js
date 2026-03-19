@@ -396,7 +396,7 @@ Synchronous version of `remove()`.
 
 ## Transactions
 
-### `db.transaction(async (txn: Transaction) => void | Promise<any>): Promise<any>`
+### `db.transaction<T>(callback: TransactionCallback<T>, options?: DBTransactionOptions): Promise<T>`
 
 Executes all database operations within the specified callback within a single transaction. If the
 callback completes without error, the database operations are automatically committed. However, if
@@ -427,7 +427,7 @@ const isBar = await db.transaction(async (txn: Transaction) => {
 console.log(isBar ? 'Foo is bar' : 'Foo is not bar');
 ```
 
-### `db.transactionSync((txn: Transaction) => any): any`
+### `db.transactionSync<T>(callback: TransactionCallback<T>, options?: TransactionOptions): T`
 
 Executes a transaction callback and commits synchronously. Once the transaction callback returns,
 the commit is executed synchronously and blocks the current thread until finished.
@@ -441,17 +441,56 @@ db.transactionSync((txn: Transaction) => {
 });
 ```
 
+### `TransactionCallback<T>`
+
+`(txn: Transaction, attempt: number) => T | PromiseLike<T>`
+
+A sync or async function to encapsulate all of the transaction operations. Once the function is
+executed, the transaction is automatically committed. If the function returns a value, it will be
+returned from the transaction call.
+
+The `txn` parameter is a `Transaction`. See the [Transaction](#class-transaction) section for more
+details.
+
+The `attempt` parameter is the number of times the transaction has been retried.
+
+### `TransactionOptions`
+
+- `disableSnapshot?: boolean` Whether to disable snapshots. Defaults to `false`.
+- `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
+- `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
+  Defaults to `true` when the transaction is bound to a transaction log, otherwise `false`.
+
+### Transaction Retry Logic
+
+The retry mechanism will only be active when the `retryOnBusy` option is `true` or when
+`retryOnBusy` is `undefined` and the transaction is bound to a transaction log. The attempts starts
+at `1` and ends at `maxRetries`.
+
+When using a transaction log and the commit fails with `ERR_BUSY`, the transaction log will be in
+a bad state and the transaction will need to be retried. If the max retries is reached or the
+transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
+
+Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
+entries are not added.
+
 ### Class: `Transaction`
 
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
 operations methods as the `RocksDatabase` instance plus:
 
-- `txn.abort()`
-- `txn.commit()`
-- `txn.commitSync()`
-- `txn.getTimestamp()`
-- `txn.id`
-- `txn.setTimestamp(ts)`
+- `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
+  transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
+  no further transaction operations are permitted. Calling this method multiple times has no effect.
+- `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
+- `txn.commitSync()` Synchronously commits and closes the transaction.
+- `txn.getTimestamp(): number` Retrieves the transaction start timestamp in seconds as a decimal. It
+  defaults to the time at which the transaction was created.
+- `txn.id: number` The readonly transaction ID. Transaction IDs are unique to the RocksDB database
+  path, regardless the database name/column family.
+- `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
+  a timestamp, it will set the timestamp to the current time. The value must be in seconds with
+  higher precision in the decimal.
 
 #### `txn.abort(): void`
 
