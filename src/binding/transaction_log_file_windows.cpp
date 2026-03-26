@@ -313,6 +313,14 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 bool TransactionLogFile::removeFile() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	// unmap before closing the handle - otherwise MapViewOfFile may remain tied to
+	// the file mapping and deletion/reuse of the path can fault (matches POSIX).
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
+			this, this->path.string().c_str());
+		this->memoryMap.reset();
+	}
+
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (handle=%p)\n",
 			this, this->path.string().c_str(), this->fileHandle);

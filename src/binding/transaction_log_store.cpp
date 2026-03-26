@@ -217,9 +217,11 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%zu)\n", this, this->name.c_str(), this->sequenceFiles.size());
 
-	// collect sequence numbers to remove to avoid modifying map during iteration
+	// Snapshot the write head: compare against this only, not `currentSequenceNumber`
+	// after any future logic, so one purge pass cannot match multiple entries.
+	const uint32_t initialCurrentSequence = this->currentSequenceNumber;
 	std::unordered_set<uint32_t> sequenceNumbersToRemove;
-	bool purgedCurrentFile = false;
+	bool removedInitialCurrentFile = false;
 	bool bumpSequenceNumber = false;
 
 	for (const auto& entry : this->sequenceFiles) {
@@ -261,9 +263,8 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str());
 
-		if (entry.first == this->currentSequenceNumber) {
-			purgedCurrentFile = true;
-
+		if (entry.first == initialCurrentSequence) {
+			removedInitialCurrentFile = true;
 			// if the active log had real entries, the next write must use a new sequence number,
 			// otherwise a new file would reuse the same path while readers may still hold a mmap
 			// or positions tied to the deleted file's content
@@ -290,8 +291,8 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		this->currentSequenceNumber = this->nextSequenceNumber++;
 	}
 
-	if (purgedCurrentFile) {
-		// current file was removed, reset the log position to the beginning of the next file
+	if (removedInitialCurrentFile) {
+		// Initial current file was removed; next write starts at offset 0 for the (possibly bumped) sequence.
 		this->nextLogPosition = { 0, this->currentSequenceNumber };
 	}
 

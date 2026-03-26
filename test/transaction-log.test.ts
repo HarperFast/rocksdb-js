@@ -1297,7 +1297,7 @@ describe('Transaction Log', () => {
 				//   TRANSACTION_LOG_ENTRY_HEADER_SIZE + payloadSize bytes
 				// The file itself starts with TRANSACTION_LOG_FILE_HEADER_SIZE bytes.
 				// With a 400-byte payload: 12 entries →
-				//   13 + 12 * (13 + 400) = 4969 bytes — past the page boundary.
+				//   13 + 12 * (13 + 400) = 4969 bytes - past the page boundary.
 				const payload = Buffer.alloc(400, 0x55);
 				for (let i = 0; i < 12; i++) {
 					await db.transaction(async (txn) => {
@@ -1317,7 +1317,7 @@ describe('Transaction Log', () => {
 				db.purgeLogs({ before: Date.now() + 1000 });
 
 				// One small commit writes a new tiny log (header + one entry ≈ 36 bytes)
-				// — far less than one 4 KiB memory page.
+				// - far less than one 4 KiB memory page.
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.alloc(10), txn.id);
 					await txn.put('small', Buffer.alloc(10));
