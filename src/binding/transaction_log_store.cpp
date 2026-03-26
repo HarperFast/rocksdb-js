@@ -83,7 +83,7 @@ void TransactionLogStore::close() {
 		logFile->close();
 	}
 
-	this->doPurge();
+	this->doPurge(nullptr);
 }
 
 std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32_t sequenceNumber) {
@@ -204,13 +204,17 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 	return position;
 }
 
-void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
-	std::lock_guard<std::mutex> lock(this->writeMutex);
-	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
-	this->doPurge(visitor, all, before);
+std::vector<std::filesystem::path> TransactionLogStore::purge(const bool all, const uint64_t before) {
+	std::vector<std::filesystem::path> removedPaths;
+	{
+		std::lock_guard<std::mutex> lock(this->writeMutex);
+		std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
+		this->doPurge(&removedPaths, all, before);
+	}
+	return removedPaths;
 }
 
-void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
+void TransactionLogStore::doPurge(std::vector<std::filesystem::path>* removedPathsOut, const bool all, const uint64_t before) {
 	if (this->sequenceFiles.empty()) {
 		return;
 	}
@@ -275,8 +279,8 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 		// delete the log file
 		auto removed = logFile->removeFile();
-		if (visitor && removed) {
-			visitor(logFile->path);
+		if (removedPathsOut && removed) {
+			removedPathsOut->push_back(logFile->path);
 		}
 
 		sequenceNumbersToRemove.insert(entry.first);

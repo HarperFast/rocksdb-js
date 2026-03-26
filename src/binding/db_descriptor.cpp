@@ -1796,43 +1796,49 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
 
+	std::vector<std::filesystem::path> removedPathsForJs;
+	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
+	{
+		std::unique_lock<std::mutex> lock(this->transactionLogMutex);
+
+		for (auto& entry : this->transactionLogStores) {
+			auto store = entry.second;
+			if (name.empty() || store->name == name) {
+				auto paths = store->purge(destroy, before);
+				removedPathsForJs.insert(removedPathsForJs.end(), paths.begin(), paths.end());
+
+				if (destroy) {
+					storesToRemove.push_back(store);
+				}
+			}
+		}
+
+		for (auto& store : storesToRemove) {
+			this->transactionLogStores.erase(store->name);
+
+			store->close();
+
+			try {
+				std::filesystem::remove_all(store->path);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",
+					this, store->path.string().c_str(), e.what());
+			} catch (...) {
+				DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Unknown error removing log directory %s\n",
+					this, store->path.string().c_str());
+			}
+		}
+	} // release transactionLogMutex before any N-API calls
+
 	napi_value removed;
 	NAPI_STATUS_THROWS(::napi_create_array(env, &removed));
 
 	size_t i = 0;
-	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-
-	for (auto& entry : this->transactionLogStores) {
-		auto store = entry.second;
-		if (name.empty() || store->name == name) {
-			store->purge([&](const std::filesystem::path& filePath) -> void {
-				napi_value logFileValue;
-				auto path = filePath.string();
-				NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
-				NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-			}, destroy, before);
-
-			if (destroy) {
-				storesToRemove.push_back(store);
-			}
-		}
-	}
-
-	for (auto& store : storesToRemove) {
-		this->transactionLogStores.erase(store->name);
-
-		store->close();
-
-		try {
-			std::filesystem::remove_all(store->path);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",
-				this, store->path.string().c_str(), e.what());
-		} catch (...) {
-			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Unknown error removing log directory %s\n",
-				this, store->path.string().c_str());
-		}
+	for (const auto& filePath : removedPathsForJs) {
+		napi_value logFileValue;
+		auto path = filePath.string();
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
+		NAPI_STATUS_THROWS(::napi_set_element(env, removed, i++, logFileValue));
 	}
 
 	return removed;

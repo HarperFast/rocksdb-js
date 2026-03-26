@@ -9,7 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
-#include <functional>
+#include <vector>
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
@@ -264,12 +264,10 @@ struct TransactionLogStore final {
 	 * Purges transaction logs. By default, it deletes transaction log files older than the
 	 * retention period (3 days). If `before` is provided, it deletes transaction log files older
 	 * than the specified timestamp. If `all` is true, it deletes all transaction log files.
+	 * Returns paths of removed files in purge order. Does not invoke JS/N-API — callers should
+	 * publish results after releasing any descriptor-level locks.
 	 */
-	void purge(
-		std::function<void(const std::filesystem::path&)> visitor,
-		const bool all,
-		const uint64_t before
-	);
+	std::vector<std::filesystem::path> purge(const bool all, const uint64_t before);
 
 	/**
 	 * Registers a log file for the given sequence number.
@@ -314,8 +312,12 @@ private:
 	 */
 	std::shared_ptr<TransactionLogFile> getLogFile(const uint32_t sequenceNumber);
 
+	/**
+	 * @param removedPathsOut If non-null, successful removals append paths here (visitor is not invoked).
+	 *        Callers that need JS/N-API callbacks should run them after releasing writeMutex/dataSetsMutex.
+	 */
 	void doPurge(
-		std::function<void(const std::filesystem::path&)> visitor = nullptr,
+		std::vector<std::filesystem::path>* removedPathsOut,
 		const bool all = false,
 		const uint64_t before = 0
 	);
