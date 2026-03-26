@@ -1309,24 +1309,25 @@ describe('Transaction Log', () => {
 				// Capture the committed position and verify the offset is beyond 4 KiB.
 				const positionBuf = log._getLastCommittedPosition()!;
 				const positionInLogFile = positionBuf.readUInt32LE(0);
-				const sequenceNumber = positionBuf.readUInt32LE(4);
 				expect(positionInLogFile).toBeGreaterThan(4096);
 
-				// Purge every log file. The store retains `currentSequenceNumber` so
-				// the very next write recreates the file at the same sequence number.
+				// Purge every log file. If the active log had entries, the store bumps
+				// the sequence number so the next write does not reuse the same .txnlog
+				// id (avoids stale mmap / positions tied to the deleted file).
 				db.purgeLogs({ before: Date.now() + 1000 });
 
-				// One small commit recreates the log at `sequenceNumber` with only
-				// TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE
-				// + 10 ≈ 36 bytes — far less than one 4 KiB memory page.
+				// One small commit writes a new tiny log (header + one entry ≈ 36 bytes)
+				// — far less than one 4 KiB memory page.
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.alloc(10), txn.id);
 					await txn.put('small', Buffer.alloc(10));
 				});
 
-				// Fetch the memory map for the recreated (tiny) log file.
-				//
-				// Without the fix, POSIX maps maxFileSize (16 MB) via MAP_SHARED over
+				// Map the current log file (sequence may differ from pre-purge after bump).
+				const afterPurgePosition = log._getLastCommittedPosition()!;
+				const sequenceAfterPurge = afterPurgePosition.readUInt32LE(4);
+
+				// Without the mmap fix, POSIX maps maxFileSize (16 MB) via MAP_SHARED over
 				// a ~36-byte file. On btrfs/ext4, accessing any byte at or beyond the
 				// last 4 KiB page of the actual file (i.e. byte ≥ 4096) triggers
 				// SIGBUS because there is no kernel backing for those pages.
@@ -1334,7 +1335,7 @@ describe('Transaction Log', () => {
 				// With the fix, an anonymous zero-filled mapping covers the full
 				// maxFileSize region and only the real file content is overlaid at the
 				// start via MAP_FIXED, so reads past the file return 0 harmlessly.
-				const mmap = log._getMemoryMapOfFile(sequenceNumber);
+				const mmap = log._getMemoryMapOfFile(sequenceAfterPurge);
 				expect(mmap).toBeDefined();
 
 				// This single-byte read at the start of the second 4 KiB page is the

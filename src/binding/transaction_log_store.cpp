@@ -1,5 +1,6 @@
 #include <chrono>
 #include <exception>
+#include <unordered_set>
 #include <vector>
 #include "macros.h"
 #include "transaction_log_store.h"
@@ -214,10 +215,11 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%u)\n", this, this->name.c_str(), this->sequenceFiles.size());
+	DEBUG_LOG("%p TransactionLogStore::purge Purging transaction log store \"%s\" (# files=%zu)\n", this, this->name.c_str(), this->sequenceFiles.size());
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
-	std::vector<uint32_t> sequenceNumbersToRemove;
+	std::unordered_set<uint32_t> sequenceNumbersToRemove;
+	bool purgedCurrentFile = false;
 
 	for (const auto& entry : this->sequenceFiles) {
 		auto& logFile = entry.second;
@@ -258,19 +260,48 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str());
 
+		if (entry.first == this->currentSequenceNumber) {
+			purgedCurrentFile = true;
+
+			// if the active log had real entries, the next write must use a new sequence number,
+			// otherwise a new file would reuse the same path while readers may still hold a mmap
+			// or positions tied to the deleted file's content
+			if (logFile->size.load(std::memory_order_relaxed) > TRANSACTION_LOG_FILE_HEADER_SIZE) {
+				this->currentSequenceNumber = this->nextSequenceNumber++;
+			}
+		}
+
 		// delete the log file
 		auto removed = logFile->removeFile();
 		if (visitor && removed) {
 			visitor(logFile->path);
 		}
 
-		// collect sequence number for removal
-		sequenceNumbersToRemove.push_back(entry.first);
+		sequenceNumbersToRemove.insert(entry.first);
 	}
 
 	// remove sequence files from the map
 	for (uint32_t sequenceNumber : sequenceNumbersToRemove) {
 		this->sequenceFiles.erase(sequenceNumber);
+	}
+
+	if (purgedCurrentFile) {
+		// current file was removed, reset the log position to the beginning of the next file
+		this->nextLogPosition = { 0, this->currentSequenceNumber };
+	}
+
+	// remove uncommitted transaction positions that are no longer valid
+	for (auto it = this->uncommittedTransactionPositions.begin(); it != this->uncommittedTransactionPositions.end(); ) {
+		if (sequenceNumbersToRemove.count(it->logSequenceNumber)) {
+			it = this->uncommittedTransactionPositions.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	// if the last committed position is no longer valid, update it to the next log position
+	if (sequenceNumbersToRemove.count(this->lastCommittedPosition->logSequenceNumber)) {
+		*this->lastCommittedPosition = this->nextLogPosition;
 	}
 
 	// if all log files have been removed, clean up the empty directory

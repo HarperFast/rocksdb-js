@@ -158,8 +158,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	uint32_t overlaySize = 0;
 	if (this->fd >= 0 && actualFileSize > 0) {
 		overlaySize = std::min(actualFileSize, fileSize);
-		void* fileMap = ::mmap(anonMap, overlaySize, PROT_READ,
-			MAP_SHARED | MAP_FIXED, this->fd, 0);
+		void* fileMap = ::mmap(anonMap, overlaySize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
 		if (fileMap == MAP_FAILED) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: file overlay mmap failed: %s\n",
 				this, ::strerror(errno));
