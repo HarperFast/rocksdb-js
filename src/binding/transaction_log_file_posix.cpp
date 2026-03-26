@@ -115,62 +115,20 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
-	uint32_t actualFileSize = this->size.load(std::memory_order_relaxed);
-
-	if (this->memoryMap && this->memoryMap->mapSize >= fileSize) {
-		// The existing anonymous mapping is large enough. If the file has grown
-		// since the last time we overlaid it, extend the MAP_SHARED overlay so
-		// readers immediately see the new data without requiring a new mmap.
-		if (this->fd >= 0 && actualFileSize > this->mmapOverlaySize) {
-			uint32_t newOverlaySize = std::min(actualFileSize, fileSize);
-			void* updated = ::mmap(this->memoryMap->map, newOverlaySize, PROT_READ,
-				MAP_SHARED | MAP_FIXED, this->fd, 0);
-			if (updated != MAP_FAILED) {
-				this->mmapOverlaySize = newOverlaySize;
-				DEBUG_LOG("%p TransactionLogFile::getMemoryMap Extended file overlay to %u bytes\n",
-					this, newOverlaySize);
-			} else {
-				DEBUG_LOG("%p TransactionLogFile::getMemoryMap WARNING: overlay extension failed: %s\n",
-					this, ::strerror(errno));
-			}
-		}
-		this->memoryMap->fileSize = fileSize;
-		return this->memoryMap;
-	}
-
-	// Allocate an anonymous read-only region of the full requested size.
-	// All bytes default to zero, so readers that iterate past the end of
-	// actual file content will see 0.0 timestamps and stop gracefully
-	// instead of triggering a SIGBUS (which MAP_SHARED alone would cause
-	// when the file is smaller than fileSize on Linux).
-	void* anonMap = ::mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (anonMap == MAP_FAILED) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: anonymous mmap failed: %s\n",
-			this, ::strerror(errno));
-		return nullptr;
-	}
-	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Created anonymous map %p (size=%u, actualFileSize=%u)\n",
-		this, anonMap, fileSize, actualFileSize);
-
-	// Overlay the real file content at the start of the anonymous mapping so
-	// that readers see up-to-date data. MAP_FIXED replaces the corresponding
-	// pages of the anonymous region with file-backed shared pages.
-	uint32_t overlaySize = 0;
-	if (this->fd >= 0 && actualFileSize > 0) {
-		overlaySize = std::min(actualFileSize, fileSize);
-		void* fileMap = ::mmap(anonMap, overlaySize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
-		if (fileMap == MAP_FAILED) {
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: file overlay mmap failed: %s\n",
-				this, ::strerror(errno));
-			::munmap(anonMap, fileSize);
+	if (!this->memoryMap) {
+		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
+		if (map == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Overlaid %u bytes of file content at %p\n",
-			this, overlaySize, anonMap);
+		// If successful, return a MemoryMap object for tracking references.
+		// Note, that we do not need to do any cleanup from this class's
+		// destructor. Removing files that are memory mapped is perfectly fine,
+		// and the memory map can be safely used indefinitely (the file descriptor
+		// doesn't need to be kept open either).
+		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
 	}
-
-	this->mmapOverlaySize = overlaySize;
-	this->memoryMap = std::make_shared<MemoryMap>(anonMap, fileSize);
 	this->memoryMap->fileSize = fileSize;
 	return this->memoryMap;
 }

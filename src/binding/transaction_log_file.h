@@ -98,15 +98,6 @@ struct TransactionLogFile final {
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
 
-#ifdef PLATFORM_POSIX
-	/**
-	 * The number of bytes of actual file content overlaid at the start of the
-	 * anonymous mmap region. Used to detect when the file has grown and the
-	 * overlay needs to be extended via a MAP_FIXED remap.
-	 */
-	uint32_t mmapOverlaySize = 0;
-#endif
-
 	/**
 	 * The mutex used to protect the file (open/close, read/write, etc).
 	 */
