@@ -1,13 +1,13 @@
 #include "db_descriptor.h"
 #include "db_settings.h"
 #include "rocksdb/listener.h"
-#include <algorithm>
 #include <memory>
 
 namespace rocksdb_js {
 
 // forward declarations
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
+static void releaseListenerCallback(void* arg);
 
 struct JobTracker final {
 	int columnFamilyCount = 0;
@@ -56,8 +56,6 @@ public:
 			// Increment existing entry so we know how many column families are being flushed
 			it->second.columnFamilyCount++;
 		}
-
-
 	}
 
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
@@ -193,6 +191,19 @@ void DBDescriptor::close() {
 
 	{
 		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+		for (auto& [key, listeners] : this->listenerCallbacks) {
+			for (auto& listener : listeners) {
+				::napi_remove_env_cleanup_hook(listener->env, releaseListenerCallback, listener.get());
+				if (listener->threadsafeCallback) {
+					::napi_release_threadsafe_function(listener->threadsafeCallback, napi_tsfn_release);
+					listener->threadsafeCallback = nullptr;
+				}
+				if (listener->callbackRef) {
+					::napi_delete_reference(listener->env, listener->callbackRef);
+					listener->callbackRef = nullptr;
+				}
+			}
+		}
 		this->listenerCallbacks.clear();
 	}
 
@@ -1314,11 +1325,16 @@ napi_value DBDescriptor::getUserSharedBuffer(
  * defined event listener callback functions.
  */
 static void callListenerCallback(napi_env env, napi_value jsCallback, void* unusedContext, void* data) {
+	ListenerData* listenerData = static_cast<ListenerData*>(data);
+
 	if (env == nullptr || jsCallback == nullptr) {
+		if (listenerData != nullptr) {
+			delete listenerData;
+			listenerData = nullptr;
+		}
 		return;
 	}
 
-	ListenerData* listenerData = static_cast<ListenerData*>(data);
 	uint32_t argc = 0;
 	napi_value* argv = nullptr;
 	napi_value global;
@@ -1359,6 +1375,10 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* unus
 	napi_value result;
 	DEBUG_LOG("callListenerCallback calling listener callback\n");
 	napi_status status = ::napi_call_function(env, global, jsCallback, argc, argv, &result);
+	if (argv != nullptr) {
+		delete[] argv;
+		argv = nullptr;
+	}
 	if (status != napi_ok) {
 		DEBUG_LOG("callListenerCallback failed to call listener callback (status=%d)\n", status);
 		std::string errorStr = rocksdb_js::getNapiExtendedError(env, status);
@@ -1366,6 +1386,27 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* unus
 		::napi_throw_error(env, nullptr, errorStr.c_str());
 	} else {
 		DEBUG_LOG("callListenerCallback called listener callback successfully!\n");
+	}
+}
+
+/**
+ * Env cleanup hook that releases a ListenerCallback's TSFN and callback
+ * reference. Registered via napi_add_env_cleanup_hook so it runs before the
+ * UV loop stops, making it safe to call napi_release_threadsafe_function.
+ *
+ * By the time the napi_wrap GC finalizer fires (and removeListenersByOwner is
+ * called), this hook has already set threadsafeCallback to nullptr, so the
+ * null-checks in those paths prevent double-release.
+ */
+static void releaseListenerCallback(void* arg) {
+	auto* listener = static_cast<ListenerCallback*>(arg);
+	if (listener->threadsafeCallback) {
+		::napi_release_threadsafe_function(listener->threadsafeCallback, napi_tsfn_release);
+		listener->threadsafeCallback = nullptr;
+	}
+	if (listener->callbackRef) {
+		::napi_delete_reference(listener->env, listener->callbackRef);
+		listener->callbackRef = nullptr;
 	}
 }
 
@@ -1426,6 +1467,11 @@ napi_ref DBDescriptor::addListener(
 	}
 
 	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, listenerCallback->threadsafeCallback));
+
+	// Register a cleanup hook so the TSFN is released before the UV loop stops.
+	// This ensures napi_release_threadsafe_function is never called from a GC
+	// finalizer (which runs after the loop has already exited).
+	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, releaseListenerCallback, listenerCallback.get()));
 
 	std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
 	auto it = this->listenerCallbacks.find(key);
@@ -1580,6 +1626,9 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 			bool isEqual = false;
 			NAPI_STATUS_THROWS(::napi_strict_equals(env, fn, callback, &isEqual));
 			if (isEqual) {
+				// cancel the env cleanup hook before releasing manually.
+				::napi_remove_env_cleanup_hook((*listener)->env, releaseListenerCallback, (*listener).get());
+
 				// release the threadsafe callback
 				if ((*listener)->threadsafeCallback) {
 					DEBUG_LOG("%p DBDescriptor::removeListener deleting threadsafe callback for key:", this);
@@ -1649,20 +1698,32 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 		auto& listeners = keyIt->second;
 
 		// remove listeners owned by this handle
-		listeners.erase(
-			std::remove_if(listeners.begin(), listeners.end(),
-				[this, owner](const std::shared_ptr<ListenerCallback>& callback) {
-					(void)this; // suppress unused warning for release builds
-					auto sharedOwner = callback->owner.lock();
-					bool shouldRemove = (sharedOwner.get() == owner) || callback->owner.expired();
-					if (shouldRemove) {
-						DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener for owner %p\n", this, owner);
-						// note: can't safely log key here as we're in iterator
-					}
-					return shouldRemove;
-				}),
-			listeners.end()
-		);
+		for (auto listenerIt = listeners.begin(); listenerIt != listeners.end(); ) {
+			auto& listener = *listenerIt;
+			auto sharedOwner = listener->owner.lock();
+			bool shouldRemove = (sharedOwner.get() == owner) || listener->owner.expired();
+
+			if (shouldRemove) {
+				DEBUG_LOG("%p DBDescriptor::removeListenersByOwner removing listener for owner %p\n", this, owner);
+
+				// napi_remove_env_cleanup_hook is a no-op if the hook has already run
+				// (i.e., during env teardown). If the hook ran, it already released the
+				// TSFN and set threadsafeCallback to nullptr, so the checks below are safe.
+				::napi_remove_env_cleanup_hook(listener->env, releaseListenerCallback, listener.get());
+				if (listener->threadsafeCallback) {
+					::napi_release_threadsafe_function(listener->threadsafeCallback, napi_tsfn_release);
+					listener->threadsafeCallback = nullptr;
+				}
+				if (listener->callbackRef) {
+					::napi_delete_reference(listener->env, listener->callbackRef);
+					listener->callbackRef = nullptr;
+				}
+
+				listenerIt = listeners.erase(listenerIt);
+			} else {
+				++listenerIt;
+			}
+		}
 
 		// remove the key entirely if no listeners remain
 		if (listeners.empty()) {
@@ -1728,6 +1789,7 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
 	uint64_t before = 0;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "before", before));
+	::fprintf(stderr, "DBDescriptor::purgeTransactionLogs before: %lu\n", before);
 
 	bool destroy = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));

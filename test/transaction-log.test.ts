@@ -1284,6 +1284,73 @@ describe('Transaction Log', () => {
 				expect(db.purgeLogs({ before: oneHourAgo.getTime() })).toEqual([logFile]);
 				expect(existsSync(logDirectory)).toBe(false);
 			}));
+
+		it.skip('should not SIGBUS', () => {
+			dbRunner(async ({ db }) => {
+				let auditRetention = 0.01;
+				const cleanupPriority = 0;
+
+				const log = db.useLog('foo');
+
+				await db.transaction(async (txn) => {
+					const value = Buffer.alloc(10, 'a');
+					log.addEntry(value, txn.id);
+					await txn.put('foo', value);
+				});
+
+				await db.transaction(async (txn) => {
+					await txn.remove('foo');
+				});
+
+				await delay(50);
+
+				db.purgeLogs({
+					before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
+				});
+
+				await delay(40);
+
+				await db.transaction(async (txn) => {
+					const value = Buffer.alloc(10, 'b');
+					log.addEntry(value, txn.id);
+					await txn.put('bar', value);
+				});
+
+				db.purgeLogs({
+					before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
+				});
+
+				await delay(50);
+
+				await db.transaction(async (txn) => {
+					await txn.remove('bar');
+				});
+
+				await delay(50);
+
+				auditRetention = 10;
+
+				await db.transaction(async (txn) => {
+					const value = Buffer.alloc(10, 'c');
+					log.addEntry(value, txn.id);
+					await txn.put('bar', value);
+				});
+
+				db.purgeLogs({
+					before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
+				});
+
+				await delay(50);
+
+				await db.transaction(async (txn) => {
+					const value = Buffer.alloc(10, 'd');
+					log.addEntry(value, txn.id);
+					await txn.put('bar', value);
+				});
+
+				await delay(50);
+			});
+		});
 	});
 
 	describe('flushSync()', () => {
