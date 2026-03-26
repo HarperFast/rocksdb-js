@@ -1789,7 +1789,6 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
 	uint64_t before = 0;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "before", before));
-	::fprintf(stderr, "DBDescriptor::purgeTransactionLogs before: %lu\n", before);
 
 	bool destroy = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
