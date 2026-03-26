@@ -220,6 +220,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::unordered_set<uint32_t> sequenceNumbersToRemove;
 	bool purgedCurrentFile = false;
+	bool bumpSequenceNumber = false;
 
 	for (const auto& entry : this->sequenceFiles) {
 		auto& logFile = entry.second;
@@ -267,7 +268,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			// otherwise a new file would reuse the same path while readers may still hold a mmap
 			// or positions tied to the deleted file's content
 			if (logFile->size.load(std::memory_order_relaxed) > TRANSACTION_LOG_FILE_HEADER_SIZE) {
-				this->currentSequenceNumber = this->nextSequenceNumber++;
+				bumpSequenceNumber = true;
 			}
 		}
 
@@ -283,6 +284,10 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// remove sequence files from the map
 	for (uint32_t sequenceNumber : sequenceNumbersToRemove) {
 		this->sequenceFiles.erase(sequenceNumber);
+	}
+
+	if (bumpSequenceNumber) {
+		this->currentSequenceNumber = this->nextSequenceNumber++;
 	}
 
 	if (purgedCurrentFile) {
