@@ -1285,70 +1285,62 @@ describe('Transaction Log', () => {
 				expect(existsSync(logDirectory)).toBe(false);
 			}));
 
-		it.skip('should not SIGBUS', () => {
-			dbRunner(async ({ db }) => {
-				let auditRetention = 0.01;
-				const cleanupPriority = 0;
-
+		it('should not SIGBUS when reading a recreated log file after purge', () => {
+			// /tmp is tmpfs: Linux zero-fills pages beyond file end for MAP_SHARED
+			// on tmpfs, so SIGBUS never fires there. Use a btrfs/ext4 path where
+			// the kernel raises SIGBUS for MAP_SHARED reads past the file end.
+			return dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 
+				// Build a log file with `positionInLogFile` well past the 4 KiB page
+				// boundary (4096 bytes). Each entry costs:
+				//   TRANSACTION_LOG_ENTRY_HEADER_SIZE + payloadSize bytes
+				// The file itself starts with TRANSACTION_LOG_FILE_HEADER_SIZE bytes.
+				// With a 400-byte payload: 12 entries →
+				//   13 + 12 * (13 + 400) = 4969 bytes — past the page boundary.
+				const payload = Buffer.alloc(400, 0x55);
+				for (let i = 0; i < 12; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(payload, txn.id);
+						await txn.put(`key${i}`, payload);
+					});
+				}
+
+				// Capture the committed position and verify the offset is beyond 4 KiB.
+				const positionBuf = log._getLastCommittedPosition()!;
+				const positionInLogFile = positionBuf.readUInt32LE(0);
+				const sequenceNumber = positionBuf.readUInt32LE(4);
+				expect(positionInLogFile).toBeGreaterThan(4096);
+
+				// Purge every log file. The store retains `currentSequenceNumber` so
+				// the very next write recreates the file at the same sequence number.
+				db.purgeLogs({ before: Date.now() + 1000 });
+
+				// One small commit recreates the log at `sequenceNumber` with only
+				// TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE
+				// + 10 ≈ 36 bytes — far less than one 4 KiB memory page.
 				await db.transaction(async (txn) => {
-					const value = Buffer.alloc(10, 'a');
-					log.addEntry(value, txn.id);
-					await txn.put('foo', value);
+					log.addEntry(Buffer.alloc(10), txn.id);
+					await txn.put('small', Buffer.alloc(10));
 				});
 
-				await db.transaction(async (txn) => {
-					await txn.remove('foo');
-				});
+				// Fetch the memory map for the recreated (tiny) log file.
+				//
+				// Without the fix, POSIX maps maxFileSize (16 MB) via MAP_SHARED over
+				// a ~36-byte file. On btrfs/ext4, accessing any byte at or beyond the
+				// last 4 KiB page of the actual file (i.e. byte ≥ 4096) triggers
+				// SIGBUS because there is no kernel backing for those pages.
+				//
+				// With the fix, an anonymous zero-filled mapping covers the full
+				// maxFileSize region and only the real file content is overlaid at the
+				// start via MAP_FIXED, so reads past the file return 0 harmlessly.
+				const mmap = log._getMemoryMapOfFile(sequenceNumber);
+				expect(mmap).toBeDefined();
 
-				await delay(50);
-
-				db.purgeLogs({
-					before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-				});
-
-				await delay(40);
-
-				await db.transaction(async (txn) => {
-					const value = Buffer.alloc(10, 'b');
-					log.addEntry(value, txn.id);
-					await txn.put('bar', value);
-				});
-
-				db.purgeLogs({
-					before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-				});
-
-				await delay(50);
-
-				await db.transaction(async (txn) => {
-					await txn.remove('bar');
-				});
-
-				await delay(50);
-
-				auditRetention = 10;
-
-				await db.transaction(async (txn) => {
-					const value = Buffer.alloc(10, 'c');
-					log.addEntry(value, txn.id);
-					await txn.put('bar', value);
-				});
-
-				db.purgeLogs({
-					before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-				});
-
-				await delay(50);
-
-				await db.transaction(async (txn) => {
-					const value = Buffer.alloc(10, 'd');
-					log.addEntry(value, txn.id);
-					await txn.put('bar', value);
-				});
-
-				await delay(50);
+				// This single-byte read at the start of the second 4 KiB page is the
+				// exact access that fires SIGBUS without the fix on btrfs/ext4.
+				const byteAtPageBoundary = mmap!.readUInt8(4096);
+				expect(byteAtPageBoundary).toBe(0);
 			});
 		});
 	});
