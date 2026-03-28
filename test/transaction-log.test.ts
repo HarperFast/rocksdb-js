@@ -1284,6 +1284,61 @@ describe('Transaction Log', () => {
 				expect(db.purgeLogs({ before: oneHourAgo.getTime() })).toEqual([logFile]);
 				expect(existsSync(logDirectory)).toBe(false);
 			}));
+
+		it('should return valid lastCommittedPosition after purging earlier log files and reopening', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				// Create log file 1 with header
+				const logFile1 = join(logDirectory, '1.txnlog');
+				const header1 = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header1.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header1.writeUInt8(1, 4);
+				header1.writeDoubleBE(0, 5);
+				await writeFile(logFile1, header1);
+
+				db.open();
+				const log = db.useLog('foo');
+
+				// Get initial lastCommittedPosition - should be valid even though no commits yet
+				let lastCommittedBuffer = log._getLastCommittedPosition();
+				let lastCommittedPosUint32 = new Uint32Array(lastCommittedBuffer.buffer, 0, 2);
+				expect(lastCommittedPosUint32[1]).toBeGreaterThanOrEqual(1);
+				expect(lastCommittedPosUint32[0]).toBeGreaterThanOrEqual(10);
+
+				// Purge the first log file
+				expect(existsSync(logFile1)).toBe(true);
+				db.purgeLogs({ destroy: true, name: 'foo', before: Date.now() - 1000 });
+				expect(existsSync(logFile1)).toBe(false);
+
+				// Create log file 2 with header
+				await mkdir(logDirectory, { recursive: true });
+				const logFile2 = join(logDirectory, '2.txnlog');
+				const header2 = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header2.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header2.writeUInt8(1, 4);
+				header2.writeDoubleBE(0, 5);
+				await writeFile(logFile2, header2);
+
+				// Write some data to log file 2 to make it have content beyond header
+				const entry = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
+				entry.writeUInt32BE(10, 0); // data length
+				entry.writeDoubleBE(Date.now(), 4); // timestamp
+				entry.writeBigUInt64BE(1n, 12); // transaction id
+				await writeFile(logFile2, Buffer.concat([header2, entry]));
+
+				// Close and reopen database
+				db.close();
+				db.open();
+				const log2 = db.useLog('foo');
+
+				// After reopening, lastCommittedPosition should be valid and point to log file 2
+				lastCommittedBuffer = log2._getLastCommittedPosition();
+				lastCommittedPosUint32 = new Uint32Array(lastCommittedBuffer.buffer, 0, 2);
+				expect(lastCommittedPosUint32[1]).toBeGreaterThanOrEqual(2);
+				expect(lastCommittedPosUint32[0]).toBeGreaterThanOrEqual(10);
+			}));
 	});
 
 	describe('flushSync()', () => {
