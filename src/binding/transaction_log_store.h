@@ -261,6 +261,11 @@ struct TransactionLogStore final {
 	LogPosition getLastFlushedPosition();
 
 	/**
+	 * Reads and returns the last flushed position from the txn.state file without acquiring a lock.
+	 */
+	LogPosition _getLastFlushedPosition();
+
+	/**
 	 * Purges transaction logs. By default, it deletes transaction log files older than the
 	 * retention period (3 days). If `before` is provided, it deletes transaction log files older
 	 * than the specified timestamp. If `all` is true, it deletes all transaction log files.

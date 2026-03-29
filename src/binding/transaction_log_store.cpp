@@ -151,32 +151,27 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 
 std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 	// Initialize lastCommittedPosition if it's still at {0, 0} and invalid
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	if (this->lastCommittedPosition->fullPosition == 0) {
-		// Get flushed position before acquiring lock to avoid deadlock
-		LogPosition flushedPosition = this->getLastFlushedPosition();
+		LogPosition flushedPosition = this->_getLastFlushedPosition();
 
-		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		LogPosition initialPosition = { 0, 0 };
 
-		// Double-check after acquiring lock
-		if (this->lastCommittedPosition->fullPosition == 0) {
-			LogPosition initialPosition = { 0, 0 };
-
-			// First, try to use the last flushed position from disk
-			if (flushedPosition.fullPosition > 0) {
-				initialPosition = flushedPosition;
-			}
-			// If no flushed position exists, use the beginning of the first extant log file
-			else if (!this->sequenceFiles.empty()) {
-				auto firstLogFile = this->sequenceFiles.begin()->second;
-				initialPosition = { TRANSACTION_LOG_FILE_HEADER_SIZE, firstLogFile->sequenceNumber };
-			}
-			// Otherwise, use current position
-			else if (this->currentSequenceNumber > 0) {
-				initialPosition = { TRANSACTION_LOG_FILE_HEADER_SIZE, this->currentSequenceNumber };
-			}
-
-			*this->lastCommittedPosition = initialPosition;
+		// First, try to use the last flushed position from disk
+		if (flushedPosition.fullPosition > 0) {
+			initialPosition = flushedPosition;
 		}
+		// If no flushed position exists, use the beginning of the first extant log file
+		else if (!this->sequenceFiles.empty()) {
+			auto firstLogFile = this->sequenceFiles.begin()->second;
+			initialPosition = { TRANSACTION_LOG_FILE_HEADER_SIZE, firstLogFile->sequenceNumber };
+		}
+		// Otherwise, use current position
+		else if (this->currentSequenceNumber > 0) {
+			initialPosition = { TRANSACTION_LOG_FILE_HEADER_SIZE, this->currentSequenceNumber };
+		}
+
+		*this->lastCommittedPosition = initialPosition;
 	}
 	return this->lastCommittedPosition;
 }
@@ -218,8 +213,12 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 }
 
 LogPosition TransactionLogStore::getLastFlushedPosition() {
-	auto stateFilePath = this->path / "txn.state";
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	return this->_getLastFlushedPosition();
+}
+
+LogPosition TransactionLogStore::_getLastFlushedPosition() {
+	auto stateFilePath = this->path / "txn.state";
 	std::ifstream inputFile(stateFilePath, std::ios::binary | std::ios::in);
 	LogPosition position = { 0, 0 };
 
@@ -393,7 +392,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			}
 		}
 
-		if (!logPosition.fullPosition) {
+		if (logPosition.fullPosition == 0) {
 			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 			this->uncommittedTransactionPositions.erase(logPosition);
 			logPosition = this->nextLogPosition;
