@@ -133,6 +133,9 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	return this->memoryMap;
 }
 
+void TransactionLogFile::updateMemoryMapOverlay() {
+}
+
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0) {
 		return static_cast<int64_t>(::pread(this->fd, buffer, size, offset));

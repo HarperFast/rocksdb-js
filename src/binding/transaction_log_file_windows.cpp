@@ -429,6 +429,10 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 	return message;
 }
 
+void TransactionLogFile::updateMemoryMapOverlay() {
+	// No-op: Windows pre-extends the file to maxFileSize before mapping.
+}
+
 } // namespace rocksdb_js
 
 #endif
