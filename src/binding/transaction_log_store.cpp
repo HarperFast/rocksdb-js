@@ -321,7 +321,8 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	}
 
 	// update next sequence number to be one higher than the highest existing
-	if (sequenceNumber >= this->nextSequenceNumber) {
+	// if (sequenceNumber >= this->nextSequenceNumber) {
+	if (sequenceNumber > this->nextSequenceNumber) {
 		this->nextSequenceNumber = sequenceNumber + 1;
 	}
 
