@@ -115,6 +115,8 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+
 	if (!this->memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
