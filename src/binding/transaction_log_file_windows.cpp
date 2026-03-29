@@ -206,8 +206,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
-	std::lock_guard<std::mutex> lock(this->fileMutex);
-
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			// existing memory map will work
