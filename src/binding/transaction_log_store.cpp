@@ -275,10 +275,13 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			// pairs. Existing shared_ptrs to the old memory map remain valid
 			// until released. Post-increment is safe because registerLogFile
 			// guarantees nextSequenceNumber > currentSequenceNumber.
+			uint32_t prev = this->currentSequenceNumber;
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 			this->nextLogPosition = { 0, this->currentSequenceNumber };
-			DEBUG_LOG("%p TransactionLogStore::purge Current sequence purged, advanced to %u\n",
-				this, this->currentSequenceNumber);
+			::fprintf(stderr, "%p TransactionLogStore::purge Current sequence purged, advanced from %u to %u\n",
+				this, prev, this->currentSequenceNumber);
+			DEBUG_LOG("%p TransactionLogStore::purge Current sequence purged, advanced from %u to %u\n",
+				this, prev, this->currentSequenceNumber);
 
 			// TODO: remove the txn.state file if there are no uncommitted transactions left to flush
 		}
@@ -311,7 +314,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = logFile;
 
-	if (sequenceNumber >= this->currentSequenceNumber) {
+	if (sequenceNumber > this->currentSequenceNumber) {
 		if (!logFile->isOpen()) {
 			logFile->open(this->latestTimestamp);
 		}
