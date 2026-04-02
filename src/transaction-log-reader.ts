@@ -132,17 +132,19 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
-							dataView = nextLogBuffer.dataView;
-							logBuffer = nextLogBuffer;
-							if (latestLogId > logBuffer!.logId) {
-								// it is non-current log file, we can safely use or cache the size
-								size =
-									logBuffer!.size ??
-									(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
-							} else {
-								size = latestSize; // use the latest position from loadLastPosition
+							if (nextLogBuffer) {
+								dataView = nextLogBuffer.dataView;
+								logBuffer = nextLogBuffer;
+								if (latestLogId > logBuffer!.logId) {
+									// it is non-current log file, we can safely use or cache the size
+									size =
+										logBuffer!.size ??
+										(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+								} else {
+									size = latestSize; // use the latest position from loadLastPosition
+								}
+								position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 							}
-							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
 					}
 				}
