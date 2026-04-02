@@ -198,6 +198,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 
 	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
 	this->size += static_cast<uint32_t>(bytesWritten);
+	this->updateMemoryMapOverlay();
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex, batch.currentEntryBytesWritten);
 }

@@ -284,6 +284,27 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			continue;
 		}
 
+		// Don't purge files that have uncommitted transactions — erasing their
+		// positions from uncommittedTransactionPositions would cause data loss.
+		// For the current sequence, nextLogPosition is the sentinel (not a real
+		// transaction) so we allow purging when it's the only entry.
+		for (const auto& pos : this->uncommittedTransactionPositions) {
+			if (pos.logSequenceNumber == entry.first) {
+				if (entry.first == this->currentSequenceNumber &&
+					pos.positionInLogFile == this->nextLogPosition.positionInLogFile &&
+					pos.logSequenceNumber == this->nextLogPosition.logSequenceNumber) {
+					continue;
+				}
+				shouldPurge = false;
+				break;
+			}
+		}
+		if (!shouldPurge) {
+			DEBUG_LOG("%p TransactionLogStore::purge Skipping purge of seq %u: has uncommitted transactions\n",
+				this, entry.first);
+			continue;
+		}
+
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str());
 
 		// delete the log file
@@ -299,19 +320,22 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// remove sequence files from the map
 	for (uint32_t sequenceNumber : sequenceNumbersToRemove) {
 		if (sequenceNumber == this->currentSequenceNumber) {
+			// Erase only the stale sentinel for the current sequence — the guard
+			// above already verified no real uncommitted positions exist.
+			this->uncommittedTransactionPositions.erase(this->nextLogPosition);
 			// Advance to maintain monotonicity of (sequenceNumber, position)
 			// pairs. Existing shared_ptrs to the old memory map remain valid
 			// until released. Post-increment is safe because registerLogFile
 			// guarantees nextSequenceNumber > currentSequenceNumber.
-			uint32_t prev = this->currentSequenceNumber;
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 			this->nextLogPosition = { 0, this->currentSequenceNumber };
-			::fprintf(stderr, "%p TransactionLogStore::purge Current sequence purged, advanced from %u to %u\n",
-				this, prev, this->currentSequenceNumber);
-			DEBUG_LOG("%p TransactionLogStore::purge Current sequence purged, advanced from %u to %u\n",
-				this, prev, this->currentSequenceNumber);
-
-			// TODO: remove the txn.state file if there are no uncommitted transactions left to flush
+			this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+			LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
+				? this->nextLogPosition
+				: *(this->uncommittedTransactionPositions.begin());
+			*this->lastCommittedPosition = fullyCommittedPosition;
+			DEBUG_LOG("%p TransactionLogStore::purge Current sequence purged, advanced to %u\n",
+				this, this->currentSequenceNumber);
 		}
 		this->sequenceFiles.erase(sequenceNumber);
 	}
@@ -342,7 +366,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = logFile;
 
-	if (sequenceNumber > this->currentSequenceNumber) {
+	if (sequenceNumber >= this->currentSequenceNumber) {
 		if (!logFile->isOpen()) {
 			logFile->open(this->latestTimestamp);
 		}
