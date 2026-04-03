@@ -288,17 +288,17 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		// positions from uncommittedTransactionPositions would cause data loss.
 		// For the current sequence, nextLogPosition is the sentinel (not a real
 		// transaction) so we allow purging when it's the only entry.
-		// for (const auto& pos : this->uncommittedTransactionPositions) {
-		// 	if (pos.logSequenceNumber == entry.first) {
+		for (const auto& pos : this->uncommittedTransactionPositions) {
+			if (pos.logSequenceNumber == entry.first) {
 		// 		if (entry.first == this->currentSequenceNumber &&
 		// 			pos.positionInLogFile == this->nextLogPosition.positionInLogFile &&
 		// 			pos.logSequenceNumber == this->nextLogPosition.logSequenceNumber) {
 		// 			continue;
 		// 		}
-		// 		shouldPurge = false;
-		// 		break;
-		// 	}
-		// }
+				shouldPurge = false;
+				break;
+			}
+		}
 		if (!shouldPurge) {
 			DEBUG_LOG("%p TransactionLogStore::purge Skipping purge of seq %u: has uncommitted transactions\n",
 				this, entry.first);
