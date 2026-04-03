@@ -584,18 +584,22 @@ bool operator>(const LogPosition a, const LogPosition b) {
  * log file (until it expires), even after crash.
  */
 void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
+	// Hold writeMutex for the whole flush: TransactionLogFile::flush() drops fileMutex while calling
+	// FlushFileBuffers. Without writeMutex, purge() can close the same handle concurrently (Windows),
+	// which leads to use-after-close and STATUS_ACCESS_VIOLATION.
+	std::lock_guard<std::mutex> writeLock(this->writeMutex);
+
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;
 
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-		// Copy the sequence files to a vector so we can release the lock
+		// Copy the sequence files to a vector so we can release dataSetsMutex before slow I/O
 		logFilesToFlush.reserve(this->sequenceFiles.size());
 		for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
 			logFilesToFlush.push_back(logFile);
 		}
 	}
 
-	// Flush all log files to ensure data is synced to disk (without holding the lock)
 	for (const auto& logFile : logFilesToFlush) {
 		try {
 			logFile->flush();

@@ -206,6 +206,11 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+	if (this->fileHandle == INVALID_HANDLE_VALUE) {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap file is not open: %s\n", this, this->path.string().c_str());
+		return nullptr;
+	}
+
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			// existing memory map will work
@@ -222,45 +227,20 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
-	// Check the actual file size on disk to avoid repeated expansions
+	// Use SetFileInformationByHandle(FileEndOfFileInfo) instead of SetFilePointerEx/SetEndOfFile: this path shares the
+	// handle with writeBatchToFile/readFromFile, which also move the file pointer. Concurrent pointer manipulation races
+	// with other threads and causes STATUS_ACCESS_VIOLATION or corrupt writes on Windows.
 	if (fileSize > this->size.load(std::memory_order_relaxed)) {
-		LARGE_INTEGER currentPos;
-		LARGE_INTEGER distanceToMove;
-		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)
-		distanceToMove.QuadPart = 0; // We want to move 0 bytes to query current position
-		if (!::SetFilePointerEx(this->fileHandle, distanceToMove, &currentPos, FILE_CURRENT)) {
+		FILE_END_OF_FILE_INFO eofInfo;
+		eofInfo.EndOfFile.QuadPart = static_cast<LONGLONG>(fileSize);
+		if (!::SetFileInformationByHandle(
+				this->fileHandle,
+				FileEndOfFileInfo,
+				&eofInfo,
+				sizeof(eofInfo))) {
 			DWORD error = ::GetLastError();
 			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str());
-			return nullptr;
-		}
-
-		// Move to the new file size
-		LARGE_INTEGER newSize;
-		newSize.QuadPart = fileSize;
-		if (!::SetFilePointerEx(this->fileHandle, newSize, NULL, FILE_BEGIN)) {
-			DWORD error = ::GetLastError();
-			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetFilePointerEx to new size: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str());
-			return nullptr;
-		}
-
-		// Set the End of File with the new file size
-		if (!::SetEndOfFile(this->fileHandle)) {
-			DWORD error = ::GetLastError();
-			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to SetEndOfFile: %s (error=%lu: %s)\n",
-				this, this->path.string().c_str(), error, errorMessage.c_str());
-			return nullptr;
-		}
-
-		// Restore original position
-		if (!::SetFilePointerEx(this->fileHandle, currentPos, NULL, FILE_BEGIN)) {
-			DWORD error = ::GetLastError();
-			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: Failed to restore position: %s (error=%lu: %s)\n",
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: SetFileInformationByHandle(FileEndOfFileInfo) failed: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str());
 			return nullptr;
 		}
