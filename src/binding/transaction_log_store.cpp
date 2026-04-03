@@ -299,11 +299,11 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		// 		break;
 		// 	}
 		// }
-		// if (!shouldPurge) {
-		// 	DEBUG_LOG("%p TransactionLogStore::purge Skipping purge of seq %u: has uncommitted transactions\n",
-		// 		this, entry.first);
-		// 	continue;
-		// }
+		if (!shouldPurge) {
+			DEBUG_LOG("%p TransactionLogStore::purge Skipping purge of seq %u: has uncommitted transactions\n",
+				this, entry.first);
+			continue;
+		}
 
 		DEBUG_LOG("%p TransactionLogStore::purge Purging log file: %s\n", this, logFile->path.string().c_str());
 
@@ -322,18 +322,18 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		if (sequenceNumber == this->currentSequenceNumber) {
 			// Erase only the stale sentinel for the current sequence — the guard
 			// above already verified no real uncommitted positions exist.
-			this->uncommittedTransactionPositions.erase(this->nextLogPosition);
+		// 	this->uncommittedTransactionPositions.erase(this->nextLogPosition);
 			// Advance to maintain monotonicity of (sequenceNumber, position)
 			// pairs. Existing shared_ptrs to the old memory map remain valid
 			// until released. Post-increment is safe because registerLogFile
 			// guarantees nextSequenceNumber > currentSequenceNumber.
-			this->currentSequenceNumber = this->nextSequenceNumber++;
-			this->nextLogPosition = { 0, this->currentSequenceNumber };
-			this->uncommittedTransactionPositions.insert(this->nextLogPosition);
-			LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
-				? this->nextLogPosition
-				: *(this->uncommittedTransactionPositions.begin());
-			*this->lastCommittedPosition = fullyCommittedPosition;
+		// 	this->currentSequenceNumber = this->nextSequenceNumber++;
+		// 	this->nextLogPosition = { 0, this->currentSequenceNumber };
+		// 	this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+		// 	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
+		// 		? this->nextLogPosition
+		// 		: *(this->uncommittedTransactionPositions.begin());
+		// 	*this->lastCommittedPosition = fullyCommittedPosition;
 			DEBUG_LOG("%p TransactionLogStore::purge Current sequence purged, advanced to %u\n",
 				this, this->currentSequenceNumber);
 		}
