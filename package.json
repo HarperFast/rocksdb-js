@@ -1,6 +1,6 @@
 {
   "name": "@harperfast/rocksdb-js",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "RocksDB binding for Node.js",
   "homepage": "https://github.com/HarperFast/rocksdb-js",
   "bugs": [
@@ -58,15 +58,15 @@
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "25.5.0",
+    "@types/node": "25.5.2",
     "@vitest/coverage-v8": "4.1.2",
     "cross-env": "10.1.0",
-    "dotenv": "17.3.1",
-    "lefthook": "2.1.4",
-    "lmdb": "3.5.2",
+    "dotenv": "17.4.1",
+    "lefthook": "2.1.5",
+    "lmdb": "3.5.3",
     "node-gyp": "12.2.0",
-    "oxfmt": "0.42.0",
-    "oxlint": "1.57.0",
+    "oxfmt": "0.43.0",
+    "oxlint": "1.58.0",
     "prebuildify": "6.0.1",
     "semver": "7.7.4",
     "tsdown": "0.21.7",
@@ -76,14 +76,14 @@
     "vitest": "4.1.2"
   },
   "optionalDependencies": {
-    "@harperfast/rocksdb-js-darwin-arm64": "0.1.13",
-    "@harperfast/rocksdb-js-darwin-x64": "0.1.13",
-    "@harperfast/rocksdb-js-linux-arm64-glibc": "0.1.13",
-    "@harperfast/rocksdb-js-linux-arm64-musl": "0.1.13",
-    "@harperfast/rocksdb-js-linux-x64-glibc": "0.1.13",
-    "@harperfast/rocksdb-js-linux-x64-musl": "0.1.13",
-    "@harperfast/rocksdb-js-win32-arm64": "0.1.13",
-    "@harperfast/rocksdb-js-win32-x64": "0.1.13"
+    "@harperfast/rocksdb-js-darwin-arm64": "0.1.14",
+    "@harperfast/rocksdb-js-darwin-x64": "0.1.14",
+    "@harperfast/rocksdb-js-linux-arm64-glibc": "0.1.14",
+    "@harperfast/rocksdb-js-linux-arm64-musl": "0.1.14",
+    "@harperfast/rocksdb-js-linux-x64-glibc": "0.1.14",
+    "@harperfast/rocksdb-js-linux-x64-musl": "0.1.14",
+    "@harperfast/rocksdb-js-win32-arm64": "0.1.14",
+    "@harperfast/rocksdb-js-win32-x64": "0.1.14"
   },
   "engines": {
     "node": ">=18"
