@@ -5,7 +5,9 @@ import { defineConfig, type UserConfig } from 'tsdown';
 const { version } = JSON.parse(readFileSync('./package.json', 'utf8'));
 
 const config: UserConfig = defineConfig({
-	external: ['msgpackr', 'ordered-binary'],
+	deps: {
+		neverBundle: ['msgpackr', 'ordered-binary'],
+	},
 	entry: './src/index.ts',
 	format: ['es', 'cjs'],
 	minify: Boolean(process.env.MINIFY),
