@@ -58,11 +58,11 @@
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "25.5.0",
+    "@types/node": "25.5.2",
     "@vitest/coverage-v8": "4.1.2",
     "cross-env": "10.1.0",
     "dotenv": "17.4.1",
-    "lefthook": "2.1.4",
+    "lefthook": "2.1.5",
     "lmdb": "3.5.3",
     "node-gyp": "12.2.0",
     "oxfmt": "0.43.0",
