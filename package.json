@@ -95,6 +95,6 @@
   },
   "gypfile": true,
   "rocksdb": {
-    "version": "10.10.1"
+    "version": "11.0.4"
   }
 }
