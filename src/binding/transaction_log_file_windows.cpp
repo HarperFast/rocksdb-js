@@ -331,10 +331,16 @@ bool TransactionLogFile::removeFile() {
 		this->fileHandle = INVALID_HANDLE_VALUE;
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
 	auto removed = std::filesystem::remove(this->path);
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
 			this, this->path.string().c_str());
+		return false;
+	}
+
+	if (std::filesystem::exists(this->path)) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile File still exists: %s\n", this, this->path.string().c_str());
 		return false;
 	}
 

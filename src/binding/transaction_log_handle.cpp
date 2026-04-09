@@ -35,9 +35,11 @@ void TransactionLogHandle::addEntry(
 	}
 
 	auto store = this->store.lock();
-	if (!store) {
-		// store was closed/destroyed, try to get or create a new one
-		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed, re-resolving \"%s\"\n", this, this->logName.c_str());
+	if (!store || store->isClosing.load(std::memory_order_relaxed)) {
+		// Store was destroyed or is being closed — resolve a fresh one.
+		// (The actual bind+increment in addLogEntry will re-check isClosing
+		// under writeMutex for a fully atomic transition.)
+		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed or closing, re-resolving \"%s\"\n", this, this->logName.c_str());
 		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
 		this->store = store; // update weak_ptr to point to new store
 	}
