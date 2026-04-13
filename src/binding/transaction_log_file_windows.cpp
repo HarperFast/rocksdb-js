@@ -446,9 +446,11 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 	return message;
 }
 
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 void TransactionLogFile::updateMemoryMapOverlay() {
 	// No-op: Windows pre-extends the file to maxFileSize before mapping.
 }
+#endif
 
 } // namespace rocksdb_js
 

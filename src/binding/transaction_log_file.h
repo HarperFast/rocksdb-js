@@ -37,6 +37,7 @@
 #endif
 #include <sys/stat.h>
 
+#define TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY 1
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
@@ -98,7 +99,7 @@ struct TransactionLogFile final {
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
 
-#ifdef PLATFORM_POSIX
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
 	 * The file size at which the last MAP_FIXED overlay was applied over the
 	 * anonymous base mapping. Used to avoid redundant mmap calls; only
@@ -183,7 +184,9 @@ struct TransactionLogFile final {
 	 * so that cached JS buffers see the new data without re-acquiring.
 	 * No-op on Windows where the file is pre-extended to maxFileSize.
 	 */
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	void updateMemoryMapOverlay();
+#endif
 
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.

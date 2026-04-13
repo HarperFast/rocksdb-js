@@ -21,7 +21,9 @@ void TransactionLogFile::close() {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
 			this, this->path.string().c_str(), this->memoryMap.use_count());
 		this->memoryMap.reset();
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 		this->lastOverlaySize.store(0, std::memory_order_relaxed);
+#endif
 	}
 
 	if (this->fd >= 0) {
@@ -116,6 +118,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			this->updateMemoryMapOverlay();
@@ -154,9 +157,26 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	// that are memory mapped is perfectly fine on POSIX, and the memory map
 	// can be safely used indefinitely.
 	this->memoryMap = std::make_shared<MemoryMap>(anonMap, fileSize);
+#else
+	if (!this->memoryMap) {
+		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
+		if (map == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
+			return nullptr;
+		}
+		// Note, that we do not need to do any cleanup from this class's
+		// destructor. Removing files that are memory mapped is perfectly fine,
+		// and the memory map can be safely used indefinitely (the file descriptor
+		// doesn't need to be kept open either).
+		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
+	}
+	this->memoryMap->fileSize = fileSize;
+#endif
 	return this->memoryMap;
 }
 
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 void TransactionLogFile::updateMemoryMapOverlay() {
 	if (!this->memoryMap || !this->memoryMap->map || this->fd < 0) return;
 
@@ -174,6 +194,7 @@ void TransactionLogFile::updateMemoryMapOverlay() {
 		this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
 	}
 }
+#endif
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0) {
@@ -189,7 +210,9 @@ bool TransactionLogFile::removeFile() {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
 		this->memoryMap.reset();
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 		this->lastOverlaySize.store(0, std::memory_order_relaxed);
+#endif
 	}
 
 	if (this->fd >= 0) {
