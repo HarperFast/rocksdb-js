@@ -412,16 +412,16 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
 			if (std::filesystem::exists(this->path)) {
-				DEBUG_LOG("%p TransactionLogStore::purge Removing empty log directory: %s\n", this, this->path.string().c_str());
-				std::filesystem::remove(this->path);
-				DEBUG_LOG("%p TransactionLogStore::purge Removed empty log directory: %s\n", this, this->path.string().c_str());
+				DEBUG_LOG("%p TransactionLogStore::purge Removing log store directory: %s\n", this, this->path.string().c_str());
+				std::filesystem::remove_all(this->path);
+				DEBUG_LOG("%p TransactionLogStore::purge Removed log store directory: %s\n", this, this->path.string().c_str());
 			}
 		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log directory %s: %s\n", this, this->path.string().c_str(), e.what());
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to remove log store directory %s: %s\n", this, this->path.string().c_str(), e.what());
 		} catch (...) {
 			auto eptr = std::current_exception();
 			std::string errorMsg = getExceptionMessage(eptr);
-			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log directory %s: %s\n",
+			DEBUG_LOG("%p TransactionLogStore::purge Unknown error removing log store directory %s: %s\n",
 				this, this->path.string().c_str(), errorMsg.c_str());
 		}
 	}
