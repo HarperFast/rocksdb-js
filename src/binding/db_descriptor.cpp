@@ -1768,6 +1768,14 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 		this->transactionLogStores.erase(store->name);
 
 		try {
+			// print the files in the store path
+			::fprintf(stderr, "PURGING STORE \"%s\"\n", store->name.c_str());
+			uint32_t i = 0;
+			for (const auto& entry : std::filesystem::directory_iterator(store->path)) {
+				::fprintf(stderr, "  %s\n", entry.path().string().c_str());
+				i++;
+			}
+			::fprintf(stderr, "  %u files\n", i);
 			std::filesystem::remove_all(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",

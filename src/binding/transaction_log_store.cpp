@@ -362,34 +362,15 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			continue;
 		}
 
-		// Don't purge files that have uncommitted transactions - erasing their
-		// positions from uncommittedTransactionPositions would cause data loss.
-		// For the current sequence, nextLogPosition is the sentinel (not a real
-		// transaction) so we allow purging when it's the only entry.
-		for (const auto& pos : this->uncommittedTransactionPositions) {
-			if (pos.logSequenceNumber == sequenceNumber) {
-				if (sequenceNumber == this->currentSequenceNumber &&
-					pos.positionInLogFile == this->nextLogPosition.positionInLogFile &&
-					pos.logSequenceNumber == this->nextLogPosition.logSequenceNumber) {
-					continue;
-				}
-				shouldPurge = false;
-				break;
-			}
-		}
-		if (!shouldPurge) {
+		// only purge files that are entirely before the last flushed position,
+		// guaranteeing all their transactions have been committed to RocksDB
+		auto lastFlushedPosition = this->getLastFlushedPosition();
+		if (sequenceNumber > lastFlushedPosition.logSequenceNumber ||
+			(sequenceNumber == lastFlushedPosition.logSequenceNumber &&
+				logFile->size > lastFlushedPosition.positionInLogFile)
+		) {
 			continue;
 		}
-
-		// // only purge files that are entirely before the last flushed position,
-		// // guaranteeing all their transactions have been committed to RocksDB
-		// auto lastFlushedPosition = this->getLastFlushedPosition();
-		// if (sequenceNumber > lastFlushedPosition.logSequenceNumber ||
-		// 	(sequenceNumber == lastFlushedPosition.logSequenceNumber &&
-		// 		logFile->size > lastFlushedPosition.positionInLogFile)
-		// ) {
-		// 	continue;
-		// }
 
 		// delete the log file
 		auto removed = logFile->removeFile();
@@ -734,16 +715,16 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 	}
 
 	// open the state file if it isn't open yet
-	if (!flushedStateFile.is_open()) {
+	if (!this->flushedStateFile.is_open()) {
 		auto flushedStateFilePath = this->path / "txn.state";
-		flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+		this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
 	}
 
 	// write the position to the file
-	if (flushedStateFile.is_open()) {
-		flushedStateFile.seekp(0);
-		flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
-		flushedStateFile.flush();
+	if (this->flushedStateFile.is_open()) {
+		this->flushedStateFile.seekp(0);
+		this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
+		this->flushedStateFile.flush();
 		lastWrittenFlushedPosition = latestSequencePosition;
 	}
 }
