@@ -366,8 +366,8 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		// guaranteeing all their transactions have been committed to RocksDB
 		auto lastFlushedPosition = this->getLastFlushedPosition();
 		if (sequenceNumber > lastFlushedPosition.logSequenceNumber ||
-			(sequenceNumber == this->lastCommittedPosition->logSequenceNumber &&
-				lastFlushedPosition.positionInLogFile == this->lastCommittedPosition->positionInLogFile)
+			(sequenceNumber == lastFlushedPosition.logSequenceNumber &&
+				logFile->size > lastFlushedPosition.positionInLogFile)
 		) {
 			continue;
 		}
