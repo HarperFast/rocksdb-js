@@ -65,7 +65,7 @@
     "lefthook": "2.1.5",
     "lmdb": "3.5.3",
     "node-gyp": "12.2.0",
-    "oxfmt": "0.44.0",
+    "oxfmt": "0.45.0",
     "oxlint": "1.59.0",
     "prebuildify": "6.0.1",
     "semver": "7.7.4",
