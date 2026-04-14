@@ -5,6 +5,7 @@ build
 deps
 dist
 node_modules
+.clangd
 .claude
 .DS_Store
 .env

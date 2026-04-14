@@ -182,7 +182,6 @@ void DBDescriptor::close() {
 		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
 		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size());
 		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log store \"%s\"\n", this, name.c_str());
 			transactionLogStore->close();
 		}
 		this->transactionLogStores.clear();
@@ -1753,15 +1752,20 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 			}, destroy, before);
 
 			if (destroy) {
-				storesToRemove.push_back(store);
+				// tryClose() atomically checks for active transactions and marks
+				// the store as closing under writeMutex. If there are active
+				// transactions it returns false and the store is left open.
+				if (store->tryClose()) {
+					storesToRemove.push_back(store);
+				}
 			}
 		}
 	}
 
 	for (auto& store : storesToRemove) {
+		// tryClose() already closed the store; just remove it from the registry
+		// and delete the directory from disk.
 		this->transactionLogStores.erase(store->name);
-
-		store->close();
 
 		try {
 			std::filesystem::remove_all(store->path);

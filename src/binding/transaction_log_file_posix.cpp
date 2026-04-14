@@ -21,6 +21,9 @@ void TransactionLogFile::close() {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
 			this, this->path.string().c_str(), this->memoryMap.use_count());
 		this->memoryMap.reset();
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+		this->lastOverlaySize.store(0, std::memory_order_relaxed);
+#endif
 	}
 
 	if (this->fd >= 0) {
@@ -115,6 +118,46 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+	if (this->memoryMap) {
+		if (this->memoryMap->mapSize >= fileSize) {
+			this->updateMemoryMapOverlay();
+			this->memoryMap->fileSize = fileSize;
+			return this->memoryMap;
+		}
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map too small (mapSize=%u, fileSize=%u), remapping\n",
+			this, this->memoryMap->mapSize, fileSize);
+	}
+
+	// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
+	// pages entirely beyond the file. We first create an anonymous
+	// zero-filled mapping for the full region, then overlay the actual file
+	// content at the start via MAP_FIXED. Pages beyond the file remain
+	// anonymous and safely read as zero.
+	void* anonMap = ::mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	DEBUG_LOG("%p TransactionLogFile::getMemoryMap new anonymous map: %p (size=%u)\n", this, anonMap, fileSize);
+	if (anonMap == MAP_FAILED) {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (anonymous) failed: %s\n", this, ::strerror(errno));
+		return nullptr;
+	}
+
+	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), fileSize);
+	if (actualSize > 0 && this->fd >= 0) {
+		void* fileMap = ::mmap(anonMap, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
+		if (fileMap == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (file overlay) failed: %s\n", this, ::strerror(errno));
+			::munmap(anonMap, fileSize);
+			return nullptr;
+		}
+	}
+	this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
+
+	// The MemoryMap destructor calls munmap on the full region, which
+	// correctly frees both anonymous and file-backed pages. Removing files
+	// that are memory mapped is perfectly fine on POSIX, and the memory map
+	// can be safely used indefinitely.
+	this->memoryMap = std::make_shared<MemoryMap>(anonMap, fileSize);
+#else
 	if (!this->memoryMap) {
 		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
@@ -122,7 +165,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
-		// If successful, return a MemoryMap object for tracking references.
 		// Note, that we do not need to do any cleanup from this class's
 		// destructor. Removing files that are memory mapped is perfectly fine,
 		// and the memory map can be safely used indefinitely (the file descriptor
@@ -130,8 +172,29 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
 	}
 	this->memoryMap->fileSize = fileSize;
+#endif
 	return this->memoryMap;
 }
+
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+void TransactionLogFile::updateMemoryMapOverlay() {
+	if (!this->memoryMap || !this->memoryMap->map || this->fd < 0) return;
+
+	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize);
+	if (actualSize == 0) return;
+
+	uint32_t lastOverlay = this->lastOverlaySize.load(std::memory_order_relaxed);
+	uint32_t overlayPageEnd = lastOverlay > 0 ? ((lastOverlay + 4095u) & ~4095u) : 0;
+	if (actualSize <= overlayPageEnd) return;
+
+	DEBUG_LOG("%p TransactionLogFile::updateMemoryMapOverlay Extending overlay %u -> %u\n",
+		this, lastOverlay, actualSize);
+	void* result = ::mmap(this->memoryMap->map, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
+	if (result != MAP_FAILED) {
+		this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
+	}
+}
+#endif
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
 	if (offset >= 0) {
@@ -147,6 +210,9 @@ bool TransactionLogFile::removeFile() {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
 		this->memoryMap.reset();
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+		this->lastOverlaySize.store(0, std::memory_order_relaxed);
+#endif
 	}
 
 	if (this->fd >= 0) {

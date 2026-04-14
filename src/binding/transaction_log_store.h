@@ -148,6 +148,19 @@ struct TransactionLogStore final {
 	std::atomic<bool> isClosing = false;
 
 	/**
+	 * The number of transactions that have been bound to this store (via UseLog
+	 * or addLogEntry) but have not yet called writeBatch(). Once writeBatch()
+	 * runs the transaction's position is tracked in uncommittedTransactionPositions,
+	 * so the counter is decremented there. If the transaction is closed without
+	 * ever writing, the counter is decremented in TransactionHandle::close().
+	 *
+	 * This is used by purgeTransactionLogs() to avoid destroying a store that
+	 * still has in-flight transactions that haven't written yet, which would
+	 * cause writeBatch() to write to a closed store and create orphaned log files.
+	 */
+	std::atomic<int> pendingTransactionCount = 0;
+
+	/**
 	 * The set of transactions that have been written to log files in this store, but
 	 * have not been committed (to RocksDB) yet. We track these because we don't want
 	 * the transactions in the log to be visible until they are committed and consistent.
@@ -170,10 +183,32 @@ struct TransactionLogStore final {
 	std::mutex dataSetsMutex;
 
 	/**
+	 * A fast mutex that guards only pendingTransactionCount increments/decrements
+	 * and the isClosing flag assignment in tryClose(). It is never held during I/O
+	 * or any long operation, so it cannot cause the main-thread stalls that
+	 * holding writeMutex from UseLog/addLogEntry would cause.
+	 *
+	 * Lock ordering: transactionBindMutex → writeMutex → dataSetsMutex.
+	 */
+	std::mutex transactionBindMutex;
+
+	/**
 	 * A counter for the number of recentlyCommittedSequencePositions updates we have made so that we can use 2^n modulus
 	 * frequencies to assign to recentlyCommittedSequencePositions
 	 */
 	unsigned int nextSequencePositionsCount = 0;
+
+	/**
+	 * Protects flushedStateFile, lastWrittenFlushedPosition, and all I/O on
+	 * "txn.state". This is a separate, lightweight lock so that
+	 * getLastFlushedPosition() — which is called from doPurge() while
+	 * dataSetsMutex is already held — never needs to acquire dataSetsMutex,
+	 * eliminating that deadlock path.
+	 *
+	 * Lock ordering: dataSetsMutex → flushedStateMutex.
+	 * Never acquire dataSetsMutex while already holding flushedStateMutex.
+	 */
+	std::mutex flushedStateMutex;
 
 	/**
 	 * This file stream is used to track how much of the transaction log has been flushed to the database.
@@ -208,9 +243,25 @@ struct TransactionLogStore final {
 
 	/**
 	 * Closes the transaction log store and all associated log files.
-	 * This method waits for all active operations to complete before closing.
+	 * Used when the parent database is being closed — always closes regardless
+	 * of whether there are active transactions.
 	 */
 	void close();
+
+	/**
+	 * Attempts to close the transaction log store atomically. Returns false
+	 * (and does not close) if there are any active transactions — either
+	 * bound-but-not-yet-written (pendingTransactionCount > 0) or
+	 * written-but-not-yet-committed (non-sentinel uncommitted positions).
+	 *
+	 * The check and the "mark as closing" transition are performed together
+	 * under writeMutex, the same lock held by writeBatch() for its entire
+	 * duration. This prevents the check from racing with a concurrent writeBatch
+	 * that is in the process of decrementing pendingTransactionCount.
+	 *
+	 * Used by purgeTransactionLogs() to safely destroy a store.
+	 */
+	bool tryClose();
 
 	/**
 	 * Notifies the transaction log store that a RocksDB commit operation has finished, and the transactions sequence number.
@@ -307,7 +358,7 @@ private:
 	 * Opens a log file for the given sequence number. If the log file does not
 	 * exist, it will be created.
 	 *
-	 * Important! This method must be called with `storeMutex` already locked.
+	 * Important! This method must be called with `writeMutex` already locked.
 	 *
 	 * @param sequenceNumber The sequence number of the log file to open.
 	 * @returns The log file.
@@ -319,6 +370,12 @@ private:
 		const bool all = false,
 		const uint64_t before = 0
 	);
+
+	/**
+	 * Performs the actual close work. Must be called with both writeMutex and
+	 * dataSetsMutex already held, and isClosing already set to true.
+	 */
+	void doClose();
 };
 
 } // namespace rocksdb_js

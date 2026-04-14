@@ -79,8 +79,16 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 			throw std::runtime_error("Log already bound to a transaction");
 		}
 	} else {
-		// bind this transaction to the log store
+		// Bind under transactionBindMutex so the bind+increment is atomic with
+		// respect to tryClose()'s phase-3 check-and-mark-closing sequence.
+		// transactionBindMutex is never held during I/O, so this cannot stall the
+		// event loop the way holding writeMutex here would.
+		std::lock_guard<std::mutex> lock(entry->store->transactionBindMutex);
+		if (entry->store->isClosing.load(std::memory_order_relaxed)) {
+			throw std::runtime_error("Transaction log store is closed");
+		}
 		this->boundLogStore = entry->store;
+		entry->store->pendingTransactionCount++;
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %u to log store \"%s\"\n",
 			this, this->id, entry->store->name.c_str());
 	}
@@ -122,6 +130,22 @@ void TransactionHandle::close() {
 		auto store = this->boundLogStore.lock();
 		if (store) {
 			store->commitAborted(this->committedPosition);
+		}
+	}
+
+	// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
+	// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
+	// by writeBatch(). Decrement it now so the store can be safely destroyed.
+	//
+	// Guard under transactionBindMutex and verify isClosing first: if tryClose() already closed
+	// the store and reset the count to zero we must not decrement again (count would go negative).
+	if (this->committedPosition.logSequenceNumber == 0) {
+		auto store = this->boundLogStore.lock();
+		if (store) {
+			std::lock_guard<std::mutex> bindLock(store->transactionBindMutex);
+			if (!store->isClosing.load(std::memory_order_relaxed)) {
+				store->pendingTransactionCount--;
+			}
 		}
 	}
 

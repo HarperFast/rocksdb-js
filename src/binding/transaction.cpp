@@ -1,5 +1,3 @@
-#include <sstream>
-#include <thread>
 #include "database.h"
 #include "db_descriptor.h"
 #include "db_handle.h"
@@ -228,18 +226,27 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						txnHandle.get(), txnHandle->id);
 					store = txnHandle->boundLogStore.lock();
 					if (store) {
-						state->hasLog = true;
-						// write the batch to the store
-						store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
-						// free the batch after writing to avoid memory leak
-						txnHandle->logEntryBatch.reset();
+						try {
+							// write the batch to the store
+							store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
+							// free the batch after writing to avoid memory leak
+							txnHandle->logEntryBatch.reset();
+							state->hasLog = true;
+						} catch (const std::exception& e) {
+							DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
+							state->status = rocksdb::Status::Aborted(e.what());
+						}
 					} else {
 						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
 						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
 					}
 				}
 
-				state->status = txnHandle->txn->Commit();
+				// ensure we haven't errored above
+				if (state->status.ok()) {
+					state->status = txnHandle->txn->Commit();
+				}
+
 				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
 					if (!store) {
 						store = txnHandle->boundLogStore.lock();
@@ -637,7 +644,17 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	if (!boundStore) {
+		// Bind under transactionBindMutex so the bind+increment is atomic with
+		// respect to tryClose()'s phase-3 check-and-mark-closing sequence.
+		// transactionBindMutex is never held during I/O, so this cannot stall
+		// the event loop the way holding writeMutex here would.
+		std::lock_guard<std::mutex> lock(store->transactionBindMutex);
+		if (store->isClosing.load(std::memory_order_relaxed)) {
+			::napi_throw_error(env, nullptr, "Transaction log store is closed");
+			return nullptr;
+		}
 		(*txnHandle)->boundLogStore = store;
+		store->pendingTransactionCount++;
 		DEBUG_LOG("%p Transaction::UseLog Binding transaction %u to log store \"%s\"\n",
 			(*txnHandle).get(), (*txnHandle)->id, name.c_str());
 	}

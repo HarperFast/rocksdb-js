@@ -206,6 +206,11 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+	if (this->fileHandle == INVALID_HANDLE_VALUE) {
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap file is not open: %s\n", this, this->path.string().c_str());
+		return nullptr;
+	}
+
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
 			// existing memory map will work
@@ -313,6 +318,12 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 bool TransactionLogFile::removeFile() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 
+	if (this->memoryMap) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
+			this, this->path.string().c_str());
+		this->memoryMap.reset();
+	}
+
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Closing file: %s (handle=%p)\n",
 			this, this->path.string().c_str(), this->fileHandle);
@@ -320,10 +331,16 @@ bool TransactionLogFile::removeFile() {
 		this->fileHandle = INVALID_HANDLE_VALUE;
 	}
 
+	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
 	auto removed = std::filesystem::remove(this->path);
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
 			this, this->path.string().c_str());
+		return false;
+	}
+
+	if (std::filesystem::exists(this->path)) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile File still exists: %s\n", this, this->path.string().c_str());
 		return false;
 	}
 
@@ -428,6 +445,12 @@ std::string getWindowsErrorMessage(DWORD errorCode) {
 
 	return message;
 }
+
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+void TransactionLogFile::updateMemoryMapOverlay() {
+	// No-op: Windows pre-extends the file to maxFileSize before mapping.
+}
+#endif
 
 } // namespace rocksdb_js
 
