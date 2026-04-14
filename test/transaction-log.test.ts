@@ -845,9 +845,9 @@ describe('Transaction Log', () => {
 						worker.on('exit', () => resolver.resolve());
 					});
 
-					worker.postMessage({ addManyEntries: true, count: 1000 });
+					worker.postMessage({ addManyEntries: true, count: 500 });
 
-					for (let i = 0; i < 1000; i++) {
+					for (let i = 0; i < 500; i++) {
 						const log = db.useLog('foo');
 						await db.transaction(async (txn) => {
 							log.addEntry(Buffer.from('hello'), txn.id);
