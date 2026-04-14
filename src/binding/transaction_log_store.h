@@ -199,6 +199,18 @@ struct TransactionLogStore final {
 	unsigned int nextSequencePositionsCount = 0;
 
 	/**
+	 * Protects flushedStateFile, lastWrittenFlushedPosition, and all I/O on
+	 * "txn.state". This is a separate, lightweight lock so that
+	 * getLastFlushedPosition() — which is called from doPurge() while
+	 * dataSetsMutex is already held — never needs to acquire dataSetsMutex,
+	 * eliminating that deadlock path.
+	 *
+	 * Lock ordering: dataSetsMutex → flushedStateMutex.
+	 * Never acquire dataSetsMutex while already holding flushedStateMutex.
+	 */
+	std::mutex flushedStateMutex;
+
+	/**
 	 * This file stream is used to track how much of the transaction log has been flushed to the database.
 	 */
 	std::ofstream flushedStateFile;
@@ -322,15 +334,6 @@ struct TransactionLogStore final {
 	 * Writes a batch of transaction log entries to the store.
 	 */
 	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
-
-	/**
-	 * Returns true if there are any transactions currently active against this
-	 * store — either bound-but-not-yet-written (pendingTransactionCount > 0) or
-	 * written-but-not-yet-committed (non-sentinel entries in
-	 * uncommittedTransactionPositions). Used by purgeTransactionLogs() to
-	 * decide whether it is safe to close and delete the store.
-	 */
-	bool hasActiveTransactions();
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

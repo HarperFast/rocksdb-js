@@ -150,19 +150,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 
 				while (position < size) {
-					// advance to the next entry, reading the timestamp and the data
-					do {
-						try {
-							timestamp = dataView.getFloat64(position);
-						} catch (error) {
-							(error as Error).message += ` at position ${position} of log ${
-								logBuffer!.logId
-							} (size=${size}, log buffer length=${logBuffer!.length})`;
-							throw error;
-						}
-						// skip past any leading zeros (which leads to a tiny float that is < 1e-303)
-					} while (timestamp < 1 && ++position < size);
-
+					try {
+						timestamp = dataView.getFloat64(position);
+					} catch (error) {
+						(error as Error).message += ` at position ${position} of log ${
+							logBuffer!.logId
+						} (size=${size}, log buffer length=${logBuffer!.length})`;
+						throw error;
+					}
 					if (!timestamp) {
 						// we have gone beyond the last transaction and reached the end
 						return { done: true, value: undefined };

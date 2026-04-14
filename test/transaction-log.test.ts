@@ -1199,6 +1199,8 @@ describe('Transaction Log', () => {
 				header.writeDoubleBE(0, 5);
 				await writeFile(logFile, header);
 
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
 				db.open();
 				expect(db.listLogs()).toEqual(['foo']);
 				expect(existsSync(logFile)).toBe(true);
@@ -1217,6 +1219,8 @@ describe('Transaction Log', () => {
 				header.writeUInt8(1, 4);
 				header.writeDoubleBE(0, 5);
 				await writeFile(fooLogFile, header);
+
+				await writeFile(join(fooLogDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
 
 				const barLogDirectory = join(dbPath, 'transaction_logs', 'bar');
 				const barLogFile = join(barLogDirectory, 'bar.1.txnlog');
@@ -1276,13 +1280,15 @@ describe('Transaction Log', () => {
 				const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
 				await utimes(logFile, twoHoursAgo, twoHoursAgo);
 
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
 				db.open();
 				expect(db.listLogs()).toEqual(['foo']);
 				expect(existsSync(logFile)).toBe(true);
 				expect(db.purgeLogs({ before: threeHoursAgo.getTime() })).toEqual([]);
 				expect(existsSync(logFile)).toBe(true);
 				expect(db.purgeLogs({ before: oneHourAgo.getTime() })).toEqual([logFile]);
-				expect(existsSync(logDirectory)).toBe(false);
+				expect(existsSync(logFile)).toBe(false);
 			}));
 
 		it('should return valid lastCommittedPosition after purging earlier log files and reopening', () =>

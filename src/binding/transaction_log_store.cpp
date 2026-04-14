@@ -64,9 +64,15 @@ void TransactionLogStore::doClose() {
 		it = this->sequenceFiles.erase(it);
 	}
 
-	// Close the state file if it's open
-	if (this->flushedStateFile.is_open()) {
-		this->flushedStateFile.close();
+	// Close the state file if it's open. flushedStateMutex must be held for
+	// all flushedStateFile access; release it before calling doPurge() since
+	// doPurge() → getLastFlushedPosition() will acquire flushedStateMutex
+	// itself (and we must not hold it when doPurge re-acquires it).
+	{
+		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+		if (this->flushedStateFile.is_open()) {
+			this->flushedStateFile.close();
+		}
 	}
 
 	for (auto& logFile : logFilesToClose) {
@@ -291,8 +297,8 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 }
 
 LogPosition TransactionLogStore::getLastFlushedPosition() {
+	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 	auto stateFilePath = this->path / "txn.state";
-	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	std::ifstream inputFile(stateFilePath, std::ios::binary | std::ios::in);
 	LogPosition position = { 0, 0 };
 
@@ -356,22 +362,13 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			continue;
 		}
 
-		// Don't purge files that have uncommitted transactions - erasing their
-		// positions from uncommittedTransactionPositions would cause data loss.
-		// For the current sequence, nextLogPosition is the sentinel (not a real
-		// transaction) so we allow purging when it's the only entry.
-		for (const auto& pos : this->uncommittedTransactionPositions) {
-			if (pos.logSequenceNumber == sequenceNumber) {
-				if (sequenceNumber == this->currentSequenceNumber &&
-					pos.positionInLogFile == this->nextLogPosition.positionInLogFile &&
-					pos.logSequenceNumber == this->nextLogPosition.logSequenceNumber) {
-					continue;
-				}
-				shouldPurge = false;
-				break;
-			}
-		}
-		if (!shouldPurge) {
+		// only purge files that are entirely before the last flushed position,
+		// guaranteeing all their transactions have been committed to RocksDB
+		auto lastFlushedPosition = this->getLastFlushedPosition();
+		if (sequenceNumber > lastFlushedPosition.logSequenceNumber ||
+			(sequenceNumber == this->lastCommittedPosition->logSequenceNumber &&
+				lastFlushedPosition.positionInLogFile == this->lastCommittedPosition->positionInLogFile)
+		) {
 			continue;
 		}
 
@@ -603,10 +600,9 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		this->uncommittedTransactionPositions.insert(this->nextLogPosition);
 	}
 
-	// Now that nextLogPosition has been advanced past logPosition, the sentinel-skip
-	// logic in hasActiveTransactions() can no longer confuse logPosition with the
-	// sentinel. It is safe to drop the pending count so that purgeTransactionLogs()
-	// can see this transaction as tracked by uncommittedTransactionPositions instead.
+	// Now that nextLogPosition has been advanced past logPosition, it is safe to
+	// drop the pending count so that purgeTransactionLogs() can see this
+	// transaction as tracked by uncommittedTransactionPositions instead.
 	this->pendingTransactionCount--;
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
@@ -649,21 +645,6 @@ void TransactionLogStore::commitAborted(const LogPosition position) {
 	*this->lastCommittedPosition = fullyCommittedPosition;
 }
 
-bool TransactionLogStore::hasActiveTransactions() {
-	if (this->pendingTransactionCount.load(std::memory_order_relaxed) > 0) {
-		return true;
-	}
-	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	for (const auto& pos : this->uncommittedTransactionPositions) {
-		// The sentinel nextLogPosition is always present but is not a real transaction
-		if (pos.positionInLogFile == this->nextLogPosition.positionInLogFile &&
-			pos.logSequenceNumber == this->nextLogPosition.logSequenceNumber) {
-			continue;
-		}
-		return true;
-	}
-	return false;
-}
 
 bool operator>(const LogPosition a, const LogPosition b) {
 	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
@@ -708,18 +689,25 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
  * after restart or crash
  */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
-	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-
 	LogPosition latestSequencePosition = { 0, 0 };
-	// the latest sequence number that has been flushed according to this flush update
-	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
-		SequencePosition sequencePosition = this->recentlyCommittedSequencePositions[i];
-		if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestSequencePosition) {
-			latestSequencePosition = sequencePosition.position;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		// the latest sequence number that has been flushed according to this flush update
+		for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
+			SequencePosition sequencePosition = this->recentlyCommittedSequencePositions[i];
+			if (sequencePosition.rocksSequenceNumber <= rocksSequenceNumber && sequencePosition.position > latestSequencePosition) {
+				latestSequencePosition = sequencePosition.position;
+			}
 		}
 	}
+
 	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n",
 		this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
+
+	// All file I/O and lastWrittenFlushedPosition updates are protected by
+	// flushedStateMutex (not dataSetsMutex) so that getLastFlushedPosition()
+	// can safely read txn.state from doPurge() without risk of deadlock.
+	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 
 	// Only write if the position has changed
 	if (latestSequencePosition.fullPosition == lastWrittenFlushedPosition.fullPosition) {
