@@ -1025,6 +1025,15 @@ Returns an object containing all of the information in the log file.
   - `length: number` The size of the entry data.
   - `timestamp: number` The entry timestamp.
 
+### `currentThreadId(): number`
+
+Returns the current thread ID.
+
+```typescript
+import { currentThreadId } from '@harperfast/rocksdb-js';
+console.log(currentThreadId());
+```
+
 ### `registryStatus(): RegistryStatus`
 
 Returns an array containing that status of all active RocksDB instances.

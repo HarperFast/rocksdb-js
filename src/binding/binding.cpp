@@ -36,6 +36,16 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns the current thread id.
+ */
+napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
+	napi_value result;
+	auto threadId = getThreadId();
+	NAPI_STATUS_THROWS(::napi_create_int64(env, threadId, &result));
+	return result;
+}
+
+/**
  * The number of active `rocksdb-js` modules.
  *
  * There can be multiple instances of this module in the same Node.js process
@@ -93,6 +103,11 @@ NAPI_MODULE_INIT() {
 	napi_value shutdownFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdown", NAPI_AUTO_LENGTH, Shutdown, nullptr, &shutdownFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdown", shutdownFn));
+
+	// currentThreadId function
+	napi_value currentThreadIdFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
 
 	// constants
 	napi_value constants;
