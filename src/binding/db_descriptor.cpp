@@ -1811,16 +1811,26 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 	}
 
 	// Phase 3: Remove closed stores from the registry while holding the lock.
+	// Track which stores were actually removed so we only delete their directories.
+	std::vector<std::shared_ptr<TransactionLogStore>> storesActuallyRemoved;
 	if (!storesToRemove.empty()) {
 		std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 		for (auto& store : storesToRemove) {
-			// tryClose() already closed the store; just remove it from the registry.
-			this->transactionLogStores.erase(store->name);
+			// Only erase if the store in the map is the same as the one we closed.
+			// A new store with the same name may have been created between Phase 1
+			// and Phase 3 by a concurrent resolveTransactionLogStore() call.
+			auto it = this->transactionLogStores.find(store->name);
+			if (it != this->transactionLogStores.end() && it->second.get() == store.get()) {
+				this->transactionLogStores.erase(it);
+				storesActuallyRemoved.push_back(store);
+			}
 		}
 	}
 
 	// Phase 4: Delete directories outside the lock (I/O operations).
-	for (auto& store : storesToRemove) {
+	// Only delete directories for stores that were actually removed from the map.
+	// If a new store was created with the same name, we must not delete its directory.
+	for (auto& store : storesActuallyRemoved) {
 		try {
 			std::filesystem::remove_all(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
