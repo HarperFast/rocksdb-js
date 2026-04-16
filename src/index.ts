@@ -6,6 +6,7 @@ export { DBI, type IteratorOptions } from './dbi.js';
 export type { Key } from './encoding.js';
 export {
 	constants,
+	currentThreadId,
 	registryStatus,
 	stats,
 	type StatsHistogramData,

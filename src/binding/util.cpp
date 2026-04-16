@@ -11,6 +11,13 @@
 #include "util.h"
 #include "rocksdb/utilities/options_util.h"
 #include "db_settings.h"
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 namespace rocksdb_js {
 
@@ -269,6 +276,20 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 		case napi_cannot_run_js: errorStr = "Cannot run JavaScript"; break;
 	}
 	return std::string(errorStr);
+}
+
+size_t getThreadId() {
+#ifdef _WIN32
+    return static_cast<size_t>(GetCurrentThreadId());
+#elif defined(__linux__)
+    return static_cast<size_t>(gettid());
+#elif defined(__APPLE__)
+    uint64_t tid;
+    pthread_threadid_np(nullptr, &tid);  // requires <pthread.h>
+    return static_cast<size_t>(tid);
+#else
+    return std::hash<std::thread::id>{}(std::this_thread::get_id());
+#endif
 }
 
 /**

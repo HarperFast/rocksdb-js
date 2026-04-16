@@ -278,6 +278,7 @@ export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
+export const currentThreadId: () => number = binding.currentThreadId;
 export const stats: {
 	histograms: string[];
 	tickers: string[];

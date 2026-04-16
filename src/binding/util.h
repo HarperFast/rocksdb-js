@@ -80,6 +80,20 @@ bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char*
 
 std::string getNapiExtendedError(napi_env env, napi_status& status, const char* errorMsg = nullptr);
 
+/**
+ * Returns the current thread ID.
+ *
+ * @returns The thread ID.
+ *
+ * @example
+ * ```typescript
+ * import { currentThreadId } from '@harperfast/rocksdb-js';
+ * const threadId = currentThreadId();
+ * console.log(threadId);
+ * ```
+ */
+size_t getThreadId();
+
 [[maybe_unused]] static napi_status getString(napi_env env, napi_value from, std::string& to) {
 	napi_valuetype type;
 	NAPI_STATUS_RETURN(::napi_typeof(env, from, &type));
