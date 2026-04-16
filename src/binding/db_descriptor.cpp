@@ -1776,7 +1776,6 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 
 	size_t i = 0;
 	std::vector<std::shared_ptr<TransactionLogStore>> storesToPurge;
-	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
 
 	// Phase 1: Collect stores to process while holding the lock.
 	{
@@ -1804,18 +1803,20 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 			// tryClose() atomically checks for active transactions and marks
 			// the store as closing under writeMutex. If there are active
 			// transactions it returns false and the store is left open.
-			if (store->tryClose()) {
-				storesToRemove.push_back(store);
-			}
+			store->tryClose();
 		}
 	}
 
 	// Phase 3: Remove closed stores from the registry while holding the lock.
 	// Track which stores were actually removed so we only delete their directories.
 	std::vector<std::shared_ptr<TransactionLogStore>> storesActuallyRemoved;
-	if (!storesToRemove.empty()) {
+	if (destroy) {
 		std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-		for (auto& store : storesToRemove) {
+		for (auto& store : storesToPurge) {
+			// Skip stores that weren't successfully closed by tryClose().
+			if (!store->isClosing.load(std::memory_order_relaxed)) {
+				continue;
+			}
 			// Only erase if the store in the map is the same as the one we closed.
 			// A new store with the same name may have been created between Phase 1
 			// and Phase 3 by a concurrent resolveTransactionLogStore() call.
