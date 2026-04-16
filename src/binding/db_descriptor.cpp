@@ -48,8 +48,16 @@ public:
 			DEBUG_LOG("%p TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n",
 				desc.get(), (unsigned long long)flushedSequence);
 
-			std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
-			for (auto& [name, store] : desc->transactionLogStores) {
+			// Collect stores while holding the lock, then call methods without
+			// holding transactionLogMutex to avoid deadlock with purgeTransactionLogs.
+			std::vector<std::shared_ptr<TransactionLogStore>> stores;
+			{
+				std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
+				for (auto& [name, store] : desc->transactionLogStores) {
+					stores.push_back(store);
+				}
+			}
+			for (auto& store : stores) {
 				store->databaseFlushBegin(flushedSequence);
 			}
 		} else {
@@ -90,8 +98,17 @@ public:
 				// The last CF flush has completed for the job, now signal that the database flush is done
 				DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted job completed name=%s job id=%d flushedSequence=%llu\n",
 					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
-				std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
-				for (auto& [name, store] : desc->transactionLogStores) {
+
+				// Collect stores while holding the lock, then call methods without
+				// holding transactionLogMutex to avoid deadlock with purgeTransactionLogs.
+				std::vector<std::shared_ptr<TransactionLogStore>> stores;
+				{
+					std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
+					for (auto& [name, store] : desc->transactionLogStores) {
+						stores.push_back(store);
+					}
+				}
+				for (auto& store : stores) {
 					store->databaseFlushed(it->second.flushedSequence);
 				}
 				this->jobTrackers.erase(it); // cleanup
@@ -178,13 +195,24 @@ void DBDescriptor::close() {
 		}
 	}
 
+	// Close transaction log stores WITHOUT holding transactionLogMutex while calling
+	// store->close(), as that acquires writeMutex. If a worker thread is in writeBatch()
+	// holding writeMutex and triggers a RocksDB flush, the flush callback will try to
+	// acquire transactionLogMutex, causing a deadlock.
 	if (!this->transactionLogStores.empty()) {
-		std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
-		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing transaction log stores (size=%zu)\n", this, this->transactionLogStores.size());
-		for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-			transactionLogStore->close();
+		std::vector<std::shared_ptr<TransactionLogStore>> storesToClose;
+		{
+			std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
+			DEBUG_LOG("%p DBDescriptor::close Collecting transaction log stores to close (size=%zu)\n", this, this->transactionLogStores.size());
+			for (auto& [name, transactionLogStore] : this->transactionLogStores) {
+				storesToClose.push_back(transactionLogStore);
+			}
+			this->transactionLogStores.clear();
 		}
-		this->transactionLogStores.clear();
+		// Close stores without holding transactionLogMutex
+		for (auto& store : storesToClose) {
+			store->close();
+		}
 	}
 
 	this->transactions.clear();
@@ -1723,6 +1751,15 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
 
 /**
  * Purges transaction logs.
+ *
+ * IMPORTANT: This method must NOT hold transactionLogMutex while calling
+ * store->purge() or store->tryClose(), as those operations acquire writeMutex.
+ * RocksDB flush event listeners (OnFlushBegin/OnFlushCompleted) acquire
+ * transactionLogMutex, and if a thread holding writeMutex triggers a flush,
+ * we get a deadlock:
+ *   - purgeTransactionLogs: holds transactionLogMutex, waiting for writeMutex
+ *   - worker thread: holds writeMutex, RocksDB flush waiting for callback
+ *   - flush callback: waiting for transactionLogMutex
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
 	uint64_t before = 0;
@@ -1738,35 +1775,52 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
 	NAPI_STATUS_THROWS(::napi_create_array(env, &removed));
 
 	size_t i = 0;
+	std::vector<std::shared_ptr<TransactionLogStore>> storesToPurge;
 	std::vector<std::shared_ptr<TransactionLogStore>> storesToRemove;
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
 
-	for (auto& entry : this->transactionLogStores) {
-		auto store = entry.second;
-		if (name.empty() || store->name == name) {
-			store->purge([&](const std::filesystem::path& filePath) -> void {
-				napi_value logFileValue;
-				auto path = filePath.string();
-				NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
-				NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-			}, destroy, before);
-
-			if (destroy) {
-				// tryClose() atomically checks for active transactions and marks
-				// the store as closing under writeMutex. If there are active
-				// transactions it returns false and the store is left open.
-				if (store->tryClose()) {
-					storesToRemove.push_back(store);
-				}
+	// Phase 1: Collect stores to process while holding the lock.
+	{
+		std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+		for (auto& entry : this->transactionLogStores) {
+			auto store = entry.second;
+			if (name.empty() || store->name == name) {
+				storesToPurge.push_back(store);
 			}
 		}
 	}
 
-	for (auto& store : storesToRemove) {
-		// tryClose() already closed the store; just remove it from the registry
-		// and delete the directory from disk.
-		this->transactionLogStores.erase(store->name);
+	// Phase 2: Process stores WITHOUT holding transactionLogMutex.
+	// This prevents deadlock with flush event listeners that also need
+	// transactionLogMutex while a thread may be holding writeMutex.
+	for (auto& store : storesToPurge) {
+		store->purge([&](const std::filesystem::path& filePath) -> void {
+			napi_value logFileValue;
+			auto path = filePath.string();
+			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
+			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
+		}, destroy, before);
 
+		if (destroy) {
+			// tryClose() atomically checks for active transactions and marks
+			// the store as closing under writeMutex. If there are active
+			// transactions it returns false and the store is left open.
+			if (store->tryClose()) {
+				storesToRemove.push_back(store);
+			}
+		}
+	}
+
+	// Phase 3: Remove closed stores from the registry while holding the lock.
+	if (!storesToRemove.empty()) {
+		std::lock_guard<std::mutex> lock(this->transactionLogMutex);
+		for (auto& store : storesToRemove) {
+			// tryClose() already closed the store; just remove it from the registry.
+			this->transactionLogStores.erase(store->name);
+		}
+	}
+
+	// Phase 4: Delete directories outside the lock (I/O operations).
+	for (auto& store : storesToRemove) {
 		try {
 			std::filesystem::remove_all(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
@@ -1792,8 +1846,15 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 
 	auto it = this->transactionLogStores.find(name);
 	if (it != this->transactionLogStores.end()) {
-		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str());
-		return it->second;
+		// Check if the store is closing - if so, we need to create a new one.
+		// This can happen when purgeTransactionLogs has called tryClose() (which sets
+		// isClosing=true) but hasn't yet removed the store from the map. We can't
+		// return a closing store because operations on it will fail.
+		if (!it->second->isClosing.load(std::memory_order_relaxed)) {
+			DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str());
+			return it->second;
+		}
+		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found closing transaction log store \"%s\", creating new one\n", this, name.c_str());
 	}
 
 	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
@@ -1811,7 +1872,8 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 		this->transactionLogRetentionMs,
 		this->transactionLogMaxAgeThreshold
 	);
-	this->transactionLogStores.emplace(txnLogStore->name, txnLogStore);
+	// Use insert_or_assign to replace any closing store with the same name
+	this->transactionLogStores.insert_or_assign(txnLogStore->name, txnLogStore);
 	return txnLogStore;
 }
 
