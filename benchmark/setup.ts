@@ -129,7 +129,11 @@ export function benchmark(type: string, options: any): void {
 	);
 }
 
-export function generateTestData(count: number, keySize: number = 20, valueSize: number = 100) {
+export function generateTestData(
+	count: number,
+	keySize: number = 20,
+	valueSize: number = 100
+): Array<{ key: string; value: string }> {
 	const data: Array<{ key: string; value: string }> = [];
 
 	for (let i = 0; i < count; i++) {
@@ -244,7 +248,7 @@ let workerCurrentSuites: WorkerSuite[] = [];
  * Runs on the main thread and the worker thread. It discovers nested
  * `describe()` calls and groups them into suites.
  */
-function describeShim(name: string, fn: () => void) {
+function describeShim(name: string, fn: () => void): void {
 	const suites =
 		workerCurrentSuites.length > 0
 			? workerCurrentSuites[workerCurrentSuites.length - 1].suites
@@ -261,6 +265,13 @@ function describeShim(name: string, fn: () => void) {
 	workerCurrentSuites.pop();
 }
 
+type WorkerDescribe = {
+	(name: string, fn: () => void): void;
+	only(name: string, fn: () => void): void;
+	skip(name: string, fn: () => void): void;
+	todo(name: string, fn: () => void): void;
+};
+
 /**
  * This is the main `workerDescribe()` function that is exported. It has two
  * code paths:
@@ -268,16 +279,16 @@ function describeShim(name: string, fn: () => void) {
  * 1. The main thread, which does discovery and calls `vitest.describe()`
  * 2. The worker thread, which does discovery only
  */
-export const workerDescribe = await (async () => {
+export const workerDescribe: WorkerDescribe = await (async () => {
 	if (workerData?.benchmarkWorkerId) {
 		return Object.assign(describeShim, {
-			only(name: string, fn: () => void) {
+			only(name: string, fn: () => void): void {
 				describeShim(name, fn);
 			},
-			skip() {
+			skip(_name: string, _fn: () => void): void {
 				throw new Error('skip not supported in worker');
 			},
-			todo() {
+			todo(_name: string, _fn: () => void): void {
 				throw new Error('todo not supported in worker');
 			},
 		});
@@ -286,7 +297,7 @@ export const workerDescribe = await (async () => {
 	// main thread
 	const { describe } = await import('vitest');
 	return Object.assign(
-		(name: string, fn: () => void) => {
+		(name: string, fn: () => void): void => {
 			describeShim(name, () => {
 				// snapshot the worker current suites in the closure because vitest
 				// fires callbacks once all describes()'s have been discovered
@@ -300,7 +311,7 @@ export const workerDescribe = await (async () => {
 			});
 		},
 		{
-			only(name: string, fn: () => void) {
+			only(name: string, fn: () => void): void {
 				describeShim(name, () => {
 					const state = [...workerCurrentSuites];
 					describe.only(name, () => {
@@ -492,7 +503,7 @@ export function workerBenchmark(type: string, options: any): void {
  * Runs on the worker thread, opens the database and wires up the message
  * listeners.
  */
-export async function workerInit() {
+export async function workerInit(): Promise<void> {
 	if (!parentPort) {
 		throw new Error('Failed to initialize worker: parentPort is not available');
 	}
@@ -545,7 +556,7 @@ export async function workerInit() {
 /**
  * Runs on the worker thread and attempts to find the requested benchmark.
  */
-function workerFindBenchmark() {
+function workerFindBenchmark(): WorkerBenchmark {
 	let suite: WorkerSuite | undefined;
 	let suites: Record<string, WorkerSuite> | undefined = workerSuites;
 
@@ -567,7 +578,7 @@ function workerFindBenchmark() {
 /**
  * Runs on the main thread and launches a worker thread.
  */
-export function workerLaunch(workerData: Record<string, any> = {}) {
+export function workerLaunch(workerData: Record<string, any> = {}): Worker {
 	// Node.js 18 and older doesn't properly eval ESM code
 	const majorVersion = parseInt(process.versions.node.split('.')[0]);
 	const script =
@@ -589,7 +600,11 @@ export function workerLaunch(workerData: Record<string, any> = {}) {
 	return new Worker(script, { eval: true, workerData });
 }
 
-function withResolvers<T>() {
+function withResolvers<T>(): {
+	resolve: (value: T) => void;
+	reject: (reason?: any) => void;
+	promise: Promise<T>;
+} {
 	let resolve, reject;
 	const promise = new Promise<T>((res, rej) => {
 		resolve = res;
