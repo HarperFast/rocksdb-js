@@ -74,7 +74,7 @@ describe('User Shared Buffer', () => {
 				});
 			}));
 
-		(globalThis.gc ? it : it.skip)(
+		it.skipIf(!globalThis.gc)(
 			'should cleanup callbacks on GC',
 			() =>
 				dbRunner(async ({ db }) => {

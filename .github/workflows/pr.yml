@@ -37,6 +37,11 @@ jobs:
         with:
           gh-token: ${{ secrets.GH_TOKEN }}
 
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build
+
       - name: Check
         run: pnpm check
 

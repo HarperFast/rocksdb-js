@@ -25,5 +25,5 @@
     "typeRoots": ["./node_modules/@types"],
     "types": ["node"]
   },
-  "include": ["./tsdown.config.ts", "./src", "./scripts", "./test"]
+  "include": ["./benchmark", "./scripts", "./src", "./stress-test", "./test", "./tsdown.config.ts"]
 }

@@ -98,7 +98,7 @@ describe('Transaction Log', () => {
 				db.removeListener('new-transaction-log', listener);
 			}));
 
-		(globalThis.gc ? it : it.skip)('should cleanup transaction log instance on GC', () =>
+		it.skipIf(!globalThis.gc)('should cleanup transaction log instance on GC', () =>
 			dbRunner(async ({ db }) => {
 				let weakRef: WeakRef<TransactionLog> | undefined;
 
