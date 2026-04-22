@@ -741,8 +741,6 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
 	} else {
-		DEBUG_LOG("%p Database::GetSync key:", dbHandle->get());
-		DEBUG_LOG_KEY_LN(keySlice);
 		status = (*dbHandle)->descriptor->db->Get(
 			readOptions,
 			(*dbHandle)->getColumnFamilyHandle(),
@@ -750,8 +748,6 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 			&value
 		);
 	}
-
-	DEBUG_LOG("%p Database::GetSync status: %s\n", dbHandle->get(), status.ToString().c_str());
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED();
