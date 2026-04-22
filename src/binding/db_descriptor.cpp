@@ -180,8 +180,6 @@ void DBDescriptor::close() {
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
-	DEBUG_LOG("%p DBDescriptor::close Closing closables\n");
-
 	// Close all handles that still exist and reset their descriptor references
 	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
 		if (auto closable = it->second.lock()) {
@@ -197,8 +195,6 @@ void DBDescriptor::close() {
 			it = this->closables.erase(it);
 		}
 	}
-
-	DEBUG_LOG("%p DBDescriptor::close Closing transaction log stores\n");
 
 	// Close transaction log stores WITHOUT holding transactionLogMutex while calling
 	// store->close(), as that acquires writeMutex. If a worker thread is in writeBatch()
@@ -220,20 +216,15 @@ void DBDescriptor::close() {
 		}
 	}
 
-	DEBUG_LOG("%p DBDescriptor::close Clearing transactions\n");
 	this->transactions.clear();
-	DEBUG_LOG("%p DBDescriptor::close Clearing columns\n");
 	this->columns.clear();
 
 	{
 		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
-		DEBUG_LOG("%p DBDescriptor::close Clearing listener callbacks\n");
 		this->listenerCallbacks.clear();
 	}
 
-	DEBUG_LOG("%p DBDescriptor::close Resetting database\n");
 	this->db.reset();
-	DEBUG_LOG("%p DBDescriptor::close Database reset\n");
 }
 
 /**
