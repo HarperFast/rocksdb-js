@@ -7,7 +7,6 @@
 #include <unordered_map>
 #include "db_descriptor.h"
 #include "db_handle.h"
-#include "db_options.h"
 #include "transaction.h"
 
 namespace rocksdb_js {
