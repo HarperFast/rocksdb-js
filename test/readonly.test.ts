@@ -1,5 +1,7 @@
 import { TransactionLog } from '../src/load-binding.js';
 import { dbRunner } from './lib/util.js';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Readonly Operations', () => {
@@ -86,4 +88,34 @@ describe('Readonly Operations', () => {
 				);
 			}
 		));
+
+	it('should open a db in readonly mode in separate process', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			db.putSync('foo', 'bar');
+
+			await new Promise<void>((resolve, reject) => {
+				const args =
+					process.versions.bun || process.versions.deno
+						? [join(__dirname, 'fixtures', 'fork-open-readonly.mts'), dbPath]
+						: [
+								'node_modules/tsx/dist/cli.mjs',
+								join(__dirname, 'fixtures', 'fork-open-readonly.mts'),
+								dbPath,
+							];
+
+				const child = spawn(process.execPath, args, {
+					env: { ...process.env, DO_FORK: '1' },
+					stdio: 'inherit',
+				});
+				child.on('close', (code) => {
+					try {
+						expect(code).toBe(0);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+				child.on('error', reject);
+			});
+		}));
 });
