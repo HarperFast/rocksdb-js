@@ -67,6 +67,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 napi_value Database::Clear(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -144,6 +145,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 napi_value Database::ClearSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 	rocksdb::Status status = (*dbHandle)->clear();
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Failed to clear database");
@@ -191,6 +193,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE();
+	THROW_IF_READONLY();
 
 	if (*dbHandle) {
 		try {
@@ -221,6 +224,7 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return Database::Clear(env, info);
@@ -262,6 +266,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return Database::ClearSync(env, info);
@@ -285,6 +290,7 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(), "Flush failed");
 
@@ -303,6 +309,7 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -734,6 +741,8 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
 	} else {
+		DEBUG_LOG("%p Database::GetSync key:", dbHandle->get());
+		DEBUG_LOG_KEY_LN(keySlice);
 		status = (*dbHandle)->descriptor->db->Get(
 			readOptions,
 			(*dbHandle)->getColumnFamilyHandle(),
@@ -741,6 +750,8 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 			&value
 		);
 	}
+
+	DEBUG_LOG("%p Database::GetSync status: %s\n", dbHandle->get(), status.ToString().c_str());
 
 	if (status.IsNotFound()) {
 		NAPI_RETURN_UNDEFINED();
@@ -939,6 +950,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", dbHandleOptions.name));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", dbHandleOptions.transactionLogMaxAgeThreshold));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", dbHandleOptions.transactionLogMaxSize));
@@ -981,6 +993,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	return (*dbHandle)->descriptor->purgeTransactionLogs(env, argv[0]);
 }
@@ -993,6 +1006,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	rocksdb::Status status;
 
@@ -1051,6 +1065,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	rocksdb::Status status;
 
@@ -1166,6 +1181,7 @@ napi_value Database::UseLog(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	NAPI_GET_STRING(argv[0], name, "Name is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	THROW_IF_READONLY();
 
 	return (*dbHandle)->useLog(env, jsThis, name);
 }

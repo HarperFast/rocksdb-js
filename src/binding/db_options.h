@@ -24,6 +24,7 @@ struct DBOptions final {
 	DBMode mode = DBMode::Optimistic;
 	std::string name;
 	bool noBlockCache = false;
+	bool readOnly = false;
 	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
 	uint8_t statsLevel = rocksdb::StatsLevel::kExceptDetailedTimers;
 	float transactionLogMaxAgeThreshold = 0.75f;

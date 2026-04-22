@@ -54,6 +54,9 @@ Creates a new database instance.
     Defaults to `1`.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
+  - `readOnly: boolean` When `true`, the database is opened in readonly mode. Write operations,
+    transactions, transaction log operations, and destroy operations will throw an error with code
+    `ERR_DATABASE_READONLY`.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
     overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
@@ -440,6 +443,24 @@ db.transactionSync((txn: Transaction) => {
 	txn.putSync('foo', 'baz');
 });
 ```
+
+### Optimistic and Pessimistic Modes
+
+`rocksdb-js` supports two different transaction modes: optimistic and pessimistic. The default mode
+is optimistic.
+
+- Optimistic: Conflicts detected at commit time.
+- Pessimistic: Conflicts throw immediately on detection.
+
+When a database is opened in optimistic mode, transactions are not locked and can be retried if
+they fail with a conflict. When a database is opened in pessimistic mode, transactions are aborted
+and cannot be retried if they fail with a conflict.
+
+Optimistic mode is the default mode and is recommended for most use cases. Pessimistic mode is
+recommended for use cases where you need to know immediately if a conflict occurs.
+
+If a database is opened in one mode, it cannot be opened in a different mode. An error will be
+thrown when trying to open it in a different mode without closing the database first.
 
 ### `TransactionCallback<T>`
 

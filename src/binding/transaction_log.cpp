@@ -39,6 +39,8 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
 	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance");
 
+	THROW_IF_READONLY();
+
 	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required");
 
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(

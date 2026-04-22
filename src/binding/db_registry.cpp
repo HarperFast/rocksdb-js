@@ -31,17 +31,17 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		return;
 	}
 
-	std::string path = handle->descriptor->path;
+	DBKey key{handle->descriptor->path, handle->descriptor->readOnly};
 	DBRegistryEntry* entry = nullptr;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		auto entryIterator = instance->databases.find(path);
+		auto entryIterator = instance->databases.find(key);
 		if (entryIterator != instance->databases.end()) {
 			entry = &entryIterator->second;
-			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), path.c_str(), entry->descriptor.use_count());
+			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), key.path.c_str(), entry->descriptor->path.c_str(), entry->descriptor.use_count());
 		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), path.c_str());
+			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), key.path.c_str());
 		}
 	}
 
@@ -50,17 +50,17 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry && entry->descriptor ? entry->descriptor.use_count() : -1);
+	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), key.path.c_str(), entry && entry->descriptor ? entry->descriptor.use_count() : -1);
 
 	// since the registry itself always has a ref, we need to check for ref count 1
 	if (entry && entry->descriptor && entry->descriptor.use_count() <= 1) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), path.c_str());
+		DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), key.path.c_str());
 		entry->descriptor->close();
 
 		// re-acquire the mutex to check and potentially remove the descriptor
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			instance->databases.erase(path);
+			instance->databases.erase(key);
 		}
 
 		// notify only waiters for this specific path
@@ -77,8 +77,8 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 void DBRegistry::DebugLogDescriptorRefs() {
 	std::lock_guard<std::mutex> lock(instance->databasesMutex);
 	DEBUG_LOG("DBRegistry::DebugLogDescriptorRefs %zu descriptor%s in registry:\n", instance->databases.size(), instance->databases.size() == 1 ? "" : "s");
-	for (auto& [path, entry] : instance->databases) {
-		DEBUG_LOG("  %p for \"%s\" (ref count = %ld)\n", entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
+	for (auto& [key, entry] : instance->databases) {
+		DEBUG_LOG("  %p for \"%s\" (ref count = %ld)\n", entry.descriptor.get(), key.path.c_str(), entry.descriptor.use_count());
 	}
 }
 #endif
@@ -101,12 +101,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// Find and remove the descriptor from the registry
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		auto it = instance->databases.find(path);
-		if (it != instance->databases.end()) {
-			descriptor = it->second.descriptor;
-			instance->databases.erase(it);
-			DEBUG_LOG("%p DBRegistry::DestroyDB Found and removed descriptor from registry (ref count = %ld)\n",
-				instance.get(), descriptor ? descriptor.use_count() : 0);
+		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
+			if (it->first.path == path) {
+				descriptor = it->second.descriptor;
+				it = instance->databases.erase(it);
+				DEBUG_LOG("%p DBRegistry::DestroyDB Found and removed descriptor from registry (ref count = %ld)\n",
+					instance.get(), descriptor ? descriptor.use_count() : 0);
+			} else {
+				++it;
+			}
 		}
 	}
 
@@ -183,11 +186,12 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
-	// get or create entry for this path
-	auto entryIterator = instance->databases.find(path);
+	// get or create entry for this path + mode + readOnly combination
+	DBKey key{path, options.readOnly};
+	auto entryIterator = instance->databases.find(key);
 	if (entryIterator == instance->databases.end()) {
 		// create entry with empty descriptor and new condition variable
-		auto [it, inserted] = instance->databases.emplace(path, DBRegistryEntry());
+		auto [it, inserted] = instance->databases.emplace(key, DBRegistryEntry());
 		entryIterator = it;
 	}
 
@@ -278,7 +282,7 @@ void DBRegistry::PurgeAll() {
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 			auto descriptor = it->second.descriptor;
 			if (descriptor) {
-				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.c_str(), descriptor.use_count());
+				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.path.c_str(), descriptor.use_count());
 				descriptor->close();
 			}
 			it = instance->databases.erase(it);
@@ -314,11 +318,11 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
 		size_t i = 0;
-		for (auto& [path, entry] : instance->databases) {
+		for (auto& [key, entry] : instance->databases) {
 			napi_value database;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
 			napi_value pathValue;
-			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, path.c_str(), path.size(), &pathValue));
+			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, key.path.c_str(), key.path.size(), &pathValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
 			napi_value modeValue;
 			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
@@ -372,7 +376,7 @@ void DBRegistry::Shutdown() {
 			DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size());
 
 			// Collect all descriptors to close
-			for (auto& [path, entry] : instance->databases) {
+			for (auto& [_key, entry] : instance->databases) {
 				if (entry.descriptor) {
 					descriptorsToClose.push_back(entry.descriptor);
 				}

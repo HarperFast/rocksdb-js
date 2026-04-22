@@ -69,6 +69,8 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	THROW_IF_READONLY();
+
 	bool disableSnapshot = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "disableSnapshot", disableSnapshot));
 
@@ -561,6 +563,11 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_TRANSACTION_HANDLE("Put");
 
+	if ((*txnHandle)->dbHandle->descriptor->readOnly) {
+		::napi_throw_error(env, "ERR_DATABASE_READONLY", "Database is opened in readonly mode");
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
 
@@ -582,6 +589,11 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_TRANSACTION_HANDLE("Remove");
+
+	if ((*txnHandle)->dbHandle->descriptor->readOnly) {
+		::napi_throw_error(env, "ERR_DATABASE_READONLY", "Database is opened in readonly mode");
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 

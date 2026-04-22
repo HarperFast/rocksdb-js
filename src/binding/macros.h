@@ -254,4 +254,12 @@
 		rocksdb_js::createRocksDBError(env, status, msg, error); \
 	} while (0)
 
+#define THROW_IF_READONLY() \
+	do { \
+		if ((*dbHandle)->descriptor && (*dbHandle)->descriptor->readOnly) { \
+			::napi_throw_error(env, "ERR_DATABASE_READONLY", "Database is opened in readonly mode"); \
+			NAPI_RETURN_UNDEFINED(); \
+		} \
+	} while (0)
+
 #endif

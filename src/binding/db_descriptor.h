@@ -65,6 +65,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	DBMode mode;
 
 	/**
+	 * Whether the database was opened in readonly mode via
+	 * `DB::OpenForReadOnly`. When true, write operations are not supported.
+	 */
+	bool readOnly;
+
+	/**
 	 * The RocksDB database instance.
 	 */
 	std::shared_ptr<rocksdb::DB> db;
@@ -182,7 +188,6 @@ public:
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
-
 
 	/**
 	 * Gets a single statistic value.

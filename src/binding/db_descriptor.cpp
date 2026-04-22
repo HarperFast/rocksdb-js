@@ -134,6 +134,7 @@ DBDescriptor::DBDescriptor(
 ):
 	path(path),
 	mode(options.mode),
+	readOnly(options.readOnly),
 	db(db),
 	columns(std::move(columns)),
 	statistics(statistics),
@@ -163,8 +164,8 @@ void DBDescriptor::close() {
 		return;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
-		this, this->path.c_str(), this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
+	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s readOnly=%s closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
+		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
 
 	// We want to ensure that all in-memory data is written to disk
 	this->flush();
@@ -178,6 +179,8 @@ void DBDescriptor::close() {
 	this->db->WaitForCompact(options);
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
+
+	DEBUG_LOG("%p DBDescriptor::close Closing closables\n");
 
 	// Close all handles that still exist and reset their descriptor references
 	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
@@ -194,6 +197,8 @@ void DBDescriptor::close() {
 			it = this->closables.erase(it);
 		}
 	}
+
+	DEBUG_LOG("%p DBDescriptor::close Closing transaction log stores\n");
 
 	// Close transaction log stores WITHOUT holding transactionLogMutex while calling
 	// store->close(), as that acquires writeMutex. If a worker thread is in writeBatch()
@@ -215,15 +220,20 @@ void DBDescriptor::close() {
 		}
 	}
 
+	DEBUG_LOG("%p DBDescriptor::close Clearing transactions\n");
 	this->transactions.clear();
+	DEBUG_LOG("%p DBDescriptor::close Clearing columns\n");
 	this->columns.clear();
 
 	{
 		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
+		DEBUG_LOG("%p DBDescriptor::close Clearing listener callbacks\n");
 		this->listenerCallbacks.clear();
 	}
 
+	DEBUG_LOG("%p DBDescriptor::close Resetting database\n");
 	this->db.reset();
+	DEBUG_LOG("%p DBDescriptor::close Database reset\n");
 }
 
 /**
@@ -677,8 +687,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// we could also consider some testing around using atomic_flush
 	dbOptions.atomic_flush = true; // this is necessary in order to ensure that we can track full flush jobs back to the corresponding sequence numbers
 	dbOptions.comparator = rocksdb::BytewiseComparator();
-	dbOptions.create_if_missing = true;
-	dbOptions.create_missing_column_families = true;
+	dbOptions.create_if_missing = !options.readOnly;
+	dbOptions.create_missing_column_families = !options.readOnly;
 	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
@@ -727,7 +737,21 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::shared_ptr<rocksdb::DB> db;
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
-	if (options.mode == DBMode::Pessimistic) {
+	if (options.readOnly) {
+		std::unique_ptr<rocksdb::DB> rdb;
+		DEBUG_LOG("DBDescriptor::open Opening readonly db for \"%s\"\n", path.c_str());
+		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open readonly db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			if (status.IsIOError()) {
+				DEBUG_LOG("DBDescriptor::open IOError: %s\n", status.ToString().c_str());
+				throw std::runtime_error("Database does not exist");
+			}
+			throw std::runtime_error(status.ToString().c_str());
+		}
+		DEBUG_LOG("DBDescriptor::open Opened readonly db for \"%s\"\n", path.c_str());
+		db = std::shared_ptr<rocksdb::DB>(rdb.release(), DBDeleter{});
+	} else if (options.mode == DBMode::Pessimistic) {
 		rocksdb::TransactionDBOptions txndbOptions;
 		txndbOptions.default_lock_timeout = 10000;
 		txndbOptions.transaction_lock_timeout = 10000;
@@ -1889,6 +1913,11 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 }
 
 rocksdb::Status DBDescriptor::flush() {
+	if (this->readOnly) {
+		DEBUG_LOG("%p DBDescriptor::flush Skipping flush for readonly database\n", this);
+		return rocksdb::Status::OK();
+	}
+
 	// Convert columns map to vector of ColumnFamilyHandle*
 	std::vector<rocksdb::ColumnFamilyHandle*> columnHandles;
 	columnHandles.reserve(this->columns.size());
