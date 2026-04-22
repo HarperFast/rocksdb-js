@@ -662,18 +662,20 @@ const db = RocksDatabase.open('/path/to/db', {
 console.log(db.getStats());
 ```
 
-### `db.getStat(statName: string): number`
+### `db.getStat(statName: string): RocksDBStat`
 
-Retrieves a single statistic value.
+Retrieves a single statistic value. Return value is either a `number` or `StatsHistogramData`
+object.
 
 ```typescript
 console.log(db.getStat('rocksdb.block.cache.miss'));
 ```
 
-### `db.getStats(all?: boolean): Object<string, number | StatsHistogramData>`
+### `db.getStats(all?: boolean): RocksDBStats`
 
 Returns an object containing a curated list of column family-level properties, internal tickers
-stats, and internal histogram stats.
+stats, and internal histogram stats. Return value is an object with the stat name as the key and
+a `RocksDBStat` as the value.
 
 By default, it only returns the most meaningful internal stats. When `all = true`, it returns the
 same column family-level properties, but includes all internal tickers and histogram stats.
@@ -722,6 +724,14 @@ The `stats.StatsLevel` contains constants used to set which types of skip and re
 - `StatsLevel.ExceptDetailedTimers` Skip time waiting for mutex locks and compression.
 - `StatsLevel.ExceptTimeForMutex` Skip time waiting for mutex locks.
 - `StatsLevel.All` Collects all stats.
+
+### `type RocksDBStat = number | StatsHistogramData`
+
+A `RocksDBStat` is either a `number` or `StatsHistogramData` object.
+
+### `type RocksDBStats = Record<string, RocksDBStat>`
+
+A `RocksDBStats` is an object with the stat name as the key and a `RocksDBStat` as the value.
 
 ### `type StatsHistogramData`
 
