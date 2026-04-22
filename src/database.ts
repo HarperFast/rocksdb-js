@@ -35,6 +35,9 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	name?: string;
 }
 
+export type RocksDBStat = number | StatsHistogramData;
+export type RocksDBStats = Record<string, RocksDBStat>;
+
 /**
  * The main class for interacting with a RocksDB database.
  *
@@ -228,7 +231,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @param statName - The name of the statistic to retrieve.
 	 * @returns The statistic value.
 	 */
-	getStat(statName: string): number | StatsHistogramData {
+	getStat(statName: string): RocksDBStat {
 		return this.store.db.getStat(statName);
 	}
 
@@ -241,7 +244,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const stats = db.getStats();
 	 * ```
 	 */
-	getStats(all = false): Record<string, number | StatsHistogramData> {
+	getStats(all = false): RocksDBStats {
 		return this.store.db.getStats(all);
 	}
 
