@@ -42,7 +42,7 @@ describe('Statistics', () => {
 
 			stats = db.getStats();
 			expect(stats).toBeDefined();
-			expect(Object.keys(stats).length).toBeLessThan(25);
+			expect(Object.keys(stats).length).toBeLessThanOrEqual(25);
 
 			// internal stats
 			expect(stats['rocksdb.number.keys.written']).toBeUndefined();

@@ -141,6 +141,9 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 	// sst
 	SET_INTERNAL_STAT(result, "rocksdb.total-sst-files-size");
 	SET_INTERNAL_STAT(result, "rocksdb.live-sst-files-size");
+
+	// data size
+	SET_INTERNAL_STAT(result, "rocksdb.estimate-live-data-size");
 	SET_INTERNAL_STAT(result, "rocksdb.estimate-num-keys");
 
 	// block cache
