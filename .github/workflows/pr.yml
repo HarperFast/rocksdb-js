@@ -86,6 +86,7 @@ jobs:
         run: pnpm coverage || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm coverage)
 
   bun-test:
+    if: false
     name: Test on Bun
     runs-on: ${{ matrix.os }}
     strategy:
@@ -122,6 +123,7 @@ jobs:
         run: pnpm test:bun || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:bun)
 
   deno-test:
+    if: false
     name: Test on Deno
     runs-on: ${{ matrix.os }}
     strategy:

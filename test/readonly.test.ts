@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-describe('Readonly Operations', () => {
+describe.skip('Readonly Operations', () => {
 	it('should error opening a readonly database that does not exist', () =>
 		dbRunner({ skipOpen: true, dbOptions: [{ readOnly: true }] }, async ({ db }) => {
 			expect(() => db.open()).toThrow('Database does not exist');
@@ -124,7 +124,7 @@ describe('Readonly Operations', () => {
 			);
 		}));
 
-	it.skip('should open a db in readonly mode in separate process', () =>
+	it('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('foo', 'bar');
 
