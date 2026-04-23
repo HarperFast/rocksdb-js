@@ -118,7 +118,7 @@ describe('Readonly Operations', () => {
 		));
 
 	it('should throw if trying to create a transaction log in readonly mode', () =>
-		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async ({ db }, { db: db2 }) => {
+		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async (_, { db: db2 }) => {
 			expect(() => new TransactionLog(db2.store.db, 'foo')).toThrow(
 				'Database is opened in readonly mode'
 			);
