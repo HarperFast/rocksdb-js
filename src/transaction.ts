@@ -125,14 +125,14 @@ export class Transaction extends DBI {
 	 * @returns The transaction start timestamp in seconds.
 	 */
 	getTimestamp(): number {
-		return this.#txn.getTimestamp() ?? 0;
+		return this.#txn.getTimestamp();
 	}
 
 	/**
 	 * Get the transaction id.
 	 */
 	get id(): number {
-		return this.#txn.id ?? 0;
+		return this.#txn.id;
 	}
 
 	/**

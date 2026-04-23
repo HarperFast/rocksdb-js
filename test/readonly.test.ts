@@ -139,8 +139,7 @@ describe('Readonly Operations', () => {
 							];
 
 				const child = spawn(process.execPath, args, {
-					env: { ...process.env, DO_FORK: '1' },
-					// stdio: 'inherit',
+					stdio: 'inherit',
 				});
 				child.on('close', (code) => {
 					try {
