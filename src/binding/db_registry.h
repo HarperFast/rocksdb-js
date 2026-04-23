@@ -12,10 +12,10 @@
 namespace rocksdb_js {
 
 /**
- * Lightweight key for the registry map. Composed of the three fields that
- * uniquely identify a database instance: path, transaction mode, and whether
- * it was opened read-only. Using a dedicated key type lets callers look up
- * entries before a DBDescriptor has been opened.
+ * Lightweight key for the registry map. Composed of the two fields that
+ * uniquely identify a database instance: path and whether it was opened
+ * read-only. Using a dedicated key type lets callers look up entries before
+ * a `DBDescriptor` has been opened.
  */
 struct DBKey {
 	std::string path;

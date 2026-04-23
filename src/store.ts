@@ -405,6 +405,9 @@ export class Store {
 			// used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
+		if (this.readOnly) {
+			txnId = undefined;
+		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		const result = context.getSync(keyParam, flags | ONLY_IF_IN_MEMORY_CACHE_FLAG, txnId);
 		if (typeof result === 'number') {
@@ -520,7 +523,7 @@ export class Store {
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
-		if ((options as DBITransactional)?.transaction) {
+		if (!this.readOnly && (options as DBITransactional)?.transaction) {
 			txnId = (options as DBITransactional).transaction!.id;
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');

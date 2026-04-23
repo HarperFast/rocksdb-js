@@ -54,9 +54,9 @@ Creates a new database instance.
     Defaults to `1`.
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
-  - `readOnly: boolean` When `true`, the database is opened in readonly mode. Write operations,
-    transactions, transaction log operations, and destroy operations will throw an error with code
-    `ERR_DATABASE_READONLY`.
+  - `readOnly: boolean` When `true`, the database is opened in readonly mode. Read operations are
+    permitted. Write operations, transaction log operations, and destroy operations will throw an
+    error with code `ERR_DATABASE_READONLY`. Transactions are a no-op in readonly mode.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
     overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or

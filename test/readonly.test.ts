@@ -43,12 +43,6 @@ describe('Readonly Operations', () => {
 				await expect(db2.remove('foo')).rejects.toThrow('Database is opened in readonly mode');
 				expect(() => db2.removeSync('foo')).toThrow('Database is opened in readonly mode');
 
-				// transaction
-				await expect(db2.transaction(() => {})).rejects.toThrow(
-					'Database is opened in readonly mode'
-				);
-				expect(() => db2.transactionSync(() => {})).toThrow('Database is opened in readonly mode');
-
 				// useLog
 				expect(() => db2.useLog('foo')).toThrow('Database is opened in readonly mode');
 			}
@@ -76,18 +70,59 @@ describe('Readonly Operations', () => {
 			}
 		));
 
-	it('should throw if trying to create a transaction log in readonly mode', () =>
+	it('should allow read operations in transactions', async () =>
 		dbRunner(
 			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
 			async ({ db }, { db: db2 }) => {
-				// create the database
 				db.open();
+				db.putSync('foo', 'bar');
+
 				db2.open();
-				expect(() => new TransactionLog(db2.store.db, 'foo')).toThrow(
-					'Database is opened in readonly mode'
-				);
+
+				// read operations
+				await db2.transaction(async (txn) => {
+					expect(await txn.get('foo')).toBe('bar');
+				});
+				await db2.transaction(async (txn) => {
+					expect(await db2.get('foo', { transaction: txn })).toBe('bar');
+				});
+				db2.transactionSync(async (txn) => {
+					expect(txn.getSync('foo')).toBe('bar');
+				});
+				db2.transactionSync(async (txn) => {
+					expect(db2.getSync('foo', { transaction: txn })).toBe('bar');
+				});
+
+				// write operations
+				await expect(
+					db2.transaction(async (txn) => {
+						txn.putSync('foo', 'baz');
+					})
+				).rejects.toThrow('Database is opened in readonly mode');
+				await expect(
+					db2.transaction(async (txn) => {
+						db2.putSync('foo', 'baz', { transaction: txn });
+					})
+				).rejects.toThrow('Database is opened in readonly mode');
+				expect(() =>
+					db2.transactionSync((txn) => {
+						txn.putSync('foo', 'baz');
+					})
+				).toThrow('Database is opened in readonly mode');
+				expect(() =>
+					db2.transactionSync((txn) => {
+						db2.putSync('foo', 'baz', { transaction: txn });
+					})
+				).toThrow('Database is opened in readonly mode');
 			}
 		));
+
+	it('should throw if trying to create a transaction log in readonly mode', () =>
+		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async ({ db }, { db: db2 }) => {
+			expect(() => new TransactionLog(db2.store.db, 'foo')).toThrow(
+				'Database is opened in readonly mode'
+			);
+		}));
 
 	it('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {
