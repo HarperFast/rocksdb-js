@@ -1,6 +1,6 @@
 import { RocksDatabase } from '../../src/index.js';
 
-let db: RocksDatabase;
+let db: RocksDatabase | undefined;
 
 try {
 	// open in read-write mode, this should fail
@@ -16,6 +16,9 @@ try {
 		console.error('Expected value to be bar, got', value);
 		process.exit(1);
 	}
-	console.log('Value is bar');
-	process.exit(0);
+} finally {
+	db?.close();
 }
+
+console.log('Success');
+process.exit(0);
