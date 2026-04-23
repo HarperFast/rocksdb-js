@@ -10,7 +10,7 @@ describe('Readonly Operations', () => {
 			expect(() => db.open()).toThrow('Database does not exist');
 		}));
 
-	it.skip('should error write operations and transactions in readonly mode', () =>
+	it('should error write operations and transactions in readonly mode', () =>
 		dbRunner(
 			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
 			async ({ db }, { db: db2 }) => {
@@ -48,7 +48,7 @@ describe('Readonly Operations', () => {
 			}
 		));
 
-	it.skip('should not see changes in readonly mode', () =>
+	it('should not see changes in readonly mode', () =>
 		dbRunner(
 			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
 			async ({ db }, { db: db2 }) => {
@@ -70,7 +70,7 @@ describe('Readonly Operations', () => {
 			}
 		));
 
-	it.skip('should allow read operations in transactions', async () =>
+	it('should allow read operations in transactions', async () =>
 		dbRunner(
 			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
 			async ({ db }, { db: db2 }) => {
@@ -117,14 +117,14 @@ describe('Readonly Operations', () => {
 			}
 		));
 
-	it.skip('should throw if trying to create a transaction log in readonly mode', () =>
+	it('should throw if trying to create a transaction log in readonly mode', () =>
 		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async (_, { db: db2 }) => {
 			expect(() => new TransactionLog(db2.store.db, 'foo')).toThrow(
 				'Database is opened in readonly mode'
 			);
 		}));
 
-	it.skip('should open a db in readonly mode in separate process', () =>
+	it('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('foo', 'bar');
 
@@ -139,7 +139,7 @@ describe('Readonly Operations', () => {
 							];
 
 				const child = spawn(process.execPath, args, {
-					stdio: 'inherit',
+					// stdio: 'inherit',
 				});
 				child.on('close', (code) => {
 					try {

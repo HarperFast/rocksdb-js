@@ -37,11 +37,6 @@ jobs:
         with:
           gh-token: ${{ secrets.GH_TOKEN }}
 
-      - name: Build
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: pnpm build
-
       - name: Check
         run: pnpm check
 
@@ -51,10 +46,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [24]
-        os: [windows-latest]
-        # node: [20, 22, 24]
-        # os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22, 24]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout repository
@@ -86,7 +79,6 @@ jobs:
         run: pnpm coverage || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm coverage)
 
   bun-test:
-    if: false
     name: Test on Bun
     runs-on: ${{ matrix.os }}
     strategy:
@@ -123,7 +115,6 @@ jobs:
         run: pnpm test:bun || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:bun)
 
   deno-test:
-    if: false
     name: Test on Deno
     runs-on: ${{ matrix.os }}
     strategy:
