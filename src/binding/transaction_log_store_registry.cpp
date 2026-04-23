@@ -53,10 +53,10 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 	auto it = instance->entries.find(dbPath);
 	if (it == instance->entries.end()) {
 		// Create new entry
-		auto entry = std::make_unique<TransactionLogStoreRegistryEntry>(config);
+		auto entry = std::make_shared<TransactionLogStoreRegistryEntry>(config);
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Created entry for \"%s\" (refCount=1)\n",
 			instance.get(), dbPath.c_str());
-		instance->entries.emplace(dbPath, std::move(entry));
+		instance->entries.emplace(dbPath, entry);
 	} else {
 		// Increment reference count
 		it->second->refCount++;
@@ -123,9 +123,9 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 		return;
 	}
 
-	TransactionLogStoreRegistryEntry* entry = nullptr;
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 	std::string transactionLogsPath;
-	TransactionLogStoreConfig config;
+	const TransactionLogStoreConfig* config = nullptr;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -137,9 +137,10 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 			return;
 		}
 
-		entry = it->second.get();
+		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		entry = it->second;
 		transactionLogsPath = entry->config.transactionLogsPath;
-		config = entry->config;
+		config = &entry->config;
 	}
 
 	if (transactionLogsPath.empty() || !std::filesystem::exists(transactionLogsPath)) {
@@ -154,9 +155,9 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 		if (dirEntry.is_directory()) {
 			auto store = TransactionLogStore::load(
 				dirEntry.path(),
-				config.transactionLogMaxSize,
-				config.transactionLogRetentionMs,
-				config.transactionLogMaxAgeThreshold
+				config->transactionLogMaxSize,
+				config->transactionLogRetentionMs,
+				config->transactionLogMaxAgeThreshold
 			);
 			if (store) {
 				DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Found store \"%s\" for \"%s\"\n",
@@ -179,8 +180,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		return nullptr;
 	}
 
-	TransactionLogStoreRegistryEntry* entry = nullptr;
-	TransactionLogStoreConfig config;
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
+	const TransactionLogStoreConfig* config = nullptr;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -192,8 +193,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			return nullptr;
 		}
 
-		entry = it->second.get();
-		config = entry->config;
+		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		entry = it->second;
+		config = &entry->config;
 	}
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -211,7 +213,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	}
 
 	// Create new store
-	auto logDirectory = std::filesystem::path(config.transactionLogsPath) / name;
+	auto logDirectory = std::filesystem::path(config->transactionLogsPath) / name;
 	DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Creating new store \"%s\" for \"%s\"\n",
 		instance.get(), name.c_str(), dbPath.c_str());
 
@@ -221,9 +223,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
 		name,
 		logDirectory,
-		config.transactionLogMaxSize,
-		config.transactionLogRetentionMs,
-		config.transactionLogMaxAgeThreshold
+		config->transactionLogMaxSize,
+		config->transactionLogRetentionMs,
+		config->transactionLogMaxAgeThreshold
 	);
 
 	// Use insert_or_assign to replace any closing store with the same name
@@ -243,7 +245,7 @@ napi_value TransactionLogStoreRegistry::ListStores(napi_env env, const std::stri
 		return result;
 	}
 
-	TransactionLogStoreRegistryEntry* entry = nullptr;
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -255,7 +257,8 @@ napi_value TransactionLogStoreRegistry::ListStores(napi_env env, const std::stri
 			return result;
 		}
 
-		entry = it->second.get();
+		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		entry = it->second;
 	}
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -296,7 +299,7 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
 
-	TransactionLogStoreRegistryEntry* entry = nullptr;
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -308,7 +311,8 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 			return removed;
 		}
 
-		entry = it->second.get();
+		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		entry = it->second;
 	}
 
 	size_t i = 0;

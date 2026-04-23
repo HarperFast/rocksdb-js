@@ -2,8 +2,8 @@
 #define __TRANSACTION_LOG_STORE_REGISTRY_H__
 
 #include <chrono>
-#include <map>
 #include <memory>
+#include <unordered_map>
 #include <mutex>
 #include <string>
 #include <node_api.h>
@@ -83,9 +83,10 @@ private:
 	TransactionLogStoreRegistry() = default;
 
 	/**
-	 * Map of database path to registry entry.
+	 * Map of database path to registry entry. Uses shared_ptr so entries can
+	 * be safely accessed after releasing entriesMutex by taking a copy.
 	 */
-	std::unordered_map<std::string, std::unique_ptr<TransactionLogStoreRegistryEntry>> entries;
+	std::unordered_map<std::string, std::shared_ptr<TransactionLogStoreRegistryEntry>> entries;
 
 	/**
 	 * Mutex to protect the entries map.
