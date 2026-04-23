@@ -57,15 +57,22 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), key.path.c_str());
 		entry->descriptor->close();
 
-		// re-acquire the mutex to check and potentially remove the descriptor
+		// Save the condition variable before erasing the entry. Accessing `entry`
+		// after erase is a use-after-free because `entry` is a raw pointer into
+		// the map's internal storage, which is freed when the element is erased.
+		std::shared_ptr<std::condition_variable> condition;
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			instance->databases.erase(key);
+			auto eraseIt = instance->databases.find(key);
+			if (eraseIt != instance->databases.end()) {
+				condition = eraseIt->second.condition;
+				instance->databases.erase(eraseIt);
+			}
 		}
 
 		// notify only waiters for this specific path
-		if (entry->condition) {
-			entry->condition->notify_all();
+		if (condition) {
+			condition->notify_all();
 		}
 	}
 }
@@ -245,7 +252,15 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			entry.descriptor->columns[name] = columnDescriptor;
 		}
 	} else {
-		entry.descriptor = DBDescriptor::open(path, options);	// store the descriptor in the existing entry
+		try {
+			entry.descriptor = DBDescriptor::open(path, options);
+		} catch (...) {
+			// Remove the stale entry (null descriptor) so it does not pollute the
+			// registry and cause null-dereference crashes in callers such as
+			// RegistryStatus that iterate every entry without guarding for null.
+			instance->databases.erase(entryIterator);
+			throw;
+		}
 		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
 		columns = entry.descriptor->columns;
 	}
@@ -319,6 +334,9 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 
 		size_t i = 0;
 		for (auto& [key, entry] : instance->databases) {
+			if (!entry.descriptor) {
+				continue;
+			}
 			napi_value database;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
 			napi_value pathValue;
