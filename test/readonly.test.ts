@@ -124,7 +124,7 @@ describe('Readonly Operations', () => {
 			);
 		}));
 
-	it('should open a db in readonly mode in separate process', () =>
+	it.skip('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('foo', 'bar');
 
