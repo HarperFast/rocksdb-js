@@ -1,6 +1,11 @@
 import { version } from './load-binding.js';
 
-export { RocksDatabase, type RocksDatabaseOptions } from './database.js';
+export {
+	RocksDatabase,
+	type RocksDatabaseOptions,
+	type RocksDBStat,
+	type RocksDBStats,
+} from './database.js';
 export { DBIterator } from './dbi-iterator.js';
 export { DBI, type IteratorOptions } from './dbi.js';
 export type { Key } from './encoding.js';
