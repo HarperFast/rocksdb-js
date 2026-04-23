@@ -42,9 +42,6 @@ describe('Readonly Operations', () => {
 				// remove
 				await expect(db2.remove('foo')).rejects.toThrow('Database is opened in readonly mode');
 				expect(() => db2.removeSync('foo')).toThrow('Database is opened in readonly mode');
-
-				// useLog
-				expect(() => db2.useLog('foo')).toThrow('Database is opened in readonly mode');
 			}
 		));
 
@@ -117,11 +114,39 @@ describe('Readonly Operations', () => {
 			}
 		));
 
-	it('should throw if trying to create a transaction log in readonly mode', () =>
-		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async (_, { db: db2 }) => {
-			expect(() => new TransactionLog(db2.store.db, 'foo')).toThrow(
-				'Database is opened in readonly mode'
-			);
+	it('should allow read access to transaction logs', async () =>
+		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async ({ db: db1 }, { db: db2 }) => {
+			const log1 = db1.useLog('foo');
+			await db1.transaction(async (txn) => {
+				await txn.put('foo', 'bar');
+				log1.addEntry(Buffer.from('hello'), txn.id);
+			});
+
+			expect(db1.listLogs()).toEqual(['foo']);
+			expect(db2.listLogs()).toEqual(['foo']);
+
+			const log2 = db2.useLog('foo');
+			await db2.transaction(async (txn) => {
+				expect(() => log2.addEntry(Buffer.from('world'), txn.id)).toThrow(
+					'Database is opened in readonly mode'
+				);
+
+				const txnLog = txn.useLog('foo');
+				expect(() => txnLog.addEntry(Buffer.from('world'), txn.id)).toThrow(
+					'Database is opened in readonly mode'
+				);
+			});
+
+			const value1 = Array.from(log1.query({ start: 0 }));
+			const value2 = Array.from(log2.query({ start: 0 }));
+			expect(value1).toEqual(value2);
+
+			// manually construct a transaction log instance
+			const txnLog1 = new TransactionLog(db1.store.db, 'foo');
+			const txnLog2 = new TransactionLog(db2.store.db, 'foo');
+			const value3 = Array.from(txnLog1.query({ start: 0 }));
+			const value4 = Array.from(txnLog2.query({ start: 0 }));
+			expect(value3).toEqual(value4);
 		}));
 
 	it('should open a db in readonly mode in separate process', () =>

@@ -1,5 +1,6 @@
 #include "db_descriptor.h"
 #include "db_settings.h"
+#include "transaction_log_store_registry.h"
 #include "rocksdb/listener.h"
 #include <algorithm>
 #include <memory>
@@ -48,15 +49,8 @@ public:
 			DEBUG_LOG("%p TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n",
 				desc.get(), (unsigned long long)flushedSequence);
 
-			// Collect stores while holding the lock, then call methods without
-			// holding transactionLogMutex to avoid deadlock with purgeTransactionLogs.
-			std::vector<std::shared_ptr<TransactionLogStore>> stores;
-			{
-				std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
-				for (auto& [name, store] : desc->transactionLogStores) {
-					stores.push_back(store);
-				}
-			}
+			// Get stores from the registry
+			auto stores = TransactionLogStoreRegistry::GetStores(desc->path);
 			for (auto& store : stores) {
 				store->databaseFlushBegin(flushedSequence);
 			}
@@ -99,15 +93,8 @@ public:
 				DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted job completed name=%s job id=%d flushedSequence=%llu\n",
 					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
 
-				// Collect stores while holding the lock, then call methods without
-				// holding transactionLogMutex to avoid deadlock with purgeTransactionLogs.
-				std::vector<std::shared_ptr<TransactionLogStore>> stores;
-				{
-					std::lock_guard<std::mutex> lock(desc->transactionLogMutex);
-					for (auto& [name, store] : desc->transactionLogStores) {
-						stores.push_back(store);
-					}
-				}
+				// Get stores from the registry
+				auto stores = TransactionLogStoreRegistry::GetStores(desc->path);
 				for (auto& store : stores) {
 					store->databaseFlushed(it->second.flushedSequence);
 				}
@@ -137,11 +124,7 @@ DBDescriptor::DBDescriptor(
 	readOnly(options.readOnly),
 	db(db),
 	columns(std::move(columns)),
-	statistics(statistics),
-	transactionLogMaxAgeThreshold(options.transactionLogMaxAgeThreshold),
-	transactionLogMaxSize(options.transactionLogMaxSize),
-	transactionLogRetentionMs(options.transactionLogRetentionMs),
-	transactionLogsPath(options.transactionLogsPath)
+	statistics(statistics)
 {}
 
 /**
@@ -164,8 +147,8 @@ void DBDescriptor::close() {
 		return;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s readOnly=%s closables=%zu columns=%zu transactions=%zu transactionLogStores=%zu)\n",
-		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size(), this->transactionLogStores.size());
+	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s readOnly=%s closables=%zu columns=%zu transactions=%zu)\n",
+		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
 	// We want to ensure that all in-memory data is written to disk
 	this->flush();
@@ -196,25 +179,9 @@ void DBDescriptor::close() {
 		}
 	}
 
-	// Close transaction log stores WITHOUT holding transactionLogMutex while calling
-	// store->close(), as that acquires writeMutex. If a worker thread is in writeBatch()
-	// holding writeMutex and triggers a RocksDB flush, the flush callback will try to
-	// acquire transactionLogMutex, causing a deadlock.
-	if (!this->transactionLogStores.empty()) {
-		std::vector<std::shared_ptr<TransactionLogStore>> storesToClose;
-		{
-			std::lock_guard<std::mutex> logLock(this->transactionLogMutex);
-			DEBUG_LOG("%p DBDescriptor::close Collecting transaction log stores to close (size=%zu)\n", this, this->transactionLogStores.size());
-			for (auto& [name, transactionLogStore] : this->transactionLogStores) {
-				storesToClose.push_back(transactionLogStore);
-			}
-			this->transactionLogStores.clear();
-		}
-		// Close stores without holding transactionLogMutex
-		for (auto& store : storesToClose) {
-			store->close();
-		}
-	}
+	// Unregister from transaction log store registry - this will clean up stores
+	// when the last descriptor for this path is closed
+	TransactionLogStoreRegistry::Unregister(this->path);
 
 	this->transactions.clear();
 	this->columns.clear();
@@ -790,7 +757,15 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// set the weak pointer for the event listener
 	*descriptorWeakPtr = descriptor;
 
-	descriptor->discoverTransactionLogStores();
+	// Register with the transaction log store registry
+	TransactionLogStoreConfig logConfig;
+	logConfig.transactionLogsPath = options.transactionLogsPath;
+	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
+	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
+	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
+	TransactionLogStoreRegistry::Register(path, logConfig);
+	TransactionLogStoreRegistry::DiscoverStores(path);
+
 	return descriptor;
 }
 
@@ -1717,148 +1692,19 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 }
 
 /**
- * Discovers all transaction logs in the database directory and stores the
- * handles in a map.
- */
-void DBDescriptor::discoverTransactionLogStores() {
-	if (this->transactionLogsPath.empty() || !std::filesystem::exists(this->transactionLogsPath)) {
-		DEBUG_LOG("%p DBDescriptor::discoverTransactionLogStores No transaction logs path set or directory does not exist\n", this);
-		return;
-	}
-
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-
-	for (const auto& entry : std::filesystem::directory_iterator(this->transactionLogsPath)) {
-		if (entry.is_directory()) {
-			auto store = TransactionLogStore::load(
-				entry.path(),
-				this->transactionLogMaxSize,
-				this->transactionLogRetentionMs,
-				this->transactionLogMaxAgeThreshold
-			);
-			if (store) {
-				this->transactionLogStores.emplace(store->name, store);
-			}
-		}
-	}
-}
-
-/**
  * Lists all transaction logs in the database.
  *
  * @param env The environment of the current callback.
  */
 napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
-	napi_value result;
-	size_t i = 0;
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, this->transactionLogStores.size(), &result));
-
-	DEBUG_LOG("%p DBDescriptor::listTransactionLogStores Returning %u transaction log store names\n", this, this->transactionLogStores.size());
-	for (auto& log : this->transactionLogStores) {
-		napi_value name;
-		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, log.second->name.c_str(), log.second->name.length(), &name));
-		NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, name));
-	}
-
-	return result;
+	return TransactionLogStoreRegistry::ListStores(env, this->path);
 }
 
 /**
  * Purges transaction logs.
- *
- * IMPORTANT: This method must NOT hold transactionLogMutex while calling
- * store->purge() or store->tryClose(), as those operations acquire writeMutex.
- * RocksDB flush event listeners (OnFlushBegin/OnFlushCompleted) acquire
- * transactionLogMutex, and if a thread holding writeMutex triggers a flush,
- * we get a deadlock:
- *   - purgeTransactionLogs: holds transactionLogMutex, waiting for writeMutex
- *   - worker thread: holds writeMutex, RocksDB flush waiting for callback
- *   - flush callback: waiting for transactionLogMutex
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
-	uint64_t before = 0;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "before", before));
-
-	bool destroy = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
-
-	std::string name;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
-
-	napi_value removed;
-	NAPI_STATUS_THROWS(::napi_create_array(env, &removed));
-
-	size_t i = 0;
-	std::vector<std::shared_ptr<TransactionLogStore>> storesToPurge;
-
-	// Phase 1: Collect stores to process while holding the lock.
-	{
-		std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-		for (auto& entry : this->transactionLogStores) {
-			auto store = entry.second;
-			if (name.empty() || store->name == name) {
-				storesToPurge.push_back(store);
-			}
-		}
-	}
-
-	// Phase 2: Process stores WITHOUT holding transactionLogMutex.
-	// This prevents deadlock with flush event listeners that also need
-	// transactionLogMutex while a thread may be holding writeMutex.
-	for (auto& store : storesToPurge) {
-		store->purge([&](const std::filesystem::path& filePath) -> void {
-			napi_value logFileValue;
-			auto path = filePath.string();
-			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
-			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-		}, destroy, before);
-
-		if (destroy) {
-			// tryClose() atomically checks for active transactions and marks
-			// the store as closing under writeMutex. If there are active
-			// transactions it returns false and the store is left open.
-			store->tryClose();
-		}
-	}
-
-	// Phase 3: Remove closed stores from the registry while holding the lock.
-	// Track which stores were actually removed so we only delete their directories.
-	std::vector<std::shared_ptr<TransactionLogStore>> storesActuallyRemoved;
-	if (destroy) {
-		std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-		for (auto& store : storesToPurge) {
-			// Skip stores that weren't successfully closed by tryClose().
-			if (!store->isClosing.load(std::memory_order_relaxed)) {
-				continue;
-			}
-			// Only erase if the store in the map is the same as the one we closed.
-			// A new store with the same name may have been created between Phase 1
-			// and Phase 3 by a concurrent resolveTransactionLogStore() call.
-			auto it = this->transactionLogStores.find(store->name);
-			if (it != this->transactionLogStores.end() && it->second.get() == store.get()) {
-				this->transactionLogStores.erase(it);
-				storesActuallyRemoved.push_back(store);
-			}
-		}
-	}
-
-	// Phase 4: Delete directories outside the lock (I/O operations).
-	// Only delete directories for stores that were actually removed from the map.
-	// If a new store was created with the same name, we must not delete its directory.
-	for (auto& store : storesActuallyRemoved) {
-		try {
-			std::filesystem::remove_all(store->path);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Failed to remove log directory %s: %s\n",
-				this, store->path.string().c_str(), e.what());
-		} catch (...) {
-			DEBUG_LOG("%p DBDescriptor::purgeTransactionLogs Unknown error removing log directory %s\n",
-				this, store->path.string().c_str());
-		}
-	}
-
-	return removed;
+	return TransactionLogStoreRegistry::PurgeStores(env, this->path, options);
 }
 
 /**
@@ -1868,39 +1714,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  * @returns The transaction log store.
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
-	std::lock_guard<std::mutex> lock(this->transactionLogMutex);
-
-	auto it = this->transactionLogStores.find(name);
-	if (it != this->transactionLogStores.end()) {
-		// Check if the store is closing - if so, we need to create a new one.
-		// This can happen when purgeTransactionLogs has called tryClose() (which sets
-		// isClosing=true) but hasn't yet removed the store from the map. We can't
-		// return a closing store because operations on it will fail.
-		if (!it->second->isClosing.load(std::memory_order_relaxed)) {
-			DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found transaction log store \"%s\"\n", this, name.c_str());
-			return it->second;
-		}
-		DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Found closing transaction log store \"%s\", creating new one\n", this, name.c_str());
-	}
-
-	auto logDirectory = std::filesystem::path(this->transactionLogsPath) / name;
-	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating new transaction log store \"%s\"\n",
-		this, name.c_str());
-
-	// ensure the directory exists
-	DEBUG_LOG("%p DBDescriptor::resolveTransactionLogStore Creating directory: %s\n", this, logDirectory.string().c_str());
-	rocksdb_js::tryCreateDirectory(logDirectory);
-
-	auto txnLogStore = std::make_shared<TransactionLogStore>(
-		name,
-		logDirectory,
-		this->transactionLogMaxSize,
-		this->transactionLogRetentionMs,
-		this->transactionLogMaxAgeThreshold
-	);
-	// Use insert_or_assign to replace any closing store with the same name
-	this->transactionLogStores.insert_or_assign(txnLogStore->name, txnLogStore);
-	return txnLogStore;
+	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
 }
 
 rocksdb::Status DBDescriptor::flush() {

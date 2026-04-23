@@ -1177,7 +1177,6 @@ napi_value Database::UseLog(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	NAPI_GET_STRING(argv[0], name, "Name is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	THROW_IF_READONLY();
 
 	return (*dbHandle)->useLog(env, jsThis, name);
 }

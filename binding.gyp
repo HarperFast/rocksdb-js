@@ -23,6 +23,7 @@
 				'src/binding/transaction_log_file.cpp',
 				'src/binding/transaction_log_handle.cpp',
 				'src/binding/transaction_log_store.cpp',
+				'src/binding/transaction_log_store_registry.cpp',
 				'src/binding/util.cpp',
 			],
 			'defines': [

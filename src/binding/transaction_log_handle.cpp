@@ -7,8 +7,9 @@ namespace rocksdb_js {
 
 TransactionLogHandle::TransactionLogHandle(
 	const std::shared_ptr<DBHandle>& dbHandle,
-	const std::string& logName
-): dbHandle(dbHandle), logName(logName), transactionId(0) {
+	const std::string& logName,
+	bool readOnly
+): dbHandle(dbHandle), logName(logName), readOnly(readOnly), transactionId(0) {
 	DEBUG_LOG("%p TransactionLogHandle::TransactionLogHandle Creating TransactionLogHandle \"%s\"\n", this, logName.c_str());
 	this->store = dbHandle->descriptor->resolveTransactionLogStore(logName);
 }
