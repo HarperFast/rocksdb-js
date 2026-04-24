@@ -75,7 +75,7 @@ export interface StoreOptions extends Omit<
 	randomAccessStructure?: boolean;
 
 	/**
-	 * When `true`, the database is opened in readonly mode. Write operations
+	 * When `true`, the database is opened in read-only mode. Write operations
 	 * will throw an error with code `ERR_DATABASE_READONLY`.
 	 */
 	readOnly?: boolean;

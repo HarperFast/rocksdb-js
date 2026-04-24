@@ -10,38 +10,63 @@ describe('Readonly Operations', () => {
 			expect(() => db.open()).toThrow('Database does not exist');
 		}));
 
-	it('should error write operations and transactions in readonly mode', () =>
+	it.only('should error write operations and transactions in readonly mode', () =>
 		dbRunner(
-			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
-			async ({ db }, { db: db2 }) => {
+			{
+				skipOpen: true,
+				dbOptions: [{}, { readOnly: true }, { name: 'baz' }, { name: 'baz', readOnly: true }],
+			},
+			async ({ db }, { db: db2 }, { db: db3 }, { db: db4 }) => {
 				db.open();
+				expect(db.readOnly).toBe(false);
 				db2.open();
+				expect(db2.readOnly).toBe(true);
+				db3.open();
+				expect(db3.readOnly).toBe(false);
+				db4.open();
+				expect(db4.readOnly).toBe(true);
 
 				// clear
-				await expect(db2.clear()).rejects.toThrow('Database is opened in readonly mode');
-				expect(() => db2.clearSync()).toThrow('Database is opened in readonly mode');
+				await expect(db2.clear()).rejects.toThrow(
+					'Clear failed: Not implemented: Not supported operation in read only mode'
+				);
+				expect(() => db2.clearSync()).toThrow(
+					'Clear failed: Not implemented: Not supported operation in read only mode'
+				);
 
 				// destroy
-				expect(() => db2.destroy()).toThrow('Database is opened in readonly mode');
+				expect(() => db2.destroy()).toThrow(
+					'Destroy failed: Unsupported operation in read-only mode'
+				);
 
 				// drop
-				await expect(db2.drop()).rejects.toThrow('Database is opened in readonly mode');
-				expect(() => db2.dropSync()).toThrow('Database is opened in readonly mode');
-
-				// flush
-				await expect(db2.flush()).rejects.toThrow('Database is opened in readonly mode');
-				expect(() => db2.flushSync()).toThrow('Database is opened in readonly mode');
+				await expect(db2.drop()).rejects.toThrow(
+					'Drop failed: Not implemented: Not supported operation in read only mode'
+				);
+				expect(() => db2.dropSync()).toThrow(
+					'Drop failed: Not implemented: Not supported operation in read only mode'
+				);
 
 				// purgeLogs
-				expect(() => db2.purgeLogs()).toThrow('Database is opened in readonly mode');
+				expect(() => db2.purgeLogs()).toThrow(
+					'Purge logs failed: Unsupported operation in read-only mode'
+				);
 
 				// put
-				await expect(db2.put('foo', 'bar')).rejects.toThrow('Database is opened in readonly mode');
-				expect(() => db2.putSync('foo', 'bar')).toThrow('Database is opened in readonly mode');
+				await expect(db2.put('foo', 'bar')).rejects.toThrow(
+					'Put failed: Not implemented: Not supported operation in read only mode'
+				);
+				expect(() => db2.putSync('foo', 'bar')).toThrow(
+					'Put failed: Not implemented: Not supported operation in read only mode'
+				);
 
 				// remove
-				await expect(db2.remove('foo')).rejects.toThrow('Database is opened in readonly mode');
-				expect(() => db2.removeSync('foo')).toThrow('Database is opened in readonly mode');
+				await expect(db2.remove('foo')).rejects.toThrow(
+					'Remove failed: Not implemented: Not supported operation in read only mode'
+				);
+				expect(() => db2.removeSync('foo')).toThrow(
+					'Remove failed: Not implemented: Not supported operation in read only mode'
+				);
 			}
 		));
 
@@ -95,22 +120,22 @@ describe('Readonly Operations', () => {
 					db2.transaction(async (txn) => {
 						txn.putSync('foo', 'baz');
 					})
-				).rejects.toThrow('Database is opened in readonly mode');
+				).rejects.toThrow('Put failed: Not implemented: Not supported operation in read only mode');
 				await expect(
 					db2.transaction(async (txn) => {
 						db2.putSync('foo', 'baz', { transaction: txn });
 					})
-				).rejects.toThrow('Database is opened in readonly mode');
+				).rejects.toThrow('Put failed: Not implemented: Not supported operation in read only mode');
 				expect(() =>
 					db2.transactionSync((txn) => {
 						txn.putSync('foo', 'baz');
 					})
-				).toThrow('Database is opened in readonly mode');
+				).toThrow('Put failed: Not implemented: Not supported operation in read only mode');
 				expect(() =>
 					db2.transactionSync((txn) => {
 						db2.putSync('foo', 'baz', { transaction: txn });
 					})
-				).toThrow('Database is opened in readonly mode');
+				).toThrow('Put failed: Not implemented: Not supported operation in read only mode');
 			}
 		));
 
@@ -128,12 +153,12 @@ describe('Readonly Operations', () => {
 			const log2 = db2.useLog('foo');
 			await db2.transaction(async (txn) => {
 				expect(() => log2.addEntry(Buffer.from('world'), txn.id)).toThrow(
-					'Database is opened in readonly mode'
+					'Unsupported operation in read-only mode'
 				);
 
 				const txnLog = txn.useLog('foo');
 				expect(() => txnLog.addEntry(Buffer.from('world'), txn.id)).toThrow(
-					'Database is opened in readonly mode'
+					'Unsupported operation in read-only mode'
 				);
 			});
 

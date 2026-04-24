@@ -80,11 +80,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry");
-
-	if ((*txnLogHandle)->readOnly) {
-		::napi_throw_error(env, nullptr, "Database is opened in readonly mode");
-		return nullptr;
-	}
+	THROW_IF_READONLY(*txnLogHandle, "");
 
 	bool isBuffer;
 	bool isArrayBuffer;

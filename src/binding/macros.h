@@ -212,7 +212,7 @@
 		if (status.code() == rocksdb::Status::Code::kAborted) { \
 			ss << status.ToString(); \
 		} else { \
-			ss << msg << ": " << status.ToString(); \
+			ss << (msg) << ": " << status.ToString(); \
 		} \
 		errorStr = ss.str(); \
 		if (errorStr.size() > 2 && errorStr.compare(errorStr.size() - 2, 2, ": ") == 0) { \
@@ -254,10 +254,10 @@
 		rocksdb_js::createRocksDBError(env, status, msg, error); \
 	} while (0)
 
-#define THROW_IF_READONLY() \
+#define THROW_IF_READONLY(handle, context) \
 	do { \
-		if ((*dbHandle)->descriptor && (*dbHandle)->descriptor->readOnly) { \
-			::napi_throw_error(env, "ERR_DATABASE_READONLY", "Database is opened in readonly mode"); \
+		if ((handle) && (handle)->readOnly) { \
+			::napi_throw_error(env, "ERR_DATABASE_READONLY", context "Unsupported operation in read-only mode"); \
 			NAPI_RETURN_UNDEFINED(); \
 		} \
 	} while (0)
