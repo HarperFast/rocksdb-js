@@ -543,6 +543,14 @@ struct AsyncWorkHandle {
 	bool isCancelled() const {
 		return this->cancelled.load();
 	}
+
+	/**
+	 * Resets the cancelled state. This should be called when re-opening
+	 * a database handle that was previously closed.
+	 */
+	void resetCancelled() {
+		this->cancelled.store(false);
+	}
 };
 
 // Big-endian encoding/decoding helpers for transaction log format

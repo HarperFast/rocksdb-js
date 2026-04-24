@@ -147,7 +147,7 @@ void DBDescriptor::close() {
 		return;
 	}
 
-	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s readOnly=%s closables=%zu columns=%zu transactions=%zu)\n",
+	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
 	// We want to ensure that all in-memory data is written to disk
@@ -629,7 +629,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  */
 std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
 	std::string name = options.name.empty() ? "default" : options.name;
-	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\")\n", path.c_str(), name.c_str());
+	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
 	// set or disable the block cache
 	rocksdb::BlockBasedTableOptions tableOptions;

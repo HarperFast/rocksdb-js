@@ -186,7 +186,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		throw std::runtime_error("DBRegistry not initialized!");
 	}
 
-	DEBUG_LOG("%p DBRegistry::OpenDB Using registry\n", instance.get());
+	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
 
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
@@ -232,7 +232,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			);
 		}
 
-		DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" already open\n", instance.get(), path.c_str());
+		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
 		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
 
 		// manually copy the columns because we don't know which ones are valid
@@ -245,6 +245,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			}
 		}
 		if (!columnExists) {
+			if (entry.descriptor->readOnly) {
+				throw std::runtime_error("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
+			}
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
 			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);

@@ -172,6 +172,10 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
+	// Reset the cancelled state in case this handle was previously closed
+	// and is being re-opened
+	this->resetCancelled();
+
 	auto handleParams = DBRegistry::OpenDB(path, options);
 	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);

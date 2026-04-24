@@ -10,11 +10,16 @@ describe('Readonly Operations', () => {
 			expect(() => db.open()).toThrow('Database does not exist');
 		}));
 
-	it.only('should error write operations and transactions in readonly mode', () =>
+	it('should error write operations and transactions in readonly mode', () =>
 		dbRunner(
 			{
 				skipOpen: true,
-				dbOptions: [{}, { readOnly: true }, { name: 'baz' }, { name: 'baz', readOnly: true }],
+				dbOptions: [
+					{}, // default column family, read/write
+					{ readOnly: true }, // default column family, read-only
+					{ name: 'baz' }, // named column family, read/write
+					{ name: 'baz', readOnly: true }, // named column family, read-only
+				],
 			},
 			async ({ db }, { db: db2 }, { db: db3 }, { db: db4 }) => {
 				db.open();
@@ -23,6 +28,18 @@ describe('Readonly Operations', () => {
 				expect(db2.readOnly).toBe(true);
 				db3.open();
 				expect(db3.readOnly).toBe(false);
+
+				// db3 created the named column family AFTER db2 took a snapshot of the column
+				// families, thus "baz" won't exist in the snapshot
+				expect(() => db4.open()).toThrow(
+					'Column family "baz" not found: cannot create column family in read-only mode'
+				);
+
+				// we close db2 to delete read-only DBDescriptor, then re-open it discover the "baz"
+				// column family
+				db2.close();
+				db2.open();
+				expect(db2.readOnly).toBe(true);
 				db4.open();
 				expect(db4.readOnly).toBe(true);
 
