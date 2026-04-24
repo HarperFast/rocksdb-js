@@ -43,9 +43,17 @@ export class Transaction extends DBI {
 	 * @param options - The options for the transaction.
 	 */
 	constructor(store: Store, options?: TransactionOptions) {
-		const txn = new NativeTransaction(store.db, options);
-		super(store, txn);
-		this.#txn = txn;
+		if (store.readOnly) {
+			super(store);
+			this.#txn = { id: 0 } as NativeTransaction;
+			this.abort = this.commitSync = this.setTimestamp = () => {};
+			this.commit = async () => {};
+			this.getTimestamp = () => 0;
+		} else {
+			const txn = new NativeTransaction(store.db, options);
+			super(store, txn);
+			this.#txn = txn;
+		}
 	}
 
 	/**

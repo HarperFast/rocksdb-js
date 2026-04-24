@@ -14,7 +14,7 @@
 #include "rocksdb/utilities/options_util.h"
 #include "db_options.h"
 #include "transaction_handle.h"
-#include "transaction_log_store.h"
+#include "transaction_log_store_registry.h"
 #include "util.h"
 
 namespace rocksdb_js {
@@ -63,6 +63,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * defaults this to `DBMode::Optimistic`.
 	 */
 	DBMode mode;
+
+	/**
+	 * Whether the database was opened in readonly mode via
+	 * `DB::OpenForReadOnly`. When true, write operations are not supported.
+	 */
+	bool readOnly;
 
 	/**
 	 * The RocksDB database instance.
@@ -129,39 +135,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::mutex listenerCallbacksMutex;
 
-	/**
-	 * The threshold for the transaction log file's last modified time to be
-	 * older than the retention period before it is rotated to the next sequence
-	 * number. A threshold of 0 means ignore age check.
-	 */
-	float transactionLogMaxAgeThreshold;
-
-	/**
-	 * The maximum size of a transaction log file in bytes before it is rotated
-	 * to the next sequence number. A max size of 0 means no limit.
-	 */
-	uint32_t transactionLogMaxSize;
-
-	/**
-	 * The retention period of transaction logs in milliseconds.
-	 */
-	std::chrono::milliseconds transactionLogRetentionMs;
-
-	/**
-	 * The path to the transaction logs.
-	 */
-	std::string transactionLogsPath;
-
-	/**
-	 * Map of transaction logs by name.
-	 */
-	std::map<std::string, std::shared_ptr<TransactionLogStore>> transactionLogStores;
-
-	/**
-	 * Mutex to protect the transaction logs map.
-	 */
-	std::mutex transactionLogMutex;
-
 private:
 	DBDescriptor(
 		const std::string& path,
@@ -170,8 +143,6 @@ private:
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 		std::shared_ptr<rocksdb::Statistics> statistics
 	);
-
-	void discoverTransactionLogStores();
 
 public:
 	static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
@@ -182,7 +153,6 @@ public:
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
-
 
 	/**
 	 * Gets a single statistic value.

@@ -42,7 +42,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required");
 
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
-		std::make_shared<TransactionLogHandle>(*dbHandle, name)
+		std::make_shared<TransactionLogHandle>(*dbHandle, name, (*dbHandle)->descriptor->readOnly)
 	);
 
 	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get());
@@ -80,6 +80,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_TRANSACTION_LOG_HANDLE("AddEntry");
+	THROW_IF_READONLY(*txnLogHandle, "");
 
 	bool isBuffer;
 	bool isArrayBuffer;

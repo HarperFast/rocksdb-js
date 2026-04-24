@@ -664,3 +664,23 @@ for (const { name, options, txnOptions } of testOptions) {
 			}));
 	});
 }
+
+describe('Optimistic and Pessimistic Instances', () => {
+	it('should error if database is already open in a optimistic mode', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { pessimistic: true }] },
+			async ({ db }, { db: db2 }) => {
+				db.open();
+				expect(() => db2.open()).toThrow("Database already open in 'optimistic' mode");
+			}
+		));
+
+	it('should error if database is already open in a pessimistic mode', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{ pessimistic: true }, {}] },
+			async ({ db }, { db: db2 }) => {
+				db.open();
+				expect(() => db2.open()).toThrow("Database already open in 'pessimistic' mode");
+			}
+		));
+});

@@ -27,6 +27,7 @@ import { ExtendedIterable } from '@harperfast/extended-iterable';
 const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } =
 	constants;
 const KEY_BUFFER_SIZE = 4096;
+
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
 
@@ -73,7 +74,11 @@ export interface StoreOptions extends Omit<
 	 */
 	randomAccessStructure?: boolean;
 
-	// readOnly?: boolean;
+	/**
+	 * When `true`, the database is opened in read-only mode. Write operations
+	 * will throw an error with code `ERR_DATABASE_READONLY`.
+	 */
+	readOnly?: boolean;
 
 	sharedStructuresKey?: symbol;
 
@@ -198,6 +203,12 @@ export class Store {
 	pessimistic: boolean;
 
 	/**
+	 * Whether the database is open in readonly mode. When `true`, write
+	 * operations will throw an error with code `ERR_DATABASE_READONLY`.
+	 */
+	readOnly: boolean;
+
+	/**
 	 * Encoder specific flag used to signal that the encoder should use a random
 	 * access structure.
 	 */
@@ -285,6 +296,7 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads ?? 1;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
+		this.readOnly = options?.readOnly ?? false;
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
@@ -392,6 +404,9 @@ export class Store {
 		if (alwaysCreateNewBuffer) {
 			// used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
+		}
+		if (this.readOnly) {
+			txnId = undefined;
 		}
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		const result = context.getSync(keyParam, flags | ONLY_IF_IN_MEMORY_CACHE_FLAG, txnId);
@@ -508,7 +523,7 @@ export class Store {
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
-		if ((options as DBITransactional)?.transaction) {
+		if (!this.readOnly && (options as DBITransactional)?.transaction) {
 			txnId = (options as DBITransactional).transaction!.id;
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');
@@ -603,6 +618,7 @@ export class Store {
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			readOnly: this.readOnly,
 			statsLevel: this.statsLevel,
 			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
 			transactionLogMaxSize: this.transactionLogMaxSize,

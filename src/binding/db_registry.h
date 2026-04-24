@@ -12,6 +12,28 @@
 namespace rocksdb_js {
 
 /**
+ * Lightweight key for the registry map. Composed of the two fields that
+ * uniquely identify a database instance: path and whether it was opened
+ * read-only. Using a dedicated key type lets callers look up entries before
+ * a `DBDescriptor` has been opened.
+ */
+struct DBKey {
+	std::string path;
+	bool readOnly;
+
+	bool operator==(const DBKey& other) const {
+		return path == other.path && readOnly == other.readOnly;
+	}
+};
+
+struct DBKeyHash {
+	size_t operator()(const DBKey& key) const {
+		return std::hash<std::string>()(key.path) ^
+		       std::hash<bool>()(key.readOnly);
+	}
+};
+
+/**
  * Entry in the database registry containing both the descriptor and a condition
  * variable for coordinating access to that specific path.
  */
@@ -50,7 +72,7 @@ private:
 	 * Map of database path to registry entry containing both the descriptor
 	 * and condition variable for that path.
 	 */
-	std::unordered_map<std::string, DBRegistryEntry> databases;
+	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash> databases;
 
 	/**
 	 * Mutex to protect the databases map.

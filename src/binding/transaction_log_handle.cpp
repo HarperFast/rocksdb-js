@@ -7,8 +7,9 @@ namespace rocksdb_js {
 
 TransactionLogHandle::TransactionLogHandle(
 	const std::shared_ptr<DBHandle>& dbHandle,
-	const std::string& logName
-): dbHandle(dbHandle), logName(logName), transactionId(0) {
+	const std::string& logName,
+	bool readOnly
+): dbHandle(dbHandle), logName(logName), readOnly(readOnly), transactionId(0) {
 	DEBUG_LOG("%p TransactionLogHandle::TransactionLogHandle Creating TransactionLogHandle \"%s\"\n", this, logName.c_str());
 	this->store = dbHandle->descriptor->resolveTransactionLogStore(logName);
 }
@@ -25,13 +26,13 @@ void TransactionLogHandle::addEntry(
 ) {
 	auto dbHandle = this->dbHandle.lock();
 	if (!dbHandle) {
-		throw std::runtime_error("Database has been closed");
+		throw rocksdb_js::DBException("Database has been closed");
 	}
 
 	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
 	if (!txnHandle) {
 		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %u not found\n", this, transactionId);
-		throw std::runtime_error("Transaction id " + std::to_string(transactionId) + " not found");
+		throw rocksdb_js::DBException("Transaction id " + std::to_string(transactionId) + " not found");
 	}
 
 	auto store = this->store.lock();
@@ -47,7 +48,7 @@ void TransactionLogHandle::addEntry(
 	// check if transaction is already bound to a different log store
 	auto boundStore = txnHandle->boundLogStore.lock();
 	if (boundStore && boundStore.get() != store.get()) {
-		throw std::runtime_error("Log already bound to a transaction");
+		throw rocksdb_js::DBException("Log already bound to a transaction");
 	}
 
 	auto entry = std::make_unique<TransactionLogEntry>(store, data, size);

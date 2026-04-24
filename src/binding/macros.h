@@ -102,7 +102,7 @@
 		napi_status status = (call); \
 		if (status != napi_ok) { \
 			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
-			throw std::runtime_error(errorStr); \
+			throw rocksdb_js::DBException(std::move(errorStr)); \
 		} \
 	} while (0)
 
@@ -212,7 +212,7 @@
 		if (status.code() == rocksdb::Status::Code::kAborted) { \
 			ss << status.ToString(); \
 		} else { \
-			ss << msg << ": " << status.ToString(); \
+			ss << (msg) << ": " << status.ToString(); \
 		} \
 		errorStr = ss.str(); \
 		if (errorStr.size() > 2 && errorStr.compare(errorStr.size() - 2, 2, ": ") == 0) { \
@@ -252,6 +252,14 @@
 	do { \
 		ROCKSDB_STATUS_FORMAT_ERROR(status, msg); \
 		rocksdb_js::createRocksDBError(env, status, msg, error); \
+	} while (0)
+
+#define THROW_IF_READONLY(handle, context) \
+	do { \
+		if ((handle) && (handle)->readOnly) { \
+			::napi_throw_error(env, "ERR_DATABASE_READONLY", context "Unsupported operation in read-only mode"); \
+			NAPI_RETURN_UNDEFINED(); \
+		} \
 	} while (0)
 
 #endif

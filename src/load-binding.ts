@@ -65,7 +65,7 @@ export type TransactionLogQueryOptions = {
 export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
 
 export type TransactionLog = {
-	new (name: string): TransactionLog;
+	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
 	name: string;
@@ -96,6 +96,7 @@ export type NativeDatabaseOptions = {
 	name?: string;
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
+	readOnly?: boolean;
 	statsLevel?: (typeof stats.StatsLevel)[keyof typeof stats.StatsLevel];
 	transactionLogMaxAgeThreshold?: number;
 	transactionLogMaxSize?: number;

@@ -454,7 +454,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
-		throw std::runtime_error("Transaction log store is closed");
+		throw rocksdb_js::DBException("Transaction log store is closed");
 	}
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (current=%u, next=%u, timestamp=%llu)\n",
@@ -513,7 +513,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		// ensure we have a valid log file before writing
 		if (!logFile) {
 			DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str());
-			throw std::runtime_error("Failed to open transaction log file for store \"" + this->name + "\"");
+			throw rocksdb_js::DBException("Failed to open transaction log file for store \"" + this->name + "\"");
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file

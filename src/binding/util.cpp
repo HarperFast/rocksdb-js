@@ -312,7 +312,7 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std
 
 	rocksdb::Status status = db->CreateColumnFamily(cfOptions, name, &cfHandle);
 	if (!status.ok()) {
-		throw std::runtime_error(status.ToString().c_str());
+		throw rocksdb_js::DBException(status.ToString());
 	}
 	return std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandle);
 }
@@ -580,7 +580,7 @@ void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perm
 		}
 	}
 
-	throw std::runtime_error("Failed to create directory: " + path.string());
+	throw rocksdb_js::DBException("Failed to create directory: " + path.string());
 }
 
 }

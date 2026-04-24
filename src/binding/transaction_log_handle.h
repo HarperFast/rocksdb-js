@@ -25,6 +25,11 @@ struct TransactionLogHandle final : Closable {
 	std::string logName;
 
 	/**
+	 * Whether the associated DBHandle's DBDescriptor is opened in readonly mode.
+	 */
+	bool readOnly;
+
+	/**
 	 * The transaction id.
 	 */
 	uint32_t transactionId;
@@ -32,7 +37,11 @@ struct TransactionLogHandle final : Closable {
 	/**
 	 * Creates a new transaction log handle.
 	 */
-	TransactionLogHandle(const std::shared_ptr<DBHandle>& dbHandle, const std::string& logName);
+	TransactionLogHandle(
+		const std::shared_ptr<DBHandle>& dbHandle,
+		const std::string& logName,
+		bool readOnly
+	);
 
 	/**
 	 * Destroys the transaction log handle.

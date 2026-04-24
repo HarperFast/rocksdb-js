@@ -82,13 +82,15 @@ struct Database final {
  * State for the `Clear` async work.
  */
 struct AsyncClearState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
+	const char* failureMsg;
 	AsyncClearState(
 		napi_env env,
-		std::shared_ptr<DBHandle> handle
+		std::shared_ptr<DBHandle> handle,
+		const char* failureMsg = "Clear failed"
 	) :
-		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle)
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
+		failureMsg(failureMsg)
 	{}
-
 };
 
 /**

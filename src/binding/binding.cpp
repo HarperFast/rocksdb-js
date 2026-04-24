@@ -10,6 +10,7 @@
 #include "transaction.h"
 #include "transaction_log.h"
 #include "transaction_log_file.h"
+#include "transaction_log_store_registry.h"
 #include "util.h"
 #include <atomic>
 
@@ -67,14 +68,16 @@ NAPI_MODULE_INIT() {
 	[[maybe_unused]] int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
-	// initialize the registry
+	// initialize the registries
 	rocksdb_js::DBRegistry::Init(env, exports);
+	rocksdb_js::TransactionLogStoreRegistry::Init();
 
 	// registry cleanup
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n");
+			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
 			rocksdb_js::DBRegistry::PurgeAll();
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {

@@ -323,6 +323,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Whether the database is open in readonly mode.
+	 */
+	get readOnly(): boolean {
+		return this.store.readOnly;
+	}
+
+	/**
 	 * Sugar method for opening a database.
 	 *
 	 * @param pathOrStore - The filesystem path to the database or a custom store.
