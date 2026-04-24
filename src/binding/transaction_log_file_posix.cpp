@@ -53,13 +53,13 @@ void TransactionLogFile::flush() {
 	if (::fsync(fdToFlush) < 0) {
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fsync failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
-		throw std::runtime_error("Failed to flush file: " + this->path.string());
+		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
 	}
 #else
 	if (::fdatasync(fdToFlush) < 0) {
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fdatasync failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
-		throw std::runtime_error("Failed to flush file: " + this->path.string());
+		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
 	}
 #endif
 
@@ -85,7 +85,7 @@ void TransactionLogFile::openFile() {
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
 				this, parentPath.string().c_str(), e.what());
-			throw std::runtime_error("Failed to create parent directory: " + parentPath.string());
+			throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
 		}
 	}
 
@@ -94,7 +94,7 @@ void TransactionLogFile::openFile() {
 	if (this->fd < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno);
-		throw std::runtime_error("Failed to open sequence file for read/write: " + this->path.string());
+		throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
 	}
 
 	// get file size
@@ -102,7 +102,7 @@ void TransactionLogFile::openFile() {
 	if (::fstat(this->fd, &st) < 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile Failed to get file size: %s (error=%d)\n",
 			this, this->path.string().c_str(), errno);
-		throw std::runtime_error("Failed to get file size: " + this->path.string());
+		throw rocksdb_js::DBException("Failed to get file size: " + this->path.string());
 	}
 	this->size = st.st_size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",

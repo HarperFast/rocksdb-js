@@ -102,7 +102,7 @@
 		napi_status status = (call); \
 		if (status != napi_ok) { \
 			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
-			throw std::runtime_error(errorStr); \
+			throw rocksdb_js::DBException(std::move(errorStr)); \
 		} \
 	} while (0)
 

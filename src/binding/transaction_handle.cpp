@@ -53,7 +53,7 @@ void TransactionHandle::resetTransaction(){
 		rocksdb::OptimisticTransactionOptions txnOptions;
 		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
-		throw std::runtime_error("Invalid database");
+		throw rocksdb_js::DBException("Invalid database");
 	}
 }
 
@@ -76,7 +76,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	if (currentBoundStore) {
 		// transaction is already bound to a log store
 		if (currentBoundStore.get() != entry->store.get()) {
-			throw std::runtime_error("Log already bound to a transaction");
+			throw rocksdb_js::DBException("Log already bound to a transaction");
 		}
 	} else {
 		// Bind under transactionBindMutex so the bind+increment is atomic with
@@ -85,7 +85,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 		// event loop the way holding writeMutex here would.
 		std::lock_guard<std::mutex> lock(entry->store->transactionBindMutex);
 		if (entry->store->isClosing.load(std::memory_order_relaxed)) {
-			throw std::runtime_error("Transaction log store is closed");
+			throw rocksdb_js::DBException("Transaction log store is closed");
 		}
 		this->boundLogStore = entry->store;
 		entry->store->pendingTransactionCount++;

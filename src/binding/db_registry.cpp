@@ -134,7 +134,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 1) +
 				" reference(s) still held after closing all handles. This may indicate handles not properly closed or JavaScript objects not yet garbage collected.";
 			DEBUG_LOG("%p DBRegistry::DestroyDB Error: %s\n", instance.get(), errorMsg.c_str());
-			throw std::runtime_error(errorMsg);
+			throw rocksdb_js::DBException(errorMsg);
 		}
 
 		// Release our reference to the descriptor
@@ -147,7 +147,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
 	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
 	if (!status.ok()) {
-		throw std::runtime_error(status.ToString().c_str());
+		throw rocksdb_js::DBException(status.ToString());
 	}
 
 	// remove the database directory including transaction logs
@@ -183,7 +183,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// ensure the registry has already been initialized
 	if (!instance) {
 		DEBUG_LOG("DBRegistry::OpenDB Registry not initialized!\n");
-		throw std::runtime_error("DBRegistry not initialized!");
+		throw rocksdb_js::DBException("DBRegistry not initialized!");
 	}
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
@@ -225,7 +225,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		// database exists and is not closing, proceed with existing logic
 		// check if the database is already open with a different mode
 		if (options.mode != entry.descriptor->mode) {
-			throw std::runtime_error(
+			throw rocksdb_js::DBException(
 				"Database already open in '" +
 				(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
 				"' mode"
@@ -246,7 +246,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 		if (!columnExists) {
 			if (entry.descriptor->readOnly) {
-				throw std::runtime_error("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
+				throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
 			}
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
 			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);

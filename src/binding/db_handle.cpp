@@ -176,11 +176,12 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	// and is being re-opened
 	this->resetCancelled();
 
+	this->path = path;
+
 	auto handleParams = DBRegistry::OpenDB(path, options);
 	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
-	this->path = path;
 
 	// Note: We cannot attach this handle to the descriptor because we don't
 	// have the smart pointer to the dbHandle instance, so the caller needs to

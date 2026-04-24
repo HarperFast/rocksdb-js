@@ -703,9 +703,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			DEBUG_LOG("DBDescriptor::open Failed to open readonly db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			if (status.IsIOError()) {
 				DEBUG_LOG("DBDescriptor::open IOError: %s\n", status.ToString().c_str());
-				throw std::runtime_error("Database does not exist");
+				throw rocksdb_js::DBException("Database does not exist");
 			}
-			throw std::runtime_error(status.ToString().c_str());
+			throw rocksdb_js::DBException(status.ToString());
 		}
 		DEBUG_LOG("DBDescriptor::open Opened readonly db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb.release(), DBDeleter{});
@@ -719,7 +719,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
-			throw std::runtime_error(status.ToString().c_str());
+			throw rocksdb_js::DBException(status.ToString());
 		}
 		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
@@ -729,7 +729,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
-			throw std::runtime_error(status.ToString().c_str());
+			throw rocksdb_js::DBException(status.ToString());
 		}
 		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
