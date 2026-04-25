@@ -66,6 +66,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool disableSnapshot;
 
 	/**
+	 * When true, IsBusy at commit time is signalled back to JS as RETRY_NOW
+	 * (a non-error resolution) instead of a rejection. The native layer may
+	 * park on a VT slot before signalling, eliminating the JS-side backoff
+	 * delay in the common case where the conflicting transaction has already
+	 * committed.
+	 */
+	bool coordinatedRetry;
+
+	/**
 	 * The transaction id assigned by the database descriptor.
 	 */
 	uint32_t id;

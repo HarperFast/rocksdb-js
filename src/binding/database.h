@@ -23,6 +23,10 @@ namespace rocksdb_js {
 // verification-table slot for the key. Distinct from NOT_IN_MEMORY_CACHE_FLAG
 // and from any byte-length value returned via the default value buffer.
 #define FRESH_VERSION_FLAG 0x08000000
+// Resolved (not rejected) value for commit() when coordinatedRetry is true
+// and the transaction experienced an IsBusy conflict. JS should retry the
+// transaction body immediately without any backoff delay.
+#define RETRY_NOW_VALUE 0x04000000
 
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \

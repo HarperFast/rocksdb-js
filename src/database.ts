@@ -16,6 +16,7 @@ import {
 	VALUE_BUFFER,
 } from './store.js';
 import {
+	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
@@ -550,7 +551,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 
 			try {
-				await txn.commit();
+				const commitResult = await txn.commit();
+				if (commitResult === RETRY_NOW) {
+					// coordinatedRetry: conflict resolved, retry immediately
+					continue;
+				}
 				return result;
 			} catch (commitErr) {
 				if (commitErr instanceof TransactionAlreadyAbortedError) {

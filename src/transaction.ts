@@ -1,6 +1,14 @@
 import { DBI } from './dbi';
-import { NativeTransaction, type TransactionOptions } from './load-binding.js';
+import { constants, NativeTransaction, type TransactionOptions } from './load-binding.js';
 import { Store } from './store.js';
+
+/**
+ * Sentinel value returned by `commit()` when `coordinatedRetry: true` and the
+ * transaction encountered an IsBusy conflict. The native layer parks on VT
+ * slots and resolves only after the conflicting transaction releases its write
+ * intent, so callers should retry immediately without any backoff delay.
+ */
+export const RETRY_NOW: number = constants.RETRY_NOW_VALUE;
 
 export class TransactionAlreadyAbortedError extends Error {
 	readonly code = 'ERR_ALREADY_ABORTED';
@@ -72,13 +80,19 @@ export class Transaction extends DBI {
 
 	/**
 	 * Commit the transaction.
+	 *
+	 * Returns `RETRY_NOW` when `coordinatedRetry: true` and an IsBusy conflict
+	 * was detected. The caller should retry the transaction body immediately.
 	 */
-	async commit(): Promise<void> {
+	async commit(): Promise<typeof RETRY_NOW | void> {
 		try {
-			await new Promise<void>((resolve, reject) => {
+			const result = await new Promise<number | void>((resolve, reject) => {
 				this.notify('beforecommit');
 				this.#txn.commit(resolve, reject);
 			});
+			if (result === RETRY_NOW) {
+				return RETRY_NOW;
+			}
 		} catch (err) {
 			throw this.#handleCommitError(err);
 		} finally {

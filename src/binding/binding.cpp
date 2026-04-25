@@ -124,6 +124,7 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
 	EXPORT_CONSTANT(constants, POPULATE_VERSION_FLAG)
 	EXPORT_CONSTANT(constants, FRESH_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, RETRY_NOW_VALUE)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	// stats

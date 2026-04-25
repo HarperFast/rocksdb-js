@@ -28,13 +28,25 @@ export type TransactionOptions = {
 	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
 	 */
 	retryOnBusy?: boolean;
+
+	/**
+	 * When `true`, an `IsBusy` conflict at commit time is resolved with the
+	 * `RETRY_NOW` sentinel value instead of being rejected. The native layer
+	 * may park on a VT slot before resolving, so the JS retry fires only after
+	 * the conflicting transaction has committed and released its write intent.
+	 *
+	 * Use together with `verificationTable: true` on the database.
+	 *
+	 * @default false
+	 */
+	coordinatedRetry?: boolean;
 };
 
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
 	abort(): void;
-	commit(resolve: () => void, reject: (err: Error) => void): void;
+	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
@@ -299,6 +311,12 @@ export const constants: {
 	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
 	POPULATE_VERSION_FLAG: number;
 	FRESH_VERSION_FLAG: number;
+	/**
+	 * Sentinel value resolved (not rejected) by `commit()` when
+	 * `coordinatedRetry: true` and the transaction encountered an IsBusy
+	 * conflict. JS should retry the transaction body immediately.
+	 */
+	RETRY_NOW_VALUE: number;
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;

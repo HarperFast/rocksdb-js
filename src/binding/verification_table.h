@@ -3,7 +3,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <vector>
 #include "rocksdb/slice.h"
 
 namespace rocksdb_js {
@@ -70,8 +73,26 @@ struct LockTracker {
 	uint16_t              generation;   // immutable after install; matches slot encoding
 	size_t                slotIndex;    // index in VT slots_ array (for Phase 4 cleanup)
 
+	bool                               woken{false};
+	std::mutex                         wakeCallbacksMutex;
+	std::vector<std::function<void()>> wakeCallbacks;
+
 	LockTracker(size_t idx, uint16_t gen)
 		: refcount(1), holders(0), generation(gen), slotIndex(idx) {}
+
+	/**
+	 * Registers a callback to be invoked when wake() is called.
+	 * If wake() was already called, returns false immediately — the caller should
+	 * proceed without parking (the lock has already been released).
+	 */
+	bool addWakeCallback(std::function<void()> cb);
+
+	/**
+	 * Fires all registered wake callbacks and marks this tracker as woken.
+	 * Subsequent addWakeCallback() calls return false.
+	 * Called from releaseIntent() after zeroing the VT slot.
+	 */
+	void wake();
 };
 
 // Returns a fresh 15-bit generation tag for a new LockTracker install.

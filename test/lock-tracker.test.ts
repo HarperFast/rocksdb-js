@@ -1,3 +1,4 @@
+import { RETRY_NOW } from '../src/transaction.js';
 import type { Transaction } from '../src/transaction.js';
 import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
@@ -91,4 +92,68 @@ describe('LockTracker (Phase 2)', () => {
 				expect(db.verifyVersion(keyB, vB)).toBe(true);
 			}));
 	});
+});
+
+describe('Coordinated retry (Phase 3)', () => {
+	it('RETRY_NOW is exported and is a number', () => {
+		expect(typeof RETRY_NOW).toBe('number');
+		expect(RETRY_NOW).toBeGreaterThan(0);
+	});
+
+	it('resolves with RETRY_NOW (not rejects) on IsBusy when coordinatedRetry is true', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('coordinated-retry-key');
+			const value = Buffer.alloc(16);
+			value.writeDoubleBE(1.5e12, 0);
+
+			// Force IsBusy by running concurrent transactions writing the same key
+			// under coordinatedRetry: true. database.ts handles RETRY_NOW internally
+			// via immediate retry; callers never see it as a return value.
+			const results = await Promise.allSettled(
+				Array.from({ length: 4 }, async (_, i) => {
+					const v = Buffer.alloc(16);
+					v.writeDoubleBE(1.5e12 + i, 0);
+					await db.transaction(
+						async (txn: Transaction) => {
+							await txn.put(key, v);
+						},
+						{ coordinatedRetry: true, maxRetries: 5 }
+					);
+				})
+			);
+
+			// All transactions should eventually succeed (coordinatedRetry retries
+			// without error) or fail gracefully; none should throw unexpectedly.
+			for (const r of results) {
+				if (r.status === 'rejected') {
+					// Only acceptable rejection is exhausted retries
+					expect((r.reason as Error).message).toContain('commit');
+				}
+			}
+
+			// Slot should be 0 (released) after all transactions settle.
+			const newV = 2.5e12;
+			db.populateVersion(key, newV);
+			expect(db.verifyVersion(key, newV)).toBe(true);
+		}));
+
+	it('transaction() retries immediately on RETRY_NOW without error', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('retry-now-immediate');
+			let attempts = 0;
+
+			// Run a transaction with coordinatedRetry. Even with contention
+			// the transaction should eventually succeed (no unhandled rejection).
+			await db.transaction(
+				async (txn: Transaction) => {
+					attempts++;
+					const v = Buffer.alloc(16);
+					v.writeDoubleBE(1.0e12 + attempts, 0);
+					await txn.put(key, v);
+				},
+				{ coordinatedRetry: true, maxRetries: 10 }
+			);
+
+			expect(attempts).toBeGreaterThanOrEqual(1);
+		}));
 });

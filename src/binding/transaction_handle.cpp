@@ -22,6 +22,7 @@ TransactionHandle::TransactionHandle(
 	env(env),
 	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
+	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
@@ -146,15 +147,15 @@ void TransactionHandle::releaseIntent() {
 		LockTracker* t = heldTrackers[i];
 
 		// CAS the slot from our lock-encoded value back to 0.
-		// Phase 3 will CAS to the newly committed version on success.
-		// If the CAS fails, some other code already cleared the slot (e.g.
+		// If the CAS fails some other code already cleared the slot (e.g.
 		// DB close or a concurrent populateVersion); either is fine.
 		uint64_t expected = vtEncodeLock(t, t->generation);
 		slot->compare_exchange_strong(expected, 0ULL,
 		    std::memory_order_release, std::memory_order_acquire);
 
-		// Each LockTracker is exclusively owned by this TransactionHandle.
-		// refcount starts at 1 (Phase 3 waiters will add refs here).
+		// Notify any waiters that were parked on this slot.
+		t->wake();
+
 		if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
 	}
 

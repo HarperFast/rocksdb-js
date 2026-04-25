@@ -162,4 +162,23 @@ uint16_t vtNextGen() {
 	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x7FFF;
 }
 
+bool LockTracker::addWakeCallback(std::function<void()> cb) {
+	std::lock_guard<std::mutex> lock(wakeCallbacksMutex);
+	if (woken) {
+		return false;
+	}
+	wakeCallbacks.push_back(std::move(cb));
+	return true;
+}
+
+void LockTracker::wake() {
+	std::vector<std::function<void()>> cbs;
+	{
+		std::lock_guard<std::mutex> lock(wakeCallbacksMutex);
+		woken = true;
+		cbs.swap(wakeCallbacks);
+	}
+	for (auto& cb : cbs) cb();
+}
+
 } // namespace rocksdb_js
