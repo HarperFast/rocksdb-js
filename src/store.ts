@@ -33,6 +33,7 @@ const {
 	ITERATOR_EXCLUSIVE_START_FLAG,
 	ITERATOR_INCLUDE_VALUES_FLAG,
 	ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG,
+	ITERATOR_CONTEXT_IS_TRANSACTION_FLAG,
 } = constants;
 const KEY_BUFFER_SIZE = 4096;
 
@@ -537,6 +538,13 @@ export class Store {
 		if (includeValues) flags |= ITERATOR_INCLUDE_VALUES_FLAG;
 		if (includeValues && !this.decoderCopies) {
 			flags |= ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG;
+		}
+		// Tell the native constructor whether `context` is a Transaction (vs.
+		// the database) so it can skip a napi_instanceof check. The store
+		// holds the canonical NativeDatabase reference, so identity comparison
+		// is sufficient.
+		if (context !== this.db) {
+			flags |= ITERATOR_CONTEXT_IS_TRANSACTION_FLAG;
 		}
 
 		// Only pass the advanced ReadOptions object on the rare path where any

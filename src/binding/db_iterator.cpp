@@ -63,7 +63,9 @@ napi_status DBIteratorOptions::initFromNapiObject(napi_env env, napi_value optio
  * Creates a new `NativeIterator` object.
  *
  * Fast path arguments (avoids per-iterator NAPI property lookups):
- *   argv[0] - the `Database` or `Transaction` instance
+ *   argv[0] - the `Database` or `Transaction` instance; the JS layer
+ *             communicates which via `ITERATOR_CONTEXT_IS_TRANSACTION_FLAG`
+ *             so the native constructor doesn't need an instanceof check
  *   argv[1] - flags bitmask (see `ITERATOR_*_FLAG`)
  *   argv[2] - startKeyEnd (uint32) - end position of start key in the shared
  *             default key buffer; 0 means no start key
@@ -74,17 +76,7 @@ napi_status DBIteratorOptions::initFromNapiObject(napi_env env, napi_value optio
  *   argv[5] - optional advanced ReadOptions object (rare path)
  */
 napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("Iterator", 6);
-
-	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
-	napi_value exports;
-	NAPI_STATUS_THROWS(::napi_get_reference_value(env, exportsRef, &exports));
-
-	napi_value databaseCtor;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Database", &databaseCtor));
-
-	bool isDatabase = false;
-	NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], databaseCtor, &isDatabase));
+	NAPI_CONSTRUCTOR_ARGV("Iterator", 6);
 
 	uint32_t flags = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &flags));
@@ -108,45 +100,43 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	itOptions.setReadOptionDefaults();
 
 	// Optional advanced ReadOptions (rare path)
-	napi_valuetype optionsType = napi_undefined;
 	if (argc > 5) {
+		napi_valuetype optionsType = napi_undefined;
 		NAPI_STATUS_THROWS(::napi_typeof(env, argv[5], &optionsType));
 		if (optionsType == napi_object) {
 			NAPI_STATUS_THROWS(itOptions.initReadOptionsFromObject(env, argv[5]));
 		}
 	}
 
+	// Trust the JS layer's IS_TRANSACTION flag instead of running
+	// napi_instanceof against the Database / Transaction constructors. JS
+	// always knows the concrete class of `_context` (set in the DBI base
+	// class constructor), so this is a safe optimization that avoids
+	// napi_get_reference_value + napi_get_named_property + napi_instanceof
+	// per iterator construction.
+	const bool isTransaction = (flags & ITERATOR_CONTEXT_IS_TRANSACTION_FLAG) != 0;
+
 	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr;
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
 	TransactionHandle* txnHandlePtr = nullptr;
 
-	if (isDatabase) {
+	if (isTransaction) {
+		std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
+		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)));
+		if (txnHandle == nullptr || *txnHandle == nullptr) {
+			::napi_throw_error(env, nullptr, "Invalid transaction handle");
+			return nullptr;
+		}
+		txnHandlePtr = (*txnHandle).get();
+		dbHandle = &txnHandlePtr->dbHandle;
+		DEBUG_LOG("DBIterator::Constructor txnHandle=%p dbHandle=%p\n", txnHandlePtr, dbHandle->get());
+	} else {
 		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&dbHandle)));
-		DEBUG_LOG("DBIterator::Constructor Initializing iterator handle with Database instance (dbHandle=%p)\n", (*dbHandle).get());
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) {
 			::napi_throw_error(env, nullptr, "Database not open");
 			return nullptr;
 		}
-	} else {
-		DEBUG_LOG("DBIterator::Constructor Using existing transaction handle\n");
-		napi_value transactionCtor;
-		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &transactionCtor));
-
-		bool isTransaction = false;
-		NAPI_STATUS_THROWS(::napi_instanceof(env, argv[0], transactionCtor, &isTransaction));
-
-		if (!isTransaction) {
-			napi_valuetype type;
-			NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
-			std::string errorMsg = "Invalid context, expected Database or Transaction instance, got type " + std::to_string(type);
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			return nullptr;
-		}
-
-		std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
-		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)));
-		txnHandlePtr = (*txnHandle).get();
-		dbHandle = &txnHandlePtr->dbHandle;
+		DEBUG_LOG("DBIterator::Constructor Initializing iterator handle with Database instance (dbHandle=%p)\n", (*dbHandle).get());
 	}
 
 	// Resolve start/end key pointers from the shared default key buffer
@@ -392,16 +382,16 @@ void DBIterator::Init(napi_env env, napi_value exports) {
 
 	DEBUG_LOG("DBIterator::Init exports=%p\n", exports);
 
-	napi_ref exportsRef;
-	NAPI_STATUS_THROWS_VOID(::napi_create_reference(env, exports, 1, &exportsRef));
-
+	// No constructor data is needed: the JS layer passes
+	// ITERATOR_CONTEXT_IS_TRANSACTION_FLAG so the constructor never has to
+	// reach back into `exports` for the Database / Transaction class refs.
 	napi_value ctor;
 	NAPI_STATUS_THROWS_VOID(::napi_define_class(
 		env,
 		className,               // className
 		len,                     // length of class name
 		DBIterator::Constructor, // constructor
-		(void*)exportsRef,       // constructor arg
+		nullptr,                 // constructor data (unused)
 		sizeof(properties) / sizeof(napi_property_descriptor), // number of properties
 		properties,              // properties array
 		&ctor                    // [out] constructor

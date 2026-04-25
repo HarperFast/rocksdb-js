@@ -14,6 +14,11 @@ namespace rocksdb_js {
 #define ITERATOR_EXCLUSIVE_START_FLAG            0x04
 #define ITERATOR_INCLUDE_VALUES_FLAG             0x08
 #define ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG  0x10
+// Set by JS when `context` (argv[0]) is a NativeTransaction instance.
+// When unset, `context` is treated as a NativeDatabase instance. The native
+// constructor relies on this flag to skip the expensive
+// napi_get_named_property + napi_instanceof type checks.
+#define ITERATOR_CONTEXT_IS_TRANSACTION_FLAG     0x20
 
 // Iterator Next() return signals
 #define ITERATOR_RESULT_DONE 0
