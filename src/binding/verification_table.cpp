@@ -7,6 +7,9 @@ namespace rocksdb_js {
 
 namespace {
 
+// Process-global counter for LockTracker generation tags.
+static std::atomic<uint16_t> vtGlobalGen{0};
+
 // SplitMix64 finalizer.
 inline uint64_t mix64(uint64_t x) {
 	x ^= x >> 33;
@@ -153,6 +156,10 @@ uint64_t VerificationTable::extractVersionFromValue(const rocksdb::Slice& value)
 	}
 	uint64_t be = loadUnaligned64(reinterpret_cast<const uint8_t*>(value.data()));
 	return toHostEndian(be);
+}
+
+uint16_t vtNextGen() {
+	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x7FFF;
 }
 
 } // namespace rocksdb_js

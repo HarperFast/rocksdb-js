@@ -2,6 +2,7 @@
 #include "db_descriptor.h"
 #include "db_handle.h"
 #include "db_iterator.h"
+#include "db_settings.h"
 #include "macros.h"
 #include "transaction.h"
 #include "transaction_handle.h"
@@ -246,7 +247,22 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 				// ensure we haven't errored above
 				if (state->status.ok()) {
+					// Register VT intent: stamps each write-key slot as
+					// "write in flight" so concurrent readers fall through
+					// to RocksDB instead of serving a stale cached version.
+					auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+					if (vt) {
+						uintptr_t dbPtr = reinterpret_cast<uintptr_t>(
+							txnHandle->dbHandle->descriptor.get());
+						txnHandle->registerIntent(vt, dbPtr);
+					}
+
 					state->status = txnHandle->txn->Commit();
+
+					// Release intent regardless of outcome.
+					if (!txnHandle->sortedWriteSlots.empty()) {
+						txnHandle->releaseIntent();
+					}
 				}
 
 				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
@@ -295,7 +311,13 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 					state->callResolve();
 				} else {
-					state->handle->state = TransactionState::Pending;
+					// Reset to Pending so the JS retry layer can re-run the callback.
+					// Guard: if close() already set state to Aborted (e.g. DB closing
+					// during commit), keep Aborted — do not overwrite it with Pending,
+					// as that would let Transaction::Abort call Rollback() on a null txn.
+					if (state->handle->state == TransactionState::Committing) {
+						state->handle->state = TransactionState::Pending;
+					}
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
 					napi_value hasLogValue;

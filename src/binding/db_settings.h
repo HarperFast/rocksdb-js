@@ -55,6 +55,16 @@ public:
 	 */
 	VerificationTable* getVerificationTable();
 
+	/**
+	 * Returns the verification table if it has already been materialized,
+	 * without creating it. Safe to call from any thread. Returns null when
+	 * the table has not yet been created or is disabled.
+	 *
+	 * Use this in hot paths (e.g. transaction commit) where materializing
+	 * the table would trigger the config-freeze check unexpectedly.
+	 */
+	VerificationTable* getVerificationTableRaw();
+
 	static napi_value Config(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);

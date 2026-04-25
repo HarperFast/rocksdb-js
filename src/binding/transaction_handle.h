@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "rocksdb/options.h"
@@ -11,6 +12,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "transaction_log_entry.h"
 #include "util.h"
+#include "verification_table.h"
 
 namespace rocksdb_js {
 
@@ -95,6 +97,20 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
+	 * VT slots (ascending pointer order) that this transaction has registered
+	 * intent for. Parallel to heldTrackers. Populated by registerIntent() in
+	 * the libuv execute thread; cleared by releaseIntent().
+	 */
+	std::vector<std::atomic<uint64_t>*> sortedWriteSlots;
+
+	/**
+	 * LockTracker pointers held by this transaction — one per entry in
+	 * sortedWriteSlots. Each tracker's refcount is incremented by 1 for our
+	 * hold; decremented in releaseIntent().
+	 */
+	std::vector<LockTracker*> heldTrackers;
+
+	/**
 	 * A weak reference to the transaction log store this transaction is bound to.
 	 * Once set, a transaction can only add entries to this specific log store.
 	 */
@@ -115,6 +131,26 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	~TransactionHandle();
 
 	void resetTransaction();
+
+	/**
+	 * Registers write intent for all keys in the current write batch.
+	 * For each key, CAS-installs (or joins) a LockTracker in the VT slot,
+	 * tagging it as "write in flight". Slots are acquired in ascending pointer
+	 * order to prevent deadlock when multiple transactions contend.
+	 *
+	 * Called from the libuv execute thread before txn->Commit().
+	 */
+	void registerIntent(VerificationTable* vt, uintptr_t dbPtr);
+
+	/**
+	 * Releases all registered write intent. Decrements each LockTracker's
+	 * holder count; the last holder CASes the slot back to 0. Frees trackers
+	 * whose refcount reaches zero. Clears sortedWriteSlots and heldTrackers.
+	 *
+	 * Called from the libuv execute thread after txn->Commit() (success or
+	 * IsBusy), and from close() to clean up orphaned intent.
+	 */
+	void releaseIntent();
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 

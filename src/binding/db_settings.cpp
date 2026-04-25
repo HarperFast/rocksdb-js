@@ -67,6 +67,14 @@ VerificationTable* DBSettings::getVerificationTable() {
 }
 
 /**
+ * Returns the verification table if already materialized, without creating it.
+ */
+VerificationTable* DBSettings::getVerificationTableRaw() {
+	std::lock_guard<std::mutex> lock(verificationTableMutex);
+	return verificationTable.get();
+}
+
+/**
  * The `config()` JavaScript function.
  *
  * @param env The Node.js environment.

@@ -1,9 +1,12 @@
+#include <algorithm>
 #include <sstream>
 #include "database.h"
 #include "db_descriptor.h"
+#include "db_settings.h"
 #include "db_iterator_handle.h"
 #include "transaction_handle.h"
 #include "macros.h"
+#include "rocksdb/write_batch.h"
 
 namespace rocksdb_js {
 
@@ -100,6 +103,97 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	this->logEntryBatch->addEntry(std::move(entry));
 }
 
+void TransactionHandle::registerIntent(VerificationTable* vt, uintptr_t dbPtr) {
+	// Collect VT slot pointers for every key in the write batch.
+	struct Collector : public rocksdb::WriteBatch::Handler {
+		VerificationTable* vt;
+		uintptr_t dbPtr;
+		std::vector<std::atomic<uint64_t>*> slots;
+
+		rocksdb::Status PutCF(uint32_t cf, const rocksdb::Slice& key,
+		                      const rocksdb::Slice&) override {
+			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Status DeleteCF(uint32_t cf, const rocksdb::Slice& key) override {
+			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Status SingleDeleteCF(uint32_t cf, const rocksdb::Slice& key) override {
+			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Status MergeCF(uint32_t cf, const rocksdb::Slice& key,
+		                        const rocksdb::Slice&) override {
+			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
+			return rocksdb::Status::OK();
+		}
+	} c;
+	c.vt = vt;
+	c.dbPtr = dbPtr;
+
+	txn->GetWriteBatch()->GetWriteBatch()->Iterate(&c);
+
+	// Sort ascending, then deduplicate.
+	std::sort(c.slots.begin(), c.slots.end());
+	c.slots.erase(std::unique(c.slots.begin(), c.slots.end()), c.slots.end());
+
+	sortedWriteSlots.clear();
+	heldTrackers.clear();
+
+	for (auto* slot : c.slots) {
+		uint64_t v = slot->load(std::memory_order_acquire);
+
+		if (vtIsLock(v)) {
+			// Another transaction already locked this slot. That transaction
+			// will release it; readers already see "lock" and fall through to
+			// RocksDB. No need for us to install a second lock — skip.
+			continue;
+		}
+
+		// Slot is 0 or a version. Install our own tracker via a single CAS.
+		// We do not retry on failure: if another thread wins the race and
+		// installs a lock, readers already see that lock and fall through.
+		uint16_t gen = vtNextGen();
+		LockTracker* t = new LockTracker(vt->slotIndexOf(slot), gen);
+		t->holders.store(1, std::memory_order_relaxed);
+
+		if (!slot->compare_exchange_strong(v, vtEncodeLock(t, gen),
+		        std::memory_order_release, std::memory_order_acquire)) {
+			// CAS failed: another thread changed the slot just now.
+			// It is either locked (readers fall through) or holds a newer
+			// version. Either way we don't need to track this slot.
+			delete t;
+			continue;
+		}
+
+		sortedWriteSlots.push_back(slot);
+		heldTrackers.push_back(t);
+	}
+}
+
+void TransactionHandle::releaseIntent() {
+	for (size_t i = 0; i < sortedWriteSlots.size(); i++) {
+		auto* slot = sortedWriteSlots[i];
+		LockTracker* t = heldTrackers[i];
+
+		// CAS the slot from our lock-encoded value back to 0.
+		// Phase 3 will CAS to the newly committed version on success.
+		// If the CAS fails, some other code already cleared the slot (e.g.
+		// DB close or a concurrent populateVersion); either is fine.
+		uint64_t expected = vtEncodeLock(t, t->generation);
+		slot->compare_exchange_strong(expected, 0ULL,
+		    std::memory_order_release, std::memory_order_acquire);
+
+		// Each LockTracker is exclusively owned by this TransactionHandle.
+		// refcount starts at 1 (Phase 3 waiters will add refs here).
+		if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+	}
+
+	sortedWriteSlots.clear();
+	heldTrackers.clear();
+}
+
 /**
  * Release the transaction. This is called after successful commit, after
  * the transaction has been aborted, or when the transaction is destroyed.
@@ -147,6 +241,12 @@ void TransactionHandle::close() {
 				store->pendingTransactionCount--;
 			}
 		}
+	}
+
+	// Release any VT intent that was registered but not yet released
+	// (e.g. DB closed mid-commit before releaseIntent ran).
+	if (!this->sortedWriteSlots.empty()) {
+		this->releaseIntent();
 	}
 
 	// destroy the RocksDB transaction
