@@ -182,6 +182,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
+	this->enableVerificationTable = options.verificationTable;
 
 	// Note: We cannot attach this handle to the descriptor because we don't
 	// have the smart pointer to the dbHandle instance, so the caller needs to

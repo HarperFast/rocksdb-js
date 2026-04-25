@@ -1084,6 +1084,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	DBOptions dbHandleOptions;
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", dbHandleOptions.disableWAL));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "verificationTable", dbHandleOptions.verificationTable));
 
 	// statistics
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "enableStats", dbHandleOptions.enableStats));

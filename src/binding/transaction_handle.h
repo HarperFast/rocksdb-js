@@ -97,16 +97,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
-	 * VT slots (ascending pointer order) that this transaction has registered
-	 * intent for. Parallel to heldTrackers. Populated by registerIntent() in
-	 * the libuv execute thread; cleared by releaseIntent().
+	 * VT slots locked by this transaction. Parallel to heldTrackers.
+	 * Populated by lockVTSlot() at putSync/removeSync time (main JS thread);
+	 * cleared by releaseIntent() from the execute thread or close().
 	 */
-	std::vector<std::atomic<uint64_t>*> sortedWriteSlots;
+	std::vector<std::atomic<uint64_t>*> lockedVTSlots;
 
 	/**
 	 * LockTracker pointers held by this transaction — one per entry in
-	 * sortedWriteSlots. Each tracker's refcount is incremented by 1 for our
-	 * hold; decremented in releaseIntent().
+	 * lockedVTSlots. Each tracker owns one ref; decremented in releaseIntent().
 	 */
 	std::vector<LockTracker*> heldTrackers;
 
@@ -133,22 +132,24 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void resetTransaction();
 
 	/**
-	 * Registers write intent for all keys in the current write batch.
-	 * For each key, CAS-installs (or joins) a LockTracker in the VT slot,
-	 * tagging it as "write in flight". Slots are acquired in ascending pointer
-	 * order to prevent deadlock when multiple transactions contend.
+	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
+	 * tagging it as "write in flight". Called at putSync/removeSync time
+	 * (main JS thread) so the slot is invalidated as soon as the key enters
+	 * the transaction's write buffer — not deferred to commit time.
 	 *
-	 * Called from the libuv execute thread before txn->Commit().
+	 * Only acts when dbHandle->enableVerificationTable is true and the VT
+	 * has been materialized. Skips slots already locked by any transaction.
+	 * On successful CAS, appends to lockedVTSlots / heldTrackers.
 	 */
-	void registerIntent(VerificationTable* vt, uintptr_t dbPtr);
+	void lockVTSlot(const std::shared_ptr<DBHandle>& dbHandle, const rocksdb::Slice& key);
 
 	/**
-	 * Releases all registered write intent. Decrements each LockTracker's
-	 * holder count; the last holder CASes the slot back to 0. Frees trackers
-	 * whose refcount reaches zero. Clears sortedWriteSlots and heldTrackers.
+	 * Releases all VT slots locked by this transaction. CASes each slot back
+	 * to 0 and frees the associated LockTracker. Clears lockedVTSlots and
+	 * heldTrackers.
 	 *
 	 * Called from the libuv execute thread after txn->Commit() (success or
-	 * IsBusy), and from close() to clean up orphaned intent.
+	 * IsBusy), and from close() to clean up orphaned locks.
 	 */
 	void releaseIntent();
 

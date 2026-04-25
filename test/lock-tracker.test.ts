@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 describe('LockTracker (Phase 2)', () => {
 	describe('intent registration clears slots on commit', () => {
 		it('zeroes a previously-populated slot after a successful commit', () =>
-			dbRunner({ dbOptions: [{ encoding: false }] }, async ({ db }) => {
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = Buffer.from('lock-clears-slot');
 				const version = 1.7e12;
 				const value = Buffer.alloc(16);
@@ -26,7 +26,7 @@ describe('LockTracker (Phase 2)', () => {
 			}));
 
 		it('slot is writable again (not stuck lock-tagged) after commit', () =>
-			dbRunner({ dbOptions: [{ encoding: false }] }, async ({ db }) => {
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = Buffer.from('slot-writable-after-commit');
 				const value = Buffer.alloc(16);
 
@@ -41,7 +41,7 @@ describe('LockTracker (Phase 2)', () => {
 			}));
 
 		it('multiple transactions on same key all settle without leaving a stuck lock', () =>
-			dbRunner({ dbOptions: [{ encoding: false }] }, async ({ db }) => {
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = Buffer.from('concurrent-writes');
 				const value = Buffer.alloc(16);
 				value.writeDoubleBE(1.7e12, 0);
@@ -69,7 +69,7 @@ describe('LockTracker (Phase 2)', () => {
 			}));
 
 		it('does not affect keys not written by the transaction', () =>
-			dbRunner({ dbOptions: [{ encoding: false }] }, async ({ db }) => {
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const keyA = Buffer.from('txn-writes-a');
 				const keyB = Buffer.from('txn-skips-b');
 				const vA = 1.1e12;

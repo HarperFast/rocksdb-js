@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <sstream>
 #include "database.h"
 #include "db_descriptor.h"
@@ -6,7 +5,6 @@
 #include "db_iterator_handle.h"
 #include "transaction_handle.h"
 #include "macros.h"
-#include "rocksdb/write_batch.h"
 
 namespace rocksdb_js {
 
@@ -103,78 +101,48 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	this->logEntryBatch->addEntry(std::move(entry));
 }
 
-void TransactionHandle::registerIntent(VerificationTable* vt, uintptr_t dbPtr) {
-	// Collect VT slot pointers for every key in the write batch.
-	struct Collector : public rocksdb::WriteBatch::Handler {
-		VerificationTable* vt;
-		uintptr_t dbPtr;
-		std::vector<std::atomic<uint64_t>*> slots;
+void TransactionHandle::lockVTSlot(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	const rocksdb::Slice& key
+) {
+	auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+	if (!vt) return;
 
-		rocksdb::Status PutCF(uint32_t cf, const rocksdb::Slice& key,
-		                      const rocksdb::Slice&) override {
-			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
-			return rocksdb::Status::OK();
-		}
-		rocksdb::Status DeleteCF(uint32_t cf, const rocksdb::Slice& key) override {
-			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
-			return rocksdb::Status::OK();
-		}
-		rocksdb::Status SingleDeleteCF(uint32_t cf, const rocksdb::Slice& key) override {
-			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
-			return rocksdb::Status::OK();
-		}
-		rocksdb::Status MergeCF(uint32_t cf, const rocksdb::Slice& key,
-		                        const rocksdb::Slice&) override {
-			if (auto* s = vt->slotFor(dbPtr, cf, key)) slots.push_back(s);
-			return rocksdb::Status::OK();
-		}
-	} c;
-	c.vt = vt;
-	c.dbPtr = dbPtr;
+	// Use the transaction's base descriptor as the database identity key.
+	// All column families of the same physical DB share the same descriptor.
+	uintptr_t dbPtr = reinterpret_cast<uintptr_t>(this->dbHandle->descriptor.get());
+	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
+	auto* slot = vt->slotFor(dbPtr, cfId, key);
+	if (!slot) return;
 
-	txn->GetWriteBatch()->GetWriteBatch()->Iterate(&c);
+	uint64_t v = slot->load(std::memory_order_acquire);
+	if (vtIsLock(v)) {
+		// Slot is already locked — either by us (same key written earlier in
+		// this transaction) or by a concurrent transaction. Either way, readers
+		// already see the lock and fall through to RocksDB. We don't need to
+		// install a second lock for this slot.
+		return;
+	}
 
-	// Sort ascending, then deduplicate.
-	std::sort(c.slots.begin(), c.slots.end());
-	c.slots.erase(std::unique(c.slots.begin(), c.slots.end()), c.slots.end());
+	// Slot is 0 or a version. Install our own LockTracker via a single CAS.
+	// We do not retry: if the CAS loses to another transaction's lock, that
+	// lock already invalidates the cache for this slot.
+	uint16_t gen = vtNextGen();
+	LockTracker* t = new LockTracker(vt->slotIndexOf(slot), gen);
+	t->holders.store(1, std::memory_order_relaxed);
 
-	sortedWriteSlots.clear();
-	heldTrackers.clear();
-
-	for (auto* slot : c.slots) {
-		uint64_t v = slot->load(std::memory_order_acquire);
-
-		if (vtIsLock(v)) {
-			// Another transaction already locked this slot. That transaction
-			// will release it; readers already see "lock" and fall through to
-			// RocksDB. No need for us to install a second lock — skip.
-			continue;
-		}
-
-		// Slot is 0 or a version. Install our own tracker via a single CAS.
-		// We do not retry on failure: if another thread wins the race and
-		// installs a lock, readers already see that lock and fall through.
-		uint16_t gen = vtNextGen();
-		LockTracker* t = new LockTracker(vt->slotIndexOf(slot), gen);
-		t->holders.store(1, std::memory_order_relaxed);
-
-		if (!slot->compare_exchange_strong(v, vtEncodeLock(t, gen),
-		        std::memory_order_release, std::memory_order_acquire)) {
-			// CAS failed: another thread changed the slot just now.
-			// It is either locked (readers fall through) or holds a newer
-			// version. Either way we don't need to track this slot.
-			delete t;
-			continue;
-		}
-
-		sortedWriteSlots.push_back(slot);
+	if (slot->compare_exchange_strong(v, vtEncodeLock(t, gen),
+	        std::memory_order_release, std::memory_order_acquire)) {
+		lockedVTSlots.push_back(slot);
 		heldTrackers.push_back(t);
+	} else {
+		delete t;
 	}
 }
 
 void TransactionHandle::releaseIntent() {
-	for (size_t i = 0; i < sortedWriteSlots.size(); i++) {
-		auto* slot = sortedWriteSlots[i];
+	for (size_t i = 0; i < lockedVTSlots.size(); i++) {
+		auto* slot = lockedVTSlots[i];
 		LockTracker* t = heldTrackers[i];
 
 		// CAS the slot from our lock-encoded value back to 0.
@@ -190,7 +158,7 @@ void TransactionHandle::releaseIntent() {
 		if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
 	}
 
-	sortedWriteSlots.clear();
+	lockedVTSlots.clear();
 	heldTrackers.clear();
 }
 
@@ -243,9 +211,9 @@ void TransactionHandle::close() {
 		}
 	}
 
-	// Release any VT intent that was registered but not yet released
-	// (e.g. DB closed mid-commit before releaseIntent ran).
-	if (!this->sortedWriteSlots.empty()) {
+	// Release any VT locks that were installed at putSync/removeSync time
+	// but not yet released (e.g. transaction aborted or DB closed mid-commit).
+	if (!this->lockedVTSlots.empty()) {
 		this->releaseIntent();
 	}
 
@@ -455,7 +423,18 @@ rocksdb::Status TransactionHandle::putSync(
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
-	return this->txn->Put(column, key, value);
+	rocksdb::Status status = this->txn->Put(column, key, value);
+
+	// Lock the VT slot for this key immediately on write. This ensures that
+	// any cached version of the key is invalidated as soon as it enters the
+	// transaction's write buffer — not deferred to commit time. This upholds
+	// the invariant that a cached version is only trusted when there is a
+	// single visible version of the record across all transactions.
+	if (status.ok() && dbHandle->enableVerificationTable) {
+		this->lockVTSlot(dbHandle, key);
+	}
+
+	return status;
 }
 
 /**
@@ -481,7 +460,13 @@ rocksdb::Status TransactionHandle::removeSync(
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
-	return this->txn->Delete(column, key);
+	rocksdb::Status status = this->txn->Delete(column, key);
+
+	if (status.ok() && dbHandle->enableVerificationTable) {
+		this->lockVTSlot(dbHandle, key);
+	}
+
+	return status;
 }
 
 } // namespace rocksdb_js

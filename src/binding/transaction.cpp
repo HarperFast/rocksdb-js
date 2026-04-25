@@ -2,7 +2,6 @@
 #include "db_descriptor.h"
 #include "db_handle.h"
 #include "db_iterator.h"
-#include "db_settings.h"
 #include "macros.h"
 #include "transaction.h"
 #include "transaction_handle.h"
@@ -247,20 +246,11 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 				// ensure we haven't errored above
 				if (state->status.ok()) {
-					// Register VT intent: stamps each write-key slot as
-					// "write in flight" so concurrent readers fall through
-					// to RocksDB instead of serving a stale cached version.
-					auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-					if (vt) {
-						uintptr_t dbPtr = reinterpret_cast<uintptr_t>(
-							txnHandle->dbHandle->descriptor.get());
-						txnHandle->registerIntent(vt, dbPtr);
-					}
-
 					state->status = txnHandle->txn->Commit();
 
-					// Release intent regardless of outcome.
-					if (!txnHandle->sortedWriteSlots.empty()) {
+					// Release VT locks that were installed at putSync/removeSync
+					// time, regardless of commit outcome (success or IsBusy).
+					if (!txnHandle->lockedVTSlots.empty()) {
 						txnHandle->releaseIntent();
 					}
 				}
@@ -379,6 +369,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
+	if (!(*txnHandle)->lockedVTSlots.empty()) {
+		(*txnHandle)->releaseIntent();
+	}
+
 	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && !status.IsBusy()) {
 		if (!store) {
 			store = (*txnHandle)->boundLogStore.lock();
@@ -404,7 +398,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			// clear/delete the previous transaction and create a new transaction so that it can be retried
 			(*txnHandle)->resetTransaction();
 		}
-		(*txnHandle)->state = TransactionState::Pending;
+		if ((*txnHandle)->state == TransactionState::Committing) {
+			(*txnHandle)->state = TransactionState::Pending;
+		}
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
 		napi_value hasLogValue;

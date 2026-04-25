@@ -256,6 +256,11 @@ export class Store {
 	transactionLogsPath?: string;
 
 	/**
+	 * Whether this store's column family participates in the VerificationTable.
+	 */
+	verificationTable?: boolean;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -305,6 +310,7 @@ export class Store {
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = options?.transactionLogsPath;
+		this.verificationTable = options?.verificationTable;
 		this.writeKey = writeKey;
 	}
 
@@ -626,6 +632,7 @@ export class Store {
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
 			transactionLogsPath: this.transactionLogsPath,
+			verificationTable: this.verificationTable,
 		});
 
 		return false;

@@ -102,6 +102,13 @@ export type NativeDatabaseOptions = {
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;
+	/**
+	 * When true, transaction writes to this column family invalidate the
+	 * VerificationTable slot for each written key at write time (not at
+	 * commit time). Enable only for column families whose records are
+	 * cached (e.g. the primary CF of a table). Default: false.
+	 */
+	verificationTable?: boolean;
 };
 
 type ResolveCallback<T> = (value: T) => void;
