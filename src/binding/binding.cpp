@@ -1,6 +1,7 @@
 #include "binding.h"
 #include "database.h"
 #include "db_iterator.h"
+#include "db_iterator_handle.h"
 #include "db_registry.h"
 #include "db_settings.h"
 #include "macros.h"
@@ -119,6 +120,13 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_REVERSE_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_INCLUSIVE_END_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_EXCLUSIVE_START_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_INCLUDE_VALUES_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_RESULT_DONE)
+	EXPORT_CONSTANT(constants, ITERATOR_RESULT_FAST)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	// stats

@@ -1,4 +1,4 @@
-import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { StoreContext } from './store.js';
 import { execSync } from 'node:child_process';
@@ -80,11 +80,41 @@ export type TransactionLog = {
 	_logBuffers: Map<number, WeakRef<LogBuffer>>;
 };
 
-export declare class NativeIteratorCls<T> implements Iterator<T> {
-	constructor(context: StoreContext, options: IteratorOptions);
-	next(): IteratorResult<T>;
-	return(): IteratorResult<T>;
-	throw(): IteratorResult<T>;
+/**
+ * Shape of options that can be passed to the native iterator constructor for
+ * the rare case of advanced RocksDB ReadOptions overrides. Common iterator
+ * options are passed via the bitmask `flags` argument instead.
+ */
+export type NativeIteratorAdvancedOptions = {
+	adaptiveReadahead?: boolean;
+	asyncIO?: boolean;
+	autoReadaheadSize?: boolean;
+	backgroundPurgeOnIteratorCleanup?: boolean;
+	fillCache?: boolean;
+	readaheadSize?: number;
+	tailing?: boolean;
+};
+
+/**
+ * The result of a single native iterator step. A number value matches one of
+ * the `ITERATOR_RESULT_*` constants. The slow-path object is returned when
+ * the data does not fit in the shared key/value buffers, or when the decoder
+ * needs a stable value buffer.
+ */
+export type NativeIteratorResult = number | { key: Buffer; value?: Buffer };
+
+export declare class NativeIteratorCls {
+	constructor(
+		context: StoreContext,
+		flags: number,
+		startKeyEnd: number,
+		endKeyStart: number,
+		endKeyEnd: number,
+		options?: NativeIteratorAdvancedOptions
+	);
+	next(): NativeIteratorResult;
+	return(): void;
+	throw(err?: unknown): void;
 }
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
@@ -170,6 +200,10 @@ export type NativeDatabase = {
 	// Provide a buffer that is used as the default/shared buffer for value, where functions that use or return a value can do so by assigning the value to the shared buffer and providing/returning the length.
 	// A null value will reset the buffer.
 	setDefaultValueBuffer(buffer: Buffer | Uint8Array | null): void;
+	// Provide a Uint32Array(2)-backed buffer used by iterators to communicate
+	// the key length (index 0) and value length (index 1) of each iteration
+	// step without per-iteration NAPI property accesses.
+	setIteratorState(buffer: Buffer | Uint8Array): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
@@ -272,6 +306,13 @@ export const constants: {
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
+	ITERATOR_REVERSE_FLAG: number;
+	ITERATOR_INCLUSIVE_END_FLAG: number;
+	ITERATOR_EXCLUSIVE_START_FLAG: number;
+	ITERATOR_INCLUDE_VALUES_FLAG: number;
+	ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG: number;
+	ITERATOR_RESULT_DONE: number;
+	ITERATOR_RESULT_FAST: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
