@@ -149,7 +149,16 @@ export type NativeDatabase = {
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
 	getStats(all?: boolean): Record<string, number | StatsHistogramData>;
-	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
+	// When `expectedVersion` is supplied and the verification-table slot for
+	// the key holds the same version, returns `FRESH_VERSION_FLAG`. When
+	// `flags` includes `POPULATE_VERSION_FLAG`, a successful read seeds the
+	// verification table from the first 8 bytes of the value.
+	getSync(
+		keyLengthOrKeyBuffer: number | Buffer,
+		flags: number,
+		txnId?: number,
+		expectedVersion?: number
+	): Buffer | number | undefined;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
 		defaultBuffer: ArrayBuffer,
@@ -160,6 +169,7 @@ export type NativeDatabase = {
 	listLogs(): string[];
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
+	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;
 	purgeLogs(options?: PurgeLogsOptions): string[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
@@ -173,10 +183,21 @@ export type NativeDatabase = {
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
+	verifyVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): boolean;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = { blockCacheSize?: number };
+export type RocksDatabaseConfig = {
+	blockCacheSize?: number;
+	/**
+	 * Number of slots in the process-global verification table. Each slot is
+	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.
+	 *
+	 * Must be configured before the first database is opened. Once the table
+	 * is materialized, attempts to change this value will throw.
+	 */
+	verificationTableEntries?: number;
+};
 
 const nativeExtRE = /\.node$/;
 const req = createRequire(import.meta.url);
@@ -269,6 +290,8 @@ export const constants: {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 	NOT_IN_MEMORY_CACHE_FLAG: number;
 	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	POPULATE_VERSION_FLAG: number;
+	FRESH_VERSION_FLAG: number;
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;

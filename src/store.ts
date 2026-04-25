@@ -700,6 +700,27 @@ export class Store {
 	}
 
 	/**
+	 * Checks the process-global verification table for a fresh version match
+	 * on `key`. Returns `true` when the table currently records `version` for
+	 * this database+column-family. Provides a fast cache-freshness check
+	 * before falling back to a full read.
+	 */
+	verifyVersion(key: Key, version: number): boolean {
+		const keyParam = getKeyParam(this.encodeKey(key));
+		return this.db.verifyVersion(keyParam, version);
+	}
+
+	/**
+	 * Seeds the verification-table slot for `key` with `version`. Has no
+	 * effect if the slot is currently lock-tagged or the table is disabled.
+	 * Useful after a full read where the caller already knows the version.
+	 */
+	populateVersion(key: Key, version: number): void {
+		const keyParam = getKeyParam(this.encodeKey(key));
+		this.db.populateVersion(keyParam, version);
+	}
+
+	/**
 	 * Acquires a lock on the given key and calls the callback.
 	 *
 	 * @param key - The key to lock.

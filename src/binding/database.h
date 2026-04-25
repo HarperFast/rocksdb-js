@@ -13,6 +13,16 @@ namespace rocksdb_js {
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
 #define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
+// Set on getSync to opt in to populating the verification table after a
+// successful read. Extracts the first 8 bytes of the value as a big-endian
+// float64 version (Harper's record-encoder format) and CASes it into the
+// slot. Has no effect when no version is found (e.g., not-found, value < 8
+// bytes) or when the slot is currently lock-tagged.
+#define POPULATE_VERSION_FLAG 0x10000000
+// Returned by getSync when the caller-supplied expectedVersion matches the
+// verification-table slot for the key. Distinct from NOT_IN_MEMORY_CACHE_FLAG
+// and from any byte-length value returned via the default value buffer.
+#define FRESH_VERSION_FLAG 0x08000000
 
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
@@ -64,6 +74,7 @@ struct Database final {
 	static napi_value ListLogs(napi_env env, napi_callback_info info);
 	static napi_value Notify(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
+	static napi_value PopulateVersion(napi_env env, napi_callback_info info);
 	static napi_value PurgeLogs(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
@@ -73,6 +84,7 @@ struct Database final {
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);
 	static napi_value UseLog(napi_env env, napi_callback_info info);
+	static napi_value VerifyVersion(napi_env env, napi_callback_info info);
 	static napi_value WithLock(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);

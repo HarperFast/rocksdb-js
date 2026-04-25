@@ -1,4 +1,5 @@
 #include "db_settings.h"
+#include <random>
 #include "macros.h"
 #include "util.h"
 #include "rocksdb/advanced_cache.h"
@@ -8,12 +9,26 @@ namespace rocksdb_js {
 // Initialize the static instance
 std::unique_ptr<DBSettings> DBSettings::instance = nullptr;
 
+namespace {
+
+uint64_t generateSeed() {
+	std::random_device rd;
+	uint64_t hi = static_cast<uint64_t>(rd());
+	uint64_t lo = static_cast<uint64_t>(rd());
+	return (hi << 32) | lo;
+}
+
+} // namespace
+
 /**
  * The constructor for the DBSettings class.
  */
 DBSettings::DBSettings():
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
-	blockCache(nullptr)
+	blockCache(nullptr),
+	verificationTableEntries(128 * 1024), // 128K slots = 1 MB at 8 bytes per slot
+	verificationTableSeed(generateSeed()),
+	verificationTable(nullptr)
 {}
 
 /**
@@ -35,6 +50,20 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
 		blockCache = rocksdb::NewLRUCache(blockCacheSize);
 	}
 	return blockCache;
+}
+
+/**
+ * Get the global verification table instance, materializing it on first call.
+ * After the first call, the table is fixed in size for the process lifetime.
+ */
+VerificationTable* DBSettings::getVerificationTable() {
+	std::lock_guard<std::mutex> lock(verificationTableMutex);
+	if (!verificationTable) {
+		verificationTable = std::make_unique<VerificationTable>(
+			verificationTableEntries, verificationTableSeed
+		);
+	}
+	return verificationTable.get();
 }
 
 /**
@@ -68,6 +97,22 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		if (settings.blockCache) {
 			settings.blockCache->SetCapacity(blockCacheSize);
 		}
+	}
+
+	int64_t verificationTableEntries = 0;
+	status = rocksdb_js::getProperty(env, params, "verificationTableEntries", verificationTableEntries, true);
+	if (status == napi_ok) {
+		if (verificationTableEntries < 0) {
+			::napi_throw_range_error(env, nullptr, "Verification table entries must be a positive integer or 0 to disable verification");
+			return nullptr;
+		}
+
+		std::lock_guard<std::mutex> lock(settings.verificationTableMutex);
+		if (settings.verificationTable) {
+			::napi_throw_error(env, nullptr, "Verification table size cannot be changed after the first database is opened");
+			return nullptr;
+		}
+		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
 	}
 
 	NAPI_RETURN_UNDEFINED();

@@ -25,6 +25,7 @@
 				'src/binding/transaction_log_store.cpp',
 				'src/binding/transaction_log_store_registry.cpp',
 				'src/binding/util.cpp',
+				'src/binding/verification_table.cpp',
 			],
 			'defines': [
 				# Note: node-gyp defaults to NAPI_VERSION=8 (v12.22.0+,

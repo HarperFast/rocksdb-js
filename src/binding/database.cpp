@@ -5,9 +5,11 @@
 #include "db_iterator.h"
 #include "db_iterator_handle.h"
 #include "db_registry.h"
+#include "db_settings.h"
 #include "macros.h"
 #include "transaction.h"
 #include "util.h"
+#include "verification_table.h"
 
 namespace rocksdb_js {
 
@@ -719,7 +721,7 @@ napi_value Database::GetStats(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(3);
+	NAPI_METHOD_ARGV(4);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	// we store this in key slice (no copying) because we are synchronously using the key
@@ -734,6 +736,47 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &txnIdType));
+
+	// Optional 4th arg: expectedVersion as a JS Number. When provided, we
+	// consult the verification table for a fast-path "still fresh" answer
+	// before reading. The Number's IEEE 754 bit pattern (host-endian uint64)
+	// is the canonical form stored in the table; this matches what
+	// VerificationTable::extractVersionFromValue produces from the BE float64
+	// timestamp at offset 0 of every Harper record value.
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 4) {
+		napi_valuetype expectedVersionType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &expectedVersionType));
+		if (expectedVersionType == napi_number) {
+			double d;
+			NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[3], &d));
+			::memcpy(&expectedVersion, &d, sizeof(expectedVersion));
+			hasExpectedVersion = !vtIsLock(expectedVersion) && expectedVersion != 0;
+		}
+	}
+
+	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	if (hasExpectedVersion || wantsPopulate) {
+		VerificationTable* vt = DBSettings::getInstance().getVerificationTable();
+		if (vt) {
+			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
+			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
+		}
+	}
+
+	// Fast path: caller-supplied version matches the table — return FRESH
+	// sentinel without touching RocksDB.
+	if (vtSlot != nullptr && hasExpectedVersion &&
+			VerificationTable::verifyVersion(vtSlot, expectedVersion)) {
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
+		return result;
+	}
+
 	rocksdb::ReadOptions readOptions;
 	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
 		// this is used by get() so that the getSync() call will fail if the entry is not in the cache
@@ -777,6 +820,16 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	// Opt-in populate: extract the version from offset 0 and CAS into the
+	// verification table. Skip silently when the slot is currently lock-tagged
+	// or the value is too short.
+	if (vtSlot != nullptr && wantsPopulate) {
+		uint64_t version = VerificationTable::extractVersionFromValue(value);
+		if (version != 0 && !vtIsLock(version)) {
+			VerificationTable::populateVersion(vtSlot, version);
+		}
+	}
+
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
 			(*dbHandle)->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*dbHandle)->defaultValueBufferLength) {
@@ -796,6 +849,100 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	));
 
 	return result;
+}
+
+/**
+ * Synchronously checks whether the verification table holds the given version
+ * for the given key in this database+column-family. Used as a fast
+ * cache-freshness check by callers that have a deserialized value cached in
+ * a JS-isolate-local map along with the
+ * version that produced it.
+ *
+ * @example
+ * ```typescript
+ * const fresh = db.verifyVersion(keyBuf, entry.version);
+ * if (fresh) return cachedObject;
+ * ```
+ */
+napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
+
+	napi_valuetype versionType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &versionType));
+	if (versionType != napi_number) {
+		::napi_throw_type_error(env, nullptr, "Version must be a number");
+		return nullptr;
+	}
+	double d;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &d));
+	uint64_t version;
+	::memcpy(&version, &d, sizeof(version));
+
+	bool fresh = false;
+	if (version != 0 && !vtIsLock(version)) {
+		VerificationTable* vt = DBSettings::getInstance().getVerificationTable();
+		if (vt) {
+			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
+			std::atomic<uint64_t>* slot = vt->slotFor(dbPtr, cfId, keySlice);
+			if (slot) {
+				fresh = VerificationTable::verifyVersion(slot, version);
+			}
+		}
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, fresh, &result));
+	return result;
+}
+
+/**
+ * Sets the verification-table slot for the given key to the given version,
+ * unless the slot is currently lock-tagged. Useful for seeding the table
+ * after a full read where the caller already knows the version. Has no
+ * effect when the verification table is disabled.
+ */
+napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	rocksdb::Slice keySlice;
+	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
+		return nullptr;
+	}
+
+	napi_valuetype versionType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &versionType));
+	if (versionType != napi_number) {
+		::napi_throw_type_error(env, nullptr, "Version must be a number");
+		return nullptr;
+	}
+	double d;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &d));
+	uint64_t version;
+	::memcpy(&version, &d, sizeof(version));
+
+	if (version == 0 || vtIsLock(version)) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	VerificationTable* vt = DBSettings::getInstance().getVerificationTable();
+	if (vt) {
+		uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+		uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
+		std::atomic<uint64_t>* slot = vt->slotFor(dbPtr, cfId, keySlice);
+		if (slot) {
+			VerificationTable::populateVersion(slot, version);
+		}
+	}
+
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -1259,6 +1406,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "opened", nullptr, nullptr, IsOpen, nullptr, nullptr, napi_default, nullptr },
+		{ "populateVersion", nullptr, PopulateVersion, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "purgeLogs", nullptr, PurgeLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -1268,6 +1416,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "verifyVersion", nullptr, VerifyVersion, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "withLock", nullptr, WithLock, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 
