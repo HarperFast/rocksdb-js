@@ -568,24 +568,12 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	if (argc >= 5) {
-		napi_valuetype evType;
-		NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &evType));
-		if (evType == napi_number) {
-			double d;
-			NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[4], &d));
-			::memcpy(&expectedVersion, &d, sizeof(expectedVersion));
-			hasExpectedVersion = !vtIsLock(expectedVersion) && expectedVersion != 0;
-		}
+		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
 
 	std::atomic<uint64_t>* vtSlot = nullptr;
 	if (hasExpectedVersion) {
-		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-		if (vt) {
-			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*txnHandle)->dbHandle->descriptor.get());
-			uint32_t cfId = (*txnHandle)->dbHandle->getColumnFamilyHandle()->GetID();
-			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
-		}
+		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
 	}
 
 	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion);
@@ -651,26 +639,14 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	if (argc >= 4) {
-		napi_valuetype evType;
-		NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &evType));
-		if (evType == napi_number) {
-			double d;
-			NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[3], &d));
-			::memcpy(&expectedVersion, &d, sizeof(expectedVersion));
-			hasExpectedVersion = !vtIsLock(expectedVersion) && expectedVersion != 0;
-		}
+		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
 	std::atomic<uint64_t>* vtSlot = nullptr;
 	if (hasExpectedVersion || wantsPopulate) {
-		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-		if (vt) {
-			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*txnHandle)->dbHandle->descriptor.get());
-			uint32_t cfId = (*txnHandle)->dbHandle->getColumnFamilyHandle()->GetID();
-			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
-		}
+		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
 	}
 
 	// VT fast-path: caller-supplied version matches the table → return FRESH

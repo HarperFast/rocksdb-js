@@ -409,7 +409,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(4);
+	NAPI_METHOD_ARGV(5);
 
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	rocksdb::Slice keySlice;
@@ -424,6 +424,19 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &txnIdType));
 
+	// argv[4]: optional expectedVersion for VT check and populate.
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 5) {
+		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
+	}
+
+	// Pre-compute vtSlot so both the txn and DB async paths can use it.
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	if (hasExpectedVersion) {
+		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+	}
+
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
@@ -434,7 +447,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		return txnHandle->get(env, key, resolve, reject, *dbHandle);
+		return txnHandle->get(env, key, resolve, reject, *dbHandle,
+		                      vtSlot, hasExpectedVersion, expectedVersion);
 	}
 
 	rocksdb::ReadOptions readOptions;
@@ -447,6 +461,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	));
 
 	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
+	state->vtSlot = vtSlot;
+	state->hasExpectedVersion = hasExpectedVersion;
+	state->expectedVersion = expectedVersion;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -746,26 +763,14 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	if (argc >= 4) {
-		napi_valuetype expectedVersionType;
-		NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &expectedVersionType));
-		if (expectedVersionType == napi_number) {
-			double d;
-			NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[3], &d));
-			::memcpy(&expectedVersion, &d, sizeof(expectedVersion));
-			hasExpectedVersion = !vtIsLock(expectedVersion) && expectedVersion != 0;
-		}
+		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
 	std::atomic<uint64_t>* vtSlot = nullptr;
 	if (hasExpectedVersion || wantsPopulate) {
-		VerificationTable* vt = DBSettings::getInstance().getVerificationTable();
-		if (vt) {
-			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
-			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
-			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
-		}
+		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
 	}
 
 	// Fast path: caller-supplied version matches the table — return FRESH
@@ -820,10 +825,20 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// Opt-in populate: extract the version from offset 0 and CAS into the
-	// verification table. Skip silently when the slot is currently lock-tagged
-	// or the value is too short.
-	if (vtSlot != nullptr && wantsPopulate) {
+	// Soft VT miss: VT didn't confirm fresh at fast-path time, but the value
+	// read from DB still carries the expected version. Re-populate and signal FRESH.
+	if (hasExpectedVersion && vtSlot != nullptr) {
+		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
+		if (extracted == expectedVersion) {
+			VerificationTable::populateVersion(vtSlot, expectedVersion);
+			napi_value freshResult;
+			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
+			return freshResult;
+		}
+	}
+	// Opt-in populate, or implicit populate when an expected version was provided
+	// (seeds the VT with whatever version the DB actually holds).
+	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion)) {
 		uint64_t version = VerificationTable::extractVersionFromValue(value);
 		if (version != 0 && !vtIsLock(version)) {
 			VerificationTable::populateVersion(vtSlot, version);
@@ -879,21 +894,13 @@ napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 		::napi_throw_type_error(env, nullptr, "Version must be a number");
 		return nullptr;
 	}
-	double d;
-	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &d));
-	uint64_t version;
-	::memcpy(&version, &d, sizeof(version));
 
+	uint64_t version = 0;
 	bool fresh = false;
-	if (version != 0 && !vtIsLock(version)) {
-		VerificationTable* vt = DBSettings::getInstance().getVerificationTable();
-		if (vt) {
-			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
-			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
-			std::atomic<uint64_t>* slot = vt->slotFor(dbPtr, cfId, keySlice);
-			if (slot) {
-				fresh = VerificationTable::verifyVersion(slot, version);
-			}
+	if (parseExpectedVersion(env, argv[1], version)) {
+		auto* slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
+		if (slot) {
+			fresh = VerificationTable::verifyVersion(slot, version);
 		}
 	}
 
@@ -923,23 +930,15 @@ napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 		::napi_throw_type_error(env, nullptr, "Version must be a number");
 		return nullptr;
 	}
-	double d;
-	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &d));
-	uint64_t version;
-	::memcpy(&version, &d, sizeof(version));
 
-	if (version == 0 || vtIsLock(version)) {
+	uint64_t version = 0;
+	if (!parseExpectedVersion(env, argv[1], version)) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	VerificationTable* vt = DBSettings::getInstance().getVerificationTable();
-	if (vt) {
-		uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
-		uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
-		std::atomic<uint64_t>* slot = vt->slotFor(dbPtr, cfId, keySlice);
-		if (slot) {
-			VerificationTable::populateVersion(slot, version);
-		}
+	auto* slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
+	if (slot) {
+		VerificationTable::populateVersion(slot, version);
 	}
 
 	NAPI_RETURN_UNDEFINED();

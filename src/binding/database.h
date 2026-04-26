@@ -1,14 +1,49 @@
 #ifndef __DATABASE_H__
 #define __DATABASE_H__
 
+#include <cstring>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "rocksdb/status.h"
 #include "db_handle.h"
 #include "macros.h"
 #include "util.h"
+#include "verification_table.h"
 
 namespace rocksdb_js {
+
+/**
+ * Parses an expectedVersion from a napi_value double argument (bit-cast from
+ * IEEE 754 to uint64). Returns true and sets `out` when the arg is a valid
+ * non-zero, non-lock-tagged version. Returns false and leaves `out` unchanged
+ * for undefined/null args, non-numbers, zero, or lock-tagged values.
+ */
+inline bool parseExpectedVersion(napi_env env, napi_value arg, uint64_t& out) {
+	napi_valuetype t;
+	if (::napi_typeof(env, arg, &t) != napi_ok || t != napi_number) return false;
+	double d;
+	if (::napi_get_value_double(env, arg, &d) != napi_ok) return false;
+	uint64_t v;
+	::memcpy(&v, &d, sizeof(v));
+	if (vtIsLock(v) || v == 0) return false;
+	out = v;
+	return true;
+}
+
+/**
+ * Returns the verification-table slot for (dbHandle, key), or nullptr if the
+ * table pointer is null or the slot maps outside the table bounds.
+ */
+inline std::atomic<uint64_t>* vtSlotFor(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	VerificationTable* vt,
+	const rocksdb::Slice& key
+) {
+	if (!vt) return nullptr;
+	uintptr_t dbPtr = reinterpret_cast<uintptr_t>(dbHandle->descriptor.get());
+	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
+	return vt->slotFor(dbPtr, cfId, key);
+}
 
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
@@ -140,6 +175,12 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
 	std::string key;
 	std::string value;
+
+	// Verification table state for post-read check and populate.
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	bool wantsPopulate = false;
+	std::atomic<uint64_t>* vtSlot = nullptr;
 };
 
 napi_value resolveGetSyncResult(
@@ -161,6 +202,22 @@ void resolveGetResult(
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
+		if (state->status.ok() && state->vtSlot) {
+			// VT check and populate for the async read result.
+			rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion) {
+				// Soft miss: value still carries the expected version — signal FRESH.
+				VerificationTable::populateVersion(state->vtSlot, state->expectedVersion);
+				napi_value freshResult;
+				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+				state->callResolve(freshResult);
+				return;
+			}
+			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0) {
+				VerificationTable::populateVersion(state->vtSlot, extracted);
+			}
+		}
 		napi_value result;
 		if (state->status.IsNotFound()) {
 			napi_get_undefined(env, &result);
