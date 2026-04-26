@@ -51,8 +51,10 @@ export type NativeTransaction = {
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
-		resolve: (value: Buffer) => void,
-		reject: (err: Error) => void
+		resolve: (value: Buffer | number) => void,
+		reject: (err: Error) => void,
+		txnIdIgnored?: number,
+		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
@@ -157,9 +159,10 @@ export type NativeDatabase = {
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
-		resolve: ResolveCallback<Buffer>,
+		resolve: ResolveCallback<Buffer | number>,
 		reject: RejectCallback,
-		txnId?: number
+		txnId?: number,
+		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number;
@@ -305,6 +308,7 @@ const bindingPath = locateBinding();
 const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
 export const constants: {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 	NOT_IN_MEMORY_CACHE_FLAG: number;

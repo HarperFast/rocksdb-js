@@ -2,6 +2,7 @@
 #include "db_descriptor.h"
 #include "db_handle.h"
 #include "db_iterator.h"
+#include "db_settings.h"
 #include "macros.h"
 #include "transaction.h"
 #include "transaction_handle.h"
@@ -550,7 +551,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(3);
+	NAPI_METHOD_ARGV(5);
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
@@ -562,7 +563,32 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	// storing in std::string so it can live through the async process
 	std::string key(keySlice.data(), keySlice.size());
 
-	return (*txnHandle)->get(env, key, resolve, reject);
+	// argv[3]: txnId (ignored — the transaction is self)
+	// argv[4]: optional expectedVersion for VT check and populate
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 5) {
+		napi_valuetype evType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &evType));
+		if (evType == napi_number) {
+			double d;
+			NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[4], &d));
+			::memcpy(&expectedVersion, &d, sizeof(expectedVersion));
+			hasExpectedVersion = !vtIsLock(expectedVersion) && expectedVersion != 0;
+		}
+	}
+
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	if (hasExpectedVersion) {
+		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) {
+			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*txnHandle)->dbHandle->descriptor.get());
+			uint32_t cfId = (*txnHandle)->dbHandle->getColumnFamilyHandle()->GetID();
+			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
+		}
+	}
+
+	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion);
 }
 
 /**
@@ -612,7 +638,7 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(4);
 	UNWRAP_TRANSACTION_HANDLE("GetSync");
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
@@ -620,6 +646,40 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	}
 	int32_t flags;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags));
+	// argv[2]: txnId (ignored — the transaction is self)
+	// argv[3]: optional expectedVersion for VT check and populate
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 4) {
+		napi_valuetype evType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &evType));
+		if (evType == napi_number) {
+			double d;
+			NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[3], &d));
+			::memcpy(&expectedVersion, &d, sizeof(expectedVersion));
+			hasExpectedVersion = !vtIsLock(expectedVersion) && expectedVersion != 0;
+		}
+	}
+
+	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	if (hasExpectedVersion || wantsPopulate) {
+		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) {
+			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*txnHandle)->dbHandle->descriptor.get());
+			uint32_t cfId = (*txnHandle)->dbHandle->getColumnFamilyHandle()->GetID();
+			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
+		}
+	}
+
+	// VT fast-path: caller-supplied version matches the table → return FRESH
+	if (vtSlot && hasExpectedVersion && VerificationTable::verifyVersion(vtSlot, expectedVersion)) {
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
+		return result;
+	}
+
 	rocksdb::PinnableSlice value;
 	rocksdb::ReadOptions readOptions;
 	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
@@ -641,6 +701,24 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result));
 		return result;
 	}
+
+	// Soft VT miss: value still carries the expected version → populate + FRESH
+	if (hasExpectedVersion && vtSlot) {
+		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
+		if (extracted == expectedVersion) {
+			VerificationTable::populateVersion(vtSlot, expectedVersion);
+			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
+			return result;
+		}
+	}
+	// Populate: explicit flag or implicit when checking an expected version
+	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
+		uint64_t version = VerificationTable::extractVersionFromValue(value);
+		if (version != 0 && !vtIsLock(version)) {
+			VerificationTable::populateVersion(vtSlot, version);
+		}
+	}
+
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&
 			(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
