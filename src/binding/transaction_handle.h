@@ -171,7 +171,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		std::string& key,
 		napi_value resolve,
 		napi_value reject,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
+		std::atomic<uint64_t>* vtSlot = nullptr,
+		bool hasExpectedVersion = false,
+		uint64_t expectedVersion = 0,
+		bool wantsPopulate = false
 	);
 
 	/**

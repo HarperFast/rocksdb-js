@@ -248,7 +248,11 @@ napi_value TransactionHandle::get(
 	std::string &key,
 	napi_value resolve,
 	napi_value reject,
-	std::shared_ptr<DBHandle> dbHandleOverride
+	std::shared_ptr<DBHandle> dbHandleOverride,
+	std::atomic<uint64_t>* vtSlot,
+	bool hasExpectedVersion,
+	uint64_t expectedVersion,
+	bool wantsPopulate
 ) {
 	if (!this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
@@ -284,7 +288,23 @@ napi_value TransactionHandle::get(
 	);
 
 	if (!status.IsIncomplete()) {
-		// found it in the block cache!
+		// Block-cache hit. Apply VT check/populate before resolving.
+		if (vtSlot && status.ok()) {
+			rocksdb::Slice valueSlice(value.data(), value.size());
+			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+				VerificationTable::populateVersion(vtSlot, expectedVersion);
+				napi_value global, freshResult;
+				::napi_get_global(env, &global);
+				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
+				return returnStatus;
+			}
+			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
+				VerificationTable::populateVersion(vtSlot, extracted);
+			}
+		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
 	}
 
@@ -298,6 +318,10 @@ napi_value TransactionHandle::get(
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	state->vtSlot = vtSlot;
+	state->hasExpectedVersion = hasExpectedVersion;
+	state->expectedVersion = expectedVersion;
+	state->wantsPopulate = wantsPopulate;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
