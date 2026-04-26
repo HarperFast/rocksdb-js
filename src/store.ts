@@ -29,6 +29,7 @@ const {
 	NOT_IN_MEMORY_CACHE_FLAG,
 	ALWAYS_CREATE_NEW_BUFFER_FLAG,
 	FRESH_VERSION_FLAG,
+	POPULATE_VERSION_FLAG,
 } = constants;
 const KEY_BUFFER_SIZE = 4096;
 
@@ -415,6 +416,9 @@ export class Store {
 			// used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
+		if (options?.populateVersion) {
+			flags |= POPULATE_VERSION_FLAG;
+		}
 		const txnId = this.getTxnId(options);
 		const expectedVersion = options?.expectedVersion;
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
@@ -523,6 +527,9 @@ export class Store {
 		let flags = 0;
 		if (alwaysCreateNewBuffer) {
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
+		}
+		if (options?.populateVersion) {
+			flags |= POPULATE_VERSION_FLAG;
 		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
 		const result = context.getSync(
@@ -791,6 +798,15 @@ export interface GetOptions {
 	 * with the version extracted from the value.
 	 */
 	expectedVersion?: number;
+
+	/**
+	 * When `true`, after a DB read the native layer automatically seeds the
+	 * verification-table slot with the version extracted from the value.
+	 * Eliminates the need for a separate `populateVersion` call on cold reads.
+	 *
+	 * @default false
+	 */
+	populateVersion?: boolean;
 
 	/**
 	 * Whether to skip decoding the value.
