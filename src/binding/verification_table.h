@@ -71,14 +71,15 @@ struct LockTracker {
 	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder
 	std::atomic<uint32_t> holders{0};   // count of active intent registrations
 	uint16_t              generation;   // immutable after install; matches slot encoding
-	size_t                slotIndex;    // index in VT slots_ array (for Phase 4 cleanup)
+	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
+	uintptr_t             dbPtr;        // identity of the owning DB descriptor
 
 	bool                               woken{false};
 	std::mutex                         wakeCallbacksMutex;
 	std::vector<std::function<void()>> wakeCallbacks;
 
-	LockTracker(size_t idx, uint16_t gen)
-		: refcount(1), holders(0), generation(gen), slotIndex(idx) {}
+	LockTracker(size_t idx, uint16_t gen, uintptr_t dbPtr)
+		: refcount(1), holders(0), generation(gen), slotIndex(idx), dbPtr(dbPtr) {}
 
 	/**
 	 * Registers a callback to be invoked when wake() is called.
@@ -154,6 +155,17 @@ public:
 	size_t slotIndexOf(std::atomic<uint64_t>* slot) const {
 		return static_cast<size_t>(slot - slots_.get());
 	}
+
+	/**
+	 * Safety-net scan called from DBDescriptor::close(). Finds every slot
+	 * whose LockTracker was installed by the given database, CASes it back to
+	 * 0, and calls wake() to unpark any parked TSFN waiters.
+	 *
+	 * Under normal shutdown all TransactionHandle::close() calls already do
+	 * this via releaseIntent(); cancelForDB() is a defensive final pass for
+	 * unexpected races or shutdown ordering issues.
+	 */
+	void cancelForDB(uintptr_t dbPtr);
 
 private:
 	std::unique_ptr<std::atomic<uint64_t>[]> slots_;

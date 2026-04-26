@@ -162,6 +162,43 @@ uint16_t vtNextGen() {
 	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x7FFF;
 }
 
+void VerificationTable::cancelForDB(uintptr_t dbPtr) {
+	if (!slots_) return;
+	size_t n = mask_ + 1;
+	for (size_t i = 0; i < n; ++i) {
+		uint64_t v = slots_[i].load(std::memory_order_acquire);
+		if (!vtIsLock(v)) continue;
+
+		LockTracker* t = vtDecodeLock(v);
+		uint16_t gen = vtGenFromLock(v);
+
+		// Grab a temporary ref to prevent deletion during the work below.
+		t->refcount.fetch_add(1, std::memory_order_acquire);
+
+		// ABA check: confirm the slot still holds the same tracker after our ref.
+		uint64_t v2 = slots_[i].load(std::memory_order_acquire);
+		if (!vtIsLock(v2) || vtDecodeLock(v2) != t || vtGenFromLock(v2) != gen) {
+			if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+			continue;
+		}
+
+		if (t->dbPtr != dbPtr) {
+			if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+			continue;
+		}
+
+		// CAS the slot back to 0; may fail if releaseIntent() already did it.
+		uint64_t expected = vtEncodeLock(t, gen);
+		slots_[i].compare_exchange_strong(expected, 0ULL,
+		    std::memory_order_release, std::memory_order_acquire);
+
+		// Wake any parked TSFN waiters — idempotent if already woken.
+		t->wake();
+
+		if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+	}
+}
+
 bool LockTracker::addWakeCallback(std::function<void()> cb) {
 	std::lock_guard<std::mutex> lock(wakeCallbacksMutex);
 	if (woken) {

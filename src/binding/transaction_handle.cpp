@@ -129,7 +129,7 @@ void TransactionHandle::lockVTSlot(
 	// We do not retry: if the CAS loses to another transaction's lock, that
 	// lock already invalidates the cache for this slot.
 	uint16_t gen = vtNextGen();
-	LockTracker* t = new LockTracker(vt->slotIndexOf(slot), gen);
+	LockTracker* t = new LockTracker(vt->slotIndexOf(slot), gen, dbPtr);
 	t->holders.store(1, std::memory_order_relaxed);
 
 	if (slot->compare_exchange_strong(v, vtEncodeLock(t, gen),
