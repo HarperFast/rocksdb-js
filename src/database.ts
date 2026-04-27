@@ -435,23 +435,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					structures: any,
 					isCompatible: boolean | ((existingStructures: any) => boolean)
 				) => {
-					return this.transactionSync((txn: Transaction) => {
-						// note: we need to get a fresh copy of the shared structures,
-						// so we don't want to use the transaction's getBinarySync()
-						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
-						const existingStructures =
-							existingStructuresBuffer && store.decoder?.decode
-								? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
-								: undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
+					return this.transactionSync(
+						(txn: Transaction) => {
+							// note: we need to get a fresh copy of the shared structures,
+							// so we don't want to use the transaction's getBinarySync()
+							const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
+							const existingStructures =
+								existingStructuresBuffer && store.decoder?.decode
+									? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
+									: undefined;
+							if (typeof isCompatible == 'function') {
+								if (!isCompatible(existingStructures)) {
+									return false;
+								}
+							} else if (existingStructures && existingStructures.length !== isCompatible) {
 								return false;
 							}
-						} else if (existingStructures && existingStructures.length !== isCompatible) {
-							return false;
-						}
-						txn.putSync(sharedStructuresKey, structures);
-					});
+							txn.putSync(sharedStructuresKey, structures);
+						},
+						{ retryOnBusy: true }
+					);
 				};
 			}
 			store.encoder = new EncoderClass({ ...opts, ...store.encoder });
