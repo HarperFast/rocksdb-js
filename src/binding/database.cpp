@@ -846,6 +846,25 @@ napi_value Database::SetDefaultKeyBuffer(napi_env env, napi_callback_info info) 
 }
 
 /**
+ * Sets the shared iterator state buffer. The buffer is a Uint32Array of length 2
+ * used by the iterator's `Next()` to write key and value lengths back to
+ * JavaScript without expensive NAPI property accesses or object creation.
+ */
+napi_value Database::SetIteratorState(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE();
+
+	void* data;
+	size_t length;
+	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length));
+
+	(*dbHandle)->iteratorStatePtr = (char*) data;
+	(*dbHandle)->iteratorStateLength = length;
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Gets or creates a buffer that an be shared across worker threads.
  */
 napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) {
@@ -1265,6 +1284,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultValueBuffer", nullptr, SetDefaultValueBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultKeyBuffer", nullptr, SetDefaultKeyBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setIteratorState", nullptr, SetIteratorState, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "tryLock", nullptr, TryLock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "unlock", nullptr, Unlock, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr },

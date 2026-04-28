@@ -9,6 +9,7 @@ import {
 } from './load-binding.js';
 import {
 	type ArrayBufferWithNotify,
+	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	Store,
 	type StoreOptions,
@@ -367,6 +368,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		store.db.setDefaultValueBuffer(VALUE_BUFFER);
 		store.db.setDefaultKeyBuffer(KEY_BUFFER);
+		store.db.setIteratorState(ITERATOR_STATE_BUFFER);
 
 		/**
 		 * The encoder initialization precedence is:

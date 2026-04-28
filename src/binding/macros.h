@@ -152,7 +152,7 @@
 	napi_value argv[n]; \
 	size_t argc = n; \
 	napi_value jsThis; \
-	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, args, &jsThis, nullptr))
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, argv, &jsThis, nullptr))
 
 #define NAPI_CONSTRUCTOR_ARGV_WITH_DATA(className, n) \
 	NAPI_CHECK_NEW_TARGET(className); \
