@@ -277,7 +277,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	(*dbHandle)->descriptor->columns.erase((*dbHandle)->getColumnFamilyName());
+	(*dbHandle)->descriptor->tryUnregisterColumnFamily((*dbHandle)->getColumnFamilyName());
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 		env, global, resolve, 0, nullptr, nullptr
@@ -306,7 +306,9 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle()), "Drop failed");
-	(*dbHandle)->descriptor->columns.erase((*dbHandle)->getColumnFamilyName());
+
+	(*dbHandle)->descriptor->tryUnregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
 }

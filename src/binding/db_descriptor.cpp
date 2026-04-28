@@ -818,6 +818,42 @@ uint32_t DBDescriptor::transactionGetNextId() {
 }
 
 /**
+ * Attempts to unregister a column family from the descriptor. This will only
+ * remove the column family from the columns map if there is at most one
+ * DBHandle still referencing it (the one performing the drop).
+ */
+bool DBDescriptor::tryUnregisterColumnFamily(const std::string& columnName) {
+	auto it = this->columns.find(columnName);
+	if (it == this->columns.end()) {
+		DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" not found\n",
+			this, columnName.c_str());
+		return false;
+	}
+
+	// Check the reference count on the ColumnFamilyDescriptor shared_ptr.
+	// References are held by:
+	// - 1: the columns map entry
+	// - 1: each DBHandle that has this column family open
+	// So if use_count <= 2, only the map and the calling DBHandle hold references.
+	long refCount = it->second.use_count();
+
+	DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" has %ld references\n",
+		this, columnName.c_str(), refCount);
+
+	// Only unregister if there's at most 2 references (map + the DBHandle doing the drop)
+	if (refCount <= 2) {
+		this->columns.erase(it);
+		DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily unregistered column \"%s\"\n",
+			this, columnName.c_str());
+		return true;
+	}
+
+	DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" still has %ld other references, not unregistering\n",
+		this, columnName.c_str(), refCount - 2);
+	return false;
+}
+
+/**
  * Called when a lock callback completes (async or sync) to clean up the lock
  * handle and fire the next callback in the queue.
  */
