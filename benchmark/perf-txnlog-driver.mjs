@@ -15,15 +15,21 @@ const log = db.useLog('perf');
 const data = Buffer.alloc(100, 0xab);
 
 for (let i = 0; i < WARMUP; i++) {
-	await db.transaction((txn) => { log.addEntry(data, txn.id); });
+	await db.transaction((txn) => {
+		log.addEntry(data, txn.id);
+	});
 }
 
-console.log(`=== profiling window start (disableWAL=${DISABLE_WAL}, concurrency=${CONCURRENCY}) ===`);
+console.log(
+	`=== profiling window start (disableWAL=${DISABLE_WAL}, concurrency=${CONCURRENCY}) ===`
+);
 const start = performance.now();
 
 async function worker() {
 	for (let i = 0; i < ITERS / CONCURRENCY; i++) {
-		await db.transaction((txn) => { log.addEntry(data, txn.id); });
+		await db.transaction((txn) => {
+			log.addEntry(data, txn.id);
+		});
 	}
 }
 
@@ -31,7 +37,9 @@ await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
 const elapsed = performance.now() - start;
 console.log(`=== profiling window end ===`);
-console.log(`${ITERS} commits in ${elapsed.toFixed(1)}ms = ${(ITERS / (elapsed / 1000)).toFixed(0)} commits/sec`);
+console.log(
+	`${ITERS} commits in ${elapsed.toFixed(1)}ms = ${(ITERS / (elapsed / 1000)).toFixed(0)} commits/sec`
+);
 
 db.close();
 rmSync(dir, { recursive: true });
