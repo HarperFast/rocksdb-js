@@ -118,6 +118,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Returns the list of column families in the RocksDB database.
+	 */
+	get columns(): string[] {
+		return this.store.db.columns;
+	}
+
+	/**
 	 * Set global database settings.
 	 *
 	 * @param options - The options for the database.
@@ -184,7 +191,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
 	 * ```
 	 */
-	getDBIntProperty(propertyName: string): number {
+	getDBIntProperty(propertyName: string): number | undefined {
 		return this.store.db.getDBIntProperty(propertyName);
 	}
 
@@ -201,7 +208,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const stats = db.getDBProperty('rocksdb.stats');
 	 * ```
 	 */
-	getDBProperty(propertyName: string): string {
+	getDBProperty(propertyName: string): string | undefined {
 		return this.store.db.getDBProperty(propertyName);
 	}
 

@@ -85,6 +85,18 @@ const db = RocksDatabase.open('foo');
 db.close();
 ```
 
+### `db.columns: string[]`
+
+Returns the list of column families in the RocksDB database.
+
+```typescript
+const db = RocksDatabase.open('path/to/db');
+console.log(db.columns); // ['default']
+
+const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+console.log(db.columns); // ['default', 'users']
+```
+
 ### `db.config(options)`
 
 Sets global database settings.
@@ -290,11 +302,13 @@ await promise;
 console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
 ```
 
-### `db.getDBProperty(propertyName: string): string`
+### `db.getDBProperty(propertyName: string): string | undefined`
 
 Gets a RocksDB database property as a string.
 
 - `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.levelstats'`.
+
+Returns `undefined` if the property is not found.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');
@@ -302,11 +316,13 @@ const levelStats = db.getDBProperty('rocksdb.levelstats');
 const stats = db.getDBProperty('rocksdb.stats');
 ```
 
-### `db.getDBIntProperty(propertyName: string): number`
+### `db.getDBIntProperty(propertyName: string): number | undefined`
 
 Gets a RocksDB database property as an integer.
 
 - `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.num-blob-files'`.
+
+Returns `undefined` if the property is not found.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');
@@ -1218,6 +1234,38 @@ Extends `RangeOptions`.
 
 - `options: object`
   - `reverse: boolean` When `true`, the iterator will iterate in reverse order. Defaults to `false`.
+
+## CLI
+
+The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases.
+
+```bash
+rocksdb-js [dbpath]
+```
+
+Options:
+
+- `-h, --help` Show this help message
+
+- `-r, --readonly` Open the database in read-only mode
+- `-v, --version` Show the version information
+
+Available commands:
+
+- `clear` Clear all data in the current column family
+- `columns` List column families
+- `count` Count the number of keys in the current column family
+- `drop <column>` Permanently drop a column family
+- `exit` Exit the REPL
+- `get <key>` Get the value of a key
+- `prop <key>` Get a RocksDB property (try "rocksdb.stats")
+- `help` Show this help message
+- `put <key> <value>` Set the value of a key
+- `query [start] [end]` Query a range of keys
+- `remove <key>` Delete a key
+- `repl` Open a JS sub-REPL; "db" refers to the current column family
+- `stats` Show the statistics for the current column family
+- `use [column]` Create a new column family or switch to an existing one
 
 ## Development
 
