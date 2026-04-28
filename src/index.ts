@@ -29,7 +29,7 @@ export {
 	type StoreRangeOptions,
 	type StoreRemoveOptions,
 } from './store.js';
-export { Transaction } from './transaction.js';
+export { RETRY_NOW, Transaction } from './transaction.js';
 
 import './transaction-log-reader.js';
 

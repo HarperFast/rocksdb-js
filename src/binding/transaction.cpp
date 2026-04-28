@@ -73,6 +73,8 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 
 	bool disableSnapshot = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "disableSnapshot", disableSnapshot));
+	bool coordinatedRetry = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
 
 	napi_ref jsDatabaseRef;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 0, &jsDatabaseRef));
@@ -81,6 +83,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
 		std::make_shared<TransactionHandle>(*dbHandle, env, jsDatabaseRef, disableSnapshot)
 	);
+	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
 	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 
@@ -296,14 +299,22 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					state->callResolve();
 				} else {
 					state->handle->state = TransactionState::Pending;
-					napi_value error;
-					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
-					napi_value hasLogValue;
-					napi_status status = ::napi_get_boolean(env, state->hasLog, &hasLogValue);
-					if (status == napi_ok) {
-						::napi_set_named_property(env, error, "hasLog", hasLogValue);
+					if (state->status.IsBusy() && state->handle->coordinatedRetry) {
+						// coordinatedRetry path: resolve with RETRY_NOW_VALUE so the JS
+						// layer retries immediately without backoff, rather than throwing.
+						napi_value retryVal;
+						::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
+						state->callResolve(retryVal);
+					} else {
+						napi_value error;
+						ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
+						napi_value hasLogValue;
+						napi_status status = ::napi_get_boolean(env, state->hasLog, &hasLogValue);
+						if (status == napi_ok) {
+							::napi_set_named_property(env, error, "hasLog", hasLogValue);
+						}
+						state->callReject(error);
 					}
-					state->callReject(error);
 				}
 			}
 

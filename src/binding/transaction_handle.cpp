@@ -21,6 +21,7 @@ TransactionHandle::TransactionHandle(
 	env(env),
 	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
+	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {

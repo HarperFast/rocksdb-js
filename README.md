@@ -481,12 +481,17 @@ The `attempt` parameter is the number of times the transaction has been retried.
 - `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
   Defaults to `true` when the transaction is bound to a transaction log, otherwise `false`.
+- `coordinatedRetry?: boolean` When `true`, an `IsBusy` conflict at commit time resolves the
+  commit promise with the `RETRY_NOW` sentinel value instead of rejecting with `ERR_BUSY`. The
+  `transaction()` retry loop detects this sentinel and retries immediately without backoff.
+  Use this when you want predictable, low-latency retry behavior on write-write conflicts. Mutually
+  exclusive with `retryOnBusy` — use one or the other. Defaults to `false`.
 
 ### Transaction Retry Logic
 
 The retry mechanism will only be active when the `retryOnBusy` option is `true` or when
-`retryOnBusy` is `undefined` and the transaction is bound to a transaction log. The attempts starts
-at `1` and ends at `maxRetries`.
+`retryOnBusy` is `undefined` and the transaction is bound to a transaction log. The attempts start
+at `1` and end at `maxRetries`.
 
 When using a transaction log and the commit fails with `ERR_BUSY`, the transaction log will be in
 a bad state and the transaction will need to be retried. If the max retries is reached or the
@@ -494,6 +499,40 @@ transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
 
 Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
 entries are not added.
+
+#### Coordinated Retry
+
+When `coordinatedRetry: true` is set, `IsBusy` conflicts do not throw. Instead, the native layer
+resets the transaction and resolves the commit with the `RETRY_NOW` sentinel (exported as
+`RETRY_NOW` from `@harperfast/rocksdb-js`). The `transaction()` retry loop detects this and
+retries the transaction body immediately:
+
+```typescript
+import { RocksDatabase, RETRY_NOW } from '@harperfast/rocksdb-js';
+
+const db = RocksDatabase.open('/path/to/db');
+
+await db.transaction(
+	async (txn) => {
+		const current = (await txn.get('counter')) ?? 0;
+		await txn.put('counter', current + 1);
+	},
+	{ coordinatedRetry: true, maxRetries: 10 }
+);
+```
+
+You can also use `RETRY_NOW` directly when managing transactions manually:
+
+```typescript
+import { Transaction, RETRY_NOW } from '@harperfast/rocksdb-js';
+
+const txn = new Transaction(db.store, { coordinatedRetry: true });
+txn.putSync('key', 'value');
+const result = await txn.commit();
+if (result === RETRY_NOW) {
+	// conflict detected — retry the transaction body
+}
+```
 
 ### Class: `Transaction`
 
@@ -503,7 +542,9 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
-- `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
+- `txn.commit(): Promise<void | typeof RETRY_NOW>` Asynchronously commits the transaction and
+  closes the transaction. Returns `RETRY_NOW` when `coordinatedRetry: true` and an `IsBusy`
+  conflict was detected; otherwise returns `undefined`.
 - `txn.commitSync()` Synchronously commits and closes the transaction.
 - `txn.getTimestamp(): number` Retrieves the transaction start timestamp in seconds as a decimal. It
   defaults to the time at which the transaction was created.

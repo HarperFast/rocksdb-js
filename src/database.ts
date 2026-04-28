@@ -18,6 +18,7 @@ import {
 import {
 	Transaction,
 	TransactionAbandonedError,
+	RETRY_NOW,
 	TransactionAlreadyAbortedError,
 	TransactionIsBusyError,
 } from './transaction.js';
@@ -524,7 +525,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 
 			try {
-				await txn.commit();
+				const commitResult = await txn.commit();
+				if (commitResult === RETRY_NOW) {
+					// coordinatedRetry: conflict resolved, retry immediately
+					continue;
+				}
 				return result;
 			} catch (commitErr) {
 				if (commitErr instanceof TransactionAlreadyAbortedError) {

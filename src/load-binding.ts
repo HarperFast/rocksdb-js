@@ -28,13 +28,23 @@ export type TransactionOptions = {
 	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
 	 */
 	retryOnBusy?: boolean;
+
+	/**
+	 * When `true`, an `IsBusy` conflict at commit time resolves the commit
+	 * promise with `RETRY_NOW_VALUE` instead of rejecting with `ERR_BUSY`.
+	 * The JS layer should retry the transaction body immediately without
+	 * backoff. Mutually exclusive with `retryOnBusy` — use one or the other.
+	 *
+	 * @default false
+	 */
+	coordinatedRetry?: boolean;
 };
 
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
 	abort(): void;
-	commit(resolve: () => void, reject: (err: Error) => void): void;
+	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
@@ -269,6 +279,12 @@ export const constants: {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 	NOT_IN_MEMORY_CACHE_FLAG: number;
 	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	/**
+	 * Sentinel resolved (not rejected) by `commit()` when `coordinatedRetry`
+	 * is `true` and the transaction encountered an `IsBusy` conflict. The JS
+	 * layer should retry the transaction body immediately without backoff.
+	 */
+	RETRY_NOW_VALUE: number;
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;

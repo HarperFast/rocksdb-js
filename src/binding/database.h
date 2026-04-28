@@ -14,6 +14,11 @@ namespace rocksdb_js {
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
 #define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
 
+// Sentinel resolved (not rejected) by commit() when coordinatedRetry is set
+// and the transaction encountered an IsBusy conflict. The JS layer retries
+// immediately without backoff on receiving this value.
+#define RETRY_NOW_VALUE 0x04000000
+
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
