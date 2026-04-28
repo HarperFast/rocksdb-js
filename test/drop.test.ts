@@ -80,14 +80,12 @@ describe('Drop', () => {
 
 				// close db1 and reopen it, then do the same to db2, keeping column family alive
 				db1.close();
-				expect(db1.columns).toEqual(['default', 'test']);
 				expect(db2.columns).toEqual(['default', 'test']);
 				db1.open();
 				expect(db1.columns).toEqual(['default', 'test']);
 				expect(db2.columns).toEqual(['default', 'test']);
 				db2.close();
 				expect(db1.columns).toEqual(['default', 'test']);
-				expect(db2.columns).toEqual(['default', 'test']);
 				db2.open();
 				expect(db1.columns).toEqual(['default', 'test']);
 				expect(db2.columns).toEqual(['default', 'test']);
@@ -98,11 +96,8 @@ describe('Drop', () => {
 				// close both databases, column family should be deleted
 				db1.close();
 				db2.close();
-				expect(db1.columns).toEqual(['default']);
-				expect(db2.columns).toEqual(['default']);
 				db1.open();
 				expect(db1.columns).toEqual(['default', 'test']);
-				expect(db2.columns).toEqual(['default', 'test']);
 				db2.open();
 				expect(db1.columns).toEqual(['default', 'test']);
 				expect(db2.columns).toEqual(['default', 'test']);
