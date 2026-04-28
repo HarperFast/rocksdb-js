@@ -174,7 +174,7 @@ async function clearCommand() {
 }
 
 function columnsCommand() {
-	for (const column of currentDB.columns.sort()) {
+	for (const column of currentDB.columns) {
 		console.log(hl(column));
 	}
 	console.log();
@@ -261,7 +261,7 @@ function helpCommand() {
 		`${hl('log [name] [file] [entry]')}  List the transaction log store names and log store files`
 	);
 	console.log(`${hl('prop <key>')}                 Get a RocksDB property (try "rocksdb.stats")`);
-	console.log(`${hl('purge-logs [name]')}          Purge transaction log files older than 3 days`);
+	console.log(`${hl('purge-logs <name>')}          Purge transaction log files older than 3 days`);
 	console.log(`${hl('put <key> <value>')}          Set the value of a key`);
 	console.log(`${hl('query [start] [end]')}        Query a range of keys`);
 	console.log(`${hl('remove <key>')}               Delete a key`);
@@ -483,7 +483,7 @@ async function main() {
 		currentDB = RocksDatabase.open(dbPath, { readOnly: argv.readonly });
 		dbs[currentDB.name] = currentDB;
 
-		console.log(wrapColumns(currentDB.columns.sort()) + '\n');
+		console.log(wrapColumns(currentDB.columns) + '\n');
 		console.log(`Type "help" for more information.`);
 
 		while (true) {

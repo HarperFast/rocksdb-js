@@ -1,4 +1,5 @@
 #include <node_api.h>
+#include <algorithm>
 #include <sstream>
 #include "database.h"
 #include "db_handle.h"
@@ -202,10 +203,17 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	const auto& columns = (*dbHandle)->descriptor->columns;
+	std::vector<std::string> columnNames;
+	columnNames.reserve(columns.size());
+	for (const auto& [name, _column] : columns) {
+		columnNames.push_back(name);
+	}
+	std::sort(columnNames.begin(), columnNames.end());
+
 	napi_value result;
 	size_t i = 0;
 	NAPI_STATUS_THROWS(::napi_create_array(env, &result));
-	for (const auto& [name, _column] : columns) {
+	for (const auto& name : columnNames) {
 		napi_value columnValue;
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &columnValue));
 		NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, columnValue));

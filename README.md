@@ -1246,7 +1246,6 @@ rocksdb-js [dbpath]
 Options:
 
 - `-h, --help` Show this help message
-
 - `-r, --readonly` Open the database in read-only mode
 - `-v, --version` Show the version information
 
@@ -1258,8 +1257,10 @@ Available commands:
 - `drop <column>` Permanently drop a column family
 - `exit` Exit the REPL
 - `get <key>` Get the value of a key
-- `prop <key>` Get a RocksDB property (try "rocksdb.stats")
 - `help` Show this help message
+- `log [name] [file] [entry]` List the transaction log store names and log store files
+- `prop <key>` Get a RocksDB property (try "rocksdb.stats")
+- `purge-logs <name>` Purge transaction log files older than 3 days
 - `put <key> <value>` Set the value of a key
 - `query [start] [end]` Query a range of keys
 - `remove <key>` Delete a key
