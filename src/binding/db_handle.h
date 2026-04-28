@@ -84,7 +84,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	~DBHandle();
 
 	rocksdb::Status clear();
-	void close();
+	void close() override;
 	napi_value get(
 		napi_env env,
 		rocksdb::Slice& key,

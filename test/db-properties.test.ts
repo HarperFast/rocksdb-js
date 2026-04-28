@@ -13,7 +13,7 @@ describe('Database Properties', () => {
 			const levelStats = db.getDBProperty('rocksdb.levelstats');
 			expect(levelStats).toBeDefined();
 			expect(typeof levelStats).toBe('string');
-			expect(levelStats.length).toBeGreaterThan(0);
+			expect(levelStats!.length).toBeGreaterThan(0);
 		}));
 
 	it('should get stats property from database', () =>
@@ -26,7 +26,7 @@ describe('Database Properties', () => {
 			const stats = db.getDBProperty('rocksdb.stats');
 			expect(stats).toBeDefined();
 			expect(typeof stats).toBe('string');
-			expect(stats.length).toBeGreaterThan(0);
+			expect(stats!.length).toBeGreaterThan(0);
 		}));
 
 	it('should get integer property from database', () =>
@@ -50,7 +50,7 @@ describe('Database Properties', () => {
 			await db.flush();
 
 			// Get number of files at level 0, for some reason this is a string property
-			const numFiles = +db.getDBProperty('rocksdb.num-files-at-level0');
+			const numFiles = +db.getDBProperty('rocksdb.num-files-at-level0')!;
 			expect(numFiles).toBeDefined();
 			expect(typeof numFiles).toBe('number');
 			expect(numFiles).toBeGreaterThan(0);
@@ -126,15 +126,21 @@ describe('Database Properties', () => {
 			expect(memTableSize).toBeGreaterThan(0);
 		}));
 
+	it('should return undefined for unknown string property', () =>
+		dbRunner(async ({ db }) => {
+			expect(db.getDBProperty('invalid.property.name.that.does.not.exist')).toBeUndefined();
+		}));
+
+	it('should return undefined for unknown integer property', () =>
+		dbRunner(async ({ db }) => {
+			expect(db.getDBIntProperty('invalid.property.name.that.does.not.exist')).toBeUndefined();
+		}));
+
 	it('should throw error for invalid string property', () =>
 		dbRunner(async ({ db }) => {
 			expect(() => {
 				db.getDBProperty(undefined as any);
 			}).toThrow('Property name is required');
-
-			expect(() => {
-				db.getDBProperty('invalid.property.name.that.does.not.exist');
-			}).toThrow('Failed to get database property');
 		}));
 
 	it('should throw error for invalid integer property', () =>
@@ -142,10 +148,6 @@ describe('Database Properties', () => {
 			expect(() => {
 				db.getDBIntProperty(undefined as any);
 			}).toThrow('Property name is required');
-
-			expect(() => {
-				db.getDBIntProperty('invalid.property.name.that.does.not.exist');
-			}).toThrow('Failed to get database integer property');
 		}));
 
 	it('should throw error when database is not open', () =>

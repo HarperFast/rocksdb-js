@@ -129,6 +129,7 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	columns: string[];
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
@@ -143,8 +144,8 @@ export type NativeDatabase = {
 		txnId?: number
 	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
-	getDBIntProperty(propertyName: string): number;
-	getDBProperty(propertyName: string): string;
+	getDBIntProperty(propertyName: string): number | undefined;
+	getDBProperty(propertyName: string): string | undefined;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
