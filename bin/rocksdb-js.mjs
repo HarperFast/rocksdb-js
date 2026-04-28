@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { RocksDatabase, versions } from '../dist/index.mjs';
-import { existsSync } from 'node:fs';
+import { RocksDatabase, parseTransactionLog, versions } from '../dist/index.mjs';
+import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
@@ -17,7 +17,9 @@ const COMMANDS = {
 	exit: () => process.exit(0),
 	get: getCommand,
 	help: helpCommand,
+	log: logCommand,
 	prop: propCommand,
+	'purge-logs': purgeLogsCommand,
 	put: putCommand,
 	query: queryCommand,
 	remove: removeCommand,
@@ -25,6 +27,20 @@ const COMMANDS = {
 	stats: statsCommand,
 	use: useCommand,
 };
+
+const { values: argv, positionals } = parseArgs({
+	allowPositionals: true,
+	arguments: process.argv.slice(2),
+	options: {
+		help: { type: 'boolean', short: 'h' },
+		readonly: { type: 'boolean', short: 'r' },
+		version: { type: 'boolean', short: 'v' },
+	},
+});
+const dbPath = resolve(positionals[0] || process.cwd());
+const dbs = {};
+let currentDB = null;
+let r = null;
 
 function completer(line) {
 	const parts = line.trimStart().split(/[ \t]+/);
@@ -40,6 +56,27 @@ function completer(line) {
 		const columns = dbs.default?.columns ?? [];
 		const hits = columns.filter((c) => c.startsWith(arg));
 		return [hits.length ? hits : columns, arg];
+	}
+
+	if (command === 'log') {
+		if (parts.length === 2) {
+			const arg = parts[1];
+			const logs = currentDB.listLogs();
+			const hits = logs.filter((l) => l.startsWith(arg));
+			return [hits.length ? hits : logs, arg];
+		} else if (parts.length === 3) {
+			const [name, store] = parts.slice(1);
+			const logs = currentDB.listLogs();
+			const hit = logs.find((l) => l === name);
+			if (hit) {
+				const logPath = join(currentDB.path, 'transaction_logs', name);
+				const logFiles = readdirSync(logPath).filter(
+					(f) => (!store || f.startsWith(store)) && f.endsWith('.txnlog')
+				);
+				return [logFiles.length ? logFiles : [], store, name];
+			}
+			return [[], store, name];
+		}
 	}
 
 	return [[], line];
@@ -66,20 +103,6 @@ let rl = createRL();
 let ctrlC = false;
 let currentAbortController = null;
 
-const { values: argv, positionals } = parseArgs({
-	allowPositionals: true,
-	arguments: process.argv.slice(2),
-	options: {
-		help: { type: 'boolean', short: 'h' },
-		readonly: { type: 'boolean', short: 'r' },
-		version: { type: 'boolean', short: 'v' },
-	},
-});
-const dbPath = resolve(positionals[0] || process.cwd());
-const dbs = {};
-let currentDB = null;
-let r = null;
-
 function str(text) {
 	try {
 		if (typeof text === 'symbol') {
@@ -95,6 +118,28 @@ const hl = (text) => styleText('magenta', str(text));
 const note = (text) => styleText('gray', str(text));
 const warn = (text) => styleText('yellow', str(text));
 const bad = (text) => styleText('red', str(text));
+
+function wrapColumns(columns) {
+	const width = stdout.columns || 80;
+	const prefix = 'Columns: ';
+	const indent = ' '.repeat(prefix.length);
+	const lines = [];
+	let line = '';
+	let lineLen = 0;
+	for (const col of columns) {
+		const sepLen = line ? 2 : 0; // ', '
+		if (line && prefix.length + lineLen + sepLen + col.length > width) {
+			lines.push(line);
+			line = hl(col);
+			lineLen = col.length;
+		} else {
+			line += (line ? ', ' : '') + hl(col);
+			lineLen += sepLen + col.length;
+		}
+	}
+	if (line) lines.push(line);
+	return prefix + lines.join('\n' + indent);
+}
 
 async function run(fn) {
 	const start = Date.now();
@@ -176,19 +221,6 @@ async function dropCommand(args) {
 	}
 }
 
-async function replCommand() {
-	const history = [...rl.history];
-	rl.close();
-	r = repl.start({ prompt: styleText('magenta', 'js> '), useColors: true, useGlobal: false });
-	Object.defineProperty(r.context, 'db', { get: () => currentDB, enumerable: true });
-	r.on('SIGINT', () => r.close());
-	await new Promise((resolve) => r.on('exit', resolve));
-	r = null;
-	console.log();
-	rl = createRL();
-	rl.history = history;
-}
-
 async function getCommand(args) {
 	const [key] = args;
 	if (!key) {
@@ -216,26 +248,105 @@ async function propCommand(args) {
 }
 
 function helpCommand() {
-	console.log(`${hl('clear')}                Clear all data in the current column family`);
-	console.log(`${hl('columns')}              List column families`);
+	console.log(`${hl('clear')}                      Clear all data in the current column family`);
+	console.log(`${hl('columns')}                    List column families`);
 	console.log(
-		`${hl('count')}                Count the number of keys in the current column family`
+		`${hl('count')}                      Count the number of keys in the current column family`
 	);
-	console.log(`${hl('drop <column>')}        Permanently drop a column family`);
-	console.log(`${hl('exit')}                 Exit the REPL`);
-	console.log(`${hl('get <key>')}            Get the value of a key`);
-	console.log(`${hl('prop <key>')}           Get a RocksDB property (try "rocksdb.stats")`);
-	console.log(`${hl('help')}                 Show this help message`);
-	console.log(`${hl('put <key> <value>')}    Set the value of a key`);
-	console.log(`${hl('query [start] [end]')}  Query a range of keys`);
-	console.log(`${hl('remove <key>')}         Delete a key`);
+	console.log(`${hl('drop <column>')}              Permanently drop a column family`);
+	console.log(`${hl('exit')}                       Exit the REPL`);
+	console.log(`${hl('get <key>')}                  Get the value of a key`);
+	console.log(`${hl('help')}                       Show this help message`);
 	console.log(
-		`${hl('repl')}                 Open a JS sub-REPL; "db" refers to the current column family`
+		`${hl('log [name] [file] [entry]')}  List the transaction log store names and log store files`
 	);
-	console.log(`${hl('stats')}                Show the statistics for the current column family`);
+	console.log(`${hl('prop <key>')}                 Get a RocksDB property (try "rocksdb.stats")`);
+	console.log(`${hl('purge-logs [name]')}          Purge transaction log files older than 3 days`);
+	console.log(`${hl('put <key> <value>')}          Set the value of a key`);
+	console.log(`${hl('query [start] [end]')}        Query a range of keys`);
+	console.log(`${hl('remove <key>')}               Delete a key`);
 	console.log(
-		`${hl('use [column]')}         Create a new column family or switch to an existing one`
+		`${hl('repl')}                       Open a JS sub-REPL; "db" refers to the current column family`
 	);
+	console.log(
+		`${hl('stats')}                      Show the statistics for the current column family`
+	);
+	console.log(
+		`${hl('use [column]')}               Create a new column family or switch to an existing one`
+	);
+	console.log();
+}
+
+async function logCommand(args) {
+	const [name, file, entry] = args;
+	const logs = currentDB.listLogs();
+	if (name) {
+		if (!logs.includes(name)) {
+			console.log(`Log store ${hl(name)} does not exist\n`);
+			return;
+		}
+		if (file) {
+			const logPath = join(currentDB.path, 'transaction_logs', name, file);
+			const log = parseTransactionLog(logPath);
+			if (entry) {
+				if (entry < 1 || entry > log.entries.length) {
+					console.log(`Entry ${hl(entry)} does not exist\n`);
+					return;
+				}
+				const { data } = log.entries[entry - 1];
+				console.log(`Entry ${entry} (${data.length.toLocaleString()} bytes)\n`);
+				console.log(
+					hl(
+						data
+							.toString('hex')
+							.match(/.{1,2}/g)
+							.join(' ')
+					)
+				);
+				console.log();
+				return;
+			}
+
+			console.log(`Size      = ${hl(`${log.size.toLocaleString()} bytes`)}`);
+			console.log(`Version   = ${hl(log.version)}`);
+			console.log(`Timestamp = ${hl(new Date(log.timestamp).toISOString())}`);
+			console.log(`Entries   = ${hl(log.entries.length)}`);
+			let i = 1;
+			for (const entry of log.entries) {
+				console.log(
+					`${String(i++).padStart(3)})  ${hl(new Date(entry.timestamp).toISOString())}  ${entry.length.toLocaleString()} bytes  ${entry.flags & 0x01 ? '' : note('(continued in next file)')}`
+				);
+			}
+			console.log();
+			return;
+		}
+		const logPath = join(currentDB.path, 'transaction_logs', name);
+		const logFiles = await readdir(logPath);
+		for (const logFile of logFiles) {
+			if (!logFile.endsWith('.txnlog')) continue;
+			console.log(hl(logFile));
+		}
+	} else {
+		for (const log of logs) {
+			console.log(hl(log));
+		}
+	}
+	console.log();
+}
+
+async function purgeLogsCommand(args) {
+	const [name] = args;
+	if (!name) {
+		console.log(`Usage: ${hl('purge-logs <name>')}\n`);
+		return;
+	}
+	const { result: removed, time } = await run(() => currentDB.purgeLogs({ name }));
+	console.log(
+		`Purged ${removed.length} log file${removed.length === 1 ? '' : 's'} ${note(`(${time}ms)`)}`
+	);
+	for (const file of removed) {
+		console.log(hl(file));
+	}
 	console.log();
 }
 
@@ -274,6 +385,19 @@ async function removeCommand(args) {
 	}
 	const { time } = await run(() => currentDB.remove(key));
 	console.log(`Removed ${hl(key)} ${note(`(${time}ms)`)}\n`);
+}
+
+async function replCommand() {
+	const history = [...rl.history];
+	rl.close();
+	r = repl.start({ prompt: styleText('magenta', 'js> '), useColors: true, useGlobal: false });
+	Object.defineProperty(r.context, 'db', { get: () => currentDB, enumerable: true });
+	r.on('SIGINT', () => r.close());
+	await new Promise((resolve) => r.on('exit', resolve));
+	r = null;
+	console.log();
+	rl = createRL();
+	rl.history = history;
 }
 
 function statsCommand() {
@@ -359,7 +483,7 @@ async function main() {
 		currentDB = RocksDatabase.open(dbPath, { readOnly: argv.readonly });
 		dbs[currentDB.name] = currentDB;
 
-		console.log(`Columns: ${hl(currentDB.columns.sort().join(', '))}\n`);
+		console.log(wrapColumns(currentDB.columns.sort()) + '\n');
 		console.log(`Type "help" for more information.`);
 
 		while (true) {

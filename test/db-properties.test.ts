@@ -126,15 +126,21 @@ describe('Database Properties', () => {
 			expect(memTableSize).toBeGreaterThan(0);
 		}));
 
+	it('should return undefined for unknown string property', () =>
+		dbRunner(async ({ db }) => {
+			expect(db.getDBProperty('invalid.property.name.that.does.not.exist')).toBeUndefined();
+		}));
+
+	it('should return undefined for unknown integer property', () =>
+		dbRunner(async ({ db }) => {
+			expect(db.getDBIntProperty('invalid.property.name.that.does.not.exist')).toBeUndefined();
+		}));
+
 	it('should throw error for invalid string property', () =>
 		dbRunner(async ({ db }) => {
 			expect(() => {
 				db.getDBProperty(undefined as any);
 			}).toThrow('Property name is required');
-
-			expect(() => {
-				db.getDBProperty('invalid.property.name.that.does.not.exist');
-			}).toThrow('Failed to get database property');
 		}));
 
 	it('should throw error for invalid integer property', () =>
@@ -142,10 +148,6 @@ describe('Database Properties', () => {
 			expect(() => {
 				db.getDBIntProperty(undefined as any);
 			}).toThrow('Property name is required');
-
-			expect(() => {
-				db.getDBIntProperty('invalid.property.name.that.does.not.exist');
-			}).toThrow('Failed to get database integer property');
 		}));
 
 	it('should throw error when database is not open', () =>
