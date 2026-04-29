@@ -465,6 +465,7 @@ async function main() {
 
 	try {
 		if (!existsSync(join(dbPath, 'CURRENT'))) {
+			console.log();
 			let answer = await ask('RocksDB database does not exist, create it? (y/N) ');
 			if (answer !== 'y' && answer !== 'Y') {
 				process.exit(0);
