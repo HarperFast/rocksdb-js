@@ -155,7 +155,7 @@ async function ask(prompt) {
 			currentAbortController = new AbortController();
 			const answer = await rl.question(prompt, { signal: currentAbortController.signal });
 			rl.pause();
-			rl.ctrlC = false;
+			ctrlC = false;
 			return answer;
 		} catch (err) {
 			if (err.code !== 'ABORT_ERR') throw err;
@@ -326,10 +326,12 @@ async function logCommand(args) {
 			if (!logFile.endsWith('.txnlog')) continue;
 			console.log(hl(logFile));
 		}
-	} else {
+	} else if (logs.length > 0) {
 		for (const log of logs) {
 			console.log(hl(log));
 		}
+	} else {
+		console.log('No log stores found');
 	}
 	console.log();
 }
