@@ -85,6 +85,18 @@ const db = RocksDatabase.open('foo');
 db.close();
 ```
 
+### `db.columns: string[]`
+
+Returns the list of column families in the RocksDB database.
+
+```typescript
+const db = RocksDatabase.open('path/to/db');
+console.log(db.columns); // ['default']
+
+const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+console.log(db.columns); // ['default', 'users']
+```
+
 ### `db.config(options)`
 
 Sets global database settings.
@@ -290,11 +302,13 @@ await promise;
 console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
 ```
 
-### `db.getDBProperty(propertyName: string): string`
+### `db.getDBProperty(propertyName: string): string | undefined`
 
 Gets a RocksDB database property as a string.
 
 - `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.levelstats'`.
+
+Returns `undefined` if the property is not found.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');
@@ -302,11 +316,13 @@ const levelStats = db.getDBProperty('rocksdb.levelstats');
 const stats = db.getDBProperty('rocksdb.stats');
 ```
 
-### `db.getDBIntProperty(propertyName: string): number`
+### `db.getDBIntProperty(propertyName: string): number | undefined`
 
 Gets a RocksDB database property as an integer.
 
 - `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.num-blob-files'`.
+
+Returns `undefined` if the property is not found.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');

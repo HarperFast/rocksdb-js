@@ -223,6 +223,17 @@ public:
 	uint32_t transactionGetNextId();
 
 	/**
+	 * Attempts to unregister a column family from the descriptor. This will
+	 * only remove the column family from the columns map if there is at most
+	 * one DBHandle still referencing it (the one performing the drop).
+	 *
+	 * @param columnName The name of the column family to unregister.
+	 * @returns true if the column family was unregistered, false if other
+	 *          DBHandles are still referencing it.
+	 */
+	bool tryUnregisterColumnFamily(const std::string& columnName);
+
+	/**
 	 * Creates a new user shared buffer or returns an existing one.
 	 *
 	 * @param env The environment of the current callback.

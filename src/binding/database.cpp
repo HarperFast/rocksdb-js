@@ -1,4 +1,5 @@
 #include <node_api.h>
+#include <algorithm>
 #include <sstream>
 #include "database.h"
 #include "db_handle.h"
@@ -189,6 +190,38 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns the list of column families in the RocksDB database.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * console.log(db.columns);
+ * ```
+ */
+napi_value Database::Columns(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	const auto& columns = (*dbHandle)->descriptor->columns;
+	std::vector<std::string> columnNames;
+	columnNames.reserve(columns.size());
+	for (const auto& [name, _column] : columns) {
+		columnNames.push_back(name);
+	}
+	std::sort(columnNames.begin(), columnNames.end());
+
+	napi_value result;
+	size_t i = 0;
+	NAPI_STATUS_THROWS(::napi_create_array(env, &result));
+	for (const auto& name : columnNames) {
+		napi_value columnValue;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &columnValue));
+		NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, columnValue));
+	}
+	return result;
+}
+
+/**
  * Destroys the RocksDB database.
  *
  * @example
@@ -252,6 +285,8 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	(*dbHandle)->descriptor->tryUnregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 		env, global, resolve, 0, nullptr, nullptr
 	), "Failed to call resolve function");
@@ -279,6 +314,9 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle()), "Drop failed");
+
+	(*dbHandle)->descriptor->tryUnregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
 }
@@ -612,7 +650,6 @@ napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 	);
 
 	if (!success) {
-		::napi_throw_error(env, nullptr, "Failed to get database property");
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -649,8 +686,6 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 	);
 
 	if (!success) {
-		std::string errorMsg = "Failed to get database integer property \"" + propertyName + "\"";
-		::napi_throw_error(env, nullptr, errorMsg.c_str());
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -1238,6 +1273,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "columns", nullptr, nullptr, Columns, nullptr, nullptr, napi_default, nullptr },
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
