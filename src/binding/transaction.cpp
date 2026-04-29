@@ -2,10 +2,12 @@
 #include "db_descriptor.h"
 #include "db_handle.h"
 #include "db_iterator.h"
+#include "db_settings.h"
 #include "macros.h"
 #include "transaction.h"
 #include "transaction_handle.h"
 #include "util.h"
+#include "verification_table.h"
 
 #define UNWRAP_TRANSACTION_HANDLE(fnName) \
 	std::shared_ptr<TransactionHandle>* txnHandle = nullptr; \
@@ -74,6 +76,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	bool disableSnapshot = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "disableSnapshot", disableSnapshot));
 
+	bool coordinatedRetry = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
+
 	napi_ref jsDatabaseRef;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 0, &jsDatabaseRef));
 
@@ -81,6 +86,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
 		std::make_shared<TransactionHandle>(*dbHandle, env, jsDatabaseRef, disableSnapshot)
 	);
+	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
 	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 
@@ -151,10 +157,37 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Context passed through the RETRY_NOW TSFN; owns the resolve/reject refs.
+ * Freed by retryNowFinalize after the TSFN fires.
+ */
+struct RetryNowContext {
+	napi_ref resolveRef;
+	napi_ref rejectRef;
+};
+
+static void retryNowCallJs(napi_env env, napi_value /*func*/, void* context, void* /*data*/) {
+	auto* ctx = reinterpret_cast<RetryNowContext*>(context);
+	napi_value global, resolveFn, retryVal;
+	::napi_get_global(env, &global);
+	::napi_get_reference_value(env, ctx->resolveRef, &resolveFn);
+	::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
+	::napi_call_function(env, global, resolveFn, 1, &retryVal, nullptr);
+}
+
+static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
+	auto* ctx = reinterpret_cast<RetryNowContext*>(finalizeData);
+	if (ctx->resolveRef) ::napi_delete_reference(env, ctx->resolveRef);
+	if (ctx->rejectRef) ::napi_delete_reference(env, ctx->rejectRef);
+	delete ctx;
+}
+
+/**
  * State for the `Commit` async work.
  */
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
+	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
+	std::vector<std::atomic<uint64_t>*> savedSlots;
 
 	TransactionCommitState(
 		napi_env env,
@@ -247,6 +280,19 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				// ensure we haven't errored above
 				if (state->status.ok()) {
 					state->status = txnHandle->txn->Commit();
+
+					// For coordinated retry: save slot pointers before
+					// releaseIntent() clears them so the complete callback
+					// can park on any new lock installed on those slots.
+					if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
+						state->savedSlots = txnHandle->lockedVTSlots;
+					}
+
+					// Release VT locks that were installed at putSync/removeSync
+					// time, regardless of commit outcome (success or IsBusy).
+					if (!txnHandle->lockedVTSlots.empty()) {
+						txnHandle->releaseIntent();
+					}
 				}
 
 				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
@@ -294,8 +340,92 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					}
 
 					state->callResolve();
+				} else if (
+					state->status.IsBusy() &&
+					state->handle &&
+					state->handle->coordinatedRetry
+				) {
+					// Coordinated-retry path: signal RETRY_NOW to JS instead of
+					// rejecting. The native layer may park on an active VT lock
+					// before firing the resolve, so JS retries only after the
+					// conflicting transaction has released its write intent.
+					if (state->handle->state == TransactionState::Committing) {
+						state->handle->state = TransactionState::Pending;
+					}
+
+					// Transfer resolve/reject refs from state to a RetryNowContext
+					// so the TSFN finalize can clean them up.
+					auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
+					state->resolveRef = nullptr;
+					state->rejectRef = nullptr;
+
+					bool parked = false;
+					for (auto* slot : state->savedSlots) {
+						uint64_t v = slot->load(std::memory_order_acquire);
+						if (!vtIsLock(v)) continue;
+
+						LockTracker* t = vtDecodeLock(v);
+						uint16_t gen = vtGenFromLock(v);
+
+						// Grab a temporary ref to prevent deletion during ABA check.
+						t->refcount.fetch_add(1, std::memory_order_acquire);
+						uint64_t v2 = slot->load(std::memory_order_acquire);
+						if (!vtIsLock(v2) || vtDecodeLock(v2) != t || vtGenFromLock(v2) != gen) {
+							if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+							continue;
+						}
+
+						// Create a TSFN that calls resolve(RETRY_NOW) when fired.
+						napi_value resource_name;
+						::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
+						napi_threadsafe_function tsfn;
+						::napi_create_threadsafe_function(
+							env, nullptr, nullptr, resource_name,
+							0, 1,
+							ctx, retryNowFinalize,
+							ctx, retryNowCallJs,
+							&tsfn
+						);
+						::napi_unref_threadsafe_function(env, tsfn);
+
+						// Register wake callback; if the tracker already fired wake()
+						// before we got here, addWakeCallback returns false and we
+						// call+release the TSFN immediately (async on the JS thread).
+						bool registered = t->addWakeCallback([tsfn]() {
+							::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+							::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+						});
+						if (!registered) {
+							::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+							::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+						}
+
+						if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+						parked = true;
+						break;
+					}
+
+					if (!parked) {
+						// No active lock found; resolve RETRY_NOW directly (we are on
+						// the JS thread in this complete callback).
+						napi_value global, resolveFn, retryVal;
+						::napi_get_global(env, &global);
+						::napi_get_reference_value(env, ctx->resolveRef, &resolveFn);
+						::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
+						::napi_call_function(env, global, resolveFn, 1, &retryVal, nullptr);
+						::napi_delete_reference(env, ctx->resolveRef);
+						::napi_delete_reference(env, ctx->rejectRef);
+						delete ctx;
+					}
+					// If parked, ctx is owned by the TSFN finalize; do not free here.
 				} else {
-					state->handle->state = TransactionState::Pending;
+					// Normal error path: reset to Pending so JS can retry.
+					// Guard: keep Aborted if close() already set it (DB closing
+					// during commit) — don't let Transaction::Abort call Rollback()
+					// on a null txn.
+					if (state->handle->state == TransactionState::Committing) {
+						state->handle->state = TransactionState::Pending;
+					}
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
 					napi_value hasLogValue;
@@ -357,6 +487,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
+	if (!(*txnHandle)->lockedVTSlots.empty()) {
+		(*txnHandle)->releaseIntent();
+	}
+
 	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && !status.IsBusy()) {
 		if (!store) {
 			store = (*txnHandle)->boundLogStore.lock();
@@ -382,7 +516,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			// clear/delete the previous transaction and create a new transaction so that it can be retried
 			(*txnHandle)->resetTransaction();
 		}
-		(*txnHandle)->state = TransactionState::Pending;
+		if ((*txnHandle)->state == TransactionState::Committing) {
+			(*txnHandle)->state = TransactionState::Pending;
+		}
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
 		napi_value hasLogValue;
@@ -415,7 +551,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(3);
+	NAPI_METHOD_ARGV(5);
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
@@ -427,7 +563,20 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	// storing in std::string so it can live through the async process
 	std::string key(keySlice.data(), keySlice.size());
 
-	return (*txnHandle)->get(env, key, resolve, reject);
+	// argv[3]: txnId (ignored — the transaction is self)
+	// argv[4]: optional expectedVersion for VT check and populate
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 5) {
+		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
+	}
+
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	if (hasExpectedVersion) {
+		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+	}
+
+	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion);
 }
 
 /**
@@ -477,7 +626,7 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(4);
 	UNWRAP_TRANSACTION_HANDLE("GetSync");
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
@@ -485,6 +634,28 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	}
 	int32_t flags;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &flags));
+	// argv[2]: txnId (ignored — the transaction is self)
+	// argv[3]: optional expectedVersion for VT check and populate
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 4) {
+		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
+	}
+
+	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	if (hasExpectedVersion || wantsPopulate) {
+		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+	}
+
+	// VT fast-path: caller-supplied version matches the table → return FRESH
+	if (vtSlot && hasExpectedVersion && VerificationTable::verifyVersion(vtSlot, expectedVersion)) {
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
+		return result;
+	}
+
 	rocksdb::PinnableSlice value;
 	rocksdb::ReadOptions readOptions;
 	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
@@ -506,6 +677,24 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result));
 		return result;
 	}
+
+	// Soft VT miss: value still carries the expected version → populate + FRESH
+	if (hasExpectedVersion && vtSlot) {
+		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
+		if (extracted == expectedVersion) {
+			VerificationTable::populateVersion(vtSlot, expectedVersion);
+			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
+			return result;
+		}
+	}
+	// Populate: explicit flag or implicit when checking an expected version
+	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
+		uint64_t version = VerificationTable::extractVersionFromValue(value);
+		if (version != 0 && !vtIsLock(version)) {
+			VerificationTable::populateVersion(vtSlot, version);
+		}
+	}
+
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&
 			(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
 			value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {

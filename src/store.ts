@@ -24,8 +24,13 @@ import {
 import { parseDuration } from './util.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 
-const { ONLY_IF_IN_MEMORY_CACHE_FLAG, NOT_IN_MEMORY_CACHE_FLAG, ALWAYS_CREATE_NEW_BUFFER_FLAG } =
-	constants;
+const {
+	ONLY_IF_IN_MEMORY_CACHE_FLAG,
+	NOT_IN_MEMORY_CACHE_FLAG,
+	ALWAYS_CREATE_NEW_BUFFER_FLAG,
+	FRESH_VERSION_FLAG,
+	POPULATE_VERSION_FLAG,
+} = constants;
 const KEY_BUFFER_SIZE = 4096;
 
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
@@ -256,6 +261,11 @@ export class Store {
 	transactionLogsPath?: string;
 
 	/**
+	 * Whether this store's column family participates in the VerificationTable.
+	 */
+	verificationTable?: boolean;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -305,6 +315,7 @@ export class Store {
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = options?.transactionLogsPath;
+		this.verificationTable = options?.verificationTable;
 		this.writeKey = writeKey;
 	}
 
@@ -397,7 +408,7 @@ export class Store {
 		context: StoreContext,
 		key: Key,
 		alwaysCreateNewBuffer: boolean = false,
-		txnId?: number
+		options?: StoreGetOptions
 	): any | undefined {
 		const keyParam = getKeyParam(this.encodeKey(key));
 		let flags = 0;
@@ -405,19 +416,29 @@ export class Store {
 			// used by getBinary to force a new safe long-lived buffer
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
-		if (this.readOnly) {
-			txnId = undefined;
+		if (options?.populateVersion) {
+			flags |= POPULATE_VERSION_FLAG;
 		}
+		const txnId = this.getTxnId(options);
+		const expectedVersion = options?.expectedVersion;
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
-		const result = context.getSync(keyParam, flags | ONLY_IF_IN_MEMORY_CACHE_FLAG, txnId);
+		const result = context.getSync(
+			keyParam,
+			flags | ONLY_IF_IN_MEMORY_CACHE_FLAG,
+			txnId,
+			expectedVersion
+		);
 		if (typeof result === 'number') {
 			// return a number indicates it is using the default buffer
 			if (result === NOT_IN_MEMORY_CACHE_FLAG) {
 				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
 					// We still use the same shared buffer for the key, the native side will make a copy for the async task
-					context.get(keyParam, resolve, reject, txnId);
+					context.get(keyParam, resolve, reject, txnId, expectedVersion);
 				});
+			}
+			if (result === FRESH_VERSION_FLAG) {
+				return result;
 			}
 			// continue with fast path
 			VALUE_BUFFER.end = result;
@@ -507,9 +528,20 @@ export class Store {
 		if (alwaysCreateNewBuffer) {
 			flags |= ALWAYS_CREATE_NEW_BUFFER_FLAG;
 		}
+		if (options?.populateVersion) {
+			flags |= POPULATE_VERSION_FLAG;
+		}
 		// we are using the shared buffer for keys, so we just pass in the key ending point (much faster than passing in a buffer)
-		const result = context.getSync(keyParam, flags, this.getTxnId(options));
+		const result = context.getSync(
+			keyParam,
+			flags,
+			this.getTxnId(options),
+			options?.expectedVersion
+		);
 		if (typeof result === 'number') {
+			if (result === FRESH_VERSION_FLAG) {
+				return result;
+			}
 			// return a number indicates it is using the default buffer
 			VALUE_BUFFER.end = result;
 			return VALUE_BUFFER;
@@ -626,6 +658,7 @@ export class Store {
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
 			transactionLogsPath: this.transactionLogsPath,
+			verificationTable: this.verificationTable,
 		});
 
 		return false;
@@ -700,6 +733,27 @@ export class Store {
 	}
 
 	/**
+	 * Checks the process-global verification table for a fresh version match
+	 * on `key`. Returns `true` when the table currently records `version` for
+	 * this database+column-family. Provides a fast cache-freshness check
+	 * before falling back to a full read.
+	 */
+	verifyVersion(key: Key, version: number): boolean {
+		const keyParam = getKeyParam(this.encodeKey(key));
+		return this.db.verifyVersion(keyParam, version);
+	}
+
+	/**
+	 * Seeds the verification-table slot for `key` with `version`. Has no
+	 * effect if the slot is currently lock-tagged or the table is disabled.
+	 * Useful after a full read where the caller already knows the version.
+	 */
+	populateVersion(key: Key, version: number): void {
+		const keyParam = getKeyParam(this.encodeKey(key));
+		this.db.populateVersion(keyParam, version);
+	}
+
+	/**
 	 * Acquires a lock on the given key and calls the callback.
 	 *
 	 * @param key - The key to lock.
@@ -737,6 +791,23 @@ function getKeyParam(keyBuffer: BufferWithDataView): number | Buffer {
 }
 
 export interface GetOptions {
+	/**
+	 * When set, the native layer checks the verification table before reading.
+	 * If the slot holds this version, returns `FRESH_VERSION_FLAG` immediately
+	 * (the cached value is still valid). After a DB read, also seeds the slot
+	 * with the version extracted from the value.
+	 */
+	expectedVersion?: number;
+
+	/**
+	 * When `true`, after a DB read the native layer automatically seeds the
+	 * verification-table slot with the version extracted from the value.
+	 * Eliminates the need for a separate `populateVersion` call on cold reads.
+	 *
+	 * @default false
+	 */
+	populateVersion?: boolean;
+
 	/**
 	 * Whether to skip decoding the value.
 	 *

@@ -28,19 +28,33 @@ export type TransactionOptions = {
 	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
 	 */
 	retryOnBusy?: boolean;
+
+	/**
+	 * When `true`, an `IsBusy` conflict at commit time is resolved with the
+	 * `RETRY_NOW` sentinel value instead of being rejected. The native layer
+	 * may park on a VT slot before resolving, so the JS retry fires only after
+	 * the conflicting transaction has committed and released its write intent.
+	 *
+	 * Use together with `verificationTable: true` on the database.
+	 *
+	 * @default false
+	 */
+	coordinatedRetry?: boolean;
 };
 
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
 	abort(): void;
-	commit(resolve: () => void, reject: (err: Error) => void): void;
+	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
-		resolve: (value: Buffer) => void,
-		reject: (err: Error) => void
+		resolve: (value: Buffer | number) => void,
+		reject: (err: Error) => void,
+		txnIdIgnored?: number,
+		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
@@ -102,6 +116,13 @@ export type NativeDatabaseOptions = {
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;
+	/**
+	 * When true, transaction writes to this column family invalidate the
+	 * VerificationTable slot for each written key at write time (not at
+	 * commit time). Enable only for column families whose records are
+	 * cached (e.g. the primary CF of a table). Default: false.
+	 */
+	verificationTable?: boolean;
 };
 
 type ResolveCallback<T> = (value: T) => void;
@@ -139,9 +160,10 @@ export type NativeDatabase = {
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
-		resolve: ResolveCallback<Buffer>,
+		resolve: ResolveCallback<Buffer | number>,
 		reject: RejectCallback,
-		txnId?: number
+		txnId?: number,
+		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
@@ -150,7 +172,16 @@ export type NativeDatabase = {
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
 	getStats(all?: boolean): Record<string, number | StatsHistogramData>;
-	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
+	// When `expectedVersion` is supplied and the verification-table slot for
+	// the key holds the same version, returns `FRESH_VERSION_FLAG`. When
+	// `flags` includes `POPULATE_VERSION_FLAG`, a successful read seeds the
+	// verification table from the first 8 bytes of the value.
+	getSync(
+		keyLengthOrKeyBuffer: number | Buffer,
+		flags: number,
+		txnId?: number,
+		expectedVersion?: number
+	): Buffer | number | undefined;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
 		defaultBuffer: ArrayBuffer,
@@ -161,6 +192,7 @@ export type NativeDatabase = {
 	listLogs(): string[];
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
+	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;
 	purgeLogs(options?: PurgeLogsOptions): string[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
@@ -174,10 +206,21 @@ export type NativeDatabase = {
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
+	verifyVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): boolean;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = { blockCacheSize?: number };
+export type RocksDatabaseConfig = {
+	blockCacheSize?: number;
+	/**
+	 * Number of slots in the process-global verification table. Each slot is
+	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.
+	 *
+	 * Must be configured before the first database is opened. Once the table
+	 * is materialized, attempts to change this value will throw.
+	 */
+	verificationTableEntries?: number;
+};
 
 const nativeExtRE = /\.node$/;
 const req = createRequire(import.meta.url);
@@ -266,10 +309,19 @@ const bindingPath = locateBinding();
 const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
 export const constants: {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 	NOT_IN_MEMORY_CACHE_FLAG: number;
 	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	POPULATE_VERSION_FLAG: number;
+	FRESH_VERSION_FLAG: number;
+	/**
+	 * Sentinel value resolved (not rejected) by `commit()` when
+	 * `coordinatedRetry: true` and the transaction encountered an IsBusy
+	 * conflict. JS should retry the transaction body immediately.
+	 */
+	RETRY_NOW_VALUE: number;
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;

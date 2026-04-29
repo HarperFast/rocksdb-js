@@ -16,6 +16,7 @@ import {
 	VALUE_BUFFER,
 } from './store.js';
 import {
+	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
@@ -305,6 +306,32 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Checks the process-global verification table for a fresh version match
+	 * on `key`. Returns `true` when the table currently records `version`. Use
+	 * this as a fast cache-freshness check before falling back to a full read:
+	 *
+	 * ```typescript
+	 * if (db.verifyVersion(key, cachedEntry.version)) {
+	 *   return cachedEntry.value;
+	 * }
+	 * const value = db.getSync(key);
+	 * db.populateVersion(key, extractVersion(value));
+	 * ```
+	 */
+	verifyVersion(key: Key, version: number): boolean {
+		return this.store.verifyVersion(key, version);
+	}
+
+	/**
+	 * Seeds the verification-table slot for `key` with `version`. Has no
+	 * effect if the slot is currently lock-tagged or if the verification
+	 * table is disabled.
+	 */
+	populateVersion(key: Key, version: number): void {
+		this.store.populateVersion(key, version);
+	}
+
+	/**
 	 * Returns whether the database is open.
 	 *
 	 * @returns `true` if the database is open, `false` otherwise.
@@ -415,23 +442,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					structures: any,
 					isCompatible: boolean | ((existingStructures: any) => boolean)
 				) => {
-					return this.transactionSync((txn: Transaction) => {
-						// note: we need to get a fresh copy of the shared structures,
-						// so we don't want to use the transaction's getBinarySync()
-						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
-						const existingStructures =
-							existingStructuresBuffer && store.decoder?.decode
-								? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
-								: undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
+					return this.transactionSync(
+						(txn: Transaction) => {
+							// note: we need to get a fresh copy of the shared structures,
+							// so we don't want to use the transaction's getBinarySync()
+							const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
+							const existingStructures =
+								existingStructuresBuffer && store.decoder?.decode
+									? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
+									: undefined;
+							if (typeof isCompatible == 'function') {
+								if (!isCompatible(existingStructures)) {
+									return false;
+								}
+							} else if (existingStructures && existingStructures.length !== isCompatible) {
 								return false;
 							}
-						} else if (existingStructures && existingStructures.length !== isCompatible) {
-							return false;
-						}
-						txn.putSync(sharedStructuresKey, structures);
-					});
+							txn.putSync(sharedStructuresKey, structures);
+						},
+						{ retryOnBusy: true }
+					);
 				};
 			}
 			store.encoder = new EncoderClass({ ...opts, ...store.encoder });
@@ -535,7 +565,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 
 			try {
-				await txn.commit();
+				const commitResult = await txn.commit();
+				if (commitResult === RETRY_NOW) {
+					// coordinatedRetry: conflict resolved, retry immediately
+					continue;
+				}
 				return result;
 			} catch (commitErr) {
 				if (commitErr instanceof TransactionAlreadyAbortedError) {

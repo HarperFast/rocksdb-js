@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include "db_handle.h"
 #include "db_iterator.h"
 #include "rocksdb/options.h"
@@ -11,6 +12,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "transaction_log_entry.h"
 #include "util.h"
+#include "verification_table.h"
 
 namespace rocksdb_js {
 
@@ -64,6 +66,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool disableSnapshot;
 
 	/**
+	 * When true, IsBusy at commit time is signalled back to JS as RETRY_NOW
+	 * (a non-error resolution) instead of a rejection. The native layer may
+	 * park on a VT slot before signalling, eliminating the JS-side backoff
+	 * delay in the common case where the conflicting transaction has already
+	 * committed.
+	 */
+	bool coordinatedRetry;
+
+	/**
 	 * The transaction id assigned by the database descriptor.
 	 */
 	uint32_t id;
@@ -95,6 +106,19 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
+	 * VT slots locked by this transaction. Parallel to heldTrackers.
+	 * Populated by lockVTSlot() at putSync/removeSync time (main JS thread);
+	 * cleared by releaseIntent() from the execute thread or close().
+	 */
+	std::vector<std::atomic<uint64_t>*> lockedVTSlots;
+
+	/**
+	 * LockTracker pointers held by this transaction — one per entry in
+	 * lockedVTSlots. Each tracker owns one ref; decremented in releaseIntent().
+	 */
+	std::vector<LockTracker*> heldTrackers;
+
+	/**
 	 * A weak reference to the transaction log store this transaction is bound to.
 	 * Once set, a transaction can only add entries to this specific log store.
 	 */
@@ -116,6 +140,28 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	void resetTransaction();
 
+	/**
+	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
+	 * tagging it as "write in flight". Called at putSync/removeSync time
+	 * (main JS thread) so the slot is invalidated as soon as the key enters
+	 * the transaction's write buffer — not deferred to commit time.
+	 *
+	 * Only acts when dbHandle->enableVerificationTable is true and the VT
+	 * has been materialized. Skips slots already locked by any transaction.
+	 * On successful CAS, appends to lockedVTSlots / heldTrackers.
+	 */
+	void lockVTSlot(const std::shared_ptr<DBHandle>& dbHandle, const rocksdb::Slice& key);
+
+	/**
+	 * Releases all VT slots locked by this transaction. CASes each slot back
+	 * to 0 and frees the associated LockTracker. Clears lockedVTSlots and
+	 * heldTrackers.
+	 *
+	 * Called from the libuv execute thread after txn->Commit() (success or
+	 * IsBusy), and from close() to clean up orphaned locks.
+	 */
+	void releaseIntent();
+
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
 	void close() override;
@@ -125,7 +171,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		std::string& key,
 		napi_value resolve,
 		napi_value reject,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
+		std::atomic<uint64_t>* vtSlot = nullptr,
+		bool hasExpectedVersion = false,
+		uint64_t expectedVersion = 0,
+		bool wantsPopulate = false
 	);
 
 	/**

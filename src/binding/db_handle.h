@@ -47,6 +47,17 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool disableWAL = false;
 
 	/**
+	 * Whether to register writes from this column family into the
+	 * VerificationTable so that cached record versions are invalidated
+	 * on commit. Set via the `verificationTable: true` open option.
+	 *
+	 * Only enable this for column families whose records are cached
+	 * (typically the primary CF of a table). Secondary-index CFs should
+	 * leave this false to avoid unnecessary VT contention.
+	 */
+	bool enableVerificationTable = false;
+
+	/**
 	 * The node environment.
 	 */
 	napi_env env;

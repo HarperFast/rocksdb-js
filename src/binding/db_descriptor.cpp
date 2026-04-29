@@ -179,6 +179,17 @@ void DBDescriptor::close() {
 		}
 	}
 
+	// Safety-net: cancel any VT locks still held by this DB after all
+	// TransactionHandles have been closed. Under normal operation the
+	// closable->close() calls above already call releaseIntent() + wake()
+	// for every transaction; this is a defensive final pass.
+	{
+		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) {
+			vt->cancelForDB(reinterpret_cast<uintptr_t>(this));
+		}
+	}
+
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
 	TransactionLogStoreRegistry::Unregister(this->path);

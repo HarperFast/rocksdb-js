@@ -20,6 +20,7 @@ enum class DBMode {
  */
 struct DBOptions final {
 	bool disableWAL = false;
+	bool verificationTable = false;
 	bool enableStats = false;
 	DBMode mode = DBMode::Optimistic;
 	std::string name;
