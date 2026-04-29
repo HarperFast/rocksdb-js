@@ -7,32 +7,18 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export type TransactionOptions = {
+export type NativeTransactionOptions = {
 	/**
 	 * Whether to disable snapshots.
 	 *
 	 * @default false
 	 */
 	disableSnapshot?: boolean;
-
-	/**
-	 * The maximum number of times to retry the transaction.
-	 *
-	 * @default 3
-	 */
-	maxRetries?: number;
-
-	/**
-	 * Whether to retry the transaction if it fails with `IsBusy`.
-	 *
-	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
-	 */
-	retryOnBusy?: boolean;
 };
 
 export type NativeTransaction = {
 	id: number;
-	new (context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
+	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
