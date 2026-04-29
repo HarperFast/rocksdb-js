@@ -16,6 +16,7 @@ export interface Encoder {
 	encode?: (value: any, mode?: number) => Buffer; // | string;
 	Encoder?: EncoderFunction;
 	freezeData?: boolean;
+	name?: string;
 	needsStableBuffer?: boolean;
 	randomAccessStructure?: boolean;
 	readKey?: (buffer: Buffer, start: number, end: number, inSequence?: boolean) => any;

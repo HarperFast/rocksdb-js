@@ -453,8 +453,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					const bytesWritten = store.writeKey(value, store.encodeBuffer, 0);
 					return store.encodeBuffer.subarray(0, bytesWritten);
 				},
+				copyBuffers: true,
 			};
-			store.encoder.copyBuffers = true;
+		}
+
+		if (store.encoder) {
+			store.encoder.name = this.#name;
 		}
 
 		if (store.decoder && store.decoder.needsStableBuffer !== true) {
