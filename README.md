@@ -399,7 +399,7 @@ Synchronous version of `remove()`.
 
 ## Transactions
 
-### `db.transaction<T>(callback: TransactionCallback<T>, options?: DBTransactionOptions): Promise<T>`
+### `db.transaction<T>(callback: TransactionCallback<T>, options?: TransactionOptions): Promise<T>`
 
 Executes all database operations within the specified callback within a single transaction. If the
 callback completes without error, the database operations are automatically committed. However, if

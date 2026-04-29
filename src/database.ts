@@ -5,7 +5,7 @@ import {
 	type StatsHistogramData,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
-	type TransactionOptions,
+	type NativeTransactionOptions,
 } from './load-binding.js';
 import {
 	type ArrayBufferWithNotify,
@@ -33,6 +33,22 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	 * @default 'default'
 	 */
 	name?: string;
+}
+
+export interface TransactionOptions extends NativeTransactionOptions {
+	/**
+	 * The maximum number of times to retry the transaction.
+	 *
+	 * @default 3
+	 */
+	maxRetries?: number;
+
+	/**
+	 * Whether to retry the transaction if it fails with `IsBusy`.
+	 *
+	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
+	 */
+	retryOnBusy?: boolean;
 }
 
 export type RocksDBStat = number | StatsHistogramData;
@@ -408,23 +424,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					structures: any,
 					isCompatible: boolean | ((existingStructures: any) => boolean)
 				) => {
-					return this.transactionSync((txn: Transaction) => {
-						// note: we need to get a fresh copy of the shared structures,
-						// so we don't want to use the transaction's getBinarySync()
-						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
-						const existingStructures =
-							existingStructuresBuffer && store.decoder?.decode
-								? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
-								: undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
+					return this.transactionSync(
+						(txn: Transaction, _attempt: number) => {
+							// note: we need to get a fresh copy of the shared structures,
+							// so we don't want to use the transaction's getBinarySync()
+							const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
+							const existingStructures =
+								existingStructuresBuffer && store.decoder?.decode
+									? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
+									: undefined;
+							if (typeof isCompatible == 'function') {
+								if (!isCompatible(existingStructures)) {
+									return false;
+								}
+							} else if (existingStructures && existingStructures.length !== isCompatible) {
 								return false;
 							}
-						} else if (existingStructures && existingStructures.length !== isCompatible) {
-							return false;
-						}
-						txn.putSync(sharedStructuresKey, structures);
-					});
+							txn.putSync(sharedStructuresKey, structures);
+						},
+						{ retryOnBusy: true }
+					);
 				};
 			}
 			store.encoder = new EncoderClass({ ...opts, ...store.encoder });
