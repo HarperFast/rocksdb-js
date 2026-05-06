@@ -222,6 +222,177 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Compacts the entire key range of the database asynchronously.
+ * This triggers manual compaction which removes tombstones and reclaims space.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await db.compact();
+ * ```
+ */
+napi_value Database::Compact(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(4);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	auto state = new AsyncCompactState(env, *dbHandle);
+
+	// Check for optional start key (argv[2])
+	napi_valuetype startType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &startType));
+	if (startType != napi_undefined && startType != napi_null) {
+		rocksdb::Slice startSlice;
+		if (!rocksdb_js::getSliceFromArg(env, argv[2], startSlice, (*dbHandle)->defaultKeyBufferPtr, "Start key must be a buffer")) {
+			delete state;
+			return nullptr;
+		}
+		state->startKey = std::string(startSlice.data(), startSlice.size());
+		state->hasStart = true;
+	}
+
+	// Check for optional end key (argv[3])
+	napi_valuetype endType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &endType));
+	if (endType != napi_undefined && endType != napi_null) {
+		rocksdb::Slice endSlice;
+		if (!rocksdb_js::getSliceFromArg(env, argv[3], endSlice, (*dbHandle)->defaultKeyBufferPtr, "End key must be a buffer")) {
+			delete state;
+			return nullptr;
+		}
+		state->endKey = std::string(endSlice.data(), endSlice.size());
+		state->hasEnd = true;
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.compact",
+		NAPI_AUTO_LENGTH,
+		&name
+	));
+
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env doNotUse, void* data) { // execute
+			auto state = reinterpret_cast<AsyncCompactState*>(data);
+			// check if database is still open before proceeding
+			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during compact operation");
+			} else {
+				rocksdb::Slice* startPtr = state->hasStart ? new rocksdb::Slice(state->startKey) : nullptr;
+				rocksdb::Slice* endPtr = state->hasEnd ? new rocksdb::Slice(state->endKey) : nullptr;
+				state->status = state->handle->descriptor->db->CompactRange(
+					rocksdb::CompactRangeOptions(),
+					state->handle->columnDescriptor->column.get(),
+					startPtr,
+					endPtr
+				);
+				delete startPtr;
+				delete endPtr;
+			}
+			// signal that execute handler is complete
+			state->signalExecuteCompleted();
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<AsyncCompactState*>(data);
+
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				if (state->status.ok()) {
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+					state->callResolve(undefined);
+				} else {
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Compact failed");
+					state->callReject(error);
+				}
+			}
+
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	));
+
+	(*dbHandle)->registerAsyncWork();
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Compacts the entire key range of the database synchronously.
+ * This triggers manual compaction which removes tombstones and reclaims space.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.compactSync();
+ * ```
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.compactSync('a', 'z');
+ * ```
+ */
+napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	rocksdb::Slice startSlice;
+	rocksdb::Slice* startPtr = nullptr;
+	napi_valuetype startType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &startType));
+	if (startType != napi_undefined && startType != napi_null) {
+		if (!rocksdb_js::getSliceFromArg(env, argv[0], startSlice, (*dbHandle)->defaultKeyBufferPtr, "Start key must be a buffer")) {
+			return nullptr;
+		}
+		startPtr = &startSlice;
+	}
+
+	rocksdb::Slice endSlice;
+	rocksdb::Slice* endPtr = nullptr;
+	napi_valuetype endType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &endType));
+	if (endType != napi_undefined && endType != napi_null) {
+		if (!rocksdb_js::getSliceFromArg(env, argv[1], endSlice, (*dbHandle)->defaultKeyBufferPtr, "End key must be a buffer")) {
+			return nullptr;
+		}
+		endPtr = &endSlice;
+	}
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
+		(*dbHandle)->descriptor->db->CompactRange(
+			rocksdb::CompactRangeOptions(),
+			(*dbHandle)->columnDescriptor->column.get(),
+			startPtr,
+			endPtr
+		),
+		"Compact failed"
+	);
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Destroys the RocksDB database.
  *
  * @example
@@ -1274,6 +1445,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "columns", nullptr, nullptr, Columns, nullptr, nullptr, napi_default, nullptr },
+		{ "compact", nullptr, Compact, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "compactSync", nullptr, CompactSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },

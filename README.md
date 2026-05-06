@@ -193,6 +193,27 @@ const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
 ```
 
+### `db.compactRange(options?): Promise<void>`
+
+Compacts a range of keys in the database. In RocksDB, deleted keys are not immediately removed from
+the database. Instead, they are marked as deleted and a tombstone is written. This function
+triggers a manual compaction which removes the tombstones and reclaims space.
+
+- `start?: Key` The start key of the range to compact.
+- `end?: Key` The end key of the range to compact.
+
+```typescript
+await db.compactRange();
+```
+
+### `db.compactRangeSync(options?): void`
+
+Synchronous version of `compactRange()`.
+
+```typescript
+db.compactRangeSync();
+```
+
 ### `db.destroy(): void`
 
 Completely removes a database based on the `db` instance's path including all data, column families,
@@ -222,6 +243,23 @@ Synchronous version of `db.drop()`.
 const db = RocksDatabase.open('path/to/db');
 db.dropSync();
 db.close();
+```
+
+### `db.flush(): Promise<void>`
+
+Flushes all in-memory data to disk asynchronously.
+
+```typescript
+await db.flush();
+```
+
+### `db.flushSync(): void`
+
+Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
+it is recommended to use `flush()` if you want to keep the event loop free.
+
+```typescript
+db.flushSync();
 ```
 
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
@@ -875,23 +913,6 @@ await Promise.all([
 Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.3.0 introduced a
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
-
-### `db.flush(): Promise<void>`
-
-Flushes all in-memory data to disk asynchronously.
-
-```typescript
-await db.flush();
-```
-
-### `db.flushSync(): void`
-
-Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
-it is recommended to use `flush()` if you want to keep the event loop free.
-
-```typescript
-db.flushSync();
-```
 
 ## Transaction Log
 
