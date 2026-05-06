@@ -74,16 +74,12 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	}
 
 	return(value?: any): IteratorResult<DBIteratorValue<T>, any> {
-		if (this.iterator.return) {
-			this.iterator.return();
-		}
+		this.iterator.return?.();
 		return { done: true, value };
 	}
 
 	throw(err: unknown): IteratorResult<DBIteratorValue<T>, any> {
-		if (this.iterator.throw) {
-			this.iterator.throw(err);
-		}
+		this.iterator.throw?.(err);
 		throw err;
 	}
 }
