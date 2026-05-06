@@ -4,8 +4,9 @@
 #include <string>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <map>
-#include <set>
+#include <vector>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -57,6 +58,12 @@ union LogPosition {
 			a.positionInLogFile < b.positionInLogFile :
 			a.logSequenceNumber < b.logSequenceNumber;
 	};
+
+	bool operator<(const LogPosition& other) const {
+		return logSequenceNumber == other.logSequenceNumber ?
+			positionInLogFile < other.positionInLogFile :
+			logSequenceNumber < other.logSequenceNumber;
+	}
 
 	LogPosition() = default;
 
@@ -161,11 +168,12 @@ struct TransactionLogStore final {
 	std::atomic<int> pendingTransactionCount = 0;
 
 	/**
-	 * The set of transactions that have been written to log files in this store, but
-	 * have not been committed (to RocksDB) yet. We track these because we don't want
-	 * the transactions in the log to be visible until they are committed and consistent.
+	 * Positions written to log files but not yet committed to RocksDB. Kept as a
+	 * sorted vector (ascending) so the minimum is always front(). A sorted vector
+	 * is faster than std::set for the small sizes seen here (typically 1–16 entries)
+	 * because it avoids per-node heap allocation and is cache-friendly.
 	 */
-	std::set<LogPosition, LogPosition> uncommittedTransactionPositions;
+	std::vector<LogPosition> uncommittedTransactionPositions;
 
 	/**
 	 * An array of recent sequence positions to correlate a database sequence number with a transaction log position,
@@ -370,6 +378,24 @@ private:
 		const bool all = false,
 		const uint64_t before = 0
 	);
+
+	// Sorted-vector helpers for uncommittedTransactionPositions.
+	// All callers must hold dataSetsMutex.
+	void positionInsert(LogPosition pos) {
+		auto it = std::lower_bound(uncommittedTransactionPositions.begin(),
+		                           uncommittedTransactionPositions.end(), pos);
+		// Mimic std::set::insert: skip if the element already exists.
+		if (it == uncommittedTransactionPositions.end() || pos < *it) {
+			uncommittedTransactionPositions.insert(it, pos);
+		}
+	}
+	void positionErase(LogPosition pos) {
+		auto it = std::lower_bound(uncommittedTransactionPositions.begin(),
+		                           uncommittedTransactionPositions.end(), pos);
+		if (it != uncommittedTransactionPositions.end() && !(*it < pos) && !(pos < *it)) {
+			uncommittedTransactionPositions.erase(it);
+		}
+	}
 
 	/**
 	 * Performs the actual close work. Must be called with both writeMutex and
