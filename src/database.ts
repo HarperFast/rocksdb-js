@@ -145,7 +145,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * await db.compactRange();
+	 * await db.compact();
 	 * ```
 	 */
 	compact(options?: CompactOptions): Promise<void> {
@@ -173,7 +173,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
-	 * db.compactRangeSync();
+	 * db.compactSync();
 	 * ```
 	 */
 	compactSync(options?: CompactOptions): void {
