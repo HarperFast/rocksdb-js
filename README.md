@@ -193,25 +193,30 @@ const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
 ```
 
-### `db.compactRange(options?): Promise<void>`
+### `db.compact(options?): Promise<void>`
 
 Compacts a range of keys in the database. In RocksDB, deleted keys are not immediately removed from
 the database. Instead, they are marked as deleted and a tombstone is written. This function
 triggers a manual compaction which removes the tombstones and reclaims space.
 
-- `start?: Key` The start key of the range to compact.
-- `end?: Key` The end key of the range to compact.
+- `options: object`
+  - `start?: Key` The start key of the range to compact.
+  - `end?: Key` The end key of the range to compact.
 
 ```typescript
-await db.compactRange();
+await db.compact();
+
+await db.compact({ start: 'a', end: 'z' });
 ```
 
-### `db.compactRangeSync(options?): void`
+### `db.compactSync(options?): void`
 
-Synchronous version of `compactRange()`.
+Synchronous version of `compact()`.
 
 ```typescript
-db.compactRangeSync();
+db.compactSync();
+
+db.compactSync({ start: 'a', end: 'z' });
 ```
 
 ### `db.destroy(): void`
