@@ -160,7 +160,8 @@ describe('Ranges', () => {
 						throw new Error('Iterator does not support throw');
 					}
 				} catch (error) {
-					console.log(error);
+					expect(error).toBeInstanceOf(Error);
+					expect((error as Error).message).toBe('test');
 				}
 			}));
 
@@ -251,6 +252,23 @@ describe('Ranges', () => {
 					{
 						key: 'e',
 					},
+				]);
+			}));
+
+		it('should iterate with advanced ReadOptions (fillCache)', () =>
+			dbRunner(async ({ db }) => {
+				for (const key of ['a', 'b', 'c']) {
+					await db.put(key, `value ${key}`);
+				}
+
+				const results: { key: Key; value: unknown }[] = [];
+				for (const { key, value } of db.getRange({ fillCache: true })) {
+					results.push({ key, value });
+				}
+				expect(results).toEqual([
+					{ key: 'a', value: 'value a' },
+					{ key: 'b', value: 'value b' },
+					{ key: 'c', value: 'value c' },
 				]);
 			}));
 
