@@ -55,7 +55,7 @@ function completer(line) {
 
 	if (parts.length <= 1) {
 		const hits = Object.keys(COMMANDS).filter((c) => c.startsWith(command));
-		return [hits.length ? hits : COMMANDS, line];
+		return [hits.length ? hits : [], line];
 	}
 
 	if ((command === 'drop' || command === 'use') && parts.length === 2) {
@@ -65,7 +65,7 @@ function completer(line) {
 		return [hits.length ? hits : columns, arg];
 	}
 
-	if (command === 'log') {
+	if (command === 'log' && currentDB) {
 		if (parts.length === 2) {
 			const arg = parts[1];
 			const logs = currentDB.listLogs();
@@ -285,7 +285,7 @@ function helpCommand() {
 }
 
 async function logCommand(args) {
-	const [name, file, entry] = args;
+	const [name, file, entryStr] = args;
 	const logs = currentDB.listLogs();
 	if (name) {
 		if (!logs.includes(name)) {
@@ -295,7 +295,8 @@ async function logCommand(args) {
 		if (file) {
 			const logPath = join(currentDB.path, 'transaction_logs', name, file);
 			const log = parseTransactionLog(logPath);
-			if (entry) {
+			const entry = entryStr ? parseInt(entryStr) : undefined;
+			if (!isNaN(entry)) {
 				if (entry < 1 || entry > log.entries.length) {
 					console.log(`Entry ${hl(entry)} does not exist\n`);
 					return;
@@ -349,6 +350,11 @@ async function purgeLogsCommand(args) {
 		console.log(`Usage: ${hl('purge-logs <name>')}\n`);
 		return;
 	}
+	const answer = await ask(`Are you sure you want to purge logs? (y/N) `);
+	if (answer !== 'y' && answer !== 'Y') {
+		console.log();
+		return;
+	}
 	const { result: removed, time } = await run(() => currentDB.purgeLogs({ name }));
 	console.log(
 		`Purged ${removed.length} log file${removed.length === 1 ? '' : 's'} ${note(`(${time}ms)`)}`
@@ -361,13 +367,13 @@ async function purgeLogsCommand(args) {
 
 async function putCommand(args) {
 	const [key, ...valueParts] = args;
+	if (!key || valueParts.length === 0) {
+		console.log(`Usage: ${hl('put <key> <value>')}\n`);
+		return;
+	}
 	let value = valueParts.join(' ');
 	if (value.startsWith('"') && value.endsWith('"')) {
 		value = value.slice(1, -1);
-	}
-	if (!key || value === undefined) {
-		console.log(`Usage: ${hl('put <key> <value>')}\n`);
-		return;
 	}
 	await currentDB.put(key, value);
 	console.log();
