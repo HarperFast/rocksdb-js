@@ -41,6 +41,13 @@ const dbPath = resolve(positionals[0] || process.cwd());
 const dbs = {};
 let currentDB = null;
 let r = null;
+const defaultOpenOptions = {
+	disableWAL: false,
+	encoding: 'msgpack',
+	freezeData: true,
+	randomAccessStructure: true,
+	readOnly: argv.readonly,
+};
 
 function completer(line) {
 	const parts = line.trimStart().split(/[ \t]+/);
@@ -210,7 +217,7 @@ async function dropCommand(args) {
 		return;
 	}
 
-	const db = dbs[column] || RocksDatabase.open(dbPath, { name: column, readOnly: argv.readonly });
+	const db = dbs[column] || RocksDatabase.open(dbPath, { name: column, ...defaultOpenOptions });
 	const { time } = await run(() => db.drop());
 	db.close();
 	delete dbs[column];
@@ -371,8 +378,13 @@ async function queryCommand(args) {
 	let count = 0;
 	const [start, end] = args;
 	try {
-		for await (const { key, value } of currentDB.getRange({ start, end })) {
-			console.log(`${str(key)} = ${inspect(value, { colors: true, depth: 10 })}`);
+		for await (const { key } of currentDB.getRange({ start, end, values: false })) {
+			try {
+				const value = await currentDB.get(key);
+				console.log(`${str(key)} = ${inspect(value, { colors: true, depth: 10 })}`);
+			} catch (error) {
+				console.error(`${str(key)} = ${bad(error)}`);
+			}
 			count++;
 		}
 		const endTime = Date.now();
@@ -439,7 +451,7 @@ async function useCommand(args) {
 			}
 			console.log(`Created ${hl(name)}\n`);
 		}
-		dbs[name] = RocksDatabase.open(dbPath, { name });
+		dbs[name] = RocksDatabase.open(dbPath, { name, ...defaultOpenOptions });
 	} else {
 		console.log(`Switching ${hl(currentDB.name)} => ${hl(name)}\n`);
 	}
@@ -487,7 +499,7 @@ async function main() {
 			}
 		}
 
-		currentDB = RocksDatabase.open(dbPath, { readOnly: argv.readonly });
+		currentDB = RocksDatabase.open(dbPath, { ...defaultOpenOptions });
 		dbs[currentDB.name] = currentDB;
 
 		console.log(wrapColumns(currentDB.columns) + '\n');
@@ -499,14 +511,26 @@ async function main() {
 			if (!command) continue;
 			const commandFn = COMMANDS[command];
 			if (commandFn) {
-				await commandFn(line.slice(1));
+				try {
+					await commandFn(line.slice(1));
+				} catch (error) {
+					console.error(bad(error));
+				}
 			} else {
 				console.log(`Unknown command: ${command}\n`);
 			}
 		}
 	} catch (error) {
+		if (error.message.includes('Resource temporarily unavailable')) {
+			console.log();
+			console.error(
+				bad('Error: RocksDB is already open by another process, rerun with the read-only flag:\n')
+			);
+			console.log(hl(`  rocksdb-js --readonly ${dbPath}\n`));
+			process.exit(1);
+		}
 		if (error.code !== 'ABORT_ERR') {
-			console.error(error);
+			console.error(bad(error));
 			process.exit(1);
 		}
 	} finally {
