@@ -46,6 +46,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool inclusiveEnd;
 	bool reverse;
 	bool values;
+	bool needsStableValueBuffer;
 	std::unique_ptr<rocksdb::Iterator> iterator;
 	std::string startKeyStr;
 	std::string endKeyStr;
