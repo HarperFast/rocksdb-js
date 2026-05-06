@@ -353,7 +353,11 @@ async function purgeLogsCommand(args) {
 }
 
 async function putCommand(args) {
-	const [key, value] = args;
+	const [key, ...valueParts] = args;
+	let value = valueParts.join(' ');
+	if (value.startsWith('"') && value.endsWith('"')) {
+		value = value.slice(1, -1);
+	}
 	if (!key || value === undefined) {
 		console.log(`Usage: ${hl('put <key> <value>')}\n`);
 		return;
