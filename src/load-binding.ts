@@ -115,6 +115,8 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	compact(resolve: ResolveCallback<void>, reject: RejectCallback, start?: Key, end?: Key): void;
+	compactSync(start?: Key, end?: Key): void;
 	columns: string[];
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;

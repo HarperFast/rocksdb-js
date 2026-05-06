@@ -47,6 +47,8 @@ struct Database final {
 	static napi_value Destroy(napi_env env, napi_callback_info info);
 	static napi_value Drop(napi_env env, napi_callback_info info);
 	static napi_value DropSync(napi_env env, napi_callback_info info);
+	static napi_value Compact(napi_env env, napi_callback_info info);
+	static napi_value CompactSync(napi_env env, napi_callback_info info);
 	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
@@ -93,6 +95,20 @@ struct AsyncClearState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		failureMsg(failureMsg)
 	{}
 };
+
+/**
+ * State for the `CompactRange` async work.
+ */
+struct AsyncCompactState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
+	std::string startKey;
+	std::string endKey;
+	bool hasStart = false;
+	bool hasEnd = false;
+
+	AsyncCompactState(napi_env env, std::shared_ptr<DBHandle> handle)
+		: BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}
+};
+
 
 /**
  * State for the `Flush` async work.

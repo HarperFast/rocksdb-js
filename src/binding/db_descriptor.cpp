@@ -153,6 +153,21 @@ void DBDescriptor::close() {
 	// We want to ensure that all in-memory data is written to disk
 	this->flush();
 
+	// Trigger manual compaction on all column families to reclaim space from
+	// tombstones before closing
+	if (!this->readOnly) {
+		for (const auto& [name, columnDesc] : this->columns) {
+			if (columnDesc && columnDesc->column) {
+				this->db->CompactRange(
+					rocksdb::CompactRangeOptions(),
+					columnDesc->column.get(),
+					nullptr,
+					nullptr
+				);
+			}
+		}
+	}
+
 	// Wait for any outstanding (background threads) operations to complete.
 	// Note that this is not setting the RocksDB `close_db` flag since active
 	// references to the databases may still exist. Also, contrary to the
