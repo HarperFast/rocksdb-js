@@ -158,12 +158,7 @@ void DBDescriptor::close() {
 	if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
 		for (const auto& [name, columnDesc] : this->columns) {
 			if (columnDesc && columnDesc->column) {
-				this->db->CompactRange(
-					rocksdb::CompactRangeOptions(),
-					columnDesc->column.get(),
-					nullptr,
-					nullptr
-				);
+				this->compactRange(columnDesc->column.get(), nullptr, nullptr);
 			}
 		}
 	}
@@ -1785,6 +1780,21 @@ rocksdb::Status DBDescriptor::flush() {
 	return this->db->Flush(
 		flushOptions,
 		columnHandles
+	);
+}
+
+rocksdb::Status DBDescriptor::compactRange(
+	rocksdb::ColumnFamilyHandle* column,
+	const rocksdb::Slice* start,
+	const rocksdb::Slice* end
+) {
+	std::lock_guard<std::mutex> lock(this->compactMutex);
+	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range\n", this);
+	return this->db->CompactRange(
+		rocksdb::CompactRangeOptions(),
+		column,
+		start,
+		end
 	);
 }
 

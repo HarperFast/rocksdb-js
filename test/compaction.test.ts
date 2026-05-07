@@ -138,4 +138,31 @@ describe('Compaction', () => {
 
 			expect(sizeAfterSyncCompact).toBeLessThan(sizeBeforeSyncCompact);
 		}));
+
+	it('should not compact more than once at a time', () =>
+		dbRunner(async ({ db }) => {
+			for (let i = 0; i < 1000; ++i) {
+				await db.put(`foo-${i}`, `bar-${i}`);
+			}
+			await db.flush();
+
+			let firstResolved = false;
+			let secondResolved = false;
+
+			const firstCompact = db.compact().then((r) => {
+				firstResolved = true;
+				return r;
+			});
+			const secondCompact = db.compact().then((r) => {
+				secondResolved = true;
+				return r;
+			});
+
+			await firstCompact;
+			expect(firstResolved).toBe(true);
+			expect(secondResolved).toBe(false);
+
+			await secondCompact;
+			expect(secondResolved).toBe(true);
+		}));
 });

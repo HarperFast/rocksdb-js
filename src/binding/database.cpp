@@ -291,16 +291,15 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during compact operation");
 			} else {
-				rocksdb::Slice* startPtr = state->hasStart ? new rocksdb::Slice(state->startKey) : nullptr;
-				rocksdb::Slice* endPtr = state->hasEnd ? new rocksdb::Slice(state->endKey) : nullptr;
-				state->status = state->handle->descriptor->db->CompactRange(
-					rocksdb::CompactRangeOptions(),
+				rocksdb::Slice startSlice(state->startKey);
+				rocksdb::Slice endSlice(state->endKey);
+				rocksdb::Slice* startPtr = state->hasStart ? &startSlice : nullptr;
+				rocksdb::Slice* endPtr = state->hasEnd ? &endSlice : nullptr;
+				state->status = state->handle->descriptor->compactRange(
 					state->handle->columnDescriptor->column.get(),
 					startPtr,
 					endPtr
 				);
-				delete startPtr;
-				delete endPtr;
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -380,8 +379,7 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	}
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
-		(*dbHandle)->descriptor->db->CompactRange(
-			rocksdb::CompactRangeOptions(),
+		(*dbHandle)->descriptor->compactRange(
 			(*dbHandle)->columnDescriptor->column.get(),
 			startPtr,
 			endPtr

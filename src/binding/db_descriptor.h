@@ -128,6 +128,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<bool> closing{false};
 
 	/**
+	 * Mutex to prevent concurrent compaction operations.
+	 */
+	std::mutex compactMutex;
+
+	/**
 	 * Map of listener callbacks by key.
 	 */
 	std::unordered_map<std::string, std::vector<std::shared_ptr<ListenerCallback>>> listenerCallbacks;
@@ -263,6 +268,21 @@ public:
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 	rocksdb::Status flush();
+
+	/**
+	 * Compacts a range of keys in the specified column family. This method is
+	 * thread-safe and uses a mutex to prevent concurrent compaction operations.
+	 *
+	 * @param column The column family to compact.
+	 * @param start The start key of the range (nullptr for beginning).
+	 * @param end The end key of the range (nullptr for end).
+	 * @returns The status of the compaction operation.
+	 */
+	rocksdb::Status compactRange(
+		rocksdb::ColumnFamilyHandle* column,
+		const rocksdb::Slice* start,
+		const rocksdb::Slice* end
+	);
 };
 
 /**
