@@ -199,7 +199,8 @@ console.log(entriesRemoved); // 10
 
 Compacts a range of keys in the database. In RocksDB, deleted keys are not immediately removed from
 the database. Instead, they are marked as deleted and a tombstone is written. This function
-triggers a manual compaction which removes the tombstones and reclaims space.
+triggers a manual compaction which removes the tombstones and reclaims space. Only one compaction
+per database path can be performed at a time.
 
 - `options: object`
   - `start?: Key` The start key of the range to compact.
