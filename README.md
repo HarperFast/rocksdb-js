@@ -1155,6 +1155,8 @@ The default `Store` contains the following methods which can be overridden:
 
 - `constructor(path, options?)`
 - `close()`
+- `compact(options?)`
+- `compactSync(options?)`
 - `decodeKey(key)`
 - `decodeValue(value)`
 - `encodeKey(key)`

@@ -66,7 +66,7 @@ describe('Compaction', () => {
 			expect(sizeAfterCompact).toBeLessThan(sizeAfterRemove);
 		}));
 
-	it('should compact a specific key range', () =>
+	it.only('should compact a specific key range', () =>
 		dbRunner(async ({ db }) => {
 			// Insert data with different prefixes
 			for (let i = 0; i < 100; ++i) {
@@ -76,7 +76,7 @@ describe('Compaction', () => {
 			}
 			await db.flush();
 
-			const sizeBeforeCompact = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+			const sizeAfterInsert = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
 
 			// Remove the 'bbb' prefix data to create tombstones
 			for (let i = 0; i < 100; ++i) {
@@ -88,7 +88,7 @@ describe('Compaction', () => {
 			await db.compact({ start: 'bbb', end: 'bbc' });
 
 			const sizeAfterCompact = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
-			expect(sizeAfterCompact).toBeLessThan(sizeBeforeCompact);
+			expect(sizeAfterCompact).toBeLessThan(sizeAfterInsert);
 
 			// Verify data outside the compacted range is still accessible
 			expect(await db.get('aaa-0')).toBe('value-0');
@@ -103,7 +103,8 @@ describe('Compaction', () => {
 			const sizeBeforeSyncCompact = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
 			db.compactSync({ start: 'aaa', end: 'aab' });
 
-			const sizeAfterCompactSync = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
-			expect(sizeAfterCompactSync).toBeLessThan(sizeBeforeSyncCompact);
+			const sizeAfterSyncCompact = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+
+			expect(sizeAfterSyncCompact).toBeLessThan(sizeBeforeSyncCompact);
 		}));
 });

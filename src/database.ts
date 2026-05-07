@@ -9,6 +9,7 @@ import {
 } from './load-binding.js';
 import {
 	type ArrayBufferWithNotify,
+	CompactOptions,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	Store,
@@ -26,11 +27,6 @@ import { Encoder as MsgpackEncoder } from 'msgpackr';
 import * as orderedBinary from 'ordered-binary';
 
 export type TransactionCallback<T> = (txn: Transaction, attempt: number) => T | PromiseLike<T>;
-
-export type CompactOptions = {
-	start?: Key;
-	end?: Key;
-};
 
 export interface RocksDatabaseOptions extends StoreOptions {
 	/**
@@ -150,21 +146,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	compact(options?: CompactOptions): Promise<void> {
-		let startBuffer: Buffer | undefined;
-		let endBuffer: Buffer | undefined;
-
-		if (options?.start !== undefined) {
-			const start = this.store.encodeKey(options.start);
-			startBuffer = Buffer.from(start.subarray(start.start, start.end));
-		}
-		if (options?.end !== undefined) {
-			const end = this.store.encodeKey(options.end);
-			endBuffer = Buffer.from(end.subarray(end.start, end.end));
-		}
-
-		return new Promise((resolve, reject) =>
-			this.store.db.compact(resolve, reject, startBuffer, endBuffer)
-		);
+		return this.store.compact(options);
 	}
 
 	/**
@@ -178,19 +160,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	compactSync(options?: CompactOptions): void {
-		let startBuffer: Buffer | undefined;
-		let endBuffer: Buffer | undefined;
-
-		if (options?.start !== undefined) {
-			const start = this.store.encodeKey(options.start);
-			startBuffer = Buffer.from(start.subarray(start.start, start.end));
-		}
-		if (options?.end !== undefined) {
-			const end = this.store.encodeKey(options.end);
-			endBuffer = Buffer.from(end.subarray(end.start, end.end));
-		}
-
-		this.store.db.compactSync(startBuffer, endBuffer);
+		return this.store.compactSync(options);
 	}
 
 	/**
