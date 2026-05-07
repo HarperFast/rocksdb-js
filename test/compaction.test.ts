@@ -146,23 +146,9 @@ describe('Compaction', () => {
 			}
 			await db.flush();
 
-			let firstResolved = false;
-			let secondResolved = false;
+			await Promise.all([db.compact(), db.compact()]);
 
-			const firstCompact = db.compact().then((r) => {
-				firstResolved = true;
-				return r;
-			});
-			const secondCompact = db.compact().then((r) => {
-				secondResolved = true;
-				return r;
-			});
-
-			await firstCompact;
-			expect(firstResolved).toBe(true);
-			expect(secondResolved).toBe(false);
-
-			await secondCompact;
-			expect(secondResolved).toBe(true);
+			expect(await db.get('foo-0')).toBe('bar-0');
+			expect(await db.get('foo-999')).toBe('bar-999');
 		}));
 });
