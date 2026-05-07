@@ -1283,6 +1283,7 @@ Available commands:
 
 - `clear` Clear all data in the current column family
 - `columns` List column families
+- `compact` Compact the current column family
 - `count` Count the number of keys in the current column family
 - `drop <column>` Permanently drop a column family
 - `exit` Exit the REPL
