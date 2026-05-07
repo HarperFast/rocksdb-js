@@ -30,18 +30,15 @@ struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
 /**
- * Custom deleter for RocksDB that triggers compaction and waits for it to
- * complete before destroying the database instance.
+ * Custom deleter for RocksDB that waits for any background compaction to
+ * complete before destroying the database instance. Compaction is triggered
+ * by DBDescriptor::close() before this deleter runs.
  */
 struct DBDeleter {
 	void operator()(rocksdb::DB* db) const {
 		if (db) {
-			DEBUG_LOG("DBDeleter::operator() Compacting and closing database\n");
-			// Trigger manual compaction on the default column family to reclaim
-			// space from tombstones before closing. Using nullptr for column family
-			// handle compacts the default column family.
-			db->CompactRange(rocksdb::CompactRangeOptions(), nullptr, nullptr);
-			// Wait for compaction to complete and close the database
+			DEBUG_LOG("DBDeleter::operator() Waiting for compaction and closing database\n");
+			// Wait for any background compaction to complete and close the database
 			rocksdb::WaitForCompactOptions options;
 			options.close_db = true;
 			db->WaitForCompact(options);
