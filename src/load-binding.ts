@@ -199,7 +199,10 @@ export type NativeDatabase = {
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = { blockCacheSize?: number };
+export type RocksDatabaseConfig = {
+	blockCacheSize?: number;
+	compactOnClose?: boolean;
+};
 
 const nativeExtRE = /\.node$/;
 const req = createRequire(import.meta.url);

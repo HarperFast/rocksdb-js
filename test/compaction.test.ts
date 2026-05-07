@@ -1,9 +1,16 @@
+import { RocksDatabase } from '../src/index.js';
 import { dbRunner } from './lib/util.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 describe('Compaction', () => {
+	afterEach(() => {
+		RocksDatabase.config({ compactOnClose: false });
+	});
+
 	it('should compact on close', () =>
 		dbRunner(async ({ db }) => {
+			RocksDatabase.config({ compactOnClose: true });
+
 			const sizeStart = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
 			for (let i = 0; i < 1000; ++i) {
 				await db.put(`foo-${i}`, `bar-${i}`);
@@ -22,6 +29,30 @@ describe('Compaction', () => {
 			db.open();
 			const sizeAfter = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
 			expect(sizeAfter).toBeLessThan(sizeAfterRemove);
+		}));
+
+	it('should not compact on close', () =>
+		dbRunner(async ({ db }) => {
+			RocksDatabase.config({ compactOnClose: false });
+
+			const sizeStart = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+			for (let i = 0; i < 1000; ++i) {
+				await db.put(`foo-${i}`, `bar-${i}`);
+			}
+			await db.flush();
+			const sizeWithData = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+			expect(sizeWithData).toBeGreaterThan(sizeStart);
+
+			for (let i = 0; i < 1000; ++i) {
+				await db.remove(`foo-${i}`);
+			}
+			await db.flush();
+			const sizeAfterRemove = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+			db.close();
+
+			db.open();
+			const sizeAfter = db.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+			expect(sizeAfter).toBe(sizeAfterRemove);
 		}));
 
 	it('should compact with compact()', () =>

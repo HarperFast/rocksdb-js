@@ -155,7 +155,7 @@ void DBDescriptor::close() {
 
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing
-	if (!this->readOnly) {
+	if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
 		for (const auto& [name, columnDesc] : this->columns) {
 			if (columnDesc && columnDesc->column) {
 				this->db->CompactRange(

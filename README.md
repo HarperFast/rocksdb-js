@@ -105,10 +105,12 @@ Sets global database settings.
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
 
 ```typescript
 RocksDatabase.config({
 	blockCacheSize: 100 * 1024 * 1024, // 100MB
+	compactOnClose: true,
 });
 ```
 
