@@ -66,7 +66,7 @@ describe('Compaction', () => {
 			expect(sizeAfterCompact).toBeLessThan(sizeAfterRemove);
 		}));
 
-	it.only('should compact a specific key range', () =>
+	it('should compact a specific key range', () =>
 		dbRunner(async ({ db }) => {
 			// Insert data with different prefixes
 			for (let i = 0; i < 100; ++i) {
