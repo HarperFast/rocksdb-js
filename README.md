@@ -1235,6 +1235,39 @@ Extends `RangeOptions`.
 - `options: object`
   - `reverse: boolean` When `true`, the iterator will iterate in reverse order. Defaults to `false`.
 
+## CLI
+
+The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases.
+
+```bash
+rocksdb-js [dbpath]
+```
+
+Options:
+
+- `-h, --help` Show this help message
+- `-r, --readonly` Open the database in read-only mode
+- `-v, --version` Show the version information
+
+Available commands:
+
+- `clear` Clear all data in the current column family
+- `columns` List column families
+- `count` Count the number of keys in the current column family
+- `drop <column>` Permanently drop a column family
+- `exit` Exit the REPL
+- `get <key>` Get the value of a key
+- `help` Show this help message
+- `log [name] [file] [entry]` List the transaction log store names and log store files
+- `prop <key>` Get a RocksDB property (try "rocksdb.stats")
+- `purge-logs <name>` Purge transaction log files older than 3 days
+- `put <key> <value>` Set the value of a key
+- `query [start] [end]` Query a range of keys
+- `remove <key>` Delete a key
+- `repl` Open a JS sub-REPL; "db" refers to the current column family
+- `stats` Show the statistics for the current column family
+- `use [column]` Create a new column family or switch to an existing one
+
 ## Development
 
 This package requires Node.js 18 or higher, pnpm, and a C++ compiler.
