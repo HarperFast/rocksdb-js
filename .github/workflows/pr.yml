@@ -53,6 +53,13 @@ jobs:
       matrix:
         node: [20, 22, 24]
         os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - node: 20
+            pnpm-version: '10'
+          - node: 22
+            pnpm-version: latest
+          - node: 24
+            pnpm-version: latest
 
     steps:
       - name: Checkout repository
@@ -61,7 +68,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: ${{ matrix.pnpm-version }}
 
       - name: Use Node.js ${{ matrix.node }}
         uses: actions/setup-node@v6
@@ -100,6 +107,12 @@ jobs:
         with:
           version: latest
 
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -135,6 +148,12 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: latest
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'pnpm'
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
