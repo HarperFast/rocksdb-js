@@ -10,6 +10,7 @@
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include <vector>
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
@@ -120,8 +121,12 @@ struct TransactionLogStore final {
 
 	/**
 	 * The current sequence number of the transaction log file.
+	 *
+	 * Atomic so per-handle fast-path readers can compare without acquiring
+	 * dataSetsMutex. Mutations are still serialized by writeMutex /
+	 * dataSetsMutex; the atomic just makes reads race-free.
 	 */
-	uint32_t currentSequenceNumber = 1;
+	std::atomic<uint32_t> currentSequenceNumber{1};
 
 	/**
 	 * The next sequence number to use for the transaction log file.
@@ -132,6 +137,16 @@ struct TransactionLogStore final {
 	 * The map of sequence numbers to transaction log files.
 	 */
 	std::map<uint32_t, std::shared_ptr<TransactionLogFile>> sequenceFiles;
+
+	/**
+	 * Generation counter, bumped whenever sequenceFiles is mutated
+	 * (rotation, registration, purge, close). Per-handle multi-file caches
+	 * compare this against their cached version to detect when they need
+	 * to refresh their snapshot. Mutations happen under dataSetsMutex; the
+	 * counter is published with release ordering so handles' acquire load
+	 * synchronizes-with the corresponding sequenceFiles state.
+	 */
+	std::atomic<uint64_t> filesVersion{0};
 
 	/**
 	 * The mutex to protect writing with the transaction log store.
@@ -299,6 +314,30 @@ struct TransactionLogStore final {
 	 * Get the shared represention object representing the last committed position.
 	 **/
 	std::weak_ptr<LogPosition> getLastCommittedPosition();
+
+	/**
+	 * Look up a log file by sequence number without creating it. Returns
+	 * nullptr if the file isn't currently in sequenceFiles. Read-only;
+	 * intended for use by per-handle caches that want to refresh after
+	 * observing a sequence-number bump.
+	 */
+	std::shared_ptr<TransactionLogFile> lookupLogFile(uint32_t sequenceNumber);
+
+	/**
+	 * Returns an immutable snapshot of all currently-known log files,
+	 * sorted by sequence number ascending. The result also reports the
+	 * version of `filesVersion` that the snapshot corresponds to, so
+	 * callers can compare against later observations of `filesVersion`
+	 * to detect when the snapshot has gone stale.
+	 *
+	 * Acquires `dataSetsMutex` briefly to copy the map; the returned
+	 * vector is then independent of further sequenceFiles mutations.
+	 */
+	struct FilesSnapshot {
+		std::shared_ptr<const std::vector<std::shared_ptr<TransactionLogFile>>> files;
+		uint64_t version;
+	};
+	FilesSnapshot getFilesSnapshot();
 
 	/**
 	 * Finds the transaction log file position with the oldest transaction that is equal to, or

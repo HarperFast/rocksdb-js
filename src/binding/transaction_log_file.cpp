@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <system_error>
 #include "transaction_log_entry.h"
@@ -205,6 +206,15 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex, batch.currentEntryBytesWritten);
 }
 
+// Pack/unpack helpers for the (indexedUpTo<<32 | count) atomic.
+namespace {
+inline uint32_t unpackCount(uint64_t s) { return static_cast<uint32_t>(s & 0xFFFFFFFFu); }
+inline uint32_t unpackIndexedUpTo(uint64_t s) { return static_cast<uint32_t>(s >> 32); }
+inline uint64_t packIndexState(uint32_t count, uint32_t indexedUpTo) {
+	return (static_cast<uint64_t>(indexedUpTo) << 32) | static_cast<uint64_t>(count);
+}
+} // namespace
+
 /**
  * Find the position of a timestamp, specifically the position where there are no transactions with an earlier timestamp
  * @param timestamp - the timestamp to find the position of
@@ -213,47 +223,82 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
  */
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
-	std::lock_guard<std::mutex> indexLock(this->indexMutex);
-	auto memoryMap = this->getMemoryMap(mapSize);
 
-	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
-	// to indicate the timestamp comes after this logfile
+	auto cmp = [](const std::pair<double, uint32_t>& entry, double t) { return entry.first < t; };
+	auto lookup = [&](const std::pair<double, uint32_t>* data, uint32_t count) -> uint32_t {
+		auto end = data + count;
+		auto it = std::lower_bound(data, end, timestamp, cmp);
+		return it == end ? 0xFFFFFFFF : it->second;
+	};
+
+	// Fast path: lock-free read. After the first reader builds the index
+	// via the slow path below, subsequent reads on the same file all hit
+	// here as long as the file hasn't grown past the indexed range.
+	{
+		uint64_t state = this->indexState.load(std::memory_order_acquire);
+		uint32_t count = unpackCount(state);
+		uint32_t indexedUpTo = unpackIndexedUpTo(state);
+		uint32_t observedSize = this->size.load(std::memory_order_acquire);
+		if (count > 0 && indexedUpTo >= observedSize) {
+			return lookup(this->indexData.get(), count);
+		}
+	}
+
+	// Slow path: only one reader extends the index; others wait briefly
+	// and then take advantage of the freshly-built result. This shares the
+	// extend work across concurrent readers — total CPU usage and
+	// throughput are both better than having every reader do its own
+	// linear scan over the unindexed tail.
+	std::lock_guard<std::mutex> extendLock(this->indexExtendMutex);
+
+	// Re-check after acquiring the lock — another thread may have extended.
+	uint64_t state = this->indexState.load(std::memory_order_relaxed);
+	uint32_t count = unpackCount(state);
+	uint32_t indexedUpTo = unpackIndexedUpTo(state);
+	if (count > 0 && indexedUpTo >= this->size.load(std::memory_order_acquire)) {
+		return lookup(this->indexData.get(), count);
+	}
+
+	auto memoryMap = this->getMemoryMap(mapSize);
 	if (!memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
 		return 0xFFFFFFFF;
 	}
 
-	// we use our memory maps for fast access to the data
+	if (!this->indexData) {
+		this->indexCapacity = (mapSize / TRANSACTION_LOG_ENTRY_HEADER_SIZE) + 1;
+		this->indexData = std::make_unique<std::pair<double, uint32_t>[]>(this->indexCapacity);
+	}
+
+	// Walk forward from lastIndexedPosition, appending strictly-increasing
+	// timestamps. Publish the new (count, indexedUpTo) state via release-store
+	// so concurrent fast-path readers can pick it up without locking.
 	char* mappedFile = (char*) memoryMap->map;
-	// We begin by indexing the file, so we can use fast ordered std::map access O(log n). We only need to index the file
-	// that hasn't been indexed yet, so we start at the last indexed position. Note that there may be a slight benefit
-	// to using an ordered vector with binary search for faster lookups, but std::map is simpler for now is very close in performance
-	while (this->lastIndexedPosition < this->size) {
+	while (this->lastIndexedPosition < this->size && count < this->indexCapacity) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
 		if (entryTimestamp == 0) {
-			// this means we have reached the end of zero-padded file (usually Windows), adjust size and break out of the loop
+			// reached end of zero-padded file (usually Windows); adjust size and stop
 			this->size = this->lastIndexedPosition;
 			break;
 		}
-		// for the first iteration, we insert the log file timestamp at the beginning of the index
 		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
-			// specifically record the log file timestamp as the first entry with a position of zero
-			positionByTimestampIndex.insert({entryTimestamp, 0});
-			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
+			// record the log file's own timestamp as the first index entry, at position 0
+			this->indexData[count++] = std::make_pair(entryTimestamp, 0u);
+			this->lastIndexedTimestamp = entryTimestamp;
+			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE;
 			continue;
-			// else check that the timestamp is greater than any previously indexed timestamp,
-			// otherwise we don't record it, because we want to start at the first position with a timestamp that
-			// is greater than the requested timestamp:
-		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
-			// insert with a hint to go at the end (constant time?)
-			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
 		}
-		// read size of the entry and move on
+		// only insert strictly-increasing timestamps so lower_bound returns the
+		// earliest position with a matching-or-later timestamp
+		if (entryTimestamp > this->lastIndexedTimestamp) {
+			this->indexData[count++] = std::make_pair(entryTimestamp, this->lastIndexedPosition);
+			this->lastIndexedTimestamp = entryTimestamp;
+		}
 		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + this->lastIndexedPosition + 8);
 	}
-	// now do the actual search: just a search for the lower bound
-	auto it = this->positionByTimestampIndex.lower_bound(timestamp);
-	return it == this->positionByTimestampIndex.end() ? 0xFFFFFFFF : it->second;
+
+	this->indexState.store(packIndexState(count, this->lastIndexedPosition), std::memory_order_release);
+	return lookup(this->indexData.get(), count);
 }
 
 } // namespace rocksdb_js
