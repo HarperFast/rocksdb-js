@@ -260,11 +260,15 @@ for (const key of db.getKeys()) {
 
 ### `db.getKeysCount(options?: RangeOptions): number`
 
-Retrieves the number of keys within a range.
+Retrieves the number of keys and optionally within a range. If no `start` or `end` key is provided,
+the estimated number (`rocksdb.estimate-num-keys`) of keys is returned. If a `start` and/or `end`
+key is provided, it iterates over the range and counts the keys, which is slow and should only be
+used if you need to know the exact number of keys in the range.
 
 ```typescript
-const total = db.getKeysCount();
-const range = db.getKeysCount({ start: 'a', end: 'z' });
+const estimated = db.getKeysCount(); // estimated number of keys
+const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys in the range
+const all = db.getKeysCount({ start: null }); // exact number of all keys in the database
 ```
 
 ### `db.getMonotonicTimestamp(): number`
