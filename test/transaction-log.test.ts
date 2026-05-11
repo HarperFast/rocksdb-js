@@ -352,6 +352,43 @@ describe('Transaction Log', () => {
 				expect(queryResults[0].endTxn).toBe(true);
 			}));
 
+		it('should not throw when the memory map for the latest log cannot be acquired', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				// prime the query path so _logBuffers and _lastCommittedPosition are initialized
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// simulate the inconsistent state where _lastCommittedPosition reports a
+				// non-zero size for a logId whose memory map cannot be acquired (transient
+				// state during rotation, 0-byte file at mmap time, FS race, etc.)
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realGetMmapDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => undefined,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					// should terminate iteration cleanly rather than throw RangeError
+					const results = Array.from(log.query({ start: 0 }));
+					expect(results.length).toBe(0);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realGetMmapDescriptor);
+				}
+				// once the mmap works again, the data must still be readable
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
+
 		it('should query a transaction log after re-opening database', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				try {

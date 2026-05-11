@@ -98,6 +98,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				logBuffer.logId = 0;
 				logBuffer.size = 0;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
+				// the outer size variable was set from loadLastPosition() above, but if we
+				// couldn't acquire a memory map for that logId (e.g. the committed-position
+				// references a logId that doesn't exist on disk — purged, never created, or
+				// torn write of the position word), reading at any non-zero size would read
+				// past the empty buffer. force size to match the empty buffer; the iterator's
+				// position-vs-size logic then routes through the existing advance-to-next-log
+				// path, which correctly returns done when no log file can be mapped.
+				size = 0;
 			}
 		}
 
