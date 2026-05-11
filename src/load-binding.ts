@@ -145,6 +145,8 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	compact(resolve: ResolveCallback<void>, reject: RejectCallback, start?: Key, end?: Key): void;
+	compactSync(start?: Key, end?: Key): void;
 	columns: string[];
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
@@ -197,7 +199,10 @@ export type NativeDatabase = {
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = { blockCacheSize?: number };
+export type RocksDatabaseConfig = {
+	blockCacheSize?: number;
+	compactOnClose?: boolean;
+};
 
 const nativeExtRE = /\.node$/;
 const req = createRequire(import.meta.url);

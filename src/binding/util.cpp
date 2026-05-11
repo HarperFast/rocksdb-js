@@ -473,6 +473,7 @@ const char* getNapiBufferFromArg(
 bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char* defaultBuffer, const char* errorMsg) {
 	int32_t length;
 	char* data;
+	// NOTE: Deno will return `napi_ok` if `arg` is a Buffer
 	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
 	if (argStatus == napi_ok) {
 		// utilize the default shared buffer, if we have a number as a length

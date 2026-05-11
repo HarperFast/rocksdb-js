@@ -65,6 +65,11 @@ export type StorePutOptions = PutOptions & DBITransactional;
 export type StoreRangeOptions = RangeOptions & DBITransactional;
 export type StoreRemoveOptions = DBITransactional | unknown;
 
+export type CompactOptions = {
+	start?: Key;
+	end?: Key;
+};
+
 /**
  * Options for the `Store` class.
  */
@@ -334,6 +339,60 @@ export class Store {
 	 */
 	close(): void {
 		this.db.close();
+	}
+
+	/**
+	 * Compacts the entire key range of the database asynchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.compact();
+	 * ```
+	 */
+	compact(options?: CompactOptions): Promise<void> {
+		let startBuffer: Buffer | undefined;
+		let endBuffer: Buffer | undefined;
+
+		if (options?.start !== undefined) {
+			const start = this.encodeKey(options.start);
+			startBuffer = Buffer.from(start.subarray(start.start, start.end));
+		}
+		if (options?.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			endBuffer = Buffer.from(end.subarray(end.start, end.end));
+		}
+
+		return new Promise((resolve, reject) =>
+			this.db.compact(resolve, reject, startBuffer, endBuffer)
+		);
+	}
+
+	/**
+	 * Compacts the entire key range of the database synchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.compactSync();
+	 * ```
+	 */
+	compactSync(options?: CompactOptions): void {
+		let startBuffer: Buffer | undefined;
+		let endBuffer: Buffer | undefined;
+
+		if (options?.start !== undefined) {
+			const start = this.encodeKey(options.start);
+			startBuffer = Buffer.from(start.subarray(start.start, start.end));
+		}
+		if (options?.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			endBuffer = Buffer.from(end.subarray(end.start, end.end));
+		}
+
+		this.db.compactSync(startBuffer, endBuffer);
 	}
 
 	/**

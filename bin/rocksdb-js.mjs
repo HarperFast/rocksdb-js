@@ -12,6 +12,7 @@ import { inspect, parseArgs, styleText } from 'node:util';
 const COMMANDS = {
 	clear: clearCommand,
 	columns: columnsCommand,
+	compact: compactCommand,
 	count: countCommand,
 	drop: dropCommand,
 	exit: () => process.exit(0),
@@ -187,6 +188,21 @@ function columnsCommand() {
 	console.log();
 }
 
+async function compactCommand() {
+	const sizeBefore = currentDB.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+	const { time } = await run(() => currentDB.compact());
+	const sizeAfter = currentDB.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+	const ratio =
+		sizeBefore > 0
+			? `reduced by ${(((sizeBefore - sizeAfter) / sizeBefore) * 100).toFixed(2)}%`
+			: sizeAfter > 0
+				? `increased by ${sizeAfter.toLocaleString()} bytes`
+				: 'no change';
+	console.log(`Compacted, ${ratio} ${note(`(${time}ms)`)}`);
+	console.log(`${hl(sizeBefore.toLocaleString())} -> ${hl(sizeAfter.toLocaleString())} bytes\n`);
+	console.log();
+}
+
 async function countCommand() {
 	const { result: count, time } = await run(() => currentDB.getKeysCount());
 	console.log(`Count: ${hl(count)} ${note(`(${time}ms)`)}\n`);
@@ -257,6 +273,7 @@ async function propCommand(args) {
 function helpCommand() {
 	console.log(`${hl('clear')}                      Clear all data in the current column family`);
 	console.log(`${hl('columns')}                    List column families`);
+	console.log(`${hl('compact')}                    Compact the current column family`);
 	console.log(
 		`${hl('count')}                      Count the number of keys in the current column family`
 	);

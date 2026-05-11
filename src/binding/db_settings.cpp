@@ -70,6 +70,8 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
+
 	NAPI_RETURN_UNDEFINED();
 }
 
