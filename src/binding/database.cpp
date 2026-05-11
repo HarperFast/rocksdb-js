@@ -722,20 +722,10 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 		}
 		txnHandle->getCount(itOptions, count, *dbHandle);
 	} else {
-		// if we don't have a start or end key, we can just get the estimated number of keys
-		if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
-			(*dbHandle)->descriptor->db->GetIntProperty(
-				(*dbHandle)->getColumnFamilyHandle(),
-				"rocksdb.estimate-num-keys",
-				&count
-			);
-		} else {
-			// for range queries, we need to iterate to count keys
-			std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-			while (itHandle->iterator->Valid()) {
-				++count;
-				itHandle->iterator->Next();
-			}
+		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
+		while (itHandle->iterator->Valid()) {
+			++count;
+			itHandle->iterator->Next();
 		}
 	}
 

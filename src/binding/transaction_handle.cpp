@@ -280,20 +280,9 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-
-	// if we don't have a start or end key, we can just get the estimated number of keys
-	if (itOptions.startKeyStr == nullptr && itOptions.endKeyStr == nullptr) {
-		dbHandle->descriptor->db->GetIntProperty(
-			dbHandle->getColumnFamilyHandle(),
-			"rocksdb.estimate-num-keys",
-			&count
-		);
-	} else {
-		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(this, itOptions);
-		for (count = 0; itHandle->iterator->Valid(); ++count) {
-			itHandle->iterator->Next();
-		}
+	std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(this, itOptions);
+	for (count = 0; itHandle->iterator->Valid(); ++count) {
+		itHandle->iterator->Next();
 	}
 }
 

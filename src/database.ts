@@ -259,6 +259,20 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Retrieves the estimated number of keys in the database.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const estimated = db.getEstimatedKeyCount();
+	 * console.log(estimated);
+	 * ```
+	 */
+	getEstimatedKeyCount(): number {
+		return this.getDBIntProperty('rocksdb.estimate-num-keys') ?? 0;
+	}
+
+	/**
 	 * Returns the current timestamp as a monotonically increasing timestamp in
 	 * milliseconds represented as a decimal number.
 	 *

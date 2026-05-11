@@ -294,6 +294,16 @@ Note that all errors are returned as rejected promises.
 
 Synchronous version of `get()`.
 
+### `db.getEstimatedKeyCount(): number`
+
+Retrieves the estimated number of keys in the database. This is an alias for
+`db.getDBIntProperty('rocksdb.estimate-num-keys')`.
+
+```typescript
+const estimated = db.getEstimatedKeyCount();
+console.log(estimated);
+```
+
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves all keys within a range.
@@ -306,11 +316,11 @@ for (const key of db.getKeys()) {
 
 ### `db.getKeysCount(options?: RangeOptions): number`
 
-Retrieves the number of keys within a range.
+Retrieves the exact number of keys in a database or a range.
 
 ```typescript
-const total = db.getKeysCount();
-const range = db.getKeysCount({ start: 'a', end: 'z' });
+const count = db.getKeysCount(); // estimated number of keys
+const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys in the range
 ```
 
 ### `db.getMonotonicTimestamp(): number`
