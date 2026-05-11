@@ -1,4 +1,4 @@
-import type { IteratorOptions, RangeOptions } from './dbi.js';
+import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { StoreContext } from './store.js';
 import { execSync } from 'node:child_process';
@@ -7,32 +7,18 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export type TransactionOptions = {
+export type NativeTransactionOptions = {
 	/**
 	 * Whether to disable snapshots.
 	 *
 	 * @default false
 	 */
 	disableSnapshot?: boolean;
-
-	/**
-	 * The maximum number of times to retry the transaction.
-	 *
-	 * @default 3
-	 */
-	maxRetries?: number;
-
-	/**
-	 * Whether to retry the transaction if it fails with `IsBusy`.
-	 *
-	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
-	 */
-	retryOnBusy?: boolean;
 };
 
 export type NativeTransaction = {
 	id: number;
-	new (context: NativeDatabase, options?: TransactionOptions): NativeTransaction;
+	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
 	abort(): void;
 	commit(resolve: () => void, reject: (err: Error) => void): void;
 	commitSync(): void;
@@ -80,11 +66,41 @@ export type TransactionLog = {
 	_logBuffers: Map<number, WeakRef<LogBuffer>>;
 };
 
-export declare class NativeIteratorCls<T> implements Iterator<T> {
-	constructor(context: StoreContext, options: IteratorOptions);
-	next(): IteratorResult<T>;
-	return(): IteratorResult<T>;
-	throw(): IteratorResult<T>;
+/**
+ * Shape of options that can be passed to the native iterator constructor for
+ * the rare case of advanced RocksDB ReadOptions overrides. Common iterator
+ * options are passed via the bitmask `flags` argument instead.
+ */
+export type NativeIteratorAdvancedOptions = {
+	adaptiveReadahead?: boolean;
+	asyncIO?: boolean;
+	autoReadaheadSize?: boolean;
+	backgroundPurgeOnIteratorCleanup?: boolean;
+	fillCache?: boolean;
+	readaheadSize?: number;
+	tailing?: boolean;
+};
+
+/**
+ * The result of a single native iterator step. A number value matches one of
+ * the `ITERATOR_RESULT_*` constants. The slow-path object is returned when
+ * the data does not fit in the shared key/value buffers, or when the decoder
+ * needs a stable value buffer.
+ */
+export type NativeIteratorResult = number | { key: Buffer; value?: Buffer };
+
+export declare class NativeIteratorCls {
+	constructor(
+		context: StoreContext,
+		flags: number,
+		startKeyEnd: number,
+		endKeyStart: number,
+		endKeyEnd: number,
+		options?: NativeIteratorAdvancedOptions
+	);
+	next(): NativeIteratorResult;
+	return(): void;
+	throw(err?: unknown): void;
 }
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
@@ -129,6 +145,9 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
+	compact(resolve: ResolveCallback<void>, reject: RejectCallback, start?: Key, end?: Key): void;
+	compactSync(start?: Key, end?: Key): void;
+	columns: string[];
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
@@ -143,8 +162,8 @@ export type NativeDatabase = {
 		txnId?: number
 	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
-	getDBIntProperty(propertyName: string): number;
-	getDBProperty(propertyName: string): string;
+	getDBIntProperty(propertyName: string): number | undefined;
+	getDBProperty(propertyName: string): string | undefined;
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
@@ -170,13 +189,20 @@ export type NativeDatabase = {
 	// Provide a buffer that is used as the default/shared buffer for value, where functions that use or return a value can do so by assigning the value to the shared buffer and providing/returning the length.
 	// A null value will reset the buffer.
 	setDefaultValueBuffer(buffer: Buffer | Uint8Array | null): void;
+	// Provide a Uint32Array(2)-backed buffer used by iterators to communicate
+	// the key length (index 0) and value length (index 1) of each iteration
+	// step without per-iteration NAPI property accesses.
+	setIteratorState(buffer: Buffer | Uint8Array): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
-export type RocksDatabaseConfig = { blockCacheSize?: number };
+export type RocksDatabaseConfig = {
+	blockCacheSize?: number;
+	compactOnClose?: boolean;
+};
 
 const nativeExtRE = /\.node$/;
 const req = createRequire(import.meta.url);
@@ -272,6 +298,14 @@ export const constants: {
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
+	ITERATOR_REVERSE_FLAG: number;
+	ITERATOR_INCLUSIVE_END_FLAG: number;
+	ITERATOR_EXCLUSIVE_START_FLAG: number;
+	ITERATOR_INCLUDE_VALUES_FLAG: number;
+	ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG: number;
+	ITERATOR_CONTEXT_IS_TRANSACTION_FLAG: number;
+	ITERATOR_RESULT_DONE: number;
+	ITERATOR_RESULT_FAST: number;
 } = binding.constants;
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;

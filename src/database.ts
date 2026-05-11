@@ -5,10 +5,12 @@ import {
 	type StatsHistogramData,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
-	type TransactionOptions,
+	type NativeTransactionOptions,
 } from './load-binding.js';
 import {
 	type ArrayBufferWithNotify,
+	CompactOptions,
+	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	Store,
 	type StoreOptions,
@@ -33,6 +35,22 @@ export interface RocksDatabaseOptions extends StoreOptions {
 	 * @default 'default'
 	 */
 	name?: string;
+}
+
+export interface TransactionOptions extends NativeTransactionOptions {
+	/**
+	 * The maximum number of times to retry the transaction.
+	 *
+	 * @default 3
+	 */
+	maxRetries?: number;
+
+	/**
+	 * Whether to retry the transaction if it fails with `IsBusy`.
+	 *
+	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
+	 */
+	retryOnBusy?: boolean;
 }
 
 export type RocksDBStat = number | StatsHistogramData;
@@ -118,6 +136,41 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Compacts the entire key range of the database asynchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.compact();
+	 * ```
+	 */
+	compact(options?: CompactOptions): Promise<void> {
+		return this.store.compact(options);
+	}
+
+	/**
+	 * Compacts the entire key range of the database synchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.compactSync();
+	 * ```
+	 */
+	compactSync(options?: CompactOptions): void {
+		return this.store.compactSync(options);
+	}
+
+	/**
+	 * Returns the list of column families in the RocksDB database.
+	 */
+	get columns(): string[] {
+		return this.store.db.columns;
+	}
+
+	/**
 	 * Set global database settings.
 	 *
 	 * @param options - The options for the database.
@@ -184,7 +237,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
 	 * ```
 	 */
-	getDBIntProperty(propertyName: string): number {
+	getDBIntProperty(propertyName: string): number | undefined {
 		return this.store.db.getDBIntProperty(propertyName);
 	}
 
@@ -201,7 +254,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const stats = db.getDBProperty('rocksdb.stats');
 	 * ```
 	 */
-	getDBProperty(propertyName: string): string {
+	getDBProperty(propertyName: string): string | undefined {
 		return this.store.db.getDBProperty(propertyName);
 	}
 
@@ -367,6 +420,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		store.db.setDefaultValueBuffer(VALUE_BUFFER);
 		store.db.setDefaultKeyBuffer(KEY_BUFFER);
+		store.db.setIteratorState(ITERATOR_STATE_BUFFER);
 
 		/**
 		 * The encoder initialization precedence is:
@@ -408,23 +462,26 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					structures: any,
 					isCompatible: boolean | ((existingStructures: any) => boolean)
 				) => {
-					return this.transactionSync((txn: Transaction) => {
-						// note: we need to get a fresh copy of the shared structures,
-						// so we don't want to use the transaction's getBinarySync()
-						const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
-						const existingStructures =
-							existingStructuresBuffer && store.decoder?.decode
-								? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
-								: undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
+					return this.transactionSync(
+						(txn: Transaction, _attempt: number) => {
+							// note: we need to get a fresh copy of the shared structures,
+							// so we don't want to use the transaction's getBinarySync()
+							const existingStructuresBuffer = this.getBinarySync(sharedStructuresKey);
+							const existingStructures =
+								existingStructuresBuffer && store.decoder?.decode
+									? store.decoder.decode(existingStructuresBuffer as BufferWithDataView)
+									: undefined;
+							if (typeof isCompatible == 'function') {
+								if (!isCompatible(existingStructures)) {
+									return false;
+								}
+							} else if (existingStructures && existingStructures.length !== isCompatible) {
 								return false;
 							}
-						} else if (existingStructures && existingStructures.length !== isCompatible) {
-							return false;
-						}
-						txn.putSync(sharedStructuresKey, structures);
-					});
+							txn.putSync(sharedStructuresKey, structures);
+						},
+						{ retryOnBusy: true }
+					);
 				};
 			}
 			store.encoder = new EncoderClass({ ...opts, ...store.encoder });
@@ -446,8 +503,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					const bytesWritten = store.writeKey(value, store.encodeBuffer, 0);
 					return store.encodeBuffer.subarray(0, bytesWritten);
 				},
+				copyBuffers: true,
 			};
-			store.encoder.copyBuffers = true;
+		}
+
+		if (store.encoder) {
+			store.encoder.name = this.#name;
 		}
 
 		if (store.decoder && store.decoder.needsStableBuffer !== true) {

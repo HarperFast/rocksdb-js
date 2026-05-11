@@ -12,7 +12,8 @@ DBIteratorHandle::DBIteratorHandle(
 	exclusiveStart(options.exclusiveStart),
 	inclusiveEnd(options.inclusiveEnd),
 	reverse(options.reverse),
-	values(options.values)
+	values(options.values),
+	needsStableValueBuffer(options.needsStableValueBuffer)
 {
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
@@ -35,7 +36,8 @@ DBIteratorHandle::DBIteratorHandle(
 	exclusiveStart(options.exclusiveStart),
 	inclusiveEnd(options.inclusiveEnd),
 	reverse(options.reverse),
-	values(options.values)
+	values(options.values),
+	needsStableValueBuffer(options.needsStableValueBuffer)
 {
 	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", txnHandle, dbHandle->descriptor.get());
 	this->init(options);

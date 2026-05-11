@@ -1,5 +1,5 @@
 import { DBI } from './dbi';
-import { NativeTransaction, type TransactionOptions } from './load-binding.js';
+import { NativeTransaction, type NativeTransactionOptions } from './load-binding.js';
 import { Store } from './store.js';
 
 export class TransactionAlreadyAbortedError extends Error {
@@ -42,7 +42,7 @@ export class Transaction extends DBI {
 	 * @param store - The base store interface for this transaction.
 	 * @param options - The options for the transaction.
 	 */
-	constructor(store: Store, options?: TransactionOptions) {
+	constructor(store: Store, options?: NativeTransactionOptions) {
 		if (store.readOnly) {
 			super(store);
 			this.#txn = { id: 0 } as NativeTransaction;

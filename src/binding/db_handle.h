@@ -80,11 +80,19 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	char* defaultKeyBufferPtr = nullptr;
 	size_t defaultKeyBufferLength = 0;
 
+	/**
+	 * Pointer to a shared Uint32Array buffer used by iterators to communicate
+	 * key and value lengths back to JavaScript without per-iteration NAPI
+	 * property accesses. Layout: [keyLength, valueLength].
+	 */
+	char* iteratorStatePtr = nullptr;
+	size_t iteratorStateLength = 0;
+
 	DBHandle(napi_env env, napi_ref exportsRef);
 	~DBHandle();
 
 	rocksdb::Status clear();
-	void close();
+	void close() override;
 	napi_value get(
 		napi_env env,
 		rocksdb::Slice& key,

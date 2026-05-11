@@ -153,6 +153,16 @@ void DBDescriptor::close() {
 	// We want to ensure that all in-memory data is written to disk
 	this->flush();
 
+	// Trigger manual compaction on all column families to reclaim space from
+	// tombstones before closing
+	if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
+		for (const auto& [name, columnDesc] : this->columns) {
+			if (columnDesc && columnDesc->column) {
+				this->compactRange(columnDesc->column.get(), nullptr, nullptr);
+			}
+		}
+	}
+
 	// Wait for any outstanding (background threads) operations to complete.
 	// Note that this is not setting the RocksDB `close_db` flag since active
 	// references to the databases may still exist. Also, contrary to the
@@ -815,6 +825,42 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
  */
 uint32_t DBDescriptor::transactionGetNextId() {
 	return ++this->nextTransactionId;
+}
+
+/**
+ * Attempts to unregister a column family from the descriptor. This will only
+ * remove the column family from the columns map if there is at most one
+ * DBHandle still referencing it (the one performing the drop).
+ */
+bool DBDescriptor::tryUnregisterColumnFamily(const std::string& columnName) {
+	auto it = this->columns.find(columnName);
+	if (it == this->columns.end()) {
+		DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" not found\n",
+			this, columnName.c_str());
+		return false;
+	}
+
+	// Check the reference count on the ColumnFamilyDescriptor shared_ptr.
+	// References are held by:
+	// - 1: the columns map entry
+	// - 1: each DBHandle that has this column family open
+	// So if use_count <= 2, only the map and the calling DBHandle hold references.
+	long refCount = it->second.use_count();
+
+	DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" has %ld references\n",
+		this, columnName.c_str(), refCount);
+
+	// Only unregister if there's at most 2 references (map + the DBHandle doing the drop)
+	if (refCount <= 2) {
+		this->columns.erase(it);
+		DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily unregistered column \"%s\"\n",
+			this, columnName.c_str());
+		return true;
+	}
+
+	DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" still has %ld other references, not unregistering\n",
+		this, columnName.c_str(), refCount - 2);
+	return false;
 }
 
 /**
@@ -1734,6 +1780,21 @@ rocksdb::Status DBDescriptor::flush() {
 	return this->db->Flush(
 		flushOptions,
 		columnHandles
+	);
+}
+
+rocksdb::Status DBDescriptor::compactRange(
+	rocksdb::ColumnFamilyHandle* column,
+	const rocksdb::Slice* start,
+	const rocksdb::Slice* end
+) {
+	std::lock_guard<std::mutex> lock(this->compactMutex);
+	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range\n", this);
+	return this->db->CompactRange(
+		rocksdb::CompactRangeOptions(),
+		column,
+		start,
+		end
 	);
 }
 
