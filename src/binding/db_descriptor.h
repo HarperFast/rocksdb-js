@@ -30,13 +30,15 @@ struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
 /**
- * Custom deleter for RocksDB that calls WaitForCompact with close_db=true
- * before destroying the database instance.
+ * Custom deleter for RocksDB that waits for any background compaction to
+ * complete before destroying the database instance. Compaction is triggered
+ * by DBDescriptor::close() before this deleter runs.
  */
 struct DBDeleter {
 	void operator()(rocksdb::DB* db) const {
 		if (db) {
-			DEBUG_LOG("DBDeleter::operator() Compacting and closing database\n");
+			DEBUG_LOG("DBDeleter::operator() Waiting for compaction and closing database\n");
+			// Wait for any background compaction to complete and close the database
 			rocksdb::WaitForCompactOptions options;
 			options.close_db = true;
 			db->WaitForCompact(options);
@@ -124,6 +126,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
+
+	/**
+	 * Mutex to prevent concurrent compaction operations.
+	 */
+	std::mutex compactMutex;
 
 	/**
 	 * Map of listener callbacks by key.
@@ -261,6 +268,21 @@ public:
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 	rocksdb::Status flush();
+
+	/**
+	 * Compacts a range of keys in the specified column family. This method is
+	 * thread-safe and uses a mutex to prevent concurrent compaction operations.
+	 *
+	 * @param column The column family to compact.
+	 * @param start The start key of the range (nullptr for beginning).
+	 * @param end The end key of the range (nullptr for end).
+	 * @returns The status of the compaction operation.
+	 */
+	rocksdb::Status compactRange(
+		rocksdb::ColumnFamilyHandle* column,
+		const rocksdb::Slice* start,
+		const rocksdb::Slice* end
+	);
 };
 
 /**

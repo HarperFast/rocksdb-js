@@ -50,14 +50,6 @@
 		} \
 	} while (0)
 
-#define NAPI_STATUS_RETURN(call) \
-	do { \
-		napi_status status = (call); \
-		if (status != napi_ok) { \
-			return status; \
-		} \
-	} while (0)
-
 #define NAPI_STATUS_THROWS_RVAL(call, rval) \
 	do { \
 		napi_status status = (call); \

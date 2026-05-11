@@ -29,8 +29,7 @@ rocksdb::Status DBHandle::clear() {
 	}
 
 	// compact the database to reclaim space
-	rocksdb::Status status = this->descriptor->db->CompactRange(
-		rocksdb::CompactRangeOptions(),
+	rocksdb::Status status = this->descriptor->compactRange(
 		this->columnDescriptor->column.get(),
 		nullptr,
 		nullptr

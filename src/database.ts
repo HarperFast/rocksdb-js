@@ -9,6 +9,7 @@ import {
 } from './load-binding.js';
 import {
 	type ArrayBufferWithNotify,
+	CompactOptions,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	Store,
@@ -132,6 +133,34 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	close(): void {
 		this.store.close();
+	}
+
+	/**
+	 * Compacts the entire key range of the database asynchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.compact();
+	 * ```
+	 */
+	compact(options?: CompactOptions): Promise<void> {
+		return this.store.compact(options);
+	}
+
+	/**
+	 * Compacts the entire key range of the database synchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.compactSync();
+	 * ```
+	 */
+	compactSync(options?: CompactOptions): void {
+		return this.store.compactSync(options);
 	}
 
 	/**

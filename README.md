@@ -105,10 +105,12 @@ Sets global database settings.
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
 
 ```typescript
 RocksDatabase.config({
 	blockCacheSize: 100 * 1024 * 1024, // 100MB
+	compactOnClose: true,
 });
 ```
 
@@ -193,6 +195,33 @@ const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
 ```
 
+### `db.compact(options?): Promise<void>`
+
+Compacts a range of keys in the database. In RocksDB, deleted keys are not immediately removed from
+the database. Instead, they are marked as deleted and a tombstone is written. This function
+triggers a manual compaction which removes the tombstones and reclaims space. Only one compaction
+per database path can be performed at a time.
+
+- `options: object`
+  - `start?: Key` The start key of the range to compact.
+  - `end?: Key` The end key of the range to compact.
+
+```typescript
+await db.compact();
+
+await db.compact({ start: 'a', end: 'z' });
+```
+
+### `db.compactSync(options?): void`
+
+Synchronous version of `compact()`.
+
+```typescript
+db.compactSync();
+
+db.compactSync({ start: 'a', end: 'z' });
+```
+
 ### `db.destroy(): void`
 
 Completely removes a database based on the `db` instance's path including all data, column families,
@@ -222,6 +251,23 @@ Synchronous version of `db.drop()`.
 const db = RocksDatabase.open('path/to/db');
 db.dropSync();
 db.close();
+```
+
+### `db.flush(): Promise<void>`
+
+Flushes all in-memory data to disk asynchronously.
+
+```typescript
+await db.flush();
+```
+
+### `db.flushSync(): void`
+
+Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
+it is recommended to use `flush()` if you want to keep the event loop free.
+
+```typescript
+db.flushSync();
 ```
 
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
@@ -886,23 +932,6 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
-### `db.flush(): Promise<void>`
-
-Flushes all in-memory data to disk asynchronously.
-
-```typescript
-await db.flush();
-```
-
-### `db.flushSync(): void`
-
-Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
-it is recommended to use `flush()` if you want to keep the event loop free.
-
-```typescript
-db.flushSync();
-```
-
 ## Transaction Log
 
 A user controlled API for logging transactions. This API is designed to be generic so that you can
@@ -1139,6 +1168,8 @@ The default `Store` contains the following methods which can be overridden:
 
 - `constructor(path, options?)`
 - `close()`
+- `compact(options?)`
+- `compactSync(options?)`
 - `decodeKey(key)`
 - `decodeValue(value)`
 - `encodeKey(key)`
@@ -1263,6 +1294,7 @@ Available commands:
 
 - `clear` Clear all data in the current column family
 - `columns` List column families
+- `compact` Compact the current column family
 - `count` Count the number of keys in the current column family
 - `drop <column>` Permanently drop a column family
 - `exit` Exit the REPL

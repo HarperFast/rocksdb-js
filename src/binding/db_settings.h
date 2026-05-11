@@ -20,6 +20,8 @@ private:
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
 
+	bool compactOnClose;
+
 public:
 	static DBSettings& getInstance() {
 		if (!instance) {
@@ -33,6 +35,10 @@ public:
 	}
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
+
+	inline bool getCompactOnClose() const {
+		return compactOnClose;
+	}
 
 	static napi_value Config(napi_env env, napi_callback_info info);
 
