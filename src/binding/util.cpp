@@ -473,27 +473,23 @@ const char* getNapiBufferFromArg(
 bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char* defaultBuffer, const char* errorMsg) {
 	int32_t length;
 	char* data;
-
-	// check if the argument is a buffer first...
-	// Deno will return successfully a buffer as a int32 with a value of 0
-	bool isBuffer;
-	NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, arg, &isBuffer), false);
-
-	if (isBuffer) {
-		size_t bufferLength;
-		NAPI_STATUS_THROWS_RVAL(::napi_get_buffer_info(env, arg, reinterpret_cast<void**>(&data), &bufferLength), false);
-		length = static_cast<int32_t>(bufferLength);
+	// NOTE: Deno will return `napi_ok` if `arg` is a Buffer
+	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
+	if (argStatus == napi_ok) {
+		// utilize the default shared buffer, if we have a number as a length
+		data = defaultBuffer;
 	} else {
-		napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
-		if (argStatus == napi_ok) {
-			// utilize the default shared buffer, if we have a number as a length
-			data = defaultBuffer;
-		} else {
+		// otherwise, see if we can accept a buffer
+		bool isBuffer;
+		NAPI_STATUS_THROWS_RVAL(::napi_is_buffer(env, arg, &isBuffer), false);
+		if (!isBuffer) {
 			::napi_throw_error(env, nullptr, errorMsg);
 			return false;
 		}
+		size_t bufferLength;
+		NAPI_STATUS_THROWS_RVAL(::napi_get_buffer_info(env, arg, reinterpret_cast<void**>(&data), &bufferLength), false);
+		length = static_cast<int32_t>(bufferLength);
 	}
-
 	result = rocksdb::Slice(data, length);
 	return true;
 }

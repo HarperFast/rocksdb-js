@@ -248,12 +248,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	napi_valuetype startType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &startType));
 	if (startType != napi_undefined && startType != napi_null) {
-		rocksdb::Slice startSlice;
-		if (!rocksdb_js::getSliceFromArg(env, argv[2], startSlice, (*dbHandle)->defaultKeyBufferPtr, "Start key must be a buffer")) {
-			delete state;
-			return nullptr;
-		}
-		state->startKey = std::string(startSlice.data(), startSlice.size());
+		NAPI_GET_BUFFER(argv[2], startKey, "Start key must be a buffer");
+		state->startKey = std::string(startKey, startKeyLength);
 		state->hasStart = true;
 	}
 
@@ -261,12 +257,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	napi_valuetype endType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &endType));
 	if (endType != napi_undefined && endType != napi_null) {
-		rocksdb::Slice endSlice;
-		if (!rocksdb_js::getSliceFromArg(env, argv[3], endSlice, (*dbHandle)->defaultKeyBufferPtr, "End key must be a buffer")) {
-			delete state;
-			return nullptr;
-		}
-		state->endKey = std::string(endSlice.data(), endSlice.size());
+		NAPI_GET_BUFFER(argv[3], endKey, "End key must be a buffer");
+		state->endKey = std::string(endKey, endKeyLength);
 		state->hasEnd = true;
 	}
 
@@ -361,9 +353,8 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	napi_valuetype startType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &startType));
 	if (startType != napi_undefined && startType != napi_null) {
-		if (!rocksdb_js::getSliceFromArg(env, argv[0], startSlice, (*dbHandle)->defaultKeyBufferPtr, "Start key must be a buffer")) {
-			return nullptr;
-		}
+		NAPI_GET_BUFFER(argv[0], startKey, "Start key must be a buffer");
+		startSlice = rocksdb::Slice(startKey, startKeyLength);
 		startPtr = &startSlice;
 	}
 
@@ -372,9 +363,8 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	napi_valuetype endType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &endType));
 	if (endType != napi_undefined && endType != napi_null) {
-		if (!rocksdb_js::getSliceFromArg(env, argv[1], endSlice, (*dbHandle)->defaultKeyBufferPtr, "End key must be a buffer")) {
-			return nullptr;
-		}
+		NAPI_GET_BUFFER(argv[1], endKey, "End key must be a buffer");
+		endSlice = rocksdb::Slice(endKey, endKeyLength);
 		endPtr = &endSlice;
 	}
 
