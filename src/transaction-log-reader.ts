@@ -93,9 +93,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 
 			if (logBuffer === undefined) {
-				// create a fake log buffer if we don't have any log buffer yet
+				// create a placeholder log buffer if we couldn't acquire a memory map.
+				// preserve the intended logId (when > 0) so the iterator's read guard can
+				// retry the mmap if a non-zero size from loadLastPosition() disagrees with
+				// the placeholder's length.
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
-				logBuffer.logId = 0;
+				logBuffer.logId = logId > 0 ? logId : 0;
 				logBuffer.size = 0;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
 			}
@@ -150,6 +153,23 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 
 				while (position < size) {
+					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > logBuffer!.length) {
+						// the size reported by loadLastPosition() exceeds the actual mapped
+						// buffer length. can happen if _getMemoryMapOfFile returned undefined
+						// (transient state during log rotation, 0-byte file at mmap time,
+						// or an inconsistent _lastCommittedPosition referencing an unmappable
+						// logId) and we installed an empty placeholder buffer. try to
+						// re-acquire the mmap; if it still can't cover this read, end the
+						// iteration safely — the caller can re-query when state is consistent.
+						const remapped =
+							logBuffer!.logId > 0 ? getLogMemoryMap(transactionLog, logBuffer!.logId) : undefined;
+						if (remapped && position + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= remapped.length) {
+							logBuffer = remapped;
+							dataView = remapped.dataView;
+						} else {
+							return { done: true, value: undefined };
+						}
+					}
 					try {
 						timestamp = dataView.getFloat64(position);
 					} catch (error) {
