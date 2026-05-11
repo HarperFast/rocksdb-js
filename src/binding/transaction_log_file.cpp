@@ -53,6 +53,18 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	this->openFile();
 
+	// Cache the file's effective last-write time now, once, so writeBatch can
+	// check the maxAgeThreshold without a stat() syscall on every commit.
+	if (this->size == 0) {
+		this->fileLastWriteTime = std::chrono::system_clock::now();
+	} else {
+		try {
+			this->fileLastWriteTime = convertFileTimeToSystemTime(std::filesystem::last_write_time(this->path));
+		} catch (...) {
+			this->fileLastWriteTime = std::chrono::system_clock::now();
+		}
+	}
+
 	// read the file header
 	char buffer[TRANSACTION_LOG_FILE_HEADER_SIZE];
 	if (this->size == 0) {
@@ -165,8 +177,10 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%u bytes)\n", this, numEntriesToWrite, totalSizeToWrite);
 
-	// allocate buffers for the transaction headers and iovecs
-	auto iovecs = std::make_unique<iovec[]>(numEntriesToWrite);
+	// Use a stack buffer for small batches to avoid a heap alloc per commit.
+	iovec stackIovecs[8];
+	auto heapIovecs = numEntriesToWrite > 8 ? std::make_unique<iovec[]>(numEntriesToWrite) : nullptr;
+	iovec* iovecs = heapIovecs ? heapIovecs.get() : stackIovecs;
 	size_t iovecsIndex = 0;
 
 	// write the transaction headers and entry data to the iovecs
@@ -190,7 +204,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		++batch.currentEntryIndex;
 	}
 
-	int64_t bytesWritten = this->writeBatchToFile(iovecs.get(), static_cast<int>(iovecsIndex));
+	int64_t bytesWritten = this->writeBatchToFile(iovecs, static_cast<int>(iovecsIndex));
 	if (bytesWritten < 0) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str());
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());

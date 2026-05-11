@@ -41,6 +41,7 @@ TransactionLogStore::TransactionLogStore(
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	lastCommittedPosition = std::make_shared<LogPosition>();
+	uncommittedTransactionPositions.reserve(16);
 	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) { // initialize recent commits to not match until values are entered
 		this->recentlyCommittedSequencePositions[i].position = { 0, 0 };
 		this->recentlyCommittedSequencePositions[i].rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF; // maximum int64, won't match any commit
@@ -390,7 +391,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		if (sequenceNumber == this->currentSequenceNumber) {
 			// erase only the stale sentinel for the current sequence - the guard
 			// above already verified no real uncommitted positions exist
-			this->uncommittedTransactionPositions.erase(this->nextLogPosition);
+			this->positionErase(this->nextLogPosition);
 
 			// Advance to maintain monotonicity of (sequenceNumber, position)
 			// pairs. Existing shared_ptrs to the old memory map remain valid
@@ -398,10 +399,10 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			DEBUG_LOG("%p TransactionLogStore::purge Advancing sequence number from %u to %u\n", this, this->currentSequenceNumber, this->nextSequenceNumber);
 			this->currentSequenceNumber = this->nextSequenceNumber++;
 			this->nextLogPosition = { 0, this->currentSequenceNumber };
-			this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+			this->positionInsert(this->nextLogPosition);
 			LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
 				? this->nextLogPosition
-				: *(this->uncommittedTransactionPositions.begin());
+				: this->uncommittedTransactionPositions.front();
 			*this->lastCommittedPosition = fullyCommittedPosition;
 		}
 		this->sequenceFiles.erase(sequenceNumber);
@@ -463,7 +464,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	{
 		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
 		logPosition = this->nextLogPosition;
-		this->uncommittedTransactionPositions.insert(logPosition);
+		this->positionInsert(logPosition);
 	}
 
 	if (batch.timestamp > this->latestTimestamp) {
@@ -505,9 +506,9 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		if (!logPosition.fullPosition) {
 			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-			this->uncommittedTransactionPositions.erase(logPosition);
+			this->positionErase(logPosition);
 			logPosition = this->nextLogPosition;
-			this->uncommittedTransactionPositions.insert(logPosition);
+			this->positionInsert(logPosition);
 		}
 
 		// ensure we have a valid log file before writing
@@ -517,50 +518,18 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file
-		DEBUG_LOG("%p TransactionLogStore::writeBatch Checking if log file is older than threshold (%f) for store \"%s\"\n",
-			this, this->maxAgeThreshold, this->name.c_str());
 		if (this->maxAgeThreshold > 0) {
-			try {
-				auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-					this->retentionMs * (1 - this->maxAgeThreshold)
-				);
-				auto lastWriteTime = logFile->getLastWriteTime();
-				auto now = std::chrono::system_clock::now();
-				auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastWriteTime);
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:        %f\n",
-					this, this->maxAgeThreshold);
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Retention duration:       %lld ms\n",
-					this, this->retentionMs.count());
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Threshold duration:       %lld ms\n",
-					this, thresholdDuration.count());
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Log file last write time: %lld ms\n",
-					this, std::chrono::duration_cast<std::chrono::milliseconds>(lastWriteTime.time_since_epoch()).count());
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Now:                      %lld ms\n",
-					this, std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
-				DEBUG_LOG("%p TransactionLogStore::writeBatch File age:                 %lld ms\n",
-					this, fileAgeMs.count());
-				if (fileAgeMs >= thresholdDuration) {
-					DEBUG_LOG("%p TransactionLogStore::writeBatch Log file is older than threshold (%lld ms >= %lld ms), advancing from %u to %u for store \"%s\"\n",
-						this, fileAgeMs.count(), thresholdDuration.count(), this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str());
-					this->currentSequenceNumber = this->nextSequenceNumber++;
-					continue;
-				}
-			} catch (const std::filesystem::filesystem_error& e) {
-				// file was deleted or doesn't exist yet
-				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: File no longer exists or not yet created: %s - %s\n",
-					this, logFile->path.string().c_str(), e.what());
-				this->currentSequenceNumber = this->nextSequenceNumber++;
-				continue;
-			} catch (const std::exception& e) {
-				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to get last write time for file %s: %s\n",
-					this, logFile->path.string().c_str(), e.what());
-				this->currentSequenceNumber = this->nextSequenceNumber++;
-				continue;
-			} catch (...) {
-				auto eptr = std::current_exception();
-				std::string errorMsg = getExceptionMessage(eptr);
-				DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Unknown error getting last write time for file %s: %s\n",
-					this, logFile->path.string().c_str(), errorMsg.c_str());
+			auto thresholdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+				this->retentionMs * (1 - this->maxAgeThreshold)
+			);
+			auto now = std::chrono::system_clock::now();
+			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - logFile->fileLastWriteTime);
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:  %f\n", this, this->maxAgeThreshold);
+			DEBUG_LOG("%p TransactionLogStore::writeBatch File age:           %lld ms (threshold %lld ms)\n",
+				this, fileAgeMs.count(), thresholdDuration.count());
+			if (fileAgeMs >= thresholdDuration) {
+				DEBUG_LOG("%p TransactionLogStore::writeBatch Log file is older than threshold (%lld ms >= %lld ms), advancing from %u to %u for store \"%s\"\n",
+					this, fileAgeMs.count(), thresholdDuration.count(), this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str());
 				this->currentSequenceNumber = this->nextSequenceNumber++;
 				continue;
 			}
@@ -573,6 +542,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// write as much as possible to this file
 		logFile->writeEntries(batch, this->maxFileSize);
+		logFile->fileLastWriteTime = std::chrono::system_clock::now();
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
@@ -597,7 +567,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	}
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-		this->uncommittedTransactionPositions.insert(this->nextLogPosition);
+		this->positionInsert(this->nextLogPosition);
 	}
 
 	// Now that nextLogPosition has been advanced past logPosition, it is safe to
@@ -611,12 +581,12 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
-	this->uncommittedTransactionPositions.erase(position);
+	this->positionErase(position);
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
 	// If there are no uncommitted transactions, everything up to nextLogPosition is fully committed
 	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
 		? this->nextLogPosition
-		: *(this->uncommittedTransactionPositions.begin());
+		: this->uncommittedTransactionPositions.front();
 	// update the current position handle with latest fully committed position
 	*this->lastCommittedPosition = fullyCommittedPosition;
 	// now setup a sequence position that matches a rocksdb sequence number to our log position
@@ -638,10 +608,10 @@ void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::Se
 
 void TransactionLogStore::commitAborted(const LogPosition position) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	this->uncommittedTransactionPositions.erase(position);
+	this->positionErase(position);
 	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
 		? this->nextLogPosition
-		: *(this->uncommittedTransactionPositions.begin());
+		: this->uncommittedTransactionPositions.front();
 	*this->lastCommittedPosition = fullyCommittedPosition;
 }
 
@@ -802,7 +772,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
 	}
-	store->uncommittedTransactionPositions.insert(store->nextLogPosition);
+	store->positionInsert(store->nextLogPosition);
 
 	return store;
 }

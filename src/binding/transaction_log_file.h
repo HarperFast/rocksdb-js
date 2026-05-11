@@ -95,6 +95,14 @@ struct TransactionLogFile final {
 	uint32_t lastFlushedSize = 0;
 
 	/**
+	 * The time of the last write to this file, kept in-memory to avoid a
+	 * stat() syscall on every commit for the maxAgeThreshold check.
+	 * Set once in open() (now for new files, mtime for existing ones) and
+	 * updated after each successful writeEntries() call.
+	 */
+	std::chrono::system_clock::time_point fileLastWriteTime;
+
+	/**
 	 * The memory map of the file.
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
