@@ -1,11 +1,13 @@
 #ifndef __TRANSACTION_LOG_FILE_H__
 #define __TRANSACTION_LOG_FILE_H__
 
-#include <chrono>
-#include <filesystem>
-#include <mutex>
-#include <map>
 #include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <utility>
 #include "macros.h"
 #include "util.h"
 
@@ -114,9 +116,32 @@ struct TransactionLogFile final {
 	 */
 	std::mutex fileMutex;
 
-	std::map<double, uint32_t> positionByTimestampIndex;
+	/**
+	 * Lock-free in-memory index of (timestamp -> position).
+	 *
+	 * The buffer at indexData is allocated once on the first slow-path call
+	 * and never reallocated for the file's lifetime — its address is stable.
+	 * Entries are append-only — once written they are never modified.
+	 *
+	 * Readers atomic-load `indexState` (packed: low 32 bits = entry count,
+	 * high 32 bits = file position the index has been built up to). With
+	 * (count, indexedUpTo) and the file size, a reader can verify the index
+	 * is current and run lower_bound on the stable buffer with no locking
+	 * at all.
+	 *
+	 * Writers serialize among themselves via `indexExtendMutex` but never
+	 * block readers. Acquire-release ordering on `indexState` provides the
+	 * happens-before relationship that makes reads of `indexData` safe.
+	 *
+	 * Only mutated under indexExtendMutex; readers don't touch them:
+	 *   indexCapacity, lastIndexedPosition, lastIndexedTimestamp, indexData
+	 */
+	std::unique_ptr<std::pair<double, uint32_t>[]> indexData;
+	std::size_t indexCapacity = 0;
+	std::atomic<uint64_t> indexState{0};
 	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
-	std::mutex indexMutex;
+	double lastIndexedTimestamp = 0;
+	std::mutex indexExtendMutex;
 
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 

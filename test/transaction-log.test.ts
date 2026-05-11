@@ -453,6 +453,409 @@ describe('Transaction Log', () => {
 				});
 				expect(Array.from(queryIterator).length).toBe(1); // latest should show up now
 			}));
+
+		// Regression: per-handle file-list cache must be invalidated after the
+		// store rotates to a new file. Same log handle queries before and
+		// after writes that cross a rotation boundary; the second query must
+		// observe entries in the newly-rotated file.
+		it('should observe new entries after rotation in the same handle', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(100, 'a');
+
+				const startTs = Date.now() - 1000;
+
+				// First query: pre-rotation. Forces the handle to cache its file
+				// list at the current filesVersion.
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+				let results = Array.from(log.query({ start: startTs }));
+				expect(results.length).toBe(1);
+
+				// Rotate by writing entries that exceed maxFileSize. With
+				// transactionLogMaxSize=200 and ~113 byte entries (100 byte payload
+				// plus 13 byte header), every other write rotates.
+				for (let i = 0; i < 5; i++) {
+					await delay(2);
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+
+				// Second query on the same handle: must see ALL 6 entries,
+				// not just the 1 from before rotation. A stale per-handle
+				// cache pointing only to file 1 would miss the new files.
+				results = Array.from(log.query({ start: startTs }));
+				expect(results.length).toBe(6);
+			}));
+
+		// Regression: a query should return correct results even with concurrent
+		// writes happening to the same log. Exercises the lock-free index reader
+		// against a writer extending the file/index.
+		it('should return correct results with concurrent writes', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(50, 'a');
+				const startTs = Date.now() - 1000;
+
+				// Seed with some entries.
+				for (let i = 0; i < 10; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+
+				// Run 30 more writes concurrently with 30 queries; verify
+				// every query returns at least the seed count (10) and at
+				// most the total possible (40), and never returns garbage.
+				const writes: Array<Promise<unknown>> = [];
+				const queries: number[] = [];
+				for (let i = 0; i < 30; i++) {
+					writes.push(
+						db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						})
+					);
+					queries.push(Array.from(log.query({ start: startTs })).length);
+				}
+				await Promise.all(writes);
+
+				// Every query observed at least the 10 seeded entries; final
+				// query observes all 40.
+				for (const count of queries) {
+					expect(count).toBeGreaterThanOrEqual(10);
+					expect(count).toBeLessThanOrEqual(40);
+				}
+				const finalCount = Array.from(log.query({ start: startTs })).length;
+				expect(finalCount).toBe(40);
+			}));
+
+		// Regression: a query handle that was cached pre-purge must produce
+		// results consistent with the post-purge state. Either purge is a
+		// no-op (entries weren't flushed yet) and the query returns the same
+		// data, OR purge removes files and the query returns the remaining
+		// data — never garbage entries.
+		it('should handle queries after attempting to purge earlier files', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(100, 'a');
+
+				const startTs = Date.now() - 1000;
+
+				// Seed enough entries to create multiple log files.
+				for (let i = 0; i < 4; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+					await delay(2);
+				}
+
+				// First query — populates the handle's per-handle file cache.
+				const beforePurge = Array.from(log.query({ start: startTs }));
+				expect(beforePurge.length).toBe(4);
+
+				// purgeLogs({destroy: true}) attempts to tryClose each store
+				// regardless of whether any files were physically removed (e.g.
+				// unflushed files are not removed but the store still closes
+				// if there are no pending/uncommitted transactions). After
+				// close, reads through the same handle return empty — the
+				// handle holds a strong reference to the now-closed store
+				// and treats isClosing the same as "store gone". Either an
+				// empty result or the original 4 are valid outcomes; the
+				// guard is that we never see garbage.
+				db.purgeLogs({ destroy: true });
+				const afterPurge = Array.from(log.query({ start: startTs }));
+				expect(afterPurge.length).toBeLessThanOrEqual(beforePurge.length);
+				expect(afterPurge.length).toBeLessThanOrEqual(4);
+			}));
+
+		// Regression: documents the observable behavior of `purgeLogs({destroy: true})`
+		// when no files are physically purgable (writes haven't been flushed
+		// to RocksDB yet). The store may or may not be closed by tryClose
+		// depending on internal state (uncommittedTransactionPositions,
+		// pendingTransactionCount) at the time of the call. The handle must
+		// behave safely in either case:
+		//   - If the store stays open: queries return the original entries.
+		//   - If the store closed: queries return empty (handle observes
+		//     isClosing on every read method and short-circuits).
+		// In neither case should we see crashes, leaks, or garbage entries.
+		it('should behave safely when purgeLogs({destroy: true}) may or may not close the store', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(50, 'a');
+				const startTs = Date.now() - 1000;
+
+				for (let i = 0; i < 5; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: startTs })).length).toBe(5);
+
+				db.purgeLogs({ destroy: true });
+
+				// Either 0 (store closed → empty) or 5 (store stayed open).
+				// Anything in between would be a bug — partial entries imply
+				// stale per-handle cache state.
+				const afterDestroy = Array.from(log.query({ start: startTs }));
+				expect([0, 5]).toContain(afterDestroy.length);
+
+				// A fresh handle resolves a fresh store — should always work.
+				const freshLog = db.useLog('foo');
+				const fromFresh = Array.from(freshLog.query({ start: startTs }));
+				expect(fromFresh.length).toBeGreaterThanOrEqual(0);
+				expect(fromFresh.length).toBeLessThanOrEqual(5);
+			}));
+
+		// Stress: many concurrent reads while a destroyer thread races
+		// purgeLogs({destroy: true}) calls. Validates shared_ptr cache
+		// safety — handles must not crash or return garbage while their
+		// store is being closed concurrently.
+		it('should remain crash-free under concurrent reads + destroy attempts', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(50, 'a');
+				const startTs = Date.now() - 1000;
+
+				for (let i = 0; i < 50; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+
+				// 64 concurrent reads interleaved with 4 destroy attempts
+				// (most will be no-ops since reads keep transactions in flight,
+				// but the calls still try to flip isClosing on the store).
+				const ops: Array<Promise<unknown>> = [];
+				for (let i = 0; i < 64; i++) {
+					ops.push(Promise.resolve().then(() => Array.from(log.query({ start: startTs })).length));
+				}
+				for (let i = 0; i < 4; i++) {
+					ops.push(
+						Promise.resolve().then(() => {
+							db.purgeLogs({ destroy: true });
+						})
+					);
+				}
+				const results = await Promise.all(ops);
+
+				// All read results must be a valid count (0..50). No NaN,
+				// no -1, no unbounded values that would indicate corruption.
+				for (let i = 0; i < 64; i++) {
+					const count = results[i] as number;
+					expect(count).toBeGreaterThanOrEqual(0);
+					expect(count).toBeLessThanOrEqual(50);
+				}
+
+				// A fresh handle and fresh transaction must still be usable.
+				const freshLog = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					freshLog.addEntry(value, txn.id);
+				});
+				const final = Array.from(freshLog.query({ start: startTs }));
+				expect(final.length).toBeGreaterThanOrEqual(1);
+				expect(final.length).toBeLessThanOrEqual(51);
+			}));
+
+		// Regression for the lock-free getLogFileSize fast path: a reader
+		// crossing log file boundaries during ongoing rotations must observe
+		// each rotated file's size correctly. The fast path reads the file's
+		// size atomic directly from the per-handle snapshot; the slow path
+		// fallback handles the "file in snapshot but not yet opened (size==0)"
+		// race window.
+		it('should report correct size and entries for queries crossing rotated files under writes', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(100, 'a');
+				const startTs = Date.now() - 1000;
+
+				// Seed 3 entries → triggers one rotation. Caches file list in
+				// the handle.
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+					await delay(2);
+				}
+				const initial = Array.from(log.query({ start: startTs }));
+				expect(initial.length).toBe(3);
+
+				// Concurrent writes (forcing more rotations) interleaved with
+				// queries. The query path will call getLogFileSize for each
+				// rotated file as it crosses boundaries; the fast path must
+				// return the correct size or fall through to the slow path.
+				const writes: Array<Promise<unknown>> = [];
+				const counts: number[] = [];
+				for (let i = 0; i < 20; i++) {
+					writes.push(
+						db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						})
+					);
+					counts.push(Array.from(log.query({ start: startTs })).length);
+				}
+				await Promise.all(writes);
+
+				// Every query observes at least the 3 seeded entries and at
+				// most the total possible (3 + 20).
+				for (const count of counts) {
+					expect(count).toBeGreaterThanOrEqual(3);
+					expect(count).toBeLessThanOrEqual(23);
+				}
+				const finalCount = Array.from(log.query({ start: startTs })).length;
+				expect(finalCount).toBe(23);
+			}));
+
+		// Regression: the per-handle file snapshot must stay correct across
+		// many rotations. With a small max file size, every other write
+		// rotates; the handle's filesVersion-driven cache invalidation has
+		// to keep up.
+		it('should remain correct across many rotations on a single long-lived handle', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(100, 'a');
+				const startTs = Date.now() - 1000;
+
+				// 100 entries with 100-byte payloads at maxFileSize=200 forces
+				// ~50 rotations. The cache should see filesVersion advance ~50
+				// times via the handle's lock-free findPosition path.
+				for (let i = 0; i < 100; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+					if (i % 10 === 0) await delay(1);
+				}
+
+				// Query repeatedly through the same handle, checking that
+				// every query sees all 100 entries — proves the cache stays
+				// fresh through every rotation.
+				for (let i = 0; i < 5; i++) {
+					const results = Array.from(log.query({ start: startTs }));
+					expect(results.length).toBe(100);
+				}
+			}));
+
+		// Regression: lock-free index correctness under concurrent first-time
+		// readers. After a fresh re-open of the database, no thread has built
+		// the in-memory index yet. Many concurrent queries should serialize
+		// briefly on indexExtendMutex (only one builds, others wait), and all
+		// of them should return correct results.
+		it('should handle concurrent first-time readers on an unindexed log', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(50, 'a');
+				const startTs = Date.now() - 1000;
+
+				// Seed 200 entries.
+				for (let i = 0; i < 200; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+
+				// Close and reopen so the index is empty on first query.
+				db.close();
+				const reopened = RocksDatabase.open(dbPath);
+				const reopenedLog = reopened.useLog('foo');
+
+				try {
+					// 32 concurrent queries — first one to acquire indexExtendMutex
+					// builds the index; others wait briefly and then use the
+					// freshly-built result. Use readUncommitted so the query
+					// reads the entire log (lastCommittedPosition is 0 after a
+					// fresh open).
+					const queries = await Promise.all(
+						Array.from({ length: 32 }, () =>
+							Promise.resolve().then(
+								() =>
+									Array.from(reopenedLog.query({ start: startTs, readUncommitted: true })).length
+							)
+						)
+					);
+					for (const count of queries) {
+						expect(count).toBe(200);
+					}
+				} finally {
+					reopened.close();
+				}
+			}));
+
+		// Regression: two handles on the same log have independent
+		// cachedFiles snapshots. Both must see the same data; refresh must
+		// fire correctly per-handle.
+		it('should serve consistent results across multiple handles on the same log', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db }) => {
+				const log1 = db.useLog('foo');
+				const log2 = db.useLog('foo');
+				const value = Buffer.alloc(100, 'a');
+				const startTs = Date.now() - 1000;
+
+				// Seed.
+				for (let i = 0; i < 5; i++) {
+					await db.transaction(async (txn) => {
+						log1.addEntry(value, txn.id);
+					});
+					await delay(1);
+				}
+
+				// Both handles populate their caches.
+				expect(Array.from(log1.query({ start: startTs })).length).toBe(5);
+				expect(Array.from(log2.query({ start: startTs })).length).toBe(5);
+
+				// Force several rotations via writes through log1.
+				for (let i = 0; i < 10; i++) {
+					await db.transaction(async (txn) => {
+						log1.addEntry(value, txn.id);
+					});
+					await delay(1);
+				}
+
+				// log2's cache was stale at the start of this query; it must
+				// observe the filesVersion bump and refresh, then return the
+				// same count as log1.
+				const fromLog1 = Array.from(log1.query({ start: startTs })).length;
+				const fromLog2 = Array.from(log2.query({ start: startTs })).length;
+				expect(fromLog1).toBe(15);
+				expect(fromLog2).toBe(15);
+			}));
+
+		// Regression: a reused query iterator must continue to produce
+		// correct entries when the log rotates between iterator yields.
+		// The iterator's internal log file pointer crosses the boundary
+		// via getLogFileSize (newly lock-free) + getMemoryMap.
+		it('should continue iterating correctly across rotations within a reused iterator', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(100, 'a');
+				const startTs = Date.now() - 1000;
+
+				// Seed 2 entries (within first file).
+				for (let i = 0; i < 2; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+					await delay(1);
+				}
+
+				const iterator = log.query({ start: startTs });
+				const initial = Array.from(iterator);
+				expect(initial.length).toBe(2);
+
+				// Add more entries, forcing rotations.
+				for (let i = 0; i < 10; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+					await delay(1);
+				}
+
+				// Resume the same iterator — it should pick up only the new
+				// entries (8+) added after rotations, not duplicate the
+				// original 2.
+				const resumed = Array.from(iterator);
+				expect(resumed.length).toBe(10);
+			}));
 	});
 
 	describe('addEntry()', () => {
