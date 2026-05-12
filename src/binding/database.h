@@ -30,7 +30,7 @@ namespace rocksdb_js {
 /**
  * RAII guard that tracks in-flight operations on a DBDescriptor.
  * Increments counter on construction, decrements on destruction.
- * Notifies the closing condition variable when count reaches zero.
+ * Notifies waiters via atomic::notify_all() when count reaches zero.
  */
 struct OperationGuard {
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -44,8 +44,7 @@ struct OperationGuard {
 	~OperationGuard() {
 		if (descriptor) {
 			if (--descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-				std::lock_guard<std::mutex> lock(descriptor->closingMutex);
-				descriptor->closingCondition.notify_one();
+				descriptor->operationsInFlight.notify_all();
 			}
 		}
 	}
