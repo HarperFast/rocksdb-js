@@ -7,7 +7,6 @@
 #include <queue>
 #include <set>
 #include <functional>
-#include <condition_variable>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -129,16 +128,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<bool> closing{false};
 
 	/**
-	 * Counter tracking in-flight database operations. Used with closingCondition
-	 * to allow close() to wait for all operations to complete.
+	 * Counter tracking in-flight database operations. close() uses
+	 * atomic::wait() to block until this reaches zero.
 	 */
 	std::atomic<uint32_t> operationsInFlight{0};
-
-	/**
-	 * Mutex and condition variable for close() to wait on in-flight operations.
-	 */
-	std::mutex closingMutex;
-	std::condition_variable closingCondition;
 
 	/**
 	 * Mutex to prevent concurrent compaction operations.

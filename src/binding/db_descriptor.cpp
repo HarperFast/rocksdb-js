@@ -154,9 +154,9 @@ void DBDescriptor::close() {
 	// The closing flag is already set, so new operations will fail with "Database is closing".
 	// Existing operations will decrement operationsInFlight and notify us when done.
 	DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
-	{
-		std::unique_lock<std::mutex> lock(this->closingMutex);
-		this->closingCondition.wait(lock, [this] { return this->operationsInFlight.load() == 0; });
+	uint32_t current;
+	while ((current = this->operationsInFlight.load()) != 0) {
+		this->operationsInFlight.wait(current);
 	}
 	DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
