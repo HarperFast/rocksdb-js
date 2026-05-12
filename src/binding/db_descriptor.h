@@ -7,7 +7,7 @@
 #include <queue>
 #include <set>
 #include <functional>
-#include <shared_mutex>
+#include <condition_variable>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -129,11 +129,16 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<bool> closing{false};
 
 	/**
-	 * Reader-writer mutex to protect database operations during shutdown.
-	 * Operations (get, put, delete) acquire a shared lock.
-	 * close() acquires an exclusive lock, ensuring all operations complete first.
+	 * Counter tracking in-flight database operations. Used with closingCondition
+	 * to allow close() to wait for all operations to complete.
 	 */
-	std::shared_mutex operationsMutex;
+	std::atomic<uint32_t> operationsInFlight{0};
+
+	/**
+	 * Mutex and condition variable for close() to wait on in-flight operations.
+	 */
+	std::mutex closingMutex;
+	std::condition_variable closingCondition;
 
 	/**
 	 * Mutex to prevent concurrent compaction operations.
