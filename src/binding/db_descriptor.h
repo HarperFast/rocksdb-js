@@ -7,6 +7,7 @@
 #include <queue>
 #include <set>
 #include <functional>
+#include <shared_mutex>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -126,6 +127,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
+
+	/**
+	 * Reader-writer mutex to protect database operations during shutdown.
+	 * Operations (get, put, delete) acquire a shared lock.
+	 * close() acquires an exclusive lock, ensuring all operations complete first.
+	 */
+	std::shared_mutex operationsMutex;
 
 	/**
 	 * Mutex to prevent concurrent compaction operations.

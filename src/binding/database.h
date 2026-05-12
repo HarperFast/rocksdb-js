@@ -28,6 +28,31 @@ namespace rocksdb_js {
 	} while (0)
 
 /**
+ * Acquires a shared lock on the descriptor's operations mutex to prevent
+ * use-after-free during shutdown. Also checks if the database is closing
+ * and throws an error if so.
+ *
+ * Use this macro after UNWRAP_DB_HANDLE_AND_OPEN() in operations that
+ * access descriptor->db or column family handles.
+ *
+ * Note: We copy the descriptor shared_ptr first to ensure the descriptor
+ * stays alive even if another thread calls close() on our handle.
+ */
+#define ACQUIRE_OPERATIONS_LOCK() \
+	auto _descriptor = (*dbHandle)->descriptor; \
+	if (!_descriptor) { \
+		::napi_throw_error(env, nullptr, "Database not open"); \
+		NAPI_RETURN_UNDEFINED(); \
+	} \
+	std::shared_lock<std::shared_mutex> _operationsLock(_descriptor->operationsMutex); \
+	do { \
+		if (_descriptor->isClosing()) { \
+			::napi_throw_error(env, nullptr, "Database is closing"); \
+			NAPI_RETURN_UNDEFINED(); \
+		} \
+	} while (0)
+
+/**
  * The `NativeDatabase` JavaScript class implementation.
  *
  * @example
