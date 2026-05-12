@@ -150,11 +150,15 @@ void DBDescriptor::close() {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
-	// Acquire exclusive lock to wait for all in-flight operations to complete.
-	// This prevents use-after-free when operations are running in other threads.
-	DEBUG_LOG("%p DBDescriptor::close Waiting for operations lock \"%s\"\n", this, this->path.c_str());
-	std::unique_lock<std::shared_mutex> operationsLock(this->operationsMutex);
-	DEBUG_LOG("%p DBDescriptor::close Acquired operations lock \"%s\"\n", this, this->path.c_str());
+	// Wait for all in-flight operations to complete before cleanup.
+	// The closing flag is already set, so new operations will fail with "Database is closing".
+	// Existing operations will decrement operationsInFlight and notify us when done.
+	DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
+	{
+		std::unique_lock<std::mutex> lock(this->closingMutex);
+		this->closingCondition.wait(lock, [this] { return this->operationsInFlight.load() == 0; });
+	}
+	DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
 	// We want to ensure that all in-memory data is written to disk
 	this->flush();
