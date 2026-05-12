@@ -43,21 +43,21 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # 6.0.8
         with:
           version: latest
 
       - name: Use Node.js 24
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # 6.4.0
         with:
           node-version: 24
           cache: 'pnpm'
 
       - name: Setup RocksDB cache
-        uses: actions/cache@v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # 5.0.5
         with:
           path: deps/rocksdb
           key: benchmark-rocksdb-${{ hashFiles('package.json') }}
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload benchmark results as artifact
         if: always() && hashFiles('benchmark-results.json') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
         with:
           name: benchmark-results-${{ github.sha }}
           path: benchmark-results.json
@@ -89,7 +89,7 @@ jobs:
 
       - name: Comment PR with benchmark results
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # 9.0.0
         with:
           script: |
             const fs = require('node:fs');

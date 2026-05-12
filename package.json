@@ -89,7 +89,7 @@
     "@harperfast/rocksdb-js-win32-x64": "1.2.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": "^22.18.0 || >=24.0.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
