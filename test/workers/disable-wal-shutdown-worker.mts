@@ -36,4 +36,4 @@ parentPort?.on('message', (event) => {
 parentPort?.postMessage({ started: true });
 
 // Start the write loop
-writeLoop();
+writeLoop().catch(() => {});
