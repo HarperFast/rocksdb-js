@@ -635,7 +635,8 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	// check if transaction is already bound to a different log store
 	auto boundStore = (*txnHandle)->boundLogStore.lock();
 	if (boundStore && boundStore->name != name) {
-		::napi_throw_error(env, nullptr, "Log already bound to a transaction");
+		std::string errorMessage = "Transaction " + std::to_string((*txnHandle)->id) + " is already bound to the log store \"" + boundStore->name + "\"";
+		::napi_throw_error(env, nullptr, errorMessage.c_str());
 		return nullptr;
 	}
 
@@ -674,13 +675,14 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	napi_value jsDatabase;
 	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->jsDatabaseRef, &jsDatabase), "Failed to get 'jsDatabase' reference");
 
-	napi_value args[2];
+	napi_value args[3];
 	args[0] = jsDatabase;
 
 	NAPI_STATUS_THROWS_ERROR(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]), "Invalid log name");
+	NAPI_STATUS_THROWS_ERROR(::napi_create_uint32(env, (*txnHandle)->id, &args[2]), "Failed to create transaction id argument");
 
 	napi_value instance;
-	NAPI_STATUS_THROWS_ERROR(::napi_new_instance(env, transactionLogCtor, 2, args, &instance), "Failed to create new TransactionLog instance");
+	NAPI_STATUS_THROWS_ERROR(::napi_new_instance(env, transactionLogCtor, 3, args, &instance), "Failed to create new TransactionLog instance");
 
 	return instance;
 }

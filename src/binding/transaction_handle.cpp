@@ -66,6 +66,15 @@ TransactionHandle::~TransactionHandle() {
 
 /**
  * Adds a log entry to the specified transaction log store's batch.
+ *
+ * @example
+ * ```typescript
+ * await db.transaction(async (txn) => {
+ *   const log = txn.useLog('foo'); // transaction log store will be bound to this transaction
+ *   log.addEntry(Buffer.from('hello'));
+ *   log.addEntry(Buffer.from('world'));
+ * });
+ * ```
  */
 void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
@@ -76,7 +85,8 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	if (currentBoundStore) {
 		// transaction is already bound to a log store
 		if (currentBoundStore.get() != entry->store.get()) {
-			throw rocksdb_js::DBException("Log already bound to a transaction");
+			std::string errorMessage = "Transaction " + std::to_string(this->id) + " is already bound to the log store \"" + currentBoundStore->name + "\"";
+			throw rocksdb_js::DBException(errorMessage);
 		}
 	} else {
 		// Bind under transactionBindMutex so the bind+increment is atomic with
