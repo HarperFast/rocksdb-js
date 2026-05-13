@@ -67,14 +67,13 @@ struct OperationGuard {
  * stays alive even if another thread calls close() on our handle.
  */
 #define ACQUIRE_OPERATIONS_LOCK() \
-	auto _descriptor = (*dbHandle)->descriptor; \
-	if (!_descriptor) { \
+	if (!(*dbHandle)->descriptor) { \
 		::napi_throw_error(env, nullptr, "Database not open"); \
 		NAPI_RETURN_UNDEFINED(); \
 	} \
-	OperationGuard _operationGuard(_descriptor); \
+	OperationGuard __operationGuard((*dbHandle)->descriptor); \
 	do { \
-		if (_descriptor->isClosing()) { \
+		if ((*dbHandle)->descriptor->isClosing()) { \
 			::napi_throw_error(env, nullptr, "Database is closing"); \
 			NAPI_RETURN_UNDEFINED(); \
 		} \
