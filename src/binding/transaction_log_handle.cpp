@@ -47,7 +47,7 @@ void TransactionLogHandle::addEntry(
 
 	// check if transaction is already bound to a different log store
 	auto boundStore = txnHandle->boundLogStore.lock();
-	if (boundStore && boundStore.get() != store.get()) {
+	if (boundStore && boundStore->name != store->name) {
 		std::string errorMessage = "Transaction " + std::to_string(transactionId) + " is already bound to the log store \"" + boundStore->name + "\"";
 		throw rocksdb_js::DBException(errorMessage);
 	}

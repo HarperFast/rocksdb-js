@@ -84,7 +84,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	auto currentBoundStore = this->boundLogStore.lock();
 	if (currentBoundStore) {
 		// transaction is already bound to a log store
-		if (currentBoundStore.get() != entry->store.get()) {
+		if (currentBoundStore->name != entry->store->name) {
 			std::string errorMessage = "Transaction " + std::to_string(this->id) + " is already bound to the log store \"" + currentBoundStore->name + "\"";
 			throw rocksdb_js::DBException(errorMessage);
 		}
