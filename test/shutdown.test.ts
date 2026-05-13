@@ -226,11 +226,11 @@ describe('Shutdown', () => {
 		}
 	});
 
-	it('should handle shutdown() while worker is still actively writing', async () => {
+	it('should throw "Database is closing" and preserve data when shutdown() is called while worker is actively writing', async () => {
 		const dbPath = generateDBPath();
 		await mkdir(dbPath, { recursive: true });
 
-		// Start worker that writes with disableWAL=true
+		// Start worker that writes with disableWAL=true using sync writes
 		const worker = new Worker(
 			createWorkerBootstrapScript('./test/workers/disable-wal-shutdown-worker.mts'),
 			{
@@ -239,17 +239,29 @@ describe('Shutdown', () => {
 			}
 		);
 
-		// Wait for worker to start
+		// Set up promise to capture the error from the worker
 		let lastWriteCount = 0;
+		const errorPromise = new Promise<{ message: string; writeCount: number }>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('Worker error timeout')), 10000);
+			worker.on('message', (event) => {
+				if (event.writeCount) {
+					lastWriteCount = event.writeCount;
+				}
+				if (event.error) {
+					clearTimeout(timeout);
+					resolve({ message: event.message, writeCount: event.writeCount });
+				}
+			});
+			worker.on('error', reject);
+		});
+
+		// Wait for worker to start
 		await new Promise<void>((resolve, reject) => {
 			const timeout = setTimeout(() => reject(new Error('Worker start timeout')), 10000);
 			worker.on('message', (event) => {
 				if (event.started) {
 					clearTimeout(timeout);
 					resolve();
-				}
-				if (event.writeCount) {
-					lastWriteCount = event.writeCount;
 				}
 			});
 			worker.on('error', reject);
@@ -258,22 +270,27 @@ describe('Shutdown', () => {
 		// Let the worker write some data
 		await delay(50);
 
-		// Get the write count before shutdown
-		const writeCountBeforeShutdown = lastWriteCount;
-
-		// Call shutdown() while worker is STILL RUNNING (not terminated)
-		// This should not crash
+		// Call shutdown() while worker is STILL RUNNING - this should not crash and
+		// should cause the worker to receive "Database is closing"
 		shutdown();
 
-		// Now terminate the worker
+		// Wait for the worker to report the error
+		const error = await errorPromise;
+		expect(error.message).toBe('Database is closing');
+		expect(error.writeCount).toBeGreaterThan(0);
+
+		// Terminate the worker now that it has reported the error
 		await worker.terminate();
 
 		// Re-open the database and verify data integrity
 		const db = RocksDatabase.open(dbPath);
 
-		// Verify that at least some data was written and persisted
+		// Verify that at least some data was written and persisted. Use the
+		// smaller of the last reported progress and the error writeCount since
+		// the worker may have written further between progress reports.
+		const expectedCount = Math.min(lastWriteCount, error.writeCount);
 		let verifiedCount = 0;
-		for (let i = 0; i < writeCountBeforeShutdown; i++) {
+		for (let i = 0; i < expectedCount; i++) {
 			const value = db.getSync(`key-${i}`) as { index: number; data: string } | undefined;
 			if (value !== undefined) {
 				expect(value.index).toBe(i);
@@ -286,61 +303,6 @@ describe('Shutdown', () => {
 		expect(verifiedCount).toBeGreaterThan(0);
 
 		db.close();
-
-		// Cleanup
-		if (!process.env.KEEP_FILES) {
-			await rm(dbPath, { force: true, recursive: true });
-		}
-	});
-
-	it('should throw "Database is closing" when sync operations are attempted during shutdown', async () => {
-		const dbPath = generateDBPath();
-		await mkdir(dbPath, { recursive: true });
-
-		// Start worker that opens the database and writes continuously
-		const worker = new Worker(
-			createWorkerBootstrapScript('./test/workers/shutdown-error-worker.mts'),
-			{
-				eval: true,
-				workerData: { path: dbPath },
-			}
-		);
-
-		// Wait for worker to start writing
-		await new Promise<void>((resolve, reject) => {
-			const timeout = setTimeout(() => reject(new Error('Worker start timeout')), 10000);
-			worker.on('message', (event) => {
-				if (event.started) {
-					clearTimeout(timeout);
-					resolve();
-				}
-			});
-			worker.on('error', reject);
-		});
-
-		// Let the worker write some data
-		await delay(50);
-
-		// Set up promise to capture the error from the worker
-		const errorPromise = new Promise<{ message: string }>((resolve, reject) => {
-			const timeout = setTimeout(() => reject(new Error('Worker error timeout')), 10000);
-			worker.on('message', (event) => {
-				if (event.error) {
-					clearTimeout(timeout);
-					resolve({ message: event.message });
-				}
-			});
-		});
-
-		// Call shutdown() - this should cause the worker to get "Database is closing" error
-		shutdown();
-
-		// Wait for the worker to report the error
-		const error = await errorPromise;
-		expect(error.message).toBe('Database is closing');
-
-		// Clean up worker
-		await worker.terminate();
 
 		// Cleanup
 		if (!process.env.KEEP_FILES) {
