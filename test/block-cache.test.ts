@@ -44,8 +44,8 @@ describe('Block Cache', () => {
 		}));
 
 	it('should throw error when block cache size is negative', () => {
-		expect(() => RocksDatabase.config({ blockCacheSize: -1 })).toThrowError(
-			'Block cache size must be a positive integer or 0 to disable caching'
+		expect(() => RocksDatabase.config({ blockCacheSize: -1 })).toThrow(
+			new Error('Block cache size must be a positive integer or 0 to disable caching')
 		);
 	});
 });
