@@ -77,9 +77,9 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
-			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n");
+			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
-			rocksdb_js::DBRegistry::PurgeAll();
+			rocksdb_js::DBRegistry::Shutdown();
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");

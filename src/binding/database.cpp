@@ -139,6 +139,7 @@ napi_value Database::Clear(napi_env env, napi_callback_info info) {
 static napi_value doClearSync(napi_env env, napi_callback_info info, const char* failureMsg) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Status status = (*dbHandle)->clear();
 	if (!status.ok()) {
@@ -471,6 +472,7 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 		return doClearSync(env, info, "Drop failed");
 	}
 
+	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle()), "Drop failed");
 
@@ -492,6 +494,7 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	if ((*dbHandle)->descriptor->readOnly) {
 		NAPI_RETURN_UNDEFINED();
@@ -905,6 +908,7 @@ napi_value Database::GetStats(napi_env env, napi_callback_info info) {
 napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	// we store this in key slice (no copying) because we are synchronously using the key
 	rocksdb::Slice keySlice;
@@ -1216,6 +1220,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "Put failed: ");
 
 	rocksdb::Status status;
@@ -1275,6 +1280,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "Remove failed: ");
 
 	rocksdb::Status status;
