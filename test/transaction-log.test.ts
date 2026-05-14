@@ -127,23 +127,39 @@ describe('Transaction Log', () => {
 			})
 		);
 
-		it('should error if log already bound to a transaction', () =>
+		it('should error if transaction is already bound to an unbounded log', () =>
 			dbRunner(async ({ db }) => {
 				const log1 = db.useLog('log1');
 				const log2 = db.useLog('log2');
+
 				await db.transaction(async (txn) => {
 					log1.addEntry(Buffer.from('hello'), txn.id);
 					log1.addEntry(Buffer.from('world'), txn.id);
-					expect(() => log2.addEntry(Buffer.from('nope'), txn.id)).toThrowError(
-						new Error('Log already bound to a transaction')
+					expect(() => log2.addEntry(Buffer.from('nope'), txn.id)).toThrow(
+						new Error(`Transaction ${txn.id} is already bound to the log store "log1"`)
 					);
 				});
+			}));
 
+		it('should error if transaction is already bound to a different bounded log', () =>
+			dbRunner(async ({ db }) => {
 				await db.transaction(async (txn) => {
 					txn.useLog('log3');
 					txn.useLog('log3'); // do it twice
-					expect(() => txn.useLog('log4')).toThrowError(
-						new Error('Log already bound to a transaction')
+					expect(() => txn.useLog('log4')).toThrow(
+						new Error(`Transaction ${txn.id} is already bound to the log store "log3"`)
+					);
+				});
+			}));
+
+		it('should error if transaction is already bound to a bounded log', () =>
+			dbRunner(async ({ db }) => {
+				const log1 = db.useLog('log1');
+
+				await db.transaction(async (txn) => {
+					txn.useLog('log4');
+					expect(() => log1.addEntry(Buffer.from('world'), txn.id)).toThrow(
+						new Error(`Transaction ${txn.id} is already bound to the log store "log4"`)
 					);
 				});
 			}));
@@ -1061,13 +1077,13 @@ describe('Transaction Log', () => {
 
 		it('should error if the log name is invalid', () =>
 			dbRunner(async ({ db }) => {
-				expect(() => db.useLog(undefined as any)).toThrowError(
+				expect(() => db.useLog(undefined as any)).toThrow(
 					new TypeError('Log name must be a string or number')
 				);
-				expect(() => db.useLog([] as any)).toThrowError(
+				expect(() => db.useLog([] as any)).toThrow(
 					new TypeError('Log name must be a string or number')
 				);
-				await expect(db.transaction((txn) => txn.useLog(undefined as any))).rejects.toThrowError(
+				await expect(db.transaction((txn) => txn.useLog(undefined as any))).rejects.toThrow(
 					new TypeError('Log name must be a string or number')
 				);
 			}));
@@ -1076,10 +1092,10 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				await db.transaction(async (txn) => {
-					expect(() => log.addEntry(undefined as any, txn.id)).toThrowError(
+					expect(() => log.addEntry(undefined as any, txn.id)).toThrow(
 						new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer')
 					);
-					expect(() => log.addEntry([] as any, txn.id)).toThrowError(
+					expect(() => log.addEntry([] as any, txn.id)).toThrow(
 						new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer')
 					);
 				});
@@ -1089,10 +1105,10 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				await db.transaction(async (_txn) => {
-					expect(() => log.addEntry(Buffer.from('hello'), undefined as any)).toThrowError(
+					expect(() => log.addEntry(Buffer.from('hello'), undefined as any)).toThrow(
 						new TypeError('Missing argument, transaction id is required')
 					);
-					expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrowError(
+					expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrow(
 						new TypeError('Invalid argument, transaction id must be a non-negative integer')
 					);
 				});
@@ -1220,6 +1236,34 @@ describe('Transaction Log', () => {
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 				const info = parseTransactionLog(logPath);
 				expect(info.entries.length).toBe(2);
+			}));
+
+		it('should bind a transaction log to a transaction', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const value = Buffer.alloc(10, 'a');
+
+				await db.transaction(async (txn) => {
+					const log = txn.useLog('foo');
+					log.addEntry(value, txn.id);
+				});
+
+				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				const info = parseTransactionLog(logPath);
+				expect(info.size).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10
+				);
+				expect(info.version).toBe(1);
+				expect(info.entries.length).toBe(1);
+				expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+				expect(info.entries[0].length).toBe(10);
+				expect(info.entries[0].data).toEqual(value);
+
+				const log = db.useLog('foo');
+				const queryResults = Array.from(log.query({ start: 0 }));
+				expect(queryResults.length).toBe(1);
+				expect(queryResults[0].data).toEqual(value);
+				expect(queryResults[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+				expect(queryResults[0].endTxn).toBe(true);
 			}));
 	});
 
