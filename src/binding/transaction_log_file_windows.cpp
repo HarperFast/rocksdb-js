@@ -363,39 +363,43 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		return -1;
 	}
 
-	// emulate writev() by writing each buffer sequentially
-	// all entry data is now owned by C++ (not Node.js buffers), so safe to access directly
+	// emulate writev() by writing each buffer sequentially. On a partial
+	// WriteFile return we advance into the buffer's remainder and retry so a
+	// short write does not silently drop the tail of an entry.
 	int64_t totalBytesWritten = 0;
 
 	for (int i = 0; i < iovcnt; i++) {
-		if (iovecs[i].iov_len == 0) {
-			continue;
-		}
+		char* basePtr = static_cast<char*>(iovecs[i].iov_base);
+		size_t remaining = iovecs[i].iov_len;
 
-		DWORD bytesWritten;
-		bool success = ::WriteFile(
-			this->fileHandle,
-			iovecs[i].iov_base,
-			static_cast<DWORD>(iovecs[i].iov_len),
-			&bytesWritten,
-			nullptr
-		);
+		while (remaining > 0) {
+			DWORD bytesWritten = 0;
+			bool success = ::WriteFile(
+				this->fileHandle,
+				basePtr,
+				static_cast<DWORD>(remaining),
+				&bytesWritten,
+				nullptr
+			);
 
-		if (!success) {
-			DWORD error = ::GetLastError();
-			std::string errorMessage = getWindowsErrorMessage(error);
-			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
-				this, error, errorMessage.c_str(), i, iovcnt);
-			// if we've written some data but this write failed, return what we
-			// wrote; otherwise return -1 to indicate error
-			return totalBytesWritten > 0 ? totalBytesWritten : -1;
-		}
+			if (!success) {
+				DWORD error = ::GetLastError();
+				std::string errorMessage = getWindowsErrorMessage(error);
+				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
+					this, error, errorMessage.c_str(), i, iovcnt);
+				return -1;
+			}
 
-		totalBytesWritten += bytesWritten;
+			if (bytesWritten == 0) {
+				// shouldn't happen; bail to avoid an infinite loop
+				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile returned 0 bytes (iovec %d/%d, %zu remaining)\n",
+					this, i, iovcnt, remaining);
+				return -1;
+			}
 
-		// partial write - stop here
-		if (bytesWritten < iovecs[i].iov_len) {
-			break;
+			totalBytesWritten += bytesWritten;
+			basePtr += bytesWritten;
+			remaining -= bytesWritten;
 		}
 	}
 

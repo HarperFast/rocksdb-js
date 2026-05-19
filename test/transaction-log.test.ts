@@ -1267,6 +1267,70 @@ describe('Transaction Log', () => {
 			}));
 	});
 
+	describe('writev framing integrity', () => {
+		// Regression for HarperFast/rocksdb-js#572. The POSIX writeBatchToFile
+		// previously advanced through iovecs by count regardless of actual bytes
+		// written, so any short writev silently dropped a tail and produced
+		// framing corruption. These tests exercise the high-iovcnt batching path
+		// end-to-end and assert byte-exact round-trip integrity for every entry.
+
+		it('should round-trip many entries with varied sizes across a single batch', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const startTime = Date.now() - 1000;
+				const numEntries = 200;
+				const expected: Buffer[] = [];
+
+				await db.transaction(async (txn) => {
+					for (let i = 0; i < numEntries; i++) {
+						// vary sizes (1..256 bytes) so iovecs land on non-aligned boundaries
+						const size = (i % 256) + 1;
+						const value = Buffer.alloc(size);
+						for (let j = 0; j < size; j++) {
+							value[j] = (i * 37 + j) & 0xff;
+						}
+						expected.push(value);
+						log.addEntry(value, txn.id);
+					}
+				});
+
+				const results = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(results.length).toBe(numEntries);
+				for (let i = 0; i < numEntries; i++) {
+					expect(Buffer.from(results[i].data)).toEqual(expected[i]);
+				}
+			}));
+
+		it('should round-trip > MAX_IOVS (1024) entries in a single batch', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const startTime = Date.now() - 1000;
+				// > 1024 entries forces writeBatchToFile to chunk through the
+				// MAX_IOVS-bounded inner loop. Pre-fix code mis-tracked progress
+				// here when any partial writev occurred.
+				const numEntries = 1100;
+				const expected: Buffer[] = [];
+
+				await db.transaction(async (txn) => {
+					for (let i = 0; i < numEntries; i++) {
+						const value = Buffer.alloc(16);
+						value.writeUInt32BE(i >>> 0, 0);
+						value.writeUInt32BE((i ^ 0xdeadbeef) >>> 0, 4);
+						value.writeUInt32BE((i + 1) >>> 0, 8);
+						value.writeUInt32BE((i * 7) >>> 0, 12);
+						expected.push(value);
+						log.addEntry(value, txn.id);
+					}
+				});
+
+				const results = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(results.length).toBe(numEntries);
+				for (let i = 0; i < numEntries; i++) {
+					expect(Buffer.from(results[i].data)).toEqual(expected[i]);
+				}
+			}));
+	});
+
 	describe('purgeLogs', () => {
 		it('should purge all transaction log files', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
