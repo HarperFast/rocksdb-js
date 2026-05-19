@@ -123,8 +123,8 @@ void TransactionLogFile::open(const double latestTimestamp) {
 }
 
 void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
-	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu, bytes written=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
-		this, batch.entries.size(), batch.currentEntryIndex, batch.currentEntryBytesWritten, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
+	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
+		this, batch.entries.size(), batch.currentEntryIndex, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
 
 	// branch based on file format version
 	if (this->version == 1) {
@@ -210,13 +210,12 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
-	batch.currentEntryBytesWritten += static_cast<uint32_t>(bytesWritten);
 	this->size += static_cast<uint32_t>(bytesWritten);
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	this->updateMemoryMapOverlay();
 #endif
-	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu, bytesWritten=%zu)\n",
-		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex, batch.currentEntryBytesWritten);
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu)\n",
+		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex);
 }
 
 /**

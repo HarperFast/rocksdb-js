@@ -51,8 +51,9 @@ struct TransactionLogEntry final {
 };
 
 /**
- * A batch of transaction log entries with state tracking for partial writes
- * across multiple log files.
+ * A batch of transaction log entries. `writeBatchToFile` is now write-everything
+ * -or-fail, so a partial entry can never end up on disk; only whole-entry
+ * progress needs to be tracked across log-file rotations.
  */
 struct TransactionLogEntryBatch final {
 	/**
@@ -69,17 +70,6 @@ struct TransactionLogEntryBatch final {
 	 * The index of the current entry being written.
 	 */
 	uint32_t currentEntryIndex = 0;
-
-	/**
-	 * The number of bytes already written from the current entry's data
-	 * (excluding the transaction header).
-	 */
-	uint32_t currentEntryBytesWritten = 0;
-
-	/**
-	 * Whether the transaction header for the current entry has been written.
-	 */
-	bool currentEntryHeaderWritten = false;
 
 	TransactionLogEntryBatch(const double timestamp) :
 		timestamp(timestamp)
