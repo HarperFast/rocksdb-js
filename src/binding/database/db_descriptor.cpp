@@ -665,7 +665,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = !options.readOnly;
 	dbOptions.create_missing_column_families = !options.readOnly;
-	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
+	dbOptions.db_write_buffer_size = static_cast<size_t>(options.dbWriteBufferSize);
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.persist_user_defined_timestamps = true;
@@ -681,6 +681,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	cfOptions.enable_blob_files = true;
 	cfOptions.min_blob_size = 2048;
 	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
+	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
+	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
