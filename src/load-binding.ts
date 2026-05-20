@@ -106,8 +106,11 @@ export declare class NativeIteratorCls {
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
+	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;
+	maxWriteBufferNumber?: number;
+	maxWriteBufferSizeToMaintain?: number;
 	mode?: NativeDatabaseMode;
 	name?: string;
 	noBlockCache?: boolean;
@@ -118,6 +121,7 @@ export type NativeDatabaseOptions = {
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;
+	writeBufferSize?: number;
 };
 
 type ResolveCallback<T> = (value: T) => void;
