@@ -1166,6 +1166,10 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "writeBufferSize", dbHandleOptions.writeBufferSize));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferNumber", dbHandleOptions.maxWriteBufferNumber));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbHandleOptions.dbWriteBufferSize));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferSizeToMaintain", dbHandleOptions.maxWriteBufferSizeToMaintain));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", dbHandleOptions.transactionLogMaxAgeThreshold));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", dbHandleOptions.transactionLogMaxSize));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogRetentionMs", dbHandleOptions.transactionLogRetentionMs));
