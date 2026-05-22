@@ -42,6 +42,7 @@
     "check": "pnpm type-check && pnpm lint && pnpm fmt:check",
     "clean": "node-gyp clean",
     "coverage": "tsx scripts/coverage/main.ts",
+    "coverage:native": "tsx scripts/native-test/coverage.mjs",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "lint": "oxlint",
@@ -52,6 +53,7 @@
     "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports --v8-flags=--expose-gc ./node_modules/vitest/vitest.mjs",
     "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
+    "test:native": "tsx scripts/native-test/run.mjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
@@ -71,7 +73,8 @@
     "oxfmt": "0.48.0",
     "oxlint": "1.63.0",
     "prebuildify": "6.0.1",
-    "semver": "7.8.0",
+    "semver": "7.8.1",
+    "tar": "7.5.15",
     "tsdown": "0.21.10",
     "tslib": "2.8.1",
     "tsx": "4.21.0",
@@ -90,11 +93,6 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "msgpackr-extract"
-    ]
   },
   "gypfile": true,
   "rocksdb": {

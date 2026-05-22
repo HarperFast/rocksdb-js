@@ -1,9 +1,10 @@
-benchmark-results.json
-benchmark/data
-build
+/benchmark-results.json
+/benchmark/data
+/build
 /coverage
-deps
-dist
+/deps/*
+!/deps/gtest.gyp
+/dist
 node_modules
 .clangd
 .claude
