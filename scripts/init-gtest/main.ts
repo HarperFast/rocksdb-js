@@ -5,7 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream';
@@ -30,7 +30,6 @@ async function main() {
 
 	const url = `https://github.com/google/googletest/archive/refs/tags/v${GTEST_VERSION}.tar.gz`;
 	const tmpFile = join(tmpdir(), `googletest-${GTEST_VERSION}.tar.gz`);
-	const extractDir = join(tmpdir(), `googletest-extract-${GTEST_VERSION}`);
 
 	console.log(`Downloading GoogleTest ${GTEST_VERSION}...`);
 	const response = await fetch(url);
@@ -49,16 +48,15 @@ async function main() {
 		throw new Error(`SHA256 mismatch for ${tmpFile} (${sha256} !== ${GTEST_SHA256})`);
 	}
 
-	await rm(extractDir, { recursive: true, force: true });
+	// Extract directly into `dest` with strip:1 to drop the top-level
+	// `googletest-<version>/` directory from the archive. Avoids a cross-device
+	// rename, which fails on Windows CI runners where tmpdir() is on C: and
+	// the workspace is on D:.
 	await rm(dest, { recursive: true, force: true });
-	await mkdir(extractDir, { recursive: true });
+	await mkdir(dest, { recursive: true });
 
 	console.log(`Extracting ${tmpFile}...`);
-	await extractTar({ file: tmpFile, cwd: extractDir });
-
-	const extracted = join(extractDir, `googletest-${GTEST_VERSION}`);
-	await mkdir(dirname(dest), { recursive: true });
-	await rename(extracted, dest);
+	await extractTar({ file: tmpFile, cwd: dest, strip: 1 });
 
 	await writeFile(join(dest, '.version'), `${GTEST_VERSION}\n`, 'utf8');
 	console.log(`GoogleTest ${GTEST_VERSION} installed to ${dest}`);
