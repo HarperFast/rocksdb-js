@@ -48,6 +48,10 @@ mkdirSync(coverageDir, { recursive: true });
 const lcovIgnore =
 	'unsupported,unsupported,inconsistent,inconsistent,format,format,mismatch,mismatch,gcov,gcov';
 
+// Capture: walk the test binary's object directory, read every .gcda/.gcno
+// pair gcov produced during the test run, and write a single lcov tracefile
+// (lcov.info) describing line/branch coverage across every translation unit
+// the binary was built from - including system headers and gtest sources.
 run('lcov', [
 	'--ignore-errors',
 	lcovIgnore,
@@ -58,6 +62,10 @@ run('lcov', [
 	infoFile,
 ]);
 
+// Extract: filter the tracefile in place, keeping only entries whose source
+// path matches the binding code we actually care about. Drops gtest internals,
+// libc++ headers, and anything else outside src/binding/ so the HTML report
+// reflects our coverage, not the test harness's.
 run('lcov', [
 	'--ignore-errors',
 	lcovIgnore,
@@ -68,6 +76,8 @@ run('lcov', [
 	infoFile,
 ]);
 
+// Render: turn the filtered tracefile into a browsable HTML report under
+// coverage/native/html/. --dark-mode picks the dark CSS theme.
 run('genhtml', [
 	'--ignore-errors',
 	'category,category',
