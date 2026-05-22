@@ -1421,7 +1421,7 @@ To run the tests without code coverage, run:
 pnpm test
 ```
 
-### Native C++ unit tests (GoogleTest)
+#### Native C++ unit tests (GoogleTest)
 
 Build and run standalone native tests (RocksDB + binding `core/` helpers, no Node in the test
 binary):
@@ -1436,6 +1436,8 @@ Coverage report for native tests (macOS/Linux; requires `lcov`):
 pnpm coverage:native
 # open coverage/native/html/index.html
 ```
+
+Note: Code coverage is not supported on Windows. Tests are run without coverage.
 
 To run a specific test suite, for example `"ranges"`, run:
 

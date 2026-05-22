@@ -110,7 +110,7 @@
 							'RuntimeLibrary': 0,
 							'ExceptionHandling': 1,
 							'AdditionalOptions!': [],
-							# 'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20'],
+							# 'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20', '/U_DEBUG']
 						},
 						'VCLinkerTool': {
@@ -259,5 +259,5 @@
 				}
 			]
 		},
-	],
+	]
 }
