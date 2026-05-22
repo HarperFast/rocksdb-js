@@ -631,7 +631,7 @@ bool operator>(const LogPosition a, const LogPosition b) {
  */
 void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
 	if (this->isClosing.load(std::memory_order_relaxed)) {
-		throw rocksdb_js::DBException("Transaction log store is closed");
+		return;
 	}
 
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;
