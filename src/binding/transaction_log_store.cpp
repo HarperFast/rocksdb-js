@@ -664,7 +664,7 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
  */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
 	if (this->isClosing.load(std::memory_order_relaxed)) {
-		throw rocksdb_js::DBException("Transaction log store is closed");
+		return;
 	}
 
 	LogPosition latestSequencePosition = { 0, 0 };
