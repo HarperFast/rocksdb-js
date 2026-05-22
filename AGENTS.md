@@ -17,10 +17,12 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 
 - `pnpm test` - Run all tests with Vitest using Node.js
 - `pnpm coverage` - Run all tests with Vitest and coverage report
+- `pnpm coverage:native` - Native tests with gcov/lcov report in `coverage/native/html/` (Unix only)
 - `node --expose-gc ./node_modules/vitest/vitest.mjs test/specific.test.ts` - Run single test file
 - `pnpm test:bun` - Run all tests with Vitest using Bun
 - `pnpm test:deno` - Run all tests with Vitest using Deno
 - `pnpm test:stress` - Run all stress tests with Vitest using Node.js
+- `pnpm test:native` - Build and run C++ GoogleTest unit tests (no Node runtime in test binary)
 - `pnpm bench` - Run all benchmarks with Vitest using Node.js
 
 ### Code Quality
@@ -55,13 +57,17 @@ This is a Node.js binding for RocksDB that provides both TypeScript and C++ laye
 
 ### C++ Native Layer (`src/binding/`)
 
-- **`binding.cpp/h`** - Main N-API module entry point
-- **`database.cpp/h`** - Native database operations and async work handling
-- **`db_handle.cpp/h`** - Database handle management
-- **`transaction.cpp/h` && `transaction_handle.cpp/h`** - Native transaction implementations
-- - **`transaction_log*.cpp/h`** - Native transaction log store and file implementations
-- **`db_iterator*.cpp/h`** - Iterator implementations for range queries
-- **`util.cpp/h`** - Utility functions and error handling
+Layout (include via `src/binding` root, e.g. `#include "core/encoding.h"`):
+
+- **`core/`** - No `node_api.h`: encoding, `DBException`, platform helpers, debug logging
+- **`napi/`** - N-API helpers, macros, async work (`BaseAsyncState`), module `binding.h`
+- **`database/`**, **`transaction/`**, **`iterator/`**, **`transaction_log/`**, **`stats/`** -
+  domain code and JS bridge classes
+- **`binding.cpp`** - `NAPI_MODULE_INIT` entry point
+- **`options/db_options.h`** - Parsed open options (plain C++)
+
+`core/` and `transaction_log/` store/file code are suitable for **GoogleTest** without Node.
+N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in `test/native/`.
 
 ### Key Design Patterns
 
@@ -92,11 +98,11 @@ with lazy evaluation.
 
 ## Test Structure
 
-Tests are in `test/` directory using Vitest:
-
-- Individual feature tests (transactions, ranges, encoding, etc.)
-- `test/lib/util.ts` contains test utilities
-- Coverage reports generated to `coverage/` directory
+- **Vitest** (`test/*.test.ts`): TypeScript integration tests; `pnpm test` / `pnpm coverage`
+- **GoogleTest** (`test/native/*.cc`): C++ unit tests; `pnpm test:native` /
+  `pnpm coverage:native` (lcov on Unix)
+- `test/lib/util.ts` contains Vitest utilities
+- Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
 
 ## Important Implementation Notes
 

@@ -54,6 +54,9 @@ importers:
       semver:
         specifier: 7.8.1
         version: 7.8.1
+      tar:
+        specifier: 7.5.15
+        version: 7.5.15
       tsdown:
         specifier: 0.22.0
         version: 0.22.0(tsx@4.22.3)(typescript@6.0.3)

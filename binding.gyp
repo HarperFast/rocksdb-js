@@ -5,26 +5,29 @@
 			'dependencies': ['prepare-rocksdb'],
 			'include_dirs': [
 				'deps/rocksdb/include',
+				'src/binding',
 			],
 			'sources': [
 				'src/binding/binding.cpp',
-				'src/binding/database.cpp',
-				'src/binding/database_events.cpp',
-				'src/binding/db_descriptor.cpp',
-				'src/binding/db_handle.cpp',
-				'src/binding/db_iterator.cpp',
-				'src/binding/db_iterator_handle.cpp',
-				'src/binding/db_registry.cpp',
-				'src/binding/db_settings.cpp',
-				'src/binding/rocksdb_stats.cpp',
-				'src/binding/transaction_handle.cpp',
-				'src/binding/transaction.cpp',
-				'src/binding/transaction_log.cpp',
-				'src/binding/transaction_log_file.cpp',
-				'src/binding/transaction_log_handle.cpp',
-				'src/binding/transaction_log_store.cpp',
-				'src/binding/transaction_log_store_registry.cpp',
-				'src/binding/util.cpp',
+				'src/binding/core/debug.cpp',
+				'src/binding/core/platform.cpp',
+				'src/binding/napi/helpers.cpp',
+				'src/binding/database/database.cpp',
+				'src/binding/database/database_events.cpp',
+				'src/binding/database/db_descriptor.cpp',
+				'src/binding/database/db_handle.cpp',
+				'src/binding/database/db_registry.cpp',
+				'src/binding/database/db_settings.cpp',
+				'src/binding/iterator/db_iterator.cpp',
+				'src/binding/iterator/db_iterator_handle.cpp',
+				'src/binding/stats/rocksdb_stats.cpp',
+				'src/binding/transaction/transaction_handle.cpp',
+				'src/binding/transaction/transaction.cpp',
+				'src/binding/transaction_log/transaction_log.cpp',
+				'src/binding/transaction_log/transaction_log_file.cpp',
+				'src/binding/transaction_log/transaction_log_handle.cpp',
+				'src/binding/transaction_log/transaction_log_store.cpp',
+				'src/binding/transaction_log/transaction_log_store_registry.cpp',
 			],
 			'defines': [
 				# Note: node-gyp defaults to NAPI_VERSION=8 (v12.22.0+,
@@ -107,16 +110,122 @@
 							'RuntimeLibrary': 0,
 							'ExceptionHandling': 1,
 							'AdditionalOptions!': [],
-							# 'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
+							# 'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20'],
 							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20', '/U_DEBUG']
 						},
 						'VCLinkerTool': {
 							'AdditionalLibraryDirectories': [
-								# '<(module_root_dir)/deps/rocksdb/debug/lib'
+								# '<(module_root_dir)/deps/rocksdb/debug/lib',
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								# 'rocksdbd.lib'
+								# 'rocksdbd.lib',
+								'rocksdb.lib'
+							]
+						}
+					},
+					'xcode_settings': {
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
+						'OTHER_CFLAGS': ['-g', '--coverage'],
+						'OTHER_LDFLAGS': ['--coverage']
+					}
+				}
+			}
+		},
+		{
+			'target_name': 'rocksdb-js-native-tests',
+			'type': 'executable',
+			'dependencies': ['prepare-rocksdb', 'deps/gtest.gyp:gtest_main'],
+			'include_dirs': [
+				'deps/rocksdb/include',
+				'src/binding',
+				'deps/googletest/googletest/include',
+				'deps/googletest/googlemock/include',
+			],
+			'sources': [
+				'src/binding/core/debug.cpp',
+				'src/binding/core/platform.cpp',
+				'test/native/rocksdb_version_test.cc',
+				'test/native/encoding_test.cc',
+			],
+			'cflags!': [ '-fno-exceptions', '-std=c++17' ],
+			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],
+			'cflags_cc': [
+				'-std=c++20',
+				'-fexceptions'
+			],
+			'conditions': [
+				['OS=="win"', {
+					'link_settings': {
+						'libraries': [
+							'rpcrt4.lib',
+							'shell32.lib',
+							'shlwapi.lib'
+						]
+					},
+					'msvs_settings': {
+						'VCCLCompilerTool': {
+							'ExceptionHandling': 1,
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
+						},
+						'VCLinkerTool': {
+							'AdditionalLibraryDirectories': [
+								'<(module_root_dir)/deps/rocksdb/lib'
+							],
+							'AdditionalDependencies': [
+								'rocksdb.lib'
+							]
+						}
+					}
+				}],
+				['OS=="linux" or OS=="mac"', {
+					'cflags+': ['-fexceptions'],
+					'cflags_cc+': ['-fexceptions'],
+					'link_settings': {
+						'libraries': [
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+						]
+					},
+					'xcode_settings': {
+						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+						'MACOSX_DEPLOYMENT_TARGET': '26.0',
+						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
+					}
+				}]
+			],
+			'configurations': {
+				'Release': {
+					'msvs_settings': {
+						'VCCLCompilerTool': {
+							'RuntimeLibrary': 0,
+							'ExceptionHandling': 1,
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
+						},
+						'VCLinkerTool': {
+							'AdditionalLibraryDirectories': [
+								'<(module_root_dir)/deps/rocksdb/lib'
+							],
+							'AdditionalDependencies': [
+								'rocksdb.lib'
+							]
+						}
+					}
+				},
+				'Debug': {
+					'cflags_cc+': ['-g', '--coverage'],
+					'ldflags': ['--coverage'],
+					'msvs_settings': {
+						'VCCLCompilerTool': {
+							'RuntimeLibrary': 0,
+							'ExceptionHandling': 1,
+							'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20', '/U_DEBUG']
+						},
+						'VCLinkerTool': {
+							'AdditionalLibraryDirectories': [
+								'<(module_root_dir)/deps/rocksdb/lib'
+							],
+							'AdditionalDependencies': [
 								'rocksdb.lib'
 							]
 						}
@@ -150,5 +259,5 @@
 				}
 			]
 		},
-	]
+	],
 }
