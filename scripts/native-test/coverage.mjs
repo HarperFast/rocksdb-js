@@ -45,7 +45,8 @@ const objDir = join(root, 'build/Debug/obj.target/rocksdb-js-native-tests');
 rmSync(coverageDir, { recursive: true, force: true });
 mkdirSync(coverageDir, { recursive: true });
 
-const lcovIgnore = 'unsupported,unsupported,inconsistent,inconsistent,format,format';
+const lcovIgnore =
+	'unsupported,unsupported,inconsistent,inconsistent,format,format,mismatch,mismatch,gcov,gcov';
 
 run('lcov', [
 	'--ignore-errors',
