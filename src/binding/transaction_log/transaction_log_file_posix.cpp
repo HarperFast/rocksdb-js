@@ -5,7 +5,11 @@
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
+#include <algorithm>
+#include <limits.h>
 #include <sys/mman.h>
+#include <sys/uio.h>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -237,9 +241,51 @@ bool TransactionLogFile::removeFile() {
 }
 
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
-	// Implementation of writevAll lives in writev_all.cpp so the same loop
-	// can be linked into a standalone unit-test executable.
-	return TransactionLogFile::writevAll(this->fd, iovecs, iovcnt);
+	if (iovcnt <= 0) {
+		return 0;
+	}
+
+	// writev has a per-call iovec limit (IOV_MAX) and may return short on
+	// partial writes (EINTR, ENOSPC, NFS/FUSE, etc.). Track byte progress
+	// through the iovec array and advance into a partial iovec's remainder so
+	// a short writev does not silently drop the tail of an entry.
+	int64_t totalWritten = 0;
+	std::vector<iovec> pending(iovecs, iovecs + iovcnt);
+	size_t pendingIdx = 0;
+
+	while (pendingIdx < pending.size()) {
+		int toWrite = static_cast<int>(std::min(pending.size() - pendingIdx, static_cast<size_t>(IOV_MAX)));
+		ssize_t written = ::writev(this->fd, &pending[pendingIdx], toWrite);
+
+		if (written < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			return -1;
+		}
+
+		if (written == 0) {
+			// shouldn't happen for regular files; bail to avoid an infinite loop
+			return -1;
+		}
+
+		totalWritten += written;
+
+		size_t remainingBytes = static_cast<size_t>(written);
+		while (remainingBytes > 0 && pendingIdx < pending.size()) {
+			iovec& iov = pending[pendingIdx];
+			if (remainingBytes >= iov.iov_len) {
+				remainingBytes -= iov.iov_len;
+				++pendingIdx;
+			} else {
+				iov.iov_base = static_cast<char*>(iov.iov_base) + remainingBytes;
+				iov.iov_len -= remainingBytes;
+				remainingBytes = 0;
+			}
+		}
+	}
+
+	return totalWritten;
 }
 
 int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64_t offset) {

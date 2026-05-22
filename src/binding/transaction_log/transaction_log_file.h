@@ -208,17 +208,6 @@ struct TransactionLogFile final {
 	 */
 	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
 
-#ifdef PLATFORM_POSIX
-	/**
-	 * Writes the supplied iovecs to `fd` in their entirety, retrying short
-	 * writev() returns and EINTR. Exposed for unit testing of the partial-
-	 * write loop.
-	 *
-	 * @returns the total bytes written on success, or -1 on error.
-	 */
-	static int64_t writevAll(int fd, const iovec* iovecs, int iovcnt);
-#endif
-
 private:
 	/**
 	 * Platform specific function that opens the log file for reading and writing.
