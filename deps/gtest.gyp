@@ -3,6 +3,7 @@
 		{
 			'target_name': 'prepare-gtest',
 			'type': 'none',
+			'hard_dependency': 1,
 			'actions': [
 				{
 					'action_name': 'prepare_gtest',
