@@ -385,7 +385,7 @@ std::vector<std::shared_ptr<TransactionLogStore>> TransactionLogStoreRegistry::G
 		return result;
 	}
 
-	TransactionLogStoreRegistryEntry* entry = nullptr;
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -395,7 +395,7 @@ std::vector<std::shared_ptr<TransactionLogStore>> TransactionLogStoreRegistry::G
 			return result;
 		}
 
-		entry = it->second.get();
+		entry = it->second;
 	}
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
