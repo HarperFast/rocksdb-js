@@ -631,6 +631,10 @@ bool operator>(const LogPosition a, const LogPosition b) {
  * log file (until it expires), even after crash.
  */
 void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		return;
+	}
+
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;
 
 	{
@@ -660,6 +664,10 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
  * after restart or crash
  */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		return;
+	}
+
 	LogPosition latestSequencePosition = { 0, 0 };
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
