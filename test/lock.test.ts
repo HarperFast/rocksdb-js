@@ -296,23 +296,21 @@ describe('Lock', () => {
 
 				worker.postMessage({ close: true });
 
-				if (!process.versions.deno) {
-					return;
-				}
+				if (process.versions.deno) {
+					// there is something buggy with Deno where calling `await delay(100)` freezes the
+					// process, but advancing a microtask seems to unfreeze it
+					await new Promise<void>((resolve) => {
+						const timer = setTimeout(() => {
+							worker.terminate();
+							resolve();
+						}, 100);
 
-				// there is something buggy with Deno where calling `await delay(100)` freezes the
-				// process, but advancing a microtask seems to unfreeze it
-				return new Promise<void>((resolve) => {
-					const timer = setTimeout(() => {
-						worker.terminate();
-						resolve();
-					}, 100);
-
-					worker.on('exit', () => {
-						clearTimeout(timer);
-						resolve();
+						worker.on('exit', () => {
+							clearTimeout(timer);
+							resolve();
+						});
 					});
-				});
+				}
 			}));
 	});
 });
