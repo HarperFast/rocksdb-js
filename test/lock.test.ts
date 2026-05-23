@@ -296,12 +296,23 @@ describe('Lock', () => {
 
 				worker.postMessage({ close: true });
 
-				if (process.versions.deno) {
-					// deno doesn't emit an `exit` event when the worker quits, but
-					// `terminate()` will trigger the `exit` event
-					await delay(100);
-					worker.terminate();
+				if (!process.versions.deno) {
+					return;
 				}
+
+				// there is something buggy with Deno where calling `await delay(100)` freezes the
+				// process, but advancing a microtask seems to unfreeze it
+				return new Promise<void>((resolve) => {
+					const timer = setTimeout(() => {
+						worker.terminate();
+						resolve();
+					}, 100);
+
+					worker.on('exit', () => {
+						clearTimeout(timer);
+						resolve();
+					});
+				});
 			}));
 	});
 });
