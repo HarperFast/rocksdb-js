@@ -75,6 +75,25 @@ describe('WriteBufferManager', () => {
 				RocksDatabase.config({ writeBufferManagerSize: 64 * 1024 * 1024 });
 			}));
 
+		it('should reject costToCache change after the WriteBufferManager is created', () => {
+			// costToCache is baked into the WBM at construction time and
+			// cannot be retro-applied. The reject must happen before any
+			// other WBM state is touched — verify that a bundled size change
+			// in the same config() call is NOT applied when costToCache is
+			// rejected.
+			expect(() =>
+				RocksDatabase.config({
+					writeBufferManagerSize: 96 * 1024 * 1024,
+					writeBufferManagerCostToCache: false,
+				})
+			).toThrow(
+				/writeBufferManagerCostToCache cannot be changed after the WriteBufferManager has been created/
+			);
+
+			// Re-stating the current value is a no-op and must not throw.
+			expect(() => RocksDatabase.config({ writeBufferManagerCostToCache: true })).not.toThrow();
+		});
+
 		describe('memory reclamation', () => {
 			it('should release active memtable memory after flush', () =>
 				dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
