@@ -650,11 +650,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
 	// set or disable the block cache
+	DBSettings& settings = DBSettings::getInstance();
 	rocksdb::BlockBasedTableOptions tableOptions;
 	if (options.noBlockCache) {
 		tableOptions.no_block_cache = true;
 	} else {
-		DBSettings& settings = DBSettings::getInstance();
 		tableOptions.block_cache = settings.getBlockCache();
 	}
 
@@ -665,7 +665,18 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = !options.readOnly;
 	dbOptions.create_missing_column_families = !options.readOnly;
+<<<<<<< HEAD
 	dbOptions.db_write_buffer_size = static_cast<size_t>(options.dbWriteBufferSize);
+=======
+	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
+	// Attach the process-wide WriteBufferManager (if configured) so memtable
+	// memory is bounded across all DBs in this process. With cost_to_cache,
+	// active memtables share the block cache pool — the cache shrinks during
+	// write bursts and reclaims room as memtables flush.
+	if (auto wbm = settings.getWriteBufferManager()) {
+		dbOptions.write_buffer_manager = wbm;
+	}
+>>>>>>> 8f52bfb6 (Expose RocksDB WriteBufferManager with cost-to-cache support)
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.persist_user_defined_timestamps = true;
