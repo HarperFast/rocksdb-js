@@ -202,6 +202,40 @@ export type NativeDatabase = {
 export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
 	compactOnClose?: boolean;
+	/**
+	 * Total memtable memory limit (bytes) shared across every database opened
+	 * in this process. When set, RocksDB uses a single `WriteBufferManager` so
+	 * write buffers are bounded process-wide rather than per database. 0 (the
+	 * default) disables the manager.
+	 *
+	 * Can be updated at runtime; the new size takes effect on the existing
+	 * manager via `SetBufferSize`.
+	 */
+	writeBufferManagerSize?: number;
+	/**
+	 * When `true`, memtable memory is "charged" against the shared block cache
+	 * so the block cache and write buffers draw from a single pool. During
+	 * write bursts the cache shrinks to make room for memtables; once
+	 * memtables flush, the cache can grow back into the reclaimed space.
+	 *
+	 * Has no effect when the block cache is disabled (size 0) or
+	 * `writeBufferManagerSize` is 0. Must be set on the same `config()` call
+	 * that first enables the manager — changing it after the manager has been
+	 * created has no effect on the running instance.
+	 *
+	 * @default false
+	 */
+	writeBufferManagerCostToCache?: boolean;
+	/**
+	 * When `true`, writes are stalled once the manager's `buffer_size` is
+	 * exceeded, providing a hard cap on memtable memory. When `false`,
+	 * memtables are allowed to grow past the limit and flushes are simply
+	 * scheduled more aggressively. Off by default to favor write throughput
+	 * over hard memory bounding.
+	 *
+	 * @default false
+	 */
+	writeBufferManagerAllowStall?: boolean;
 };
 
 const nativeExtRE = /\.node$/;
