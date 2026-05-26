@@ -201,6 +201,27 @@ export class Store {
 	maxKeySize: number;
 
 	/**
+	 * The maximum number of memtables that can be queued per column family
+	 * before writes stall. Higher values absorb write bursts while flushes catch
+	 * up, at the cost of memory.
+	 */
+	maxWriteBufferNumber?: number;
+
+	/**
+	 * The bytes of recent memtable history to retain in memory for transaction
+	 * conflict checking. `-1` derives the value from
+	 * `maxWriteBufferNumber * writeBufferSize`.
+	 */
+	maxWriteBufferSizeToMaintain?: number;
+
+	/**
+	 * The total memtable budget in bytes across all column families. When the
+	 * sum of memtables reaches this size, RocksDB flushes the largest one. `0`
+	 * disables the global trigger so per-CF `writeBufferSize` drives flushing.
+	 */
+	dbWriteBufferSize?: number;
+
+	/**
 	 * The name of the store (e.g. the column family). Defaults to `'default'`.
 	 */
 	name: string;
@@ -212,9 +233,10 @@ export class Store {
 
 	/**
 	 * The number of threads to use for parallel operations. This is a RocksDB
-	 * option.
+	 * option. When undefined, the native layer picks
+	 * `max(1, hardware_concurrency() / 2)`.
 	 */
-	parallelismThreads: number;
+	parallelismThreads?: number;
 
 	/**
 	 * The path to the database.
@@ -282,6 +304,12 @@ export class Store {
 	transactionLogsPath?: string;
 
 	/**
+	 * The per-column-family memtable size in bytes at which the memtable is
+	 * sealed and flushed.
+	 */
+	writeBufferSize?: number;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -307,6 +335,7 @@ export class Store {
 		);
 
 		this.db = new NativeDatabase();
+		this.dbWriteBufferSize = options?.dbWriteBufferSize;
 		this.decoder = options?.decoder ?? null;
 		this.disableWAL = options?.disableWAL ?? false;
 		this.enableStats = options?.enableStats ?? false;
@@ -317,9 +346,11 @@ export class Store {
 		this.keyBuffer = KEY_BUFFER;
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
+		this.maxWriteBufferNumber = options?.maxWriteBufferNumber;
+		this.maxWriteBufferSizeToMaintain = options?.maxWriteBufferSizeToMaintain;
 		this.name = options?.name ?? 'default';
 		this.noBlockCache = options?.noBlockCache;
-		this.parallelismThreads = options?.parallelismThreads ?? 1;
+		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
 		this.readOnly = options?.readOnly ?? false;
@@ -331,6 +362,7 @@ export class Store {
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = options?.transactionLogsPath;
+		this.writeBufferSize = options?.writeBufferSize;
 		this.writeKey = writeKey;
 	}
 
@@ -746,8 +778,11 @@ export class Store {
 		}
 
 		this.db.open(this.path, {
+			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,
+			maxWriteBufferNumber: this.maxWriteBufferNumber,
+			maxWriteBufferSizeToMaintain: this.maxWriteBufferSizeToMaintain,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 			name: this.name,
 			noBlockCache: this.noBlockCache,
@@ -760,6 +795,7 @@ export class Store {
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
 			transactionLogsPath: this.transactionLogsPath,
+			writeBufferSize: this.writeBufferSize,
 		});
 
 		return false;
