@@ -1,5 +1,4 @@
 #include "database/db_settings.h"
-#include <cstdio>
 #include "napi/macros.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
@@ -116,30 +115,11 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 
 	int64_t writeBufferManagerSize = 0;
-	status = rocksdb_js::getProperty(env, params, "writeBufferManagerSize", writeBufferManagerSize, true);
-	if (status == napi_ok) {
-		if (writeBufferManagerSize < 0) {
-			::napi_throw_range_error(env, nullptr, "Write buffer manager size must be a positive integer or 0 to disable");
-			return nullptr;
-		}
-		const size_t newSize = static_cast<size_t>(writeBufferManagerSize);
-
-		// Take the mutex to serialize with WBM construction and SetBufferSize.
-		// We update the atomic *inside* the lock so observers in
-		// getWriteBufferManager() see a consistent state (lock held =>
-		// no concurrent WBM creation in flight).
-		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
-		settings.writeBufferManagerSize.store(newSize, std::memory_order_relaxed);
-
-		// If the manager was already created, adjust its buffer size in place
-		// (SetBufferSize is atomic). RocksDB asserts new_size > 0, so when
-		// "disabling" via size=0 we leave the existing manager alone —
-		// already-open DBs keep their reference, and subsequent opens skip
-		// the manager entirely (see getWriteBufferManager). Runtime size=0
-		// is a "no new attachments" signal, not a teardown.
-		if (newSize > 0 && settings.writeBufferManager) {
-			settings.writeBufferManager->SetBufferSize(newSize);
-		}
+	const bool wbmSizeProvided =
+		rocksdb_js::getProperty(env, params, "writeBufferManagerSize", writeBufferManagerSize, true) == napi_ok;
+	if (wbmSizeProvided && writeBufferManagerSize < 0) {
+		::napi_throw_range_error(env, nullptr, "Write buffer manager size must be a positive integer or 0 to disable");
+		return nullptr;
 	}
 
 	// `costToCache` is immutable after WBM creation — the cache reservation
@@ -148,13 +128,41 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// Already-open DBs see the new behavior on their next write.
 	bool newCostToCache = settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed);
 	bool newAllowStall = settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed);
-	bool costToCacheProvided = rocksdb_js::getProperty(env, params, "writeBufferManagerCostToCache", newCostToCache, true) == napi_ok;
-	bool allowStallProvided = rocksdb_js::getProperty(env, params, "writeBufferManagerAllowStall", newAllowStall, true) == napi_ok;
+	const bool costToCacheProvided =
+		rocksdb_js::getProperty(env, params, "writeBufferManagerCostToCache", newCostToCache, true) == napi_ok;
+	const bool allowStallProvided =
+		rocksdb_js::getProperty(env, params, "writeBufferManagerAllowStall", newAllowStall, true) == napi_ok;
 
+	// All WBM updates run under one critical section so the costToCache
+	// invariant check, SetBufferSize, and SetAllowStall observe a single
+	// consistent view of the manager. Throwing happens before any state
+	// mutation, so a rejected costToCache change leaves the live manager
+	// untouched.
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
 		const bool oldCostToCache = settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed);
+
+		if (wbmAlreadyCreated && costToCacheProvided && newCostToCache != oldCostToCache) {
+			::napi_throw_error(env, nullptr,
+				"writeBufferManagerCostToCache cannot be changed after the WriteBufferManager has been created; set it on the first config() call before any database is opened");
+			return nullptr;
+		}
+
+		if (wbmSizeProvided) {
+			const size_t newSize = static_cast<size_t>(writeBufferManagerSize);
+			settings.writeBufferManagerSize.store(newSize, std::memory_order_relaxed);
+
+			// If the manager was already created, adjust its buffer size in
+			// place (SetBufferSize is atomic). RocksDB asserts new_size > 0,
+			// so when "disabling" via size=0 we leave the existing manager
+			// alone — already-open DBs keep their reference, and subsequent
+			// opens skip the manager entirely (see getWriteBufferManager).
+			// Runtime size=0 is a "no new attachments" signal, not a teardown.
+			if (newSize > 0 && wbmAlreadyCreated) {
+				settings.writeBufferManager->SetBufferSize(newSize);
+			}
+		}
 
 		settings.writeBufferManagerCostToCache.store(newCostToCache, std::memory_order_relaxed);
 		settings.writeBufferManagerAllowStall.store(newAllowStall, std::memory_order_relaxed);
@@ -163,13 +171,6 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// the RocksDB-supported runtime knob.
 		if (wbmAlreadyCreated && allowStallProvided) {
 			settings.writeBufferManager->SetAllowStall(newAllowStall);
-		}
-
-		// costToCache can't be retro-applied; warn if the user attempts it.
-		if (wbmAlreadyCreated && costToCacheProvided && newCostToCache != oldCostToCache) {
-			std::fprintf(stderr,
-				"rocksdb-js: writeBufferManagerCostToCache change to %s ignored — manager already created. Set this on the first config() call before any database is opened.\n",
-				newCostToCache ? "true" : "false");
 		}
 	}
 
