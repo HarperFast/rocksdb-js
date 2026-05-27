@@ -29,21 +29,41 @@ namespace rocksdb_js {
  * @example
  * ```typescript
  * const db = RocksDatabase.open('/tmp/testdb');
- * db.open('/tmp/testdb');
- * const txnLog = new NativeTransactionLog(db, 'test');
+ *
+ * // create a log that is NOT bound to a transaction; transaction id must be passed into
+ * // `txnLog.addEntry()`
+ * const log = db.useLog('test');
+ * await db.transaction(async (txn) => {
+ *   log.addEntry(Buffer.from('hello'), txn.id);
+ * });
+ *
+ * // create a log that is bound to a transaction; transaction id is set automatically
+ * await db.transaction(async (txn) => {
+ *   const txnLog = txn.useLog('test');
+ *   txnLog.addEntry(Buffer.from('hello'));
+ * });
  * ```
  */
 napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("TransactionLog", 2);
+	NAPI_CONSTRUCTOR_ARGV_WITH_DATA("TransactionLog", 3);
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
 	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance");
 
 	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required");
 
+	// optional 3rd arg: transactionId (set when created via txn.useLog())
+	uint32_t transactionId = 0;
+	napi_valuetype thirdArgType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &thirdArgType));
+	if (thirdArgType == napi_number) {
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
+	}
+
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
 		std::make_shared<TransactionLogHandle>(*dbHandle, name, (*dbHandle)->descriptor->readOnly)
 	);
+	(*txnLogHandle)->transactionId = transactionId;
 
 	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get());
 
