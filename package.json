@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@harperfast/extended-iterable": "1.0.3",
-    "msgpackr": "2.0.1",
+    "msgpackr": "2.0.2",
     "ordered-binary": "1.6.1"
   },
   "devDependencies": {
