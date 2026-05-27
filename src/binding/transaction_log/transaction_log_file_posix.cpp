@@ -11,6 +11,17 @@
 #include <sys/uio.h>
 #include <vector>
 
+// Hook point for unit tests: compile with -DROCKSDB_JS_WRITEV=my_mock_fn to
+// inject a partial-write simulation. The macro must expand to a callable with
+// the same signature as ::writev. When defined, the block below emits a
+// forward declaration so the compiler sees the symbol before first use.
+// Production builds leave this macro undefined and call ::writev directly.
+#ifdef ROCKSDB_JS_WRITEV
+extern "C" ssize_t ROCKSDB_JS_WRITEV(int, const struct iovec*, int);
+#else
+#define ROCKSDB_JS_WRITEV ::writev
+#endif
+
 namespace rocksdb_js {
 
 TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
@@ -255,7 +266,7 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 
 	while (pendingIdx < pending.size()) {
 		int toWrite = static_cast<int>(std::min(pending.size() - pendingIdx, static_cast<size_t>(IOV_MAX)));
-		ssize_t written = ::writev(this->fd, &pending[pendingIdx], toWrite);
+		ssize_t written = ROCKSDB_JS_WRITEV(this->fd, &pending[pendingIdx], toWrite);
 
 		if (written < 0) {
 			if (errno == EINTR) {
