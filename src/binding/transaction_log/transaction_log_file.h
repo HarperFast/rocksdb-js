@@ -46,6 +46,12 @@
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
 
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+// Forward declaration so that the friend designation inside namespace
+// rocksdb_js can refer to the global-scope test accessor.
+struct WriteBatchToFileTestAccessor;
+#endif
+
 namespace rocksdb_js {
 
 // forward declarations
@@ -207,6 +213,12 @@ struct TransactionLogFile final {
 	 * Platform specific function that writes data to the log file.
 	 */
 	int64_t writeToFile(const void* buffer, uint32_t size, int64_t offset = -1);
+
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	// Expose writeBatchToFile to the gtest test accessor without pulling
+	// gtest headers into the production build.
+	friend struct ::WriteBatchToFileTestAccessor;
+#endif
 
 private:
 	/**
