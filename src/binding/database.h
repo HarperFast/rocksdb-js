@@ -28,6 +28,58 @@ namespace rocksdb_js {
 	} while (0)
 
 /**
+ * RAII guard that tracks in-flight operations on a DBDescriptor.
+ * Increments counter on construction, decrements on destruction.
+ * Notifies waiters via atomic::notify_all() when count reaches zero.
+ */
+struct OperationGuard {
+	std::shared_ptr<DBDescriptor> descriptor;
+
+	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
+		if (descriptor) {
+			++descriptor->operationsInFlight;
+		}
+	}
+
+	~OperationGuard() {
+		if (descriptor) {
+			if (--descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+				descriptor->operationsInFlight.notify_all();
+			}
+		}
+	}
+
+	// Non-copyable, non-movable
+	OperationGuard(const OperationGuard&) = delete;
+	OperationGuard& operator=(const OperationGuard&) = delete;
+	OperationGuard(OperationGuard&&) = delete;
+	OperationGuard& operator=(OperationGuard&&) = delete;
+};
+
+/**
+ * Registers an in-flight operation to prevent use-after-free during shutdown.
+ * Also checks if the database is closing and throws an error if so.
+ *
+ * Use this macro after UNWRAP_DB_HANDLE_AND_OPEN() in operations that
+ * access descriptor->db or column family handles.
+ *
+ * Note: We copy the descriptor shared_ptr first to ensure the descriptor
+ * stays alive even if another thread calls close() on our handle.
+ */
+#define ACQUIRE_OPERATIONS_LOCK() \
+	if (!(*dbHandle)->descriptor) { \
+		::napi_throw_error(env, nullptr, "Database not open"); \
+		NAPI_RETURN_UNDEFINED(); \
+	} \
+	OperationGuard __operationGuard((*dbHandle)->descriptor); \
+	do { \
+		if ((*dbHandle)->descriptor->isClosing()) { \
+			::napi_throw_error(env, nullptr, "Database is closing"); \
+			NAPI_RETURN_UNDEFINED(); \
+		} \
+	} while (0)
+
+/**
  * The `NativeDatabase` JavaScript class implementation.
  *
  * @example

@@ -128,6 +128,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<bool> closing{false};
 
 	/**
+	 * Counter tracking in-flight database operations. close() uses
+	 * atomic::wait() to block until this reaches zero.
+	 */
+	std::atomic<uint32_t> operationsInFlight{0};
+
+	/**
 	 * Mutex to prevent concurrent compaction operations.
 	 */
 	std::mutex compactMutex;

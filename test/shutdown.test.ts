@@ -1,8 +1,10 @@
-import { registryStatus, shutdown } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { RocksDatabase, registryStatus, shutdown } from '../src/index.js';
+import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
 describe('Shutdown', () => {
@@ -155,5 +157,156 @@ describe('Shutdown', () => {
 			});
 			child.on('error', reject);
 		});
+	});
+
+	it('should flush disableWAL writes when worker is terminated and shutdown is called', async () => {
+		const dbPath = generateDBPath();
+		await mkdir(dbPath, { recursive: true });
+
+		// Start worker that writes with disableWAL=true
+		const worker = new Worker(
+			createWorkerBootstrapScript('./test/workers/disable-wal-shutdown-worker.mts'),
+			{
+				eval: true,
+				workerData: { path: dbPath },
+			}
+		);
+
+		// Wait for worker to start and write some data
+		let lastWriteCount = 0;
+		await new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('Worker start timeout')), 10000);
+			worker.on('message', (event) => {
+				if (event.started) {
+					clearTimeout(timeout);
+					resolve();
+				}
+				if (event.writeCount) {
+					lastWriteCount = event.writeCount;
+				}
+			});
+			worker.on('error', reject);
+		});
+
+		// Let the worker write data for a bit
+		await delay(100);
+
+		// Get the last known write count before terminating
+		const writeCountBeforeTerminate = lastWriteCount;
+
+		// Terminate the worker abruptly (simulates crash/kill)
+		await worker.terminate();
+
+		// Main thread calls shutdown to flush all databases
+		shutdown();
+
+		// Re-open the database and verify data integrity
+		const db = RocksDatabase.open(dbPath);
+
+		// Verify that at least some data was written and persisted
+		// We check up to writeCountBeforeTerminate since we know at least that many were written
+		let verifiedCount = 0;
+		for (let i = 0; i < writeCountBeforeTerminate; i++) {
+			const value = db.getSync(`key-${i}`) as { index: number; data: string } | undefined;
+			if (value !== undefined) {
+				expect(value.index).toBe(i);
+				expect(value.data).toBe(`value-${i}`);
+				verifiedCount++;
+			}
+		}
+
+		// Ensure we actually verified some data (worker should have written at least a few entries)
+		expect(verifiedCount).toBeGreaterThan(0);
+
+		db.close();
+
+		// Cleanup
+		if (!process.env.KEEP_FILES) {
+			await rm(dbPath, { force: true, recursive: true });
+		}
+	});
+
+	it('should throw "Database is closing" and preserve data when shutdown() is called while worker is actively writing', async () => {
+		const dbPath = generateDBPath();
+		await mkdir(dbPath, { recursive: true });
+
+		// Start worker that writes with disableWAL=true using sync writes
+		const worker = new Worker(
+			createWorkerBootstrapScript('./test/workers/disable-wal-shutdown-worker.mts'),
+			{
+				eval: true,
+				workerData: { path: dbPath },
+			}
+		);
+
+		// Set up promise to capture the error from the worker
+		let lastWriteCount = 0;
+		const errorPromise = new Promise<{ message: string; writeCount: number }>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('Worker error timeout')), 10000);
+			worker.on('message', (event) => {
+				if (event.writeCount) {
+					lastWriteCount = event.writeCount;
+				}
+				if (event.error) {
+					clearTimeout(timeout);
+					resolve({ message: event.message, writeCount: event.writeCount });
+				}
+			});
+			worker.on('error', reject);
+		});
+
+		// Wait for worker to start
+		await new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('Worker start timeout')), 10000);
+			worker.on('message', (event) => {
+				if (event.started) {
+					clearTimeout(timeout);
+					resolve();
+				}
+			});
+			worker.on('error', reject);
+		});
+
+		// Let the worker write some data
+		await delay(50);
+
+		// Call shutdown() while worker is STILL RUNNING - this should not crash and
+		// should cause the worker to receive "Database is closing"
+		shutdown();
+
+		// Wait for the worker to report the error
+		const error = await errorPromise;
+		expect(error.message).toBe('Database is closing');
+		expect(error.writeCount).toBeGreaterThan(0);
+
+		// Terminate the worker now that it has reported the error
+		await worker.terminate();
+
+		// Re-open the database and verify data integrity
+		const db = RocksDatabase.open(dbPath);
+
+		// Verify that at least some data was written and persisted. Use the
+		// smaller of the last reported progress and the error writeCount since
+		// the worker may have written further between progress reports.
+		const expectedCount = Math.min(lastWriteCount, error.writeCount);
+		let verifiedCount = 0;
+		for (let i = 0; i < expectedCount; i++) {
+			const value = db.getSync(`key-${i}`) as { index: number; data: string } | undefined;
+			if (value !== undefined) {
+				expect(value.index).toBe(i);
+				expect(value.data).toBe(`value-${i}`);
+				verifiedCount++;
+			}
+		}
+
+		// Ensure we actually verified some data
+		expect(verifiedCount).toBeGreaterThan(0);
+
+		db.close();
+
+		// Cleanup
+		if (!process.env.KEEP_FILES) {
+			await rm(dbPath, { force: true, recursive: true });
+		}
 	});
 });
