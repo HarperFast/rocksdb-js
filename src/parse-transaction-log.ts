@@ -5,7 +5,7 @@ const { TRANSACTION_LOG_TOKEN } = constants;
 
 // Transaction log files did not exist before this date, so any timestamp that
 // predates it indicates corruption.
-const MIN_VALID_TIMESTAMP = Date.UTC(2017, 2, 1); // 2017-03-01
+const MIN_VALID_TIMESTAMP = Date.UTC(2026, 0, 27); // 2026-01-27
 
 // Currently only bit 0 (TRANSACTION_LOG_ENTRY_LAST_FLAG) is defined.
 const VALID_FLAGS_MASK = 0x01;
@@ -80,7 +80,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 		const timestamp = read(8).readDoubleBE(0);
 		const anomalies: string[] = [];
 		if (!Number.isFinite(timestamp) || timestamp < MIN_VALID_TIMESTAMP) {
-			anomalies.push(`Header timestamp ${timestamp} predates 2017-03-01 (possible corruption)`);
+			anomalies.push(`Header timestamp ${timestamp} predates 2026-01-27 (possible corruption)`);
 		}
 
 		// read the entries
@@ -100,7 +100,7 @@ export function parseTransactionLog(path: string): TransactionLog {
 
 			const entryAnomalies: string[] = [];
 			if (!Number.isFinite(timestamp) || timestamp < MIN_VALID_TIMESTAMP) {
-				entryAnomalies.push(`timestamp ${timestamp} predates 2017-03-01 (possible corruption)`);
+				entryAnomalies.push(`timestamp ${timestamp} predates 2026-01-27 (possible corruption)`);
 			}
 			if ((flags & ~VALID_FLAGS_MASK) !== 0) {
 				entryAnomalies.push(
