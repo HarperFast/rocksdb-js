@@ -382,7 +382,7 @@ async function logCommand(args) {
 			if (!logFile.endsWith('.txnlog')) continue;
 			console.log(hl(logFile));
 
-			const log = parseTransactionLog(join(logPath, logFile));
+			const log = parseTransactionLog(join(logPath, logFile), { skipData: true });
 			const ts =
 				Number.isFinite(log.timestamp) && log.timestamp > 0
 					? new Date(log.timestamp).toISOString()
