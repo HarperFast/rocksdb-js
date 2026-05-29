@@ -160,8 +160,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: main
-          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
@@ -216,7 +215,7 @@ jobs:
           set -o pipefail
           git add package.json
           git commit -m "v${{ needs.preflight.outputs.version }}"
-          git push origin main
+          git push origin HEAD:${{ github.event.release.target_commitish }}
 
       - name: Get package.json info
         id: get-package-info
@@ -260,7 +259,7 @@ jobs:
         run: |
           git add pnpm-lock.yaml
           git commit -m "chore(package): update pnpm-lock.yaml after publishing ${{ needs.preflight.outputs.version }}"
-          git push origin main
+          git push origin HEAD:${{ github.event.release.target_commitish }}
 
   on-publish-success:
     if: success() && !cancelled()
