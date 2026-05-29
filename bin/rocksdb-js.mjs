@@ -2,7 +2,7 @@
 
 import { RocksDatabase, parseTransactionLog, versions } from '../dist/index.mjs';
 import { existsSync, readdirSync } from 'node:fs';
-import { mkdir, readdir } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
@@ -19,6 +19,7 @@ const COMMANDS = {
 	get: getCommand,
 	help: helpCommand,
 	log: logCommand,
+	logs: logCommand, // alias for log
 	prop: propCommand,
 	'purge-logs': purgeLogsCommand,
 	put: putCommand,
@@ -66,12 +67,12 @@ function completer(line) {
 		return [hits.length ? hits : columns, arg];
 	}
 
-	if (command === 'log' && currentDB) {
+	if ((command === 'log' || command === 'logs') && currentDB) {
 		if (parts.length === 2) {
 			const arg = parts[1];
 			const logs = currentDB.listLogs();
 			const hits = logs.filter((l) => l.startsWith(arg));
-			return [hits.length ? hits : logs, arg];
+			return [(hits.length ? hits : logs).map((s) => `${s} `), arg];
 		} else if (parts.length === 3) {
 			const [name, store] = parts.slice(1);
 			const logs = currentDB.listLogs();
@@ -81,7 +82,7 @@ function completer(line) {
 				const logFiles = readdirSync(logPath).filter(
 					(f) => (!store || f.startsWith(store)) && f.endsWith('.txnlog')
 				);
-				return [logFiles.length ? logFiles : [], store, name];
+				return [logFiles.length ? logFiles.map((f) => `${f} `) : [], store, name];
 			}
 			return [[], store, name];
 		}
@@ -147,6 +148,34 @@ function wrapColumns(columns) {
 	}
 	if (line) lines.push(line);
 	return prefix + lines.join('\n' + indent);
+}
+
+function formatHexDump(data) {
+	const bytesPerRow = 16;
+	const lines = [];
+	for (let offset = 0; offset < data.length; offset += bytesPerRow) {
+		const chunk = data.subarray(offset, offset + bytesPerRow);
+		const hexParts = [];
+		for (let i = 0; i < bytesPerRow; i++) {
+			if (i === 8) hexParts.push('');
+			hexParts.push(i < chunk.length ? chunk[i].toString(16).padStart(2, '0') : '  ');
+		}
+		let ascii = '';
+		for (const byte of chunk) {
+			ascii += byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.';
+		}
+		lines.push(
+			`${note(offset.toString(16).padStart(8, '0'))}  ${hl(hexParts.join(' '))}  ${note('|')}${hl(ascii)}${note('|')}`
+		);
+	}
+	return lines.join('\n');
+}
+
+function formatBytes(bytes) {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+	return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 async function run(fn) {
@@ -320,40 +349,72 @@ async function logCommand(args) {
 				}
 				const { data } = log.entries[entry - 1];
 				console.log(`Entry ${entry} (${data.length.toLocaleString()} bytes)\n`);
-				console.log(
-					hl(
-						data
-							.toString('hex')
-							.match(/.{1,2}/g)
-							.join(' ')
-					)
-				);
+				console.log(formatHexDump(data));
 				console.log();
 				return;
 			}
 
-			console.log(`Size      = ${hl(`${log.size.toLocaleString()} bytes`)}`);
-			console.log(`Version   = ${hl(log.version)}`);
-			console.log(`Timestamp = ${hl(new Date(log.timestamp).toISOString())}`);
-			console.log(`Entries   = ${hl(log.entries.length)}`);
+			for (const anomaly of log.anomalies) {
+				console.log(bad(`!  ${anomaly}`));
+			}
 			let i = 1;
 			for (const entry of log.entries) {
+				const ts =
+					Number.isFinite(entry.timestamp) && entry.timestamp > 0
+						? new Date(entry.timestamp).toISOString()
+						: String(entry.timestamp);
 				console.log(
-					`${String(i++).padStart(3)})  ${hl(new Date(entry.timestamp).toISOString())}  ${entry.length.toLocaleString()} bytes  ${entry.flags & 0x01 ? '' : note('(continued in next file)')}`
+					`${String(i++).padStart(3)})  ${hl(ts)}  ${entry.length.toLocaleString()} bytes  ${entry.flags & 0x01 ? note('(end of transaction)') : ''}`
 				);
+				if (entry.anomalies) {
+					for (const anomaly of entry.anomalies) {
+						console.log(`     ${bad(`! ${anomaly}`)}`);
+					}
+				}
 			}
 			console.log();
 			return;
 		}
+
 		const logPath = join(currentDB.path, 'transaction_logs', name);
 		const logFiles = await readdir(logPath);
 		for (const logFile of logFiles) {
 			if (!logFile.endsWith('.txnlog')) continue;
 			console.log(hl(logFile));
+
+			const log = parseTransactionLog(join(logPath, logFile), { skipData: true });
+			const ts =
+				Number.isFinite(log.timestamp) && log.timestamp > 0
+					? new Date(log.timestamp).toISOString()
+					: String(log.timestamp);
+			console.log(`  Size      = ${hl(`${log.size.toLocaleString()} bytes`)}`);
+			console.log(`  Version   = ${hl(log.version)}`);
+			console.log(`  Timestamp = ${hl(ts)}`);
+			console.log(`  Entries   = ${hl(log.entries.length)}`);
+			const totalAnomalies = log.anomalies.length + log.entryAnomalyCount;
+			if (totalAnomalies > 0) {
+				console.log(`  Anomalies = ${bad(totalAnomalies)}`);
+				for (const anomaly of log.anomalies) {
+					console.log(`    ${bad(`! ${anomaly}`)}`);
+				}
+				if (log.entryAnomalyCount > 0) {
+					console.log(
+						`    ${bad(`! ${log.entryAnomalyCount} entr${log.entryAnomalyCount === 1 ? 'y has' : 'ies have'} anomalies (run "log ${name} ${logFile}" for details)`)}`
+					);
+				}
+			}
 		}
 	} else if (logs.length > 0) {
-		for (const log of logs) {
-			console.log(hl(log));
+		for (const name of logs) {
+			const files = (await readdir(join(currentDB.path, 'transaction_logs', name))).filter((f) =>
+				f.endsWith('.txnlog')
+			);
+			const maxlen = files.reduce((max, file) => Math.max(max, file.length), 0);
+			console.log(hl(name));
+			for (const file of files) {
+				const { size } = await stat(join(currentDB.path, 'transaction_logs', name, file));
+				console.log(`  ${file.padEnd(maxlen)} ${note(`(${formatBytes(size)})`)}`);
+			}
 		}
 	} else {
 		console.log('No log stores found');
@@ -533,6 +594,7 @@ async function main() {
 			const command = line[0];
 			if (!command) continue;
 			const commandFn = COMMANDS[command];
+			console.log();
 			if (commandFn) {
 				try {
 					await commandFn(line.slice(1));
