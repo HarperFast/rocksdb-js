@@ -4,4 +4,4 @@ allowBuilds:
   lmdb: true
   msgpackr-extract: true
 minimumReleaseAgeExclude:
-  - semver@7.8.1
+  - '@harperfast/*'
