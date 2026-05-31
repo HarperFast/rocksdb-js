@@ -30,11 +30,29 @@ const {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG,
 	FRESH_VERSION_FLAG,
 	POPULATE_VERSION_FLAG,
+	ITERATOR_REVERSE_FLAG,
+	ITERATOR_INCLUSIVE_END_FLAG,
+	ITERATOR_EXCLUSIVE_START_FLAG,
+	ITERATOR_INCLUDE_VALUES_FLAG,
+	ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG,
+	ITERATOR_CONTEXT_IS_TRANSACTION_FLAG,
 } = constants;
 const KEY_BUFFER_SIZE = 4096;
 
 export const KEY_BUFFER: BufferWithDataView = createFixedBuffer(KEY_BUFFER_SIZE);
 export const VALUE_BUFFER: BufferWithDataView = createFixedBuffer(64 * 1024);
+
+/**
+ * Backing buffer for the shared iterator state. Layout (Uint32Array view):
+ *   [0] = key length written into KEY_BUFFER by the most recent iterator step
+ *   [1] = value length written into VALUE_BUFFER by the most recent step
+ */
+export const ITERATOR_STATE_BUFFER: Buffer = Buffer.allocUnsafeSlow(8);
+export const ITERATOR_STATE: Uint32Array = new Uint32Array(
+	ITERATOR_STATE_BUFFER.buffer,
+	ITERATOR_STATE_BUFFER.byteOffset,
+	2
+);
 
 const MAX_KEY_SIZE = 1024 * 1024; // 1MB
 const RESET_BUFFER_MODE = 1024;
@@ -48,6 +66,11 @@ export type StoreIteratorOptions = IteratorOptions & DBITransactional;
 export type StorePutOptions = PutOptions & DBITransactional;
 export type StoreRangeOptions = RangeOptions & DBITransactional;
 export type StoreRemoveOptions = DBITransactional | unknown;
+
+export type CompactOptions = {
+	start?: Key;
+	end?: Key;
+};
 
 /**
  * Options for the `Store` class.
@@ -180,6 +203,27 @@ export class Store {
 	maxKeySize: number;
 
 	/**
+	 * The maximum number of memtables that can be queued per column family
+	 * before writes stall. Higher values absorb write bursts while flushes catch
+	 * up, at the cost of memory.
+	 */
+	maxWriteBufferNumber?: number;
+
+	/**
+	 * The bytes of recent memtable history to retain in memory for transaction
+	 * conflict checking. `-1` derives the value from
+	 * `maxWriteBufferNumber * writeBufferSize`.
+	 */
+	maxWriteBufferSizeToMaintain?: number;
+
+	/**
+	 * The total memtable budget in bytes across all column families. When the
+	 * sum of memtables reaches this size, RocksDB flushes the largest one. `0`
+	 * disables the global trigger so per-CF `writeBufferSize` drives flushing.
+	 */
+	dbWriteBufferSize?: number;
+
+	/**
 	 * The name of the store (e.g. the column family). Defaults to `'default'`.
 	 */
 	name: string;
@@ -191,9 +235,10 @@ export class Store {
 
 	/**
 	 * The number of threads to use for parallel operations. This is a RocksDB
-	 * option.
+	 * option. When undefined, the native layer picks
+	 * `max(1, hardware_concurrency() / 2)`.
 	 */
-	parallelismThreads: number;
+	parallelismThreads?: number;
 
 	/**
 	 * The path to the database.
@@ -266,6 +311,12 @@ export class Store {
 	verificationTable?: boolean;
 
 	/**
+	 * The per-column-family memtable size in bytes at which the memtable is
+	 * sealed and flushed.
+	 */
+	writeBufferSize?: number;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -291,6 +342,7 @@ export class Store {
 		);
 
 		this.db = new NativeDatabase();
+		this.dbWriteBufferSize = options?.dbWriteBufferSize;
 		this.decoder = options?.decoder ?? null;
 		this.disableWAL = options?.disableWAL ?? false;
 		this.enableStats = options?.enableStats ?? false;
@@ -301,9 +353,11 @@ export class Store {
 		this.keyBuffer = KEY_BUFFER;
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
+		this.maxWriteBufferNumber = options?.maxWriteBufferNumber;
+		this.maxWriteBufferSizeToMaintain = options?.maxWriteBufferSizeToMaintain;
 		this.name = options?.name ?? 'default';
 		this.noBlockCache = options?.noBlockCache;
-		this.parallelismThreads = options?.parallelismThreads ?? 1;
+		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
 		this.readOnly = options?.readOnly ?? false;
@@ -316,6 +370,7 @@ export class Store {
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = options?.transactionLogsPath;
 		this.verificationTable = options?.verificationTable;
+		this.writeBufferSize = options?.writeBufferSize;
 		this.writeKey = writeKey;
 	}
 
@@ -324,6 +379,60 @@ export class Store {
 	 */
 	close(): void {
 		this.db.close();
+	}
+
+	/**
+	 * Compacts the entire key range of the database asynchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.compact();
+	 * ```
+	 */
+	compact(options?: CompactOptions): Promise<void> {
+		let startBuffer: Buffer | undefined;
+		let endBuffer: Buffer | undefined;
+
+		if (options?.start !== undefined) {
+			const start = this.encodeKey(options.start);
+			startBuffer = Buffer.from(start.subarray(start.start, start.end));
+		}
+		if (options?.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			endBuffer = Buffer.from(end.subarray(end.start, end.end));
+		}
+
+		return new Promise((resolve, reject) =>
+			this.db.compact(resolve, reject, startBuffer, endBuffer)
+		);
+	}
+
+	/**
+	 * Compacts the entire key range of the database synchronously.
+	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * db.compactSync();
+	 * ```
+	 */
+	compactSync(options?: CompactOptions): void {
+		let startBuffer: Buffer | undefined;
+		let endBuffer: Buffer | undefined;
+
+		if (options?.start !== undefined) {
+			const start = this.encodeKey(options.start);
+			startBuffer = Buffer.from(start.subarray(start.start, start.end));
+		}
+		if (options?.end !== undefined) {
+			const end = this.encodeKey(options.end);
+			endBuffer = Buffer.from(end.subarray(end.start, end.end));
+		}
+
+		this.db.compactSync(startBuffer, endBuffer);
 	}
 
 	/**
@@ -479,40 +588,94 @@ export class Store {
 			throw new Error('Database not open');
 		}
 
-		options = { ...options };
+		// Resolve start/end keys, honoring the `key` shortcut for single-key
+		// matches and swapping start/end when iterating in reverse.
+		let startUnencoded = options?.key ?? options?.start;
+		let endUnencoded = options?.key ?? options?.end;
 
-		const unencodedStartKey = options.key ?? options.start;
+		const includeValues = options?.values ?? true;
+		const reverse = options?.reverse ?? false;
 
-		if (unencodedStartKey !== undefined) {
-			const start = this.encodeKey(unencodedStartKey);
-			options.start = Buffer.from(start.subarray(start.start, start.end));
+		let exclusiveStart = options?.exclusiveStart ?? false;
+		let inclusiveEnd = options?.inclusiveEnd ?? false;
+		if (options?.key !== undefined) {
+			inclusiveEnd = true;
 		}
 
-		if (options.key !== undefined) {
-			options.end = options.start;
-			options.inclusiveEnd = true;
-		} else if (options.end !== undefined) {
-			const end = this.encodeKey(options.end);
-			options.end = Buffer.from(end.subarray(end.start, end.end));
+		if (reverse) {
+			const tmp = startUnencoded;
+			startUnencoded = endUnencoded;
+			endUnencoded = tmp;
+			// preserve previous default behavior: reverse iteration treats
+			// missing exclusiveStart/inclusiveEnd as `true`
+			exclusiveStart = options?.exclusiveStart ?? true;
+			inclusiveEnd = options?.inclusiveEnd ?? true;
 		}
 
-		if (options.reverse) {
-			// reverse the start and end keys
-			const start = options.start;
-			options.start = options.end;
-			options.end = start;
+		// Encode both keys back-to-back into the shared key buffer. Each key
+		// is identified to the native side by its (start, end) offsets.
+		const keyBuffer = this.keyBuffer;
+		let startKeyEnd = 0;
+		let endKeyStart = 0;
+		let endKeyEnd = 0;
 
-			// reverse the exclusive start and end flags
-			options.exclusiveStart = options.exclusiveStart ?? true;
-			options.inclusiveEnd = options.inclusiveEnd ?? true;
+		if (startUnencoded !== undefined) {
+			startKeyEnd = this.writeKey(startUnencoded, keyBuffer, 0);
+			if (startKeyEnd === 0) {
+				throw new Error('Zero length key is not allowed');
+			}
 		}
+
+		if (endUnencoded !== undefined) {
+			if (endUnencoded === startUnencoded) {
+				// `key` shortcut: reuse the encoded start key bytes
+				endKeyStart = 0;
+				endKeyEnd = startKeyEnd;
+			} else {
+				endKeyStart = startKeyEnd;
+				endKeyEnd = this.writeKey(endUnencoded, keyBuffer, endKeyStart);
+				if (endKeyEnd === endKeyStart) {
+					throw new Error('Zero length key is not allowed');
+				}
+			}
+		}
+
+		let flags = 0;
+		if (reverse) flags |= ITERATOR_REVERSE_FLAG;
+		if (exclusiveStart) flags |= ITERATOR_EXCLUSIVE_START_FLAG;
+		if (inclusiveEnd) flags |= ITERATOR_INCLUSIVE_END_FLAG;
+		if (includeValues) flags |= ITERATOR_INCLUDE_VALUES_FLAG;
+		if (includeValues && !this.decoderCopies) {
+			flags |= ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG;
+		}
+		// Tell the native constructor whether `context` is a Transaction (vs.
+		// the database) so it can skip a napi_instanceof check. The store
+		// holds the canonical NativeDatabase reference, so identity comparison
+		// is sufficient.
+		if (context !== this.db) {
+			flags |= ITERATOR_CONTEXT_IS_TRANSACTION_FLAG;
+		}
+
+		// Only pass the advanced ReadOptions object on the rare path where any
+		// of the underlying RocksDB iterator options are actually overridden.
+		const advancedOptions =
+			options !== undefined &&
+			(options.adaptiveReadahead !== undefined ||
+				options.asyncIO !== undefined ||
+				options.autoReadaheadSize !== undefined ||
+				options.backgroundPurgeOnIteratorCleanup !== undefined ||
+				options.fillCache !== undefined ||
+				options.readaheadSize !== undefined ||
+				options.tailing !== undefined)
+				? options
+				: undefined;
 
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
 			new DBIterator(
-				new NativeIterator(context, options) as Iterator<DBIteratorValue<any>>,
+				new NativeIterator(context, flags, startKeyEnd, endKeyStart, endKeyEnd, advancedOptions),
 				this,
-				options
+				includeValues
 			)
 		);
 	}
@@ -644,8 +807,11 @@ export class Store {
 		}
 
 		this.db.open(this.path, {
+			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,
+			maxWriteBufferNumber: this.maxWriteBufferNumber,
+			maxWriteBufferSizeToMaintain: this.maxWriteBufferSizeToMaintain,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',
 			name: this.name,
 			noBlockCache: this.noBlockCache,
@@ -659,6 +825,7 @@ export class Store {
 				: undefined,
 			transactionLogsPath: this.transactionLogsPath,
 			verificationTable: this.verificationTable,
+			writeBufferSize: this.writeBufferSize,
 		});
 
 		return false;

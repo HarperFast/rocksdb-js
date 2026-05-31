@@ -10,6 +10,8 @@ describe('Column Families', () => {
 			expect(db2.get('foo')).toBe('bar2');
 			expect(db.name).toBe('default');
 			expect(db2.name).toBe('foo');
+			expect(db.columns).toEqual(['default', 'foo']);
+			expect(db2.columns).toEqual(['default', 'foo']);
 		}));
 
 	it('should reuse same instance for same column family', () =>
@@ -19,5 +21,16 @@ describe('Column Families', () => {
 			expect(db2.get('foo')).toBe('bar');
 			expect(db.name).toBe('foo');
 			expect(db2.name).toBe('foo');
+			expect(db.columns).toEqual(['default', 'foo']);
+			expect(db2.columns).toEqual(['default', 'foo']);
+		}));
+
+	it('should get column families', () =>
+		dbRunner({ skipOpen: true, dbOptions: [{}, { name: 'foo' }] }, async ({ db }, { db: db2 }) => {
+			db.open();
+			expect(db.columns).toEqual(['default']);
+			db2.open();
+			expect(db.columns).toEqual(['default', 'foo']);
+			expect(db2.columns).toEqual(['default', 'foo']);
 		}));
 });

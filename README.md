@@ -85,6 +85,18 @@ const db = RocksDatabase.open('foo');
 db.close();
 ```
 
+### `db.columns: string[]`
+
+Returns the list of column families in the RocksDB database.
+
+```typescript
+const db = RocksDatabase.open('path/to/db');
+console.log(db.columns); // ['default']
+
+const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+console.log(db.columns); // ['default', 'users']
+```
+
 ### `db.config(options)`
 
 Sets global database settings.
@@ -93,10 +105,27 @@ Sets global database settings.
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `writeBufferManagerAllowStall: boolean` When `true`, writes are stalled once the manager's
+    `buffer_size` is exceeded, providing a hard cap on memtable memory. When `false`, memtables are
+    allowed to grow past the limit and flushes are simply scheduled more aggressively. Off by
+    default to favor write throughput over hard memory bounding. Defaults to `false`.
+  - `writeBufferManagerCostToCache: boolean` When `true`, memtable memory is "charged" against the
+    shared block cache so the block cache and write buffers draw from a single pool. During write
+    bursts the cache shrinks to make room for memtables; once memtables flush, the cache can grow
+    back into the reclaimed space. Defaults to `false`.
+  - `writeBufferManagerSize: number` Total memtable memory limit (bytes) shared across every
+    database opened in this process. When set, RocksDB uses a single `WriteBufferManager` so write
+    buffers are bounded process-wide rather than per database. A value of `0` disables the manager.
+    Defaults to `0`.
 
 ```typescript
 RocksDatabase.config({
 	blockCacheSize: 100 * 1024 * 1024, // 100MB
+	compactOnClose: true,
+	writeBufferManagerAllowStall: false,
+	writeBufferManagerCostToCache: false,
+	writeBufferManagerSize: 64 * 1024 * 1024, // 64MB
 });
 ```
 
@@ -181,6 +210,33 @@ const entriesRemoved = db.clearSync();
 console.log(entriesRemoved); // 10
 ```
 
+### `db.compact(options?): Promise<void>`
+
+Compacts a range of keys in the database. In RocksDB, deleted keys are not immediately removed from
+the database. Instead, they are marked as deleted and a tombstone is written. This function
+triggers a manual compaction which removes the tombstones and reclaims space. Only one compaction
+per database path can be performed at a time.
+
+- `options: object`
+  - `start?: Key` The start key of the range to compact.
+  - `end?: Key` The end key of the range to compact.
+
+```typescript
+await db.compact();
+
+await db.compact({ start: 'a', end: 'z' });
+```
+
+### `db.compactSync(options?): void`
+
+Synchronous version of `compact()`.
+
+```typescript
+db.compactSync();
+
+db.compactSync({ start: 'a', end: 'z' });
+```
+
 ### `db.destroy(): void`
 
 Completely removes a database based on the `db` instance's path including all data, column families,
@@ -212,6 +268,23 @@ db.dropSync();
 db.close();
 ```
 
+### `db.flush(): Promise<void>`
+
+Flushes all in-memory data to disk asynchronously.
+
+```typescript
+await db.flush();
+```
+
+### `db.flushSync(): void`
+
+Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
+it is recommended to use `flush()` if you want to keep the event loop free.
+
+```typescript
+db.flushSync();
+```
+
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
 Retreives the value for a given key. If the key does not exist, it will resolve `undefined`.
@@ -236,6 +309,16 @@ Note that all errors are returned as rejected promises.
 
 Synchronous version of `get()`.
 
+### `db.getEstimatedKeyCount(): number`
+
+Retrieves the estimated number of keys in the database. This is an alias for
+`db.getDBIntProperty('rocksdb.estimate-num-keys')`.
+
+```typescript
+const estimated = db.getEstimatedKeyCount();
+console.log(estimated);
+```
+
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves all keys within a range.
@@ -248,11 +331,11 @@ for (const key of db.getKeys()) {
 
 ### `db.getKeysCount(options?: RangeOptions): number`
 
-Retrieves the number of keys within a range.
+Retrieves the exact number of keys in a database or a range.
 
 ```typescript
-const total = db.getKeysCount();
-const range = db.getKeysCount({ start: 'a', end: 'z' });
+const count = db.getKeysCount(); // estimated number of keys
+const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys in the range
 ```
 
 ### `db.getMonotonicTimestamp(): number`
@@ -290,11 +373,13 @@ await promise;
 console.log(db.getOldestSnapshotTimestamp()); // returns `0`, no snapshots
 ```
 
-### `db.getDBProperty(propertyName: string): string`
+### `db.getDBProperty(propertyName: string): string | undefined`
 
 Gets a RocksDB database property as a string.
 
 - `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.levelstats'`.
+
+Returns `undefined` if the property is not found.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');
@@ -302,11 +387,13 @@ const levelStats = db.getDBProperty('rocksdb.levelstats');
 const stats = db.getDBProperty('rocksdb.stats');
 ```
 
-### `db.getDBIntProperty(propertyName: string): number`
+### `db.getDBIntProperty(propertyName: string): number | undefined`
 
 Gets a RocksDB database property as an integer.
 
 - `propertyName: string` The name of the property to retrieve (e.g., ) `'rocksdb.num-blob-files'`.
+
+Returns `undefined` if the property is not found.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');
@@ -399,7 +486,7 @@ Synchronous version of `remove()`.
 
 ## Transactions
 
-### `db.transaction<T>(callback: TransactionCallback<T>, options?: DBTransactionOptions): Promise<T>`
+### `db.transaction<T>(callback: TransactionCallback<T>, options?: TransactionOptions): Promise<T>`
 
 Executes all database operations within the specified callback within a single transaction. If the
 callback completes without error, the database operations are automatically committed. However, if
@@ -860,23 +947,6 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
-### `db.flush(): Promise<void>`
-
-Flushes all in-memory data to disk asynchronously.
-
-```typescript
-await db.flush();
-```
-
-### `db.flushSync(): void`
-
-Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
-it is recommended to use `flush()` if you want to keep the event loop free.
-
-```typescript
-db.flushSync();
-```
-
 ## Transaction Log
 
 A user controlled API for logging transactions. This API is designed to be generic so that you can
@@ -1113,6 +1183,8 @@ The default `Store` contains the following methods which can be overridden:
 
 - `constructor(path, options?)`
 - `close()`
+- `compact(options?)`
+- `compactSync(options?)`
 - `decodeKey(key)`
 - `decodeValue(value)`
 - `encodeKey(key)`
@@ -1218,6 +1290,40 @@ Extends `RangeOptions`.
 
 - `options: object`
   - `reverse: boolean` When `true`, the iterator will iterate in reverse order. Defaults to `false`.
+
+## CLI
+
+The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases.
+
+```bash
+rocksdb-js [dbpath]
+```
+
+Options:
+
+- `-h, --help` Show this help message
+- `-r, --readonly` Open the database in read-only mode
+- `-v, --version` Show the version information
+
+Available commands:
+
+- `clear` Clear all data in the current column family
+- `columns` List column families
+- `compact` Compact the current column family
+- `count` Count the number of keys in the current column family
+- `drop <column>` Permanently drop a column family
+- `exit` Exit the REPL
+- `get <key>` Get the value of a key
+- `help` Show this help message
+- `log [name] [file] [entry]` List the transaction log store names and log store files
+- `prop <key>` Get a RocksDB property (try "rocksdb.stats")
+- `purge-logs <name>` Purge transaction log files older than 3 days
+- `put <key> <value>` Set the value of a key
+- `query [start] [end]` Query a range of keys
+- `remove <key>` Delete a key
+- `repl` Open a JS sub-REPL; "db" refers to the current column family
+- `stats` Show the statistics for the current column family
+- `use [column]` Create a new column family or switch to an existing one
 
 ## Development
 
@@ -1329,6 +1435,24 @@ To run the tests without code coverage, run:
 ```bash
 pnpm test
 ```
+
+#### Native C++ unit tests (GoogleTest)
+
+Build and run standalone native tests (RocksDB + binding `core/` helpers, no Node in the test
+binary):
+
+```bash
+pnpm test:native
+```
+
+Coverage report for native tests (macOS/Linux; requires `lcov`):
+
+```bash
+pnpm coverage:native
+# open coverage/native/html/index.html
+```
+
+Note: Code coverage is not supported on Windows. Tests are run without coverage.
 
 To run a specific test suite, for example `"ranges"`, run:
 

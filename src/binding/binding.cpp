@@ -1,17 +1,20 @@
-#include "binding.h"
-#include "database.h"
-#include "db_iterator.h"
-#include "db_registry.h"
-#include "db_settings.h"
-#include "macros.h"
-#include "rocksdb_stats.h"
+#include "napi/binding.h"
+#include "database/database.h"
+#include "iterator/db_iterator.h"
+#include "iterator/db_iterator_handle.h"
+#include "database/db_registry.h"
+#include "database/db_settings.h"
+#include "napi/macros.h"
+#include "stats/rocksdb_stats.h"
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
-#include "transaction.h"
-#include "transaction_log.h"
-#include "transaction_log_file.h"
-#include "transaction_log_store_registry.h"
-#include "util.h"
+#include "transaction/transaction.h"
+#include "transaction_log/transaction_log.h"
+#include "transaction_log/transaction_log_file.h"
+#include "transaction_log/transaction_log_store_registry.h"
+#include "core/platform.h"
+#include "napi/helpers.h"
+#include "napi/async.h"
 #include <atomic>
 
 namespace rocksdb_js {
@@ -76,9 +79,9 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
-			DEBUG_LOG("Binding::Init Cleaning up last instance, purging all databases\n");
+			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
-			rocksdb_js::DBRegistry::PurgeAll();
+			rocksdb_js::DBRegistry::Shutdown();
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
@@ -125,6 +128,14 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, POPULATE_VERSION_FLAG)
 	EXPORT_CONSTANT(constants, FRESH_VERSION_FLAG)
 	EXPORT_CONSTANT(constants, RETRY_NOW_VALUE)
+	EXPORT_CONSTANT(constants, ITERATOR_REVERSE_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_INCLUSIVE_END_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_EXCLUSIVE_START_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_INCLUDE_VALUES_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_CONTEXT_IS_TRANSACTION_FLAG)
+	EXPORT_CONSTANT(constants, ITERATOR_RESULT_DONE)
+	EXPORT_CONSTANT(constants, ITERATOR_RESULT_FAST)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	// stats

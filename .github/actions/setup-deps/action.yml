@@ -10,12 +10,14 @@ runs:
   using: 'composite'
   steps:
     - name: Setup RocksDB cache
-      uses: actions/cache@v4
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
-        path: deps/rocksdb
-        key: ${{ runner.os }}-rocksdb-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'deps/rocksdb/**') }}
+        path: |
+          deps/rocksdb
+          deps/googletest
+        key: ${{ runner.os }}-native-deps-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'scripts/init-gtest/main.ts', 'deps/rocksdb/**', 'deps/googletest/**') }}
         restore-keys: |
-          ${{ runner.os }}-rocksdb-
+          ${{ runner.os }}-native-deps-
 
     - name: Install dependencies
       shell: bash

@@ -43,6 +43,13 @@ describe('Clear', () => {
 			10_000
 		);
 
+		it('should succeed when column family has been dropped', () =>
+			dbRunner({ dbOptions: [{ name: 'test' }] }, async ({ db }) => {
+				db.putSync('key', 'value');
+				db.dropSync();
+				await expect(db.clear()).resolves.toBeUndefined();
+			}));
+
 		it('should only remove entries in one column family', () =>
 			dbRunner({ dbOptions: [{}, { name: 'second' }] }, async ({ db }, { db: db2 }) => {
 				for (let i = 0; i < 10; i++) {

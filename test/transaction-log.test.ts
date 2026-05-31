@@ -127,23 +127,39 @@ describe('Transaction Log', () => {
 			})
 		);
 
-		it('should error if log already bound to a transaction', () =>
+		it('should error if transaction is already bound to an unbounded log', () =>
 			dbRunner(async ({ db }) => {
 				const log1 = db.useLog('log1');
 				const log2 = db.useLog('log2');
+
 				await db.transaction(async (txn) => {
 					log1.addEntry(Buffer.from('hello'), txn.id);
 					log1.addEntry(Buffer.from('world'), txn.id);
-					expect(() => log2.addEntry(Buffer.from('nope'), txn.id)).toThrowError(
-						new Error('Log already bound to a transaction')
+					expect(() => log2.addEntry(Buffer.from('nope'), txn.id)).toThrow(
+						new Error(`Transaction ${txn.id} is already bound to the log store "log1"`)
 					);
 				});
+			}));
 
+		it('should error if transaction is already bound to a different bounded log', () =>
+			dbRunner(async ({ db }) => {
 				await db.transaction(async (txn) => {
 					txn.useLog('log3');
 					txn.useLog('log3'); // do it twice
-					expect(() => txn.useLog('log4')).toThrowError(
-						new Error('Log already bound to a transaction')
+					expect(() => txn.useLog('log4')).toThrow(
+						new Error(`Transaction ${txn.id} is already bound to the log store "log3"`)
+					);
+				});
+			}));
+
+		it('should error if transaction is already bound to a bounded log', () =>
+			dbRunner(async ({ db }) => {
+				const log1 = db.useLog('log1');
+
+				await db.transaction(async (txn) => {
+					txn.useLog('log4');
+					expect(() => log1.addEntry(Buffer.from('world'), txn.id)).toThrow(
+						new Error(`Transaction ${txn.id} is already bound to the log store "log4"`)
 					);
 				});
 			}));
@@ -350,6 +366,43 @@ describe('Transaction Log', () => {
 				expect(queryResults.length).toBe(1);
 				expect(queryResults[0].data).toEqual(value);
 				expect(queryResults[0].endTxn).toBe(true);
+			}));
+
+		it('should not throw when the memory map for the latest log cannot be acquired', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				// prime the query path so _logBuffers and _lastCommittedPosition are initialized
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// simulate the inconsistent state where _lastCommittedPosition reports a
+				// non-zero size for a logId whose memory map cannot be acquired (transient
+				// state during rotation, 0-byte file at mmap time, FS race, etc.)
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realGetMmapDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => undefined,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					// should terminate iteration cleanly rather than throw RangeError
+					const results = Array.from(log.query({ start: 0 }));
+					expect(results.length).toBe(0);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realGetMmapDescriptor);
+				}
+				// once the mmap works again, the data must still be readable
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 			}));
 
 		it('should query a transaction log after re-opening database', () =>
@@ -863,10 +916,19 @@ describe('Transaction Log', () => {
 					worker.postMessage({ close: true });
 
 					if (process.versions.deno) {
-						// deno doesn't emit an `exit` event when the worker quits, but
-						// `terminate()` will trigger the `exit` event
-						await delay(100);
-						worker.terminate();
+						// there is something buggy with Deno where calling `await delay(100)` freezes the
+						// process, but advancing a microtask seems to unfreeze it
+						await new Promise<void>((resolve) => {
+							const timer = setTimeout(() => {
+								worker.terminate();
+								resolve();
+							}, 100);
+
+							worker.on('exit', () => {
+								clearTimeout(timer);
+								resolve();
+							});
+						});
 					}
 
 					await resolver.promise;
@@ -1024,13 +1086,13 @@ describe('Transaction Log', () => {
 
 		it('should error if the log name is invalid', () =>
 			dbRunner(async ({ db }) => {
-				expect(() => db.useLog(undefined as any)).toThrowError(
+				expect(() => db.useLog(undefined as any)).toThrow(
 					new TypeError('Log name must be a string or number')
 				);
-				expect(() => db.useLog([] as any)).toThrowError(
+				expect(() => db.useLog([] as any)).toThrow(
 					new TypeError('Log name must be a string or number')
 				);
-				await expect(db.transaction((txn) => txn.useLog(undefined as any))).rejects.toThrowError(
+				await expect(db.transaction((txn) => txn.useLog(undefined as any))).rejects.toThrow(
 					new TypeError('Log name must be a string or number')
 				);
 			}));
@@ -1039,10 +1101,10 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				await db.transaction(async (txn) => {
-					expect(() => log.addEntry(undefined as any, txn.id)).toThrowError(
+					expect(() => log.addEntry(undefined as any, txn.id)).toThrow(
 						new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer')
 					);
-					expect(() => log.addEntry([] as any, txn.id)).toThrowError(
+					expect(() => log.addEntry([] as any, txn.id)).toThrow(
 						new TypeError('Invalid log entry, expected a Buffer or ArrayBuffer')
 					);
 				});
@@ -1052,10 +1114,10 @@ describe('Transaction Log', () => {
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				await db.transaction(async (_txn) => {
-					expect(() => log.addEntry(Buffer.from('hello'), undefined as any)).toThrowError(
+					expect(() => log.addEntry(Buffer.from('hello'), undefined as any)).toThrow(
 						new TypeError('Missing argument, transaction id is required')
 					);
-					expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrowError(
+					expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrow(
 						new TypeError('Invalid argument, transaction id must be a non-negative integer')
 					);
 				});
@@ -1183,6 +1245,98 @@ describe('Transaction Log', () => {
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 				const info = parseTransactionLog(logPath);
 				expect(info.entries.length).toBe(2);
+			}));
+
+		it('should bind a transaction log to a transaction', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const value = Buffer.alloc(10, 'a');
+
+				await db.transaction(async (txn) => {
+					const log = txn.useLog('foo');
+					log.addEntry(value, txn.id);
+				});
+
+				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				const info = parseTransactionLog(logPath);
+				expect(info.size).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10
+				);
+				expect(info.version).toBe(1);
+				expect(info.entries.length).toBe(1);
+				expect(info.entries[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+				expect(info.entries[0].length).toBe(10);
+				expect(info.entries[0].data).toEqual(value);
+
+				const log = db.useLog('foo');
+				const queryResults = Array.from(log.query({ start: 0 }));
+				expect(queryResults.length).toBe(1);
+				expect(queryResults[0].data).toEqual(value);
+				expect(queryResults[0].timestamp).toBeGreaterThanOrEqual(Date.now() - 1000);
+				expect(queryResults[0].endTxn).toBe(true);
+			}));
+	});
+
+	describe('writev framing integrity', () => {
+		// Regression for HarperFast/rocksdb-js#572. The POSIX writeBatchToFile
+		// previously advanced through iovecs by count regardless of actual bytes
+		// written, so any short writev silently dropped a tail and produced
+		// framing corruption. These tests exercise the high-iovcnt batching path
+		// end-to-end and assert byte-exact round-trip integrity for every entry.
+
+		it('should round-trip many entries with varied sizes across a single batch', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const startTime = Date.now() - 1000;
+				const numEntries = 200;
+				const expected: Buffer[] = [];
+
+				await db.transaction(async (txn) => {
+					for (let i = 0; i < numEntries; i++) {
+						// vary sizes (1..256 bytes) so iovecs land on non-aligned boundaries
+						const size = (i % 256) + 1;
+						const value = Buffer.alloc(size);
+						for (let j = 0; j < size; j++) {
+							value[j] = (i * 37 + j) & 0xff;
+						}
+						expected.push(value);
+						log.addEntry(value, txn.id);
+					}
+				});
+
+				const results = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(results.length).toBe(numEntries);
+				for (let i = 0; i < numEntries; i++) {
+					expect(Buffer.from(results[i].data)).toEqual(expected[i]);
+				}
+			}));
+
+		it('should round-trip > MAX_IOVS (1024) entries in a single batch', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const startTime = Date.now() - 1000;
+				// > 1024 entries forces writeBatchToFile to chunk through the
+				// MAX_IOVS-bounded inner loop. Pre-fix code mis-tracked progress
+				// here when any partial writev occurred.
+				const numEntries = 1100;
+				const expected: Buffer[] = [];
+
+				await db.transaction(async (txn) => {
+					for (let i = 0; i < numEntries; i++) {
+						const value = Buffer.alloc(16);
+						value.writeUInt32BE(i >>> 0, 0);
+						value.writeUInt32BE((i ^ 0xdeadbeef) >>> 0, 4);
+						value.writeUInt32BE((i + 1) >>> 0, 8);
+						value.writeUInt32BE((i * 7) >>> 0, 12);
+						expected.push(value);
+						log.addEntry(value, txn.id);
+					}
+				});
+
+				const results = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
+				expect(results.length).toBe(numEntries);
+				for (let i = 0; i < numEntries; i++) {
+					expect(Buffer.from(results[i].data)).toEqual(expected[i]);
+				}
 			}));
 	});
 
