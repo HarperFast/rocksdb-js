@@ -1,7 +1,17 @@
-import { RETRY_NOW } from '../src/transaction.js';
-import type { Transaction } from '../src/transaction.js';
+import { constants } from '../src/load-binding.js';
+import { RETRY_NOW, Transaction } from '../src/transaction.js';
 import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
+
+const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
+
+// Builds a value buffer whose first 8 bytes are the big-endian float64 version,
+// matching VerificationTable::extractVersionFromValue (Harper's record format).
+function valueWithVersion(version: number): Buffer {
+	const value = Buffer.alloc(16);
+	value.writeDoubleBE(version, 0);
+	return value;
+}
 
 describe('LockTracker (Phase 2)', () => {
 	describe('intent registration clears slots on commit', () => {
@@ -155,5 +165,82 @@ describe('Coordinated retry (Phase 3)', () => {
 			);
 
 			expect(attempts).toBeGreaterThanOrEqual(1);
+		}));
+});
+
+// Regression coverage for the VT-fast-path / optimistic-snapshot interaction.
+// A read satisfied entirely from the Verification Table (returning
+// FRESH_VERSION_FLAG, skipping the RocksDB read) must STILL establish the
+// transaction's read snapshot. Optimistic conflict detection compares written
+// keys against the transaction's snapshot sequence; without a snapshot a
+// read-modify-write whose read was served from the VT commits with no baseline,
+// so a concurrent write to the same key goes undetected (lost update).
+describe('Coordinated retry — VT fast-path establishes the snapshot (regression)', () => {
+	it('DB-context read (with txnId) served from the VT still sets the snapshot', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('vt-fastpath-snapshot-db-ctx');
+			const version = 1.7e12;
+			await db.put(key, valueWithVersion(version));
+			db.populateVersion(key, version);
+			expect(db.verifyVersion(key, version)).toBe(true);
+
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			try {
+				expect(db.getOldestSnapshotTimestamp()).toBe(0);
+				// Harper-style read: root DB + transaction in options + expectedVersion.
+				const result = db.getBinarySync(key, { transaction: txn, expectedVersion: version } as any);
+				expect(result).toBe(FRESH_VERSION_FLAG); // fast path taken (no RocksDB read)
+				// ...and the snapshot was still established despite skipping the read.
+				expect(db.getOldestSnapshotTimestamp()).toBeGreaterThan(0);
+			} finally {
+				txn.abort();
+			}
+		}));
+
+	it('transaction-context read served from the VT still sets the snapshot', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('vt-fastpath-snapshot-txn-ctx');
+			const version = 1.7e12;
+			await db.put(key, valueWithVersion(version));
+			db.populateVersion(key, version);
+			expect(db.verifyVersion(key, version)).toBe(true);
+
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			try {
+				expect(db.getOldestSnapshotTimestamp()).toBe(0);
+				const result = txn.getBinarySync(key, { expectedVersion: version } as any);
+				expect(result).toBe(FRESH_VERSION_FLAG); // fast path taken
+				expect(db.getOldestSnapshotTimestamp()).toBeGreaterThan(0);
+			} finally {
+				txn.abort();
+			}
+		}));
+
+	it('a VT-served read still participates in conflict detection (no lost update)', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('vt-fastpath-conflict');
+			const v0 = 1.7e12;
+			await db.put(key, valueWithVersion(v0));
+			db.populateVersion(key, v0);
+			expect(db.verifyVersion(key, v0)).toBe(true);
+
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			let committed = false;
+			try {
+				// 1. Read through the VT fast path (no RocksDB read) — must snapshot.
+				expect(db.getBinarySync(key, { transaction: txn, expectedVersion: v0 } as any)).toBe(
+					FRESH_VERSION_FLAG
+				);
+				// 2. A competing committed write bumps the key's sequence after our snapshot.
+				await db.put(key, valueWithVersion(1.8e12));
+				// 3. Our write must now be detected as conflicting; under coordinatedRetry
+				//    that surfaces as the RETRY_NOW signal rather than a silent success.
+				txn.putSync(key, valueWithVersion(1.9e12));
+				const result = await txn.commit();
+				committed = result !== RETRY_NOW;
+				expect(result).toBe(RETRY_NOW);
+			} finally {
+				if (!committed) txn.abort();
+			}
 		}));
 });
