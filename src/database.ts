@@ -625,13 +625,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				return this.#abortTransaction(txn, callbackErr);
 			}
 
+			let commitResult: typeof RETRY_NOW | void;
 			try {
-				const commitResult = await txn.commit();
-				if (commitResult === RETRY_NOW) {
-					// coordinatedRetry: conflict resolved, retry immediately
-					continue;
-				}
-				return result;
+				commitResult = await txn.commit();
 			} catch (commitErr) {
 				if (commitErr instanceof TransactionAlreadyAbortedError) {
 					return;
@@ -639,13 +635,29 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				if (
 					commitErr instanceof TransactionIsBusyError &&
 					(options?.retryOnBusy ?? commitErr.hasLog) &&
-					attempt <= maxRetries
+					attempt < maxRetries
 				) {
 					// retry the transaction
 					continue;
 				}
 
 				this.#abandonTransaction(txn, commitErr);
+				return;
+			}
+
+			if (commitResult !== RETRY_NOW) {
+				return result;
+			}
+			// coordinatedRetry: the conflict resolved, retry immediately — but only
+			// if attempts remain. On the final attempt a RETRY_NOW must not fall
+			// out of the loop silently (that would resolve undefined and leave the
+			// transaction un-aborted); abandon it like an exhausted ERR_BUSY retry.
+			if (attempt >= maxRetries) {
+				this.#abandonTransaction(
+					txn,
+					new Error(`Transaction did not commit after ${maxRetries} coordinated retries`)
+				);
+				return;
 			}
 		}
 	}

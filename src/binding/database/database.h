@@ -47,6 +47,50 @@ inline std::atomic<uint64_t>* vtSlotFor(
 	return vt->slotFor(dbPtr, cfId, key);
 }
 
+/**
+ * Publishes `version` into the verification-table slot — making it cacheable —
+ * but only when that version is the single accessible value of the key: i.e. no
+ * read snapshot older than the version's commit is still open. While such a
+ * snapshot is active, two versions are visible (the snapshot's older value and
+ * the latest), so a fresh cache hit would violate that reader's snapshot. We
+ * therefore suppress caching until those snapshots drain; reads simply fall
+ * through to their own snapshot view, and a later read repopulates the slot once
+ * it is settled.
+ *
+ * Reads stay lock-free — the (cold-path) oldest-snapshot lookup happens only
+ * here, after a real RocksDB read, never on the verifyVersion fast path.
+ */
+inline void vtPopulateIfSettled(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	std::atomic<uint64_t>* slot,
+	uint64_t version
+) {
+	if (!slot || version == 0 || vtIsLock(version)) return;
+	auto db = dbHandle->descriptor->db;
+	if (db) {
+		uint64_t oldestSnapshotSec = 0;
+		// rocksdb.oldest-snapshot-time is the wall-clock unix-seconds creation
+		// time of the oldest live snapshot, or 0 when none are open.
+		if (db->GetIntProperty(dbHandle->getColumnFamilyHandle(),
+		        "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
+		    oldestSnapshotSec != 0) {
+			// `version` is the host-endian bit pattern of the float64 ms
+			// timestamp Harper writes at offset 0 of each record; reinterpret it
+			// to compare against the snapshot's wall-clock time. Conservative at
+			// second granularity: require the oldest snapshot to have been
+			// created at/after the version's millisecond, so it already sees
+			// this version (single accessible value). Otherwise leave the slot
+			// unpopulated.
+			double versionMs;
+			std::memcpy(&versionMs, &version, sizeof(double));
+			if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) {
+				return;
+			}
+		}
+	}
+	VerificationTable::populateVersion(slot, version);
+}
+
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
 #define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000

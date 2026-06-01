@@ -167,10 +167,52 @@ public:
 	 */
 	void cancelForDB(uintptr_t dbPtr);
 
+	// ---- Write-intent lifecycle (LockTracker management) ----
+	//
+	// These four methods own the full lifecycle of a slot's LockTracker and are
+	// the ONLY places a tracker pointer is loaded-from-a-slot-then-dereferenced.
+	// They are serialized by writerMutex_ so a tracker can never be freed by one
+	// thread (releaseWriteIntent / unrefTracker) in the window where another
+	// thread (lockSlotForWrite / refTrackerIfLocked / cancelForDB) has loaded its
+	// pointer from a slot but not yet taken a reference — closing the lock-free
+	// load-then-incref use-after-free. The hot read path (verifyVersion,
+	// populateVersion) stays lock-free; writers are the cold/contended path.
+
+	/**
+	 * Registers a write intent on `slot`. If the slot is already locked by a
+	 * concurrent writer, joins that LockTracker as an additional holder (so the
+	 * slot is not cleared until every writer releases); otherwise installs a new
+	 * tracker. Returns the tracker the caller now holds an intent on (to be
+	 * passed to releaseWriteIntent), or nullptr if the slot is null.
+	 */
+	LockTracker* lockSlotForWrite(std::atomic<uint64_t>* slot, uintptr_t dbPtr);
+
+	/**
+	 * Releases one write intent previously taken via lockSlotForWrite. When the
+	 * last holder releases, the slot is CAS'd back to 0 and parked waiters are
+	 * woken. Frees the tracker once its last reference is dropped.
+	 */
+	void releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* tracker);
+
+	/**
+	 * If `slot` currently holds a lock, takes a temporary reference on its
+	 * LockTracker and returns it (caller must later call unrefTracker); returns
+	 * nullptr if the slot is not locked. Used by the coordinated-retry parker.
+	 */
+	LockTracker* refTrackerIfLocked(std::atomic<uint64_t>* slot);
+
+	/** Drops a temporary reference taken via refTrackerIfLocked. */
+	void unrefTracker(LockTracker* tracker);
+
 private:
 	std::unique_ptr<std::atomic<uint64_t>[]> slots_;
 	size_t mask_;
 	uint64_t seed_;
+
+	// Serializes all LockTracker install / join / release / reference / reclaim
+	// operations (see the write-intent lifecycle methods above). Not taken on
+	// the lock-free read path.
+	std::mutex writerMutex_;
 };
 
 } // namespace rocksdb_js

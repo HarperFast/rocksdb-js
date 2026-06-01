@@ -126,47 +126,32 @@ void TransactionHandle::lockVTSlot(
 	auto* slot = vt->slotFor(dbPtr, cfId, key);
 	if (!slot) return;
 
-	uint64_t v = slot->load(std::memory_order_acquire);
-	if (vtIsLock(v)) {
-		// Slot is already locked — either by us (same key written earlier in
-		// this transaction) or by a concurrent transaction. Either way, readers
-		// already see the lock and fall through to RocksDB. We don't need to
-		// install a second lock for this slot.
-		return;
-	}
-
-	// Slot is 0 or a version. Install our own LockTracker via a single CAS.
-	// We do not retry: if the CAS loses to another transaction's lock, that
-	// lock already invalidates the cache for this slot.
-	uint16_t gen = vtNextGen();
-	LockTracker* t = new LockTracker(vt->slotIndexOf(slot), gen, dbPtr);
-	t->holders.store(1, std::memory_order_relaxed);
-
-	if (slot->compare_exchange_strong(v, vtEncodeLock(t, gen),
-	        std::memory_order_release, std::memory_order_acquire)) {
+	// Register a write intent on the slot. lockSlotForWrite installs a new
+	// LockTracker or joins an existing one as an additional holder (when another
+	// transaction — or this one, via an earlier write to a colliding key —
+	// already locked it), all under the VT's writer mutex. Joining is essential:
+	// if a second concurrent writer skipped registering an intent, a reader
+	// could repopulate the slot with a now-stale version after the first writer
+	// released but before the second committed.
+	LockTracker* t = vt->lockSlotForWrite(slot, dbPtr);
+	if (t) {
 		lockedVTSlots.push_back(slot);
 		heldTrackers.push_back(t);
-	} else {
-		delete t;
 	}
 }
 
 void TransactionHandle::releaseIntent() {
-	for (size_t i = 0; i < lockedVTSlots.size(); i++) {
-		auto* slot = lockedVTSlots[i];
-		LockTracker* t = heldTrackers[i];
-
-		// CAS the slot from our lock-encoded value back to 0.
-		// If the CAS fails some other code already cleared the slot (e.g.
-		// DB close or a concurrent populateVersion); either is fine.
-		uint64_t expected = vtEncodeLock(t, t->generation);
-		slot->compare_exchange_strong(expected, 0ULL,
-		    std::memory_order_release, std::memory_order_acquire);
-
-		// Notify any waiters that were parked on this slot.
-		t->wake();
-
-		if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+	if (!lockedVTSlots.empty()) {
+		// The trackers were created via the VT, so it is materialized and
+		// getVerificationTableRaw() returns it. releaseWriteIntent drops this
+		// transaction's holder reference under the writer mutex; the slot is
+		// only cleared (and waiters woken) when the last holder releases.
+		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) {
+			for (size_t i = 0; i < lockedVTSlots.size(); i++) {
+				vt->releaseWriteIntent(lockedVTSlots[i], heldTrackers[i]);
+			}
+		}
 	}
 
 	lockedVTSlots.clear();
@@ -298,21 +283,22 @@ napi_value TransactionHandle::get(
 	);
 
 	if (!status.IsIncomplete()) {
-		// Block-cache hit. Apply VT check/populate before resolving.
+		// Block-cache hit. Apply the VT freshness check before resolving. This is
+		// a transactional read (snapshot), so we do NOT seed the process-global
+		// VT — the snapshot's value may be older than the latest committed
+		// version, and publishing it could falsely mark a stale value cacheable.
+		// The match still confirms the caller's cached value is valid for this
+		// read; the VT is seeded only by non-transactional reads.
 		if (vtSlot && status.ok()) {
 			rocksdb::Slice valueSlice(value.data(), value.size());
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-				VerificationTable::populateVersion(vtSlot, expectedVersion);
 				napi_value global, freshResult;
 				::napi_get_global(env, &global);
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
 				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
 				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
 				return returnStatus;
-			}
-			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-				VerificationTable::populateVersion(vtSlot, extracted);
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);

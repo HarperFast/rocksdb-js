@@ -362,20 +362,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					state->rejectRef = nullptr;
 
 					bool parked = false;
+					VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
 					for (auto* slot : state->savedSlots) {
-						uint64_t v = slot->load(std::memory_order_acquire);
-						if (!vtIsLock(v)) continue;
-
-						LockTracker* t = vtDecodeLock(v);
-						uint16_t gen = vtGenFromLock(v);
-
-						// Grab a temporary ref to prevent deletion during ABA check.
-						t->refcount.fetch_add(1, std::memory_order_acquire);
-						uint64_t v2 = slot->load(std::memory_order_acquire);
-						if (!vtIsLock(v2) || vtDecodeLock(v2) != t || vtGenFromLock(v2) != gen) {
-							if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
-							continue;
-						}
+						// refTrackerIfLocked takes a temporary reference under the VT
+						// writer mutex, so the tracker cannot be freed by a concurrent
+						// releaseWriteIntent between loading the slot and referencing it
+						// (the old load-then-incref use-after-free).
+						LockTracker* t = vt ? vt->refTrackerIfLocked(slot) : nullptr;
+						if (!t) continue;
 
 						// Create a TSFN that calls resolve(RETRY_NOW) when fired.
 						napi_value resource_name;
@@ -402,7 +396,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 							::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
 						}
 
-						if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
+						vt->unrefTracker(t);
 						parked = true;
 						break;
 					}
@@ -684,20 +678,17 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		return result;
 	}
 
-	// Soft VT miss: value still carries the expected version → populate + FRESH
+	// Soft VT miss: the value read at this transaction's snapshot still carries
+	// the caller's expected version, so the cached value is valid for this read.
+	// We do NOT seed the process-global VT here: a transactional read sees its
+	// snapshot's value, which may be older than the latest committed version, so
+	// publishing it could falsely mark a stale value cacheable. The VT is seeded
+	// only by non-transactional reads (Database::GetSync).
 	if (hasExpectedVersion && vtSlot) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		if (extracted == expectedVersion) {
-			VerificationTable::populateVersion(vtSlot, expectedVersion);
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 			return result;
-		}
-	}
-	// Populate: explicit flag or implicit when checking an expected version
-	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
-		uint64_t version = VerificationTable::extractVersionFromValue(value);
-		if (version != 0 && !vtIsLock(version)) {
-			VerificationTable::populateVersion(vtSlot, version);
 		}
 	}
 

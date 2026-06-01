@@ -161,40 +161,85 @@ uint16_t vtNextGen() {
 	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x7FFF;
 }
 
+LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, uintptr_t dbPtr) {
+	if (!slot) return nullptr;
+	std::lock_guard<std::mutex> lock(writerMutex_);
+	uint64_t v = slot->load(std::memory_order_acquire);
+	if (vtIsLock(v)) {
+		// Slot already locked by another (or our own earlier) writer — join the
+		// existing tracker as an additional holder so the slot stays locked, and
+		// is only cleared, until every holder releases. This preserves the
+		// invariant that a verifiable (cacheable) version is never published
+		// while any write to a colliding key is still pending.
+		LockTracker* t = vtDecodeLock(v);
+		t->holders.fetch_add(1, std::memory_order_relaxed);
+		t->refcount.fetch_add(1, std::memory_order_relaxed);
+		return t;
+	}
+	// Slot holds 0 or a version — install a fresh tracker.
+	uint16_t gen = vtNextGen();
+	LockTracker* t = new LockTracker(slotIndexOf(slot), gen, dbPtr);
+	t->holders.store(1, std::memory_order_relaxed);
+	t->refcount.store(1, std::memory_order_relaxed); // 1 reference == this holder
+	slot->store(vtEncodeLock(t, gen), std::memory_order_release);
+	return t;
+}
+
+void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* t) {
+	if (!t) return;
+	std::lock_guard<std::mutex> lock(writerMutex_);
+	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);
+	if (lastHolder) {
+		// Last writer out: clear the slot (only if it still holds our lock — a
+		// concurrent cancelForDB / populate may already have cleared it) and
+		// wake any parked waiters.
+		uint64_t expected = vtEncodeLock(t, t->generation);
+		slot->compare_exchange_strong(expected, 0ULL,
+		    std::memory_order_release, std::memory_order_acquire);
+		t->wake();
+	}
+	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
+}
+
+LockTracker* VerificationTable::refTrackerIfLocked(std::atomic<uint64_t>* slot) {
+	if (!slot) return nullptr;
+	std::lock_guard<std::mutex> lock(writerMutex_);
+	uint64_t v = slot->load(std::memory_order_acquire);
+	if (!vtIsLock(v)) return nullptr;
+	LockTracker* t = vtDecodeLock(v);
+	t->refcount.fetch_add(1, std::memory_order_relaxed);
+	return t;
+}
+
+void VerificationTable::unrefTracker(LockTracker* t) {
+	if (!t) return;
+	std::lock_guard<std::mutex> lock(writerMutex_);
+	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
+}
+
 void VerificationTable::cancelForDB(uintptr_t dbPtr) {
 	if (!slots_) return;
+	std::lock_guard<std::mutex> lock(writerMutex_);
 	size_t n = mask_ + 1;
 	for (size_t i = 0; i < n; ++i) {
 		uint64_t v = slots_[i].load(std::memory_order_acquire);
 		if (!vtIsLock(v)) continue;
 
+		// Holding writerMutex_ means no concurrent release can free this tracker
+		// out from under us, so the loaded pointer is safe to dereference.
 		LockTracker* t = vtDecodeLock(v);
 		uint16_t gen = vtGenFromLock(v);
+		if (t->dbPtr != dbPtr) continue;
 
-		// Grab a temporary ref to prevent deletion during the work below.
-		t->refcount.fetch_add(1, std::memory_order_acquire);
-
-		// ABA check: confirm the slot still holds the same tracker after our ref.
-		uint64_t v2 = slots_[i].load(std::memory_order_acquire);
-		if (!vtIsLock(v2) || vtDecodeLock(v2) != t || vtGenFromLock(v2) != gen) {
-			if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
-			continue;
-		}
-
-		if (t->dbPtr != dbPtr) {
-			if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
-			continue;
-		}
-
-		// CAS the slot back to 0; may fail if releaseIntent() already did it.
+		// CAS the slot back to 0; may fail harmlessly if it changed.
 		uint64_t expected = vtEncodeLock(t, gen);
 		slots_[i].compare_exchange_strong(expected, 0ULL,
 		    std::memory_order_release, std::memory_order_acquire);
 
-		// Wake any parked TSFN waiters — idempotent if already woken.
+		// Wake any parked TSFN waiters — idempotent if already woken. The
+		// outstanding holders' releaseWriteIntent calls will free the tracker;
+		// cancelForDB only clears the slot and unparks waiters.
 		t->wake();
-
-		if (t->refcount.fetch_sub(1, std::memory_order_release) == 1) delete t;
 	}
 }
 

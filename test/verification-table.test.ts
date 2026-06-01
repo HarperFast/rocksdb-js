@@ -1,5 +1,6 @@
 import { RocksDatabase } from '../src/index.js';
 import { constants } from '../src/load-binding.js';
+import { Transaction } from '../src/transaction.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
@@ -133,6 +134,50 @@ describe('Verification Table', () => {
 				expect(() => RocksDatabase.config({ verificationTableEntries: 64 })).toThrowError(
 					'Verification table size cannot be changed after the first database is opened'
 				);
+			}));
+	});
+
+	// The single-accessible-version invariant: a slot may only hold a fresh
+	// (cacheable) version when no read snapshot older than that version is still
+	// open. Otherwise an older snapshot sees a prior value while the latest is
+	// different — two accessible versions — and a fresh cache hit would violate
+	// that reader's snapshot. Gated in vtPopulateIfSettled via the oldest active
+	// snapshot's wall-clock time. (Versions here are ms timestamps; we use ±10s
+	// to stay well outside the second-granularity comparison.)
+	describe('snapshot-gated populate (single-version invariant)', () => {
+		it('suppresses publishing a version newer than an open snapshot, allows one older', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				// Open a read transaction to establish a live snapshot at ~now.
+				const txn = new Transaction(db.store);
+				txn.getBinarySync(Buffer.from('open-snapshot-anchor')); // forces SetSnapshot
+				try {
+					expect(db.getOldestSnapshotTimestamp()).toBeGreaterThan(0);
+					const nowSec = Math.floor(Date.now() / 1000);
+
+					// Older than the open snapshot → every snapshot already sees it
+					// (single accessible version) → publish allowed.
+					const settled = (nowSec - 10) * 1000;
+					db.populateVersion(Buffer.from('settled'), settled);
+					expect(db.verifyVersion(Buffer.from('settled'), settled)).toBe(true);
+
+					// Newer than the open snapshot → that snapshot still sees a prior
+					// value (two accessible versions) → publish suppressed.
+					const unsettled = (nowSec + 10) * 1000;
+					db.populateVersion(Buffer.from('unsettled'), unsettled);
+					expect(db.verifyVersion(Buffer.from('unsettled'), unsettled)).toBe(false);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('publishes freely when no snapshots are open', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				expect(db.getOldestSnapshotTimestamp()).toBe(0);
+				// With no open snapshots there is a single accessible version, so even
+				// a just-written version is immediately cacheable.
+				const v = (Math.floor(Date.now() / 1000) + 10) * 1000;
+				db.populateVersion(Buffer.from('no-snap'), v);
+				expect(db.verifyVersion(Buffer.from('no-snap'), v)).toBe(true);
 			}));
 	});
 });
