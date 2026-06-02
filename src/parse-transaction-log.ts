@@ -65,7 +65,7 @@ export function parseTransactionLog(
 			const previewBytes = Math.min(bytesRead, 64);
 			const preview = buffer.subarray(0, previewBytes).toString('hex');
 			throw new Error(
-				`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset}, file size: ${size}, file path: ${path}, buffer (first ${previewBytes} bytes): ${preview}`
+				`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset.toString(16)}, file size: ${size}, file path: ${path}, buffer (first ${previewBytes} bytes): ${preview}`
 			);
 		}
 		return buffer;
@@ -111,7 +111,7 @@ export function parseTransactionLog(
 			if (length > remaining) {
 				const entryOffset = fileOffset - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 				throw new Error(
-					`Corrupt entry at offset ${entryOffset}: declared length ${length} exceeds ${remaining} bytes remaining (file size: ${size})`
+					`Corrupt entry at offset ${entryOffset.toString(16)}: declared length ${length} exceeds ${remaining} bytes remaining (file size: ${size})`
 				);
 			}
 			const data = read(length);
