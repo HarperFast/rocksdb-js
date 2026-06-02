@@ -8,6 +8,9 @@ updates:
       day: 'monday'
       time: '05:15' # UTC
     open-pull-requests-limit: 10
+    # Wait 24h after a release before proposing an update, to match pnpm's minimumReleaseAge policy.
+    cooldown:
+      default-days: 1
     # Group updates to reduce PR noise. Major version updates will fall through to individual PRs.
     groups:
       # Group all other patch updates
