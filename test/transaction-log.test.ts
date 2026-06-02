@@ -1340,6 +1340,102 @@ describe('Transaction Log', () => {
 			}));
 	});
 
+	describe('corruption handling', () => {
+		// A torn/corrupt entry can declare a length far larger than the bytes
+		// actually present (e.g. a partial write that left a header pointing past
+		// its data). The readers must fail with a bounded, diagnosable error
+		// rather than driving an unbounded allocUnsafe (OOM), building a multi-GB
+		// hex string, or dereferencing an undefined buffer. Regression for the
+		// race_alerts crash-loop investigation.
+
+		function buildLogBuffer(
+			entries: { timestamp: number; length: number; flags: number; data: Buffer }[]
+		): Buffer {
+			const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+			header.writeUInt32BE(TRANSACTION_LOG_TOKEN >>> 0, 0);
+			header.writeUInt8(1, 4); // version
+			header.writeDoubleBE(Date.now(), 5);
+			const parts: Buffer[] = [header];
+			for (const entry of entries) {
+				const entryHeader = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+				entryHeader.writeDoubleBE(entry.timestamp, 0);
+				entryHeader.writeUInt32BE(entry.length >>> 0, 8);
+				entryHeader.writeUInt8(entry.flags, 12);
+				parts.push(entryHeader, entry.data);
+			}
+			return Buffer.concat(parts);
+		}
+
+		it('parseTransactionLog() throws a bounded error when an entry length overruns the file', async () => {
+			const path = `${generateDBPath()}.txnlog`;
+			// one valid entry, then a header claiming ~2GB with no data behind it
+			const buffer = buildLogBuffer([
+				{ timestamp: Date.now(), length: 4, flags: 1, data: Buffer.from([1, 2, 3, 4]) },
+				{ timestamp: Date.now(), length: 0x7fffffff, flags: 1, data: Buffer.alloc(0) },
+			]);
+			await writeFile(path, buffer);
+
+			let error: Error | undefined;
+			try {
+				parseTransactionLog(path);
+			} catch (caught) {
+				error = caught as Error;
+			}
+			expect(error).toBeInstanceOf(Error);
+			expect(error!.message).toMatch(/Corrupt entry at offset/);
+			// must not regress into the unbounded-allocation / oversized-string symptom
+			expect(error!.message).not.toMatch(/Cannot create a string longer than/);
+			expect(error!.message.length).toBeLessThan(1000);
+		});
+
+		it('query() throws a bounded RangeError when an entry length overruns the log buffer', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				// prime the query path so _lastCommittedPosition / _logBuffers init
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// Build a standalone-ArrayBuffer copy of the real memory map and corrupt
+				// the length field of the 2nd entry so it overruns the buffer. Returning
+				// the copy from _getMemoryMapOfFile lets us exercise the reader's framing
+				// path without a read-only mmap we can't mutate in place.
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const secondEntryLengthOffset =
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10) + 8;
+				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryLengthOffset);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					expect(() => Array.from(log.query({ start: 0 }))).toThrow(
+						/Corrupt transaction log entry/
+					);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+				// once the real mmap is restored, the valid data must still be readable
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
+	});
+
 	describe('purgeLogs', () => {
 		it('should purge all transaction log files', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
