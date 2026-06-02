@@ -5,7 +5,22 @@
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
+#include <algorithm>
+#include <limits.h>
 #include <sys/mman.h>
+#include <sys/uio.h>
+#include <vector>
+
+// Hook point for unit tests: compile with -DROCKSDB_JS_WRITEV=my_mock_fn to
+// inject a partial-write simulation. The macro must expand to a callable with
+// the same signature as ::writev. When defined, the block below emits a
+// forward declaration so the compiler sees the symbol before first use.
+// Production builds leave this macro undefined and call ::writev directly.
+#ifdef ROCKSDB_JS_WRITEV
+extern "C" ssize_t ROCKSDB_JS_WRITEV(int, const struct iovec*, int);
+#else
+#define ROCKSDB_JS_WRITEV ::writev
+#endif
 
 namespace rocksdb_js {
 
@@ -237,30 +252,48 @@ bool TransactionLogFile::removeFile() {
 }
 
 int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
-	if (iovcnt == 0) {
+	if (iovcnt <= 0) {
 		return 0;
 	}
 
-	// writev has a limit on the number of iovecs (IOV_MAX, typically 1024 on macOS)
-	// if we exceed this, we need to batch the writes
-	constexpr int MAX_IOVS = 1024;  // IOV_MAX on most systems
+	// writev has a per-call iovec limit (IOV_MAX) and may return short on
+	// partial writes (EINTR, ENOSPC, NFS/FUSE, etc.). Track byte progress
+	// through the iovec array and advance into a partial iovec's remainder so
+	// a short writev does not silently drop the tail of an entry.
 	int64_t totalWritten = 0;
-	int remaining = iovcnt;
-	int offset = 0;
+	std::vector<iovec> pending(iovecs, iovecs + iovcnt);
+	size_t pendingIdx = 0;
 
-	while (remaining > 0) {
-		int toWrite = std::min(remaining, MAX_IOVS);
-		ssize_t written = ::writev(this->fd, iovecs + offset, toWrite);
+	while (pendingIdx < pending.size()) {
+		int toWrite = static_cast<int>(std::min(pending.size() - pendingIdx, static_cast<size_t>(IOV_MAX)));
+		ssize_t written = ROCKSDB_JS_WRITEV(this->fd, &pending[pendingIdx], toWrite);
 
 		if (written < 0) {
-			DEBUG_LOG("%p TransactionLogFile::writeBatchToFile writev failed: errno=%d (%s)\n",
-				this, errno, strerror(errno));
+			if (errno == EINTR) {
+				continue;
+			}
+			return -1;
+		}
+
+		if (written == 0) {
+			// shouldn't happen for regular files; bail to avoid an infinite loop
 			return -1;
 		}
 
 		totalWritten += written;
-		offset += toWrite;
-		remaining -= toWrite;
+
+		size_t remainingBytes = static_cast<size_t>(written);
+		while (remainingBytes > 0 && pendingIdx < pending.size()) {
+			iovec& iov = pending[pendingIdx];
+			if (remainingBytes >= iov.iov_len) {
+				remainingBytes -= iov.iov_len;
+				++pendingIdx;
+			} else {
+				iov.iov_base = static_cast<char*>(iov.iov_base) + remainingBytes;
+				iov.iov_len -= remainingBytes;
+				remainingBytes = 0;
+			}
+		}
 	}
 
 	return totalWritten;

@@ -146,8 +146,14 @@
 			'sources': [
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
+				'src/binding/transaction_log/transaction_log_file.cpp',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
+				'test/native/transaction_log_writev_test.cc',
+			],
+			'defines': [
+				'ROCKSDB_JS_NATIVE_TESTS',
+				'ROCKSDB_JS_WRITEV=rocksdb_js_mock_writev',
 			],
 			'cflags!': [ '-fno-exceptions', '-std=c++17' ],
 			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],
