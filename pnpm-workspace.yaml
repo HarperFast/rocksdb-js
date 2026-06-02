@@ -5,3 +5,6 @@ allowBuilds:
   msgpackr-extract: true
 minimumReleaseAgeExclude:
   - '@harperfast/*'
+  - 'lmdb'
+  - 'msgpackr'
+  - 'ordered-binary'
