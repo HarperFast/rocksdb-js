@@ -9,6 +9,10 @@ namespace {
 // Process-global counter for LockTracker generation tags.
 static std::atomic<uint16_t> vtGlobalGen{0};
 
+// Process-global counter for settle generations (62-bit; starts at 1 so a
+// settled-empty marker is always distinct from the all-zero initial state).
+static std::atomic<uint64_t> vtGlobalSettleGen{1};
+
 // SplitMix64 finalizer.
 inline uint64_t mix64(uint64_t x) {
 	x ^= x >> 33;
@@ -124,9 +128,9 @@ bool VerificationTable::populateVersion(
 	std::atomic<uint64_t>* slot,
 	uint64_t newVersion
 ) {
-	if (!slot || newVersion == 0 || vtIsLock(newVersion)) {
-		// Defensive: never write 0 (means "empty") or a lock-tagged value
-		// via populate.
+	if (!slot || !vtIsVersion(newVersion)) {
+		// Defensive: only ever publish a real version (rejects 0, locks, and
+		// settled-empty bit patterns).
 		return false;
 	}
 	uint64_t expected = slot->load(std::memory_order_acquire);
@@ -149,6 +153,33 @@ bool VerificationTable::populateVersion(
 	}
 }
 
+bool VerificationTable::populateVersionIfUnchanged(
+	std::atomic<uint64_t>* slot,
+	uint64_t observed,
+	uint64_t newVersion
+) {
+	if (!slot || !vtIsVersion(newVersion)) {
+		return false;
+	}
+	if (vtIsLock(observed)) {
+		// A write is in flight on this slot — never publish over it.
+		return false;
+	}
+	if (observed == newVersion) {
+		return true; // already current; nothing to do
+	}
+	// Single CAS from the pre-read value. If any write cycle intervened the slot
+	// no longer equals `observed` (it moved to a lock and then to a fresh settle
+	// generation), so this fails and we leave the slot cold rather than publish a
+	// possibly-stale version.
+	return slot->compare_exchange_strong(
+		observed,
+		newVersion,
+		std::memory_order_release,
+		std::memory_order_acquire
+	);
+}
+
 uint64_t VerificationTable::extractVersionFromValue(const rocksdb::Slice& value) {
 	if (value.size() < sizeof(uint64_t)) {
 		return 0;
@@ -158,7 +189,11 @@ uint64_t VerificationTable::extractVersionFromValue(const rocksdb::Slice& value)
 }
 
 uint16_t vtNextGen() {
-	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x7FFF;
+	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x3FFF;
+}
+
+uint64_t vtNextSettleGen() {
+	return vtGlobalSettleGen.fetch_add(1, std::memory_order_relaxed) & VT_SETTLED_GEN_MASK;
 }
 
 LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, uintptr_t dbPtr) {
@@ -190,11 +225,14 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);
 	if (lastHolder) {
-		// Last writer out: clear the slot (only if it still holds our lock — a
-		// concurrent cancelForDB / populate may already have cleared it) and
-		// wake any parked waiters.
+		// Last writer out: settle the slot to a fresh settled-empty generation
+		// (only if it still holds our lock — a concurrent cancelForDB / populate
+		// may already have moved it) and wake any parked waiters. Settling to a
+		// new generation rather than 0 is what defeats ABA on the cold populate:
+		// a reader that observed the pre-write state can never CAS its (now stale)
+		// version into this slot, because the slot no longer equals what it saw.
 		uint64_t expected = vtEncodeLock(t, t->generation);
-		slot->compare_exchange_strong(expected, 0ULL,
+		slot->compare_exchange_strong(expected, vtEncodeSettled(vtNextSettleGen()),
 		    std::memory_order_release, std::memory_order_acquire);
 		t->wake();
 	}
@@ -231,9 +269,10 @@ void VerificationTable::cancelForDB(uintptr_t dbPtr) {
 		uint16_t gen = vtGenFromLock(v);
 		if (t->dbPtr != dbPtr) continue;
 
-		// CAS the slot back to 0; may fail harmlessly if it changed.
+		// Settle the slot to a fresh settled-empty generation; may fail
+		// harmlessly if it changed. (Like releaseWriteIntent, never back to 0.)
 		uint64_t expected = vtEncodeLock(t, gen);
-		slots_[i].compare_exchange_strong(expected, 0ULL,
+		slots_[i].compare_exchange_strong(expected, vtEncodeSettled(vtNextSettleGen()),
 		    std::memory_order_release, std::memory_order_acquire);
 
 		// Wake any parked TSFN waiters — idempotent if already woken. The

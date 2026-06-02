@@ -568,11 +568,13 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	}
 
 	std::atomic<uint64_t>* vtSlot = nullptr;
+	uint64_t vtObserved = 0;
 	if (hasExpectedVersion) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+		if (vtSlot) vtObserved = vtSlot->load(std::memory_order_acquire);
 	}
 
-	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion);
+	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
 }
 
 /**
@@ -641,12 +643,16 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
 	std::atomic<uint64_t>* vtSlot = nullptr;
+	// Observe the slot before the read; reused for the fast-path check and the
+	// post-read conditional CAS.
+	uint64_t vtObserved = 0;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+		if (vtSlot) vtObserved = vtSlot->load(std::memory_order_acquire);
 	}
 
 	// VT fast-path: caller-supplied version matches the table → return FRESH
-	if (vtSlot && hasExpectedVersion && VerificationTable::verifyVersion(vtSlot, expectedVersion)) {
+	if (vtSlot && hasExpectedVersion && vtObserved == expectedVersion) {
 		// Serving from the VT still counts as a read within this transaction:
 		// establish the snapshot so optimistic conflict detection has a
 		// read-time baseline (see TransactionHandle::ensureSnapshot).
@@ -690,11 +696,11 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		const rocksdb::Snapshot* readSnapshot = (*txnHandle)->readSnapshot();
 		if (hasExpectedVersion && extracted == expectedVersion) {
 			// Soft VT miss confirmed fresh: value carries the caller's expected version.
-			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot);
+			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 			return result;
 		}
-		vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot);
+		vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&

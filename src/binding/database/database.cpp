@@ -633,10 +633,14 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
 
-	// Pre-compute vtSlot so both the txn and DB async paths can use it.
+	// Pre-compute vtSlot so both the txn and DB async paths can use it, and
+	// observe its value before the async read so the post-read CAS only publishes
+	// when no write cycle intervened.
 	std::atomic<uint64_t>* vtSlot = nullptr;
+	uint64_t vtObserved = 0;
 	if (hasExpectedVersion) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+		if (vtSlot != nullptr) vtObserved = vtSlot->load(std::memory_order_acquire);
 	}
 
 	if (txnIdType == napi_number) {
@@ -650,7 +654,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			NAPI_RETURN_UNDEFINED();
 		}
 		return txnHandle->get(env, key, resolve, reject, *dbHandle,
-		                      vtSlot, hasExpectedVersion, expectedVersion);
+		                      vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
 	}
 
 	rocksdb::ReadOptions readOptions;
@@ -664,6 +668,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 
 	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
 	state->vtSlot = vtSlot;
+	state->vtObserved = vtObserved;
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -959,14 +964,18 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
 	std::atomic<uint64_t>* vtSlot = nullptr;
+	// Slot value observed up front (before the read below). Reused for both the
+	// fast-path check and the post-read conditional CAS, so the populate only
+	// succeeds if nothing changed the slot across the read.
+	uint64_t vtObserved = 0;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
+		if (vtSlot != nullptr) vtObserved = vtSlot->load(std::memory_order_acquire);
 	}
 
 	// Fast path: caller-supplied version matches the table — return FRESH
 	// sentinel without touching RocksDB.
-	if (vtSlot != nullptr && hasExpectedVersion &&
-			VerificationTable::verifyVersion(vtSlot, expectedVersion)) {
+	if (vtSlot != nullptr && hasExpectedVersion && vtObserved == expectedVersion) {
 		// When this read belongs to a transaction, still establish that
 		// transaction's snapshot even though the value is served from the VT.
 		// Optimistic conflict detection at commit time needs a read-time
@@ -1042,12 +1051,12 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		if (hasExpectedVersion && extracted == expectedVersion) {
 			// Soft VT miss confirmed fresh: the value still carries the caller's
 			// expected version, so the cached value is valid for this read.
-			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot);
+			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 			napi_value freshResult;
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
 			return freshResult;
 		}
-		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot);
+		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)

@@ -85,18 +85,23 @@ inline void vtPopulateIfSettled(
 	std::atomic<uint64_t>* slot,
 	const rocksdb::Slice& key,
 	uint64_t readVersion,
-	const rocksdb::Snapshot* readSnapshot
+	const rocksdb::Snapshot* readSnapshot,
+	uint64_t observedSlot
 ) {
 	if (!slot) return;
-	if (readVersion != 0 && vtIsLock(readVersion)) return;
-	auto db = dbHandle->descriptor->db;
+	// No usable version in the value the caller read (too short, or lock-tagged
+	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
+	if (readVersion == 0 || vtIsLock(readVersion)) return;
+	// Raw pointer: the caller holds the DBHandle (and an OperationGuard keeps the
+	// descriptor alive for the call), so we avoid an atomic shared_ptr refcount
+	// bump/drop on this per-read path.
+	rocksdb::DB* db = dbHandle->descriptor->db.get();
 	if (!db) return;
 	auto* cf = dbHandle->getColumnFamilyHandle();
 
 	uint64_t version;
-	if (readVersion != 0 &&
-	    (readSnapshot == nullptr ||
-	     readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber())) {
+	if (readSnapshot == nullptr ||
+	    readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
 		// The value the caller just read is provably the latest committed version
 		// (read with no snapshot, or at a snapshot with nothing committed since),
 		// so trust it directly and skip the extra latest read.
@@ -129,7 +134,9 @@ inline void vtPopulateIfSettled(
 			return;
 		}
 	}
-	VerificationTable::populateVersion(slot, version);
+	// Conditional CAS from the value observed before the read: a no-op if any
+	// write cycle intervened, so a stale/superseded version is never published.
+	VerificationTable::populateVersionIfUnchanged(slot, observedSlot, version);
 }
 
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
@@ -338,6 +345,9 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	uint64_t expectedVersion = 0;
 	bool wantsPopulate = false;
 	std::atomic<uint64_t>* vtSlot = nullptr;
+	// Slot value observed before the async read was queued; the post-read CAS
+	// publishes only if the slot is still this (no write cycle intervened).
+	uint64_t vtObserved = 0;
 };
 
 napi_value resolveGetSyncResult(
@@ -365,14 +375,16 @@ void resolveGetResult(
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion) {
 				// Soft miss: value still carries the expected version — signal FRESH.
-				VerificationTable::populateVersion(state->vtSlot, state->expectedVersion);
+				// Conditional CAS from the value observed before the read (no-op if
+				// a write cycle intervened) so we never publish a superseded version.
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, state->expectedVersion);
 				napi_value freshResult;
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
 				state->callResolve(freshResult);
 				return;
 			}
 			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0) {
-				VerificationTable::populateVersion(state->vtSlot, extracted);
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, extracted);
 			}
 		}
 		napi_value result;

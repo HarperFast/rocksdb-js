@@ -245,6 +245,7 @@ napi_value TransactionHandle::get(
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride,
 	std::atomic<uint64_t>* vtSlot,
+	uint64_t observedSlot,
 	bool hasExpectedVersion,
 	uint64_t expectedVersion,
 	bool wantsPopulate
@@ -293,7 +294,7 @@ napi_value TransactionHandle::get(
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
 			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot);
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
 				napi_value global, freshResult;
 				::napi_get_global(env, &global);
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
@@ -302,7 +303,7 @@ napi_value TransactionHandle::get(
 				return returnStatus;
 			}
 			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot);
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
@@ -319,6 +320,7 @@ napi_value TransactionHandle::get(
 	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
 	state->vtSlot = vtSlot;
+	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;

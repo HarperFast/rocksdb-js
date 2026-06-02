@@ -147,10 +147,12 @@
 			'sources': [
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
+				'src/binding/core/verification_table.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/transaction_log_writev_test.cc',
+				'test/native/verification_table_test.cc',
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',
