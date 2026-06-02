@@ -161,7 +161,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					try {
 						timestamp = dataView.getFloat64(position);
 					} catch (error) {
-						(error as Error).message += ` at position ${position} of log ${
+						(error as Error).message += ` at position ${position.toString(16)} of log ${
 							logBuffer!.logId
 						} (size=${size}, log buffer length=${logBuffer!.length})`;
 						throw error;
@@ -181,7 +181,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					const limit = readUncommitted ? logBuffer!.length : size;
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						throw new RangeError(
-							`Corrupt transaction log: truncated entry header at position ${position} of log ${
+							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
 								logBuffer!.logId
 							} (available=${limit - position})`
 						);
@@ -189,7 +189,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					const length = dataView.getUint32(position + 8);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
 						throw new RangeError(
-							`Corrupt transaction log entry at position ${position} of log ${
+							`Corrupt transaction log entry at position ${position.toString(16)} of log ${
 								logBuffer!.logId
 							}: declared length ${length} overruns the log (limit=${limit})`
 						);
