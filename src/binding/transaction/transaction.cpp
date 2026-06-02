@@ -678,24 +678,23 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		return result;
 	}
 
-	// Soft VT miss: the value read at this transaction's snapshot carries the
-	// caller's expected version, so the cached value is valid for this read.
-	// Seed the slot with the key's LATEST committed version (vtPopulateIfSettled
-	// reads latest itself, not this transaction's snapshot value), gated so it
-	// only becomes cacheable when that latest version is the single accessible
-	// value — so a transactional read at a stale snapshot can't publish a stale
-	// version, while a settled transactional read does seed the cache.
-	if (hasExpectedVersion && vtSlot) {
+	// Seed the slot with the key's LATEST committed version, gated so it only
+	// becomes cacheable when that latest version is the single accessible value —
+	// so a transactional read at a stale snapshot can't publish a stale version,
+	// while a settled transactional read does seed the cache. Passing this
+	// transaction's read snapshot lets vtPopulateIfSettled skip a redundant
+	// latest-read when the snapshot is current (the common no-concurrent-write
+	// case) and re-read only when the snapshot is behind a newer write.
+	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
-		if (extracted == expectedVersion) {
-			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice);
+		const rocksdb::Snapshot* readSnapshot = (*txnHandle)->readSnapshot();
+		if (hasExpectedVersion && extracted == expectedVersion) {
+			// Soft VT miss confirmed fresh: value carries the caller's expected version.
+			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot);
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 			return result;
 		}
-	}
-	// Opt-in populate, or implicit populate when an expected version was provided.
-	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
-		vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice);
+		vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&

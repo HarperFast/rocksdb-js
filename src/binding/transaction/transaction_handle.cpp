@@ -291,8 +291,9 @@ napi_value TransactionHandle::get(
 		if (vtSlot && status.ok()) {
 			rocksdb::Slice valueSlice(value.data(), value.size());
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
 			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()));
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot);
 				napi_value global, freshResult;
 				::napi_get_global(env, &global);
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
@@ -301,7 +302,7 @@ napi_value TransactionHandle::get(
 				return returnStatus;
 			}
 			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()));
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot);
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);

@@ -56,35 +56,61 @@ inline std::atomic<uint64_t>* vtSlotFor(
  * snapshot; we suppress caching until those snapshots drain, and a later read
  * repopulates the slot once it is settled.
  *
- * Crucially this reads the LATEST version (no snapshot), independent of the
- * version the caller happened to read. A transactional caller may be reading at
- * an older snapshot; gating on its (possibly stale) read version would let a
- * stale value be published. By always gating on — and publishing — the latest
- * version, transactional reads correctly seed the cache whenever the key is
- * settled, and a genuinely stale snapshot read simply doesn't settle (its own
- * snapshot is older than the latest write) and is skipped.
+ * The version published is always the LATEST committed version, never a value
+ * read at an older snapshot — gating on a stale read version would let a stale
+ * value be published. Rather than unconditionally re-reading the latest, we use
+ * what the caller already read whenever it is provably the latest, and only fall
+ * back to a re-read when it might not be:
+ *
+ *   - `readSnapshot == nullptr` (a non-transactional read): the caller read the
+ *     latest committed state directly, so `readVersion` IS the latest. No re-read.
+ *   - `readSnapshot` current (its sequence == the DB's latest): nothing has
+ *     committed since the snapshot, so the snapshot read equals the latest. No
+ *     re-read.
+ *   - `readSnapshot` behind the latest sequence: a write landed after the
+ *     snapshot, so the caller's value may be stale. Re-read the latest (no
+ *     snapshot) to learn the current version.
+ *
+ * This removes the extra latest-Get from the common read-mostly path (the vast
+ * majority of populates) while preserving the single-accessible-version
+ * invariant: a transactional read at a stale snapshot still re-reads, and the
+ * oldest-snapshot gate below still suppresses publication whenever any older
+ * snapshot remains open.
  *
  * Reads stay lock-free: this runs only on the cold populate path (after a cache
- * miss), never on the verifyVersion fast path. The extra latest read is of a key
- * just read, so it is typically a memtable/block-cache hit.
+ * miss), never on the verifyVersion fast path.
  */
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
 	std::atomic<uint64_t>* slot,
-	const rocksdb::Slice& key
+	const rocksdb::Slice& key,
+	uint64_t readVersion,
+	const rocksdb::Snapshot* readSnapshot
 ) {
 	if (!slot) return;
+	if (readVersion != 0 && vtIsLock(readVersion)) return;
 	auto db = dbHandle->descriptor->db;
 	if (!db) return;
 	auto* cf = dbHandle->getColumnFamilyHandle();
 
-	// Read the latest committed value (no snapshot) to learn the current version.
-	rocksdb::PinnableSlice latest;
-	rocksdb::ReadOptions readOptions;
-	rocksdb::Status status = db->Get(readOptions, cf, key, &latest);
-	if (!status.ok()) return; // not found or error — nothing settled to cache
-	uint64_t version = VerificationTable::extractVersionFromValue(latest);
-	if (version == 0 || vtIsLock(version)) return;
+	uint64_t version;
+	if (readVersion != 0 &&
+	    (readSnapshot == nullptr ||
+	     readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber())) {
+		// The value the caller just read is provably the latest committed version
+		// (read with no snapshot, or at a snapshot with nothing committed since),
+		// so trust it directly and skip the extra latest read.
+		version = readVersion;
+	} else {
+		// The caller may have read at a snapshot older than a newer write: re-read
+		// the latest committed value (no snapshot) to learn the current version.
+		rocksdb::PinnableSlice latest;
+		rocksdb::ReadOptions readOptions;
+		rocksdb::Status status = db->Get(readOptions, cf, key, &latest);
+		if (!status.ok()) return; // not found or error — nothing settled to cache
+		version = VerificationTable::extractVersionFromValue(latest);
+		if (version == 0 || vtIsLock(version)) return;
+	}
 
 	uint64_t oldestSnapshotSec = 0;
 	// rocksdb.oldest-snapshot-time is the wall-clock unix-seconds creation time

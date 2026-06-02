@@ -992,6 +992,9 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		readOptions.read_tier = rocksdb::kBlockCacheTier;
 	}
 
+	// Tracks the snapshot the read observed (nullptr ⇒ latest committed state),
+	// so the VT populate can tell whether the value just read is the latest.
+	const rocksdb::Snapshot* readSnapshot = nullptr;
 	if (txnIdType == napi_number) {
 		uint32_t txnId;
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
@@ -1003,6 +1006,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 			NAPI_RETURN_UNDEFINED();
 		}
 		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
+		readSnapshot = txnHandle->readSnapshot();
 	} else {
 		status = (*dbHandle)->descriptor->db->Get(
 			readOptions,
@@ -1029,24 +1033,21 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// Soft VT miss: VT didn't confirm fresh at fast-path time, but the value
-	// read carries the expected version, so the caller's cached value is valid.
-	// Seed the slot with the key's latest committed version, gated so it only
-	// becomes cacheable when that version is the single accessible value (see
-	// vtPopulateIfSettled — it reads latest itself, so a transactional/snapshot
-	// read here cannot publish a stale value).
-	if (hasExpectedVersion && vtSlot != nullptr) {
+	// Seed the slot, gated so it only becomes cacheable when the published
+	// version is the single accessible value (see vtPopulateIfSettled). Passing
+	// the value just read plus the read's snapshot lets the gate skip a redundant
+	// latest-read when that value is provably the latest committed version.
+	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
-		if (extracted == expectedVersion) {
-			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice);
+		if (hasExpectedVersion && extracted == expectedVersion) {
+			// Soft VT miss confirmed fresh: the value still carries the caller's
+			// expected version, so the cached value is valid for this read.
+			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot);
 			napi_value freshResult;
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
 			return freshResult;
 		}
-	}
-	// Opt-in populate, or implicit populate when an expected version was provided.
-	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion)) {
-		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice);
+		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)

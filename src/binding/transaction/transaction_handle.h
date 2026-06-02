@@ -214,6 +214,19 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	void ensureSnapshot();
 
+	/**
+	 * Returns the snapshot a read currently observes, or nullptr when reads see
+	 * the latest committed state (snapshots disabled, or not yet established).
+	 * Used by the VT populate path to decide whether the value just read is the
+	 * latest committed version (so it can skip a re-read) or may be stale
+	 * relative to a newer write (so it must re-read the latest).
+	 */
+	const rocksdb::Snapshot* readSnapshot() const {
+		return (this->txn && this->snapshotSet && !this->disableSnapshot)
+			? this->txn->GetSnapshot()
+			: nullptr;
+	}
+
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,
 		rocksdb::Slice& value,
