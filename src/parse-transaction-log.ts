@@ -1,7 +1,7 @@
 import { constants } from './load-binding.js';
 import { closeSync, openSync, readSync, type Stats, statSync } from 'node:fs';
 
-const { TRANSACTION_LOG_TOKEN } = constants;
+const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
 // Transaction log files did not exist before this date, so any timestamp that
 // predates it indicates corruption.
@@ -59,10 +59,13 @@ export function parseTransactionLog(
 		const bytesRead = readSync(fileHandle, buffer, 0, numBytes, fileOffset);
 		fileOffset += bytesRead;
 		if (bytesRead !== numBytes) {
+			// Only hex-dump the bytes actually read, capped at 64. A corrupt length
+			// can request a huge read; dumping the whole (largely uninitialized)
+			// buffer can exceed V8's max string length and mask the real error.
+			const previewBytes = Math.min(bytesRead, 64);
+			const preview = buffer.subarray(0, previewBytes).toString('hex');
 			throw new Error(
-				`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset}, file size: ${size}, file path: ${path}, buffer: ${buffer.toString(
-					'hex'
-				)}`
+				`Expected to read ${numBytes} bytes but only read ${bytesRead}, file offset: ${fileOffset}, file size: ${size}, file path: ${path}, buffer (first ${previewBytes} bytes): ${preview}`
 			);
 		}
 		return buffer;
@@ -99,6 +102,18 @@ export function parseTransactionLog(
 			}
 			const length = read(4).readUInt32BE(0);
 			const flags = read(1).readUInt8(0);
+			// Validate the declared length against the bytes actually remaining
+			// before allocating. A torn/corrupt entry can claim a length far larger
+			// than the file (e.g. a partial write that left header bytes pointing
+			// past the data), which would otherwise drive an unbounded allocUnsafe
+			// and OOM the process during log replay.
+			const remaining = size - fileOffset;
+			if (length > remaining) {
+				const entryOffset = fileOffset - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+				throw new Error(
+					`Corrupt entry at offset ${entryOffset}: declared length ${length} exceeds ${remaining} bytes remaining (file size: ${size})`
+				);
+			}
 			const data = read(length);
 
 			const entryAnomalies: string[] = [];
