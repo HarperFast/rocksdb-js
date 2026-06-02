@@ -160,7 +160,7 @@ void TransactionLogFile::recoverTail() {
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Mid-file corruption at offset %u in %s (size=%u), leaving intact\n",
 				this, scan.validEnd, this->path.string().c_str(), fileSize);
 			::fprintf(stderr,
-				"[rocksdb-js] WARNING: transaction log %s has a framing break at offset %u with %u byte(s) of further "
+				"[rocksdb-js] WARNING: transaction log %s has a framing break at offset %x with %u byte(s) of further "
 				"data; leaving it intact to avoid discarding committed entries. Reads past this point will fail until "
 				"the file is repaired.\n",
 				this->path.string().c_str(), scan.validEnd, fileSize - scan.validEnd);
