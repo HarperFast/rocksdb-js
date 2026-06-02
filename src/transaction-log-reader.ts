@@ -161,7 +161,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					try {
 						timestamp = dataView.getFloat64(position);
 					} catch (error) {
-						(error as Error).message += ` at position ${position} of log ${
+						(error as Error).message += ` at position ${position.toString(16)} of log ${
 							logBuffer!.logId
 						} (size=${size}, log buffer length=${logBuffer!.length})`;
 						throw error;
@@ -171,7 +171,29 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return { done: true, value: undefined };
 					}
 
+					// Corruption bound: a committed read can't legitimately extend past
+					// the committed `size` (a true entry boundary); an uncommitted read is
+					// bounded only by the physically mapped buffer. A torn/corrupt entry
+					// can declare a length far past this bound — without the checks below,
+					// `position` runs past the buffer, `subarray` hands back a misframed
+					// (garbage) transaction, and the advance-to-next-log path can
+					// dereference an undefined buffer. Fail loudly with a bounded error.
+					const limit = readUncommitted ? logBuffer!.length : size;
+					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
+						throw new RangeError(
+							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
+								logBuffer!.logId
+							} (available=${limit - position})`
+						);
+					}
 					const length = dataView.getUint32(position + 8);
+					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
+						throw new RangeError(
+							`Corrupt transaction log entry at position ${position.toString(16)} of log ${
+								logBuffer!.logId
+							}: declared length ${length} overruns the log (limit=${limit})`
+						);
+					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 					let matchesRange: boolean;
 					if (foundExactStart) {
@@ -212,13 +234,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							logBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
-							dataView = logBuffer!.dataView;
-							size = logBuffer!.size;
+							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1);
+							if (!nextLogBuffer) {
+								// the next log file can't be mapped (purged, mid-rotation,
+								// 0-byte at mmap time, FS race); stop cleanly rather than
+								// dereferencing an undefined buffer
+								return { done: true, value: undefined };
+							}
+							logBuffer = nextLogBuffer;
+							dataView = logBuffer.dataView;
+							size = logBuffer.size;
 							if (size == undefined) {
-								size = transactionLog.getLogFileSize(logBuffer!.logId);
+								size = transactionLog.getLogFileSize(logBuffer.logId);
 								if (!readUncommitted) {
-									logBuffer!.size = size;
+									logBuffer.size = size;
 								}
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
