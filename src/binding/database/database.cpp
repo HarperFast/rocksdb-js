@@ -1030,30 +1030,23 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	// Soft VT miss: VT didn't confirm fresh at fast-path time, but the value
-	// read from DB still carries the expected version. Re-populate and signal FRESH.
+	// read carries the expected version, so the caller's cached value is valid.
+	// Seed the slot with the key's latest committed version, gated so it only
+	// becomes cacheable when that version is the single accessible value (see
+	// vtPopulateIfSettled — it reads latest itself, so a transactional/snapshot
+	// read here cannot publish a stale value).
 	if (hasExpectedVersion && vtSlot != nullptr) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		if (extracted == expectedVersion) {
-			// Only seed the process-global VT from non-transactional reads. A
-			// transactional read returns its snapshot's version, which may be
-			// older than the latest committed value; publishing it could falsely
-			// mark a stale value cacheable. The match itself still confirms the
-			// caller's cached value is valid for this read.
-			if (txnIdType != napi_number) {
-				vtPopulateIfSettled(*dbHandle, vtSlot, expectedVersion);
-			}
+			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice);
 			napi_value freshResult;
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
 			return freshResult;
 		}
 	}
-	// Opt-in populate, or implicit populate when an expected version was
-	// provided. Non-transactional reads only (see above), and gated so the slot
-	// only becomes cacheable when this version is the single accessible value
-	// (no older read snapshot still open) — see vtPopulateIfSettled.
-	if (vtSlot != nullptr && txnIdType != napi_number && (wantsPopulate || hasExpectedVersion)) {
-		uint64_t version = VerificationTable::extractVersionFromValue(value);
-		vtPopulateIfSettled(*dbHandle, vtSlot, version);
+	// Opt-in populate, or implicit populate when an expected version was provided.
+	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion)) {
+		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
@@ -1149,9 +1142,11 @@ napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 
 	auto* slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
 	if (slot) {
-		// Gate on the snapshot invariant: only publish a cacheable version when
-		// it is the single accessible value (no older read snapshot still open).
-		vtPopulateIfSettled(*dbHandle, slot, version);
+		// Low-level explicit primitive: publish exactly the caller-supplied
+		// version. The snapshot-isolation gating lives on the read/getSync
+		// populate path (vtPopulateIfSettled); callers of this API assert the
+		// version directly.
+		VerificationTable::populateVersion(slot, version);
 	}
 
 	NAPI_RETURN_UNDEFINED();

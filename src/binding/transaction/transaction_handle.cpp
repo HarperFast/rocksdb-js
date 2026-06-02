@@ -283,22 +283,25 @@ napi_value TransactionHandle::get(
 	);
 
 	if (!status.IsIncomplete()) {
-		// Block-cache hit. Apply the VT freshness check before resolving. This is
-		// a transactional read (snapshot), so we do NOT seed the process-global
-		// VT — the snapshot's value may be older than the latest committed
-		// version, and publishing it could falsely mark a stale value cacheable.
-		// The match still confirms the caller's cached value is valid for this
-		// read; the VT is seeded only by non-transactional reads.
+		// Block-cache hit. Apply the VT freshness check and seed before resolving.
+		// vtPopulateIfSettled reads the key's LATEST committed version (not this
+		// transaction's snapshot value) and gates on the single-version invariant,
+		// so a transactional read seeds the cache only when settled and can never
+		// publish a stale snapshot value.
 		if (vtSlot && status.ok()) {
 			rocksdb::Slice valueSlice(value.data(), value.size());
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()));
 				napi_value global, freshResult;
 				::napi_get_global(env, &global);
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
 				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
 				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
 				return returnStatus;
+			}
+			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()));
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);

@@ -48,44 +48,59 @@ inline std::atomic<uint64_t>* vtSlotFor(
 }
 
 /**
- * Publishes `version` into the verification-table slot — making it cacheable —
- * but only when that version is the single accessible value of the key: i.e. no
- * read snapshot older than the version's commit is still open. While such a
- * snapshot is active, two versions are visible (the snapshot's older value and
- * the latest), so a fresh cache hit would violate that reader's snapshot. We
- * therefore suppress caching until those snapshots drain; reads simply fall
- * through to their own snapshot view, and a later read repopulates the slot once
- * it is settled.
+ * Publishes a key's *latest committed* version into the verification-table slot
+ * — making it cacheable — but only when that version is the single accessible
+ * value of the key: i.e. no read snapshot older than the latest write is still
+ * open. While such a snapshot is open, two versions are visible (the snapshot's
+ * older value and the latest), so a fresh cache hit would violate that reader's
+ * snapshot; we suppress caching until those snapshots drain, and a later read
+ * repopulates the slot once it is settled.
  *
- * Reads stay lock-free — the (cold-path) oldest-snapshot lookup happens only
- * here, after a real RocksDB read, never on the verifyVersion fast path.
+ * Crucially this reads the LATEST version (no snapshot), independent of the
+ * version the caller happened to read. A transactional caller may be reading at
+ * an older snapshot; gating on its (possibly stale) read version would let a
+ * stale value be published. By always gating on — and publishing — the latest
+ * version, transactional reads correctly seed the cache whenever the key is
+ * settled, and a genuinely stale snapshot read simply doesn't settle (its own
+ * snapshot is older than the latest write) and is skipped.
+ *
+ * Reads stay lock-free: this runs only on the cold populate path (after a cache
+ * miss), never on the verifyVersion fast path. The extra latest read is of a key
+ * just read, so it is typically a memtable/block-cache hit.
  */
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
 	std::atomic<uint64_t>* slot,
-	uint64_t version
+	const rocksdb::Slice& key
 ) {
-	if (!slot || version == 0 || vtIsLock(version)) return;
+	if (!slot) return;
 	auto db = dbHandle->descriptor->db;
-	if (db) {
-		uint64_t oldestSnapshotSec = 0;
-		// rocksdb.oldest-snapshot-time is the wall-clock unix-seconds creation
-		// time of the oldest live snapshot, or 0 when none are open.
-		if (db->GetIntProperty(dbHandle->getColumnFamilyHandle(),
-		        "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
-		    oldestSnapshotSec != 0) {
-			// `version` is the host-endian bit pattern of the float64 ms
-			// timestamp Harper writes at offset 0 of each record; reinterpret it
-			// to compare against the snapshot's wall-clock time. Conservative at
-			// second granularity: require the oldest snapshot to have been
-			// created at/after the version's millisecond, so it already sees
-			// this version (single accessible value). Otherwise leave the slot
-			// unpopulated.
-			double versionMs;
-			std::memcpy(&versionMs, &version, sizeof(double));
-			if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) {
-				return;
-			}
+	if (!db) return;
+	auto* cf = dbHandle->getColumnFamilyHandle();
+
+	// Read the latest committed value (no snapshot) to learn the current version.
+	rocksdb::PinnableSlice latest;
+	rocksdb::ReadOptions readOptions;
+	rocksdb::Status status = db->Get(readOptions, cf, key, &latest);
+	if (!status.ok()) return; // not found or error — nothing settled to cache
+	uint64_t version = VerificationTable::extractVersionFromValue(latest);
+	if (version == 0 || vtIsLock(version)) return;
+
+	uint64_t oldestSnapshotSec = 0;
+	// rocksdb.oldest-snapshot-time is the wall-clock unix-seconds creation time
+	// of the oldest live snapshot, or 0 when none are open.
+	if (db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
+	    oldestSnapshotSec != 0) {
+		// `version` is the host-endian bit pattern of the float64 ms timestamp
+		// Harper writes at offset 0 of each record; reinterpret it to compare
+		// against the snapshot's wall-clock time. Conservative at second
+		// granularity: require the oldest snapshot to have been created at/after
+		// the latest version's millisecond, so every open snapshot already sees
+		// it (single accessible value). Otherwise leave the slot unpopulated.
+		double versionMs;
+		std::memcpy(&versionMs, &version, sizeof(double));
+		if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) {
+			return;
 		}
 	}
 	VerificationTable::populateVersion(slot, version);

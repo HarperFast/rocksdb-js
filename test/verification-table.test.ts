@@ -137,47 +137,62 @@ describe('Verification Table', () => {
 			}));
 	});
 
-	// The single-accessible-version invariant: a slot may only hold a fresh
-	// (cacheable) version when no read snapshot older than that version is still
-	// open. Otherwise an older snapshot sees a prior value while the latest is
-	// different — two accessible versions — and a fresh cache hit would violate
-	// that reader's snapshot. Gated in vtPopulateIfSettled via the oldest active
-	// snapshot's wall-clock time. (Versions here are ms timestamps; we use ±10s
-	// to stay well outside the second-granularity comparison.)
+	// The single-accessible-version invariant: a getSync populate may only mark a
+	// slot fresh when the key's LATEST version is the single accessible value —
+	// no read snapshot older than that latest write is still open. This is gated
+	// in vtPopulateIfSettled, which reads the latest version itself (so a
+	// transactional/snapshot read cannot publish a stale value) and compares the
+	// oldest active snapshot's wall-clock time against the version's ms timestamp.
+	// (db.populateVersion is the separate low-level primitive and is NOT gated.)
+	const makeValue = (versionMs: number): Buffer => {
+		const value = Buffer.alloc(16);
+		value.writeDoubleBE(versionMs, 0);
+		return value;
+	};
+
 	describe('snapshot-gated populate (single-version invariant)', () => {
-		it('suppresses publishing a version newer than an open snapshot, allows one older', () =>
+		it('a transactional read seeds the VT when the key is settled', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
-				// Open a read transaction to establish a live snapshot at ~now.
-				const txn = new Transaction(db.store);
-				txn.getBinarySync(Buffer.from('open-snapshot-anchor')); // forces SetSnapshot
-				try {
-					expect(db.getOldestSnapshotTimestamp()).toBeGreaterThan(0);
-					const nowSec = Math.floor(Date.now() / 1000);
+				const key = Buffer.from('txn-seeds');
+				const version = 1.7e12; // a settled (well in the past) version
+				await db.put(key, makeValue(version));
+				expect(db.verifyVersion(key, version)).toBe(false); // not seeded yet
 
-					// Older than the open snapshot → every snapshot already sees it
-					// (single accessible version) → publish allowed.
-					const settled = (nowSec - 10) * 1000;
-					db.populateVersion(Buffer.from('settled'), settled);
-					expect(db.verifyVersion(Buffer.from('settled'), settled)).toBe(true);
+				// A read INSIDE a transaction must still seed the cache when settled —
+				// this is the whole point: Harper's reads are transactional.
+				await db.transaction(async (txn: Transaction) => {
+					txn.getBinarySync(key, { populateVersion: true } as any);
+				});
 
-					// Newer than the open snapshot → that snapshot still sees a prior
-					// value (two accessible versions) → publish suppressed.
-					const unsettled = (nowSec + 10) * 1000;
-					db.populateVersion(Buffer.from('unsettled'), unsettled);
-					expect(db.verifyVersion(Buffer.from('unsettled'), unsettled)).toBe(false);
-				} finally {
-					txn.abort();
-				}
+				expect(db.verifyVersion(key, version)).toBe(true);
 			}));
 
-		it('publishes freely when no snapshots are open', () =>
+		it('suppresses seeding while a snapshot older than the latest version is open', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
-				expect(db.getOldestSnapshotTimestamp()).toBe(0);
-				// With no open snapshots there is a single accessible version, so even
-				// a just-written version is immediately cacheable.
-				const v = (Math.floor(Date.now() / 1000) + 10) * 1000;
-				db.populateVersion(Buffer.from('no-snap'), v);
-				expect(db.verifyVersion(Buffer.from('no-snap'), v)).toBe(true);
+				const key = Buffer.from('gated');
+				// Craft a version timestamp in the future so it is unambiguously newer
+				// than the snapshot we open now (second-granularity safe).
+				const futureVersion = (Math.floor(Date.now() / 1000) + 30) * 1000;
+				await db.put(key, makeValue(futureVersion));
+
+				// Open a read snapshot now — older than the (future-dated) latest write.
+				const snap = new Transaction(db.store);
+				snap.getBinarySync(Buffer.from('anchor')); // forces SetSnapshot
+				try {
+					expect(db.getOldestSnapshotTimestamp()).toBeGreaterThan(0);
+					// A non-transactional populate read: vtPopulateIfSettled sees an
+					// open snapshot older than the latest version → suppresses.
+					const native = (db as any).store.db;
+					native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+					expect(db.verifyVersion(key, futureVersion)).toBe(false);
+				} finally {
+					snap.abort();
+				}
+
+				// Once the snapshot closes, a populate read settles the slot.
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, futureVersion)).toBe(true);
 			}));
 	});
 });

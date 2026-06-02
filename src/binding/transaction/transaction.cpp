@@ -678,18 +678,24 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		return result;
 	}
 
-	// Soft VT miss: the value read at this transaction's snapshot still carries
-	// the caller's expected version, so the cached value is valid for this read.
-	// We do NOT seed the process-global VT here: a transactional read sees its
-	// snapshot's value, which may be older than the latest committed version, so
-	// publishing it could falsely mark a stale value cacheable. The VT is seeded
-	// only by non-transactional reads (Database::GetSync).
+	// Soft VT miss: the value read at this transaction's snapshot carries the
+	// caller's expected version, so the cached value is valid for this read.
+	// Seed the slot with the key's LATEST committed version (vtPopulateIfSettled
+	// reads latest itself, not this transaction's snapshot value), gated so it
+	// only becomes cacheable when that latest version is the single accessible
+	// value — so a transactional read at a stale snapshot can't publish a stale
+	// version, while a settled transactional read does seed the cache.
 	if (hasExpectedVersion && vtSlot) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		if (extracted == expectedVersion) {
+			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice);
 			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 			return result;
 		}
+	}
+	// Opt-in populate, or implicit populate when an expected version was provided.
+	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
+		vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&
