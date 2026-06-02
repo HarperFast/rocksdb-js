@@ -35,6 +35,12 @@ rocksdb::Status DBHandle::clear() {
 		nullptr
 	);
 	if (!status.ok()) {
+		// A dropped column family is effectively already empty — clear is a no-op.
+		// Callers that subsequently write to the same handle will receive
+		// kColumnFamilyDropped at write time and can handle recovery there.
+		if (status.IsColumnFamilyDropped()) {
+			return rocksdb::Status::OK();
+		}
 		return status;
 	}
 	// it appears we do not need to call WaitForCompact for this to work

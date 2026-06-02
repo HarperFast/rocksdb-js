@@ -3,15 +3,25 @@ import { closeSync, openSync, readSync, type Stats, statSync } from 'node:fs';
 
 const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
+// Transaction log files did not exist before this date, so any timestamp that
+// predates it indicates corruption.
+const MIN_VALID_TIMESTAMP = Date.UTC(2026, 0, 27); // 2026-01-27
+
+// Currently only bit 0 (TRANSACTION_LOG_ENTRY_LAST_FLAG) is defined.
+const VALID_FLAGS_MASK = 0x01;
+
 interface LogEntry {
-	data: Buffer;
+	anomalies?: string[];
+	data?: Buffer;
 	flags: number;
 	length: number;
 	timestamp?: number;
 }
 
 interface TransactionLog {
+	anomalies: string[];
 	entries: LogEntry[];
+	entryAnomalyCount: number;
 	timestamp: number;
 	size: number;
 	version: number;
@@ -22,7 +32,10 @@ interface TransactionLog {
  * @param path - The path to the transaction log file.
  * @returns The transaction log.
  */
-export function parseTransactionLog(path: string): TransactionLog {
+export function parseTransactionLog(
+	path: string,
+	options: { skipData?: boolean } = {}
+): TransactionLog {
 	let stats: Stats;
 	try {
 		stats = statSync(path);
@@ -71,9 +84,14 @@ export function parseTransactionLog(path: string): TransactionLog {
 		}
 
 		const timestamp = read(8).readDoubleBE(0);
+		const anomalies: string[] = [];
+		if (!Number.isFinite(timestamp) || timestamp < MIN_VALID_TIMESTAMP) {
+			anomalies.push(`Header timestamp ${timestamp} predates 2026-01-27 (possible corruption)`);
+		}
 
 		// read the entries
 		const entries: LogEntry[] = [];
+		let entryAnomalyCount = 0;
 
 		while (fileOffset < size) {
 			const timestamp = read(8).readDoubleBE(0);
@@ -97,10 +115,30 @@ export function parseTransactionLog(path: string): TransactionLog {
 				);
 			}
 			const data = read(length);
-			entries.push({ timestamp, length, flags, data });
+
+			const entryAnomalies: string[] = [];
+			if (!Number.isFinite(timestamp) || timestamp < MIN_VALID_TIMESTAMP) {
+				entryAnomalies.push(`timestamp ${timestamp} predates 2026-01-27 (possible corruption)`);
+			}
+			if ((flags & ~VALID_FLAGS_MASK) !== 0) {
+				entryAnomalies.push(
+					`flags 0x${flags.toString(16).padStart(2, '0')} contains undefined bits (expected 0x00 or 0x01)`
+				);
+			}
+			const entry: LogEntry = {
+				timestamp,
+				length,
+				flags,
+				data: options.skipData ? undefined : Buffer.from(data),
+			};
+			if (entryAnomalies.length > 0) {
+				entry.anomalies = entryAnomalies;
+				entryAnomalyCount += entryAnomalies.length;
+			}
+			entries.push(entry);
 		}
 
-		return { entries, timestamp, size, version };
+		return { anomalies, entries, entryAnomalyCount, timestamp, size, version };
 	} catch (error) {
 		if (error instanceof Error) {
 			error.message = `Invalid transaction log file: ${error.message}`;
