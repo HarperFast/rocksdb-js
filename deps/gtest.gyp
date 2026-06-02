@@ -7,6 +7,27 @@
 		# on a download action is too late.
 		'_init_gtest': '<!(<(module_root_dir)/node_modules/.bin/tsx <(module_root_dir)/scripts/init-gtest/main.ts)',
 	},
+	# See binding.gyp: Node 26's Windows headers inject Clang ThinLTO options
+	# (-flto=thin / /opt:lldltojobs=N) into every Release target, which MSVC's
+	# cl.exe and lib.exe reject. Strip them here too so the gtest_main library
+	# builds cleanly. Inert on the Linux/macOS generators.
+	'target_defaults': {
+		'configurations': {
+			'Release': {
+				'msvs_settings': {
+					'VCCLCompilerTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+					'VCLibrarianTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+					'VCLinkerTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+				},
+			},
+		},
+	},
 	'targets': [
 		{
 			'target_name': 'gtest_main',
