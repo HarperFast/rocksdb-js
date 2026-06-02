@@ -251,7 +251,7 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 	if (iovcnt <= 0) {
 		return 0;
 	}
@@ -259,14 +259,15 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 	// writev has a per-call iovec limit (IOV_MAX) and may return short on
 	// partial writes (EINTR, ENOSPC, NFS/FUSE, etc.). Track byte progress
 	// through the iovec array and advance into a partial iovec's remainder so
-	// a short writev does not silently drop the tail of an entry.
+	// a short writev does not silently drop the tail of an entry. The caller's
+	// iovec array is mutated in place to avoid a scratch allocation on the hot
+	// write path.
 	int64_t totalWritten = 0;
-	std::vector<iovec> pending(iovecs, iovecs + iovcnt);
-	size_t pendingIdx = 0;
+	int pendingIdx = 0;
 
-	while (pendingIdx < pending.size()) {
-		int toWrite = static_cast<int>(std::min(pending.size() - pendingIdx, static_cast<size_t>(IOV_MAX)));
-		ssize_t written = ROCKSDB_JS_WRITEV(this->fd, &pending[pendingIdx], toWrite);
+	while (pendingIdx < iovcnt) {
+		int toWrite = std::min(iovcnt - pendingIdx, static_cast<int>(IOV_MAX));
+		ssize_t written = ROCKSDB_JS_WRITEV(this->fd, &iovecs[pendingIdx], toWrite);
 
 		if (written < 0) {
 			if (errno == EINTR) {
@@ -283,8 +284,8 @@ int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
 		totalWritten += written;
 
 		size_t remainingBytes = static_cast<size_t>(written);
-		while (remainingBytes > 0 && pendingIdx < pending.size()) {
-			iovec& iov = pending[pendingIdx];
+		while (remainingBytes > 0 && pendingIdx < iovcnt) {
+			iovec& iov = iovecs[pendingIdx];
 			if (remainingBytes >= iov.iov_len) {
 				remainingBytes -= iov.iov_len;
 				++pendingIdx;

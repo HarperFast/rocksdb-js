@@ -350,8 +350,8 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
-	if (iovcnt == 0) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+	if (iovcnt <= 0) {
 		return 0;
 	}
 
