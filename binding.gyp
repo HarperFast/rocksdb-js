@@ -1,4 +1,29 @@
 {
+	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
+	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
+	# Node Windows build is now compiled with ClangCL + ThinLTO, but this addon
+	# builds with MSVC (cl.exe / link.exe), which rejects those LLVM-only flags:
+	# link.exe aborts with "LNK1117: syntax error in option 'opt:lldltojobs=2'".
+	# Strip them from the MSVC tool invocations via regex exclusion (value- and
+	# thin/full-agnostic). This lives under msvs_settings, so it is inert on the
+	# Linux/macOS generators and leaves their LTO behavior untouched.
+	'target_defaults': {
+		'configurations': {
+			'Release': {
+				'msvs_settings': {
+					'VCCLCompilerTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+					'VCLibrarianTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+					'VCLinkerTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+				},
+			},
+		},
+	},
 	'targets': [
 		{
 			'target_name': 'rocksdb-js',
