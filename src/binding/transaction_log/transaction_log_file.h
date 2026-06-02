@@ -175,6 +175,19 @@ struct TransactionLogFile final {
  	void open(const double latestTimestamp);
 
 	/**
+	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
+	 * if a torn/partial entry is found at the tail (e.g. an O_APPEND short write
+	 * interrupted by a crash), truncates the file back to the last valid entry
+	 * boundary and flushes. If a framing break is found mid-file with valid
+	 * entries still following it, the file is left intact — truncating would
+	 * discard committed/replicated entries — and the break is logged so the
+	 * reader's per-entry guards can surface it. Must be called after open() and
+	 * before the file receives any appends; only meaningful for the active
+	 * (current) log file.
+	 */
+	void recoverTail();
+
+	/**
 	 * Closes the log file and removes it.
 	 *
 	 * @returns `true` if the file was removed, `false` if it did not exist.
@@ -244,6 +257,15 @@ private:
 	 * consumed in either case.
 	 */
 	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
+
+	/**
+	 * Platform specific function that truncates the file to `newSize` bytes and
+	 * flushes the change to disk so a subsequent crash cannot resurrect the
+	 * dropped bytes. Returns `true` on success. POSIX-only effect; a no-op
+	 * returning `false` on Windows, which pre-extends and zero-pads its log
+	 * files (torn tails are handled there by the zero-padding end marker).
+	 */
+	bool truncateFile(uint32_t newSize);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1
