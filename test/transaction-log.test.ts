@@ -1457,44 +1457,50 @@ describe('Transaction Log', () => {
 			return buf;
 		}
 
-		it('truncates a torn tail on reopen and preserves valid entries', () =>
-			dbRunner(async ({ db, dbPath }) => {
-				let database = db;
-				try {
-					const log = database.useLog('foo');
-					const value = Buffer.alloc(24, 'x');
-					for (let i = 0; i < 3; i++) {
+		// POSIX-only: the torn-tail scenario is the O_APPEND short-write case, and
+		// truncateFile() is a deliberate no-op on Windows (which pre-extends and
+		// zero-pads its logs), so there is nothing to truncate to assert there.
+		it.skipIf(process.platform === 'win32')(
+			'truncates a torn tail on reopen and preserves valid entries',
+			() =>
+				dbRunner(async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const log = database.useLog('foo');
+						const value = Buffer.alloc(24, 'x');
+						for (let i = 0; i < 3; i++) {
+							await database.transaction(async (txn) => {
+								log.addEntry(value, txn.id);
+							});
+						}
+						expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+						database.close();
+
+						const logPath = logPathFor(dbPath, 'foo');
+						const validSize = statSync(logPath).size;
+						// append a torn partial entry: declares 5000 bytes, writes 16
+						await writeFile(logPath, Buffer.concat([readFileSync(logPath), tornEntry(5000, 16)]));
+						expect(statSync(logPath).size).toBeGreaterThan(validSize);
+
+						// reopen: opening the log triggers store load + tail recovery,
+						// which should truncate the torn tail back to validSize
+						database = RocksDatabase.open(dbPath);
+						const reopened = database.useLog('foo');
+						expect(statSync(logPath).size).toBe(validSize);
+						// the committed position isn't persisted without a RocksDB flush,
+						// so read uncommitted to verify the entries survived on disk
+						expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+
+						// the log must remain writable and consistent after recovery
 						await database.transaction(async (txn) => {
-							log.addEntry(value, txn.id);
+							reopened.addEntry(Buffer.alloc(24, 'y'), txn.id);
 						});
+						expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(4);
+					} finally {
+						database.close();
 					}
-					expect(Array.from(log.query({ start: 0 })).length).toBe(3);
-					database.close();
-
-					const logPath = logPathFor(dbPath, 'foo');
-					const validSize = statSync(logPath).size;
-					// append a torn partial entry: declares 5000 bytes, writes 16
-					await writeFile(logPath, Buffer.concat([readFileSync(logPath), tornEntry(5000, 16)]));
-					expect(statSync(logPath).size).toBeGreaterThan(validSize);
-
-					// reopen: opening the log triggers store load + tail recovery,
-					// which should truncate the torn tail back to validSize
-					database = RocksDatabase.open(dbPath);
-					const reopened = database.useLog('foo');
-					expect(statSync(logPath).size).toBe(validSize);
-					// the committed position isn't persisted without a RocksDB flush,
-					// so read uncommitted to verify the entries survived on disk
-					expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
-
-					// the log must remain writable and consistent after recovery
-					await database.transaction(async (txn) => {
-						reopened.addEntry(Buffer.alloc(24, 'y'), txn.id);
-					});
-					expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(4);
-				} finally {
-					database.close();
-				}
-			}));
+				})
+		);
 
 		it('leaves a clean log file untouched on reopen', () =>
 			dbRunner(async ({ db, dbPath }) => {
