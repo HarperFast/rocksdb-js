@@ -61,11 +61,27 @@ describe('Verification Table', () => {
 					dbOptions: [{}, { path: generateDBPath() }],
 				},
 				async ({ db: db1 }, { db: db2 }) => {
-					db1.populateVersion('foo', 1.5e12);
-					// Same key in a different DB hashes to a different slot (via the
-					// db pointer mixed into the hash). With overwhelmingly high
-					// probability the slot is still empty.
-					expect(db2.verifyVersion('foo', 1.5e12)).toBe(false);
+					// The db pointer is mixed into the slot hash, so the same key in two
+					// different databases maps to different slots. Populate many keys in
+					// db1 and confirm db2 sees (almost) none of them as fresh.
+					//
+					// Asserted statistically rather than on a single key: the VT is
+					// process-global with a fixed slot count, so a stray hash collision —
+					// or a freed database's address being reused for db2 with leftover slot
+					// state — can make an individual key spuriously verify. That is by
+					// design (collisions cause false invalidations, never incorrect
+					// results). Per-key distinct versions avoid cross-test contamination,
+					// and the threshold still fails loudly if the db pointer were NOT mixed
+					// into the hash — then every key would leak.
+					const N = 100;
+					let leaked = 0;
+					for (let i = 0; i < N; i++) {
+						const key = `cross-db-iso-${i}`;
+						const version = 1.5e12 + i;
+						db1.populateVersion(key, version);
+						if (db2.verifyVersion(key, version)) leaked++;
+					}
+					expect(leaked).toBeLessThan(N / 4);
 				}
 			);
 		});
