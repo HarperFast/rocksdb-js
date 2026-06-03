@@ -4,6 +4,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/global_events.h"
 #include "napi/macros.h"
 #include "stats/rocksdb_stats.h"
 #include "rocksdb/db.h"
@@ -33,6 +34,7 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
+	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
@@ -80,6 +82,7 @@ NAPI_MODULE_INIT() {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
+			rocksdb_js::GlobalEvents::Shutdown();
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
 			rocksdb_js::DBRegistry::Shutdown();
 			DEBUG_LOG("Binding::Init env cleanup done\n");
@@ -104,6 +107,9 @@ NAPI_MODULE_INIT() {
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+
+	// global event emitter (addListener / removeListener / listenerCount)
+	rocksdb_js::GlobalEvents::Init(env, exports);
 
 	// shutdown function
 	napi_value shutdownFn;

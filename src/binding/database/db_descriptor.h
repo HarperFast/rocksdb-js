@@ -16,6 +16,7 @@
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/platform.h"
+#include "napi/event_emitter.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 
@@ -24,8 +25,6 @@ namespace rocksdb_js {
 // forward declarations
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
-struct ListenerCallback;
-struct ListenerData;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -141,14 +140,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex compactMutex;
 
 	/**
-	 * Map of listener callbacks by key.
+	 * Per-database event emitter. Listeners attached here only fire for events
+	 * emitted on this descriptor. Cleaned up per-DBHandle on close and fully
+	 * cleared when the descriptor itself closes.
 	 */
-	std::unordered_map<std::string, std::vector<std::shared_ptr<ListenerCallback>>> listenerCallbacks;
-
-	/**
-	 * Mutex to protect the listener callbacks map.
-	 */
-	std::mutex listenerCallbacksMutex;
+	EventEmitter events;
 
 private:
 	DBDescriptor(
@@ -420,48 +416,6 @@ struct UserSharedBufferFinalizeData final {
 		std::weak_ptr<UserSharedBufferData> data,
 		napi_ref callbackRef = nullptr
 	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
-};
-
-/**
- * A struct to hold the serialized arguments to emit to the listener callbacks.
- */
-struct ListenerData final {
-	std::string args;
-
-	ListenerData(size_t size) : args(size, '\0') {}
-	ListenerData(const ListenerData& other) : args(other.args) {}
-};
-
-/**
- * A wrapper for a listener callback that holds the threadsafe callback, env,
- * and callback reference. The callback reference is used to remove the listener
- * callback and the env is used for cleanup.
- */
-struct ListenerCallback final {
-	/**
-	 * The environment of the current callback.
-	 */
-	napi_env env;
-
-	/**
-	 * The threadsafe function of the current callback. This is what is
-	 * actually called when the event is emitted.
-	 */
-	napi_threadsafe_function threadsafeCallback;
-
-	/**
-	 * The callback reference of the current callback. This is used to remove
-	 * the listener callback.
-	 */
-	napi_ref callbackRef;
-
-	/**
-	 * The DBHandle that owns this listener (weak reference to avoid cycles).
-	 */
-	std::weak_ptr<DBHandle> owner;
-
-	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<DBHandle> owner)
-		: env(env), threadsafeCallback(nullptr), callbackRef(callbackRef), owner(owner) {}
 };
 
 /**
