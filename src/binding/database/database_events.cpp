@@ -42,9 +42,9 @@ napi_value Database::Notify(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	DEBUG_LOG("Database::Notify calling notify env=%p args=%p\n", env, argv[1]);
+	DEBUG_LOG("Database::Notify calling notify argc=%zu\n", argc);
 
-	ListenerData* data = serializeListenerArgs(env, argv[1]);
+	ListenerData* data = argc > 1 ? serializeListenerArgs(env, argv[1]) : nullptr;
 	bool exceptionPending = false;
 	NAPI_STATUS_THROWS(::napi_is_exception_pending(env, &exceptionPending));
 	if (exceptionPending) {
