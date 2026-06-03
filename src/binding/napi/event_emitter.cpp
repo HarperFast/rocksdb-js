@@ -7,12 +7,32 @@
 namespace rocksdb_js {
 
 /**
- * Releases the threadsafe function and callback ref held by a listener.
+ * Threadsafe-function finalizer. Node-API guarantees this runs on the JS
+ * thread once the tsfn's ref count drops to zero, making it the safe place
+ * to delete the napi_ref backing the listener callback.
  *
- * Must be called on the JS thread, because napi_delete_reference is only
- * legal from the env's JS thread. `napi_release_threadsafe_function` is
- * thread-safe and decrements the tsfn ref count; the actual finalize runs
- * on the JS thread once the count reaches zero.
+ * We pass the napi_ref via `thread_finalize_data` at create time; ownership
+ * of the ref transfers to the tsfn from that point on.
+ */
+static void finalizeListenerCallback(napi_env env, void* finalize_data, void* /*finalize_hint*/) {
+	napi_ref callbackRef = static_cast<napi_ref>(finalize_data);
+	if (callbackRef) {
+		napi_status status = ::napi_delete_reference(env, callbackRef);
+		if (status != napi_ok) {
+			DEBUG_LOG("finalizeListenerCallback failed to delete callback reference (status=%d)\n", status);
+		}
+	}
+}
+
+/**
+ * Releases the threadsafe function held by a listener. Safe to call from any
+ * thread: `napi_release_threadsafe_function` is thread-safe, and the
+ * napi_ref is owned by the tsfn — it will be deleted on the JS thread by
+ * `finalizeListenerCallback` when the tsfn's ref count reaches zero.
+ *
+ * The local napi_ref pointer is nulled so subsequent passes (e.g. the
+ * removeListenersByOwner erase predicate) can identify this listener as
+ * already torn down.
  */
 static void releaseListenerResources(ListenerCallback& listener) {
 	if (listener.threadsafeCallback) {
@@ -22,14 +42,7 @@ static void releaseListenerResources(ListenerCallback& listener) {
 			DEBUG_LOG("releaseListenerResources failed to release threadsafe callback (status=%d)\n", status);
 		}
 	}
-
-	if (listener.callbackRef) {
-		napi_status status = ::napi_delete_reference(listener.env, listener.callbackRef);
-		listener.callbackRef = nullptr;
-		if (status != napi_ok) {
-			DEBUG_LOG("releaseListenerResources failed to delete callback reference (status=%d)\n", status);
-		}
-	}
+	listener.callbackRef = nullptr;
 }
 
 #define NAPI_STATUS_THROWS_FREE_DATA(call) \
@@ -168,19 +181,28 @@ napi_ref EventEmitter::addListener(
 	napi_ref callbackRef;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, callback, 1, &callbackRef));
 
-	auto listenerCallback = std::make_shared<ListenerCallback>(env, callbackRef, std::move(owner));
+	// `hasOwner` distinguishes ownerless global listeners (don't reap on
+	// removeListenersByOwner) from per-object listeners whose owner has
+	// already expired (do reap).
+	bool hasOwner = (owner.lock() != nullptr);
+	auto listenerCallback = std::make_shared<ListenerCallback>(env, callbackRef, std::move(owner), hasOwner);
 
+	// Pass the napi_ref as `thread_finalize_data`. Node-API guarantees the
+	// finalize callback runs on the JS thread when the tsfn's ref count
+	// hits zero, so napi_delete_reference is called from a legal context
+	// even when releaseListenerResources is invoked from a worker thread
+	// (e.g., a DBDescriptor destroyed off the JS thread).
 	napi_status status = ::napi_create_threadsafe_function(
-		env,                    // env
-		callback,               // func
-		nullptr,                // async_resource
-		resource_name,          // async_resource_name
-		0,                      // max_queue_size
-		1,                      // initial_thread_count
-		nullptr,                // thread_finalize_data
-		nullptr,                // thread_finalize_callback
-		nullptr,                // context
-		callListenerCallback,   // call_js_cb
+		env,                       // env
+		callback,                  // func
+		nullptr,                   // async_resource
+		resource_name,             // async_resource_name
+		0,                         // max_queue_size
+		1,                         // initial_thread_count
+		callbackRef,               // thread_finalize_data
+		finalizeListenerCallback,  // thread_finalize_callback
+		nullptr,                   // context
+		callListenerCallback,      // call_js_cb
 		&listenerCallback->threadsafeCallback // [out] callback
 	);
 
@@ -350,12 +372,20 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 	for (auto keyIt = this->callbacks.begin(); keyIt != this->callbacks.end();) {
 		auto& listeners = keyIt->second;
 
-		// Two-phase: release threadsafe-fn / napi_ref for matching listeners
-		// first, then erase. The teardown must run on the JS thread (caller
-		// guarantees this — typically DBHandle::close from a NAPI callback);
-		// dropping the shared_ptr alone would leak both resources because
-		// ListenerCallback has no destructor that releases them.
+		// Two-phase: release the matching listeners' threadsafe-fn first (which
+		// schedules napi_ref deletion via the tsfn finalizer on the JS thread),
+		// then erase the entries. Dropping the shared_ptr alone would not release
+		// the tsfn because ListenerCallback has no destructor; the explicit
+		// release is what guarantees we don't leak.
+		//
+		// Listeners that were registered without an owner (hasOwner == false,
+		// e.g., global emitter clients) are skipped — `weak_ptr<void>::expired`
+		// returns true for an empty weak_ptr, so without this check the lambda
+		// below would reap every ownerless listener on any owner-scoped call.
 		for (auto& callback : listeners) {
+			if (!callback->hasOwner) {
+				continue;
+			}
 			auto sharedOwner = callback->owner.lock();
 			bool shouldRemove = (sharedOwner.get() == owner) || callback->owner.expired();
 			if (shouldRemove) {
@@ -367,8 +397,10 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 		listeners.erase(
 			std::remove_if(listeners.begin(), listeners.end(),
 				[](const std::shared_ptr<ListenerCallback>& callback) {
-					// teardown above zeroed both fields for matching listeners
-					return callback->threadsafeCallback == nullptr && callback->callbackRef == nullptr;
+					// teardown above zeroed `threadsafeCallback` for matching
+					// listeners; `callbackRef` is owned by the tsfn finalizer
+					// at this point, so the tsfn pointer is the reliable marker.
+					return callback->hasOwner && callback->threadsafeCallback == nullptr;
 				}),
 			listeners.end()
 		);
