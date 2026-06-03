@@ -35,9 +35,12 @@ static void finalizeListenerCallback(napi_env env, void* finalize_data, void* /*
  * already torn down.
  */
 static void releaseListenerResources(ListenerCallback& listener) {
-	if (listener.threadsafeCallback) {
-		napi_status status = ::napi_release_threadsafe_function(listener.threadsafeCallback, napi_tsfn_release);
-		listener.threadsafeCallback = nullptr;
+	// Atomically take ownership of the tsfn so a concurrent caller (e.g.,
+	// notify on a worker thread, or a parallel removeListenersByOwner pass)
+	// can't release the same handle twice.
+	napi_threadsafe_function tsfn = listener.threadsafeCallback.exchange(nullptr);
+	if (tsfn) {
+		napi_status status = ::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
 		if (status != napi_ok) {
 			DEBUG_LOG("releaseListenerResources failed to release threadsafe callback (status=%d)\n", status);
 		}
@@ -192,6 +195,11 @@ napi_ref EventEmitter::addListener(
 	// hits zero, so napi_delete_reference is called from a legal context
 	// even when releaseListenerResources is invoked from a worker thread
 	// (e.g., a DBDescriptor destroyed off the JS thread).
+	//
+	// Use a local napi_threadsafe_function for the out-param because
+	// listenerCallback->threadsafeCallback is std::atomic<...> and its
+	// address can't be passed to a C API expecting a plain pointer slot.
+	napi_threadsafe_function tsfn = nullptr;
 	napi_status status = ::napi_create_threadsafe_function(
 		env,                       // env
 		callback,                  // func
@@ -203,7 +211,7 @@ napi_ref EventEmitter::addListener(
 		finalizeListenerCallback,  // thread_finalize_callback
 		nullptr,                   // context
 		callListenerCallback,      // call_js_cb
-		&listenerCallback->threadsafeCallback // [out] callback
+		&tsfn                      // [out] callback
 	);
 
 	if (status != napi_ok) {
@@ -217,7 +225,9 @@ napi_ref EventEmitter::addListener(
 		return nullptr;
 	}
 
-	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, listenerCallback->threadsafeCallback));
+	listenerCallback->threadsafeCallback.store(tsfn);
+
+	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, tsfn));
 
 	std::lock_guard<std::mutex> lock(this->mutex);
 	auto it = this->callbacks.find(key);
@@ -261,11 +271,15 @@ bool EventEmitter::notify(const std::string& key, ListenerData* data) {
 	for (auto& listener : listenersToCall) {
 		// create a separate copy of data for each listener to avoid double-delete
 		ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
-		if (listener->threadsafeCallback) {
+		// Atomic load: another thread may concurrently null the slot via
+		// releaseListenerResources. A nullptr read here just means the
+		// listener was torn down after we snapshotted the vector; skip it.
+		napi_threadsafe_function tsfn = listener->threadsafeCallback.load();
+		if (tsfn) {
 			DEBUG_LOG("%p EventEmitter::notify calling threadsafeCallback for key:", this);
 			DEBUG_LOG_KEY_LN(key);
 
-			napi_status status = ::napi_call_threadsafe_function(listener->threadsafeCallback, listenerData, napi_tsfn_blocking);
+			napi_status status = ::napi_call_threadsafe_function(tsfn, listenerData, napi_tsfn_blocking);
 			if (status != napi_ok) {
 				DEBUG_LOG("%p EventEmitter::notify failed to call threadsafeCallback (status=%d)\n", this, status);
 				if (listenerData) {
@@ -400,7 +414,7 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 					// teardown above zeroed `threadsafeCallback` for matching
 					// listeners; `callbackRef` is owned by the tsfn finalizer
 					// at this point, so the tsfn pointer is the reliable marker.
-					return callback->hasOwner && callback->threadsafeCallback == nullptr;
+					return callback->hasOwner && callback->threadsafeCallback.load() == nullptr;
 				}),
 			listeners.end()
 		);

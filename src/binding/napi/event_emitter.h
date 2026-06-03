@@ -1,6 +1,7 @@
 #ifndef __NAPI_EVENT_EMITTER_H__
 #define __NAPI_EVENT_EMITTER_H__
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -35,7 +36,12 @@ struct ListenerData final {
  */
 struct ListenerCallback final {
 	napi_env env;
-	napi_threadsafe_function threadsafeCallback;
+	// Atomic because `notify` reads it without holding EventEmitter::mutex
+	// (it copies the listener vector under the lock, then iterates and reads
+	// the tsfn pointer after releasing the lock), while `releaseListenerResources`
+	// can run concurrently on another thread and write nullptr. Plain access
+	// would be a data race under the C++ memory model.
+	std::atomic<napi_threadsafe_function> threadsafeCallback;
 	napi_ref callbackRef;
 	std::weak_ptr<void> owner;
 	bool hasOwner;

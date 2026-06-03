@@ -13,6 +13,10 @@ namespace rocksdb_js {
 static napi_value AddListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
+	if (argc < 2) {
+		::napi_throw_error(env, nullptr, "Callback is required");
+		return nullptr;
+	}
 	GlobalEvents::getInstance().addListener(env, key, argv[1]);
 	NAPI_RETURN_UNDEFINED();
 }
@@ -26,6 +30,10 @@ static napi_value AddListener(napi_env env, napi_callback_info info) {
 static napi_value RemoveListener(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
+	if (argc < 2) {
+		::napi_throw_error(env, nullptr, "Callback is required");
+		return nullptr;
+	}
 	return GlobalEvents::getInstance().removeListener(env, key, argv[1]);
 }
 
@@ -53,7 +61,7 @@ static napi_value Notify(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], key, "Event is required");
 
-	ListenerData* data = serializeListenerArgs(env, argv[1]);
+	ListenerData* data = argc > 1 ? serializeListenerArgs(env, argv[1]) : nullptr;
 	bool exceptionPending = false;
 	NAPI_STATUS_THROWS(::napi_is_exception_pending(env, &exceptionPending));
 	if (exceptionPending) {
