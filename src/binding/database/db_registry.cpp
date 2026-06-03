@@ -377,7 +377,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
 			napi_value listenerCallbacks;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->listenerCallbacks.size()), &listenerCallbacks));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->events.size()), &listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "listenerCallbacks", listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_element(env, result, i, database));
 			i++;

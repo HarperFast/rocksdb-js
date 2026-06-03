@@ -89,6 +89,28 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
 Uses `ExtendedIterable` wrapper around native iterators for array-like methods (map, filter, etc.)
 with lazy evaluation.
 
+### Event Emitters
+
+The codebase has **two** event surfaces backed by the same `EventEmitter` class in
+`napi/event_emitter.h`:
+
+- **Per-database**: instance methods on `RocksDatabase` (`db.addListener`, `db.notify`,
+  `db.listeners`, `db.removeListener`). Listeners are scoped to a `DBDescriptor` and cleaned
+  up when the owning `DBHandle` closes. Native exports live on the `Database` class prototype.
+- **Process-global**: static methods on `RocksDatabase` (`RocksDatabase.on`, `.addListener`,
+  `.off`, `.removeListener`, `.listenerCount`, `.notify`). Used for events that have no
+  natural database context — e.g. warnings from the transaction log layer. Native exports
+  live on the binding module root (`binding.addListener`, etc.), wired via `GlobalEvents::Init`.
+
+When wiring a new listener-related export from TypeScript, pick the right one: the binding
+module's `addListener` is **global**; the per-DB `addListener` is on the `Database` class.
+`load-binding.ts` renames the global exports to `addGlobalListener` / `removeGlobalListener`
+/ `globalListenerCount` / `globalNotify` to make the distinction explicit in TS.
+
+C++ code that needs to emit to JS without a database context should call
+`emitGlobalEvent(key, data)` from `napi/global_events.h`. Use namespaced keys
+(`'transactionLog:warning'`) for internal events to avoid collisions with user-defined ones.
+
 ## Environment Variables
 
 - `ROCKSDB_VERSION` - Override RocksDB version (default from package.json, or 'latest')
