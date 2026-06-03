@@ -1,7 +1,8 @@
 import { RocksDatabase } from '../src/database.js';
 import { withResolvers } from '../src/util.js';
-import { dbRunner } from './lib/util.js';
+import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const noop = () => {};
@@ -167,5 +168,83 @@ describe('Global Events', () => {
 		expect(() => RocksDatabase.off(undefined as any, noop)).toThrow('Event is required');
 		expect(() => RocksDatabase.listenerCount(undefined as any)).toThrow('Event is required');
 		expect(() => RocksDatabase.notify(undefined as any)).toThrow('Event is required');
+	});
+
+	it('should cross worker_threads boundaries in both directions', async () => {
+		const worker = new Worker(
+			createWorkerBootstrapScript('./test/workers/global-events-worker.mts'),
+			{ eval: true }
+		);
+
+		const started = withResolvers<void>();
+		const fromWorker = withResolvers<any>();
+		const fromMainAck = withResolvers<any>();
+
+		worker.on('message', (msg) => {
+			if (msg.started) started.resolve();
+			else if (msg.fromMain !== undefined) fromMainAck.resolve(msg.fromMain);
+		});
+		worker.on('error', (e) => started.reject(e));
+
+		try {
+			await started.promise;
+
+			// worker → main: worker calls RocksDatabase.notify; main listener fires
+			const mainHandler = (value: any) => fromWorker.resolve(value);
+			RocksDatabase.on('global-events-test:from-worker', mainHandler);
+			worker.postMessage({ notify: 'hello-from-worker' });
+			await expect(fromWorker.promise).resolves.toBe('hello-from-worker');
+			RocksDatabase.off('global-events-test:from-worker', mainHandler);
+
+			// main → worker: main calls RocksDatabase.notify; worker listener fires
+			// (the worker registered its listener at startup and posts back via parentPort)
+			RocksDatabase.notify('global-events-test:from-main', 'hello-from-main');
+			await expect(fromMainAck.promise).resolves.toBe('hello-from-main');
+		} finally {
+			worker.postMessage({ exit: true });
+			await new Promise<void>((resolve) => worker.on('exit', () => resolve()));
+		}
+	});
+
+	it("should clean up a worker's listeners when the worker exits", async () => {
+		// The worker registers a listener for 'global-events-test:from-main' at
+		// startup and then exits without removing it. Before the env-cleanup
+		// purge was wired up, the singleton would retain a dangling tsfn
+		// pointer here and the subsequent notify from this thread would
+		// dereference freed memory. After the fix, the listener is gone and
+		// the notify is a no-op for the worker side.
+		const worker = new Worker(
+			createWorkerBootstrapScript('./test/workers/global-events-worker.mts'),
+			{ eval: true }
+		);
+
+		const started = withResolvers<void>();
+		worker.on('message', (msg) => {
+			if (msg.started) started.resolve();
+		});
+		worker.on('error', (e) => started.reject(e));
+		await started.promise;
+
+		worker.postMessage({ exit: true });
+		await new Promise<void>((resolve) => worker.on('exit', () => resolve()));
+
+		// Give the worker's env cleanup hook a moment to drain.
+		await delay(100);
+
+		// Without the cleanup hook this would crash with a stale tsfn deref;
+		// with it, notify just returns false (no listeners) or true (only the
+		// caller's listener), neither of which fires the dead worker's callback.
+		const mainHandler = vi.fn();
+		RocksDatabase.on('global-events-test:from-main', mainHandler);
+		try {
+			RocksDatabase.notify('global-events-test:from-main', 'after-exit');
+			await delay(50);
+			// Only the main-thread listener should have fired; the dead worker's
+			// listener was removed by the env-cleanup hook.
+			expect(mainHandler).toHaveBeenCalledTimes(1);
+			expect(mainHandler).toHaveBeenCalledWith('after-exit');
+		} finally {
+			RocksDatabase.off('global-events-test:from-main', mainHandler);
+		}
 	});
 });

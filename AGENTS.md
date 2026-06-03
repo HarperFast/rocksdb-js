@@ -101,6 +101,12 @@ The codebase has **two** event surfaces backed by the same `EventEmitter` class 
   `.off`, `.removeListener`, `.listenerCount`, `.notify`). Used for events that have no
   natural database context — e.g. warnings from the transaction log layer. Native exports
   live on the binding module root (`binding.addListener`, etc.), wired via `GlobalEvents::Init`.
+  The underlying `EventEmitter` is a C++ magic-static singleton — it is **shared across
+  every Node env that loads this .node binary in the same process**, so listeners
+  registered on the main thread will receive events emitted from `worker_threads`
+  workers and vice versa. When an env is torn down (e.g. a worker exits), its
+  cleanup hook calls `EventEmitter::removeListenersByEnv(env)` so that env's
+  tsfns / napi_refs are released and the singleton is left with no dangling pointers.
 
 When wiring a new listener-related export from TypeScript, pick the right one: the binding
 module's `addListener` is **global**; the per-DB `addListener` is on the `Database` class.

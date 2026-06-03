@@ -78,7 +78,17 @@ NAPI_MODULE_INIT() {
 	rocksdb_js::TransactionLogStoreRegistry::Init();
 
 	// registry cleanup
+	// The C++ statics in this .node binary are shared across every Node env
+	// that loads it (main thread + worker_threads). Each env's cleanup hook
+	// fires when *that* env is being torn down — not when the whole process
+	// exits. We need to drop the dying env's listeners from the global
+	// emitter unconditionally, because the singleton outlives this env and
+	// a surviving env's notify() would otherwise dereference dangling tsfn
+	// pointers. Full Shutdown only runs when this was the last env.
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
+		napi_env dyingEnv = static_cast<napi_env>(data);
+		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
+
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
@@ -91,7 +101,7 @@ NAPI_MODULE_INIT() {
 		} else {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
 		}
-	}, nullptr));
+	}, env));
 
 	// database
 	rocksdb_js::Database::Init(env, exports);
