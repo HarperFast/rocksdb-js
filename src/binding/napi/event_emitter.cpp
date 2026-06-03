@@ -227,7 +227,17 @@ napi_ref EventEmitter::addListener(
 
 	listenerCallback->threadsafeCallback.store(tsfn);
 
-	NAPI_STATUS_THROWS(::napi_unref_threadsafe_function(env, tsfn));
+	napi_status unrefStatus = ::napi_unref_threadsafe_function(env, tsfn);
+	if (unrefStatus != napi_ok) {
+		// Tear the tsfn down so the napi_ref (now owned by the tsfn finalizer)
+		// is released on the JS thread instead of leaking for the lifetime of
+		// the env. Then propagate the original error.
+		DEBUG_LOG("%p EventEmitter::addListener unref failed (status=%d), releasing tsfn\n", this, unrefStatus);
+		std::string errorStr = rocksdb_js::getNapiExtendedError(env, unrefStatus, "Failed to unref threadsafe function");
+		releaseListenerResources(*listenerCallback);
+		::napi_throw_error(env, nullptr, errorStr.c_str());
+		return nullptr;
+	}
 
 	std::lock_guard<std::mutex> lock(this->mutex);
 	auto it = this->callbacks.find(key);
@@ -244,8 +254,14 @@ napi_ref EventEmitter::addListener(
 }
 
 bool EventEmitter::notify(const std::string& key, ListenerData* data) {
-	// copy the listeners to avoid holding the mutex during callback execution
-	std::vector<std::shared_ptr<ListenerCallback>> listenersToCall;
+	// Snapshot + acquire under the mutex: every tsfn release path also runs
+	// under this mutex, so while we hold it the tsfn count cannot drop. We
+	// bump each tsfn's count via napi_acquire_threadsafe_function, which
+	// keeps it alive across the post-mutex call below even if another
+	// thread (e.g., removeListener, removeListenersByEnv on a dying env)
+	// releases concurrently. Without the acquire there would be a window
+	// where notify holds a tsfn pointer that Node has just freed.
+	std::vector<napi_threadsafe_function> acquiredTsfns;
 	{
 		std::lock_guard<std::mutex> lock(this->mutex);
 		auto it = this->callbacks.find(key);
@@ -258,43 +274,46 @@ bool EventEmitter::notify(const std::string& key, ListenerData* data) {
 			return false;
 		}
 
-		listenersToCall.reserve(it->second.size());
+		acquiredTsfns.reserve(it->second.size());
 		for (auto& listener : it->second) {
-			listenersToCall.push_back(listener);
+			napi_threadsafe_function tsfn = listener->threadsafeCallback.load();
+			if (!tsfn) {
+				continue;
+			}
+			napi_status status = ::napi_acquire_threadsafe_function(tsfn);
+			if (status == napi_ok) {
+				acquiredTsfns.push_back(tsfn);
+			} else {
+				DEBUG_LOG("%p EventEmitter::notify acquire failed (status=%d), skipping listener\n", this, status);
+			}
 		}
 	}
 
 	DEBUG_LOG("%p EventEmitter::notify calling %zu listener%s for key:",
-		this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
+		this, acquiredTsfns.size(), acquiredTsfns.size() == 1 ? "" : "s");
 	DEBUG_LOG_KEY_LN(key);
 
-	for (auto& listener : listenersToCall) {
+	for (napi_threadsafe_function tsfn : acquiredTsfns) {
 		// create a separate copy of data for each listener to avoid double-delete
 		ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
-		// Atomic load: another thread may concurrently null the slot via
-		// releaseListenerResources. A nullptr read here just means the
-		// listener was torn down after we snapshotted the vector; skip it.
-		napi_threadsafe_function tsfn = listener->threadsafeCallback.load();
-		if (tsfn) {
-			DEBUG_LOG("%p EventEmitter::notify calling threadsafeCallback for key:", this);
-			DEBUG_LOG_KEY_LN(key);
 
-			napi_status status = ::napi_call_threadsafe_function(tsfn, listenerData, napi_tsfn_blocking);
-			if (status != napi_ok) {
-				DEBUG_LOG("%p EventEmitter::notify failed to call threadsafeCallback (status=%d)\n", this, status);
-				if (listenerData) {
-					delete listenerData;
-				}
-			} else {
-				DEBUG_LOG("%p EventEmitter::notify called threadsafeCallback for key successfully!", this);
-				DEBUG_LOG_KEY_LN(key);
-			}
-		} else {
-			DEBUG_LOG("%p EventEmitter::notify threadsafeCallback is null for key:", this);
-			DEBUG_LOG_KEY_LN(key);
+		napi_status status = ::napi_call_threadsafe_function(tsfn, listenerData, napi_tsfn_blocking);
+		if (status != napi_ok) {
+			DEBUG_LOG("%p EventEmitter::notify failed to call threadsafeCallback (status=%d)\n", this, status);
 			if (listenerData) {
 				delete listenerData;
 			}
+		} else {
+			DEBUG_LOG("%p EventEmitter::notify called threadsafeCallback for key successfully!", this);
+			DEBUG_LOG_KEY_LN(key);
+		}
+
+		// Pair with the acquire above. When this is the last reference, the
+		// tsfn's finalize callback runs (on the owning env's JS thread) and
+		// deletes the napi_ref.
+		napi_status releaseStatus = ::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+		if (releaseStatus != napi_ok) {
+			DEBUG_LOG("%p EventEmitter::notify failed to release acquired tsfn (status=%d)\n", this, releaseStatus);
 		}
 	}
 
@@ -302,7 +321,7 @@ bool EventEmitter::notify(const std::string& key, ListenerData* data) {
 		delete data;
 	}
 
-	DEBUG_LOG("%p EventEmitter::notify finished calling %zu listener%s for key:", this, listenersToCall.size(), listenersToCall.size() == 1 ? "" : "s");
+	DEBUG_LOG("%p EventEmitter::notify finished calling %zu listener%s for key:", this, acquiredTsfns.size(), acquiredTsfns.size() == 1 ? "" : "s");
 	DEBUG_LOG_KEY_LN(key);
 
 	return true;
@@ -421,6 +440,42 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 
 		if (listeners.empty()) {
 			DEBUG_LOG("%p EventEmitter::removeListenersByOwner removing empty key\n", this);
+			keyIt = this->callbacks.erase(keyIt);
+		} else {
+			++keyIt;
+		}
+	}
+}
+
+void EventEmitter::removeListenersByEnv(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+
+	DEBUG_LOG("%p EventEmitter::removeListenersByEnv removing listeners for env %p\n", this, env);
+
+	for (auto keyIt = this->callbacks.begin(); keyIt != this->callbacks.end();) {
+		auto& listeners = keyIt->second;
+
+		// Release matching listeners' tsfns first (queues napi_ref deletion
+		// via the tsfn finalizer on the env's JS thread), then erase. The
+		// erase predicate keys on env + null tsfn so we only remove the
+		// entries we just released.
+		for (auto& callback : listeners) {
+			if (callback->env == env) {
+				DEBUG_LOG("%p EventEmitter::removeListenersByEnv releasing listener for env %p\n", this, env);
+				releaseListenerResources(*callback);
+			}
+		}
+
+		listeners.erase(
+			std::remove_if(listeners.begin(), listeners.end(),
+				[env](const std::shared_ptr<ListenerCallback>& callback) {
+					return callback->env == env && callback->threadsafeCallback.load() == nullptr;
+				}),
+			listeners.end()
+		);
+
+		if (listeners.empty()) {
+			DEBUG_LOG("%p EventEmitter::removeListenersByEnv removing empty key\n", this);
 			keyIt = this->callbacks.erase(keyIt);
 		} else {
 			++keyIt;

@@ -72,6 +72,19 @@ ListenerData* serializeListenerArgs(napi_env env, napi_value value);
  */
 class EventEmitter final {
 public:
+	EventEmitter() = default;
+	// Runs releaseAll so that paths which destroy an EventEmitter without
+	// an explicit close (partial construction, exceptions thrown between
+	// open() and close()) still clean up tsfns. With the deferred-finalizer
+	// design, releaseAll is safe to call from any thread.
+	~EventEmitter() { releaseAll(); }
+
+	// EventEmitter holds OS resources (tsfns, mutex); not copyable or movable.
+	EventEmitter(const EventEmitter&) = delete;
+	EventEmitter& operator=(const EventEmitter&) = delete;
+	EventEmitter(EventEmitter&&) = delete;
+	EventEmitter& operator=(EventEmitter&&) = delete;
+
 	/**
 	 * Registers a JS callback for the given event key.
 	 *
@@ -121,9 +134,25 @@ public:
 	void removeListenersByOwner(void* owner);
 
 	/**
-	 * Releases all listeners' threadsafe functions and callback refs and
-	 * clears the map. Must be called on the JS thread (callback refs cannot
-	 * be deleted from worker threads).
+	 * Removes all listeners registered against the given napi_env, releasing
+	 * their threadsafe functions. Used by the process-wide GlobalEvents
+	 * emitter (which is shared across all envs loaded into the same native
+	 * binary) so that when one env is torn down — e.g. a `worker_threads`
+	 * worker exiting while the main thread continues running — we don't
+	 * leave dangling tsfn pointers in the singleton that a later notify
+	 * from a surviving thread would dereference.
+	 *
+	 * Safe to call from any thread: napi_release_threadsafe_function is
+	 * thread-safe, and the napi_ref deletion is deferred to the tsfn's
+	 * finalize callback which Node-API runs on the JS thread.
+	 */
+	void removeListenersByEnv(napi_env env);
+
+	/**
+	 * Releases all listeners' threadsafe functions and clears the map. Safe
+	 * to call from any thread: napi_release_threadsafe_function is
+	 * thread-safe and the napi_ref is owned by the tsfn finalizer which
+	 * runs on the JS thread.
 	 */
 	void releaseAll();
 
