@@ -29,15 +29,23 @@ struct ListenerData final {
  *
  * Owner is type-erased as std::weak_ptr<void> so the same EventEmitter can be
  * used both with per-object owners and with no owner at all (global emitter).
+ * The `hasOwner` flag distinguishes "listener was registered without an owner"
+ * (global emitter case) from "owner was non-null at register time but has
+ * since expired" — only the latter should be reaped by removeListenersByOwner.
  */
 struct ListenerCallback final {
 	napi_env env;
 	napi_threadsafe_function threadsafeCallback;
 	napi_ref callbackRef;
 	std::weak_ptr<void> owner;
+	bool hasOwner;
 
-	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<void> owner)
-		: env(env), threadsafeCallback(nullptr), callbackRef(callbackRef), owner(std::move(owner)) {}
+	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<void> owner, bool hasOwner)
+		: env(env),
+		  threadsafeCallback(nullptr),
+		  callbackRef(callbackRef),
+		  owner(std::move(owner)),
+		  hasOwner(hasOwner) {}
 };
 
 /**
