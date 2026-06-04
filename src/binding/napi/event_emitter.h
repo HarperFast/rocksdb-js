@@ -35,15 +35,37 @@ struct ListenerData final {
  * since expired" — only the latter should be reaped by removeListenersByOwner.
  */
 struct ListenerCallback final {
+	/**
+	 * The environment of the current callback.
+	 */
 	napi_env env;
-	// Atomic because `notify` reads it without holding EventEmitter::mutex
-	// (it copies the listener vector under the lock, then iterates and reads
-	// the tsfn pointer after releasing the lock), while `releaseListenerResources`
-	// can run concurrently on another thread and write nullptr. Plain access
-	// would be a data race under the C++ memory model.
+
+	/**
+	 * The threadsafe function of the current callback. This is what is actually
+	 * called when the event is emitted.
+	 *
+	 * Atomic because `notify` reads it without holding EventEmitter::mutex
+	 * (it copies the listener vector under the lock, then iterates and reads
+	 * the tsfn pointer after releasing the lock), while `releaseListenerResources`
+	 * can run concurrently on another thread and write nullptr. Plain access
+	 * would be a data race under the C++ memory model.
+	 */
 	std::atomic<napi_threadsafe_function> threadsafeCallback;
+
+	/**
+	 * The callback reference of the current callback. This is used to remove
+	 * the listener callback.
+	 */
 	napi_ref callbackRef;
+
+	/**
+	 * The DBHandle that owns this listener (weak reference to avoid cycles).
+	 */
 	std::weak_ptr<void> owner;
+
+	/**
+	 * Whether the listener has an owner. Process-wide global listeners have no owner.
+	 */
 	bool hasOwner;
 
 	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<void> owner, bool hasOwner)
