@@ -1,6 +1,10 @@
 import type { BufferWithDataView } from '../src/encoding.js';
 import { withResolvers } from '../src/util.js';
 import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
+import { generateDBPath } from './lib/util.js';
+import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { assert, describe, expect, it } from 'vitest';
@@ -216,4 +220,86 @@ describe('User Shared Buffer', () => {
 				).toThrow('Callback must be a function');
 			}));
 	});
+
+	/**
+	 * Regression tests for shutdown races on process-wide registry state.
+	 *
+	 * These intentionally run in a child process: a failing build often SIGSEGVs
+	 * instead of throwing a catchable JS error.
+	 */
+	describe('User shared buffer use-after-free repro (child process)', () => {
+		it('should survive retained ArrayBuffer access after the last DB handle closes (main + worker)', async () => {
+			const dbPath = generateDBPath();
+			mkdirSync(dbPath, { recursive: true });
+
+			const { code, signal } = await spawnRepro(dbPath, 'buffer');
+
+			expect(signal).toBeNull();
+			expect(code).toBe(0);
+		});
+
+		it('should survive retained ArrayBuffer access while handles are closing (main + worker)', async () => {
+			const dbPath = generateDBPath();
+			mkdirSync(dbPath, { recursive: true });
+
+			const { code, signal } = await spawnRepro(dbPath, 'buffer-race');
+
+			expect(signal).toBeNull();
+			expect(code).toBe(0);
+		});
+
+		it('should survive advancing a range iterator while the last handles close (main + worker)', async () => {
+			const dbPath = generateDBPath();
+			mkdirSync(dbPath, { recursive: true });
+
+			const { code, signal } = await spawnRepro(dbPath, 'stale-iterator');
+
+			expect(signal).toBeNull();
+			expect(code).toBe(0);
+		});
+
+		it('should survive shared buffer use while another worker repeatedly opens/closes the same CF (schema-sync)', async () => {
+			const dbPath = generateDBPath();
+			mkdirSync(dbPath, { recursive: true });
+
+			const { code, signal } = await spawnRepro(dbPath, 'schema-sync');
+
+			expect(signal).toBeNull();
+			expect(code).toBe(0);
+		});
+	});
 });
+
+const fixturePath = join(__dirname, 'fixtures', 'fork-user-shared-buffer-uaf.mts');
+
+function spawnRepro(
+	dbPath: string,
+	mode: 'buffer' | 'buffer-race' | 'stale-iterator' | 'schema-sync'
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+	return new Promise((resolve, reject) => {
+		const args =
+			process.versions.bun || process.versions.deno
+				? [fixturePath, dbPath, mode]
+				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath, mode];
+
+		const child = spawn(process.execPath, args, {
+			env: { ...process.env },
+		});
+
+		let stderr = '';
+		child.stdout?.on('data', (chunk) => {
+			stderr += chunk.toString();
+		});
+		child.stderr?.on('data', (chunk) => {
+			stderr += chunk.toString();
+		});
+
+		child.on('close', (code, signal) => {
+			if (code !== 0 || signal) {
+				console.error(`Repro child (${mode}) stderr:\n${stderr}`);
+			}
+			resolve({ code, signal });
+		});
+		child.on('error', reject);
+	});
+}
