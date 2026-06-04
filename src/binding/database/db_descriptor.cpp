@@ -1409,6 +1409,10 @@ void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
 	this->events.removeListenersByOwner(static_cast<void*>(owner));
 }
 
+void DBDescriptor::removeListenersByEnv(napi_env env) {
+	this->events.removeListenersByEnv(env);
+}
+
 /**
  * Lists all transaction logs in the database.
  *

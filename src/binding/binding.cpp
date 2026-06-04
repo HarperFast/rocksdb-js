@@ -81,13 +81,17 @@ NAPI_MODULE_INIT() {
 	// The C++ statics in this .node binary are shared across every Node env
 	// that loads it (main thread + worker_threads). Each env's cleanup hook
 	// fires when *that* env is being torn down — not when the whole process
-	// exits. We need to drop the dying env's listeners from the global
-	// emitter unconditionally, because the singleton outlives this env and
-	// a surviving env's notify() would otherwise dereference dangling tsfn
-	// pointers. Full Shutdown only runs when this was the last env.
+	// exits. We need to drop the dying env's listeners from every emitter
+	// that outlives the env — the global singleton and every per-DBDescriptor
+	// emitter in the DBRegistry (DBDescriptors are shared across envs that
+	// open the same path, so a worker's listeners can sit on a descriptor the
+	// main thread still notifies on). A surviving env's notify() would
+	// otherwise dereference dangling tsfn pointers. Full Shutdown only runs
+	// when this was the last env.
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		napi_env dyingEnv = static_cast<napi_env>(data);
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
+		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
