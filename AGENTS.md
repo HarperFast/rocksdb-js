@@ -45,6 +45,7 @@ This is a Node.js binding for RocksDB that provides both TypeScript and C++ laye
 ### TypeScript Layer (`src/`)
 
 - **`database.ts`** - Main `RocksDatabase` class extending `DBI` with transaction support
+- **`backup.ts`** - `backups` namespace (restore/list/delete/purge/verify) over RocksDB's `BackupEngine`; backup creation is `RocksDatabase.backup()`
 - **`store.ts`** - Core `Store` class wrapping native database with encoding/decoding
 - **`transaction.ts`** - Transaction implementation for atomic operations
 - **`dbi.ts` & `dbi-iterator.ts`** - Database interface and iteration logic
@@ -77,6 +78,10 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
 3. **Store Pattern**: `Store` class encapsulates database instance and encoding logic, shared
    between `RocksDatabase` and `Transaction`
 4. **Native Binding**: Uses node-gyp with C++20, links against prebuilt RocksDB libraries
+5. **Backups**: Whole-database (all column families) via RocksDB's `BackupEngine`
+   (`src/binding/database/backup.cpp`). Creating a backup is the `Database::Backup` instance
+   method (needs the open DB); restore/list/delete/purge/verify are module-level functions
+   operating on a backup directory with no open DB.
 
 ### Transaction Architecture
 

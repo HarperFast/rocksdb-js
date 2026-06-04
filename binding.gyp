@@ -37,6 +37,7 @@
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/napi/helpers.cpp',
+				'src/binding/database/backup.cpp',
 				'src/binding/database/database.cpp',
 				'src/binding/database/database_events.cpp',
 				'src/binding/database/db_descriptor.cpp',
