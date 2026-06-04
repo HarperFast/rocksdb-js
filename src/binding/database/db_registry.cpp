@@ -388,6 +388,38 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Scrub per-descriptor event listeners owned by the given env. Called from the
+ * env-cleanup hook so a worker thread exiting does not leave threadsafe-fn
+ * pointers in shared descriptors that the main thread (or a surviving worker)
+ * would later dereference via notify().
+ *
+ * Snapshots the descriptors under databasesMutex, then drops the lock before
+ * calling into each EventEmitter. This keeps the registry lock window short
+ * and avoids establishing a new databasesMutex -> events.mutex ordering that
+ * isn't already exercised by other call paths.
+ */
+void DBRegistry::RemoveListenersByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->removeListenersByEnv(env);
+	}
+}
+
+/**
  * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
  */
 void DBRegistry::Shutdown() {

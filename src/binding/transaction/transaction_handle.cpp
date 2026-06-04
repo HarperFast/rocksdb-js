@@ -40,10 +40,10 @@ void TransactionHandle::resetTransaction(){
 	this->logEntryBatch.reset();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
+	auto dbHandle = this->dbHandle;
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;
 
-	auto dbHandle = this->dbHandle;
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;

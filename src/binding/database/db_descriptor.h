@@ -267,6 +267,7 @@ public:
 	napi_value listeners(napi_env env, std::string& key);
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
 	void removeListenersByOwner(DBHandle* owner);
+	void removeListenersByEnv(napi_env env);
 
 	napi_value listTransactionLogStores(napi_env env);
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
