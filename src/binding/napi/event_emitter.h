@@ -157,12 +157,13 @@ public:
 
 	/**
 	 * Removes all listeners registered against the given napi_env, releasing
-	 * their threadsafe functions. Used by the process-wide GlobalEvents
-	 * emitter (which is shared across all envs loaded into the same native
-	 * binary) so that when one env is torn down — e.g. a `worker_threads`
-	 * worker exiting while the main thread continues running — we don't
-	 * leave dangling tsfn pointers in the singleton that a later notify
-	 * from a surviving thread would dereference.
+	 * their threadsafe functions. Called from the env-cleanup hook on every
+	 * emitter that outlives an individual env — the process-wide GlobalEvents
+	 * singleton and every per-DBDescriptor emitter in the DBRegistry (both
+	 * are shared across envs loaded into the same native binary). When one
+	 * env is torn down — e.g. a `worker_threads` worker exiting while the
+	 * main thread continues running — this ensures no dangling tsfn pointers
+	 * remain that a later notify from a surviving thread would dereference.
 	 *
 	 * Safe to call from any thread: napi_release_threadsafe_function is
 	 * thread-safe, and the napi_ref deletion is deferred to the tsfn's
