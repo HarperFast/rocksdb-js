@@ -173,12 +173,12 @@ napi_ref EventEmitter::addListener(
 		return nullptr;
 	}
 
-	napi_value resource_name;
+	napi_value resourceName;
 	NAPI_STATUS_THROWS(::napi_create_string_latin1(
 		env,
 		"rocksdb-js.listener",
 		NAPI_AUTO_LENGTH,
-		&resource_name
+		&resourceName
 	));
 
 	napi_ref callbackRef;
@@ -204,7 +204,7 @@ napi_ref EventEmitter::addListener(
 		env,                       // env
 		callback,                  // func
 		nullptr,                   // async_resource
-		resource_name,             // async_resource_name
+		resourceName,              // async_resource_name
 		0,                         // max_queue_size
 		1,                         // initial_thread_count
 		callbackRef,               // thread_finalize_data
