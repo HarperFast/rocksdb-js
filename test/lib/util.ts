@@ -110,6 +110,11 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
  * to exit after `close` messages, so we force-terminate after a short timeout.
  */
 export async function terminateWorker(worker: Worker): Promise<void> {
+	// check if the worker is already terminated
+	if (worker.threadId === -1) {
+		return;
+	}
+
 	if (process.versions.deno || process.versions.bun) {
 		await new Promise<void>((resolve) => {
 			const timer = setTimeout(() => {
