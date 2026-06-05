@@ -1,5 +1,5 @@
 import { currentThreadId } from '../src/index.js';
-import { createWorkerBootstrapScript } from './lib/util.js';
+import { createWorkerBootstrapScript, terminateWorker } from './lib/util.js';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
@@ -29,6 +29,7 @@ describe('threadId', () => {
 
 			expect(threadIds.has(workerThreadId)).toBe(false);
 			threadIds.add(workerThreadId);
+			await terminateWorker(worker);
 		}
 	});
 });

@@ -15,6 +15,8 @@ const rocksdbVersion = await import('./dist/index.mjs')
 	.catch(() => '?');
 console.log(`${runtime} (${machine}) rocksdb-js/${version} RocksDB/${rocksdbVersion}`);
 
+const isAlternateRuntime = !!(process.versions.bun || process.versions.deno);
+
 export default defineConfig({
 	test: {
 		allowOnly: true,
@@ -26,7 +28,10 @@ export default defineConfig({
 		globals: false,
 		hookTimeout: 30000,
 		include: ['test/**/*.test.ts'],
-		pool: process.versions.bun || process.versions.deno ? 'forks' : 'threads',
+		pool: isAlternateRuntime ? 'forks' : 'threads',
+		// Deno's node:worker_threads compat is flaky when native-backed tests run
+		// concurrently in the same fork; sequential execution avoids V8 HandleScope crashes.
+		sequence: isAlternateRuntime ? { concurrent: false } : undefined,
 		reporters: ['verbose'],
 		silent: false,
 		testTimeout: 30000,
