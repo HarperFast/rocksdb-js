@@ -237,7 +237,11 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
 		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
 
-		// manually copy the columns because we don't know which ones are valid
+		// manually copy the columns because we don't know which ones are valid.
+		// Hold the descriptor's columns mutex across the copy-check-insert so a
+		// concurrent drop (which erases its entry via unregisterColumnFamily)
+		// cannot interleave and let us reuse a just-dropped column family.
+		std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
 		bool columnExists = false;
 		for (auto& it : entry.descriptor->columns) {
 			columns[it.first] = it.second;

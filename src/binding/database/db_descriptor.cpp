@@ -164,7 +164,17 @@ void DBDescriptor::close() {
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing
 	if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
-		for (const auto& [name, columnDesc] : this->columns) {
+		// Snapshot under the columns mutex; a concurrent drop can erase from
+		// the map while we compact.
+		std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pinnedColumns;
+		{
+			std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
+			pinnedColumns.reserve(this->columns.size());
+			for (const auto& [name, columnDesc] : this->columns) {
+				pinnedColumns.push_back(columnDesc);
+			}
+		}
+		for (const auto& columnDesc : pinnedColumns) {
 			if (columnDesc && columnDesc->column) {
 				this->compactRange(columnDesc->column.get(), nullptr, nullptr);
 			}
@@ -202,7 +212,10 @@ void DBDescriptor::close() {
 	TransactionLogStoreRegistry::Unregister(this->path);
 
 	this->transactions.clear();
-	this->columns.clear();
+	{
+		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
+		this->columns.clear();
+	}
 
 	{
 		std::lock_guard<std::mutex> lock(this->listenerCallbacksMutex);
@@ -846,39 +859,21 @@ uint32_t DBDescriptor::transactionGetNextId() {
 }
 
 /**
- * Attempts to unregister a column family from the descriptor. This will only
- * remove the column family from the columns map if there is at most one
- * DBHandle still referencing it (the one performing the drop).
+ * Removes a dropped column family from the columns map so a later open-by-name
+ * creates a fresh column family instead of reusing the dangling dropped
+ * handle. DBHandles still holding the descriptor keep it alive via their
+ * shared_ptr and can continue reading until they close; only the by-name
+ * lookup is removed.
  */
-bool DBDescriptor::tryUnregisterColumnFamily(const std::string& columnName) {
-	auto it = this->columns.find(columnName);
-	if (it == this->columns.end()) {
-		DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" not found\n",
+void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
+	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	if (this->columns.erase(columnName)) {
+		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
 			this, columnName.c_str());
-		return false;
-	}
-
-	// Check the reference count on the ColumnFamilyDescriptor shared_ptr.
-	// References are held by:
-	// - 1: the columns map entry
-	// - 1: each DBHandle that has this column family open
-	// So if use_count <= 2, only the map and the calling DBHandle hold references.
-	long refCount = it->second.use_count();
-
-	DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" has %ld references\n",
-		this, columnName.c_str(), refCount);
-
-	// Only unregister if there's at most 2 references (map + the DBHandle doing the drop)
-	if (refCount <= 2) {
-		this->columns.erase(it);
-		DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily unregistered column \"%s\"\n",
+	} else {
+		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
 			this, columnName.c_str());
-		return true;
 	}
-
-	DEBUG_LOG("%p DBDescriptor::tryUnregisterColumnFamily column \"%s\" still has %ld other references, not unregistering\n",
-		this, columnName.c_str(), refCount - 2);
-	return false;
 }
 
 /**
@@ -1787,10 +1782,21 @@ rocksdb::Status DBDescriptor::flush() {
 		return rocksdb::Status::OK();
 	}
 
-	// Convert columns map to vector of ColumnFamilyHandle*
+	// Snapshot the column family descriptors under the columns mutex. flush()
+	// can run on a libuv worker thread while the JS thread drops a column
+	// family (which erases from the map); the shared_ptr copies also pin the
+	// handles so they cannot be destroyed mid-Flush.
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pinnedColumns;
+	{
+		std::lock_guard<std::mutex> lock(this->columnsMutex);
+		pinnedColumns.reserve(this->columns.size());
+		for (const auto& [name, columnDescriptor] : this->columns) {
+			pinnedColumns.push_back(columnDescriptor);
+		}
+	}
 	std::vector<rocksdb::ColumnFamilyHandle*> columnHandles;
-	columnHandles.reserve(this->columns.size());
-	for (const auto& [name, columnDescriptor] : this->columns) {
+	columnHandles.reserve(pinnedColumns.size());
+	for (const auto& columnDescriptor : pinnedColumns) {
 		columnHandles.push_back(columnDescriptor->column.get());
 	}
 	// Perform flush

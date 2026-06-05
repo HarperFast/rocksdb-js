@@ -85,6 +85,17 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	/**
+	 * Mutex to protect the columns map. Column families can be unregistered on
+	 * drop (see `unregisterColumnFamily`) while other threads iterate the map:
+	 * the JS thread via the `columns` getter or `DBRegistry::OpenDB`, libuv
+	 * worker threads via `flush()`, and a closing thread via `close()`. Lock
+	 * ordering: when both are held, `DBRegistry::databasesMutex` is acquired
+	 * BEFORE `columnsMutex`; `columnsMutex` is never held while acquiring the
+	 * registry mutex.
+	 */
+	std::mutex columnsMutex;
+
+	/**
 	 * The RocksDB statistics instance.
 	 */
 	std::shared_ptr<rocksdb::Statistics> statistics;
@@ -238,15 +249,15 @@ public:
 	uint32_t transactionGetNextId();
 
 	/**
-	 * Attempts to unregister a column family from the descriptor. This will
-	 * only remove the column family from the columns map if there is at most
-	 * one DBHandle still referencing it (the one performing the drop).
+	 * Removes a dropped column family from the columns map (under
+	 * `columnsMutex`) so a later open-by-name creates a fresh column family
+	 * instead of reusing the dangling dropped handle. DBHandles still holding
+	 * the descriptor keep it alive via their shared_ptr; only the by-name
+	 * lookup is removed.
 	 *
-	 * @param columnName The name of the column family to unregister.
-	 * @returns true if the column family was unregistered, false if other
-	 *          DBHandles are still referencing it.
+	 * @param columnName The name of the dropped column family.
 	 */
-	bool tryUnregisterColumnFamily(const std::string& columnName);
+	void unregisterColumnFamily(const std::string& columnName);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
