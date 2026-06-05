@@ -1,5 +1,10 @@
 import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
+import {
+	createWorkerBootstrapScript,
+	dbRunner,
+	generateDBPath,
+	terminateWorker,
+} from './lib/util.js';
 import EventEmitter, { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -274,23 +279,7 @@ describe('Events', () => {
 
 			resolver = withResolvers<void>();
 			worker.postMessage({ close: true });
-
-			if (process.versions.deno) {
-				// there is something buggy with Deno where calling `await delay(100)` freezes the
-				// process, but advancing a microtask seems to unfreeze it
-				await new Promise<void>((resolve) => {
-					const timer = setTimeout(() => {
-						worker.terminate();
-						resolve();
-					}, 100);
-
-					worker.on('exit', () => {
-						clearTimeout(timer);
-						resolve();
-					});
-				});
-			}
-
+			await terminateWorker(worker);
 			await resolver.promise;
 		}));
 

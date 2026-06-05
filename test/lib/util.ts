@@ -4,6 +4,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { Worker } from 'node:worker_threads';
 
 export function generateDBPath(): string {
 	const testDir = join(tmpdir(), 'rocksdb-js-tests');
@@ -102,6 +103,31 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 			}
 		}
 	}
+}
+
+/**
+ * Waits for a worker thread to exit. On Deno and Bun, worker threads often fail
+ * to exit after `close` messages, so we force-terminate after a short timeout.
+ */
+export async function terminateWorker(worker: Worker): Promise<void> {
+	if (process.versions.deno || process.versions.bun) {
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				worker.terminate();
+				resolve();
+			}, 100);
+
+			worker.on('exit', () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+		return;
+	}
+
+	await new Promise<void>((resolve) => {
+		worker.on('exit', () => resolve());
+	});
 }
 
 /**
