@@ -1299,18 +1299,20 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 	}
 
 	if (auto columnDescriptor = finalizeData->columnDescriptor.lock()) {
-		if (auto sharedData = finalizeData->sharedData.lock()) {
+		if (finalizeData->sharedData) {
 			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", columnDescriptor.get(), columnDescriptor->column.get());
 			DEBUG_LOG_KEY(finalizeData->key);
-			DEBUG_LOG_MSG(" (use_count: %ld)\n", sharedData ? sharedData.use_count() : 0);
-			columnDescriptor->releaseUserSharedBuffer(finalizeData->key, sharedData);
-			finalizeData->sharedData.reset();
+			DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData.use_count());
+			columnDescriptor->releaseUserSharedBuffer(finalizeData->key, finalizeData->sharedData);
 		}
 	} else {
 		DEBUG_LOG("userSharedBufferFinalize columnDescriptor was already destroyed for key:");
 		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 
+	// Destroying finalizeData drops the last strong ref to the shared data
+	// when this was the final external ArrayBuffer; the buffer storage is
+	// released here rather than in DBDescriptor::close().
 	delete finalizeData;
 }
 
@@ -1354,13 +1356,15 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	DEBUG_LOG("%p DBHandle::getUserSharedBuffer Creating external ArrayBuffer with size %zu for key:", this, userSharedBuffer->size);
 	DEBUG_LOG_KEY_LN(key);
 
-	// create finalize data that holds the key, a weak reference to this
-	// descriptor, the column descriptor, and a shared_ptr to keep the data alive
+	// Hold a strong ref to the user shared buffer data here so the external
+	// ArrayBuffer's storage outlives DBDescriptor / ColumnFamilyDescriptor
+	// teardown (the map may be cleared on close() while JS still retains the
+	// ArrayBuffer). The data is released when this finalize data is destroyed.
 	auto* finalizeData = new UserSharedBufferFinalizeData(
 		key,
 		std::weak_ptr<DBHandle>(dbHandle),
 		std::weak_ptr<ColumnFamilyDescriptor>(dbHandle->columnDescriptor),
-		std::weak_ptr<UserSharedBufferData>(userSharedBuffer),
+		userSharedBuffer,
 		callbackRef
 	);
 

@@ -277,6 +277,10 @@ async function runSchemaSyncMode(): Promise<void> {
 	});
 
 	stop = true;
+	// Forceful terminate (no explicit db.close() in either worker) is
+	// intentional: this exercises the case where worker DBHandles are reaped
+	// by N-API env teardown rather than orderly close, mirroring abnormal
+	// worker exits seen in production.
 	await syncWorker.terminate();
 	await holder.terminate();
 
