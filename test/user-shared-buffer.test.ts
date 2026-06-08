@@ -2,7 +2,6 @@ import { withResolvers } from '../src/util.js';
 import { createWorkerBootstrapScript, dbRunner, terminateWorker } from './lib/util.js';
 import { generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
@@ -147,66 +146,66 @@ describe('User Shared Buffer', () => {
 		it('should not crash if you close while holding a reference to the buffer', () =>
 			dbRunner(async ({ db }) => {
 				const sharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(1));
+				const view = new Uint8Array(sharedBuffer);
+				view[0] = 0xab;
 				db.close();
-				expect(() => sharedBuffer.notify()).not.toThrow();
-				// expect(sharedBuffer.notify()).toBe(true);
+				// reading and writing the retained ArrayBuffer must not crash
+				// after close (regression guard for the user-shared-buffer UAF)
+				expect(view[0]).toBe(0xab);
+				view[0] = 0xcd;
+				expect(view[0]).toBe(0xcd);
+				expect(() => sharedBuffer.notify()).toThrow('Database not open');
 			}));
+	});
+
+	describe('Descriptor teardown races', () => {
+		it('should survive advancing a range iterator while the last handles close (main + worker)', () =>
+			expectReproSurvives('stale-iterator'));
 	});
 
 	/**
 	 * Regression tests for shutdown races on process-wide registry state.
 	 *
-	 * These intentionally run in a child process: a failing build often SIGSEGVs
-	 * instead of throwing a catchable JS error.
+	 * These intentionally run in a child process because a failing build
+	 * usually SIGSEGV/SIGTRAPs rather than throwing a catchable JS error. Each
+	 * mode is also run multiple times because the underlying race only
+	 * surfaces on a fraction of attempts, and a single shot can mask
+	 * regressions that reproduce 30-50% of the time.
 	 */
 	describe('User shared buffer use-after-free repro (child process)', () => {
-		it('should survive retained ArrayBuffer access after the last DB handle closes (main + worker)', async () => {
-			const dbPath = generateDBPath();
-			mkdirSync(dbPath, { recursive: true });
+		it('should survive retained ArrayBuffer access after the last DB handle closes (main + worker)', () =>
+			expectReproSurvives('buffer'));
 
-			const { code, signal } = await spawnRepro(dbPath, 'buffer');
+		it('should survive retained ArrayBuffer access while handles are closing (main + worker)', () =>
+			expectReproSurvives('buffer-race'));
 
-			expect(signal).toBeNull();
-			expect(code).toBe(0);
-		});
-
-		it('should survive retained ArrayBuffer access while handles are closing (main + worker)', async () => {
-			const dbPath = generateDBPath();
-			mkdirSync(dbPath, { recursive: true });
-
-			const { code, signal } = await spawnRepro(dbPath, 'buffer-race');
-
-			expect(signal).toBeNull();
-			expect(code).toBe(0);
-		});
-
-		it('should survive advancing a range iterator while the last handles close (main + worker)', async () => {
-			const dbPath = generateDBPath();
-			mkdirSync(dbPath, { recursive: true });
-
-			const { code, signal } = await spawnRepro(dbPath, 'stale-iterator');
-
-			expect(signal).toBeNull();
-			expect(code).toBe(0);
-		});
-
-		it('should survive shared buffer use while another worker repeatedly opens/closes the same CF (schema-sync)', async () => {
-			const dbPath = generateDBPath();
-			mkdirSync(dbPath, { recursive: true });
-
-			const { code, signal } = await spawnRepro(dbPath, 'schema-sync');
-
-			expect(signal).toBeNull();
-			expect(code).toBe(0);
-		});
+		it('should survive shared buffer use while another worker repeatedly opens/closes the same CF (schema-sync)', () =>
+			expectReproSurvives('schema-sync'));
 	});
 });
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-user-shared-buffer-uaf.mts');
 
+type ReproMode = 'buffer' | 'buffer-race' | 'stale-iterator' | 'schema-sync';
+
+/**
+ * Runs the repro fixture in a child process N times and asserts each run
+ * exited cleanly. The race only surfaces on a fraction of attempts, so a
+ * single shot can mask a 30-50% flake regression — looping gives CI a
+ * usefully high detection rate while keeping wall time bounded (~1s/mode).
+ */
+async function expectReproSurvives(mode: ReproMode, iterations = 3): Promise<void> {
+	for (let i = 0; i < iterations; i++) {
+		const dbPath = generateDBPath();
+		const { code, signal } = await spawnRepro(dbPath, mode);
+		expect(signal, `mode=${mode} iteration=${i}`).toBeNull();
+		expect(code, `mode=${mode} iteration=${i}`).toBe(0);
+	}
+}
+
 function spawnRepro(
 	dbPath: string,
-	mode: 'buffer' | 'buffer-race' | 'stale-iterator' | 'schema-sync'
+	mode: ReproMode
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
 	return new Promise((resolve, reject) => {
 		const args =

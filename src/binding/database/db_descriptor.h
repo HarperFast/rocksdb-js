@@ -402,21 +402,27 @@ struct UserSharedBufferData final {
 /**
  * Finalize data for user shared buffer ArrayBuffers to clean up map entries
  * when the ArrayBuffer is garbage collected.
+ *
+ * Holds a strong reference to the underlying `UserSharedBufferData` so the
+ * backing storage outlives any ColumnFamilyDescriptor / DBDescriptor teardown
+ * until JS releases every retained ArrayBuffer for the key. The weak pointers
+ * to `DBHandle` / `ColumnFamilyDescriptor` are used for opportunistic cleanup
+ * (removing listeners, erasing map entries) when those are still alive.
  */
 struct UserSharedBufferFinalizeData final {
 	std::string key;
 	std::weak_ptr<DBHandle> dbHandle;
 	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
-	std::weak_ptr<UserSharedBufferData> sharedData;
+	std::shared_ptr<UserSharedBufferData> sharedData;
 	napi_ref callbackRef;
 
 	UserSharedBufferFinalizeData(
 		const std::string& k,
 		std::weak_ptr<DBHandle> d,
 		std::weak_ptr<ColumnFamilyDescriptor> c,
-		std::weak_ptr<UserSharedBufferData> data,
+		std::shared_ptr<UserSharedBufferData> data,
 		napi_ref callbackRef = nullptr
-	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), callbackRef(callbackRef) {}
 };
 
 /**
@@ -444,7 +450,7 @@ struct ColumnFamilyDescriptor final {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
 	}
 
-	void releaseUserSharedBuffer(const std::string& key, std::shared_ptr<UserSharedBufferData> sharedData) {
+	void releaseUserSharedBuffer(const std::string& key, const std::shared_ptr<UserSharedBufferData>& sharedData) {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer releasing user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
 		DEBUG_LOG_KEY_LN(key);
 
@@ -456,8 +462,12 @@ struct ColumnFamilyDescriptor final {
 			DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer found user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
 			DEBUG_LOG_KEY_LN(key);
 
-			// check if this shared_ptr is about to become the last reference
-			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
+			// Each live external ArrayBuffer keeps one strong ref via its
+			// finalize data; the map entry is a second strong ref. If the
+			// current finalizer's ref + the map entry are the only two left,
+			// no other ArrayBuffers exist for this key and the map entry is
+			// safe to evict here. Otherwise leave the entry in place so future
+			// getUserSharedBuffer() calls keep returning the same mapping.
 			if (sharedData.use_count() <= 2) {
 				this->userSharedBuffers.erase(key);
 				DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer removed user shared buffer for key:", this);
