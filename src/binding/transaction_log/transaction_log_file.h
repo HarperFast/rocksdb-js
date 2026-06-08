@@ -233,8 +233,17 @@ private:
 
 	/**
 	 * Platform specific function that writes multiple buffers to the log file.
+	 *
+	 * NOTE: `iovecs` is non-const and may be mutated on partial writes (the
+	 * partially-written iovec is advanced in place). Callers must not reuse
+	 * the array after this returns. Taking a mutable pointer lets us avoid
+	 * copying into a scratch buffer on the hot write path.
+	 *
+	 * POSIX advances partially-written iovecs in place; Windows writes from
+	 * local state and leaves the array untouched. Callers must treat it as
+	 * consumed in either case.
 	 */
-	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
+	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1
