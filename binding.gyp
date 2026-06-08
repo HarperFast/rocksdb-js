@@ -95,7 +95,12 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
+							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
+							# bundle it; link the zlib static lib shipped alongside it in the
+							# RocksDB prebuild so the compressor object resolves when the linker
+							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
 						]
 					},
 					'xcode_settings': {
@@ -215,7 +220,12 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
+							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
+							# bundle it; link the zlib static lib shipped alongside it in the
+							# RocksDB prebuild so the compressor object resolves when the linker
+							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
 						]
 					},
 					'xcode_settings': {

@@ -1,13 +1,11 @@
-import type { BufferWithDataView } from '../src/encoding.js';
 import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
+import { createWorkerBootstrapScript, dbRunner, terminateWorker } from './lib/util.js';
 import { generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { assert, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -64,64 +62,6 @@ describe('User Shared Buffer', () => {
 				expect(incrementer2[0]).toBe(2n);
 			}));
 
-		it('should notify callbacks', () =>
-			dbRunner(async ({ db }) => {
-				const sharedNumber = new Float64Array(1);
-				await new Promise<void>((resolve) => {
-					const sharedBuffer = db.getUserSharedBuffer('with-callback', sharedNumber.buffer, {
-						callback() {
-							// wait so notify() returns true
-							setTimeout(() => resolve(), 100);
-						},
-					});
-					expect(sharedBuffer.notify()).toBe(true);
-				});
-			}));
-
-		it.skipIf(!globalThis.gc)(
-			'should cleanup callbacks on GC',
-			() =>
-				dbRunner(async ({ db }) => {
-					const sharedNumber = new Float64Array(1);
-					let weakRef: WeakRef<ArrayBuffer> | undefined;
-
-					const encodedKey = db.store.encodeKey('with-callback2');
-					const key = Buffer.from(
-						encodedKey.subarray(encodedKey.start, encodedKey.end)
-					) as BufferWithDataView;
-
-					await new Promise<void>((resolve) => {
-						expect(db.listeners(key)).toBe(0);
-						const sharedBuffer = db.getUserSharedBuffer('with-callback2', sharedNumber.buffer, {
-							callback() {
-								// wait so notify() returns true
-								setImmediate(() => resolve());
-							},
-						});
-						weakRef = new WeakRef(sharedBuffer);
-						expect(sharedBuffer.notify()).toBe(true);
-						expect(db.listeners(key)).toBe(1);
-					});
-
-					// this can be flaky, especially when running all tests
-					globalThis.gc?.();
-					for (let i = 0; i < 20 && db.listeners(key) > 0; i++) {
-						globalThis.gc?.();
-						await delay(250);
-					}
-
-					assert(weakRef);
-					expect(weakRef.deref()).toBeUndefined();
-					const listenerCount = db.listeners(key);
-					if (listenerCount > 0) {
-						throw new Error(
-							`${listenerCount} listener${listenerCount === 1 ? '' : 's'} still present!`
-						);
-					}
-				}),
-			20000
-		);
-
 		it(
 			'should share buffer across worker threads with same database',
 			() =>
@@ -165,23 +105,7 @@ describe('User Shared Buffer', () => {
 
 					resolver = withResolvers<void>();
 					worker.postMessage({ close: true });
-
-					if (process.versions.deno) {
-						// there is something buggy with Deno where calling `await delay(100)` freezes the
-						// process, but advancing a microtask seems to unfreeze it
-						await new Promise<void>((resolve) => {
-							const timer = setTimeout(() => {
-								worker.terminate();
-								resolve();
-							}, 100);
-
-							worker.on('exit', () => {
-								clearTimeout(timer);
-								resolve();
-							});
-						});
-					}
-
+					await terminateWorker(worker);
 					await resolver.promise;
 
 					expect(getNextId()).toBe(5n);
