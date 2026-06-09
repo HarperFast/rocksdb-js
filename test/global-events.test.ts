@@ -136,6 +136,39 @@ describe('Global Events', () => {
 		}
 	});
 
+	it('should keep dispatching across keys as listeners churn (count gate stays accurate)', async () => {
+		// Exercises the lock-free listener-count gate that lets notify skip the
+		// mutex when nothing is listening. The dangerous failure is an
+		// undercounted gate that reads zero while a listener still exists, which
+		// would silently drop a dispatch. Register on two keys, remove one, and
+		// assert the other still fires; then remove all and assert the gate
+		// reports no listeners again.
+		const cbA = vi.fn();
+		const { promise, resolve } = withResolvers<void>();
+		const cbB = () => {
+			cbA(); // reuse the spy so we can assert call count
+			resolve();
+		};
+		RocksDatabase.on('global-events-test', cbA);
+		RocksDatabase.on('global-events-test:other', cbB);
+		try {
+			// drop the first key's listener; the second must still dispatch
+			expect(RocksDatabase.off('global-events-test', cbA)).toBe(true);
+			expect(RocksDatabase.listenerCount('global-events-test')).toBe(0);
+			expect(RocksDatabase.listenerCount('global-events-test:other')).toBe(1);
+
+			expect(RocksDatabase.notify('global-events-test:other')).toBe(true);
+			await promise;
+			expect(cbA).toHaveBeenCalledTimes(1);
+		} finally {
+			RocksDatabase.off('global-events-test:other', cbB);
+		}
+
+		// with all listeners gone the gate engages: notify is a no-op
+		expect(RocksDatabase.listenerCount('global-events-test:other')).toBe(0);
+		expect(RocksDatabase.notify('global-events-test:other')).toBe(false);
+	});
+
 	it('should treat removeListener as an alias of off', () => {
 		const cb = vi.fn();
 		RocksDatabase.on('global-events-test', cb);
