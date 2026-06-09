@@ -140,3 +140,9 @@ C++ code that needs to emit to JS without a database context should call
 3. **Memory Management**: Native layer handles RocksDB memory, TypeScript layer manages encoding
    buffers
 4. **Error Handling**: C++ errors are translated to JavaScript exceptions via N-API
+5. **Transaction log size is append-owned**: `TransactionLogFile::size` is the authoritative written
+   extent, mutated only by the append path (and the one-time reopen correction before the first
+   append). Read/index paths (e.g. `findPositionByTimestamp`) must never truncate it — a zero
+   timestamp seen mid-index during concurrent appends is a not-yet-visible memory-map artifact, not
+   EOF. Reads during writes are bounded by the committed position, not `size` (see
+   `hasAppendedSinceOpen`; HarperFast/harper#1148).
