@@ -1,6 +1,10 @@
 import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner, terminateWorker } from './lib/util.js';
-import { generateDBPath } from './lib/util.js';
+import {
+	createWorkerBootstrapScript,
+	dbRunner,
+	generateDBPath,
+	terminateWorker,
+} from './lib/util.js';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
