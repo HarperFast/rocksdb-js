@@ -43,6 +43,22 @@ public:
 	 * so threadsafe functions don't outlive their N-API environment.
 	 */
 	static void Shutdown();
+
+	/**
+	 * Lock-free, best-effort check for whether any process-global listener is
+	 * registered. Native hot paths should gate event-payload construction on
+	 * this so they don't serialize a message no one will receive:
+	 *
+	 * ```cpp
+	 * if (GlobalEvents::hasListeners()) {
+	 *     auto* data = buildExpensivePayload();
+	 *     emitGlobalEvent("transactionLog:warning", data);
+	 * }
+	 * ```
+	 */
+	static bool hasListeners() {
+		return getInstance().hasListeners();
+	}
 };
 
 /**
@@ -50,7 +66,9 @@ public:
  * if there was at least one listener.
  *
  * Takes ownership of `data` (it is freed by `notify`, even when no listeners
- * are registered).
+ * are registered). `notify` itself short-circuits cheaply when there are no
+ * listeners, but a caller that must build a non-trivial payload should still
+ * gate that construction on `GlobalEvents::hasListeners()` first.
  */
 inline bool emitGlobalEvent(const std::string& key, ListenerData* data = nullptr) {
 	return GlobalEvents::getInstance().notify(key, data);
