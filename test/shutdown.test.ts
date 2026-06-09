@@ -309,4 +309,14 @@ describe('Shutdown', () => {
 			await rm(dbPath, { force: true, recursive: true });
 		}
 	});
+
+	it('should remove all global listeners when shutdown() is called', async () => {
+		const dbPath = generateDBPath();
+		await mkdir(dbPath, { recursive: true });
+
+		RocksDatabase.on('global-events-test', () => {});
+		expect(RocksDatabase.listenerCount('global-events-test')).toBe(1);
+		shutdown();
+		expect(RocksDatabase.listenerCount('global-events-test')).toBe(0);
+	});
 });
