@@ -353,6 +353,37 @@ describe('Transaction Log', () => {
 				).toBe(3);
 			}));
 
+		it('keeps every committed entry findable by an exactStart point read as the log grows (#1148)', () =>
+			dbRunner(async ({ db }) => {
+				// Regression guard for HarperFast/harper#1148: findPositionByTimestamp must not corrupt the
+				// append-owned file size while indexing (which would freeze the index and intermittently
+				// return empty for a committed entry). Append in batches and, after each batch, point-read
+				// every previously committed timestamp via an exactStart query — all must still be found,
+				// including entries committed before the most recent appends. Includes out-of-order
+				// timestamps, which exactStart is specifically designed to resolve.
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const base = Date.now();
+				const committed: number[] = [];
+				for (let i = 0; i < 40; i++) {
+					// alternate forward and backward timestamps so the log is not monotonic
+					const ts = base + (i % 2 === 0 ? i : -i);
+					await db.transaction(async (txn) => {
+						txn.setTimestamp(ts);
+						log.addEntry(value, txn.id);
+					});
+					committed.push(ts);
+					for (const t of committed) {
+						const found = Array.from(log.query({ start: t, exactStart: true })).some(
+							(entry) => entry.timestamp === t
+						);
+						expect(found, `committed entry at ${t} must be found after ${i + 1} appends`).toBe(
+							true
+						);
+					}
+				}
+			}));
+
 		it('should query a transaction log with multiple log instances', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');

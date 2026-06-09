@@ -134,6 +134,18 @@ struct TransactionLogFile final {
 	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 	std::mutex indexMutex;
 
+	/**
+	 * True once an entry batch has been appended to this file since it was (re)opened.
+	 * findPositionByTimestamp() only corrects this->size down to the true written extent (the
+	 * reopen path, where size is seeded from a memory-map-padded on-disk size) while this is
+	 * false — i.e. during startup replay, when there are no concurrent writers. Once appends
+	 * begin, a zero timestamp encountered while indexing is a transient artifact of the reader's
+	 * memory-map view lagging a concurrent append (size is bumped only after the bytes are
+	 * written), so the read path must NOT mutate the append-owned size — doing so truncates the
+	 * counter and freezes the index, intermittently hiding committed entries (HarperFast/harper#1148).
+	 */
+	std::atomic<bool> hasAppendedSinceOpen = false;
+
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
 	// prevent copying

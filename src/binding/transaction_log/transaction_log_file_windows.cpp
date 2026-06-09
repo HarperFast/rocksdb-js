@@ -69,6 +69,11 @@ void TransactionLogFile::openFile() {
 		return;
 	}
 
+	// Fresh (re)open: until the first append, a zero timestamp seen while indexing is a genuine
+	// end-of-data marker (and this->size may be seeded from a padded on-disk size that needs
+	// correcting), so findPositionByTimestamp is allowed to correct this->size. See hasAppendedSinceOpen.
+	this->hasAppendedSinceOpen.store(false);
+
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
 	// ensure parent directory exists (may have been deleted by purge())

@@ -126,6 +126,12 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
 		this, batch.entries.size(), batch.currentEntryIndex, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
 
+	// Mark that appends are now occurring on this file (regardless of format version), so a concurrent
+	// reader's index build will no longer treat a transiently-zero (not-yet-visible) entry as
+	// end-of-file and truncate this->size (see findPositionByTimestamp and hasAppendedSinceOpen). Set
+	// before writing so a reader racing this first append observes it (it is read after this->size).
+	this->hasAppendedSinceOpen.store(true);
+
 	// branch based on file format version
 	if (this->version == 1) {
 		this->writeEntriesV1(batch, maxFileSize);
@@ -241,11 +247,27 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// We begin by indexing the file, so we can use fast ordered std::map access O(log n). We only need to index the file
 	// that hasn't been indexed yet, so we start at the last indexed position. Note that there may be a slight benefit
 	// to using an ordered vector with binary search for faster lookups, but std::map is simpler for now is very close in performance
+	// Set when indexing stops early at a committed-but-not-yet-visible tail (a concurrent append we
+	// couldn't read this pass); used below to start the scan at lastIndexedPosition rather than EOF.
+	bool stoppedAtUnindexedTail = false;
 	while (this->lastIndexedPosition < this->size) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
 		if (entryTimestamp == 0) {
-			// this means we have reached the end of zero-padded file (usually Windows), adjust size and break out of the loop
-			this->size = this->lastIndexedPosition;
+			// A zero timestamp marks the end of the written data. Only correct this->size down to the
+			// true written extent when no entries have been appended since (re)open — i.e. during
+			// startup replay, where the on-disk size can include memory-map zero-padding (Windows
+			// extends files to the map size) and there are no concurrent writers. Once appends have
+			// begun, a zero here is a transient artifact of this reader's memory-map view lagging a
+			// concurrent append (size is bumped only after the bytes are written): mutating the
+			// append-owned size would truncate it and freeze the index, intermittently hiding
+			// committed entries (HarperFast/harper#1148). Reads during writes are bounded by the
+			// committed position, so we just stop indexing here and resume from lastIndexedPosition
+			// on a later call once the bytes are visible.
+			if (!this->hasAppendedSinceOpen.load()) {
+				this->size = this->lastIndexedPosition;
+			} else {
+				stoppedAtUnindexedTail = true;
+			}
 			break;
 		}
 		// for the first iteration, we insert the log file timestamp at the beginning of the index
@@ -266,7 +288,15 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	}
 	// now do the actual search: just a search for the lower bound
 	auto it = this->positionByTimestampIndex.lower_bound(timestamp);
-	return it == this->positionByTimestampIndex.end() ? 0xFFFFFFFF : it->second;
+	if (it != this->positionByTimestampIndex.end()) {
+		return it->second;
+	}
+	// The timestamp is past every indexed entry. If indexing stopped early at a committed-but-not-yet-
+	// visible tail (a concurrent append), start the scan at lastIndexedPosition so the iterator covers
+	// those just-committed entries — bounded by the committed position — rather than reporting the
+	// timestamp as past EOF and missing them (HarperFast/harper#1148). Otherwise the timestamp genuinely
+	// comes after this log file.
+	return stoppedAtUnindexedTail ? this->lastIndexedPosition : 0xFFFFFFFF;
 }
 
 } // namespace rocksdb_js
