@@ -1,7 +1,8 @@
 #include <cmath>
-#include <cstdio>
+#include <sstream>
 #include <system_error>
 #include <vector>
+#include "napi/global_events.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 #include "transaction_log_recovery.h"
@@ -152,19 +153,25 @@ void TransactionLogFile::recoverTail() {
 		case RecoveryScan::Kind::Clean:
 			return;
 
-		case RecoveryScan::Kind::MidFileCorruption:
+		case RecoveryScan::Kind::MidFileCorruption: {
 			// Leave the file intact: entries are still framed after the break, so
 			// truncating would discard committed/replicated transactions. Surface
 			// it so an operator can repair the file; the reader's per-entry bounds
 			// checks refuse to return the broken frame.
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Mid-file corruption at offset %u in %s (size=%u), leaving intact\n",
 				this, scan.validEnd, this->path.string().c_str(), fileSize);
-			::fprintf(stderr,
-				"[rocksdb-js] WARNING: transaction log %s has a framing break at offset %x with %u byte(s) of further "
-				"data; leaving it intact to avoid discarding committed entries. Reads past this point will fail until "
-				"the file is repaired.\n",
-				this->path.string().c_str(), scan.validEnd, fileSize - scan.validEnd);
+
+			std::ostringstream msg;
+			msg << "Transaction log " << this->path.string()
+				<< " has a framing break at offset " << std::hex << scan.validEnd << std::dec
+				<< " with " << (fileSize - scan.validEnd)
+				<< " byte(s) of further data; leaving it intact to avoid discarding committed entries. "
+					"Reads past this point will fail until the file is repaired.";
+			DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+
 			return;
+		}
 
 		case RecoveryScan::Kind::TruncateTail:
 			if (scan.validEnd >= fileSize) {
@@ -177,10 +184,13 @@ void TransactionLogFile::recoverTail() {
 				if (this->lastFlushedSize > scan.validEnd) {
 					this->lastFlushedSize = scan.validEnd;
 				}
-				::fprintf(stderr,
-					"[rocksdb-js] transaction log %s had a torn tail; dropped %u partial byte(s) back to the last valid "
-					"entry (new size=%u).\n",
-					this->path.string().c_str(), fileSize - scan.validEnd, scan.validEnd);
+
+				std::ostringstream msg;
+				msg << "Transaction log " << this->path.string()
+					<< " had a torn tail; dropped " << (fileSize - scan.validEnd)
+					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ").";
+				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 			} else {
 				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
 					this, this->path.string().c_str());

@@ -2,11 +2,14 @@
 #define __NAPI_EVENT_EMITTER_H__
 
 #include <atomic>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
+#include "core/json.h"
 #include "napi/binding.h"
 
 namespace rocksdb_js {
@@ -17,8 +20,48 @@ namespace rocksdb_js {
 struct ListenerData final {
 	std::string args;
 
+	ListenerData() = default;
 	ListenerData(size_t size) : args(size, '\0') {}
 	ListenerData(const ListenerData& other) : args(other.args) {}
+
+	/**
+	 * Builds a ListenerData payload from one or more pre-stringified args,
+	 * JSON-escaped and wrapped in a JSON array (the shape the JS listener
+	 * trampoline expects). Use this from native call sites that need to
+	 * surface text — typically a single message — to a JS listener.
+	 *
+	 * Each arg is encoded as a JSON string via `appendJsonString` so paths
+	 * containing `"`, `\`, or control characters round-trip safely.
+	 *
+	 * Defined inline so files that need only this factory (e.g. recovery
+	 * code in the native GoogleTest binary, which doesn't link the rest of
+	 * the N-API event-emitter machinery) get the implementation without
+	 * pulling in event_emitter.cpp.
+	 *
+	 * Returns a heap-allocated ListenerData; ownership transfers to the
+	 * recipient (`EventEmitter::notify` / `emitGlobalEvent`).
+	 */
+	static ListenerData* fromStrings(std::initializer_list<std::string_view> args) {
+		std::string payload;
+		size_t reserve = 2; // '[' + ']'
+		for (std::string_view arg : args) {
+			reserve += arg.size() + 3; // quotes + comma; escapes may grow this
+		}
+		payload.reserve(reserve);
+
+		payload += '[';
+		bool first = true;
+		for (std::string_view arg : args) {
+			if (!first) payload += ',';
+			first = false;
+			appendJsonString(payload, arg);
+		}
+		payload += ']';
+
+		auto* data = new ListenerData();
+		data->args = std::move(payload);
+		return data;
+	}
 };
 
 /**

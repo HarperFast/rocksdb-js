@@ -668,12 +668,25 @@ complete, use the `'aftercommit'` event.
 ## Event API
 
 `rocksdb-js` provides a EventEmitter-like API that lets you asynchronously notify events to one or
-more synchronous listener callbacks. Events are scoped by database path.
+more synchronous listener callbacks. There are two types of events:
+
+- Per-database events: scoped by database path.
+- Process-global events: not scoped by database path.
 
 Unlike `EventEmitter`, events are emitted asynchronously, but in the same order that the listeners
 were added.
 
 ```typescript
+// Process-global events
+RocksDatabase.on('log.warn', console.warn);
+
+RocksDatabase.on('foo', (...args) => {
+	console.log(args);
+});
+RocksDatabase.notify('foo', 'bar');
+RocksDatabase.off('foo', callback);
+
+// Per-database events
 const callback = (name) => console.log(`Hi from ${name}`);
 db.addListener('foo', callback);
 db.notify('foo');
@@ -1102,6 +1115,18 @@ for (const entry of rangeIter) {
 
 Returns the size of the given transaction log sequence file in bytes. Omit the sequence number to
 get the total size of all the transaction log sequence files for this log.
+
+### Transaction Log Initialization
+
+When a database is opened, `rocksdb-js` will automatically discover the transaction log files. If
+a corrupt transaction log file is detected, the `log.warn` event is emitted on the global
+`RocksDatabase` instance. This should be wired up prior to opening the database.
+
+```typescript
+RocksDatabase.on('log.warn', console.warn);
+
+const db = RocksDatabase.open('path/to/db');
+```
 
 ### Transaction Log Parser
 
