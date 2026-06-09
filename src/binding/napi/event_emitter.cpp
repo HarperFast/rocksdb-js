@@ -244,6 +244,10 @@ napi_ref EventEmitter::addListener(
 	if (it == this->callbacks.end()) {
 		it = this->callbacks.emplace(key, std::vector<std::shared_ptr<ListenerCallback>>()).first;
 	}
+	// Reserve first so the push_back below cannot throw (shared_ptr copy is
+	// noexcept): if growth fails it does so here, before the counter moves, so
+	// the increment and the publish stay all-or-nothing even under OOM.
+	it->second.reserve(it->second.size() + 1);
 	// Bump the gate before publishing the listener into the map. A lock-free
 	// reader in notify() that observes a nonzero count falls through to the
 	// locked path and blocks behind this critical section, so it sees the new
@@ -461,7 +465,9 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 				}),
 			listeners.end()
 		);
-		this->listenerCount.fetch_sub(before - listeners.size(), std::memory_order_relaxed);
+		if (size_t removed = before - listeners.size()) {
+			this->listenerCount.fetch_sub(removed, std::memory_order_relaxed);
+		}
 
 		if (listeners.empty()) {
 			DEBUG_LOG("%p EventEmitter::removeListenersByOwner removing empty key\n", this);
@@ -499,7 +505,9 @@ void EventEmitter::removeListenersByEnv(napi_env env) {
 				}),
 			listeners.end()
 		);
-		this->listenerCount.fetch_sub(before - listeners.size(), std::memory_order_relaxed);
+		if (size_t removed = before - listeners.size()) {
+			this->listenerCount.fetch_sub(removed, std::memory_order_relaxed);
+		}
 
 		if (listeners.empty()) {
 			DEBUG_LOG("%p EventEmitter::removeListenersByEnv removing empty key\n", this);
