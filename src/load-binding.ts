@@ -50,10 +50,70 @@ export type TransactionLogQueryOptions = {
 
 export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
 
+/**
+ * A position within a transaction log, identifying a log file by its sequence
+ * number and a byte `offset` within that file.
+ */
+export type TransactionLogPosition = { sequence: number; offset: number };
+
+/**
+ * A detailed statistics snapshot for a single transaction log store, returned
+ * by {@link TransactionLog.getStats}. All sizes are in bytes; timestamps are
+ * milliseconds since the Unix epoch.
+ *
+ * Memory note: `memory.mappedBytes` is virtual address space — the active write
+ * file is mapped at the full configured `maxFileSize` on POSIX, so it does not
+ * reflect resident memory. `memory.overlayBytes` (POSIX only; 0 on Windows) is
+ * the file-backed portion and is the closer proxy for real consumption.
+ */
+export type TransactionLogStats = {
+	name: string;
+	path: string;
+	fileCount: number;
+	currentSequenceNumber: number;
+	oldestSequenceNumber: number;
+	totalSizeBytes: number;
+	currentFileSize: number;
+	pendingTransactions: number;
+	uncommittedTransactions: number;
+	replayGapBytes: number;
+	memory: {
+		mappedBytes: number;
+		overlayBytes: number;
+		activeMaps: number;
+	};
+	nextLogPosition: TransactionLogPosition;
+	lastFlushedPosition: TransactionLogPosition;
+	lastCommittedPosition: TransactionLogPosition | null;
+	purge: {
+		oldestFileAgeMs: number;
+		purgeableFiles: number;
+		retainedUnflushedFiles: number;
+		lastPurgeMs: number;
+	};
+	totals: {
+		transactionsWritten: number;
+		entriesWritten: number;
+		bytesWritten: number;
+		rotations: number;
+		filesPurged: number;
+		bytesPurged: number;
+		purgeRuns: number;
+		databaseFlushes: number;
+		writeFailures: number;
+	};
+	config: {
+		maxFileSize: number;
+		retentionMs: number;
+		maxAgeThreshold: number;
+	};
+};
+
 export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
+	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;

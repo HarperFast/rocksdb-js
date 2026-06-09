@@ -2,6 +2,7 @@
 #include "database/db_handle.h"
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
+#include "transaction_log/transaction_log_store_registry.h"
 
 namespace rocksdb_js {
 
@@ -165,6 +166,55 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 	SET_INTERNAL_STAT(result, "rocksdb.num-blob-files");
 	SET_INTERNAL_STAT(result, "rocksdb.total-blob-file-size");
 	SET_INTERNAL_STAT(result, "rocksdb.live-blob-file-size");
+
+	// transaction log summary, aggregated across all of this database's logs.
+	// This is independent of the RocksDB statistics gate above, so it appears
+	// even when statistics are disabled. Per-log detail is available via
+	// `log.getStats()`.
+	{
+		auto stores = TransactionLogStoreRegistry::GetStores(this->descriptor->path);
+		uint64_t logCount = 0, fileCount = 0, totalSizeBytes = 0, mappedBytes = 0,
+			overlayBytes = 0, activeMaps = 0, uncommittedTransactions = 0,
+			transactionsWritten = 0, bytesWritten = 0, replayGapBytes = 0;
+		int64_t pendingTransactions = 0;
+		for (const auto& store : stores) {
+			if (!store) {
+				continue;
+			}
+			StoreStats s;
+			store->collectStats(s);
+			logCount++;
+			fileCount += s.fileCount;
+			totalSizeBytes += s.totalSizeBytes;
+			mappedBytes += s.mappedBytes;
+			overlayBytes += s.overlayBytes;
+			activeMaps += s.activeMaps;
+			pendingTransactions += s.pendingTransactions;
+			uncommittedTransactions += s.uncommittedTransactions;
+			transactionsWritten += s.transactionsWritten;
+			bytesWritten += s.bytesWritten;
+			replayGapBytes += s.replayGapBytes;
+		}
+#define SET_TXNLOG_STAT(key, value) \
+		do { \
+			napi_value _txnlogValue; \
+			if (::napi_create_double(env, static_cast<double>(value), &_txnlogValue) == napi_ok) { \
+				::napi_set_named_property(env, result, key, _txnlogValue); \
+			} \
+		} while (0)
+		SET_TXNLOG_STAT("txnlog.logCount", logCount);
+		SET_TXNLOG_STAT("txnlog.fileCount", fileCount);
+		SET_TXNLOG_STAT("txnlog.totalSizeBytes", totalSizeBytes);
+		SET_TXNLOG_STAT("txnlog.mappedBytes", mappedBytes);
+		SET_TXNLOG_STAT("txnlog.overlayBytes", overlayBytes);
+		SET_TXNLOG_STAT("txnlog.activeMaps", activeMaps);
+		SET_TXNLOG_STAT("txnlog.pendingTransactions", pendingTransactions);
+		SET_TXNLOG_STAT("txnlog.uncommittedTransactions", uncommittedTransactions);
+		SET_TXNLOG_STAT("txnlog.transactionsWritten", transactionsWritten);
+		SET_TXNLOG_STAT("txnlog.bytesWritten", bytesWritten);
+		SET_TXNLOG_STAT("txnlog.replayGapBytes", replayGapBytes);
+#undef SET_TXNLOG_STAT
+	}
 
 	return result;
 }

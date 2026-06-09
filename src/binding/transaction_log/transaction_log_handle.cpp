@@ -98,4 +98,23 @@ std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	return std::weak_ptr<LogPosition>(); // nullptr
 }
 
+bool TransactionLogHandle::collectStats(StoreStats& out) {
+	auto store = this->store.lock();
+	if (!store) {
+		// store was released; re-resolve from the registry so stats still reflect
+		// what exists on disk (mirrors addEntry's re-resolution).
+		auto dbHandle = this->dbHandle.lock();
+		if (!dbHandle) {
+			return false;
+		}
+		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		this->store = store;
+	}
+	if (!store) {
+		return false;
+	}
+	store->collectStats(out);
+	return true;
+}
+
 } // namespace rocksdb_js

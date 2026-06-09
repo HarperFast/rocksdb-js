@@ -298,6 +298,112 @@ napi_value TransactionLog::GetPath(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
+// Sets a numeric property on `obj`. All transaction log stat values are exposed
+// as JS numbers (doubles), which is what JS uses internally anyway and avoids
+// any 2^53-boundary surprises with large byte counters.
+#define SET_STAT(obj, key, value) \
+	do { \
+		napi_value _statValue; \
+		NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(value), &_statValue)); \
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, obj, key, _statValue)); \
+	} while (0)
+
+// Builds a `{ sequence, offset }` object for a log position.
+static napi_value buildPositionObject(napi_env env, const LogPosition& position) {
+	napi_value obj;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &obj));
+	SET_STAT(obj, "sequence", position.logSequenceNumber);
+	SET_STAT(obj, "offset", position.positionInLogFile);
+	return obj;
+}
+
+/**
+ * Returns a detailed statistics snapshot for this transaction log store,
+ * including memory (memory-map + overlay) usage, file/transaction gauges,
+ * purge/retention gauges, and lifetime counters.
+ */
+napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetStats");
+
+	StoreStats s;
+	if (!(*txnLogHandle)->collectStats(s)) {
+		// database closed / store unresolvable
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, s.name.c_str(), s.name.size(), &name));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "name", name));
+	napi_value path;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, s.path.c_str(), s.path.size(), &path));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "path", path));
+
+	SET_STAT(result, "fileCount", s.fileCount);
+	SET_STAT(result, "currentSequenceNumber", s.currentSequenceNumber);
+	SET_STAT(result, "oldestSequenceNumber", s.oldestSequenceNumber);
+	SET_STAT(result, "totalSizeBytes", s.totalSizeBytes);
+	SET_STAT(result, "currentFileSize", s.currentFileSize);
+	SET_STAT(result, "pendingTransactions", s.pendingTransactions);
+	SET_STAT(result, "uncommittedTransactions", s.uncommittedTransactions);
+	SET_STAT(result, "replayGapBytes", s.replayGapBytes);
+
+	// memory
+	napi_value memory;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &memory));
+	SET_STAT(memory, "mappedBytes", s.mappedBytes);
+	SET_STAT(memory, "overlayBytes", s.overlayBytes);
+	SET_STAT(memory, "activeMaps", s.activeMaps);
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "memory", memory));
+
+	// positions
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "nextLogPosition", buildPositionObject(env, s.nextLogPosition)));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "lastFlushedPosition", buildPositionObject(env, s.lastFlushedPosition)));
+	if (s.hasLastCommittedPosition) {
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "lastCommittedPosition", buildPositionObject(env, s.lastCommittedPosition)));
+	} else {
+		napi_value nullValue;
+		NAPI_STATUS_THROWS(::napi_get_null(env, &nullValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "lastCommittedPosition", nullValue));
+	}
+
+	// purge / retention gauges
+	napi_value purge;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &purge));
+	SET_STAT(purge, "oldestFileAgeMs", s.oldestFileAgeMs);
+	SET_STAT(purge, "purgeableFiles", s.purgeableFiles);
+	SET_STAT(purge, "retainedUnflushedFiles", s.retainedUnflushedFiles);
+	SET_STAT(purge, "lastPurgeMs", s.lastPurgeMs);
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "purge", purge));
+
+	// lifetime totals
+	napi_value totals;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &totals));
+	SET_STAT(totals, "transactionsWritten", s.transactionsWritten);
+	SET_STAT(totals, "entriesWritten", s.entriesWritten);
+	SET_STAT(totals, "bytesWritten", s.bytesWritten);
+	SET_STAT(totals, "rotations", s.rotations);
+	SET_STAT(totals, "filesPurged", s.filesPurged);
+	SET_STAT(totals, "bytesPurged", s.bytesPurged);
+	SET_STAT(totals, "purgeRuns", s.purgeRuns);
+	SET_STAT(totals, "databaseFlushes", s.databaseFlushes);
+	SET_STAT(totals, "writeFailures", s.writeFailures);
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "totals", totals));
+
+	// config
+	napi_value config;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &config));
+	SET_STAT(config, "maxFileSize", s.maxFileSize);
+	SET_STAT(config, "retentionMs", s.retentionMs);
+	SET_STAT(config, "maxAgeThreshold", s.maxAgeThreshold);
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "config", config));
+
+	return result;
+}
+
 /**
  * Initializes the `NativeTransactionLog` JavaScript class.
  */
@@ -307,6 +413,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "path", nullptr, nullptr, GetPath, nullptr, nullptr, napi_default, nullptr },
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
+		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },

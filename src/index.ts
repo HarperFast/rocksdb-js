@@ -18,6 +18,8 @@ export {
 	shutdown,
 	type TransactionEntry,
 	TransactionLog,
+	type TransactionLogPosition,
+	type TransactionLogStats,
 } from './load-binding.js';
 export * from './parse-transaction-log.js';
 export {

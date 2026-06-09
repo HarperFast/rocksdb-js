@@ -303,12 +303,18 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Gets the RocksDB statistics. Requires statistics to be enabled.
+	 * Gets the RocksDB statistics. The RocksDB ticker/histogram stats require
+	 * statistics to be enabled, but the result always includes a summarized,
+	 * aggregate set of `txnlog.*` keys (across all of this database's transaction
+	 * logs), regardless of whether statistics are enabled. For detailed per-log
+	 * statistics, including memory-map usage, use `log.getStats()` on the log
+	 * returned by {@link RocksDatabase#useLog}.
 	 *
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const stats = db.getStats();
+	 * stats['txnlog.totalSizeBytes']; // bytes across all transaction logs
 	 * ```
 	 */
 	getStats(all = false): RocksDBStats {
