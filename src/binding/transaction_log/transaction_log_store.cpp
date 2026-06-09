@@ -275,7 +275,10 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
-		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size.load(std::memory_order_relaxed));
+		positionInLogFile = logFile->findPositionByTimestamp(
+			timestamp,
+			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed)
+		);
 		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
 		// we are in the correct log file to start searching
 		if (positionInLogFile > 0) {

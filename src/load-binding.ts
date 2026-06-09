@@ -389,6 +389,12 @@ const bindingPath = locateBinding();
 const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
+	binding.addListener;
+export const removeGlobalListener: (event: string, callback: (...args: any[]) => void) => boolean =
+	binding.removeListener;
+export const globalListenerCount: (event: string) => number = binding.listenerCount;
+export const globalNotify: (event: string, args?: any[]) => boolean = binding.notify;
 export const constants: {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 	NOT_IN_MEMORY_CACHE_FLAG: number;

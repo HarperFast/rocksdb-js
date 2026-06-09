@@ -1,7 +1,11 @@
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 import {
+	addGlobalListener,
 	config,
+	globalListenerCount,
+	globalNotify,
+	removeGlobalListener,
 	type StatsHistogramData,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
@@ -182,6 +186,66 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	static config(options: RocksDatabaseConfig): void {
 		config(options);
+	}
+
+	/**
+	 * Registers a process-wide event listener. Internal events emitted by the
+	 * native binding use namespaced keys (e.g. `'transactionLog:warning'`).
+	 *
+	 * Listeners are not tied to any specific database — they fire for every
+	 * matching event emitted in this process.
+	 *
+	 * @example
+	 * ```typescript
+	 * RocksDatabase.on('transactionLog:warning', (warning) => {
+	 *   console.warn(warning);
+	 * });
+	 * ```
+	 */
+	static on(event: string, callback: (...args: any[]) => void): void {
+		addGlobalListener(event, callback);
+	}
+
+	/**
+	 * Alias for {@link RocksDatabase.on}, mirroring the Node `EventEmitter` API.
+	 */
+	static addListener(event: string, callback: (...args: any[]) => void): void {
+		addGlobalListener(event, callback);
+	}
+
+	/**
+	 * Removes a previously-registered process-wide event listener. The
+	 * callback identity must match the one passed to {@link RocksDatabase.on}.
+	 *
+	 * @returns `true` if a matching listener was removed.
+	 */
+	static off(event: string, callback: (...args: any[]) => void): boolean {
+		return removeGlobalListener(event, callback);
+	}
+
+	/**
+	 * Alias for {@link RocksDatabase.off}, mirroring the Node `EventEmitter` API.
+	 */
+	static removeListener(event: string, callback: (...args: any[]) => void): boolean {
+		return removeGlobalListener(event, callback);
+	}
+
+	/**
+	 * Returns the number of process-wide listeners registered for the given event.
+	 */
+	static listenerCount(event: string): number {
+		return globalListenerCount(event);
+	}
+
+	/**
+	 * Emits a process-wide event. Mostly intended for tests and as a peer to
+	 * {@link RocksDatabase.on} — native code should call `emitGlobalEvent` in
+	 * `napi/global_events.h` directly rather than round-tripping through JS.
+	 *
+	 * @returns `true` if there was at least one listener.
+	 */
+	static notify(event: string, ...args: any[]): boolean {
+		return globalNotify(event, args);
 	}
 
 	// committed
