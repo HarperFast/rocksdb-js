@@ -20,7 +20,8 @@ namespace rocksdb_js {
 inline void appendJsonString(std::string& out, std::string_view s) {
 	out.reserve(out.size() + s.size() + 2);
 	out += '"';
-	for (unsigned char c : s) {
+	for (char ch : s) {
+		const unsigned char c = static_cast<unsigned char>(ch);
 		switch (c) {
 			case '"':  out += "\\\""; break;
 			case '\\': out += "\\\\"; break;
