@@ -167,6 +167,7 @@ void TransactionLogFile::recoverTail() {
 				<< " with " << (fileSize - scan.validEnd)
 				<< " byte(s) of further data; leaving it intact to avoid discarding committed entries. "
 					"Reads past this point will fail until the file is repaired.";
+			DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 
 			return;
@@ -188,6 +189,7 @@ void TransactionLogFile::recoverTail() {
 				msg << "Transaction log " << this->path.string()
 					<< " had a torn tail; dropped " << (fileSize - scan.validEnd)
 					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ").";
+				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
 				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 			} else {
 				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
