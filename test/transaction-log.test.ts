@@ -353,6 +353,37 @@ describe('Transaction Log', () => {
 				).toBe(3);
 			}));
 
+		it('keeps every committed entry findable by an exactStart point read as the log grows (#1148)', () =>
+			dbRunner(async ({ db }) => {
+				// Regression guard for HarperFast/harper#1148: findPositionByTimestamp must not corrupt the
+				// append-owned file size while indexing (which would freeze the index and intermittently
+				// return empty for a committed entry). Append in batches and, after each batch, point-read
+				// every previously committed timestamp via an exactStart query — all must still be found,
+				// including entries committed before the most recent appends. Includes out-of-order
+				// timestamps, which exactStart is specifically designed to resolve.
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const base = Date.now();
+				const committed: number[] = [];
+				for (let i = 0; i < 40; i++) {
+					// alternate forward and backward timestamps so the log is not monotonic
+					const ts = base + (i % 2 === 0 ? i : -i);
+					await db.transaction(async (txn) => {
+						txn.setTimestamp(ts);
+						log.addEntry(value, txn.id);
+					});
+					committed.push(ts);
+					for (const t of committed) {
+						const found = Array.from(log.query({ start: t, exactStart: true })).some(
+							(entry) => entry.timestamp === t
+						);
+						expect(found, `committed entry at ${t} must be found after ${i + 1} appends`).toBe(
+							true
+						);
+					}
+				}
+			}));
+
 		it('should query a transaction log with multiple log instances', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
@@ -1422,6 +1453,97 @@ describe('Transaction Log', () => {
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
+	});
+
+	describe('crash recovery (truncate-on-open)', () => {
+		// Simulates the POSIX O_APPEND torn-tail scenario that the writev fix
+		// (#573) left out of scope: a crash mid-append leaves a partial entry
+		// whose header claims more data than was written. On reopen the store
+		// must drop the torn tail back to the last valid entry while preserving
+		// every committed entry.
+
+		const logPathFor = (dbPath: string, name: string, seq = 1) =>
+			join(dbPath, 'transaction_logs', name, `${seq}.txnlog`);
+
+		// A torn partial entry: a full 13-byte header claiming `declaredLength`
+		// data bytes, followed by only `actualData` bytes (the rest "lost" to a
+		// crash mid-write).
+		function tornEntry(declaredLength: number, actualData: number): Buffer {
+			const buf = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + actualData);
+			buf.writeDoubleBE(Date.now(), 0);
+			buf.writeUInt32BE(declaredLength, 8);
+			buf.writeUInt8(1, 12);
+			return buf;
+		}
+
+		// POSIX-only: the torn-tail scenario is the O_APPEND short-write case, and
+		// truncateFile() is a deliberate no-op on Windows (which pre-extends and
+		// zero-pads its logs), so there is nothing to truncate to assert there.
+		it.skipIf(process.platform === 'win32')(
+			'truncates a torn tail on reopen and preserves valid entries',
+			() =>
+				dbRunner(async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const log = database.useLog('foo');
+						const value = Buffer.alloc(24, 'x');
+						for (let i = 0; i < 3; i++) {
+							await database.transaction(async (txn) => {
+								log.addEntry(value, txn.id);
+							});
+						}
+						expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+						database.close();
+
+						const logPath = logPathFor(dbPath, 'foo');
+						const validSize = statSync(logPath).size;
+						// append a torn partial entry: declares 5000 bytes, writes 16
+						await writeFile(logPath, Buffer.concat([readFileSync(logPath), tornEntry(5000, 16)]));
+						expect(statSync(logPath).size).toBeGreaterThan(validSize);
+
+						// reopen: opening the log triggers store load + tail recovery,
+						// which should truncate the torn tail back to validSize
+						database = RocksDatabase.open(dbPath);
+						const reopened = database.useLog('foo');
+						expect(statSync(logPath).size).toBe(validSize);
+						// the committed position isn't persisted without a RocksDB flush,
+						// so read uncommitted to verify the entries survived on disk
+						expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+
+						// the log must remain writable and consistent after recovery
+						await database.transaction(async (txn) => {
+							reopened.addEntry(Buffer.alloc(24, 'y'), txn.id);
+						});
+						expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(4);
+					} finally {
+						database.close();
+					}
+				})
+		);
+
+		it('leaves a clean log file untouched on reopen', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				let database = db;
+				let validSize = 0;
+				try {
+					const log = database.useLog('foo');
+					const value = Buffer.alloc(24, 'x');
+					for (let i = 0; i < 3; i++) {
+						await database.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+					validSize = statSync(logPathFor(dbPath, 'foo')).size;
+					database.close();
+
+					database = RocksDatabase.open(dbPath);
+					const reopened = database.useLog('foo');
+					expect(statSync(logPathFor(dbPath, 'foo')).size).toBe(validSize);
+					expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+				} finally {
+					database.close();
+				}
 			}));
 	});
 
