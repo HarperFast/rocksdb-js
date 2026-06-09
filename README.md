@@ -791,12 +791,22 @@ same column family-level properties, but includes all internal tickers and histo
 Column family and ticker stat values are 64-bit unsigned integers and histogram values are
 `StatsHistogramData` objects.
 
+The result also always includes a summarized, aggregate set of `txnlog.*` keys covering all of
+the database's transaction logs (`txnlog.logCount`, `txnlog.fileCount`, `txnlog.totalSizeBytes`,
+`txnlog.mappedBytes`, `txnlog.overlayBytes`, `txnlog.activeMaps`, `txnlog.pendingTransactions`,
+`txnlog.uncommittedTransactions`, `txnlog.transactionsWritten`, `txnlog.bytesWritten`,
+`txnlog.replayGapBytes`). These are present regardless of whether statistics are enabled. For
+detailed, per-log statistics — including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats).
+
 ```typescript
 // get essential stats
 console.log(db.getStats());
 
 // get all stats
 console.log(db.getStats(true));
+
+// transaction log bytes across all logs
+console.log(db.getStats()['txnlog.totalSizeBytes']);
 ```
 
 ### `stats`
@@ -1102,6 +1112,34 @@ for (const entry of rangeIter) {
 
 Returns the size of the given transaction log sequence file in bytes. Omit the sequence number to
 get the total size of all the transaction log sequence files for this log.
+
+#### `log.getStats(): TransactionLogStats`
+
+Returns a detailed statistics snapshot for this transaction log, including file/transaction
+gauges, memory-map usage, recovery positions, purge/retention gauges, and lifetime counters. All
+sizes are in bytes; timestamps are milliseconds since the Unix epoch.
+
+```typescript
+const log = db.useLog('replication');
+const stats = log.getStats();
+
+stats.fileCount; // number of sequence files on disk
+stats.totalSizeBytes; // total bytes across all sequence files
+stats.memory.mappedBytes; // bytes mapped into memory (virtual address space)
+stats.memory.overlayBytes; // POSIX file-backed overlay portion (0 on Windows)
+stats.replayGapBytes; // bytes between the last flushed position and the write head
+stats.purge.retainedUnflushedFiles; // files past retention but kept (not yet flushed to RocksDB)
+stats.totals.transactionsWritten; // lifetime count of transactions written
+```
+
+> **Memory note:** `memory.mappedBytes` is virtual address space — the active write file is mapped
+> at the full configured `transactionLogMaxSize` on POSIX, so it does not reflect resident memory.
+> `memory.overlayBytes` (POSIX only) is the file-backed portion and is the closer proxy for real
+> consumption.
+
+The `purge.retainedUnflushedFiles` gauge is useful for diagnosing why logs are not being cleaned
+up: a file can be older than the retention period but still retained because its transactions have
+not yet been flushed to RocksDB (purging it would be unsafe for crash recovery).
 
 ### Transaction Log Parser
 

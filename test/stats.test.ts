@@ -42,7 +42,10 @@ describe('Statistics', () => {
 
 			stats = db.getStats();
 			expect(stats).toBeDefined();
-			expect(Object.keys(stats).length).toBeLessThanOrEqual(25);
+			// the curated column-family set stays small; the always-present txnlog.*
+			// summary keys are counted separately.
+			const nonTxnlogKeys = Object.keys(stats).filter((key) => !key.startsWith('txnlog.'));
+			expect(nonTxnlogKeys.length).toBeLessThanOrEqual(25);
 
 			// internal stats
 			expect(stats['rocksdb.number.keys.written']).toBeUndefined();
