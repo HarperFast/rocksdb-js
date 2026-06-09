@@ -1,11 +1,8 @@
 #include <cmath>
-#include <cstdio>
 #include <sstream>
 #include <system_error>
 #include <vector>
-#ifndef ROCKSDB_JS_NATIVE_TESTS
-	#include "napi/global_events.h"
-#endif
+#include "napi/global_events.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 #include "transaction_log_recovery.h"
@@ -164,10 +161,6 @@ void TransactionLogFile::recoverTail() {
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Mid-file corruption at offset %u in %s (size=%u), leaving intact\n",
 				this, scan.validEnd, this->path.string().c_str(), fileSize);
 
-#ifndef ROCKSDB_JS_NATIVE_TESTS
-			// Surface to an operator via the global "log.warn" event. Skipped
-			// in native GoogleTest builds so this TU links without the N-API
-			// event-emitter machinery (recovery itself is the unit under test).
 			std::ostringstream msg;
 			msg << "Transaction log " << this->path.string()
 				<< " has a framing break at offset " << std::hex << scan.validEnd << std::dec
@@ -176,7 +169,6 @@ void TransactionLogFile::recoverTail() {
 					"Reads past this point will fail until the file is repaired.";
 
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
-#endif
 
 			return;
 		}

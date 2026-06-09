@@ -181,6 +181,7 @@
 				'src/binding/core/platform.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
 				'src/binding/transaction_log/transaction_log_recovery.cpp',
+				'test/native/event_emitter_stub.cc',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/json_test.cc',
