@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include "database/db_handle.h"
 #include "iterator/db_iterator.h"
 #include "rocksdb/options.h"
@@ -13,6 +14,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/verification_table.h"
 
 namespace rocksdb_js {
 
@@ -66,6 +68,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool disableSnapshot;
 
 	/**
+	 * When true, IsBusy at commit time is signalled back to JS as RETRY_NOW
+	 * (a non-error resolution) instead of a rejection. The native layer may
+	 * park on a VT slot before signalling, eliminating the JS-side backoff
+	 * delay in the common case where the conflicting transaction has already
+	 * committed.
+	 */
+	bool coordinatedRetry;
+
+	/**
 	 * The transaction id assigned by the database descriptor.
 	 */
 	uint32_t id;
@@ -97,6 +108,19 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
+	 * VT slots locked by this transaction. Parallel to heldTrackers.
+	 * Populated by lockVTSlot() at putSync/removeSync time (main JS thread);
+	 * cleared by releaseIntent() from the execute thread or close().
+	 */
+	std::vector<std::atomic<uint64_t>*> lockedVTSlots;
+
+	/**
+	 * LockTracker pointers held by this transaction — one per entry in
+	 * lockedVTSlots. Each tracker owns one ref; decremented in releaseIntent().
+	 */
+	std::vector<LockTracker*> heldTrackers;
+
+	/**
 	 * A weak reference to the transaction log store this transaction is bound to.
 	 * Once set, a transaction can only add entries to this specific log store.
 	 */
@@ -118,6 +142,28 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	void resetTransaction();
 
+	/**
+	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
+	 * tagging it as "write in flight". Called at putSync/removeSync time
+	 * (main JS thread) so the slot is invalidated as soon as the key enters
+	 * the transaction's write buffer — not deferred to commit time.
+	 *
+	 * Only acts when dbHandle->enableVerificationTable is true and the VT
+	 * has been materialized. Skips slots already locked by any transaction.
+	 * On successful CAS, appends to lockedVTSlots / heldTrackers.
+	 */
+	void lockVTSlot(const std::shared_ptr<DBHandle>& dbHandle, const rocksdb::Slice& key);
+
+	/**
+	 * Releases all VT slots locked by this transaction. CASes each slot back
+	 * to 0 and frees the associated LockTracker. Clears lockedVTSlots and
+	 * heldTrackers.
+	 *
+	 * Called from the libuv execute thread after txn->Commit() (success or
+	 * IsBusy), and from close() to clean up orphaned locks.
+	 */
+	void releaseIntent();
+
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
 	void close() override;
@@ -127,7 +173,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		std::string& key,
 		napi_value resolve,
 		napi_value reject,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
+		std::atomic<uint64_t>* vtSlot = nullptr,
+		uint64_t observedSlot = 0,
+		bool hasExpectedVersion = false,
+		uint64_t expectedVersion = 0,
+		bool wantsPopulate = false
 	);
 
 	/**
@@ -151,6 +202,31 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		rocksdb::ReadOptions& readOptions,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
+
+	/**
+	 * Lazily establishes the transaction's read snapshot (unless snapshots are
+	 * disabled or already set). Any read path that may satisfy a read from the
+	 * Verification Table fast-path — skipping the actual `txn->Get` — must call
+	 * this first, so the OptimisticTransactionDB still has a read-time snapshot
+	 * baseline for commit-time conflict detection. Without it, a
+	 * read-modify-write whose read is served from the VT would commit with no
+	 * snapshot and concurrent writes to the same key would go undetected
+	 * (lost updates).
+	 */
+	void ensureSnapshot();
+
+	/**
+	 * Returns the snapshot a read currently observes, or nullptr when reads see
+	 * the latest committed state (snapshots disabled, or not yet established).
+	 * Used by the VT populate path to decide whether the value just read is the
+	 * latest committed version (so it can skip a re-read) or may be stale
+	 * relative to a newer write (so it must re-read the latest).
+	 */
+	const rocksdb::Snapshot* readSnapshot() const {
+		return (this->txn && this->snapshotSet && !this->disableSnapshot)
+			? this->txn->GetSnapshot()
+			: nullptr;
+	}
 
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,

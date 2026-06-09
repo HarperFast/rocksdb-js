@@ -1,6 +1,7 @@
 #include <sstream>
 #include "database/database.h"
 #include "database/db_descriptor.h"
+#include "database/db_settings.h"
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
 #include "napi/macros.h"
@@ -21,6 +22,7 @@ TransactionHandle::TransactionHandle(
 	env(env),
 	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
+	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
@@ -110,6 +112,52 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	this->logEntryBatch->addEntry(std::move(entry));
 }
 
+void TransactionHandle::lockVTSlot(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	const rocksdb::Slice& key
+) {
+	auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+	if (!vt) return;
+
+	// Use the transaction's base descriptor as the database identity key.
+	// All column families of the same physical DB share the same descriptor.
+	uintptr_t dbPtr = reinterpret_cast<uintptr_t>(this->dbHandle->descriptor.get());
+	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
+	auto* slot = vt->slotFor(dbPtr, cfId, key);
+	if (!slot) return;
+
+	// Register a write intent on the slot. lockSlotForWrite installs a new
+	// LockTracker or joins an existing one as an additional holder (when another
+	// transaction — or this one, via an earlier write to a colliding key —
+	// already locked it), all under the VT's writer mutex. Joining is essential:
+	// if a second concurrent writer skipped registering an intent, a reader
+	// could repopulate the slot with a now-stale version after the first writer
+	// released but before the second committed.
+	LockTracker* t = vt->lockSlotForWrite(slot, dbPtr);
+	if (t) {
+		lockedVTSlots.push_back(slot);
+		heldTrackers.push_back(t);
+	}
+}
+
+void TransactionHandle::releaseIntent() {
+	if (!lockedVTSlots.empty()) {
+		// The trackers were created via the VT, so it is materialized and
+		// getVerificationTableRaw() returns it. releaseWriteIntent drops this
+		// transaction's holder reference under the writer mutex; the slot is
+		// only cleared (and waiters woken) when the last holder releases.
+		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) {
+			for (size_t i = 0; i < lockedVTSlots.size(); i++) {
+				vt->releaseWriteIntent(lockedVTSlots[i], heldTrackers[i]);
+			}
+		}
+	}
+
+	lockedVTSlots.clear();
+	heldTrackers.clear();
+}
+
 /**
  * Release the transaction. This is called after successful commit, after
  * the transaction has been aborted, or when the transaction is destroyed.
@@ -159,6 +207,12 @@ void TransactionHandle::close() {
 		}
 	}
 
+	// Release any VT locks that were installed at putSync/removeSync time
+	// but not yet released (e.g. transaction aborted or DB closed mid-commit).
+	if (!this->lockedVTSlots.empty()) {
+		this->releaseIntent();
+	}
+
 	// destroy the RocksDB transaction
 	this->txn->ClearSnapshot();
 	delete this->txn;
@@ -189,7 +243,12 @@ napi_value TransactionHandle::get(
 	std::string &key,
 	napi_value resolve,
 	napi_value reject,
-	std::shared_ptr<DBHandle> dbHandleOverride
+	std::shared_ptr<DBHandle> dbHandleOverride,
+	std::atomic<uint64_t>* vtSlot,
+	uint64_t observedSlot,
+	bool hasExpectedVersion,
+	uint64_t expectedVersion,
+	bool wantsPopulate
 ) {
 	if (!this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
@@ -225,7 +284,28 @@ napi_value TransactionHandle::get(
 	);
 
 	if (!status.IsIncomplete()) {
-		// found it in the block cache!
+		// Block-cache hit. Apply the VT freshness check and seed before resolving.
+		// vtPopulateIfSettled reads the key's LATEST committed version (not this
+		// transaction's snapshot value) and gates on the single-version invariant,
+		// so a transactional read seeds the cache only when settled and can never
+		// publish a stale snapshot value.
+		if (vtSlot && status.ok()) {
+			rocksdb::Slice valueSlice(value.data(), value.size());
+			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
+			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
+				napi_value global, freshResult;
+				::napi_get_global(env, &global);
+				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
+				return returnStatus;
+			}
+			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
+				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
+			}
+		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
 	}
 
@@ -239,6 +319,11 @@ napi_value TransactionHandle::get(
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	state->vtSlot = vtSlot;
+	state->vtObserved = observedSlot;
+	state->hasExpectedVersion = hasExpectedVersion;
+	state->expectedVersion = expectedVersion;
+	state->wantsPopulate = wantsPopulate;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -314,10 +399,7 @@ rocksdb::Status TransactionHandle::getSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet) {
-		this->snapshotSet = true;
-		this->txn->SetSnapshot();
-	}
+	this->ensureSnapshot();
 
 	if (this->snapshotSet) {
 		readOptions.snapshot = this->txn->GetSnapshot();
@@ -328,6 +410,13 @@ rocksdb::Status TransactionHandle::getSync(
 
 	// TODO: should this be GetForUpdate?
 	return this->txn->Get(readOptions, column, key, &result);
+}
+
+void TransactionHandle::ensureSnapshot() {
+	if (this->txn && !this->disableSnapshot && !this->snapshotSet) {
+		this->snapshotSet = true;
+		this->txn->SetSnapshot();
+	}
 }
 
 /**
@@ -354,7 +443,18 @@ rocksdb::Status TransactionHandle::putSync(
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
-	return this->txn->Put(column, key, value);
+	rocksdb::Status status = this->txn->Put(column, key, value);
+
+	// Lock the VT slot for this key immediately on write. This ensures that
+	// any cached version of the key is invalidated as soon as it enters the
+	// transaction's write buffer — not deferred to commit time. This upholds
+	// the invariant that a cached version is only trusted when there is a
+	// single visible version of the record across all transactions.
+	if (status.ok() && dbHandle->enableVerificationTable) {
+		this->lockVTSlot(dbHandle, key);
+	}
+
+	return status;
 }
 
 /**
@@ -380,7 +480,13 @@ rocksdb::Status TransactionHandle::removeSync(
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
-	return this->txn->Delete(column, key);
+	rocksdb::Status status = this->txn->Delete(column, key);
+
+	if (status.ok() && dbHandle->enableVerificationTable) {
+		this->lockVTSlot(dbHandle, key);
+	}
+
+	return status;
 }
 
 } // namespace rocksdb_js
