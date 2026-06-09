@@ -244,6 +244,14 @@ napi_ref EventEmitter::addListener(
 	if (it == this->callbacks.end()) {
 		it = this->callbacks.emplace(key, std::vector<std::shared_ptr<ListenerCallback>>()).first;
 	}
+	// Bump the gate before publishing the listener into the map. A lock-free
+	// reader in notify() that observes a nonzero count falls through to the
+	// locked path and blocks behind this critical section, so it sees the new
+	// listener; a reader that still observes zero cannot yet see the push_back
+	// either, so dropping is correct. Incrementing after push_back would open a
+	// window where the listener is visible but the count reads zero, letting the
+	// fast path skip a deliverable listener.
+	this->listenerCount.fetch_add(1, std::memory_order_relaxed);
 	it->second.push_back(listenerCallback);
 
 	DEBUG_LOG("%p EventEmitter::addListener added listener for key:", this);
@@ -254,6 +262,20 @@ napi_ref EventEmitter::addListener(
 }
 
 bool EventEmitter::notify(const std::string& key, ListenerData* data) {
+	// Lock-free fast path: when no listeners are registered anywhere, skip the
+	// mutex and the key hash entirely. This keeps normally-silent emit sites
+	// (e.g. native transaction-log warnings) cheap on the common no-listener
+	// path. A concurrent add that has not yet incremented the count is the same
+	// add-vs-emit race that exists without this check.
+	if (this->listenerCount.load(std::memory_order_relaxed) == 0) {
+		if (data) {
+			delete data;
+		}
+		DEBUG_LOG("%p EventEmitter::notify no listeners (fast path) for key:", this);
+		DEBUG_LOG_KEY_LN(key);
+		return false;
+	}
+
 	// Snapshot + acquire under the mutex: every tsfn release path also runs
 	// under this mutex, so while we hold it the tsfn count cannot drop. We
 	// bump each tsfn's count via napi_acquire_threadsafe_function, which
@@ -372,6 +394,7 @@ napi_value EventEmitter::removeListener(napi_env env, const std::string& key, na
 				releaseListenerResources(**listener);
 
 				listener = it->second.erase(listener);
+				this->listenerCount.fetch_sub(1, std::memory_order_relaxed);
 				DEBUG_LOG("%p EventEmitter::removeListener removed listener for key:", this);
 				DEBUG_LOG_KEY(key);
 				DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size());
@@ -427,6 +450,7 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 			}
 		}
 
+		size_t before = listeners.size();
 		listeners.erase(
 			std::remove_if(listeners.begin(), listeners.end(),
 				[](const std::shared_ptr<ListenerCallback>& callback) {
@@ -437,6 +461,7 @@ void EventEmitter::removeListenersByOwner(void* owner) {
 				}),
 			listeners.end()
 		);
+		this->listenerCount.fetch_sub(before - listeners.size(), std::memory_order_relaxed);
 
 		if (listeners.empty()) {
 			DEBUG_LOG("%p EventEmitter::removeListenersByOwner removing empty key\n", this);
@@ -466,6 +491,7 @@ void EventEmitter::removeListenersByEnv(napi_env env) {
 			}
 		}
 
+		size_t before = listeners.size();
 		listeners.erase(
 			std::remove_if(listeners.begin(), listeners.end(),
 				[env](const std::shared_ptr<ListenerCallback>& callback) {
@@ -473,6 +499,7 @@ void EventEmitter::removeListenersByEnv(napi_env env) {
 				}),
 			listeners.end()
 		);
+		this->listenerCount.fetch_sub(before - listeners.size(), std::memory_order_relaxed);
 
 		if (listeners.empty()) {
 			DEBUG_LOG("%p EventEmitter::removeListenersByEnv removing empty key\n", this);
@@ -495,6 +522,7 @@ void EventEmitter::releaseAll() {
 	}
 
 	this->callbacks.clear();
+	this->listenerCount.store(0, std::memory_order_relaxed);
 }
 
 size_t EventEmitter::size() const {
