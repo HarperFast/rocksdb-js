@@ -1,4 +1,29 @@
 {
+	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
+	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
+	# Node Windows build is now compiled with ClangCL + ThinLTO, but this addon
+	# builds with MSVC (cl.exe / link.exe), which rejects those LLVM-only flags:
+	# link.exe aborts with "LNK1117: syntax error in option 'opt:lldltojobs=2'".
+	# Strip them from the MSVC tool invocations via regex exclusion (value- and
+	# thin/full-agnostic). This lives under msvs_settings, so it is inert on the
+	# Linux/macOS generators and leaves their LTO behavior untouched.
+	'target_defaults': {
+		'configurations': {
+			'Release': {
+				'msvs_settings': {
+					'VCCLCompilerTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+					'VCLibrarianTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+					'VCLinkerTool': {
+						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+				},
+			},
+		},
+	},
 	'targets': [
 		{
 			'target_name': 'rocksdb-js',
@@ -11,6 +36,8 @@
 				'src/binding/binding.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
+				'src/binding/napi/event_emitter.cpp',
+				'src/binding/napi/global_events.cpp',
 				'src/binding/napi/helpers.cpp',
 				'src/binding/database/database.cpp',
 				'src/binding/database/database_events.cpp',
@@ -26,6 +53,7 @@
 				'src/binding/transaction_log/transaction_log.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
 				'src/binding/transaction_log/transaction_log_handle.cpp',
+				'src/binding/transaction_log/transaction_log_recovery.cpp',
 				'src/binding/transaction_log/transaction_log_store.cpp',
 				'src/binding/transaction_log/transaction_log_store_registry.cpp',
 			],
@@ -70,7 +98,12 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
+							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
+							# bundle it; link the zlib static lib shipped alongside it in the
+							# RocksDB prebuild so the compressor object resolves when the linker
+							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
 						]
 					},
 					'xcode_settings': {
@@ -147,9 +180,13 @@
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
+				'src/binding/transaction_log/transaction_log_recovery.cpp',
+				'test/native/event_emitter_stub.cc',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
+				'test/native/json_test.cc',
 				'test/native/transaction_log_writev_test.cc',
+				'test/native/transaction_log_recovery_test.cc',
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',
@@ -190,7 +227,12 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
+							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
+							# bundle it; link the zlib static lib shipped alongside it in the
+							# RocksDB prebuild so the compressor object resolves when the linker
+							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
 						]
 					},
 					'xcode_settings': {

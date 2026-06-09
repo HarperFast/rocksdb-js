@@ -134,6 +134,18 @@ struct TransactionLogFile final {
 	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 	std::mutex indexMutex;
 
+	/**
+	 * True once an entry batch has been appended to this file since it was (re)opened.
+	 * findPositionByTimestamp() only corrects this->size down to the true written extent (the
+	 * reopen path, where size is seeded from a memory-map-padded on-disk size) while this is
+	 * false — i.e. during startup replay, when there are no concurrent writers. Once appends
+	 * begin, a zero timestamp encountered while indexing is a transient artifact of the reader's
+	 * memory-map view lagging a concurrent append (size is bumped only after the bytes are
+	 * written), so the read path must NOT mutate the append-owned size — doing so truncates the
+	 * counter and freezes the index, intermittently hiding committed entries (HarperFast/harper#1148).
+	 */
+	std::atomic<bool> hasAppendedSinceOpen = false;
+
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
 	// prevent copying
@@ -173,6 +185,19 @@ struct TransactionLogFile final {
 	 * Opens the log file for reading and writing.
 	 */
  	void open(const double latestTimestamp);
+
+	/**
+	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
+	 * if a torn/partial entry is found at the tail (e.g. an O_APPEND short write
+	 * interrupted by a crash), truncates the file back to the last valid entry
+	 * boundary and flushes. If a framing break is found mid-file with valid
+	 * entries still following it, the file is left intact — truncating would
+	 * discard committed/replicated entries — and the break is logged so the
+	 * reader's per-entry guards can surface it. Must be called after open() and
+	 * before the file receives any appends; only meaningful for the active
+	 * (current) log file.
+	 */
+	void recoverTail();
 
 	/**
 	 * Closes the log file and removes it.
@@ -233,8 +258,26 @@ private:
 
 	/**
 	 * Platform specific function that writes multiple buffers to the log file.
+	 *
+	 * NOTE: `iovecs` is non-const and may be mutated on partial writes (the
+	 * partially-written iovec is advanced in place). Callers must not reuse
+	 * the array after this returns. Taking a mutable pointer lets us avoid
+	 * copying into a scratch buffer on the hot write path.
+	 *
+	 * POSIX advances partially-written iovecs in place; Windows writes from
+	 * local state and leaves the array untouched. Callers must treat it as
+	 * consumed in either case.
 	 */
-	int64_t writeBatchToFile(const iovec* iovecs, int iovcnt);
+	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
+
+	/**
+	 * Platform specific function that truncates the file to `newSize` bytes and
+	 * flushes the change to disk so a subsequent crash cannot resurrect the
+	 * dropped bytes. Returns `true` on success. POSIX-only effect; a no-op
+	 * returning `false` on Windows, which pre-extends and zero-pads its log
+	 * files (torn tails are handled there by the zero-padding end marker).
+	 */
+	bool truncateFile(uint32_t newSize);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1

@@ -44,7 +44,7 @@ extern "C" ssize_t rocksdb_js_mock_writev(int fd, const struct iovec* iov, int i
 // ---------------------------------------------------------------------------
 
 struct WriteBatchToFileTestAccessor {
-	static int64_t call(rocksdb_js::TransactionLogFile& f, const iovec* iovecs, int iovcnt) {
+	static int64_t call(rocksdb_js::TransactionLogFile& f, iovec* iovecs, int iovcnt) {
 		return f.writeBatchToFile(iovecs, iovcnt);
 	}
 };
