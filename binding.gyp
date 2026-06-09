@@ -183,6 +183,7 @@
 				'src/binding/transaction_log/transaction_log_recovery.cpp',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
+				'test/native/json_test.cc',
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/transaction_log_recovery_test.cc',
 			],

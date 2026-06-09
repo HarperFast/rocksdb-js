@@ -1,10 +1,33 @@
 #include "napi/event_emitter.h"
 #include <algorithm>
 #include "core/debug.h"
+#include "core/json.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
 
 namespace rocksdb_js {
+
+ListenerData* ListenerData::fromStrings(std::initializer_list<std::string_view> args) {
+	std::string payload;
+	size_t reserve = 2; // '[' + ']'
+	for (std::string_view arg : args) {
+		reserve += arg.size() + 3; // quotes + comma; escapes may grow this
+	}
+	payload.reserve(reserve);
+
+	payload += '[';
+	bool first = true;
+	for (std::string_view arg : args) {
+		if (!first) payload += ',';
+		first = false;
+		appendJsonString(payload, arg);
+	}
+	payload += ']';
+
+	auto* data = new ListenerData();
+	data->args = std::move(payload);
+	return data;
+}
 
 /**
  * Threadsafe-function finalizer. Node-API guarantees this runs on the JS

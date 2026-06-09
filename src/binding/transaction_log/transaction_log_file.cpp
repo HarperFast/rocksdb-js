@@ -1,7 +1,11 @@
 #include <cmath>
 #include <cstdio>
+#include <sstream>
 #include <system_error>
 #include <vector>
+#ifndef ROCKSDB_JS_NATIVE_TESTS
+	#include "napi/global_events.h"
+#endif
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
 #include "transaction_log_recovery.h"
@@ -152,19 +156,30 @@ void TransactionLogFile::recoverTail() {
 		case RecoveryScan::Kind::Clean:
 			return;
 
-		case RecoveryScan::Kind::MidFileCorruption:
+		case RecoveryScan::Kind::MidFileCorruption: {
 			// Leave the file intact: entries are still framed after the break, so
 			// truncating would discard committed/replicated transactions. Surface
 			// it so an operator can repair the file; the reader's per-entry bounds
 			// checks refuse to return the broken frame.
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Mid-file corruption at offset %u in %s (size=%u), leaving intact\n",
 				this, scan.validEnd, this->path.string().c_str(), fileSize);
-			::fprintf(stderr,
-				"[rocksdb-js] WARNING: transaction log %s has a framing break at offset %x with %u byte(s) of further "
-				"data; leaving it intact to avoid discarding committed entries. Reads past this point will fail until "
-				"the file is repaired.\n",
-				this->path.string().c_str(), scan.validEnd, fileSize - scan.validEnd);
+
+#ifndef ROCKSDB_JS_NATIVE_TESTS
+			// Surface to an operator via the global "log.warn" event. Skipped
+			// in native GoogleTest builds so this TU links without the N-API
+			// event-emitter machinery (recovery itself is the unit under test).
+			std::ostringstream msg;
+			msg << "Transaction log " << this->path.string()
+				<< " has a framing break at offset " << std::hex << scan.validEnd << std::dec
+				<< " with " << (fileSize - scan.validEnd)
+				<< " byte(s) of further data; leaving it intact to avoid discarding committed entries. "
+					"Reads past this point will fail until the file is repaired.";
+
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+#endif
+
 			return;
+		}
 
 		case RecoveryScan::Kind::TruncateTail:
 			if (scan.validEnd >= fileSize) {
