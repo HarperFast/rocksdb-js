@@ -1,7 +1,11 @@
 #include <cmath>
+#include <sstream>
 #include <system_error>
+#include <vector>
+#include "napi/global_events.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
+#include "transaction_log_recovery.h"
 
 // include platform-specific implementation
 #ifdef PLATFORM_WINDOWS
@@ -119,6 +123,79 @@ void TransactionLogFile::open(const double latestTimestamp) {
 
 		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, timestamp=%f)\n",
 			this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed), this->version, this->timestamp);
+	}
+}
+
+void TransactionLogFile::recoverTail() {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+
+	if (this->version != 1) {
+		return;
+	}
+
+	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return; // header-only or empty: nothing to recover
+	}
+
+	// Read the whole file image for the framing scan. This runs once, at open
+	// time, on the active log file only — never on a hot path.
+	std::vector<char> buffer(fileSize);
+	int64_t bytesRead = this->readFromFile(buffer.data(), fileSize, 0);
+	if (bytesRead < 0 || static_cast<uint32_t>(bytesRead) != fileSize) {
+		DEBUG_LOG("%p TransactionLogFile::recoverTail Failed to read file for recovery scan: %s (read=%lld, size=%u)\n",
+			this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
+		return;
+	}
+
+	RecoveryScan scan = scanTransactionLogForRecovery(buffer.data(), fileSize);
+	switch (scan.kind) {
+		case RecoveryScan::Kind::Clean:
+			return;
+
+		case RecoveryScan::Kind::MidFileCorruption: {
+			// Leave the file intact: entries are still framed after the break, so
+			// truncating would discard committed/replicated transactions. Surface
+			// it so an operator can repair the file; the reader's per-entry bounds
+			// checks refuse to return the broken frame.
+			DEBUG_LOG("%p TransactionLogFile::recoverTail Mid-file corruption at offset %u in %s (size=%u), leaving intact\n",
+				this, scan.validEnd, this->path.string().c_str(), fileSize);
+
+			std::ostringstream msg;
+			msg << "Transaction log " << this->path.string()
+				<< " has a framing break at offset " << std::hex << scan.validEnd << std::dec
+				<< " with " << (fileSize - scan.validEnd)
+				<< " byte(s) of further data; leaving it intact to avoid discarding committed entries. "
+					"Reads past this point will fail until the file is repaired.";
+			DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+
+			return;
+		}
+
+		case RecoveryScan::Kind::TruncateTail:
+			if (scan.validEnd >= fileSize) {
+				return;
+			}
+			DEBUG_LOG("%p TransactionLogFile::recoverTail Torn tail in %s: truncating %u -> %u bytes\n",
+				this, this->path.string().c_str(), fileSize, scan.validEnd);
+			if (this->truncateFile(scan.validEnd)) {
+				this->size.store(scan.validEnd, std::memory_order_relaxed);
+				if (this->lastFlushedSize > scan.validEnd) {
+					this->lastFlushedSize = scan.validEnd;
+				}
+
+				std::ostringstream msg;
+				msg << "Transaction log " << this->path.string()
+					<< " had a torn tail; dropped " << (fileSize - scan.validEnd)
+					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ").";
+				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+			} else {
+				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
+					this, this->path.string().c_str());
+			}
+			return;
 	}
 }
 

@@ -429,6 +429,16 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	return success ? static_cast<int64_t>(bytesWritten) : -1;
 }
 
+bool TransactionLogFile::truncateFile(uint32_t newSize) {
+	// No-op on Windows. The Win32 backend pre-extends and zero-pads its log
+	// files, so a torn tail surfaces as a zero-padding end marker that the
+	// recovery scan reports as Clean — there is no torn-tail truncation to do.
+	// (Open-time torn-tail repair is the POSIX O_APPEND scenario.) Returning
+	// false keeps recoverTail()'s TruncateTail branch a safe no-op here.
+	(void)newSize;
+	return false;
+}
+
 std::string getWindowsErrorMessage(DWORD errorCode) {
 	if (errorCode == 0) {
 		return "No error";
