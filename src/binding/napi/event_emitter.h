@@ -136,6 +136,21 @@ public:
 	bool notify(const std::string& key, ListenerData* data);
 
 	/**
+	 * Lock-free, best-effort check for whether this emitter has any listeners
+	 * at all (across every key). Intended as a cheap gate on hot emit paths: a
+	 * normally-silent native emit site can skip building its event payload, and
+	 * `notify` skips taking the mutex and hashing the key, when nobody is
+	 * listening.
+	 *
+	 * Best-effort by design: a listener being added or removed on another
+	 * thread may not be reflected yet — the same add-vs-emit race that exists
+	 * without this check. It never reports a listener that was not registered,
+	 * so a stale `true` only costs a redundant locked lookup and a stale
+	 * `false` only drops an event that raced with its own registration.
+	 */
+	bool hasListeners() const { return this->listenerCount.load(std::memory_order_relaxed) != 0; }
+
+	/**
 	 * Returns the number of listeners for `key` as a napi uint32.
 	 */
 	napi_value listeners(napi_env env, const std::string& key);
@@ -188,6 +203,14 @@ public:
 private:
 	std::unordered_map<std::string, std::vector<std::shared_ptr<ListenerCallback>>> callbacks;
 	mutable std::mutex mutex;
+
+	/**
+	 * Total live listener count across all keys, mirroring the size of
+	 * `callbacks`. Mutated only under `mutex` (so it stays exact relative to
+	 * the map) but read without the lock by `hasListeners` / `notify` for the
+	 * lock-free fast path. Atomic to make those unlocked reads well-defined.
+	 */
+	std::atomic<size_t> listenerCount{0};
 };
 
 } // namespace rocksdb_js
