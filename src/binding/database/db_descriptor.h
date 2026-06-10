@@ -176,28 +176,6 @@ public:
 	napi_value getStat(napi_env env, const std::string& statName);
 
 	/**
-	 * Gets all ticker statistic names.
-	 *
-	 * @example
-	 * ```typescript
-	 * import { stats } from '@harperfast/rocksdb-js';
-	 * console.log(stats.tickers);
-	 * ```
-	 */
-	napi_value getStatTickerNames(napi_env env);
-
-	/**
-	 * Gets all histogram statistic names.
-	 *
-	 * @example
-	 * ```typescript
-	 * import { stats } from '@harperfast/rocksdb-js';
-	 * console.log(stats.histograms);
-	 * ```
-	 */
-	napi_value getStatHistogramNames(napi_env env);
-
-	/**
 	 * Gets all statistics.
 	 *
 	 * @example

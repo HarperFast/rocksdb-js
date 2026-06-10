@@ -106,19 +106,4 @@ describe('Statistics', () => {
 			expect(stat['percentile95']).toBeGreaterThan(0);
 			expect(stat['percentile99']).toBeGreaterThan(0);
 		}));
-
-	it.only('should get all ticker names', () => {
-		const tickerNames = stats.tickers;
-		console.log(tickerNames);
-		expect(tickerNames).toBeDefined();
-		expect(tickerNames.length).toBeGreaterThan(0);
-		expect(tickerNames.includes('rocksdb.number.keys.written')).toBe(true);
-	});
-
-	it('should get all histogram names', () => {
-		const histogramNames = stats.histograms;
-		expect(histogramNames).toBeDefined();
-		expect(histogramNames.length).toBeGreaterThan(0);
-		expect(histogramNames.includes('rocksdb.db.write.micros')).toBe(true);
-	});
 });

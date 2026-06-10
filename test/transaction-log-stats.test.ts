@@ -1,4 +1,4 @@
-import { constants, stats as nativeStats } from '../src/load-binding.js';
+import { constants } from '../src/load-binding.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { utimes } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -166,16 +166,7 @@ describe('Transaction Log Stats', () => {
 			}));
 	});
 
-	describe('txnlog tickers and db.getStat()', () => {
-		it('should list txnlog summary keys in stats.tickers', () => {
-			expect(nativeStats.tickers).toContain('txnlog.logCount');
-			expect(nativeStats.tickers).toContain('txnlog.totalSizeBytes');
-			expect(nativeStats.tickers).toContain('txnlog.mappedBytes');
-			expect(nativeStats.tickers).toContain('txnlog.replayGapBytes');
-			// the RocksDB tickers are still present
-			expect(nativeStats.tickers).toContain('rocksdb.number.keys.written');
-		});
-
+	describe('db.getStat() txnlog resolution', () => {
 		it('should resolve txnlog summary keys via db.getStat()', () =>
 			dbRunner(async ({ db }) => {
 				const value = Buffer.alloc(100, 'a');

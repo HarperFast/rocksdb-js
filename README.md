@@ -805,13 +805,10 @@ Column family and ticker stat values are 64-bit unsigned integers and histogram 
 `StatsHistogramData` objects.
 
 The result also always includes a summarized, aggregate set of `txnlog.*` keys covering all of
-the database's transaction logs (`txnlog.logCount`, `txnlog.fileCount`, `txnlog.totalSizeBytes`,
-`txnlog.mappedBytes`, `txnlog.overlayBytes`, `txnlog.activeMaps`, `txnlog.pendingTransactions`,
-`txnlog.uncommittedTransactions`, `txnlog.transactionsWritten`, `txnlog.bytesWritten`,
-`txnlog.replayGapBytes`). These are present regardless of whether statistics are enabled, are
-listed in [`stats.tickers`](#statstickers), and can be fetched individually with
-`db.getStat('txnlog.…')`. For detailed, per-log statistics — including memory-map usage — use
-[`log.getStats()`](#loggetstats-transactionlogstats).
+the database's transaction logs. These are present regardless of whether statistics are enabled
+and can be fetched individually with `db.getStat('txnlog.…')`. For detailed, per-log statistics —
+including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats). All stat
+names are documented in [docs/stats.md](docs/stats.md).
 
 ```typescript
 // get essential stats
@@ -826,26 +823,9 @@ console.log(db.getStats()['txnlog.totalSizeBytes']);
 
 ### `stats`
 
-An object containing stat specific constants including ticker and histogram names.
-
-#### `stats.histograms`
-
-An array of internal histogram stat names.
-
-```typescript
-import { stats } from '@harperfast/rocksdb-js';
-console.log(stats.histograms);
-```
-
-#### `stats.tickers`
-
-An array of internal ticker stat names. This includes the RocksDB tickers as well as the
-summarized `txnlog.*` transaction log stat names (see [`db.getStats()`](#dbgetstatsall-boolean-rocksdbstats)).
-
-```typescript
-import { stats } from '@harperfast/rocksdb-js';
-console.log(stats.tickers);
-```
+An object containing stat-specific constants. The full catalog of available stat names (RocksDB
+tickers, histograms, internal properties, and transaction log stats) is documented in
+[docs/stats.md](docs/stats.md).
 
 #### `stats.StatsLevel`
 

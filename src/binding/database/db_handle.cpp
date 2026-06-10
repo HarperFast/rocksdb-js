@@ -199,9 +199,9 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 
 	// transaction log summary, aggregated across all of this database's logs.
 	// This is independent of the RocksDB statistics gate above, so it appears
-	// even when statistics are disabled. The same keys are discoverable via
-	// `stats.tickers` and retrievable individually via `db.getStat()`. Per-log
-	// detail is available via `log.getStats()`.
+	// even when statistics are disabled. The same keys are retrievable
+	// individually via `db.getStat()`; per-log detail is available via
+	// `log.getStats()`. All keys are documented in docs/stats.md.
 	{
 		StoreStats total;
 		uint64_t logCount = 0;

@@ -419,8 +419,6 @@ export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
 export const stats: {
-	histograms: string[];
-	tickers: string[];
 	StatsLevel: {
 		DisableAll: number;
 		ExceptTickers: number;
