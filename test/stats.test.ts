@@ -107,8 +107,9 @@ describe('Statistics', () => {
 			expect(stat['percentile99']).toBeGreaterThan(0);
 		}));
 
-	it('should get all ticker names', () => {
+	it.only('should get all ticker names', () => {
 		const tickerNames = stats.tickers;
+		console.log(tickerNames);
 		expect(tickerNames).toBeDefined();
 		expect(tickerNames.length).toBeGreaterThan(0);
 		expect(tickerNames.includes('rocksdb.number.keys.written')).toBe(true);

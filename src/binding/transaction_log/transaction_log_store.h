@@ -150,6 +150,27 @@ struct StoreStats {
 	float maxAgeThreshold = 0;
 };
 
+/**
+ * The canonical set of summarized `txnlog.*` statistics exposed by
+ * `db.getStats()`, `db.getStat()`, and the `stats.tickers` catalog. Defined
+ * once here as an X-macro — `X(jsKey, StoreStats field)` — so all three stay in
+ * sync. Each value is the sum of the named StoreStats field across all of a
+ * database's logs. `txnlog.logCount` is the number of logs and is handled
+ * separately (it is not a per-store field sum).
+ */
+#define TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY "txnlog.logCount"
+#define TRANSACTION_LOG_SUMMARY_STATS(X) \
+	X("txnlog.fileCount", fileCount) \
+	X("txnlog.totalSizeBytes", totalSizeBytes) \
+	X("txnlog.mappedBytes", mappedBytes) \
+	X("txnlog.overlayBytes", overlayBytes) \
+	X("txnlog.activeMaps", activeMaps) \
+	X("txnlog.pendingTransactions", pendingTransactions) \
+	X("txnlog.uncommittedTransactions", uncommittedTransactions) \
+	X("txnlog.transactionsWritten", transactionsWritten) \
+	X("txnlog.bytesWritten", bytesWritten) \
+	X("txnlog.replayGapBytes", replayGapBytes)
+
 struct TransactionLogStore final {
 	/**
 	 * The name of the transaction log store.

@@ -1,4 +1,4 @@
-import { constants } from '../src/load-binding.js';
+import { constants, stats as nativeStats } from '../src/load-binding.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { utimes } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -163,6 +163,35 @@ describe('Transaction Log Stats', () => {
 				expect(stats['txnlog.logCount']).toBe(0);
 				expect(stats['txnlog.totalSizeBytes']).toBe(0);
 				expect(stats['txnlog.mappedBytes']).toBe(0);
+			}));
+	});
+
+	describe('txnlog tickers and db.getStat()', () => {
+		it('should list txnlog summary keys in stats.tickers', () => {
+			expect(nativeStats.tickers).toContain('txnlog.logCount');
+			expect(nativeStats.tickers).toContain('txnlog.totalSizeBytes');
+			expect(nativeStats.tickers).toContain('txnlog.mappedBytes');
+			expect(nativeStats.tickers).toContain('txnlog.replayGapBytes');
+			// the RocksDB tickers are still present
+			expect(nativeStats.tickers).toContain('rocksdb.number.keys.written');
+		});
+
+		it('should resolve txnlog summary keys via db.getStat()', () =>
+			dbRunner(async ({ db }) => {
+				const value = Buffer.alloc(100, 'a');
+				const log = db.useLog('getstat');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+
+				expect(db.getStat('txnlog.logCount')).toBe(1);
+				expect(db.getStat('txnlog.transactionsWritten')).toBe(3);
+				// matches the aggregate exposed by getStats()
+				expect(db.getStat('txnlog.totalSizeBytes')).toBe(db.getStats()['txnlog.totalSizeBytes']);
+				// unknown txnlog key resolves to undefined
+				expect(db.getStat('txnlog.bogus')).toBeUndefined();
 			}));
 	});
 });

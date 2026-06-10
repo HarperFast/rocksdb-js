@@ -808,8 +808,10 @@ The result also always includes a summarized, aggregate set of `txnlog.*` keys c
 the database's transaction logs (`txnlog.logCount`, `txnlog.fileCount`, `txnlog.totalSizeBytes`,
 `txnlog.mappedBytes`, `txnlog.overlayBytes`, `txnlog.activeMaps`, `txnlog.pendingTransactions`,
 `txnlog.uncommittedTransactions`, `txnlog.transactionsWritten`, `txnlog.bytesWritten`,
-`txnlog.replayGapBytes`). These are present regardless of whether statistics are enabled. For
-detailed, per-log statistics — including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats).
+`txnlog.replayGapBytes`). These are present regardless of whether statistics are enabled, are
+listed in [`stats.tickers`](#statstickers), and can be fetched individually with
+`db.getStat('txnlog.…')`. For detailed, per-log statistics — including memory-map usage — use
+[`log.getStats()`](#loggetstats-transactionlogstats).
 
 ```typescript
 // get essential stats
@@ -837,7 +839,8 @@ console.log(stats.histograms);
 
 #### `stats.tickers`
 
-An array of internal ticker stat names.
+An array of internal ticker stat names. This includes the RocksDB tickers as well as the
+summarized `txnlog.*` transaction log stat names (see [`db.getStats()`](#dbgetstatsall-boolean-rocksdbstats)).
 
 ```typescript
 import { stats } from '@harperfast/rocksdb-js';
