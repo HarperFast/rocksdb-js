@@ -36,6 +36,8 @@
 				'src/binding/binding.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
+				'src/binding/napi/event_emitter.cpp',
+				'src/binding/napi/global_events.cpp',
 				'src/binding/napi/helpers.cpp',
 				'src/binding/database/database.cpp',
 				'src/binding/database/database_events.cpp',
@@ -51,6 +53,7 @@
 				'src/binding/transaction_log/transaction_log.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
 				'src/binding/transaction_log/transaction_log_handle.cpp',
+				'src/binding/transaction_log/transaction_log_recovery.cpp',
 				'src/binding/transaction_log/transaction_log_store.cpp',
 				'src/binding/transaction_log/transaction_log_store_registry.cpp',
 			],
@@ -95,7 +98,12 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
+							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
+							# bundle it; link the zlib static lib shipped alongside it in the
+							# RocksDB prebuild so the compressor object resolves when the linker
+							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
 						]
 					},
 					'xcode_settings': {
@@ -172,9 +180,13 @@
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
+				'src/binding/transaction_log/transaction_log_recovery.cpp',
+				'test/native/event_emitter_stub.cc',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
+				'test/native/json_test.cc',
 				'test/native/transaction_log_writev_test.cc',
+				'test/native/transaction_log_recovery_test.cc',
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',
@@ -215,7 +227,12 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
+							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
+							# bundle it; link the zlib static lib shipped alongside it in the
+							# RocksDB prebuild so the compressor object resolves when the linker
+							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
 						]
 					},
 					'xcode_settings': {

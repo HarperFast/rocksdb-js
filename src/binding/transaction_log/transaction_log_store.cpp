@@ -275,7 +275,10 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
-		positionInLogFile = logFile->findPositionByTimestamp(timestamp, isCurrent ? maxFileSize : logFile->size.load(std::memory_order_relaxed));
+		positionInLogFile = logFile->findPositionByTimestamp(
+			timestamp,
+			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed)
+		);
 		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
 		// we are in the correct log file to start searching
 		if (positionInLogFile > 0) {
@@ -781,6 +784,24 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
 	}
+
+	// Crash recovery: only the active (highest-sequence) file can carry a torn
+	// partial write from an interrupted append — rotated files are immutable and
+	// already complete. Scan it once, here, rather than re-scanning every file as
+	// it transiently becomes the highest during registration. A truncation
+	// corrects logFile->size, so refresh nextLogPosition from it afterwards.
+	if (store->currentSequenceNumber > 0) {
+		auto currentIt = store->sequenceFiles.find(store->currentSequenceNumber);
+		if (currentIt != store->sequenceFiles.end()) {
+			auto& currentFile = currentIt->second;
+			if (!currentFile->isOpen()) {
+				currentFile->open(store->latestTimestamp);
+			}
+			currentFile->recoverTail();
+			store->nextLogPosition = { currentFile->size, store->currentSequenceNumber };
+		}
+	}
+
 	store->positionInsert(store->nextLogPosition);
 
 	return store;
