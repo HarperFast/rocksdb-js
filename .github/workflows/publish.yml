@@ -297,7 +297,7 @@ jobs:
                     },
                     {
                       "type": "mrkdwn",
-                      "text": ":github: <https://github.com/HarperFast/rocksdb-js/releases/tag/v${{ github.event.release.tag_name }}|GitHub Release>"
+                      "text": ":github: <https://github.com/HarperFast/rocksdb-js/releases/tag/v${{ needs.preflight.outputs.version }}|GitHub Release>"
                     }
                   ]
                 }
@@ -312,8 +312,8 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           client-payload: |
             {
-              "url": "https://github.com/HarperFast/rocksdb-js/releases/tag/v${{ github.event.release.tag_name }}",
-              "version": "${{ github.event.release.tag_name }}"
+              "url": "https://github.com/HarperFast/rocksdb-js/releases/tag/v${{ needs.preflight.outputs.version }}",
+              "version": "${{ needs.preflight.outputs.version }}"
             }
 
   on-publish-failure:
