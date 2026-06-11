@@ -1,7 +1,7 @@
 import { constants } from '../src/load-binding.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
-import { utimes } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
@@ -93,7 +93,7 @@ describe('Transaction Log Stats', () => {
 
 		it('should report retained-but-unflushed files past retention', () =>
 			dbRunner(
-				{ dbOptions: [{ path: generateDBPath(), transactionLogRetention: 1000 }] },
+				{ dbOptions: [{ path: generateDBPath(), transactionLogRetention: 500 }] },
 				async ({ db }) => {
 					const log = db.useLog('retain');
 					const value = Buffer.alloc(100, 'a');
@@ -101,17 +101,16 @@ describe('Transaction Log Stats', () => {
 						log.addEntry(value, txn.id);
 					});
 
-					// age the file well past the 1ms retention window
-					const filePath = join(db.path, 'transaction_logs', 'retain', '1.txnlog');
-					const old = new Date(Date.now() - 60_000);
-					await utimes(filePath, old, old);
+					// the retention gauges use the in-memory last-write time (not the
+					// on-disk mtime), so wait out the 500ms retention window for real
+					await delay(1200);
 
 					const stats = log.getStats();
 					// nothing has been flushed to RocksDB, so the old file is retained
 					// rather than purgeable (it would be unsafe to drop).
 					expect(stats.purge.retainedUnflushedFiles).toBeGreaterThanOrEqual(1);
 					expect(stats.purge.purgeableFiles).toBe(0);
-					expect(stats.purge.oldestFileAgeMs).toBeGreaterThan(1000);
+					expect(stats.purge.oldestFileAgeMs).toBeGreaterThan(500);
 				}
 			));
 

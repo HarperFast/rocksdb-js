@@ -119,8 +119,6 @@ describe('Stress Transaction Log Memory', () => {
 				console.log(
 					`\nRSS after query: ${rssAfter} (${gib(rssAfter)}), delta ${gib(rssAfter - rssBefore)}`
 				);
-
-				await new Promise((resolve) => setTimeout(resolve, 10000));
 			})
 	);
 });

@@ -395,16 +395,12 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 		}
 
 		// purge / retention gauges — mirror the eligibility logic in doPurge().
-		// getLastWriteTime() does a filesystem stat and must not be called while
-		// holding fileMutex (it takes fileMutex itself), so it is called here with
-		// only dataSetsMutex held, matching doPurge()'s access pattern.
-		std::chrono::system_clock::time_point mtime;
-		try {
-			mtime = logFile->getLastWriteTime();
-		} catch (...) {
-			// file may have been removed concurrently; skip age accounting for it
-			continue;
-		}
+		// Uses the in-memory fileLastWriteTime (seeded from the on-disk mtime at
+		// registration/open and updated on every write) rather than stat()ing
+		// each file, so collectStats stays syscall-free while holding
+		// dataSetsMutex — important because stats may be polled frequently and
+		// writeBatch contends on this mutex.
+		auto mtime = logFile->fileLastWriteTime.load(std::memory_order_relaxed);
 		if (!hasOldest || mtime < oldestWriteTime) {
 			oldestWriteTime = mtime;
 			hasOldest = true;
@@ -563,6 +559,19 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = logFile;
 
+	// Seed the in-memory last-write time from the on-disk mtime so the
+	// retention gauges in collectStats() are correct for files that are
+	// registered at startup discovery but never opened this session. This is
+	// a one-time stat() at registration; collectStats() itself is syscall-free.
+	try {
+		logFile->fileLastWriteTime.store(
+			convertFileTimeToSystemTime(std::filesystem::last_write_time(path)),
+			std::memory_order_relaxed);
+	} catch (...) {
+		// file missing or racing a concurrent remove; keep the constructor's
+		// "now" seed
+	}
+
 	if (sequenceNumber >= this->currentSequenceNumber) {
 		if (!logFile->isOpen()) {
 			logFile->open(this->latestTimestamp);
@@ -653,7 +662,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				this->retentionMs * (1 - this->maxAgeThreshold)
 			);
 			auto now = std::chrono::system_clock::now();
-			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - logFile->fileLastWriteTime);
+			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - logFile->fileLastWriteTime.load(std::memory_order_relaxed));
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:  %f\n", this, this->maxAgeThreshold);
 			DEBUG_LOG("%p TransactionLogStore::writeBatch File age:           %lld ms (threshold %lld ms)\n",
 				this, fileAgeMs.count(), thresholdDuration.count());
@@ -671,8 +680,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed), this->maxFileSize);
 
 		// write as much as possible to this file
-		logFile->writeEntries(batch, this->maxFileSize);
-		logFile->fileLastWriteTime = std::chrono::system_clock::now();
+		try {
+			logFile->writeEntries(batch, this->maxFileSize);
+		} catch (...) {
+			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
+			throw;
+		}
+		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
