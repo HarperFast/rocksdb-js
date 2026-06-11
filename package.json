@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@harperfast/extended-iterable": "1.0.3",
-    "msgpackr": "2.0.2",
+    "msgpackr": "2.0.4",
     "ordered-binary": "1.6.1"
   },
   "devDependencies": {
@@ -73,7 +73,7 @@
     "oxfmt": "0.53.0",
     "oxlint": "1.68.0",
     "prebuildify": "6.0.1",
-    "semver": "7.8.2",
+    "semver": "7.8.4",
     "tar": "7.5.16",
     "tsdown": "0.22.2",
     "tslib": "2.8.1",
