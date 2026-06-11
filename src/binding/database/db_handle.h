@@ -5,6 +5,7 @@
 #include <vector>
 #include <utility>
 #include <string>
+#include <unordered_map>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -111,10 +112,10 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 
 	/**
 	 * Aggregates the summarized `txnlog.*` statistics across all of this
-	 * database's transaction logs into `total` (a sum of per-store StoreStats
-	 * fields) and `logCount` (the number of logs).
+	 * database's transaction logs into `total` (a sum of per-store
+	 * TransactionLogStoreStats fields) and `logCount` (the number of logs).
 	 */
-	void collectTransactionLogSummary(StoreStats& total, uint64_t& logCount);
+	void collectTransactionLogSummary(TransactionLogStoreStats& total, uint64_t& logCount);
 
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;

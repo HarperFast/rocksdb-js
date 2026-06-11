@@ -1,9 +1,61 @@
+#include "transaction_log/transaction_log_store.h"
 #include "database/db_handle.h"
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
 #include "transaction_log/transaction_log_store_registry.h"
 
 namespace rocksdb_js {
+
+namespace {
+
+bool lookupTxnlogSummaryStat(
+	const std::string& statName,
+	const TransactionLogStoreStats& total,
+	uint64_t logCount,
+	double& value
+) {
+	if (statName == TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY) {
+		value = static_cast<double>(logCount);
+		return true;
+	}
+#define X(key, field) \
+	else if (statName == key) { \
+		value = static_cast<double>(total.field); \
+		return true; \
+	}
+	TRANSACTION_LOG_SUMMARY_STATS(X)
+#undef X
+	return false;
+}
+
+void addTxnlogStoreStats(TransactionLogStoreStats& total, const TransactionLogStoreStats& s) {
+#define X(key, field) total.field += s.field;
+	TRANSACTION_LOG_SUMMARY_STATS(X)
+#undef X
+}
+
+void setTxnlogSummaryStatsOnObject(
+	napi_env env,
+	napi_value result,
+	const TransactionLogStoreStats& total,
+	uint64_t logCount
+) {
+	napi_value jsValue;
+	if (::napi_create_double(env, static_cast<double>(logCount), &jsValue) == napi_ok) {
+		::napi_set_named_property(env, result, TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY, jsValue);
+	}
+#define X(key, field) \
+	do { \
+		napi_value _txnlogValue; \
+		if (::napi_create_double(env, static_cast<double>(total.field), &_txnlogValue) == napi_ok) { \
+			::napi_set_named_property(env, result, key, _txnlogValue); \
+		} \
+	} while (0);
+	TRANSACTION_LOG_SUMMARY_STATS(X)
+#undef X
+}
+
+} // namespace
 
 /**
  * Creates a new DBHandle.
@@ -95,22 +147,11 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 	// transaction log summary stats are computed here (not RocksDB tickers or
 	// column-family properties), so resolve them before anything else.
 	if (statName.rfind("txnlog.", 0) == 0) {
-		StoreStats total;
+		TransactionLogStoreStats total;
 		uint64_t logCount = 0;
 		this->collectTransactionLogSummary(total, logCount);
 		double txnlogValue = 0;
-		bool found = false;
-		if (statName == TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY) {
-			txnlogValue = static_cast<double>(logCount);
-			found = true;
-		}
-#define X(key, field) \
-		else if (statName == key) { \
-			txnlogValue = static_cast<double>(total.field); \
-			found = true; \
-		}
-		TRANSACTION_LOG_SUMMARY_STATS(X)
-#undef X
+		bool found = lookupTxnlogSummaryStat(statName, total, logCount, txnlogValue);
 		napi_value jsValue;
 		if (found) {
 			NAPI_STATUS_THROWS(::napi_create_double(env, txnlogValue, &jsValue));
@@ -124,7 +165,7 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 	}
 
 	// check if this is an internal stat first?
-	uint64_t value = 0; \
+	uint64_t value = 0;
 	bool success = this->descriptor->db->GetIntProperty(this->getColumnFamilyHandle(), statName, &value);
 	if (success) {
 		napi_value jsValue;
@@ -203,39 +244,26 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 	// individually via `db.getStat()`; per-log detail is available via
 	// `log.getStats()`. All keys are documented in docs/stats.md.
 	{
-		StoreStats total;
+		TransactionLogStoreStats total;
 		uint64_t logCount = 0;
 		this->collectTransactionLogSummary(total, logCount);
-#define SET_TXNLOG_STAT(key, value) \
-		do { \
-			napi_value _txnlogValue; \
-			if (::napi_create_double(env, static_cast<double>(value), &_txnlogValue) == napi_ok) { \
-				::napi_set_named_property(env, result, key, _txnlogValue); \
-			} \
-		} while (0)
-		SET_TXNLOG_STAT(TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY, logCount);
-#define X(key, field) SET_TXNLOG_STAT(key, total.field);
-		TRANSACTION_LOG_SUMMARY_STATS(X)
-#undef X
-#undef SET_TXNLOG_STAT
+		setTxnlogSummaryStatsOnObject(env, result, total, logCount);
 	}
 
 	return result;
 }
 
-void DBHandle::collectTransactionLogSummary(StoreStats& total, uint64_t& logCount) {
+void DBHandle::collectTransactionLogSummary(TransactionLogStoreStats& total, uint64_t& logCount) {
 	auto stores = TransactionLogStoreRegistry::GetStores(this->descriptor->path);
 	logCount = 0;
 	for (const auto& store : stores) {
 		if (!store) {
 			continue;
 		}
-		StoreStats s;
+		TransactionLogStoreStats s;
 		store->collectStats(s);
 		logCount++;
-#define X(key, field) total.field += s.field;
-		TRANSACTION_LOG_SUMMARY_STATS(X)
-#undef X
+		addTxnlogStoreStats(total, s);
 	}
 }
 

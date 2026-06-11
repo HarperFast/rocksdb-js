@@ -98,7 +98,7 @@ std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	return std::weak_ptr<LogPosition>(); // nullptr
 }
 
-bool TransactionLogHandle::collectStats(StoreStats& out) {
+bool TransactionLogHandle::collectStats(TransactionLogStoreStats& out) {
 	auto store = this->store.lock();
 	if (!store) {
 		// store was released; re-resolve from the registry so stats still reflect

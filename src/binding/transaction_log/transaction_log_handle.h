@@ -8,6 +8,9 @@
 
 namespace rocksdb_js {
 
+// forward declaration
+struct TransactionLogStoreStats;
+
 struct TransactionLogHandle final : Closable {
 	/**
 	 * The database handle.
@@ -68,7 +71,7 @@ struct TransactionLogHandle final : Closable {
 	 * been released (mirroring addEntry). Returns false if the database has been
 	 * closed and no store can be resolved.
 	 */
-	bool collectStats(StoreStats& out);
+	bool collectStats(TransactionLogStoreStats& out);
 
 	/**
 	 * Closes the transaction log handle.

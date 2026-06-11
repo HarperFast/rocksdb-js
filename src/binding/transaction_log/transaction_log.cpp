@@ -326,7 +326,7 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetStats");
 
-	StoreStats s;
+	TransactionLogStoreStats s;
 	if (!(*txnLogHandle)->collectStats(s)) {
 		// database closed / store unresolvable
 		NAPI_RETURN_UNDEFINED();

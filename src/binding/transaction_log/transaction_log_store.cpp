@@ -315,7 +315,7 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 	return position;
 }
 
-void TransactionLogStore::collectStats(StoreStats& out) {
+void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	// identity
 	out.name = this->name;
 	out.path = this->path.string();

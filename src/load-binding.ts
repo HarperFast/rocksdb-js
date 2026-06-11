@@ -1,6 +1,18 @@
 import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
+import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.js';
 import type { StoreContext } from './store.js';
+export type {
+	GetStatsMethod,
+	StatsAll,
+	StatsAllExtras,
+	StatsBasics,
+	StatsCurated,
+	StatsCuratedExtras,
+	StatsDefault,
+	StatsHistogramData,
+	StatsValue,
+} from './stats.js';
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -191,18 +203,6 @@ export type UserSharedBufferCallback = () => void;
 
 export type PurgeLogsOptions = { before?: number; destroy?: boolean; name?: string };
 
-export type StatsHistogramData = {
-	average: number;
-	count: number;
-	max: number;
-	median: number;
-	min: number;
-	percentile95: number;
-	percentile99: number;
-	standardDeviation: number;
-	sum: number;
-};
-
 export type NativeDatabase = {
 	new (): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
@@ -231,7 +231,8 @@ export type NativeDatabase = {
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
-	getStats(all?: boolean): Record<string, number | StatsHistogramData>;
+	getStats(all?: false): StatsDefault;
+	getStats(all: true): StatsAll;
 	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
 	getUserSharedBuffer(
 		key: BufferWithDataView,

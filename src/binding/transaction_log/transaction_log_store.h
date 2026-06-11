@@ -99,7 +99,7 @@ struct SequencePosition { // forward declaration doesn't work here because it is
  *
  * All sizes are in bytes; timestamps are milliseconds since the Unix epoch.
  */
-struct StoreStats {
+struct TransactionLogStoreStats {
 	// identity
 	std::string name;
 	std::string path;
@@ -153,10 +153,11 @@ struct StoreStats {
 /**
  * The canonical set of summarized `txnlog.*` statistics exposed by
  * `db.getStats()`, `db.getStat()`, and the `stats.tickers` catalog. Defined
- * once here as an X-macro — `X(jsKey, StoreStats field)` — so all three stay in
- * sync. Each value is the sum of the named StoreStats field across all of a
- * database's logs. `txnlog.logCount` is the number of logs and is handled
- * separately (it is not a per-store field sum).
+ * once here as an X-macro — `X(jsKey, TransactionLogStoreStats field)` — so all
+ * three stay in sync. Each value is the sum of the named
+ * TransactionLogStoreStats field across all of a database's logs.
+ * `txnlog.logCount` is the number of logs and is handled separately (it is not
+ * a per-store field sum).
  */
 #define TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY "txnlog.logCount"
 #define TRANSACTION_LOG_SUMMARY_STATS(X) \
@@ -426,7 +427,7 @@ struct TransactionLogStore final {
 	 * the sequence files. The last-flushed position is read up front (before
 	 * dataSetsMutex) to keep the dataSetsMutex → flushedStateMutex lock ordering.
 	 */
-	void collectStats(StoreStats& out);
+	void collectStats(TransactionLogStoreStats& out);
 
 	/**
 	 * Purges transaction logs. By default, it deletes transaction log files older than the
