@@ -1875,7 +1875,11 @@ describe('Transaction Log', () => {
 			}
 		};
 
-		it.skipIf(!globalThis.gc)(
+		// POSIX-only: the weak-for-frozen optimization applies when a frozen file
+		// is mapped. On Windows getMemoryMap retains the map strongly regardless
+		// (by design — see transaction_log_file_windows.cpp), so a directly-mapped
+		// frozen log is not released until the file is closed/removed.
+		it.skipIf(!globalThis.gc || process.platform === 'win32')(
 			'unmaps a frozen log when all JS references to its buffer are released',
 			() =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db }) => {
