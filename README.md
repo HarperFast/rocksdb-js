@@ -1496,6 +1496,11 @@ Options:
 
 Available commands:
 
+- `backups <dir> [subcommand]` Manage database backups; with no subcommand, lists the backups in
+  `<dir>`. Subcommands: `backup` (create a backup of the open database), `restore <backup-id>`
+  (restore into the open database after confirmation; unavailable in read-only mode),
+  `verify <backup-id>` (checksum verification), `delete <backup-id>`, and `purge <keep-count>`
+  (delete all but the newest backups). `delete` and `purge` report the recovered disk space.
 - `clear` Clear all data in the current column family
 - `columns` List column families
 - `compact` Compact the current column family
