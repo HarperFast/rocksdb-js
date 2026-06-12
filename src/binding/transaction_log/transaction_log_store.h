@@ -90,6 +90,88 @@ struct SequencePosition { // forward declaration doesn't work here because it is
 	LogPosition position;
 };
 
+/**
+ * A plain (no N-API) snapshot of a transaction log store's statistics. Produced
+ * by `TransactionLogStore::collectStats()` and converted to a JavaScript object
+ * by the N-API layer. Keeping this free of N-API makes it unit-testable under
+ * GoogleTest and reusable by both the per-log (`log.getStats()`) and the
+ * DB-level aggregate (`db.getStats()` `txnlog.*` keys) paths.
+ *
+ * All sizes are in bytes; timestamps are milliseconds since the Unix epoch.
+ */
+struct TransactionLogStoreStats {
+	// identity
+	std::string name;
+	std::string path;
+
+	// files (on disk)
+	uint32_t fileCount = 0;
+	uint32_t currentSequenceNumber = 0;
+	uint32_t oldestSequenceNumber = 0;
+	uint64_t totalSizeBytes = 0;
+	uint32_t currentFileSize = 0;
+
+	// memory
+	uint64_t mappedBytes = 0;  // virtual address space (current file maps full maxFileSize on POSIX)
+	uint64_t overlayBytes = 0; // POSIX file-backed overlay portion (0 on Windows)
+	uint32_t activeMaps = 0;
+
+	// transaction state
+	int32_t pendingTransactions = 0;
+	uint32_t uncommittedTransactions = 0;
+
+	// positions / recovery
+	LogPosition nextLogPosition = { 0, 0 };
+	LogPosition lastCommittedPosition = { 0, 0 };
+	bool hasLastCommittedPosition = false;
+	LogPosition lastFlushedPosition = { 0, 0 };
+	uint64_t replayGapBytes = 0;
+
+	// purge / retention gauges
+	double oldestFileAgeMs = 0;
+	uint32_t purgeableFiles = 0;
+	uint32_t retainedUnflushedFiles = 0;
+
+	// lifetime totals
+	uint64_t transactionsWritten = 0;
+	uint64_t entriesWritten = 0;
+	uint64_t bytesWritten = 0;
+	uint64_t rotations = 0;
+	uint64_t filesPurged = 0;
+	uint64_t bytesPurged = 0;
+	uint64_t purgeRuns = 0;
+	uint64_t databaseFlushes = 0;
+	uint64_t writeFailures = 0;
+	double lastPurgeMs = 0;
+
+	// config
+	uint32_t maxFileSize = 0;
+	uint64_t retentionMs = 0;
+	float maxAgeThreshold = 0;
+};
+
+/**
+ * The canonical set of summarized `txnlog.*` statistics exposed by
+ * `db.getStats()`, `db.getStat()`, and the `stats.tickers` catalog. Defined
+ * once here as an X-macro — `X(jsKey, TransactionLogStoreStats field)` — so all
+ * three stay in sync. Each value is the sum of the named
+ * TransactionLogStoreStats field across all of a database's logs.
+ * `txnlog.logCount` is the number of logs and is handled separately (it is not
+ * a per-store field sum).
+ */
+#define TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY "txnlog.logCount"
+#define TRANSACTION_LOG_SUMMARY_STATS(X) \
+	X("txnlog.fileCount", fileCount) \
+	X("txnlog.totalSizeBytes", totalSizeBytes) \
+	X("txnlog.mappedBytes", mappedBytes) \
+	X("txnlog.overlayBytes", overlayBytes) \
+	X("txnlog.activeMaps", activeMaps) \
+	X("txnlog.pendingTransactions", pendingTransactions) \
+	X("txnlog.uncommittedTransactions", uncommittedTransactions) \
+	X("txnlog.transactionsWritten", transactionsWritten) \
+	X("txnlog.bytesWritten", bytesWritten) \
+	X("txnlog.replayGapBytes", replayGapBytes)
+
 struct TransactionLogStore final {
 	/**
 	 * The name of the transaction log store.
@@ -239,6 +321,24 @@ struct TransactionLogStore final {
 	 */
 	std::shared_ptr<LogPosition> lastCommittedPosition;
 
+	/**
+	 * Lifetime counters exposed via `collectStats()`. These are observability-only
+	 * and never gate behavior, so they are plain relaxed atomics: writers (which
+	 * already hold writeMutex/dataSetsMutex) bump them, and `collectStats()` reads
+	 * them without taking a lock. `lastPurgeMs` is milliseconds since the Unix
+	 * epoch of the most recent purge (0 if never purged).
+	 */
+	std::atomic<uint64_t> transactionsWritten = 0;
+	std::atomic<uint64_t> entriesWritten = 0;
+	std::atomic<uint64_t> bytesWritten = 0;
+	std::atomic<uint64_t> rotations = 0;
+	std::atomic<uint64_t> filesPurged = 0;
+	std::atomic<uint64_t> bytesPurged = 0;
+	std::atomic<uint64_t> purgeRuns = 0;
+	std::atomic<uint64_t> databaseFlushes = 0;
+	std::atomic<uint64_t> writeFailures = 0;
+	std::atomic<double> lastPurgeMs = 0;
+
 	TransactionLogStore(
 		const std::string& name,
 		const std::filesystem::path& path,
@@ -320,6 +420,16 @@ struct TransactionLogStore final {
 	LogPosition getLastFlushedPosition();
 
 	/**
+	 * Fills `out` with a point-in-time snapshot of this store's statistics
+	 * (file/memory/transaction gauges, purge gauges, and lifetime counters).
+	 *
+	 * Reads the lifetime counters lock-free, then takes dataSetsMutex to walk
+	 * the sequence files. The last-flushed position is read up front (before
+	 * dataSetsMutex) to keep the dataSetsMutex → flushedStateMutex lock ordering.
+	 */
+	void collectStats(TransactionLogStoreStats& out);
+
+	/**
 	 * Purges transaction logs. By default, it deletes transaction log files older than the
 	 * retention period (3 days). If `before` is provided, it deletes transaction log files older
 	 * than the specified timestamp. If `all` is true, it deletes all transaction log files.
@@ -378,6 +488,16 @@ private:
 		const bool all = false,
 		const uint64_t before = 0
 	);
+
+	/**
+	 * Advances the active log file to the next sequence number and records a
+	 * rotation. Must be called with writeMutex held (the only paths that rotate
+	 * — writeBatch() and doPurge() — both hold it).
+	 */
+	inline void advanceSequence() {
+		this->currentSequenceNumber = this->nextSequenceNumber++;
+		this->rotations.fetch_add(1, std::memory_order_relaxed);
+	}
 
 	// Sorted-vector helpers for uncommittedTransactionPositions.
 	// All callers must hold dataSetsMutex.

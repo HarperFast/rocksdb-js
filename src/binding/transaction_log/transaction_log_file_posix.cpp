@@ -90,6 +90,11 @@ void TransactionLogFile::openFile() {
 		return;
 	}
 
+	// Fresh (re)open: until the first append, a zero timestamp seen while indexing is a genuine
+	// end-of-data marker (and this->size may be seeded from a padded on-disk size that needs
+	// correcting), so findPositionByTimestamp is allowed to correct this->size. See hasAppendedSinceOpen.
+	this->hasAppendedSinceOpen.store(false);
+
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
 	// ensure parent directory exists (may have been deleted by purge())
@@ -305,6 +310,25 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
 	}
 	return static_cast<int64_t>(::write(this->fd, buffer, size));
+}
+
+bool TransactionLogFile::truncateFile(uint32_t newSize) {
+	if (this->fd < 0) {
+		return false;
+	}
+	if (::ftruncate(this->fd, static_cast<off_t>(newSize)) != 0) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile ftruncate failed: %s (errno=%d)\n",
+			this, ::strerror(errno), errno);
+		return false;
+	}
+	// Persist the size change so a second crash can't resurrect the dropped
+	// tail. fsync (not fdatasync) because the metadata size must be durable.
+	if (::fsync(this->fd) != 0) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile fsync after ftruncate failed: %s (errno=%d)\n",
+			this, ::strerror(errno), errno);
+		// the truncation itself succeeded; a later flush() will sync again
+	}
+	return true;
 }
 
 } // namespace rocksdb_js

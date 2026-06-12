@@ -1,9 +1,61 @@
-#include <algorithm>
+#include "transaction_log/transaction_log_store.h"
 #include "database/db_handle.h"
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
+#include "transaction_log/transaction_log_store_registry.h"
 
 namespace rocksdb_js {
+
+namespace {
+
+bool lookupTxnlogSummaryStat(
+	const std::string& statName,
+	const TransactionLogStoreStats& total,
+	uint64_t logCount,
+	double& value
+) {
+	if (statName == TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY) {
+		value = static_cast<double>(logCount);
+		return true;
+	}
+#define X(key, field) \
+	else if (statName == key) { \
+		value = static_cast<double>(total.field); \
+		return true; \
+	}
+	TRANSACTION_LOG_SUMMARY_STATS(X)
+#undef X
+	return false;
+}
+
+void addTxnlogStoreStats(TransactionLogStoreStats& total, const TransactionLogStoreStats& s) {
+#define X(key, field) total.field += s.field;
+	TRANSACTION_LOG_SUMMARY_STATS(X)
+#undef X
+}
+
+void setTxnlogSummaryStatsOnObject(
+	napi_env env,
+	napi_value result,
+	const TransactionLogStoreStats& total,
+	uint64_t logCount
+) {
+	napi_value jsValue;
+	if (::napi_create_double(env, static_cast<double>(logCount), &jsValue) == napi_ok) {
+		::napi_set_named_property(env, result, TRANSACTION_LOG_SUMMARY_LOG_COUNT_KEY, jsValue);
+	}
+#define X(key, field) \
+	do { \
+		napi_value _txnlogValue; \
+		if (::napi_create_double(env, static_cast<double>(total.field), &_txnlogValue) == napi_ok) { \
+			::napi_set_named_property(env, result, key, _txnlogValue); \
+		} \
+	} while (0);
+	TRANSACTION_LOG_SUMMARY_STATS(X)
+#undef X
+}
+
+} // namespace
 
 /**
  * Creates a new DBHandle.
@@ -92,8 +144,28 @@ std::string DBHandle::getColumnFamilyName() const {
 }
 
 napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
+	// transaction log summary stats are computed here (not RocksDB tickers or
+	// column-family properties), so resolve them before anything else.
+	if (statName.rfind("txnlog.", 0) == 0) {
+		TransactionLogStoreStats total;
+		uint64_t logCount = 0;
+		this->collectTransactionLogSummary(total, logCount);
+		double txnlogValue = 0;
+		bool found = lookupTxnlogSummaryStat(statName, total, logCount, txnlogValue);
+		napi_value jsValue;
+		if (found) {
+			NAPI_STATUS_THROWS(::napi_create_double(env, txnlogValue, &jsValue));
+		} else {
+			// unknown txnlog.* key: it is never a RocksDB ticker or column-family
+			// property, so return undefined rather than falling through (which
+			// would throw when statistics are disabled).
+			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue));
+		}
+		return jsValue;
+	}
+
 	// check if this is an internal stat first?
-	uint64_t value = 0; \
+	uint64_t value = 0;
 	bool success = this->descriptor->db->GetIntProperty(this->getColumnFamilyHandle(), statName, &value);
 	if (success) {
 		napi_value jsValue;
@@ -166,7 +238,33 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 	SET_INTERNAL_STAT(result, "rocksdb.total-blob-file-size");
 	SET_INTERNAL_STAT(result, "rocksdb.live-blob-file-size");
 
+	// transaction log summary, aggregated across all of this database's logs.
+	// This is independent of the RocksDB statistics gate above, so it appears
+	// even when statistics are disabled. The same keys are retrievable
+	// individually via `db.getStat()`; per-log detail is available via
+	// `log.getStats()`. All keys are documented in docs/stats.md.
+	{
+		TransactionLogStoreStats total;
+		uint64_t logCount = 0;
+		this->collectTransactionLogSummary(total, logCount);
+		setTxnlogSummaryStatsOnObject(env, result, total, logCount);
+	}
+
 	return result;
+}
+
+void DBHandle::collectTransactionLogSummary(TransactionLogStoreStats& total, uint64_t& logCount) {
+	auto stores = TransactionLogStoreRegistry::GetStores(this->descriptor->path);
+	logCount = 0;
+	for (const auto& store : stores) {
+		if (!store) {
+			continue;
+		}
+		TransactionLogStoreStats s;
+		store->collectStats(s);
+		logCount++;
+		addTxnlogStoreStats(total, s);
+	}
 }
 
 /**
@@ -260,19 +358,7 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
 	NAPI_STATUS_THROWS(::napi_create_reference(env, instance, 0, &ref));
 	this->logRefs.emplace(name, ref);
 
-	// Notify that a new transaction log was created
-	// Create JSON string with log name: ["logName"]
-	std::string jsonArgs;
-	jsonArgs.reserve(name.size() + 4);
-	jsonArgs += "[\"";
-	for (char c : name) {
-		if (c == '"') jsonArgs  += '\\';
-		jsonArgs += c;
-	}
-	jsonArgs += "\"]";
-	ListenerData* data = new ListenerData(jsonArgs.size());
-	std::copy(jsonArgs.begin(), jsonArgs.end(), data->args.begin());
-	this->descriptor->notify("new-transaction-log", data);
+	this->descriptor->notify("new-transaction-log", ListenerData::fromStrings({ name }));
 
 	return instance;
 }

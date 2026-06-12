@@ -237,7 +237,11 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
 		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
 
-		// manually copy the columns because we don't know which ones are valid
+		// manually copy the columns because we don't know which ones are valid.
+		// Hold the descriptor's columns mutex across the copy-check-insert so a
+		// concurrent drop (which erases its entry via unregisterColumnFamily)
+		// cannot interleave and let us reuse a just-dropped column family.
+		std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
 		bool columnExists = false;
 		for (auto& it : entry.descriptor->columns) {
 			columns[it.first] = it.second;
@@ -377,7 +381,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
 			napi_value listenerCallbacks;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->listenerCallbacks.size()), &listenerCallbacks));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->events.size()), &listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "listenerCallbacks", listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_element(env, result, i, database));
 			i++;
@@ -385,6 +389,38 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 	}
 
 	return result;
+}
+
+/**
+ * Scrub per-descriptor event listeners owned by the given env. Called from the
+ * env-cleanup hook so a worker thread exiting does not leave threadsafe-fn
+ * pointers in shared descriptors that the main thread (or a surviving worker)
+ * would later dereference via notify().
+ *
+ * Snapshots the descriptors under databasesMutex, then drops the lock before
+ * calling into each EventEmitter. This keeps the registry lock window short
+ * and avoids establishing a new databasesMutex -> events.mutex ordering that
+ * isn't already exercised by other call paths.
+ */
+void DBRegistry::RemoveListenersByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->removeListenersByEnv(env);
+	}
 }
 
 /**

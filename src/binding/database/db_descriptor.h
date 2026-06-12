@@ -16,6 +16,7 @@
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/platform.h"
+#include "napi/event_emitter.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 
@@ -24,8 +25,6 @@ namespace rocksdb_js {
 // forward declarations
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
-struct ListenerCallback;
-struct ListenerData;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -85,6 +84,17 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	/**
+	 * Mutex to protect the columns map. Column families can be unregistered on
+	 * drop (see `unregisterColumnFamily`) while other threads iterate the map:
+	 * the JS thread via the `columns` getter or `DBRegistry::OpenDB`, libuv
+	 * worker threads via `flush()`, and a closing thread via `close()`. Lock
+	 * ordering: when both are held, `DBRegistry::databasesMutex` is acquired
+	 * BEFORE `columnsMutex`; `columnsMutex` is never held while acquiring the
+	 * registry mutex.
+	 */
+	std::mutex columnsMutex;
+
+	/**
 	 * The RocksDB statistics instance.
 	 */
 	std::shared_ptr<rocksdb::Statistics> statistics;
@@ -141,14 +151,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex compactMutex;
 
 	/**
-	 * Map of listener callbacks by key.
+	 * Per-database event emitter. Listeners attached here only fire for events
+	 * emitted on this descriptor. Cleaned up per-DBHandle on close and fully
+	 * cleared when the descriptor itself closes.
 	 */
-	std::unordered_map<std::string, std::vector<std::shared_ptr<ListenerCallback>>> listenerCallbacks;
-
-	/**
-	 * Mutex to protect the listener callbacks map.
-	 */
-	std::mutex listenerCallbacksMutex;
+	EventEmitter events;
 
 private:
 	DBDescriptor(
@@ -178,28 +185,6 @@ public:
 	 * ```
 	 */
 	napi_value getStat(napi_env env, const std::string& statName);
-
-	/**
-	 * Gets all ticker statistic names.
-	 *
-	 * @example
-	 * ```typescript
-	 * import { stats } from '@harperfast/rocksdb-js';
-	 * console.log(stats.tickers);
-	 * ```
-	 */
-	napi_value getStatTickerNames(napi_env env);
-
-	/**
-	 * Gets all histogram statistic names.
-	 *
-	 * @example
-	 * ```typescript
-	 * import { stats } from '@harperfast/rocksdb-js';
-	 * console.log(stats.histograms);
-	 * ```
-	 */
-	napi_value getStatHistogramNames(napi_env env);
 
 	/**
 	 * Gets all statistics.
@@ -238,15 +223,15 @@ public:
 	uint32_t transactionGetNextId();
 
 	/**
-	 * Attempts to unregister a column family from the descriptor. This will
-	 * only remove the column family from the columns map if there is at most
-	 * one DBHandle still referencing it (the one performing the drop).
+	 * Removes a dropped column family from the columns map (under
+	 * `columnsMutex`) so a later open-by-name creates a fresh column family
+	 * instead of reusing the dangling dropped handle. DBHandles still holding
+	 * the descriptor keep it alive via their shared_ptr; only the by-name
+	 * lookup is removed.
 	 *
-	 * @param columnName The name of the column family to unregister.
-	 * @returns true if the column family was unregistered, false if other
-	 *          DBHandles are still referencing it.
+	 * @param columnName The name of the dropped column family.
 	 */
-	bool tryUnregisterColumnFamily(const std::string& columnName);
+	void unregisterColumnFamily(const std::string& columnName);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
@@ -271,6 +256,7 @@ public:
 	napi_value listeners(napi_env env, std::string& key);
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
 	void removeListenersByOwner(DBHandle* owner);
+	void removeListenersByEnv(napi_env env);
 
 	napi_value listTransactionLogStores(napi_env env);
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
@@ -405,63 +391,27 @@ struct UserSharedBufferData final {
 /**
  * Finalize data for user shared buffer ArrayBuffers to clean up map entries
  * when the ArrayBuffer is garbage collected.
+ *
+ * Holds a strong reference to the underlying `UserSharedBufferData` so the
+ * backing storage outlives any ColumnFamilyDescriptor / DBDescriptor teardown
+ * until JS releases every retained ArrayBuffer for the key. The weak pointers
+ * to `DBHandle` / `ColumnFamilyDescriptor` are used for opportunistic cleanup
+ * (removing listeners, erasing map entries) when those are still alive.
  */
 struct UserSharedBufferFinalizeData final {
 	std::string key;
 	std::weak_ptr<DBHandle> dbHandle;
 	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
-	std::weak_ptr<UserSharedBufferData> sharedData;
+	std::shared_ptr<UserSharedBufferData> sharedData;
 	napi_ref callbackRef;
 
 	UserSharedBufferFinalizeData(
 		const std::string& k,
 		std::weak_ptr<DBHandle> d,
 		std::weak_ptr<ColumnFamilyDescriptor> c,
-		std::weak_ptr<UserSharedBufferData> data,
+		std::shared_ptr<UserSharedBufferData> data,
 		napi_ref callbackRef = nullptr
-	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(data), callbackRef(callbackRef) {}
-};
-
-/**
- * A struct to hold the serialized arguments to emit to the listener callbacks.
- */
-struct ListenerData final {
-	std::string args;
-
-	ListenerData(size_t size) : args(size, '\0') {}
-	ListenerData(const ListenerData& other) : args(other.args) {}
-};
-
-/**
- * A wrapper for a listener callback that holds the threadsafe callback, env,
- * and callback reference. The callback reference is used to remove the listener
- * callback and the env is used for cleanup.
- */
-struct ListenerCallback final {
-	/**
-	 * The environment of the current callback.
-	 */
-	napi_env env;
-
-	/**
-	 * The threadsafe function of the current callback. This is what is
-	 * actually called when the event is emitted.
-	 */
-	napi_threadsafe_function threadsafeCallback;
-
-	/**
-	 * The callback reference of the current callback. This is used to remove
-	 * the listener callback.
-	 */
-	napi_ref callbackRef;
-
-	/**
-	 * The DBHandle that owns this listener (weak reference to avoid cycles).
-	 */
-	std::weak_ptr<DBHandle> owner;
-
-	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<DBHandle> owner)
-		: env(env), threadsafeCallback(nullptr), callbackRef(callbackRef), owner(owner) {}
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), callbackRef(callbackRef) {}
 };
 
 /**
@@ -489,7 +439,7 @@ struct ColumnFamilyDescriptor final {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
 	}
 
-	void releaseUserSharedBuffer(const std::string& key, std::shared_ptr<UserSharedBufferData> sharedData) {
+	void releaseUserSharedBuffer(const std::string& key, const std::shared_ptr<UserSharedBufferData>& sharedData) {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer releasing user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
 		DEBUG_LOG_KEY_LN(key);
 
@@ -501,8 +451,12 @@ struct ColumnFamilyDescriptor final {
 			DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer found user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());
 			DEBUG_LOG_KEY_LN(key);
 
-			// check if this shared_ptr is about to become the last reference
-			// (map entry + this finalizer's copy = 2, after finalizer exits only map = 1)
+			// Each live external ArrayBuffer keeps one strong ref via its
+			// finalize data; the map entry is a second strong ref. If the
+			// current finalizer's ref + the map entry are the only two left,
+			// no other ArrayBuffers exist for this key and the map entry is
+			// safe to evict here. Otherwise leave the entry in place so future
+			// getUserSharedBuffer() calls keep returning the same mapping.
 			if (sharedData.use_count() <= 2) {
 				this->userSharedBuffers.erase(key);
 				DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer removed user shared buffer for key:", this);

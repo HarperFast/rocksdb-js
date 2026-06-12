@@ -205,11 +205,16 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	const auto& columns = (*dbHandle)->descriptor->columns;
 	std::vector<std::string> columnNames;
-	columnNames.reserve(columns.size());
-	for (const auto& [name, _column] : columns) {
-		columnNames.push_back(name);
+	{
+		// Snapshot under the columns mutex; a concurrent drop on another
+		// thread erases from this map.
+		std::lock_guard<std::mutex> columnsLock((*dbHandle)->descriptor->columnsMutex);
+		const auto& columns = (*dbHandle)->descriptor->columns;
+		columnNames.reserve(columns.size());
+		for (const auto& [name, _column] : columns) {
+			columnNames.push_back(name);
+		}
 	}
 	std::sort(columnNames.begin(), columnNames.end());
 
@@ -447,7 +452,11 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	(*dbHandle)->descriptor->tryUnregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+	// The column family is gone from RocksDB; remove its by-name registry
+	// entry so a later open with the same name creates a fresh column family
+	// instead of reusing this dangling handle (which poisons write batches
+	// with "Invalid column family specified in write batch").
+	(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 		env, global, resolve, 0, nullptr, nullptr
@@ -478,7 +487,11 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle()), "Drop failed");
 
-	(*dbHandle)->descriptor->tryUnregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+	// The column family is gone from RocksDB; remove its by-name registry
+	// entry so a later open with the same name creates a fresh column family
+	// instead of reusing this dangling handle (which poisons write batches
+	// with "Invalid column family specified in write batch").
+	(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
