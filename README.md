@@ -1496,7 +1496,7 @@ Options:
 
 Available commands:
 
-- `backups <dir> [subcommand]` Manage database backups; with no subcommand, lists the backups in
+- `backups <dir> [subcommand]` Manage database backups; with no subcommand or `ls`/`list`, lists the backups in
   `<dir>`. Subcommands: `backup` (create a backup of the open database), `restore <backup-id>`
   (restore into the open database after confirmation; unavailable in read-only mode),
   `verify <backup-id>` (checksum verification), `delete <backup-id>`, and `purge <keep-count>`
