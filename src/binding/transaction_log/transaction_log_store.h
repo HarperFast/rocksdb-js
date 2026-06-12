@@ -126,9 +126,14 @@ struct TransactionLogStore final {
 	float maxAgeThreshold;
 
 	/**
-	 * The current sequence number of the transaction log file.
+	 * The current sequence number of the transaction log file. Atomic because it
+	 * is written on the write path (under writeMutex) but read on the read path
+	 * (getMemoryMap/findPositionByTimestamp under dataSetsMutex) — different
+	 * locks, so the accesses would otherwise be a data race. Relaxed ordering is
+	 * sufficient: readers only need a coherent value, not ordering against other
+	 * state (the mutexes already provide that).
 	 */
-	uint32_t currentSequenceNumber = 1;
+	std::atomic<uint32_t> currentSequenceNumber = 1;
 
 	/**
 	 * The next sequence number to use for the transaction log file.
@@ -294,9 +299,20 @@ struct TransactionLogStore final {
 	void databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber);
 
 	/**
-	 * Memory maps the transaction log file for the given sequence number.
+	 * Memory maps the transaction log file for the given sequence number and
+	 * returns a strong reference. For a frozen file the log file keeps only a
+	 * weak handle, so this reference (handed to the JS external buffer) owns the
+	 * mapping; releasing it unmaps the file.
 	 **/
-	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t logSequenceNumber);
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t logSequenceNumber);
+
+	/**
+	 * Advances currentSequenceNumber to the next sequence, first downgrading the
+	 * memory map of the file being rotated away from to a weak reference (so a
+	 * reader that mapped it while current no longer pins it). Must be called on
+	 * the write path (under writeMutex).
+	 */
+	void rotateToNextSequence(const std::shared_ptr<TransactionLogFile>& oldFile);
 
 	/**
 	* Get the log file size.

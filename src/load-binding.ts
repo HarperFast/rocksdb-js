@@ -373,6 +373,12 @@ export const currentThreadId: () => number = binding.currentThreadId;
  */
 export const coolTransactionLogs: () => { maps: number; bytes: number } =
 	binding.coolTransactionLogs;
+/**
+ * Number of live transaction-log memory maps across the process. Internal —
+ * used by tests to verify that releasing a frozen log's external buffer unmaps
+ * the underlying mapping rather than leaving it retained.
+ */
+export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 export const stats: {
 	histograms: string[];
 	tickers: string[];

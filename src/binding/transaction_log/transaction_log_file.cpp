@@ -18,6 +18,8 @@ namespace rocksdb_js {
 
 std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
 
+std::atomic<int64_t> MemoryMap::liveCount{0};
+
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
@@ -26,6 +28,19 @@ void TransactionLogFile::resetAdviseColdSupportForTests() {
 
 TransactionLogFile::~TransactionLogFile() {
 	this->close();
+}
+
+void TransactionLogFile::downgradeMapToFrozen() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	if (this->memoryMap) {
+		// The file is no longer the current (actively-written) log, so drop the
+		// strong reference. Keep a weak handle for handout dedup; the mapping now
+		// lives exactly as long as the JS external buffer (if any reader mapped it
+		// while it was current) — once that is released, it is unmapped instead of
+		// staying pinned for the life of this TransactionLogFile.
+		this->frozenMapCache = this->memoryMap;
+		this->memoryMap.reset();
+	}
 }
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
@@ -315,10 +330,10 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
  * @param mapSize - the size of the memory map to search in
  * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
  */
-uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
+uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
-	auto memoryMap = this->getMemoryMap(mapSize);
+	auto memoryMap = this->getMemoryMap(mapSize, isCurrent);
 
 	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
 	// to indicate the timestamp comes after this logfile

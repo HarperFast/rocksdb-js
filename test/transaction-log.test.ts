@@ -1,5 +1,10 @@
 import { RocksDatabase, Transaction } from '../src/index.js';
-import { constants, coolTransactionLogs, type TransactionLog } from '../src/load-binding.js';
+import {
+	constants,
+	coolTransactionLogs,
+	type TransactionLog,
+	transactionLogMapCount,
+} from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';
 import {
@@ -1856,5 +1861,97 @@ describe('Transaction Log', () => {
 				expect(typeof result.bytes).toBe('number');
 				expect(result.bytes).toBeGreaterThanOrEqual(0);
 			}));
+	});
+
+	describe('memory map lifecycle', () => {
+		// Repeatedly GC and wait until `cond` holds (or time runs out). Buffer
+		// finalization (which unmaps a released frozen map) is GC-driven.
+		const untilGc = async (cond: () => boolean, ms = 5000) => {
+			const end = Date.now() + ms;
+			while (Date.now() < end) {
+				globalThis.gc?.();
+				if (cond()) return;
+				await delay(20);
+			}
+		};
+
+		// POSIX-only: the weak-for-frozen optimization applies when a frozen file
+		// is mapped. On Windows getMemoryMap retains the map strongly regardless
+		// (by design — see transaction_log_file_windows.cpp), so a directly-mapped
+		// frozen log is not released until the file is closed/removed.
+		it.skipIf(!globalThis.gc || process.platform === 'win32')(
+			'unmaps a frozen log when all JS references to its buffer are released',
+			() =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					const value = Buffer.alloc(100, 'a');
+					// 20×~113B entries over a 1000B cap rotates to seq 1/2/3, so seq 1
+					// is frozen (no longer the current, actively-written file).
+					for (let i = 0; i < 20; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+
+					// Stabilize the process-global baseline first: flush any pending
+					// finalizers from earlier tests (their frozen buffers are weakly
+					// owned and may not have been collected yet) so the forced GC below
+					// can only be reclaiming the buffer under test.
+					await untilGc(() => false, 150);
+					const before = transactionLogMapCount();
+
+					// Map the frozen seq 1 directly (bypasses the query() WeakRef cache,
+					// so our local is the only strong reference to the buffer).
+					let buffer: Buffer | undefined = log._getMemoryMapOfFile(1);
+					expect(buffer).toBeDefined();
+					expect(transactionLogMapCount()).toBe(before + 1);
+					// Sanity: the frozen log reads back through the mapping.
+					expect(buffer!.subarray(0, 4).toString()).toBe('WOOF');
+
+					// Release the only strong reference; the frozen file holds just a
+					// weak handle, so GC → finalize must unmap it.
+					buffer = undefined;
+					await untilGc(() => transactionLogMapCount() === before);
+					expect(transactionLogMapCount()).toBe(before);
+				})
+		);
+
+		it.skipIf(!globalThis.gc)(
+			'unmaps a log that was mapped while current once it rotates out and is released',
+			() =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					const value = Buffer.alloc(100, 'a');
+					// A few entries — seq 1 is still the current (actively-written) file.
+					for (let i = 0; i < 3; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+
+					await untilGc(() => false, 150);
+					const before = transactionLogMapCount();
+
+					// Map seq 1 while it is current: the file retains a strong reference.
+					let buffer: Buffer | undefined = log._getMemoryMapOfFile(1);
+					expect(buffer).toBeDefined();
+					expect(transactionLogMapCount()).toBe(before + 1);
+
+					// Write enough to rotate past seq 1 (current advances to seq 2/3),
+					// which downgrades seq 1's strong reference to a weak handle.
+					for (let i = 0; i < 20; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+
+					// With the rotation downgrade, releasing the buffer is now the last
+					// strong reference, so GC must unmap it. (Without the downgrade the
+					// file would still pin it and this would never reach `before`.)
+					buffer = undefined;
+					await untilGc(() => transactionLogMapCount() === before);
+					expect(transactionLogMapCount()).toBe(before);
+				})
+		);
 	});
 });
