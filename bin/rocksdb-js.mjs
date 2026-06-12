@@ -358,15 +358,23 @@ async function backupsCommand(args) {
 
 	const backupDir = resolve(dirArg);
 
-	if (!subcommand) {
-		await listBackups(backupDir);
-		console.log();
+	if (subcommand && !BACKUP_SUBCOMMANDS.includes(subcommand)) {
+		console.log(`Unknown subcommand: ${hl(subcommand)}`);
+		console.log(`Valid subcommands: ${BACKUP_SUBCOMMANDS.map((s) => hl(s)).join(', ')}\n`);
 		return;
 	}
 
-	if (!BACKUP_SUBCOMMANDS.includes(subcommand)) {
-		console.log(`Unknown subcommand: ${hl(subcommand)}`);
-		console.log(`Valid subcommands: ${BACKUP_SUBCOMMANDS.map((s) => hl(s)).join(', ')}\n`);
+	// The backup engine creates the directory when creating a backup; everything
+	// else operates on an existing backup directory.
+	if (subcommand !== 'backup' && !existsSync(backupDir)) {
+		console.log(`Backup directory ${hl(backupDir)} does not exist`);
+		console.log(note(`Create a first backup with "backups ${dirArg} backup"\n`));
+		return;
+	}
+
+	if (!subcommand || subcommand === 'ls' || subcommand === 'list') {
+		await listBackups(backupDir);
+		console.log();
 		return;
 	}
 
@@ -431,10 +439,14 @@ async function backupsCommand(args) {
 				console.log();
 				return;
 			}
-			const { time } = await run(() =>
-				backups.verify(backupDir, found.id, { verifyWithChecksum: true })
-			);
-			console.log(`Backup ${hl(found.id)} verified ${note(`(${time}ms)`)}\n`);
+			try {
+				const { time } = await run(() =>
+					backups.verify(backupDir, found.id, { verifyWithChecksum: true })
+				);
+				console.log(`Backup ${hl(found.id)} verified OK ${note(`(${time}ms)`)}\n`);
+			} catch (error) {
+				console.error(bad(`Verify failed: ${error.toString()}`));
+			}
 			return;
 		}
 
@@ -731,7 +743,6 @@ async function putCommand(args) {
 		value = value.slice(1, -1);
 	}
 	await currentDB.put(key, value);
-	console.log();
 }
 
 async function queryCommand(args) {
