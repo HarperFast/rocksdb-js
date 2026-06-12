@@ -126,9 +126,14 @@ struct TransactionLogStore final {
 	float maxAgeThreshold;
 
 	/**
-	 * The current sequence number of the transaction log file.
+	 * The current sequence number of the transaction log file. Atomic because it
+	 * is written on the write path (under writeMutex) but read on the read path
+	 * (getMemoryMap/findPositionByTimestamp under dataSetsMutex) — different
+	 * locks, so the accesses would otherwise be a data race. Relaxed ordering is
+	 * sufficient: readers only need a coherent value, not ordering against other
+	 * state (the mutexes already provide that).
 	 */
-	uint32_t currentSequenceNumber = 1;
+	std::atomic<uint32_t> currentSequenceNumber = 1;
 
 	/**
 	 * The next sequence number to use for the transaction log file.
