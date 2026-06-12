@@ -1259,6 +1259,109 @@ import { versions } from '@harperfast/rocksdb-js';
 console.log(versions); // { "rocksdb": "10.10.1", "rocksdb-js": "0.1.2" }
 ```
 
+## Backups
+
+Backups use RocksDB's `BackupEngine` to capture consistent, incremental, checksum-verified
+snapshots of a database. A backup covers the **entire database** — every column family, the
+manifest, and (by default) the write-ahead log — so it is not scoped to an individual `Store`.
+
+Creating a backup is an instance method (`db.backup()`) because it needs a live database. The
+remaining operations act on a backup directory and do not require an open database, so they are
+grouped under the `backups` namespace export.
+
+```typescript
+import { RocksDatabase, backups } from '@harperfast/rocksdb-js';
+
+const db = RocksDatabase.open('/path/to/database');
+await db.put('foo', 'bar');
+
+// Create a backup, then restore it into a fresh directory.
+const id = await db.backup('/path/to/backups');
+await backups.restore('/path/to/backups', '/path/to/restored-db');
+```
+
+### `db.backup(backupDir: string, options?: BackupOptions): Promise<number>`
+
+Creates a new backup of the entire database into `backupDir`, creating parent directories as
+needed, and resolves with the new backup id (a monotonically increasing integer). Subsequent
+backups into the same directory are incremental — unchanged immutable files are shared rather than
+re-copied.
+
+When the database was opened with `disableWAL`, the memtable is flushed before the backup by
+default so unflushed data is not lost; otherwise flushing follows `options.flushBeforeBackup`.
+
+```typescript
+const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' });
+```
+
+`BackupOptions`:
+
+| Option                    | Type      | Default                | Description                                                           |
+| ------------------------- | --------- | ---------------------- | --------------------------------------------------------------------- |
+| `flushBeforeBackup`       | `boolean` | `true` if WAL disabled | Flush the memtable before backing up.                                 |
+| `metadata`                | `string`  | `''`                   | Application metadata stored with the backup, returned by `list()`.    |
+| `shareTableFiles`         | `boolean` | `true`                 | Share files between backups to enable incremental backups.            |
+| `shareFilesWithChecksum`  | `boolean` | `true`                 | Distinguish shared files by checksum to avoid cross-database clashes. |
+| `backupLogFiles`          | `boolean` | `true`                 | Include write-ahead log files in the backup.                          |
+| `sync`                    | `boolean` | `true`                 | `fsync` backup files for crash consistency.                           |
+| `maxBackgroundOperations` | `number`  | `1`                    | Number of background threads used to copy files.                      |
+
+### `backups.restore(backupDir: string, dbDir: string, options?: RestoreOptions): Promise<void>`
+
+Restores a backup from `backupDir` into `dbDir` (creating parent directories as needed). The
+database must **not** be open at `dbDir`, and the default restore mode is **destructive** — it
+purges `dbDir` before restoring. Restoring into the backup directory itself is rejected.
+
+```typescript
+// Restore the latest backup.
+await backups.restore('/path/to/backups', '/path/to/restored-db');
+
+// Restore a specific backup id without purging matching existing files.
+await backups.restore('/path/to/backups', '/path/to/restored-db', {
+	backupId: 1,
+	mode: 'keepLatestDbSessionIdFiles',
+});
+```
+
+`RestoreOptions`:
+
+| Option         | Type                                                                  | Default           | Description                                                  |
+| -------------- | --------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------ |
+| `backupId`     | `number`                                                              | latest backup     | The backup id to restore.                                    |
+| `walDir`       | `string`                                                              | `dbDir`           | Directory to restore write-ahead log files into.             |
+| `keepLogFiles` | `boolean`                                                             | `false`           | Keep existing log files in `walDir` rather than overwriting. |
+| `mode`         | `'purgeAllFiles' \| 'keepLatestDbSessionIdFiles' \| 'verifyChecksum'` | `'purgeAllFiles'` | The restore strategy (default purges the destination).       |
+
+### `backups.list(backupDir: string): Promise<BackupInfo[]>`
+
+Lists the non-corrupt backups in `backupDir`, ordered by id.
+
+```typescript
+const list = await backups.list('/path/to/backups');
+// [{ backupId: 1, timestamp: 1749000000, size: 4096, numberFiles: 3, appMetadata: '' }, ...]
+```
+
+Each `BackupInfo` contains `backupId`, `timestamp` (seconds since the epoch), `size` (bytes),
+`numberFiles`, and `appMetadata`.
+
+### `backups.delete(backupDir: string, backupId: number): Promise<void>`
+
+Deletes a specific backup. Shared files are reference-counted and only removed once no remaining
+backup references them, so this is not equivalent to deleting files manually.
+
+### `backups.purge(backupDir: string, keepCount: number): Promise<void>`
+
+Deletes all but the newest `keepCount` backups.
+
+### `backups.verify(backupDir: string, backupId: number, options?: { verifyWithChecksum?: boolean }): Promise<void>`
+
+Verifies a backup's file sizes, and optionally their checksums (which requires reading all
+backed-up data). Resolves if the backup is intact and rejects otherwise.
+
+```typescript
+await backups.verify('/path/to/backups', 1, { verifyWithChecksum: true });
+```
+
 ## Custom Store
 
 The store is a class that sits between the `RocksDatabase` or `Transaction` instance and the native
@@ -1393,6 +1496,11 @@ Options:
 
 Available commands:
 
+- `backups <dir> [subcommand]` Manage database backups; with no subcommand or `ls`/`list`, lists the backups in
+  `<dir>`. Subcommands: `backup` (create a backup of the open database), `restore <backup-id>`
+  (restore into the open database after confirmation; unavailable in read-only mode),
+  `verify <backup-id>` (checksum verification), `delete <backup-id>`, and `purge <keep-count>`
+  (delete all but the newest backups). `delete` and `purge` report the recovered disk space.
 - `clear` Clear all data in the current column family
 - `columns` List column families
 - `compact` Compact the current column family

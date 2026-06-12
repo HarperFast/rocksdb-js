@@ -39,6 +39,7 @@
 				'src/binding/napi/event_emitter.cpp',
 				'src/binding/napi/global_events.cpp',
 				'src/binding/napi/helpers.cpp',
+				'src/binding/database/backup.cpp',
 				'src/binding/database/database.cpp',
 				'src/binding/database/database_events.cpp',
 				'src/binding/database/db_descriptor.cpp',
