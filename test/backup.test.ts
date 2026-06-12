@@ -288,6 +288,72 @@ describe('Backups', () => {
 			);
 		}));
 
+	it('should back up a database opened in read-only mode', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db }, { db: readOnlyDB }) => {
+				// create the database with a read-write handle first
+				db.open();
+				await writeAll(db, 25);
+				db.close();
+
+				readOnlyDB.open();
+				expect(readOnlyDB.readOnly).toBe(true);
+
+				const backupDir = tempDir();
+				expect(await readOnlyDB.backup(backupDir)).toBe(1);
+
+				const restoreDir = tempDir();
+				await backups.restore(backupDir, restoreDir);
+
+				const restored = new RocksDatabase(restoreDir);
+				restored.open();
+				try {
+					await readAll(restored, 25);
+				} finally {
+					restored.close();
+				}
+			}
+		));
+
+	it.skipIf(process.platform === 'win32')(
+		'should restore while a read-only handle is open on the database',
+		() =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+				async ({ db, dbPath }, { db: readOnlyDB }) => {
+					const backupDir = tempDir();
+
+					db.open();
+					await writeAll(db, 10, 'original');
+					await db.backup(backupDir);
+					await writeAll(db, 10, 'changed');
+					db.close();
+
+					readOnlyDB.open();
+					expect(await readOnlyDB.get('key-0')).toBe('changed-0');
+
+					// The destructive restore purges and rewrites the database directory.
+					// POSIX allows unlinking files the read-only handle still has open, so
+					// the restore succeeds; the read-only handle keeps serving its stale
+					// snapshot until reopened. Skipped on Windows, where deleting open
+					// files is not permitted.
+					await backups.restore(backupDir, dbPath);
+
+					expect(await readOnlyDB.get('key-0')).toBe('changed-0');
+					readOnlyDB.close();
+
+					const reopened = new RocksDatabase(dbPath);
+					reopened.open();
+					try {
+						expect(await reopened.get('key-0')).toBe('original-0');
+					} finally {
+						reopened.close();
+					}
+				}
+			)
+	);
+
 	it('should not crash when closing during a backup', () =>
 		dbRunner({ skipOpen: true }, async ({ db }) => {
 			db.open();
