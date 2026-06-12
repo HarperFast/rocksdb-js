@@ -10,6 +10,7 @@ import repl from 'node:repl';
 import { inspect, parseArgs, styleText } from 'node:util';
 
 const COMMANDS = {
+	backups: backupsCommand,
 	clear: clearCommand,
 	columns: columnsCommand,
 	compact: compactCommand,
@@ -198,6 +199,10 @@ async function ask(prompt) {
 			if (err.code !== 'ABORT_ERR') throw err;
 		}
 	}
+}
+
+async function backupsCommand() {
+	//
 }
 
 async function clearCommand() {
