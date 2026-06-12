@@ -223,6 +223,23 @@ struct TransactionLogFile final {
 	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
 
 	/**
+	 * Hints the kernel that this log's file-backed pages are cold (MADV_COLD),
+	 * so they are reclaimed first under memory pressure without being freed.
+	 * Scoped to the file-backed `[0, actualSize)` region only (page-floored) —
+	 * never the MAP_PRIVATE|MAP_ANONYMOUS zero-fill overlay tail, where eviction
+	 * would be destructive. Non-destructive and idempotent, so it is safe under
+	 * the concurrent, not-perfectly-sequential reader pattern (replication +
+	 * real-time consumers reading the same log at different offsets): a re-read
+	 * of a not-yet-reclaimed cold page just re-activates it for free.
+	 *
+	 * No-op on kernels without MADV_COLD (< 5.4, latched on EINVAL), on macOS,
+	 * and on Windows.
+	 *
+	 * @returns The number of bytes advised (0 if nothing was advised).
+	 */
+	size_t adviseCold();
+
+	/**
 	 * On POSIX, extends the MAP_FIXED file overlay to cover any new pages
 	 * written since the last overlay. Called after writes that grow the file
 	 * so that cached JS buffers see the new data without re-acquiring.
@@ -246,9 +263,22 @@ struct TransactionLogFile final {
 	// Expose writeBatchToFile to the gtest test accessor without pulling
 	// gtest headers into the production build.
 	friend struct ::WriteBatchToFileTestAccessor;
+
+	/**
+	 * Resets the process-global MADV_COLD-unsupported latch (see adviseCold) so
+	 * that each test starts from a known state. Test-only.
+	 */
+	static void resetAdviseColdSupportForTests();
 #endif
 
 private:
+	/**
+	 * Latches `true` if madvise(MADV_COLD) ever returns EINVAL (kernel < 5.4),
+	 * after which adviseCold() no-ops without issuing the syscall. Process-global
+	 * because the kernel either supports the advice or it does not.
+	 */
+	static std::atomic<bool> madvColdUnsupported;
+
 	/**
 	 * Platform specific function that opens the log file for reading and writing.
 	 */

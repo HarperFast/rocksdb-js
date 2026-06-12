@@ -16,6 +16,14 @@
 
 namespace rocksdb_js {
 
+std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
+
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+void TransactionLogFile::resetAdviseColdSupportForTests() {
+	madvColdUnsupported.store(false, std::memory_order_relaxed);
+}
+#endif
+
 TransactionLogFile::~TransactionLogFile() {
 	this->close();
 }

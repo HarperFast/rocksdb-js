@@ -51,6 +51,29 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Advises the kernel that the file-backed pages of every mapped transaction log
+ * are cold (MADV_COLD), so they are reclaimed first under memory pressure. Meant
+ * to be called periodically from a single host-driven timer (see
+ * TransactionLogStoreRegistry::CoolTransactionLogs). Returns { maps, bytes }.
+ */
+napi_value CoolTransactionLogs(napi_env env, napi_callback_info info) {
+	TransactionLogCoolResult cooled = TransactionLogStoreRegistry::CoolTransactionLogs();
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value maps;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, cooled.maps, &maps));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "maps", maps));
+
+	napi_value bytes;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(cooled.bytes), &bytes));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "bytes", bytes));
+
+	return result;
+}
+
+/**
  * The number of active `rocksdb-js` modules.
  *
  * There can be multiple instances of this module in the same Node.js process
@@ -133,6 +156,11 @@ NAPI_MODULE_INIT() {
 	napi_value currentThreadIdFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
+
+	// coolTransactionLogs function
+	napi_value coolTransactionLogsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "coolTransactionLogs", NAPI_AUTO_LENGTH, CoolTransactionLogs, nullptr, &coolTransactionLogsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "coolTransactionLogs", coolTransactionLogsFn));
 
 	// constants
 	napi_value constants;

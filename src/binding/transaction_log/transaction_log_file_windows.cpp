@@ -472,6 +472,12 @@ void TransactionLogFile::updateMemoryMapOverlay() {
 }
 #endif
 
+size_t TransactionLogFile::adviseCold() {
+	// No-op: MADV_COLD is a Linux facility. Harper's memory-pressure target
+	// (Linux containers / Fabric) does not include Windows.
+	return 0;
+}
+
 } // namespace rocksdb_js
 
 #endif

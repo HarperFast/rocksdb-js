@@ -6,9 +6,12 @@
 #include "core/encoding.h"
 #include "core/platform.h"
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
+#include <unistd.h>
 #include <vector>
 
 // Hook point for unit tests: compile with -DROCKSDB_JS_WRITEV=my_mock_fn to
@@ -20,6 +23,17 @@
 extern "C" ssize_t ROCKSDB_JS_WRITEV(int, const struct iovec*, int);
 #else
 #define ROCKSDB_JS_WRITEV ::writev
+#endif
+
+// Hook point for unit tests: compile with -DROCKSDB_JS_MADVISE=my_mock_fn to
+// capture/intercept the madvise() call made by adviseCold() (e.g. to assert it
+// is scoped to the file-backed range, or to simulate an old kernel returning
+// EINVAL). The macro must expand to a callable with the same signature as
+// ::madvise. Production builds call ::madvise directly.
+#ifdef ROCKSDB_JS_MADVISE
+extern "C" int ROCKSDB_JS_MADVISE(void*, size_t, int);
+#else
+#define ROCKSDB_JS_MADVISE ::madvise
 #endif
 
 namespace rocksdb_js {
@@ -195,6 +209,64 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 	this->memoryMap->fileSize = fileSize;
 #endif
 	return this->memoryMap;
+}
+
+size_t TransactionLogFile::adviseCold() {
+#ifdef MADV_COLD
+	// Once we observe EINVAL (kernel < 5.4 lacks MADV_COLD), latch off so we
+	// don't keep issuing a syscall that will always fail. Process-global: a
+	// kernel that lacks the feature lacks it for every log file.
+	if (madvColdUnsupported.load(std::memory_order_relaxed)) {
+		return 0;
+	}
+
+	// Pin the current map under fileMutex so a concurrent close()/removeFile()
+	// (which reset memoryMap under the same lock) cannot munmap it out from
+	// under the madvise() below. We hold only a shared_ptr copy across the
+	// syscall, not the lock.
+	std::shared_ptr<MemoryMap> map;
+	uint32_t actualSize;
+	{
+		std::lock_guard<std::mutex> lock(this->fileMutex);
+		if (!this->memoryMap || !this->memoryMap->map) {
+			return 0;
+		}
+		map = this->memoryMap;
+		actualSize = std::min(this->size.load(std::memory_order_relaxed), map->mapSize);
+	}
+
+	// Floor the length to a page boundary. The mapping base is page-aligned (it
+	// comes from mmap), but actualSize is the exact file extent and is rarely a
+	// page multiple. Rounding *down* guarantees we never advise a page that
+	// overlaps the MAP_PRIVATE|MAP_ANONYMOUS zero-fill tail beyond actualSize —
+	// advising (let alone evicting) that region would be destructive.
+	long pageSize = ::sysconf(_SC_PAGESIZE);
+	if (pageSize <= 0) {
+		pageSize = 4096;
+	}
+	size_t length = static_cast<size_t>(actualSize) & ~(static_cast<size_t>(pageSize) - 1);
+	if (length == 0) {
+		return 0;
+	}
+
+	if (ROCKSDB_JS_MADVISE(map->map, length, MADV_COLD) != 0) {
+		if (errno == EINVAL) {
+			DEBUG_LOG("%p TransactionLogFile::adviseCold MADV_COLD unsupported (EINVAL); disabling\n", this);
+			madvColdUnsupported.store(true, std::memory_order_relaxed);
+		} else {
+			DEBUG_LOG("%p TransactionLogFile::adviseCold madvise failed: %s (errno=%d)\n",
+				this, ::strerror(errno), errno);
+		}
+		return 0;
+	}
+
+	DEBUG_LOG("%p TransactionLogFile::adviseCold MADV_COLD %zu bytes of %s\n",
+		this, length, this->path.string().c_str());
+	return length;
+#else
+	// macOS and other POSIX platforms without MADV_COLD: no-op.
+	return 0;
+#endif
 }
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
