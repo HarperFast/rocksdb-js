@@ -144,7 +144,7 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed));
 }
 
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
 	// mmap with length 0 has undefined behavior according to POSIX.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty or too-small files.
@@ -153,62 +153,71 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+	// Serialize against close()/removeFile()/adviseCold() and concurrent
+	// getMemoryMap() calls: this is the only place memoryMap/frozenMapCache are
+	// (re)assigned, so holding fileMutex here makes shared_ptr access race-free.
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+
+	// Reuse an existing live mapping that is already large enough — the strong
+	// ref for the current file, or a still-live frozen handout.
+	std::shared_ptr<MemoryMap> map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+	if (!(map && map->map && map->mapSize >= fileSize)) {
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
-	if (this->memoryMap) {
-		if (this->memoryMap->mapSize >= fileSize) {
-			this->updateMemoryMapOverlay();
-			this->memoryMap->fileSize = fileSize;
-			return this->memoryMap;
-		}
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map too small (mapSize=%u, fileSize=%u), remapping\n",
-			this, this->memoryMap->mapSize, fileSize);
-	}
-
-	// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
-	// pages entirely beyond the file. We first create an anonymous
-	// zero-filled mapping for the full region, then overlay the actual file
-	// content at the start via MAP_FIXED. Pages beyond the file remain
-	// anonymous and safely read as zero.
-	void* anonMap = ::mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	DEBUG_LOG("%p TransactionLogFile::getMemoryMap new anonymous map: %p (size=%u)\n", this, anonMap, fileSize);
-	if (anonMap == MAP_FAILED) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (anonymous) failed: %s\n", this, ::strerror(errno));
-		return nullptr;
-	}
-
-	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), fileSize);
-	if (actualSize > 0 && this->fd >= 0) {
-		void* fileMap = ::mmap(anonMap, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
-		if (fileMap == MAP_FAILED) {
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (file overlay) failed: %s\n", this, ::strerror(errno));
-			::munmap(anonMap, fileSize);
+		// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
+		// pages entirely beyond the file. We first create an anonymous
+		// zero-filled mapping for the full region, then overlay the actual file
+		// content at the start via MAP_FIXED. Pages beyond the file remain
+		// anonymous and safely read as zero.
+		void* anonMap = ::mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new anonymous map: %p (size=%u)\n", this, anonMap, fileSize);
+		if (anonMap == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (anonymous) failed: %s\n", this, ::strerror(errno));
 			return nullptr;
 		}
-	}
-	this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
 
-	// The MemoryMap destructor calls munmap on the full region, which
-	// correctly frees both anonymous and file-backed pages. Removing files
-	// that are memory mapped is perfectly fine on POSIX, and the memory map
-	// can be safely used indefinitely.
-	this->memoryMap = std::make_shared<MemoryMap>(anonMap, fileSize);
+		uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), fileSize);
+		if (actualSize > 0 && this->fd >= 0) {
+			void* fileMap = ::mmap(anonMap, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
+			if (fileMap == MAP_FAILED) {
+				DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (file overlay) failed: %s\n", this, ::strerror(errno));
+				::munmap(anonMap, fileSize);
+				return nullptr;
+			}
+		}
+		this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
+
+		// The MemoryMap destructor calls munmap on the full region, which
+		// correctly frees both anonymous and file-backed pages. Removing files
+		// that are memory mapped is perfectly fine on POSIX, and the memory map
+		// can be safely used indefinitely.
+		map = std::make_shared<MemoryMap>(anonMap, fileSize);
 #else
-	if (!this->memoryMap) {
-		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
-		if (map == MAP_FAILED) {
+		void* newMap = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, newMap);
+		if (newMap == MAP_FAILED) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
-		// Note, that we do not need to do any cleanup from this class's
-		// destructor. Removing files that are memory mapped is perfectly fine,
-		// and the memory map can be safely used indefinitely (the file descriptor
-		// doesn't need to be kept open either).
-		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
-	}
-	this->memoryMap->fileSize = fileSize;
+		map = std::make_shared<MemoryMap>(newMap, fileSize);
 #endif
-	return this->memoryMap;
+	}
+	map->fileSize = fileSize;
+
+	// Ownership: the current (actively-written) file keeps a strong reference —
+	// the writer extends its overlay and the index reads through it. A frozen
+	// file keeps only a weak handle, so the returned shared_ptr (and the JS
+	// external buffer it becomes) is the sole owner and the mapping is unmapped
+	// when JS releases it.
+	if (isCurrent) {
+		this->memoryMap = map;
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+		this->updateMemoryMapOverlay(); // extend the overlay if the file grew since this map was created
+#endif
+	} else {
+		this->memoryMap.reset();
+	}
+	this->frozenMapCache = map;
+	return map;
 }
 
 size_t TransactionLogFile::adviseCold() {
@@ -220,18 +229,20 @@ size_t TransactionLogFile::adviseCold() {
 		return 0;
 	}
 
-	// Pin the current map under fileMutex so a concurrent close()/removeFile()
-	// (which reset memoryMap under the same lock) cannot munmap it out from
-	// under the madvise() below. We hold only a shared_ptr copy across the
-	// syscall, not the lock.
+	// Pin the live map under fileMutex so a concurrent close()/removeFile()/
+	// getMemoryMap() (which (re)assign memoryMap under the same lock) cannot
+	// munmap it out from under the madvise() below. We hold only a shared_ptr
+	// copy across the syscall, not the lock. The current file holds a strong
+	// memoryMap; a frozen file's map lives in frozenMapCache (weak) while a JS
+	// buffer keeps it alive — cool that too while it is still resident.
 	std::shared_ptr<MemoryMap> map;
 	uint32_t actualSize;
 	{
 		std::lock_guard<std::mutex> lock(this->fileMutex);
-		if (!this->memoryMap || !this->memoryMap->map) {
+		map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+		if (!map || !map->map) {
 			return 0;
 		}
-		map = this->memoryMap;
 		actualSize = std::min(this->size.load(std::memory_order_relaxed), map->mapSize);
 	}
 

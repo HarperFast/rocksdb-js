@@ -188,6 +188,7 @@
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/transaction_log_recovery_test.cc',
 				'test/native/transaction_log_madvise_test.cc',
+				'test/native/transaction_log_mmap_test.cc',
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',

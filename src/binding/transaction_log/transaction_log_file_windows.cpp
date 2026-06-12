@@ -197,13 +197,26 @@ void TransactionLogFile::openFile() {
 	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
 	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
 	if (size > 0) {
-		this->findPositionByTimestamp(0, size);
+		this->findPositionByTimestamp(0, size, true);
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
 }
 
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+// On Windows the weak-for-frozen ownership optimization (POSIX) is not applied —
+// Windows is not Harper's memory-pressure target and uses a different mapping
+// model (the file is pre-extended to maxFileSize). The map is always retained
+// strongly, so `isCurrent` is ignored here.
+//
+// Unlike the POSIX implementation, this body is intentionally NOT wrapped in
+// fileMutex. Windows openFile() (which runs under fileMutex via open()) calls
+// findPositionByTimestamp() -> getMemoryMap(), so taking fileMutex here would
+// re-acquire it on the same thread and deadlock. (POSIX openFile() does not
+// index, so it has no such chain.) The pre-existing memoryMap reassignment race
+// with close()/removeFile() therefore remains on Windows; closing it would
+// require restructuring the open path and is out of scope for this Linux-focused
+// memory-pressure change.
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty files.

@@ -75,7 +75,10 @@ std::unique_ptr<rocksdb_js::TransactionLogFile> makeMappedLog(size_t fileBytes, 
 	auto log = std::make_unique<rocksdb_js::TransactionLogFile>("/tmp/rocksdb-js-madvise-test.log", 1);
 	log->fd = makeTempFileWithBytes(fileBytes);
 	log->size.store(static_cast<uint32_t>(fileBytes), std::memory_order_relaxed);
-	auto map = log->getMemoryMap(mapSize);
+	// isCurrent=true so the file retains a strong reference to the map for the
+	// lifetime of the test (a frozen map would be released as soon as this
+	// returned shared_ptr is dropped).
+	auto map = log->getMemoryMap(mapSize, /*isCurrent=*/true);
 	EXPECT_NE(map, nullptr);
 	return log;
 }
