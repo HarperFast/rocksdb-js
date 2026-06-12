@@ -47,7 +47,6 @@
 				'src/binding/database/db_settings.cpp',
 				'src/binding/iterator/db_iterator.cpp',
 				'src/binding/iterator/db_iterator_handle.cpp',
-				'src/binding/stats/rocksdb_stats.cpp',
 				'src/binding/transaction/transaction_handle.cpp',
 				'src/binding/transaction/transaction.cpp',
 				'src/binding/transaction_log/transaction_log.cpp',

@@ -804,35 +804,28 @@ same column family-level properties, but includes all internal tickers and histo
 Column family and ticker stat values are 64-bit unsigned integers and histogram values are
 `StatsHistogramData` objects.
 
+The result also always includes a summarized, aggregate set of `txnlog.*` keys covering all of
+the database's transaction logs. These are present regardless of whether statistics are enabled
+and can be fetched individually with `db.getStat('txnlog.…')`. For detailed, per-log statistics —
+including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats). All stat
+names are documented in [docs/stats.md](docs/stats.md).
+
 ```typescript
 // get essential stats
 console.log(db.getStats());
 
 // get all stats
 console.log(db.getStats(true));
+
+// transaction log bytes across all logs
+console.log(db.getStats()['txnlog.totalSizeBytes']);
 ```
 
 ### `stats`
 
-An object containing stat specific constants including ticker and histogram names.
-
-#### `stats.histograms`
-
-An array of internal histogram stat names.
-
-```typescript
-import { stats } from '@harperfast/rocksdb-js';
-console.log(stats.histograms);
-```
-
-#### `stats.tickers`
-
-An array of internal ticker stat names.
-
-```typescript
-import { stats } from '@harperfast/rocksdb-js';
-console.log(stats.tickers);
-```
+An object containing stat-specific constants. The full catalog of available stat names (RocksDB
+tickers, histograms, internal properties, and transaction log stats) is documented in
+[docs/stats.md](docs/stats.md).
 
 #### `stats.StatsLevel`
 
@@ -967,6 +960,46 @@ log gets, puts, and deletes, but also arbitrary entries.
 
 Transaction logs are isolated by the database path allowing different column families in the same
 database to share the transaction log store, but not other databases.
+
+### Memory-Map Handling
+
+Transaction log files are read through read-only memory maps. Understanding how these maps interact
+with system memory helps when interpreting [`log.getStats()`](#loggetstats-transactionlogstats)
+figures and process memory usage:
+
+- **Maps are created lazily and live until the file is closed.** Writing log entries does not map
+  anything; a log file is mapped the first time a `log.query()` reads from it. The native layer
+  holds each file's map for the life of the file — it is released when the log file is purged or
+  the database is closed, not by garbage collection. JS `Buffer` views over the map (including
+  `entry.data`) hold an additional reference, so the underlying memory is never unmapped while a
+  view is still reachable. `stats.memory.activeMaps` counts the maps currently held by the native
+  layer.
+- **Mapped bytes are virtual, not resident.** Creating a map reserves address space only. A page
+  consumes physical RAM (RSS) when it is first read (demand paging). Querying a multi-gigabyte log
+  can show `memory.mappedBytes` in the gigabytes while actual memory usage barely moves.
+- **Queries are zero-copy.** The iterator returned by `log.query()` reads only each entry's small
+  header; `entry.data` is a `Buffer` view directly into the map (no copy). Payload pages are
+  faulted into memory only if and when the entry data is actually read.
+- **Resident pages are reclaimable.** Because the maps are read-only and file-backed, every
+  resident page is "clean" — the kernel can evict it at any time under memory pressure and re-read
+  it from disk on the next access. Mapped log data therefore lives in the page cache and cannot
+  exhaust memory the way heap allocations can; a full scan of a log larger than RAM will simply
+  cycle pages through the cache.
+
+OS-specific differences:
+
+- **POSIX (Linux and macOS):** The active write file is mapped at the full configured
+  `transactionLogMaxSize` (an anonymous reservation with the file's contents overlaid on top), so
+  `memory.mappedBytes` over-reports the active file; `memory.overlayBytes` is the file-backed
+  portion and is the closer proxy for real consumption.
+- **macOS:** Activity Monitor's "Memory" column reports the physical footprint, which excludes
+  clean file-backed pages — mapped log data is essentially invisible there even when resident. Use
+  process RSS (e.g. `process.memoryUsage().rss`, `ps`, or `vmmap <pid>`) to observe it.
+- **Linux:** Resident map pages are visible in process RSS, and `/proc/<pid>/smaps` reports exact
+  per-file `Rss`/`Pss` for each mapped `.txnlog` file.
+- **Windows:** Maps are created with `CreateFileMapping`/`MapViewOfFile` at the file's current
+  size. There is no overlay mechanism, so `memory.overlayBytes` is always `0`, and the active
+  write file's map is not cached because it is not growable.
 
 ### `db.listLogs(): string[]`
 
@@ -1115,6 +1148,34 @@ for (const entry of rangeIter) {
 
 Returns the size of the given transaction log sequence file in bytes. Omit the sequence number to
 get the total size of all the transaction log sequence files for this log.
+
+#### `log.getStats(): TransactionLogStats`
+
+Returns a detailed statistics snapshot for this transaction log, including file/transaction
+gauges, memory-map usage, recovery positions, purge/retention gauges, and lifetime counters. All
+sizes are in bytes; timestamps are milliseconds since the Unix epoch.
+
+```typescript
+const log = db.useLog('replication');
+const stats = log.getStats();
+
+stats.fileCount; // number of sequence files on disk
+stats.totalSizeBytes; // total bytes across all sequence files
+stats.memory.mappedBytes; // bytes mapped into memory (virtual address space)
+stats.memory.overlayBytes; // POSIX file-backed overlay portion (0 on Windows)
+stats.replayGapBytes; // bytes between the last flushed position and the write head
+stats.purge.retainedUnflushedFiles; // files past retention but kept (not yet flushed to RocksDB)
+stats.totals.transactionsWritten; // lifetime count of transactions written
+```
+
+> **Memory note:** `memory.mappedBytes` is virtual address space — the active write file is mapped
+> at the full configured `transactionLogMaxSize` on POSIX, so it does not reflect resident memory.
+> `memory.overlayBytes` (POSIX only) is the file-backed portion and is the closer proxy for real
+> consumption.
+
+The `purge.retainedUnflushedFiles` gauge is useful for diagnosing why logs are not being cleaned
+up: a file can be older than the retention period but still retained because its transactions have
+not yet been flushed to RocksDB (purging it would be unsafe for crash recovery).
 
 ### Transaction Log Initialization
 

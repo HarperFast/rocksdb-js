@@ -5,6 +5,7 @@
 #include <vector>
 #include <utility>
 #include <string>
+#include <unordered_map>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -108,6 +109,13 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 
 	napi_value getStat(napi_env env, const std::string& statName);
 	napi_value getStats(napi_env env, bool all);
+
+	/**
+	 * Aggregates the summarized `txnlog.*` statistics across all of this
+	 * database's transaction logs into `total` (a sum of per-store
+	 * TransactionLogStoreStats fields) and `logCount` (the number of logs).
+	 */
+	void collectTransactionLogSummary(TransactionLogStoreStats& total, uint64_t& logCount);
 
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;

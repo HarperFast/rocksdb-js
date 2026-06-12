@@ -18,7 +18,8 @@
     "rocksdb-js": "./bin/rocksdb-js.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "type": "module",
   "main": "./dist/index.cjs",
