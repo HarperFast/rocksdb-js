@@ -278,6 +278,49 @@ describe('Ranges', () => {
 			}));
 	});
 
+	describe('limit option', () => {
+		const seed = async (db: any, n = 10) => {
+			let last;
+			for (let i = 0; i < n; i++) last = db.put(`k-${String(i).padStart(2, '0')}`, i);
+			await last;
+		};
+
+		it('should yield at most `limit` entries (forward)', () =>
+			dbRunner(async ({ db }) => {
+				await seed(db);
+				const keys = db.getRange({ start: true, limit: 3 }).map((e: any) => e.key).asArray;
+				expect(keys).toEqual(['k-00', 'k-01', 'k-02']);
+			}));
+
+		it('should yield at most `limit` entries (reverse)', () =>
+			dbRunner(async ({ db }) => {
+				await seed(db);
+				const keys = db
+					.getRange({ start: '\xff', reverse: true, limit: 2 })
+					.map((e: any) => e.key).asArray;
+				expect(keys).toEqual(['k-09', 'k-08']);
+			}));
+
+		it('should return the whole range when limit exceeds the entry count', () =>
+			dbRunner(async ({ db }) => {
+				await seed(db, 4);
+				const keys = db.getRange({ start: true, limit: 100 }).map((e: any) => e.key).asArray;
+				expect(keys).toEqual(['k-00', 'k-01', 'k-02', 'k-03']);
+			}));
+
+		it('should yield nothing for a limit of 0', () =>
+			dbRunner(async ({ db }) => {
+				await seed(db);
+				expect(db.getRange({ start: true, limit: 0 }).asArray).toHaveLength(0);
+			}));
+
+		it('should apply the limit to getKeys() (values:false)', () =>
+			dbRunner(async ({ db }) => {
+				await seed(db);
+				expect(db.getKeys({ start: true, limit: 2 }).asArray).toEqual(['k-00', 'k-01']);
+			}));
+	});
+
 	describe('getKeys()', () => {
 		it('should get keys only', () =>
 			dbRunner(async ({ db }) => {
