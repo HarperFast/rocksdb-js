@@ -27,15 +27,23 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	iterator: InstanceType<typeof NativeIteratorCls>;
 	store: Store;
 	#includeValues: boolean;
+	// When set, iteration stops after this many entries. The native iterator has no
+	// notion of a count bound, so the limit is enforced here in the JS layer.
+	#limit: number | undefined;
+	#yielded = 0;
 
 	constructor(
 		iterator: InstanceType<typeof NativeIteratorCls>,
 		store: Store,
-		includeValues: boolean
+		includeValues: boolean,
+		limit?: number
 	) {
 		this.iterator = iterator;
 		this.store = store;
 		this.#includeValues = includeValues;
+		// Normalize a nullish limit to `undefined` (no limit). A caller passing `null` must not be
+		// read as a 0 limit by the `#yielded >= this.#limit` check below (null coerces to 0).
+		this.#limit = limit ?? undefined;
 	}
 
 	[Symbol.iterator](): Iterator<DBIteratorValue<T>> {
@@ -43,12 +51,19 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	}
 
 	next(): IteratorResult<DBIteratorValue<T>> {
+		if (this.#limit !== undefined && this.#yielded >= this.#limit) {
+			// Reached the requested limit: release the native iterator and stop.
+			this.iterator.return?.();
+			return DONE_RESULT as IteratorResult<DBIteratorValue<T>>;
+		}
+
 		const result: NativeIteratorResult = this.iterator.next();
 
 		if (result === ITERATOR_RESULT_DONE) {
 			return DONE_RESULT as IteratorResult<DBIteratorValue<T>>;
 		}
 
+		this.#yielded++;
 		const includeValues = this.#includeValues;
 		const value: Partial<DBIteratorValue<T>> = {};
 

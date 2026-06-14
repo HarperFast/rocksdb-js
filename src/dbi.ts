@@ -92,7 +92,12 @@ export interface IteratorOptions extends RangeOptions {
 
 	// exactMatch?: boolean;
 
-	// limit?: number;
+	/**
+	 * The maximum number of entries to yield. When set, iteration stops after
+	 * `limit` entries regardless of the range bounds. Values <= 0 yield nothing.
+	 * Unset means no limit.
+	 */
+	limit?: number;
 
 	/**
 	 * A specific key to match which may result in zero, one, or many values.
