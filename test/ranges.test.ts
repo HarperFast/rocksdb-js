@@ -319,6 +319,16 @@ describe('Ranges', () => {
 				await seed(db);
 				expect(db.getKeys({ start: true, limit: 2 }).asArray).toEqual(['k-00', 'k-01']);
 			}));
+
+		it('should treat a null limit as no limit', () =>
+			dbRunner(async ({ db }) => {
+				await seed(db, 4);
+				// A nullish limit must not be read as 0 (which would yield nothing).
+				const keys = db
+					.getRange({ start: true, limit: null as any })
+					.map((e: any) => e.key).asArray;
+				expect(keys).toEqual(['k-00', 'k-01', 'k-02', 'k-03']);
+			}));
 	});
 
 	describe('getKeys()', () => {

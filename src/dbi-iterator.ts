@@ -41,7 +41,9 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		this.iterator = iterator;
 		this.store = store;
 		this.#includeValues = includeValues;
-		this.#limit = limit;
+		// Normalize a nullish limit to `undefined` (no limit). A caller passing `null` must not be
+		// read as a 0 limit by the `#yielded >= this.#limit` check below (null coerces to 0).
+		this.#limit = limit ?? undefined;
 	}
 
 	[Symbol.iterator](): Iterator<DBIteratorValue<T>> {
