@@ -418,6 +418,18 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
+namespace {
+// RocksDB rejects dropping a column family that has already been dropped with
+// Status::InvalidArgument("Column family already dropped!"). When two handles
+// to the same shared column family race to drop it — e.g. Harper worker
+// threads that each hold their own handle and all react to a drop broadcast —
+// the second DropColumnFamily call hits this. The family is gone, which is the
+// intended result, so the drop is idempotent: callers treat this as success.
+bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
+	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
+}
+} // namespace
+
 /**
  * Drops the RocksDB database column family asynchronously. If the column family
  * is the default, it will clear the database instead.
@@ -444,7 +456,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok()) {
+	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 			env, global, reject, 1, &error, nullptr
@@ -452,11 +464,16 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// The column family is gone from RocksDB; remove its by-name registry
-	// entry so a later open with the same name creates a fresh column family
-	// instead of reusing this dangling handle (which poisons write batches
-	// with "Invalid column family specified in write batch").
-	(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+	if (status.ok()) {
+		// We performed the drop; remove its by-name registry entry so a later
+		// open with the same name creates a fresh column family instead of
+		// reusing this dangling handle (which poisons write batches with
+		// "Invalid column family specified in write batch"). On the
+		// already-dropped path another handle already dropped this family and
+		// owns the unregister; the name may now point to a freshly-created
+		// family, so unregistering here would corrupt the registry.
+		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 		env, global, resolve, 0, nullptr, nullptr
@@ -485,13 +502,24 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle()), "Drop failed");
+	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
+	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
+		::napi_throw(env, error);
+		return nullptr;
+	}
 
-	// The column family is gone from RocksDB; remove its by-name registry
-	// entry so a later open with the same name creates a fresh column family
-	// instead of reusing this dangling handle (which poisons write batches
-	// with "Invalid column family specified in write batch").
-	(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+	if (status.ok()) {
+		// We performed the drop; remove its by-name registry entry so a later
+		// open with the same name creates a fresh column family instead of
+		// reusing this dangling handle (which poisons write batches with
+		// "Invalid column family specified in write batch"). On the
+		// already-dropped path another handle already dropped this family and
+		// owns the unregister; the name may now point to a freshly-created
+		// family, so unregistering here would corrupt the registry.
+		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+	}
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
