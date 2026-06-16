@@ -1413,15 +1413,15 @@ constructor.
 import { RocksDatabase, Store } from '@harperfast/rocksdb-js';
 
 class MyStore extends Store {
-  get(context, key, alwaysCreateNewBuffer, options) {
-    console.log('Getting:', key);
-    return super.get(context, key, alwaysCreateNewBuffer, options);
-  }
+	get(context, key, alwaysCreateNewBuffer, options) {
+		console.log('Getting:', key);
+		return super.get(context, key, alwaysCreateNewBuffer, options);
+	}
 
-  putSync(context, key, value, options) {
-    console.log('Putting:', key);
-    return super.putSync(context, key, value, options);
-  }
+	putSync(context, key, value, options) {
+		console.log('Putting:', key);
+		return super.putSync(context, key, value, options);
+	}
 }
 
 const myStore = new MyStore('path/to/db');
