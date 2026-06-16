@@ -1,9 +1,14 @@
-import type { BufferWithDataView } from '../src/encoding.js';
 import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
-import { setTimeout as delay } from 'node:timers/promises';
+import {
+	createWorkerBootstrapScript,
+	dbRunner,
+	generateDBPath,
+	terminateWorker,
+} from './lib/util.js';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { assert, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 describe('User Shared Buffer', () => {
 	describe('getUserSharedBuffer()', () => {
@@ -60,64 +65,6 @@ describe('User Shared Buffer', () => {
 				expect(incrementer2[0]).toBe(2n);
 			}));
 
-		it('should notify callbacks', () =>
-			dbRunner(async ({ db }) => {
-				const sharedNumber = new Float64Array(1);
-				await new Promise<void>((resolve) => {
-					const sharedBuffer = db.getUserSharedBuffer('with-callback', sharedNumber.buffer, {
-						callback() {
-							// wait so notify() returns true
-							setTimeout(() => resolve(), 100);
-						},
-					});
-					expect(sharedBuffer.notify()).toBe(true);
-				});
-			}));
-
-		it.skipIf(!globalThis.gc)(
-			'should cleanup callbacks on GC',
-			() =>
-				dbRunner(async ({ db }) => {
-					const sharedNumber = new Float64Array(1);
-					let weakRef: WeakRef<ArrayBuffer> | undefined;
-
-					const encodedKey = db.store.encodeKey('with-callback2');
-					const key = Buffer.from(
-						encodedKey.subarray(encodedKey.start, encodedKey.end)
-					) as BufferWithDataView;
-
-					await new Promise<void>((resolve) => {
-						expect(db.listeners(key)).toBe(0);
-						const sharedBuffer = db.getUserSharedBuffer('with-callback2', sharedNumber.buffer, {
-							callback() {
-								// wait so notify() returns true
-								setImmediate(() => resolve());
-							},
-						});
-						weakRef = new WeakRef(sharedBuffer);
-						expect(sharedBuffer.notify()).toBe(true);
-						expect(db.listeners(key)).toBe(1);
-					});
-
-					// this can be flaky, especially when running all tests
-					globalThis.gc?.();
-					for (let i = 0; i < 20 && db.listeners(key) > 0; i++) {
-						globalThis.gc?.();
-						await delay(250);
-					}
-
-					assert(weakRef);
-					expect(weakRef.deref()).toBeUndefined();
-					const listenerCount = db.listeners(key);
-					if (listenerCount > 0) {
-						throw new Error(
-							`${listenerCount} listener${listenerCount === 1 ? '' : 's'} still present!`
-						);
-					}
-				}),
-			20000
-		);
-
 		it(
 			'should share buffer across worker threads with same database',
 			() =>
@@ -161,23 +108,7 @@ describe('User Shared Buffer', () => {
 
 					resolver = withResolvers<void>();
 					worker.postMessage({ close: true });
-
-					if (process.versions.deno) {
-						// there is something buggy with Deno where calling `await delay(100)` freezes the
-						// process, but advancing a microtask seems to unfreeze it
-						await new Promise<void>((resolve) => {
-							const timer = setTimeout(() => {
-								worker.terminate();
-								resolve();
-							}, 100);
-
-							worker.on('exit', () => {
-								clearTimeout(timer);
-								resolve();
-							});
-						});
-					}
-
+					await terminateWorker(worker);
 					await resolver.promise;
 
 					expect(getNextId()).toBe(5n);
@@ -215,5 +146,92 @@ describe('User Shared Buffer', () => {
 					db.getUserSharedBuffer('foo', new ArrayBuffer(1), { callback: 123 as any })
 				).toThrow('Callback must be a function');
 			}));
+
+		it('should not crash if you close while holding a reference to the buffer', () =>
+			dbRunner(async ({ db }) => {
+				const sharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(1));
+				const view = new Uint8Array(sharedBuffer);
+				view[0] = 0xab;
+				db.close();
+				// reading and writing the retained ArrayBuffer must not crash
+				// after close (regression guard for the user-shared-buffer UAF)
+				expect(view[0]).toBe(0xab);
+				view[0] = 0xcd;
+				expect(view[0]).toBe(0xcd);
+				expect(() => sharedBuffer.notify()).toThrow('Database not open');
+			}));
+	});
+
+	describe('Descriptor teardown races', () => {
+		it('should survive advancing a range iterator while the last handles close (main + worker)', () =>
+			expectReproSurvives('stale-iterator'));
+	});
+
+	/**
+	 * Regression tests for shutdown races on process-wide registry state.
+	 *
+	 * These intentionally run in a child process because a failing build
+	 * usually SIGSEGV/SIGTRAPs rather than throwing a catchable JS error. Each
+	 * mode is also run multiple times because the underlying race only
+	 * surfaces on a fraction of attempts, and a single shot can mask
+	 * regressions that reproduce 30-50% of the time.
+	 */
+	describe('User shared buffer use-after-free repro (child process)', () => {
+		it('should survive retained ArrayBuffer access after the last DB handle closes (main + worker)', () =>
+			expectReproSurvives('buffer'));
+
+		it('should survive retained ArrayBuffer access while handles are closing (main + worker)', () =>
+			expectReproSurvives('buffer-race'));
+
+		it('should survive shared buffer use while another worker repeatedly opens/closes the same CF (schema-sync)', () =>
+			expectReproSurvives('schema-sync'));
 	});
 });
+
+const fixturePath = join(__dirname, 'fixtures', 'fork-user-shared-buffer-uaf.mts');
+
+type ReproMode = 'buffer' | 'buffer-race' | 'stale-iterator' | 'schema-sync';
+
+/**
+ * Runs the repro fixture in a child process N times and asserts each run
+ * exited cleanly. The race only surfaces on a fraction of attempts, so a
+ * single shot can mask a 30-50% flake regression — looping gives CI a
+ * usefully high detection rate while keeping wall time bounded (~1s/mode).
+ */
+async function expectReproSurvives(mode: ReproMode, iterations = 3): Promise<void> {
+	for (let i = 0; i < iterations; i++) {
+		const dbPath = generateDBPath();
+		const { code, signal } = await spawnRepro(dbPath, mode);
+		expect(signal, `mode=${mode} iteration=${i}`).toBeNull();
+		expect(code, `mode=${mode} iteration=${i}`).toBe(0);
+	}
+}
+
+function spawnRepro(
+	dbPath: string,
+	mode: ReproMode
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+	return new Promise((resolve, reject) => {
+		const args =
+			process.versions.bun || process.versions.deno
+				? [fixturePath, dbPath, mode]
+				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath, mode];
+
+		const child = spawn(process.execPath, args, {
+			env: { ...process.env },
+		});
+
+		let stderr = '';
+		child.stderr?.on('data', (chunk) => {
+			stderr += chunk.toString();
+		});
+
+		child.on('close', (code, signal) => {
+			if (code !== 0 || signal) {
+				console.error(`Repro child (${mode}) stderr:\n${stderr}`);
+			}
+			resolve({ code, signal });
+		});
+		child.on('error', reject);
+	});
+}

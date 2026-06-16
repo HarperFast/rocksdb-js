@@ -8,6 +8,9 @@
 
 namespace rocksdb_js {
 
+// forward declaration
+struct TransactionLogStoreStats;
+
 struct TransactionLogHandle final : Closable {
 	/**
 	 * The database handle.
@@ -62,6 +65,14 @@ struct TransactionLogHandle final : Closable {
 	LogPosition getLastFlushed();
 	uint64_t getLogFileSize(uint32_t sequenceNumber);
 	std::weak_ptr<LogPosition> getLastCommittedPosition();
+
+	/**
+	 * Fills `out` with the store's statistics. Re-resolves the store if it has
+	 * been released (mirroring addEntry). Returns false if the database has been
+	 * closed and no store can be resolved.
+	 */
+	bool collectStats(TransactionLogStoreStats& out);
+
 	/**
 	 * Closes the transaction log handle.
 	 */

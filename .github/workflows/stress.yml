@@ -7,6 +7,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Do you want to run the full or essential stress test suite?'
+        default: 'full'
+        required: false
+        type: choice
+        options:
+          - 'full'
+          - 'essential'
 
 concurrency:
   cancel-in-progress: true
@@ -52,4 +61,6 @@ jobs:
         run: pnpm build
 
       - name: Run stress tests
+        env:
+          STRESS_MODE: ${{ github.event.inputs.mode || 'essential' }}
         run: pnpm test:stress

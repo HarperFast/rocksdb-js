@@ -4,8 +4,8 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/global_events.h"
 #include "napi/macros.h"
-#include "stats/rocksdb_stats.h"
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "transaction/transaction.h"
@@ -33,6 +33,7 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
+	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
@@ -76,10 +77,25 @@ NAPI_MODULE_INIT() {
 	rocksdb_js::TransactionLogStoreRegistry::Init();
 
 	// registry cleanup
+	// The C++ statics in this .node binary are shared across every Node env
+	// that loads it (main thread + worker_threads). Each env's cleanup hook
+	// fires when *that* env is being torn down — not when the whole process
+	// exits. We need to drop the dying env's listeners from every emitter
+	// that outlives the env — the global singleton and every per-DBDescriptor
+	// emitter in the DBRegistry (DBDescriptors are shared across envs that
+	// open the same path, so a worker's listeners can sit on a descriptor the
+	// main thread still notifies on). A surviving env's notify() would
+	// otherwise dereference dangling tsfn pointers. Full Shutdown only runs
+	// when this was the last env.
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
+		napi_env dyingEnv = static_cast<napi_env>(data);
+		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
+		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
+
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
+			rocksdb_js::GlobalEvents::Shutdown();
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
 			rocksdb_js::DBRegistry::Shutdown();
 			DEBUG_LOG("Binding::Init env cleanup done\n");
@@ -88,7 +104,7 @@ NAPI_MODULE_INIT() {
 		} else {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
 		}
-	}, nullptr));
+	}, env));
 
 	// database
 	rocksdb_js::Database::Init(env, exports);
@@ -104,6 +120,9 @@ NAPI_MODULE_INIT() {
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+
+	// global event emitter (addListener / removeListener / listenerCount)
+	rocksdb_js::GlobalEvents::Init(env, exports);
 
 	// shutdown function
 	napi_value shutdownFn;
@@ -154,11 +173,7 @@ NAPI_MODULE_INIT() {
 	EXPORT_STATS_LEVEL(statsLevel, All, rocksdb::StatsLevel::kAll)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "StatsLevel", statsLevel));
 
-	// stat names
-	napi_value statHistogramNames = getHistogramNames(env);
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "histograms", statHistogramNames));
-	napi_value statTickerNames = getTickerNames(env);
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "tickers", statTickerNames));
+	// Stat names are documented in docs/stats.md rather than enumerated here.
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "stats", statsObj));
 
 	return exports;

@@ -69,6 +69,11 @@ void TransactionLogFile::openFile() {
 		return;
 	}
 
+	// Fresh (re)open: until the first append, a zero timestamp seen while indexing is a genuine
+	// end-of-data marker (and this->size may be seeded from a padded on-disk size that needs
+	// correcting), so findPositionByTimestamp is allowed to correct this->size. See hasAppendedSinceOpen.
+	this->hasAppendedSinceOpen.store(false);
+
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
 	// ensure parent directory exists (may have been deleted by purge())
@@ -350,8 +355,8 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(const iovec* iovecs, int iovcnt) {
-	if (iovcnt == 0) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+	if (iovcnt <= 0) {
 		return 0;
 	}
 
@@ -422,6 +427,16 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	DWORD bytesWritten;
 	bool success = ::WriteFile(this->fileHandle, buffer, size, &bytesWritten, nullptr);
 	return success ? static_cast<int64_t>(bytesWritten) : -1;
+}
+
+bool TransactionLogFile::truncateFile(uint32_t newSize) {
+	// No-op on Windows. The Win32 backend pre-extends and zero-pads its log
+	// files, so a torn tail surfaces as a zero-padding end marker that the
+	// recovery scan reports as Clean — there is no torn-tail truncation to do.
+	// (Open-time torn-tail repair is the POSIX O_APPEND scenario.) Returning
+	// false keeps recoverTail()'s TruncateTail branch a safe no-op here.
+	(void)newSize;
+	return false;
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {
