@@ -391,8 +391,17 @@ const char* getNapiBufferFromArg(
 bool getSliceFromArg(napi_env env, napi_value arg, rocksdb::Slice& result, char* defaultBuffer, const char* errorMsg) {
 	int32_t length;
 	char* data;
-	napi_status argStatus = ::napi_get_value_int32(env, arg, &length);
-	if (argStatus == napi_ok) {
+	// The arg is either a number (a length into the shared default key buffer) or
+	// a Buffer (its own data). Branch on the explicit type rather than on whether
+	// napi_get_value_int32 fails for a Buffer: that error behaviour is not
+	// portable — Node returns napi_number_expected for a Buffer, but Deno (and Bun
+	// on Windows) coerce the Buffer to a number and return napi_ok, which would
+	// silently take the default-buffer branch with a bogus length and read the
+	// wrong key.
+	napi_valuetype argType;
+	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, arg, &argType), false);
+	if (argType == napi_number) {
+		NAPI_STATUS_THROWS_RVAL(::napi_get_value_int32(env, arg, &length), false);
 		data = defaultBuffer;
 	} else {
 		bool isBuffer;
