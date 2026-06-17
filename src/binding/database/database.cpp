@@ -418,17 +418,15 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
-namespace {
 // RocksDB rejects dropping a column family that has already been dropped with
 // Status::InvalidArgument("Column family already dropped!"). When two handles
 // to the same shared column family race to drop it — e.g. Harper worker
 // threads that each hold their own handle and all react to a drop broadcast —
 // the second DropColumnFamily call hits this. The family is gone, which is the
 // intended result, so the drop is idempotent: callers treat this as success.
-bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
+static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
 }
-} // namespace
 
 /**
  * Drops the RocksDB database column family asynchronously. If the column family
