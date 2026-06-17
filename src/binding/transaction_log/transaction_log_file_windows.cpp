@@ -212,6 +212,13 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+	// Guard every access to this->memoryMap (and this->fileHandle) with fileMutex,
+	// the same lock close()/removeFile()/stats use; without it, our reassignment
+	// of the shared_ptr here would race their reads. Callers hold indexMutex
+	// (findPositionByTimestamp) or dataSetsMutex (store) but not fileMutex, so the
+	// lock order is indexMutex/dataSetsMutex -> fileMutex.
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+
 	if (this->fileHandle == INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap file is not open: %s\n", this, this->path.string().c_str());
 		return nullptr;

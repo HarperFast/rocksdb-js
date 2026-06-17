@@ -153,6 +153,13 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
 		return nullptr;
 	}
 
+	// Guard every access to this->memoryMap (and this->fd) with fileMutex. This
+	// is the same lock adviseCold()/close()/removeFile()/stats use; without it,
+	// our reassignment of the shared_ptr here would race their reads. Callers
+	// hold indexMutex (findPositionByTimestamp) or dataSetsMutex (store) but not
+	// fileMutex, so the lock order is indexMutex/dataSetsMutex -> fileMutex.
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= fileSize) {
@@ -271,6 +278,9 @@ size_t TransactionLogFile::adviseCold() {
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 void TransactionLogFile::updateMemoryMapOverlay() {
+	// Precondition: caller holds fileMutex (writeEntriesV1 holds it; getMemoryMap
+	// acquires it before calling in). Do not lock here — fileMutex is not
+	// recursive, so re-locking from getMemoryMap would deadlock.
 	if (!this->memoryMap || !this->memoryMap->map || this->fd < 0) return;
 
 	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize);

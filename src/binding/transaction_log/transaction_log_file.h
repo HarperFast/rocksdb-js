@@ -114,7 +114,13 @@ struct TransactionLogFile final {
 	std::atomic<std::chrono::system_clock::time_point> fileLastWriteTime = std::chrono::system_clock::now();
 
 	/**
-	 * The memory map of the file.
+	 * The memory map of the file. Guarded by fileMutex: every read, copy, and
+	 * reassignment of this shared_ptr (and every mutation of the pointed-to
+	 * MemoryMap, e.g. the MAP_FIXED overlay) must hold fileMutex. Concurrent
+	 * access to a single shared_ptr instance where one party writes is a data
+	 * race, so callers that reach this through getMemoryMap()/updateMemoryMapOverlay()
+	 * — which run under indexMutex or dataSetsMutex — still acquire fileMutex
+	 * underneath (lock order: indexMutex/dataSetsMutex -> fileMutex).
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
 
@@ -218,7 +224,9 @@ struct TransactionLogFile final {
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
 
 	/**
-	 * Return a memory map of the file and mark it as in use
+	 * Return a memory map of the file and mark it as in use. Acquires fileMutex
+	 * internally to guard memoryMap; callers may hold indexMutex/dataSetsMutex
+	 * but must NOT already hold fileMutex.
 	 */
 	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
 
@@ -244,6 +252,10 @@ struct TransactionLogFile final {
 	 * written since the last overlay. Called after writes that grow the file
 	 * so that cached JS buffers see the new data without re-acquiring.
 	 * No-op on Windows where the file is pre-extended to maxFileSize.
+	 *
+	 * Precondition: the caller must already hold fileMutex (it touches
+	 * memoryMap). Both call sites satisfy this — writeEntriesV1() holds it, and
+	 * getMemoryMap() acquires it before calling in.
 	 */
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	void updateMemoryMapOverlay();
