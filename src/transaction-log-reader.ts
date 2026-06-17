@@ -173,12 +173,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 					// Corruption bound: a committed read can't legitimately extend past
 					// the committed `size` (a true entry boundary); an uncommitted read is
-					// bounded only by the physically mapped buffer. A torn/corrupt entry
+					// bounded only by the physically mapped buffer. In both cases the bound
+					// is also clamped to `logBuffer.length` — if committed `size` over-reports
+					// the mapped buffer (e.g. a truncated/torn file), an unclamped `size`
+					// would let `position` advance past the buffer and `subarray` silently
+					// return a truncated frame instead of throwing. A torn/corrupt entry
 					// can declare a length far past this bound — without the checks below,
 					// `position` runs past the buffer, `subarray` hands back a misframed
 					// (garbage) transaction, and the advance-to-next-log path can
 					// dereference an undefined buffer. Fail loudly with a bounded error.
-					const limit = readUncommitted ? logBuffer!.length : size;
+					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						throw new RangeError(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${

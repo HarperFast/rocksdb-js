@@ -1454,6 +1454,58 @@ describe('Transaction Log', () => {
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 			}));
+
+		it('query() throws a bounded RangeError when committed size over-reports the mapped buffer (#623)', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				// prime the query path so _lastCommittedPosition / _logBuffers init
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// Extract the committed size (low 32 bits of the position word). The last
+				// entry's header is fully present and well-formed; only the underlying
+				// buffer is short. This models a torn/truncated file (or page-rounded mmap
+				// shrink) where committed `size` legitimately exceeds the physical buffer.
+				const committedWord = new Uint32Array(
+					new Float64Array([log._lastCommittedPosition![0]]).buffer
+				);
+				const committedSize = committedWord[0];
+
+				// Return a buffer truncated mid-way through the final entry's data: the
+				// frame's declared length still fits within `committedSize`, but reading it
+				// would run past the physical buffer. Without bounding `limit` by the buffer
+				// length, `subarray` would silently hand back a truncated (misframed) entry.
+				const real = log._getMemoryMapOfFile(1)!;
+				const truncatedLength = committedSize - 5;
+				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				real.copy(copyBuffer, 0, 0, truncatedLength);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					expect(() => Array.from(log.query({ start: 0 }))).toThrow(/overruns the log/);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+				// once the real mmap is restored, the valid data must still be readable
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
 	});
 
 	describe('crash recovery (truncate-on-open)', () => {
