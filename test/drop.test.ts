@@ -103,4 +103,57 @@ describe('Drop', () => {
 				expect(() => db2.putSync('key4', 'value4')).toThrow();
 			}
 		));
+
+	// Dropping an already-dropped column family must be idempotent. Harper
+	// broadcasts drops to all worker threads, so multiple handles to the same
+	// shared column family can each issue a drop; RocksDB rejects the second
+	// with "Column family already dropped!". The family is gone either way, so
+	// the redundant drop is treated as success instead of a failed operation.
+	it('should treat dropping an already-dropped column family as a no-op (sync)', () =>
+		dbRunner({ dbOptions: [{ name: 'test' }, { name: 'test' }] }, ({ db: db1 }, { db: db2 }) => {
+			db1.dropSync();
+			expect(db1.columns).toEqual(['default']);
+			// db2 still holds the dropped column family; re-dropping must not throw
+			expect(() => db2.dropSync()).not.toThrow();
+			expect(db2.columns).toEqual(['default']);
+		}));
+
+	it('should treat dropping an already-dropped column family as a no-op (async)', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'test' }, { name: 'test' }] },
+			async ({ db: db1 }, { db: db2 }) => {
+				await db1.drop();
+				expect(db1.columns).toEqual(['default']);
+				// db2 still holds the dropped column family; re-dropping must resolve
+				await expect(db2.drop()).resolves.toBeUndefined();
+				expect(db2.columns).toEqual(['default']);
+			}
+		));
+
+	// A stale handle's tolerated (already-dropped) re-drop must NOT unregister a
+	// freshly-created column family that reuses the same name. db1 really drops
+	// 'test' (and unregisters it); db3 recreates a fresh 'test'; db2 is a stale
+	// handle to the original dropped family - its no-op drop must leave db3's
+	// fresh family registered and usable, not erase it by name.
+	it('should not unregister a freshly-recreated same-name column family on a stale drop', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'test' }, { name: 'test' }] },
+			({ db: db1, dbPath }, { db: db2 }) => {
+				db1.dropSync();
+				const db3 = RocksDatabase.open(dbPath, { name: 'test' });
+				try {
+					db3.putSync('k', 'v');
+					expect(db3.columns).toContain('test');
+					// stale re-drop of the original family - must be a no-op for the registry
+					db2.dropSync();
+					// db3's fresh family is untouched: still registered and writable
+					expect(db3.columns).toContain('test');
+					expect(db3.getSync('k')).toBe('v');
+					db3.putSync('k2', 'v2');
+					expect(db3.getSync('k2')).toBe('v2');
+				} finally {
+					db3.close();
+				}
+			}
+		));
 });
