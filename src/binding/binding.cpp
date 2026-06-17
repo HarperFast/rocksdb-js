@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "database/backup.h"
 #include "database/database.h"
 #include "iterator/db_iterator.h"
 #include "iterator/db_iterator_handle.h"
@@ -131,6 +132,9 @@ NAPI_MODULE_INIT() {
 
 	// database
 	rocksdb_js::Database::Init(env, exports);
+
+	// backup management functions (restore/list/delete/purge/verify)
+	rocksdb_js::initBackupExports(env, exports);
 
 	// transaction
 	rocksdb_js::Transaction::Init(env, exports);

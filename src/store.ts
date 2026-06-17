@@ -1,3 +1,4 @@
+import type { BackupOptions } from './backup.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
@@ -23,6 +24,7 @@ import {
 } from './load-binding.js';
 import { parseDuration } from './util.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
+import { mkdir } from 'node:fs/promises';
 
 const {
 	ONLY_IF_IN_MEMORY_CACHE_FLAG,
@@ -407,6 +409,21 @@ export class Store {
 		return new Promise((resolve, reject) =>
 			this.db.compact(resolve, reject, startBuffer, endBuffer)
 		);
+	}
+
+	/**
+	 * Creates a backup of the entire database (all column families) into the
+	 * given directory and resolves with the new backup id. Parent directories
+	 * are created as needed. See `backups` for restore and management.
+	 *
+	 * @example
+	 * ```typescript
+	 * const id = await db.backup('/path/to/backups');
+	 * ```
+	 */
+	async backup(backupDir: string, options?: BackupOptions): Promise<number> {
+		await mkdir(backupDir, { recursive: true });
+		return new Promise((resolve, reject) => this.db.backup(resolve, reject, backupDir, options));
 	}
 
 	/**

@@ -1,6 +1,13 @@
 import { version } from './load-binding.js';
 
 export {
+	backups,
+	type BackupInfo,
+	type BackupOptions,
+	type RestoreMode,
+	type RestoreOptions,
+} from './backup.js';
+export {
 	RocksDatabase,
 	type RocksDatabaseOptions,
 	type RocksDBStat,
