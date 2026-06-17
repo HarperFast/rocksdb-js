@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "database/backup.h"
 #include "database/database.h"
 #include "iterator/db_iterator.h"
 #include "iterator/db_iterator_handle.h"
@@ -109,6 +110,9 @@ NAPI_MODULE_INIT() {
 	// database
 	rocksdb_js::Database::Init(env, exports);
 
+	// backup management functions (restore/list/delete/purge/verify)
+	rocksdb_js::initBackupExports(env, exports);
+
 	// transaction
 	rocksdb_js::Transaction::Init(env, exports);
 
@@ -144,6 +148,9 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, POPULATE_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, FRESH_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, RETRY_NOW_VALUE)
 	EXPORT_CONSTANT(constants, ITERATOR_REVERSE_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_INCLUSIVE_END_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_EXCLUSIVE_START_FLAG)
