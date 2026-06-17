@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "database/backup.h"
 #include "database/database.h"
 #include "iterator/db_iterator.h"
 #include "iterator/db_iterator_handle.h"
@@ -47,6 +48,29 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 	napi_value result;
 	auto threadId = getThreadId();
 	NAPI_STATUS_THROWS(::napi_create_int64(env, threadId, &result));
+	return result;
+}
+
+/**
+ * Advises the kernel that the file-backed pages of every mapped transaction log
+ * are cold (MADV_COLD), so they are reclaimed first under memory pressure. Meant
+ * to be called periodically from a single host-driven timer (see
+ * TransactionLogStoreRegistry::CoolTransactionLogs). Returns { maps, bytes }.
+ */
+napi_value CoolTransactionLogs(napi_env env, napi_callback_info info) {
+	TransactionLogCoolResult cooled = TransactionLogStoreRegistry::CoolTransactionLogs();
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value maps;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, cooled.maps, &maps));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "maps", maps));
+
+	napi_value bytes;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(cooled.bytes), &bytes));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "bytes", bytes));
+
 	return result;
 }
 
@@ -109,6 +133,9 @@ NAPI_MODULE_INIT() {
 	// database
 	rocksdb_js::Database::Init(env, exports);
 
+	// backup management functions (restore/list/delete/purge/verify)
+	rocksdb_js::initBackupExports(env, exports);
+
 	// transaction
 	rocksdb_js::Transaction::Init(env, exports);
 
@@ -134,6 +161,11 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
 
+	// coolTransactionLogs function
+	napi_value coolTransactionLogsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "coolTransactionLogs", NAPI_AUTO_LENGTH, CoolTransactionLogs, nullptr, &coolTransactionLogsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "coolTransactionLogs", coolTransactionLogsFn));
+
 	// constants
 	napi_value constants;
 	napi_create_object(env, &constants);
@@ -144,6 +176,9 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, POPULATE_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, FRESH_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, RETRY_NOW_VALUE)
 	EXPORT_CONSTANT(constants, ITERATOR_REVERSE_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_INCLUSIVE_END_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_EXCLUSIVE_START_FLAG)

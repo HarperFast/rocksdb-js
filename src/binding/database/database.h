@@ -1,6 +1,7 @@
 #ifndef __DATABASE_H__
 #define __DATABASE_H__
 
+#include <cstring>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "rocksdb/status.h"
@@ -9,12 +10,152 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/verification_table.h"
 
 namespace rocksdb_js {
+
+/**
+ * Parses an expectedVersion from a napi_value double argument (bit-cast from
+ * IEEE 754 to uint64). Returns true and sets `out` when the arg is a valid
+ * non-zero, non-lock-tagged version. Returns false and leaves `out` unchanged
+ * for undefined/null args, non-numbers, zero, or lock-tagged values.
+ */
+inline bool parseExpectedVersion(napi_env env, napi_value arg, uint64_t& out) {
+	napi_valuetype t;
+	if (::napi_typeof(env, arg, &t) != napi_ok || t != napi_number) return false;
+	double d;
+	if (::napi_get_value_double(env, arg, &d) != napi_ok) return false;
+	uint64_t v;
+	::memcpy(&v, &d, sizeof(v));
+	if (vtIsLock(v) || v == 0) return false;
+	out = v;
+	return true;
+}
+
+/**
+ * Returns the verification-table slot for (dbHandle, key), or nullptr if the
+ * table pointer is null or the slot maps outside the table bounds.
+ */
+inline std::atomic<uint64_t>* vtSlotFor(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	VerificationTable* vt,
+	const rocksdb::Slice& key
+) {
+	if (!vt) return nullptr;
+	uintptr_t dbPtr = reinterpret_cast<uintptr_t>(dbHandle->descriptor.get());
+	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
+	return vt->slotFor(dbPtr, cfId, key);
+}
+
+/**
+ * Publishes a key's *latest committed* version into the verification-table slot
+ * — making it cacheable — but only when that version is the single accessible
+ * value of the key: i.e. no read snapshot older than the latest write is still
+ * open. While such a snapshot is open, two versions are visible (the snapshot's
+ * older value and the latest), so a fresh cache hit would violate that reader's
+ * snapshot; we suppress caching until those snapshots drain, and a later read
+ * repopulates the slot once it is settled.
+ *
+ * The version published is always the LATEST committed version, never a value
+ * read at an older snapshot — gating on a stale read version would let a stale
+ * value be published. Rather than unconditionally re-reading the latest, we use
+ * what the caller already read whenever it is provably the latest, and only fall
+ * back to a re-read when it might not be:
+ *
+ *   - `readSnapshot == nullptr` (a non-transactional read): the caller read the
+ *     latest committed state directly, so `readVersion` IS the latest. No re-read.
+ *   - `readSnapshot` current (its sequence == the DB's latest): nothing has
+ *     committed since the snapshot, so the snapshot read equals the latest. No
+ *     re-read.
+ *   - `readSnapshot` behind the latest sequence: a write landed after the
+ *     snapshot, so the caller's value may be stale. Re-read the latest (no
+ *     snapshot) to learn the current version.
+ *
+ * This removes the extra latest-Get from the common read-mostly path (the vast
+ * majority of populates) while preserving the single-accessible-version
+ * invariant: a transactional read at a stale snapshot still re-reads, and the
+ * oldest-snapshot gate below still suppresses publication whenever any older
+ * snapshot remains open.
+ *
+ * Reads stay lock-free: this runs only on the cold populate path (after a cache
+ * miss), never on the verifyVersion fast path.
+ */
+inline void vtPopulateIfSettled(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	std::atomic<uint64_t>* slot,
+	const rocksdb::Slice& key,
+	uint64_t readVersion,
+	const rocksdb::Snapshot* readSnapshot,
+	uint64_t observedSlot
+) {
+	if (!slot) return;
+	// No usable version in the value the caller read (too short, or lock-tagged
+	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
+	if (readVersion == 0 || vtIsLock(readVersion)) return;
+	// Raw pointer: the caller holds the DBHandle (and an OperationGuard keeps the
+	// descriptor alive for the call), so we avoid an atomic shared_ptr refcount
+	// bump/drop on this per-read path.
+	rocksdb::DB* db = dbHandle->descriptor->db.get();
+	if (!db) return;
+	auto* cf = dbHandle->getColumnFamilyHandle();
+
+	uint64_t version;
+	if (readSnapshot == nullptr ||
+	    readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
+		// The value the caller just read is provably the latest committed version
+		// (read with no snapshot, or at a snapshot with nothing committed since),
+		// so trust it directly and skip the extra latest read.
+		version = readVersion;
+	} else {
+		// The caller may have read at a snapshot older than a newer write: re-read
+		// the latest committed value (no snapshot) to learn the current version.
+		rocksdb::PinnableSlice latest;
+		rocksdb::ReadOptions readOptions;
+		rocksdb::Status status = db->Get(readOptions, cf, key, &latest);
+		if (!status.ok()) return; // not found or error — nothing settled to cache
+		version = VerificationTable::extractVersionFromValue(latest);
+		if (version == 0 || vtIsLock(version)) return;
+	}
+
+	uint64_t oldestSnapshotSec = 0;
+	// rocksdb.oldest-snapshot-time is the wall-clock unix-seconds creation time
+	// of the oldest live snapshot, or 0 when none are open.
+	if (db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
+	    oldestSnapshotSec != 0) {
+		// `version` is the host-endian bit pattern of the float64 ms timestamp
+		// Harper writes at offset 0 of each record; reinterpret it to compare
+		// against the snapshot's wall-clock time. Conservative at second
+		// granularity: require the oldest snapshot to have been created at/after
+		// the latest version's millisecond, so every open snapshot already sees
+		// it (single accessible value). Otherwise leave the slot unpopulated.
+		double versionMs;
+		std::memcpy(&versionMs, &version, sizeof(double));
+		if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) {
+			return;
+		}
+	}
+	// Conditional CAS from the value observed before the read: a no-op if any
+	// write cycle intervened, so a stale/superseded version is never published.
+	VerificationTable::populateVersionIfUnchanged(slot, observedSlot, version);
+}
 
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
 #define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
+// Set on getSync to opt in to populating the verification table after a
+// successful read. Extracts the first 8 bytes of the value as a big-endian
+// float64 version (Harper's record-encoder format) and CASes it into the
+// slot. Has no effect when no version is found (e.g., not-found, value < 8
+// bytes) or when the slot is currently lock-tagged.
+#define POPULATE_VERSION_FLAG 0x10000000
+// Returned by getSync when the caller-supplied expectedVersion matches the
+// verification-table slot for the key. Distinct from NOT_IN_MEMORY_CACHE_FLAG
+// and from any byte-length value returned via the default value buffer.
+#define FRESH_VERSION_FLAG 0x08000000
+// Resolved (not rejected) value for commit() when coordinatedRetry is true
+// and the transaction experienced an IsBusy conflict. JS should retry the
+// transaction body immediately without any backoff delay.
+#define RETRY_NOW_VALUE 0x04000000
 
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
@@ -94,6 +235,7 @@ struct OperationGuard {
 struct Database final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value AddListener(napi_env env, napi_callback_info info);
+	static napi_value Backup(napi_env env, napi_callback_info info);
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);
@@ -121,6 +263,7 @@ struct Database final {
 	static napi_value ListLogs(napi_env env, napi_callback_info info);
 	static napi_value Notify(napi_env env, napi_callback_info info);
 	static napi_value Open(napi_env env, napi_callback_info info);
+	static napi_value PopulateVersion(napi_env env, napi_callback_info info);
 	static napi_value PurgeLogs(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
@@ -131,6 +274,7 @@ struct Database final {
 	static napi_value TryLock(napi_env env, napi_callback_info info);
 	static napi_value Unlock(napi_env env, napi_callback_info info);
 	static napi_value UseLog(napi_env env, napi_callback_info info);
+	static napi_value VerifyVersion(napi_env env, napi_callback_info info);
 	static napi_value WithLock(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
@@ -196,6 +340,15 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
 	std::string key;
 	std::string value;
+
+	// Verification table state for post-read check and populate.
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	bool wantsPopulate = false;
+	std::atomic<uint64_t>* vtSlot = nullptr;
+	// Slot value observed before the async read was queued; the post-read CAS
+	// publishes only if the slot is still this (no write cycle intervened).
+	uint64_t vtObserved = 0;
 };
 
 napi_value resolveGetSyncResult(
@@ -217,6 +370,24 @@ void resolveGetResult(
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
+		if (state->status.ok() && state->vtSlot) {
+			// VT check and populate for the async read result.
+			rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion) {
+				// Soft miss: value still carries the expected version — signal FRESH.
+				// Conditional CAS from the value observed before the read (no-op if
+				// a write cycle intervened) so we never publish a superseded version.
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, state->expectedVersion);
+				napi_value freshResult;
+				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+				state->callResolve(freshResult);
+				return;
+			}
+			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0) {
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, extracted);
+			}
+		}
 		napi_value result;
 		if (state->status.IsNotFound()) {
 			napi_get_undefined(env, &result);
