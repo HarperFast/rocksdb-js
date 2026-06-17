@@ -40,8 +40,8 @@ importers:
         specifier: 3.5.5
         version: 3.5.5
       node-gyp:
-        specifier: 12.4.0
-        version: 12.4.0
+        specifier: 13.0.0
+        version: 13.0.0
       oxfmt:
         specifier: 0.54.0
         version: 0.54.0
@@ -74,29 +74,29 @@ importers:
         version: 4.1.8(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(vite@8.0.13(@types/node@25.9.3)(esbuild@0.28.0)(tsx@4.22.4))
     optionalDependencies:
       '@harperfast/rocksdb-js-darwin-arm64':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-darwin-x64':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-linux-arm64-glibc':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-linux-arm64-musl':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-linux-x64-glibc':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-linux-x64-musl':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-win32-arm64':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
       '@harperfast/rocksdb-js-win32-x64':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.1.0
+        version: 2.1.0
 
 packages:
 
@@ -313,50 +313,50 @@ packages:
   '@harperfast/extended-iterable@1.0.3':
     resolution: {integrity: sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw==}
 
-  '@harperfast/rocksdb-js-darwin-arm64@2.0.0':
-    resolution: {integrity: sha512-1Ed3XVekAFdoJJfDsrjBYJT1B85Zj91gQcC7fQq/CnhRdEk/D1ZdCsg7q9cg++mpZ5Ksnx+BsfiyqO67bTmKpQ==}
+  '@harperfast/rocksdb-js-darwin-arm64@2.1.0':
+    resolution: {integrity: sha512-KATHEEcKv1sBsuqaxgAd5ZqRNN63f/dedl5ilE0aZKubDjPHJFWLl1USZZXd4FMR7bYHzCV823S9RxZII1UTjA==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [darwin]
 
-  '@harperfast/rocksdb-js-darwin-x64@2.0.0':
-    resolution: {integrity: sha512-dK85CtR9RXhN5GF7Ndpt7krO5zImAl5pGyrx3QmepI72uT8ncppYurDEPZZ0z/A3LrBidXbaznUp2iGFVdYUYg==}
+  '@harperfast/rocksdb-js-darwin-x64@2.1.0':
+    resolution: {integrity: sha512-8PgipGp9uviZ+c8amA1MiKthekL4Qxmd/wPGbaa2P5MEj7cW3nXwuwuLrXFtj0plfbGJZDKHAoHH1MQc63JiHQ==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [darwin]
 
-  '@harperfast/rocksdb-js-linux-arm64-glibc@2.0.0':
-    resolution: {integrity: sha512-au7qK8VCkc6uU2lp2cRcO7HLML0ehfKFBimFYnxdwIHo6wZ1lPW5YVxKnuKIBKThMxdV6Dn2XJ3pu3ub8KtPrA==}
+  '@harperfast/rocksdb-js-linux-arm64-glibc@2.1.0':
+    resolution: {integrity: sha512-kzlN++3RaECDeKLYP7a3A/7D1IrTu8DzVRdvQ90rjNi67ZhiTfPGLwkEJgSheGRaKOkvtXOcqaG+G0uLCmY2qg==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [linux]
 
-  '@harperfast/rocksdb-js-linux-arm64-musl@2.0.0':
-    resolution: {integrity: sha512-x3F2h7fVwH1IHYlQDFOO5YJ9NH3pPkZybjPOaV1Vo8BiE9A72BabcVbQeV98/3STcMP2k20YpoggsI8QjcdCzQ==}
+  '@harperfast/rocksdb-js-linux-arm64-musl@2.1.0':
+    resolution: {integrity: sha512-Wm3GCuII2+2wUdpF14qMJpFBvYMS5LCNmqYqc8PLQdM9+1C0pp2xp/YlXz295lSJwDRBGpZQ4tT/fCIhQb3RZg==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [linux]
 
-  '@harperfast/rocksdb-js-linux-x64-glibc@2.0.0':
-    resolution: {integrity: sha512-RDinS/7loqA7WuKQvfB73yc5dveTrOpdP/pXlFepWG1P586/0kpp0abRgCpkuSZyhmqIoWX9n9ooZvh03pvZ3A==}
+  '@harperfast/rocksdb-js-linux-x64-glibc@2.1.0':
+    resolution: {integrity: sha512-JOR19bhySF+fwFoxsR1JOURSxUySL1NE6wLBtWfLSA4SEQZXi/Xzkkq7Up92JuL9E4ATcEkVJjPy52azUUE4VA==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [linux]
 
-  '@harperfast/rocksdb-js-linux-x64-musl@2.0.0':
-    resolution: {integrity: sha512-gswLCyzqPUoB2HlTE+DMOd2Nr7H9uUg/pgtZpIvTpHU6ewV2O8mANT6qV/DLN9uPKWrBSp77b92PxXYtPRyPsA==}
+  '@harperfast/rocksdb-js-linux-x64-musl@2.1.0':
+    resolution: {integrity: sha512-HhUeWFqlEdjDPQecO1Exp3zm4LmXV2biyWPycXWBwXpitaI3YbDaUkiZHLT5QmGdYMHQou9s9RrcJ0B0xBpaYA==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [linux]
 
-  '@harperfast/rocksdb-js-win32-arm64@2.0.0':
-    resolution: {integrity: sha512-vwVMVS/Nw5Mw17whMVQG7eJfBXqS2NeABiCxgsd2SoV6ovvm0TbSg9D8z2hsJlSJGy8BSYxK8i+xgqf1oh1ogA==}
+  '@harperfast/rocksdb-js-win32-arm64@2.1.0':
+    resolution: {integrity: sha512-pUxyRGlyx+o0zU/ioUb4Z7ZQPy01iDU0gr7YQnOn9gCyDo1ibeeZVKDYZJ+WEpQCWEdea5YJVrSt597BQPAJiQ==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [win32]
 
-  '@harperfast/rocksdb-js-win32-x64@2.0.0':
-    resolution: {integrity: sha512-WzaatIsLBjWrmRHHCcOeQ3TqUpBiEoaKBI6SbG6UQRO41gI7Ts0LVHtYF195Luldc8XsibSic1VztEPh2ubVAQ==}
+  '@harperfast/rocksdb-js-win32-x64@2.1.0':
+    resolution: {integrity: sha512-C0XFhYIUAJxYKUV+P12lgzEhsH7NMzlSBq8WtEQun8PLI2WJIWpeo/UI7Z/YLKcO8dR8mYh1w/uui/vBC86sRg==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [win32]
@@ -950,9 +950,9 @@ packages:
   '@vitest/utils@4.1.8':
     resolution: {integrity: sha512-uOJamYALNhfJ6iolExyQM40yIQwDqYnkKtQ5VCiSe17E33H0aQ/u+1GlRuz4LZBk6Mm3sg90G9hEbmEt37C1Zg==}
 
-  abbrev@4.0.0:
-    resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
-    engines: {node: ^20.17.0 || >=22.9.0}
+  abbrev@5.0.0:
+    resolution: {integrity: sha512-/XrFJgzQQQHpti1raDJC6m4ws6aNktmjBlhk8Fdlk7LwCEuDoieEJJY9OFHjfiFJFFRM2tK+Ky/IsfbbmlMu1w==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
 
   ansis@4.3.1:
     resolution: {integrity: sha512-BJ8/l4R5LRE7hW9WdSuGYrLSHi2ynxeFpDFbH0K/CgNeY/tyhk+vO6TYxXC5r5CpUhNVX310xzPsN/H9lCdfOA==}
@@ -1309,14 +1309,14 @@ packages:
     resolution: {integrity: sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==}
     hasBin: true
 
-  node-gyp@12.4.0:
-    resolution: {integrity: sha512-OMcPNvqTCFUnNaBlmdgq+lfNqY7gTiSmNRDjY3uAXRyudeKZEZxu3CLtjMQrx4zZxCX2b/mpNqTtwuCJgXhHkw==}
-    engines: {node: ^20.17.0 || >=22.9.0}
+  node-gyp@13.0.0:
+    resolution: {integrity: sha512-FYYyBDWdc+kzoyPd5PqHUgM9DGs1C/Z4jxBZAOnA2GRUVXPivKRREq5q+VVPXVr9aGVqGMaMqyFHbviy/yb7Hg==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
     hasBin: true
 
-  nopt@9.0.0:
-    resolution: {integrity: sha512-Zhq3a+yFKrYwSBluL4H9XP3m3y5uvQkB/09CwDruCiRmR/UJYnn9W4R48ry0uGC70aeTPKLynBtscP9efFFcPw==}
-    engines: {node: ^20.17.0 || >=22.9.0}
+  nopt@10.0.1:
+    resolution: {integrity: sha512-df3sBr/6ax9hSGuC3CspvLlbnX8cP5L5nZwXF8cGN8l0zSWR6BvzmQ6jPUKjvo6+/xdpkNvEcucBNUdBeeV13g==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
     hasBin: true
 
   npm-run-path@3.1.0:
@@ -1384,9 +1384,9 @@ packages:
     resolution: {integrity: sha512-8Y2oOOateom/s8dNBsGIcnm6AxPmLH4/nanQzL5lQMU+sC0CMhzARZHizwr36pUPLdvBnOkCNQzxg4djuFSgIw==}
     hasBin: true
 
-  proc-log@6.1.0:
-    resolution: {integrity: sha512-iG+GYldRf2BQ0UDUAd6JQ/RwzaQy6mXmsk/IzlYyal4A4SNFw54MeH4/tLkF4I5WoWG9SQwuqWzS99jaFQHBuQ==}
-    engines: {node: ^20.17.0 || >=22.9.0}
+  proc-log@7.0.0:
+    resolution: {integrity: sha512-FYgfaA69XZ93zaXLoMNQ+ViDXGGBgR8aLh03txzcFhV+9xOXx7+8DLCULrKKpR9+GsH9ZfHm82aSUPpozX0Ztg==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
 
   pump@3.0.4:
     resolution: {integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA==}
@@ -1652,9 +1652,9 @@ packages:
     engines: {node: '>= 8'}
     hasBin: true
 
-  which@6.0.1:
-    resolution: {integrity: sha512-oGLe46MIrCRqX7ytPUf66EAYvdeMIZYn3WaocqqKZAxrBpkqHfL/qvTyJ/bTk5+AqHCjXmrv3CEWgy368zhRUg==}
-    engines: {node: ^20.17.0 || >=22.9.0}
+  which@7.0.0:
+    resolution: {integrity: sha512-RancgH2dmbLdHl6LRhEqvklWMgl/Hdnun0Y90KhBOLkMefg8Qa7/Zel8Sm+8HEcP6DEjzsWzpkuBQEZok58isA==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
     hasBin: true
 
   why-is-node-running@2.3.0:
@@ -1806,28 +1806,28 @@ snapshots:
 
   '@harperfast/extended-iterable@1.0.3': {}
 
-  '@harperfast/rocksdb-js-darwin-arm64@2.0.0':
+  '@harperfast/rocksdb-js-darwin-arm64@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-darwin-x64@2.0.0':
+  '@harperfast/rocksdb-js-darwin-x64@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-arm64-glibc@2.0.0':
+  '@harperfast/rocksdb-js-linux-arm64-glibc@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-arm64-musl@2.0.0':
+  '@harperfast/rocksdb-js-linux-arm64-musl@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-x64-glibc@2.0.0':
+  '@harperfast/rocksdb-js-linux-x64-glibc@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-x64-musl@2.0.0':
+  '@harperfast/rocksdb-js-linux-x64-musl@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-win32-arm64@2.0.0':
+  '@harperfast/rocksdb-js-win32-arm64@2.1.0':
     optional: true
 
-  '@harperfast/rocksdb-js-win32-x64@2.0.0':
+  '@harperfast/rocksdb-js-win32-x64@2.1.0':
     optional: true
 
   '@isaacs/fs-minipass@4.0.1':
@@ -2211,7 +2211,7 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  abbrev@4.0.0: {}
+  abbrev@5.0.0: {}
 
   ansis@4.3.1: {}
 
@@ -2535,22 +2535,22 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
 
-  node-gyp@12.4.0:
+  node-gyp@13.0.0:
     dependencies:
       env-paths: 2.2.1
       exponential-backoff: 3.1.3
       graceful-fs: 4.2.11
-      nopt: 9.0.0
-      proc-log: 6.1.0
+      nopt: 10.0.1
+      proc-log: 7.0.0
       semver: 7.8.4
       tar: 7.5.16
       tinyglobby: 0.2.17
       undici: 6.26.0
-      which: 6.0.1
+      which: 7.0.0
 
-  nopt@9.0.0:
+  nopt@10.0.1:
     dependencies:
-      abbrev: 4.0.0
+      abbrev: 5.0.0
 
   npm-run-path@3.1.0:
     dependencies:
@@ -2635,7 +2635,7 @@ snapshots:
       pump: 3.0.4
       tar-fs: 2.1.4
 
-  proc-log@6.1.0: {}
+  proc-log@7.0.0: {}
 
   pump@3.0.4:
     dependencies:
@@ -2868,7 +2868,7 @@ snapshots:
     dependencies:
       isexe: 2.0.0
 
-  which@6.0.1:
+  which@7.0.0:
     dependencies:
       isexe: 4.0.0
 

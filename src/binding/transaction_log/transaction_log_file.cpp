@@ -68,12 +68,12 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	// Cache the file's effective last-write time now, once, so writeBatch can
 	// check the maxAgeThreshold without a stat() syscall on every commit.
 	if (this->size == 0) {
-		this->fileLastWriteTime = std::chrono::system_clock::now();
+		this->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 	} else {
 		try {
-			this->fileLastWriteTime = convertFileTimeToSystemTime(std::filesystem::last_write_time(this->path));
+			this->fileLastWriteTime.store(convertFileTimeToSystemTime(std::filesystem::last_write_time(this->path)), std::memory_order_relaxed);
 		} catch (...) {
-			this->fileLastWriteTime = std::chrono::system_clock::now();
+			this->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 		}
 	}
 

@@ -104,11 +104,14 @@ struct TransactionLogFile final {
 
 	/**
 	 * The time of the last write to this file, kept in-memory to avoid a
-	 * stat() syscall on every commit for the maxAgeThreshold check.
-	 * Set once in open() (now for new files, mtime for existing ones) and
-	 * updated after each successful writeEntries() call.
+	 * stat() syscall on every commit for the maxAgeThreshold check and on
+	 * every stats poll for the retention gauges. Seeded to "now" at
+	 * construction, corrected to the on-disk mtime when an existing file is
+	 * registered (TransactionLogStore::registerLogFile) or opened, and
+	 * updated after each successful writeEntries() call. Atomic because
+	 * collectStats() reads it without holding writeMutex.
 	 */
-	std::chrono::system_clock::time_point fileLastWriteTime;
+	std::atomic<std::chrono::system_clock::time_point> fileLastWriteTime = std::chrono::system_clock::now();
 
 	/**
 	 * The memory map of the file.

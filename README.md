@@ -74,6 +74,11 @@ Creates a new database instance.
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
     `"${db.path}/transaction_logs"`.
+  - `verificationTable: boolean` When `true`, this column family participates in the process-global
+    [Verification Table](#verification-table): transaction writes to this column family invalidate
+    the verification slot for each written key. Enable this only for column families whose records
+    are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
+    `verificationTableEntries` to be configured before the first database is opened.
 
 ### `db.close()`
 
@@ -106,6 +111,11 @@ Sets global database settings.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `verificationTableEntries: number` The number of slots in the process-global
+    [Verification Table](#verification-table). Each slot is 8 bytes, so the default of `131072`
+    (128K) slots is 1 MB. Set to `0` to disable the verification table. This must be configured
+    before the first database is opened; once the table is materialized, attempts to change this
+    value throw.
   - `writeBufferManagerAllowStall: boolean` When `true`, writes are stalled once the manager's
     `buffer_size` is exceeded, providing a hard cap on memtable memory. When `false`, memtables are
     allowed to grow past the limit and flushes are simply scheduled more aggressively. Off by
@@ -305,9 +315,28 @@ assert.equal(result, 'foo');
 
 Note that all errors are returned as rejected promises.
 
+See [`GetOptions`](#getoptions) for the available options.
+
+When the `expectedVersion` option is set and the [Verification Table](#verification-table) records
+a matching version for the key, `get()` returns the `FRESH_VERSION_FLAG` sentinel
+(`constants.FRESH_VERSION_FLAG`) instead of reading the value — signalling that any value the
+caller has already cached for this key is still fresh and no read was performed. Be sure to check
+for this sentinel before treating the result as a value:
+
+```typescript
+import { constants } from '@harperfast/rocksdb-js';
+
+const result = db.get(key, { expectedVersion: cachedEntry.version });
+if (result === constants.FRESH_VERSION_FLAG) {
+	// the cached value is still valid; no read occurred
+	return cachedEntry.value;
+}
+```
+
 ### `db.getSync(key: Key, options?: GetOptions): any`
 
-Synchronous version of `get()`.
+Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
+the `expectedVersion` option is used.
 
 ### `db.getEstimatedKeyCount(): number`
 
@@ -564,6 +593,12 @@ The `attempt` parameter is the number of times the transaction has been retried.
 
 ### `TransactionOptions`
 
+- `coordinatedRetry?: boolean` When `true`, an `IsBusy` conflict at commit time is retried
+  automatically instead of being rejected. Rather than retrying immediately and racing the
+  conflicting transaction again, the retry waits until the conflicting transaction has committed and
+  released its write intent, then re-runs the transaction body right away with no backoff delay.
+  Requires the column family to be opened with `verificationTable: true`. See
+  [Verification Table](#verification-table). Defaults to `false`.
 - `disableSnapshot?: boolean` Whether to disable snapshots. Defaults to `false`.
 - `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
@@ -581,6 +616,14 @@ transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
 
 Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
 entries are not added.
+
+When `coordinatedRetry: true`, the retry behavior changes for `IsBusy` conflicts: instead of
+rejecting (or retrying immediately and potentially conflicting again), the commit waits until the
+conflicting transaction has committed and released its write intent, then re-runs the transaction
+body immediately with no backoff. This is still bounded by `maxRetries` — if the transaction has
+not committed after the configured number of coordinated retries, the transaction is abandoned with
+an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column family to be opened with
+`verificationTable: true`.
 
 ### Class: `Transaction`
 
@@ -804,35 +847,28 @@ same column family-level properties, but includes all internal tickers and histo
 Column family and ticker stat values are 64-bit unsigned integers and histogram values are
 `StatsHistogramData` objects.
 
+The result also always includes a summarized, aggregate set of `txnlog.*` keys covering all of
+the database's transaction logs. These are present regardless of whether statistics are enabled
+and can be fetched individually with `db.getStat('txnlog.…')`. For detailed, per-log statistics —
+including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats). All stat
+names are documented in [docs/stats.md](docs/stats.md).
+
 ```typescript
 // get essential stats
 console.log(db.getStats());
 
 // get all stats
 console.log(db.getStats(true));
+
+// transaction log bytes across all logs
+console.log(db.getStats()['txnlog.totalSizeBytes']);
 ```
 
 ### `stats`
 
-An object containing stat specific constants including ticker and histogram names.
-
-#### `stats.histograms`
-
-An array of internal histogram stat names.
-
-```typescript
-import { stats } from '@harperfast/rocksdb-js';
-console.log(stats.histograms);
-```
-
-#### `stats.tickers`
-
-An array of internal ticker stat names.
-
-```typescript
-import { stats } from '@harperfast/rocksdb-js';
-console.log(stats.tickers);
-```
+An object containing stat-specific constants. The full catalog of available stat names (RocksDB
+tickers, histograms, internal properties, and transaction log stats) is documented in
+[docs/stats.md](docs/stats.md).
 
 #### `stats.StatsLevel`
 
@@ -960,6 +996,74 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
+## Verification Table
+
+The verification table is a process-global, fixed-size structure that lets an application cheaply
+check whether a value it has already cached is still fresh, without performing a full read. It is
+intended for read-heavy workloads where records carry a monotonically increasing numeric version.
+
+Each record's version is the numeric value stored in the first 8 bytes of its value (interpreted as
+a big-endian float64). The table maps `(database, column family, key)` to a single 8-byte slot that
+holds the last-known version for that key. Because slots are addressed by a hash, distinct keys may
+share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
+be treated as fresh.
+
+The freshness check works as follows:
+
+1. Pass `{ expectedVersion }` to `get()` / `getSync()`. If the slot currently records that version,
+   the read is skipped and the `FRESH_VERSION_FLAG` sentinel is returned.
+2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
+   seed the slot with the version extracted from the value, so subsequent freshness checks hit.
+
+Transaction writes to a column family opened with `verificationTable: true` invalidate the slot for
+each written key at write time, so a stale version can never survive a write. This is also what
+enables [`coordinatedRetry`](#transactionoptions): a conflicting transaction parks on the slot and
+retries once the write intent is released.
+
+The table is **process-global** and backed by a single shared structure, so versions populated on
+the main thread are visible to `worker_threads` workers and vice versa.
+
+### Enabling the verification table
+
+The table must be sized before the first database is opened, via the
+[`verificationTableEntries`](#dbconfigoptions) config option (default `131072` slots = 1 MB; set to
+`0` to disable). Then opt-in per column family with the `verificationTable: true` open option:
+
+```typescript
+import { RocksDatabase } from '@harperfast/rocksdb-js';
+
+RocksDatabase.config({ verificationTableEntries: 128 * 1024 });
+
+const db = RocksDatabase.open('path/to/db', { verificationTable: true });
+```
+
+Enable `verificationTable` only for column families whose records are cached (e.g. the primary
+column family of a table); enabling it adds per-write slot invalidation overhead.
+
+### `db.verifyVersion(key: Key, version: number): boolean`
+
+Returns `true` when the verification table currently records `version` for `key` (in this database
+and column family), indicating a cached value with that version is still fresh. Returns `false`
+otherwise — including when the table is disabled. This is a cheap, synchronous check that performs
+no database read.
+
+```typescript
+if (db.verifyVersion(key, cachedEntry.version)) {
+	return cachedEntry.value;
+}
+const value = db.getSync(key);
+db.populateVersion(key, extractVersion(value));
+```
+
+### `db.populateVersion(key: Key, version: number): void`
+
+Seeds the verification-table slot for `key` with `version`. This is typically called after a full
+read where the caller already knows the version. It has no effect if the slot is currently
+lock-tagged (a transaction is mid-write on that key) or if the verification table is disabled.
+
+Passing `{ populateVersion: true }` to `get()` / `getSync()` performs the equivalent seeding
+automatically after a cold read, avoiding a separate call.
+
 ## Transaction Log
 
 A user controlled API for logging transactions. This API is designed to be generic so that you can
@@ -967,6 +1071,46 @@ log gets, puts, and deletes, but also arbitrary entries.
 
 Transaction logs are isolated by the database path allowing different column families in the same
 database to share the transaction log store, but not other databases.
+
+### Memory-Map Handling
+
+Transaction log files are read through read-only memory maps. Understanding how these maps interact
+with system memory helps when interpreting [`log.getStats()`](#loggetstats-transactionlogstats)
+figures and process memory usage:
+
+- **Maps are created lazily and live until the file is closed.** Writing log entries does not map
+  anything; a log file is mapped the first time a `log.query()` reads from it. The native layer
+  holds each file's map for the life of the file — it is released when the log file is purged or
+  the database is closed, not by garbage collection. JS `Buffer` views over the map (including
+  `entry.data`) hold an additional reference, so the underlying memory is never unmapped while a
+  view is still reachable. `stats.memory.activeMaps` counts the maps currently held by the native
+  layer.
+- **Mapped bytes are virtual, not resident.** Creating a map reserves address space only. A page
+  consumes physical RAM (RSS) when it is first read (demand paging). Querying a multi-gigabyte log
+  can show `memory.mappedBytes` in the gigabytes while actual memory usage barely moves.
+- **Queries are zero-copy.** The iterator returned by `log.query()` reads only each entry's small
+  header; `entry.data` is a `Buffer` view directly into the map (no copy). Payload pages are
+  faulted into memory only if and when the entry data is actually read.
+- **Resident pages are reclaimable.** Because the maps are read-only and file-backed, every
+  resident page is "clean" — the kernel can evict it at any time under memory pressure and re-read
+  it from disk on the next access. Mapped log data therefore lives in the page cache and cannot
+  exhaust memory the way heap allocations can; a full scan of a log larger than RAM will simply
+  cycle pages through the cache.
+
+OS-specific differences:
+
+- **POSIX (Linux and macOS):** The active write file is mapped at the full configured
+  `transactionLogMaxSize` (an anonymous reservation with the file's contents overlaid on top), so
+  `memory.mappedBytes` over-reports the active file; `memory.overlayBytes` is the file-backed
+  portion and is the closer proxy for real consumption.
+- **macOS:** Activity Monitor's "Memory" column reports the physical footprint, which excludes
+  clean file-backed pages — mapped log data is essentially invisible there even when resident. Use
+  process RSS (e.g. `process.memoryUsage().rss`, `ps`, or `vmmap <pid>`) to observe it.
+- **Linux:** Resident map pages are visible in process RSS, and `/proc/<pid>/smaps` reports exact
+  per-file `Rss`/`Pss` for each mapped `.txnlog` file.
+- **Windows:** Maps are created with `CreateFileMapping`/`MapViewOfFile` at the file's current
+  size. There is no overlay mechanism, so `memory.overlayBytes` is always `0`, and the active
+  write file's map is not cached because it is not growable.
 
 ### `db.listLogs(): string[]`
 
@@ -1116,6 +1260,34 @@ for (const entry of rangeIter) {
 Returns the size of the given transaction log sequence file in bytes. Omit the sequence number to
 get the total size of all the transaction log sequence files for this log.
 
+#### `log.getStats(): TransactionLogStats`
+
+Returns a detailed statistics snapshot for this transaction log, including file/transaction
+gauges, memory-map usage, recovery positions, purge/retention gauges, and lifetime counters. All
+sizes are in bytes; timestamps are milliseconds since the Unix epoch.
+
+```typescript
+const log = db.useLog('replication');
+const stats = log.getStats();
+
+stats.fileCount; // number of sequence files on disk
+stats.totalSizeBytes; // total bytes across all sequence files
+stats.memory.mappedBytes; // bytes mapped into memory (virtual address space)
+stats.memory.overlayBytes; // POSIX file-backed overlay portion (0 on Windows)
+stats.replayGapBytes; // bytes between the last flushed position and the write head
+stats.purge.retainedUnflushedFiles; // files past retention but kept (not yet flushed to RocksDB)
+stats.totals.transactionsWritten; // lifetime count of transactions written
+```
+
+> **Memory note:** `memory.mappedBytes` is virtual address space — the active write file is mapped
+> at the full configured `transactionLogMaxSize` on POSIX, so it does not reflect resident memory.
+> `memory.overlayBytes` (POSIX only) is the file-backed portion and is the closer proxy for real
+> consumption.
+
+The `purge.retainedUnflushedFiles` gauge is useful for diagnosing why logs are not being cleaned
+up: a file can be older than the retention period but still retained because its transactions have
+not yet been flushed to RocksDB (purging it would be unsafe for crash recovery).
+
 ### Transaction Log Initialization
 
 When a database is opened, `rocksdb-js` will automatically discover the transaction log files. If
@@ -1214,7 +1386,7 @@ The default `Store` contains the following methods which can be overridden:
 - `decodeValue(value)`
 - `encodeKey(key)`
 - `encodeValue(value)`
-- `get(context, key, resolve, reject, txnId?)`
+- `get(context, key, alwaysCreateNewBuffer?, options?)`
 - `getCount(context, options?, txnId?)`
 - `getKeys(context, options?)`
 - `getKeysCount(context, options?)`
@@ -1225,11 +1397,13 @@ The default `Store` contains the following methods which can be overridden:
 - `isOpen()`
 - `listLogs()`
 - `open()`
+- `populateVersion(key, version)`
 - `putSync(context, key, value, options?)`
 - `removeSync(context, key, options?)`
 - `tryLock(key, onUnlocked?)`
 - `unlock(key)`
 - `useLog(context, name)`
+- `verifyVersion(key, version)`
 - `withLock(key, callback?)`
 
 To use it, extend the default `Store` and pass in an instance of your store into the `RocksDatabase`
@@ -1239,15 +1413,15 @@ constructor.
 import { RocksDatabase, Store } from '@harperfast/rocksdb-js';
 
 class MyStore extends Store {
-  get(context, key, resolve, reject, txnId) {
-    console.log('Getting:' key);
-    return super.get(context, key, resolve, reject, txnId);
-  }
+	get(context, key, alwaysCreateNewBuffer, options) {
+		console.log('Getting:', key);
+		return super.get(context, key, alwaysCreateNewBuffer, options);
+	}
 
-  putSync(context, key, value, options) {
-    console.log('Putting:', key);
-    return super.putSync(context, key, value, options);
-  }
+	putSync(context, key, value, options) {
+		console.log('Putting:', key);
+		return super.putSync(context, key, value, options);
+	}
 }
 
 const myStore = new MyStore('path/to/db');
@@ -1266,6 +1440,22 @@ console.log(await db.get('foo'));
 > important that you encode the value first!
 
 ## Interfaces
+
+### `GetOptions`
+
+Options for `get()`, `getSync()`, and the `getBinary*` methods.
+
+- `options: object`
+  - `expectedVersion: number` When set, the [Verification Table](#verification-table) is checked
+    before reading. If the slot holds this version, the read is skipped and the
+    `FRESH_VERSION_FLAG` sentinel is returned. After a database read, the slot is seeded with the
+    version extracted from the value. Requires the column family to be opened with
+    `verificationTable: true`.
+  - `populateVersion: boolean` When `true`, after a database read the verification-table slot is
+    seeded with the version extracted from the value, eliminating the need for a separate
+    `db.populateVersion()` call on cold reads. Defaults to `false`.
+  - `skipDecode: boolean` When `true`, the value is returned without being decoded. Defaults to
+    `false`.
 
 ### `RocksDBOptions`
 

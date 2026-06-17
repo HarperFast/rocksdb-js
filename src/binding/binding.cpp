@@ -6,7 +6,6 @@
 #include "database/db_settings.h"
 #include "napi/global_events.h"
 #include "napi/macros.h"
-#include "stats/rocksdb_stats.h"
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "transaction/transaction.h"
@@ -173,6 +172,9 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
+	EXPORT_CONSTANT(constants, POPULATE_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, FRESH_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, RETRY_NOW_VALUE)
 	EXPORT_CONSTANT(constants, ITERATOR_REVERSE_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_INCLUSIVE_END_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_EXCLUSIVE_START_FLAG)
@@ -199,11 +201,7 @@ NAPI_MODULE_INIT() {
 	EXPORT_STATS_LEVEL(statsLevel, All, rocksdb::StatsLevel::kAll)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "StatsLevel", statsLevel));
 
-	// stat names
-	napi_value statHistogramNames = getHistogramNames(env);
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "histograms", statHistogramNames));
-	napi_value statTickerNames = getTickerNames(env);
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, statsObj, "tickers", statTickerNames));
+	// Stat names are documented in docs/stats.md rather than enumerated here.
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "stats", statsObj));
 
 	return exports;
