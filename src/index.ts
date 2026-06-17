@@ -19,6 +19,7 @@ export type { Key } from './encoding.js';
 export type * from './stats.js';
 export {
 	constants,
+	coolTransactionLogs,
 	currentThreadId,
 	registryStatus,
 	stats,
