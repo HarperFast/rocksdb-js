@@ -1,3 +1,4 @@
+import type { BackupInfo, BackupOptions, RestoreOptions } from './backup.js';
 import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.js';
@@ -227,6 +228,12 @@ export type PurgeLogsOptions = { before?: number; destroy?: boolean; name?: stri
 export type NativeDatabase = {
 	new (): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
+	backup(
+		resolve: ResolveCallback<number>,
+		reject: RejectCallback,
+		backupDir: string,
+		options?: BackupOptions
+	): void;
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
@@ -465,6 +472,59 @@ export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
+
+/**
+ * Advises the kernel that the file-backed pages of every mapped transaction log
+ * are cold (Linux MADV_COLD), so they are reclaimed first under memory pressure
+ * without being freed — useful during replication catch-up, where a full read of
+ * the logs would otherwise inflate the container's reclaimable cache toward its
+ * cgroup limit. No-op on kernels < 5.4, macOS, and Windows.
+ *
+ * The transaction log registry is a process-global singleton shared across all
+ * worker threads, so a single call cools every worker's maps. Call it on an
+ * interval from one thread (e.g. an `unref()`ed timer on the main thread).
+ *
+ * @returns the number of maps cooled and total file-backed bytes advised.
+ */
+export const coolTransactionLogs: () => { maps: number; bytes: number } =
+	binding.coolTransactionLogs;
+
+// Module-level backup management functions. These operate on a backup directory
+// and do not require an open database. Wrapped by the `backups` namespace in
+// `backup.ts`; creating a backup is a `RocksDatabase` instance method.
+export const nativeBackupRestore: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	dbDir: string,
+	walDir: string,
+	options?: { backupId?: number; keepLogFiles?: boolean; mode?: RestoreOptions['mode'] }
+) => void = binding.backupRestore;
+export const nativeBackupList: (
+	resolve: ResolveCallback<BackupInfo[]>,
+	reject: RejectCallback,
+	backupDir: string
+) => void = binding.backupList;
+export const nativeBackupDelete: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	backupId: number
+) => void = binding.backupDelete;
+export const nativeBackupPurge: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	keepCount: number
+) => void = binding.backupPurge;
+export const nativeBackupVerify: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	backupId: number,
+	verifyWithChecksum: boolean
+) => void = binding.backupVerify;
+
 export const stats: {
 	StatsLevel: {
 		DisableAll: number;
@@ -476,4 +536,5 @@ export const stats: {
 		All: number;
 	};
 } = binding.stats;
+
 export const version: string = binding.version;

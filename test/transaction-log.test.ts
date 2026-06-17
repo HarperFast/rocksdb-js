@@ -1,5 +1,5 @@
 import { RocksDatabase, Transaction } from '../src/index.js';
-import { constants, type TransactionLog } from '../src/load-binding.js';
+import { constants, coolTransactionLogs, type TransactionLog } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';
 import {
@@ -11,6 +11,7 @@ import {
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -1802,6 +1803,58 @@ describe('Transaction Log', () => {
 				u32s = new Uint32Array(contents.buffer, contents.byteOffset);
 				expect(u32s[1]).toBe(1);
 				expect(u32s[0]).toBeGreaterThan(200);
+			}));
+	});
+
+	describe('coolTransactionLogs()', () => {
+		// MADV_COLD is Linux 5.4+; on macOS/Windows/older kernels adviseCold()
+		// no-ops and reports zero, so only assert it did work where supported.
+		const [major = 0, minor = 0] =
+			process.platform === 'linux' ? release().split('.').map(Number) : [];
+		const madvColdSupported = major > 5 || (major === 5 && minor >= 4);
+
+		it('should advise mapped logs cold without corrupting their contents', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('cool');
+				// Write enough to span many pages so the floored advice length is
+				// non-zero even on large (16K/64K) page sizes.
+				const value = Buffer.alloc(4096, 'z');
+				const entryCount = 64;
+				await db.transaction(async (txn) => {
+					for (let i = 0; i < entryCount; i++) {
+						log.addEntry(value, txn.id);
+					}
+				});
+
+				// Querying maps the log file (the file-backed mmap exposed to JS).
+				const before = Array.from(log.query({ start: 0 }));
+				expect(before.length).toBe(entryCount);
+
+				const result = coolTransactionLogs();
+				expect(typeof result.maps).toBe('number');
+				expect(typeof result.bytes).toBe('number');
+				if (madvColdSupported) {
+					expect(result.maps).toBeGreaterThanOrEqual(1);
+					expect(result.bytes).toBeGreaterThan(0);
+				}
+
+				// MADV_COLD is non-destructive: the log must still read back intact.
+				const after = Array.from(log.query({ start: 0 }));
+				expect(after.length).toBe(entryCount);
+				for (let i = 0; i < entryCount; i++) {
+					expect(after[i].data.equals(value)).toBe(true);
+				}
+			}));
+
+		it('should be a safe no-op when no logs are mapped', () =>
+			dbRunner(async ({ db }) => {
+				db.open();
+				// No log written/mapped for this db; cooling must not throw and must
+				// return a well-formed result.
+				const result = coolTransactionLogs();
+				expect(typeof result.maps).toBe('number');
+				expect(typeof result.bytes).toBe('number');
+				expect(result.bytes).toBeGreaterThanOrEqual(0);
 			}));
 	});
 });
