@@ -1,3 +1,4 @@
+import type { BackupOptions } from './backup.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 import {
@@ -152,6 +153,27 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	compact(options?: CompactOptions): Promise<void> {
 		return this.store.compact(options);
+	}
+
+	/**
+	 * Creates a backup of the entire database (all column families) into the
+	 * given directory, creating parent directories as needed, and resolves with
+	 * the new backup id. Use the `backups` namespace to restore, list, delete,
+	 * purge, or verify backups.
+	 *
+	 * When the database was opened with `disableWAL`, the memtable is flushed
+	 * before the backup by default so unflushed data is not lost.
+	 *
+	 * @example
+	 * ```typescript
+	 * import { backups } from '@harperfast/rocksdb-js';
+	 *
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const id = await db.backup('/path/to/backups');
+	 * ```
+	 */
+	backup(backupDir: string, options?: BackupOptions): Promise<number> {
+		return this.store.backup(backupDir, options);
 	}
 
 	/**
