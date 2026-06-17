@@ -16,6 +16,14 @@
 
 namespace rocksdb_js {
 
+std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
+
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+void TransactionLogFile::resetAdviseColdSupportForTests() {
+	madvColdUnsupported.store(false, std::memory_order_relaxed);
+}
+#endif
+
 TransactionLogFile::~TransactionLogFile() {
 	this->close();
 }
@@ -301,16 +309,38 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex);
 }
 
+// Public entry point: acquire fileMutex (the guard for memoryMap) and delegate to
+// the platform getMemoryMapLocked(). Callers that already hold fileMutex (the open
+// path, via findPositionByTimestamp) must call getMemoryMapLocked() directly.
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	return this->getMemoryMapLocked(fileSize);
+}
+
 /**
  * Find the position of a timestamp, specifically the position where there are no transactions with an earlier timestamp
  * @param timestamp - the timestamp to find the position of
  * @param mapSize - the size of the memory map to search in
  * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
  */
-uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize) {
+uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool fileMutexHeld) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
-	std::lock_guard<std::mutex> indexLock(this->indexMutex);
-	auto memoryMap = this->getMemoryMap(mapSize);
+
+	// getMemoryMapLocked() (re)assigns this->memoryMap and so must run under
+	// fileMutex. The open() -> openFile() -> here path already holds it; every
+	// other caller does not. Take fileMutex only for the mapping call and release
+	// it before the scan: the scan reads through the pinned shared_ptr copy and
+	// must stay concurrent with appends (a zero timestamp mid-scan is a not-yet-
+	// visible append, not EOF — see hasAppendedSinceOpen; HarperFast/harper#1148).
+	// Acquiring fileMutex before indexMutex (and never the reverse) keeps the
+	// fileMutex -> indexMutex order; the open path nests them in that same order.
+	std::shared_ptr<MemoryMap> memoryMap;
+	if (fileMutexHeld) {
+		memoryMap = this->getMemoryMapLocked(mapSize);
+	} else {
+		std::lock_guard<std::mutex> fileLock(this->fileMutex);
+		memoryMap = this->getMemoryMapLocked(mapSize);
+	}
 
 	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
 	// to indicate the timestamp comes after this logfile
@@ -318,6 +348,8 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
 		return 0xFFFFFFFF;
 	}
+
+	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 
 	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;

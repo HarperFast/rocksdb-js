@@ -473,6 +473,22 @@ export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
 
+/**
+ * Advises the kernel that the file-backed pages of every mapped transaction log
+ * are cold (Linux MADV_COLD), so they are reclaimed first under memory pressure
+ * without being freed — useful during replication catch-up, where a full read of
+ * the logs would otherwise inflate the container's reclaimable cache toward its
+ * cgroup limit. No-op on kernels < 5.4, macOS, and Windows.
+ *
+ * The transaction log registry is a process-global singleton shared across all
+ * worker threads, so a single call cools every worker's maps. Call it on an
+ * interval from one thread (e.g. an `unref()`ed timer on the main thread).
+ *
+ * @returns the number of maps cooled and total file-backed bytes advised.
+ */
+export const coolTransactionLogs: () => { maps: number; bytes: number } =
+	binding.coolTransactionLogs;
+
 // Module-level backup management functions. These operate on a backup directory
 // and do not require an open database. Wrapped by the `backups` namespace in
 // `backup.ts`; creating a backup is a `RocksDatabase` instance method.
@@ -508,6 +524,7 @@ export const nativeBackupVerify: (
 	backupId: number,
 	verifyWithChecksum: boolean
 ) => void = binding.backupVerify;
+
 export const stats: {
 	StatsLevel: {
 		DisableAll: number;
@@ -519,4 +536,5 @@ export const stats: {
 		All: number;
 	};
 } = binding.stats;
+
 export const version: string = binding.version;
