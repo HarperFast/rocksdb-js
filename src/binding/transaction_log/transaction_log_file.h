@@ -118,9 +118,14 @@ struct TransactionLogFile final {
 	 * reassignment of this shared_ptr (and every mutation of the pointed-to
 	 * MemoryMap, e.g. the MAP_FIXED overlay) must hold fileMutex. Concurrent
 	 * access to a single shared_ptr instance where one party writes is a data
-	 * race, so callers that reach this through getMemoryMap()/updateMemoryMapOverlay()
-	 * — which run under indexMutex or dataSetsMutex — still acquire fileMutex
-	 * underneath (lock order: indexMutex/dataSetsMutex -> fileMutex).
+	 * race. The mapping is created/replaced only in getMemoryMapLocked(), which
+	 * requires fileMutex; the public getMemoryMap() wrapper acquires it.
+	 *
+	 * Lock order is fileMutex -> indexMutex (open() holds fileMutex and reaches
+	 * findPositionByTimestamp() -> indexMutex). findPositionByTimestamp() honors
+	 * that order: it takes fileMutex only for the getMemoryMapLocked() call and
+	 * releases it before taking indexMutex for the scan, so it never holds both
+	 * in the opposite order.
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
 
@@ -224,11 +229,19 @@ struct TransactionLogFile final {
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
 
 	/**
-	 * Return a memory map of the file and mark it as in use. Acquires fileMutex
-	 * internally to guard memoryMap; callers may hold indexMutex/dataSetsMutex
-	 * but must NOT already hold fileMutex.
+	 * Return a memory map of the file and mark it as in use. Thin wrapper that
+	 * acquires fileMutex (the guard for memoryMap) and delegates to
+	 * getMemoryMapLocked(). Callers must NOT already hold fileMutex — a caller
+	 * that does (the open path) calls getMemoryMapLocked() directly instead.
 	 */
 	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
+
+	/**
+	 * Platform-specific body of getMemoryMap(): creates or reuses the mapping and
+	 * (re)assigns this->memoryMap. Precondition: the caller already holds
+	 * fileMutex. Returns nullptr for an empty/too-small file.
+	 */
+	std::shared_ptr<MemoryMap> getMemoryMapLocked(uint32_t fileSize);
 
 	/**
 	 * Hints the kernel that this log's file-backed pages are cold (MADV_COLD),
@@ -255,7 +268,7 @@ struct TransactionLogFile final {
 	 *
 	 * Precondition: the caller must already hold fileMutex (it touches
 	 * memoryMap). Both call sites satisfy this — writeEntriesV1() holds it, and
-	 * getMemoryMap() acquires it before calling in.
+	 * getMemoryMapLocked() runs with it held.
 	 */
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	void updateMemoryMapOverlay();
@@ -263,8 +276,14 @@ struct TransactionLogFile final {
 
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
+	 *
+	 * @param fileMutexHeld true when the caller already holds fileMutex (the
+	 *   open() -> openFile() -> here path on Windows). When false, this acquires
+	 *   fileMutex only for the getMemoryMapLocked() call and releases it before
+	 *   scanning. Passing true while NOT holding fileMutex, or false while
+	 *   holding it, is a bug (the latter self-deadlocks).
 	 */
-	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize);
+	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize, bool fileMutexHeld = false);
 
 	/**
 	 * Platform specific function that writes data to the log file.

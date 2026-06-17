@@ -144,21 +144,16 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed));
 }
 
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+// Precondition: caller holds fileMutex (the guard for this->memoryMap / this->fd).
+// The public getMemoryMap() wrapper acquires it; the open path holds it already.
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize) {
 	// mmap with length 0 has undefined behavior according to POSIX.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty or too-small files.
 	if (fileSize == 0) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
-
-	// Guard every access to this->memoryMap (and this->fd) with fileMutex. This
-	// is the same lock adviseCold()/close()/removeFile()/stats use; without it,
-	// our reassignment of the shared_ptr here would race their reads. Callers
-	// hold indexMutex (findPositionByTimestamp) or dataSetsMutex (store) but not
-	// fileMutex, so the lock order is indexMutex/dataSetsMutex -> fileMutex.
-	std::lock_guard<std::mutex> lock(this->fileMutex);
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	if (this->memoryMap) {
