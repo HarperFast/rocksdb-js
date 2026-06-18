@@ -151,3 +151,27 @@ C++ code that needs to emit to JS without a database context should call
    timestamp seen mid-index during concurrent appends is a not-yet-visible memory-map artifact, not
    EOF. Reads during writes are bounded by the committed position, not `size` (see
    `hasAppendedSinceOpen`; HarperFast/harper#1148).
+6. **Shared DBDescriptor teardown is cross-env**: a `DBDescriptor` is process-global and shared by
+   every env that opens the same path (`worker_threads` workers included), so multiple threads can
+   reach `DBRegistry::CloseDB` for one descriptor at the same time — e.g. several worker envs tearing
+   down at once, each via its own `Database` finalizer. The purge decision (refcount check),
+   `descriptor->close()`, and the registry-map erase must therefore be coordinated under
+   `databasesMutex` and must never dereference a raw pointer/iterator into the map across an unlocked
+   region — a concurrent erase frees that node and the survivor closes a freed descriptor (locking a
+   destroyed mutex; surfaces on glibc as "malloc(): unaligned tcache chunk detected"). The current
+   design takes a `shared_ptr` copy of the descriptor under the lock as a single-purge claim (the copy
+   pushes `use_count` past the purge threshold so a racing `CloseDB` skips) while leaving the entry in
+   the map — descriptor non-null and `isClosing()` — until `close()` finishes, so a concurrent
+   `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close.
+
+## Debugging native heap corruption
+
+AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
+on the binding via `binding.gyp`). On Linux, `LD_PRELOAD` the libasan shared object to run the
+instrumented `.node` under stock node; `.github/workflows/benchmark-asan.yml` does this and loops the
+worker benchmarks. **ASan does not work locally on recent macOS** — the runtime deadlocks at init even
+for a trivial binary, and Node additionally hangs under a DYLD-injected ASan runtime. Use Apple's
+**Guard Malloc** there instead (no rebuild needed): `DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib
+MallocScribble=1 node ...` faults immediately on an out-of-bounds access or use-after-free (it works
+with `worker_threads`). `scripts/gmalloc-worker-repro.mjs` reproduces the shared-descriptor teardown
+race this way in seconds; capture the stack with `lldb -b -o 'break set -n __cxa_throw' -o run -o bt`.

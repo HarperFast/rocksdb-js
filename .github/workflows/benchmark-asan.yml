@@ -1,0 +1,109 @@
+name: Benchmark (ASan)
+
+# Diagnostic workflow for the intermittent heap-corruption crash seen in the
+# benchmark suite ("malloc(): unaligned tcache chunk detected"). Builds the
+# native binding with AddressSanitizer (ROCKSDB_ASAN=1) and loops the
+# worker-heavy benchmarks under the ASan runtime until it trips, capturing the
+# exact corrupting stack. Manual-dispatch only — ASan builds run ~2-3x slower
+# and this is not part of normal PR gating.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'How many times to loop the worker benchmarks'
+        default: '30'
+        required: false
+        type: string
+      benches:
+        description: 'Space-separated bench files to loop'
+        default: 'benchmark/worker-put-sync.bench.ts benchmark/worker-get-sync.bench.ts benchmark/worker-transaction-log.bench.ts benchmark/realistic-load.bench.ts'
+        required: false
+        type: string
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  asan-benchmark:
+    name: Run Benchmarks under ASan
+    runs-on: [self-hosted, linux, benchmark]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: latest
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Setup RocksDB cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: deps/rocksdb
+          key: benchmark-rocksdb-${{ hashFiles('package.json') }}
+          restore-keys: |
+            benchmark-rocksdb-
+
+      - name: Install dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
+
+      - name: Build bundle
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: pnpm build:bundle
+
+      - name: Build binding with AddressSanitizer
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ROCKSDB_ASAN: '1'
+        run: pnpm rebuild
+
+      - name: Loop worker benchmarks under ASan
+        id: asan
+        env:
+          # RocksDB is a non-instrumented prebuilt static lib, so disable ODR
+          # and leak checks; halt + abort on the first real error so the job
+          # fails loudly with the report. libasan is LD_PRELOADed (node is not
+          # ASan-linked), so skip the link-order assertion.
+          ASAN_OPTIONS: 'detect_leaks=0:detect_odr_violation=0:halt_on_error=1:abort_on_error=1:verify_asan_link_order=0:symbolize=1:log_path=stderr'
+          ITERATIONS: ${{ github.event.inputs.iterations || '30' }}
+          BENCHES: ${{ github.event.inputs.benches }}
+        run: |
+          set -uo pipefail
+          export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
+          echo "LD_PRELOAD=$LD_PRELOAD"
+          : "${BENCHES:=benchmark/worker-put-sync.bench.ts benchmark/worker-get-sync.bench.ts benchmark/worker-transaction-log.bench.ts benchmark/realistic-load.bench.ts}"
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "::group::ASan benchmark iteration $i / $ITERATIONS"
+            node --expose-gc ./node_modules/vitest/vitest.mjs bench --run $BENCHES 2>&1 | tee -a asan-bench.log
+            code=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            if grep -qiE "AddressSanitizer|heap-buffer-overflow|heap-use-after-free|double-free|unaligned tcache|SUMMARY: AddressSanitizer" asan-bench.log; then
+              echo "ASan tripped on iteration $i"
+              exit 1
+            fi
+            if [ "$code" -ne 0 ]; then
+              echo "benchmark process exited non-zero ($code) on iteration $i"
+              exit "$code"
+            fi
+          done
+          echo "completed $ITERATIONS iterations with no ASan error"
+
+      - name: Upload ASan log
+        if: always() && hashFiles('asan-bench.log') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: asan-bench-log-${{ github.sha }}
+          path: asan-bench.log
+          retention-days: 30
