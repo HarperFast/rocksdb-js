@@ -1120,7 +1120,9 @@ Returns an array of log store names.
 const names = db.listLogs();
 ```
 
-### `db.purgeLogs(options?): string[] | { path: string; entries: number }[]`
+### `db.purgeLogs(options?): string[]`
+
+### `db.purgeLogs(options): { path: string; entries: number }[]`
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
 
@@ -1133,9 +1135,11 @@ Deletes transaction log files older than the `transactionLogRetention` (defaults
     each file before it is removed, so it is only performed when this option is enabled.
   - `name?: string` The name of a store to limit the purging to.
 
-By default, returns an array with the full path of each log file deleted. When `includeEntryCounts`
-is `true`, returns an array of objects, each with the `path` of the deleted log file and the number
-of `entries` it held.
+The method is overloaded so the return type follows `includeEntryCounts`: by default (omitted or
+`false`) it returns `string[]` — the full path of each log file deleted; when `includeEntryCounts` is
+`true` it returns `{ path: string; entries: number }[]`, each entry being the `path` of the deleted
+log file and the number of `entries` it held. Because of the overloads, the object-array form is
+returned directly when `includeEntryCounts: true` is passed as a literal, with no casting required.
 
 ```typescript
 const removed = db.purgeLogs();
