@@ -1122,7 +1122,7 @@ const names = db.listLogs();
 
 ### `db.purgeLogs(options?): string[]`
 
-### `db.purgeLogs(options): { path: string; entries: number }[]`
+### `db.purgeLogs({ includeEntryCounts: true, ...options }): { path: string; entries: number }[]`
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
 
