@@ -1120,7 +1120,7 @@ Returns an array of log store names.
 const names = db.listLogs();
 ```
 
-### `db.purgeLogs(options?): string[]`
+### `db.purgeLogs(options?): string[] | { path: string; entries: number }[]`
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
 
@@ -1128,13 +1128,24 @@ Deletes transaction log files older than the `transactionLogRetention` (defaults
   - `before?: number` Remove all transaction log files older than the specified timestamp.
   - `destroy?: boolean` When `true`, deletes transaction log stores including all log sequence files
     on disk.
+  - `includeEntryCounts?: boolean` When `true`, counts the entries in each deleted log file and
+    returns an array of `{ path, entries }` objects instead of an array of file paths. Counting reads
+    each file before it is removed, so it is only performed when this option is enabled.
   - `name?: string` The name of a store to limit the purging to.
 
-Returns an array with the full path of each log file deleted.
+By default, returns an array with the full path of each log file deleted. When `includeEntryCounts`
+is `true`, returns an array of objects, each with the `path` of the deleted log file and the number
+of `entries` it held.
 
 ```typescript
 const removed = db.purgeLogs();
 console.log(`Removed ${removed.length} log files`);
+
+// Include the entry count for each deleted log file:
+const purged = db.purgeLogs({ includeEntryCounts: true });
+for (const { path, entries } of purged) {
+	console.log(`Removed ${path} (${entries} entries)`);
+}
 ```
 
 ### `db.useLog(name): TransactionLog`
