@@ -46,7 +46,14 @@ describe('Concurrent cross-thread teardown', () => {
 			);
 
 			expect(exitCodes).toEqual(Array.from({ length: WORKERS }, () => 0));
-			rmSync(path, { recursive: true, force: true });
+			// Best-effort temp cleanup. On Windows the DB files can briefly stay
+			// locked right after the workers exit, so retry and never fail the
+			// test on a cleanup EBUSY — the teardown under test already passed.
+			try {
+				rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			} catch {
+				// ignore — leftover temp dir, not a test failure
+			}
 		}
 	}, 60_000);
 });
