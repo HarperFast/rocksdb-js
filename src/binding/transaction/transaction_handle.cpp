@@ -210,9 +210,12 @@ void TransactionHandle::close() {
 	this->waitForAsyncWorkCompletion();
 
 	// Test seam: widen the PATH A vs PATH B race window (see txnCloseTestDelayMs).
+	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
+	// unblocks); the seam makes it wide enough to reproduce deterministically.
 	// Noop in production.
-	if (txnCloseTestDelayMs() > 0) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(txnCloseTestDelayMs()));
+	const int testDelayMs = txnCloseTestDelayMs();
+	if (testDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(testDelayMs));
 	}
 
 	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
