@@ -213,10 +213,14 @@ void TransactionLogFile::openFile() {
 // holds it already (and reaches here via findPositionByTimestamp(fileMutexHeld=true),
 // which calls getMemoryMapLocked() directly rather than re-acquiring fileMutex).
 //
-// On Windows the weak-for-frozen ownership optimization (POSIX) is not applied —
+// On Windows the weak-for-frozen ownership optimization (POSIX) is not applied:
 // Windows is not Harper's memory-pressure target and uses a different mapping
-// model (the file is pre-extended to maxFileSize). The map is always retained
-// strongly in this->memoryMap, so `isCurrent` is ignored here.
+// model (the file is pre-extended to maxFileSize). This function never consults
+// frozenMapCache and always stores the mapping strongly in this->memoryMap, so
+// `isCurrent` is ignored. (downgradeMapToFrozen() is shared code and still resets
+// this->memoryMap on rotation, but a later frozen read here simply re-creates the
+// mapping and re-pins it strongly for the rest of the file's life — so frozen maps
+// are neither weak-held nor deduped on Windows, by design.)
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
 	(void)isCurrent;
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.

@@ -214,9 +214,14 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		this->updateMemoryMapOverlay(); // extend the overlay if the file grew since this map was created
 #endif
 	} else {
+		// Frozen: keep only a weak handle so the returned shared_ptr (the JS
+		// external buffer) is the sole owner and the mapping is unmapped when JS
+		// releases it. (No need to set frozenMapCache on the current-file branch:
+		// it is read only when memoryMap is null, and downgradeMapToFrozen() seeds
+		// it from memoryMap at the moment the file is frozen.)
 		this->memoryMap.reset();
+		this->frozenMapCache = map;
 	}
-	this->frozenMapCache = map;
 	return map;
 }
 

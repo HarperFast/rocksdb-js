@@ -191,7 +191,20 @@ void TransactionLogStore::rotateToNextSequence(const std::shared_ptr<Transaction
 	// The file we are rotating away from is now frozen: drop its strong memory-map
 	// reference so the mapping is released once any JS buffers a reader mapped from
 	// it while it was current are GC'd, rather than staying pinned until the file
-	// is re-read as frozen or purged. Called under writeMutex (the write path).
+	// is re-read as frozen or purged.
+	//
+	// Called under writeMutex (the write path). Take dataSetsMutex too so the
+	// downgrade + currentSequenceNumber bump are atomic with respect to readers
+	// that derive a file's strong-vs-weak map ownership from currentSequenceNumber
+	// — getMemoryMap() and findPositionByTimestamp() both compute `isCurrent` under
+	// dataSetsMutex. Without this, a reader could read currentSequenceNumber == N
+	// (isCurrent=true) and re-pin file N's map strongly in getMemoryMapLocked()
+	// after this method has already downgraded it, permanently retaining the
+	// mapping and defeating the release. Serializing here forces the reader to be
+	// wholly before (sees N, then this downgrade undoes its strong ref) or wholly
+	// after (sees N+1, maps frozen/weak). Lock order is writeMutex -> dataSetsMutex,
+	// consistent with the rest of the store; no caller holds dataSetsMutex already.
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	if (oldFile) {
 		oldFile->downgradeMapToFrozen();
 	}
@@ -211,6 +224,12 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 	// Return a strong reference: for a frozen file the log file itself keeps only
 	// a weak handle, so this strong ref (and the JS external buffer it is handed
 	// to) is what keeps the mapping alive.
+	//
+	// `isCurrent` decides strong-vs-weak ownership down in getMemoryMapLocked().
+	// We hold dataSetsMutex across the read and the getMemoryMap() call, and
+	// rotateToNextSequence() takes the same lock around its downgrade + sequence
+	// bump, so this isCurrent value cannot go stale mid-call (a frozen file can
+	// never be re-pinned as current here).
 	bool isCurrent = this->currentSequenceNumber.load(std::memory_order_relaxed) == logSequenceNumber;
 	return logFile->getMemoryMap(isCurrent ?
 		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
