@@ -1,6 +1,13 @@
 import { version } from './load-binding.js';
 
 export {
+	backups,
+	type BackupInfo,
+	type BackupOptions,
+	type RestoreMode,
+	type RestoreOptions,
+} from './backup.js';
+export {
 	RocksDatabase,
 	type RocksDatabaseOptions,
 	type RocksDBStat,
@@ -9,16 +16,18 @@ export {
 export { DBIterator } from './dbi-iterator.js';
 export { DBI, type IteratorOptions } from './dbi.js';
 export type { Key } from './encoding.js';
+export type * from './stats.js';
 export {
 	constants,
 	coolTransactionLogs,
 	currentThreadId,
 	registryStatus,
 	stats,
-	type StatsHistogramData,
 	shutdown,
-	type TransactionEntry,
 	TransactionLog,
+	type TransactionEntry,
+	type TransactionLogPosition,
+	type TransactionLogStats,
 } from './load-binding.js';
 export * from './parse-transaction-log.js';
 export {

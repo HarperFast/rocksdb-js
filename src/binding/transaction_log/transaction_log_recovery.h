@@ -50,6 +50,19 @@ struct RecoveryScan final {
  */
 RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize);
 
+/**
+ * Counts the well-formed v1 entry frames in an in-memory transaction log image.
+ * Pure (no I/O) so it can be unit-tested standalone, and shares the framing walk
+ * with scanTransactionLogForRecovery(). The file header is assumed already
+ * validated by the caller; counting begins at the first entry and stops at the
+ * first zero-timestamp marker, EOF, or a broken/torn frame — yielding the same
+ * entry count parseTransactionLog() reports for a clean file.
+ *
+ * @param data     Pointer to the full file image.
+ * @param fileSize Number of bytes in `data`.
+ */
+uint32_t countTransactionLogEntries(const char* data, uint32_t fileSize);
+
 } // namespace rocksdb_js
 
 #endif

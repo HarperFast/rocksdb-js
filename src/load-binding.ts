@@ -1,6 +1,19 @@
+import type { BackupInfo, BackupOptions, RestoreOptions } from './backup.js';
 import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
+import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.js';
 import type { StoreContext } from './store.js';
+export type {
+	GetStatsMethod,
+	StatsAll,
+	StatsAllExtras,
+	StatsBasics,
+	StatsCurated,
+	StatsCuratedExtras,
+	StatsDefault,
+	StatsHistogramData,
+	StatsValue,
+} from './stats.js';
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -14,19 +27,33 @@ export type NativeTransactionOptions = {
 	 * @default false
 	 */
 	disableSnapshot?: boolean;
+
+	/**
+	 * When `true`, an `IsBusy` conflict at commit time is resolved with the
+	 * `RETRY_NOW` sentinel value instead of being rejected. The native layer
+	 * may park on a VT slot before resolving, so the JS retry fires only after
+	 * the conflicting transaction has committed and released its write intent.
+	 *
+	 * Use together with `verificationTable: true` on the database.
+	 *
+	 * @default false
+	 */
+	coordinatedRetry?: boolean;
 };
 
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
 	abort(): void;
-	commit(resolve: () => void, reject: (err: Error) => void): void;
+	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
-		resolve: (value: Buffer) => void,
-		reject: (err: Error) => void
+		resolve: (value: Buffer | number) => void,
+		reject: (err: Error) => void,
+		txnIdIgnored?: number,
+		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
@@ -50,10 +77,70 @@ export type TransactionLogQueryOptions = {
 
 export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
 
+/**
+ * A position within a transaction log, identifying a log file by its sequence
+ * number and a byte `offset` within that file.
+ */
+export type TransactionLogPosition = { sequence: number; offset: number };
+
+/**
+ * A detailed statistics snapshot for a single transaction log store, returned
+ * by {@link TransactionLog.getStats}. All sizes are in bytes; timestamps are
+ * milliseconds since the Unix epoch.
+ *
+ * Memory note: `memory.mappedBytes` is virtual address space — the active write
+ * file is mapped at the full configured `maxFileSize` on POSIX, so it does not
+ * reflect resident memory. `memory.overlayBytes` (POSIX only; 0 on Windows) is
+ * the file-backed portion and is the closer proxy for real consumption.
+ */
+export type TransactionLogStats = {
+	name: string;
+	path: string;
+	fileCount: number;
+	currentSequenceNumber: number;
+	oldestSequenceNumber: number;
+	totalSizeBytes: number;
+	currentFileSize: number;
+	pendingTransactions: number;
+	uncommittedTransactions: number;
+	replayGapBytes: number;
+	memory: {
+		mappedBytes: number;
+		overlayBytes: number;
+		activeMaps: number;
+	};
+	nextLogPosition: TransactionLogPosition;
+	lastFlushedPosition: TransactionLogPosition;
+	lastCommittedPosition: TransactionLogPosition | null;
+	purge: {
+		oldestFileAgeMs: number;
+		purgeableFiles: number;
+		retainedUnflushedFiles: number;
+		lastPurgeMs: number;
+	};
+	totals: {
+		transactionsWritten: number;
+		entriesWritten: number;
+		bytesWritten: number;
+		rotations: number;
+		filesPurged: number;
+		bytesPurged: number;
+		purgeRuns: number;
+		databaseFlushes: number;
+		writeFailures: number;
+	};
+	config: {
+		maxFileSize: number;
+		retentionMs: number;
+		maxAgeThreshold: number;
+	};
+};
+
 export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
+	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
@@ -121,6 +208,13 @@ export type NativeDatabaseOptions = {
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;
+	/**
+	 * When true, transaction writes to this column family invalidate the
+	 * VerificationTable slot for each written key at write time (not at
+	 * commit time). Enable only for column families whose records are
+	 * cached (e.g. the primary CF of a table). Default: false.
+	 */
+	verificationTable?: boolean;
 	writeBufferSize?: number;
 };
 
@@ -129,23 +223,32 @@ type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
 
-export type PurgeLogsOptions = { before?: number; destroy?: boolean; name?: string };
-
-export type StatsHistogramData = {
-	average: number;
-	count: number;
-	max: number;
-	median: number;
-	min: number;
-	percentile95: number;
-	percentile99: number;
-	standardDeviation: number;
-	sum: number;
+export type PurgeLogsOptions = {
+	before?: number;
+	destroy?: boolean;
+	/**
+	 * When `true`, count the entries in each purged log file (extra work) and
+	 * return `PurgedLog[]` instead of the default `string[]` of file paths.
+	 */
+	includeEntryCounts?: boolean;
+	name?: string;
 };
+
+/**
+ * A purged transaction log file and the number of entries it held, returned by
+ * `purgeLogs()` when `includeEntryCounts` is `true`.
+ */
+export type PurgedLog = { path: string; entries: number };
 
 export type NativeDatabase = {
 	new (): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
+	backup(
+		resolve: ResolveCallback<number>,
+		reject: RejectCallback,
+		backupDir: string,
+		options?: BackupOptions
+	): void;
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
@@ -161,9 +264,10 @@ export type NativeDatabase = {
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
-		resolve: ResolveCallback<Buffer>,
+		resolve: ResolveCallback<Buffer | number>,
 		reject: RejectCallback,
-		txnId?: number
+		txnId?: number,
+		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
@@ -171,8 +275,14 @@ export type NativeDatabase = {
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
-	getStats(all?: boolean): Record<string, number | StatsHistogramData>;
-	getSync(keyLengthOrKeyBuffer: number | Buffer, flags: number, txnId?: number): Buffer;
+	getStats(all?: false): StatsDefault;
+	getStats(all: true): StatsAll;
+	getSync(
+		keyLengthOrKeyBuffer: number | Buffer,
+		flags: number,
+		txnId?: number,
+		expectedVersion?: number
+	): Buffer;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
 		defaultBuffer: ArrayBuffer,
@@ -183,7 +293,10 @@ export type NativeDatabase = {
 	listLogs(): string[];
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
-	purgeLogs(options?: PurgeLogsOptions): string[];
+	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;
+	purgeLogs(options: PurgeLogsOptions & { includeEntryCounts: true }): PurgedLog[];
+	purgeLogs(options?: PurgeLogsOptions & { includeEntryCounts?: false }): string[];
+	purgeLogs(options?: PurgeLogsOptions): string[] | PurgedLog[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
@@ -200,11 +313,20 @@ export type NativeDatabase = {
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
 	useLog(name: string): TransactionLog;
+	verifyVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): boolean;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };
 
 export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
+	/**
+	 * Number of slots in the process-global verification table. Each slot is
+	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.
+	 *
+	 * Must be configured before the first database is opened. Once the table
+	 * is materialized, attempts to change this value will throw.
+	 */
+	verificationTableEntries?: number;
 	compactOnClose?: boolean;
 	/**
 	 * Total memtable memory limit (bytes) shared across every database opened
@@ -329,6 +451,7 @@ const bindingPath = locateBinding();
 const binding = req(bindingPath);
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;
 export const removeGlobalListener: (event: string, callback: (...args: any[]) => void) => boolean =
@@ -339,6 +462,14 @@ export const constants: {
 	ALWAYS_CREATE_NEW_BUFFER_FLAG: number;
 	NOT_IN_MEMORY_CACHE_FLAG: number;
 	ONLY_IF_IN_MEMORY_CACHE_FLAG: number;
+	POPULATE_VERSION_FLAG: number;
+	FRESH_VERSION_FLAG: number;
+	/**
+	 * Sentinel value resolved (not rejected) by `commit()` when
+	 * `coordinatedRetry: true` and the transaction encountered an IsBusy
+	 * conflict. JS should retry the transaction body immediately.
+	 */
+	RETRY_NOW_VALUE: number;
 	TRANSACTION_LOG_TOKEN: number;
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
@@ -358,6 +489,7 @@ export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const registryStatus: () => RegistryStatus = binding.registryStatus;
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
+
 /**
  * Advises the kernel that the file-backed pages of every mapped transaction log
  * are cold (Linux MADV_COLD), so they are reclaimed first under memory pressure
@@ -373,15 +505,51 @@ export const currentThreadId: () => number = binding.currentThreadId;
  */
 export const coolTransactionLogs: () => { maps: number; bytes: number } =
 	binding.coolTransactionLogs;
+
 /**
  * Number of live transaction-log memory maps across the process. Internal —
  * used by tests to verify that releasing a frozen log's external buffer unmaps
  * the underlying mapping rather than leaving it retained.
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
+
+// Module-level backup management functions. These operate on a backup directory
+// and do not require an open database. Wrapped by the `backups` namespace in
+// `backup.ts`; creating a backup is a `RocksDatabase` instance method.
+export const nativeBackupRestore: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	dbDir: string,
+	walDir: string,
+	options?: { backupId?: number; keepLogFiles?: boolean; mode?: RestoreOptions['mode'] }
+) => void = binding.backupRestore;
+export const nativeBackupList: (
+	resolve: ResolveCallback<BackupInfo[]>,
+	reject: RejectCallback,
+	backupDir: string
+) => void = binding.backupList;
+export const nativeBackupDelete: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	backupId: number
+) => void = binding.backupDelete;
+export const nativeBackupPurge: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	keepCount: number
+) => void = binding.backupPurge;
+export const nativeBackupVerify: (
+	resolve: ResolveCallback<void>,
+	reject: RejectCallback,
+	backupDir: string,
+	backupId: number,
+	verifyWithChecksum: boolean
+) => void = binding.backupVerify;
+
 export const stats: {
-	histograms: string[];
-	tickers: string[];
 	StatsLevel: {
 		DisableAll: number;
 		ExceptTickers: number;
@@ -392,4 +560,5 @@ export const stats: {
 		All: number;
 	};
 } = binding.stats;
+
 export const version: string = binding.version;

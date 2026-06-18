@@ -1,9 +1,10 @@
 import { registryStatus } from '../src/index.js';
 import { dbRunner } from '../test/lib/util.js';
 import { createWorkerBootstrapScript } from '../test/lib/util.js';
+import { stressTest } from './setup.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
+import { describe, expect } from 'vitest';
 
 // Node.js 18 and older doesn't properly eval ESM code
 const bootstrapScript = createWorkerBootstrapScript(
@@ -11,8 +12,9 @@ const bootstrapScript = createWorkerBootstrapScript(
 );
 
 describe('Stress DB Instances', () => {
-	it.skipIf(!globalThis.gc)(
+	stressTest(
 		'should create 10 worker threads and each open 500 databases with 25 column families',
+		{ mode: 'essential', skipIf: !globalThis.gc },
 		() =>
 			dbRunner(async ({ dbPath }) => {
 				const promises: Promise<void>[] = [];

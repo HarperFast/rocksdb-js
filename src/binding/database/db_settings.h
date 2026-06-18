@@ -6,6 +6,7 @@
 #include <node_api.h>
 #include "rocksdb/cache.h"
 #include "rocksdb/write_buffer_manager.h"
+#include "core/verification_table.h"
 
 namespace rocksdb_js {
 
@@ -49,6 +50,18 @@ private:
 
 	bool compactOnClose;
 
+	// Number of slots requested for the verification table. Default 128K
+	// (1 MB at 8 bytes per slot). 0 disables the table. Configurable via
+	// RocksDatabase.config({ verificationTableEntries }) only before the
+	// table is first materialized; after that, attempts to change it throw.
+	size_t verificationTableEntries;
+
+	// Random hash seed mixed into verification-table slot indices.
+	uint64_t verificationTableSeed;
+
+	std::unique_ptr<VerificationTable> verificationTable;
+	std::mutex verificationTableMutex;
+
 public:
 	/**
 	 * Returns the process-wide DBSettings singleton.
@@ -80,6 +93,23 @@ public:
 	inline bool getCompactOnClose() const {
 		return compactOnClose;
 	}
+
+	/**
+	 * Returns the global verification table, materializing it on first call.
+	 * After the first call, the table size is fixed for the process lifetime.
+	 * Returns null when the table is disabled (entries == 0).
+	 */
+	VerificationTable* getVerificationTable();
+
+	/**
+	 * Returns the verification table if it has already been materialized,
+	 * without creating it. Safe to call from any thread. Returns null when
+	 * the table has not yet been created or is disabled.
+	 *
+	 * Use this in hot paths (e.g. transaction commit) where materializing
+	 * the table would trigger the config-freeze check unexpectedly.
+	 */
+	VerificationTable* getVerificationTableRaw();
 
 	static napi_value Config(napi_env env, napi_callback_info info);
 

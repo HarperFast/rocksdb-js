@@ -5,6 +5,7 @@
 #include <vector>
 #include <utility>
 #include <string>
+#include <unordered_map>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -47,6 +48,17 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * Whether to disable WAL.
 	 */
 	bool disableWAL = false;
+
+	/**
+	 * Whether to register writes from this column family into the
+	 * VerificationTable so that cached record versions are invalidated
+	 * on commit. Set via the `verificationTable: true` open option.
+	 *
+	 * Only enable this for column families whose records are cached
+	 * (typically the primary CF of a table). Secondary-index CFs should
+	 * leave this false to avoid unnecessary VT contention.
+	 */
+	bool enableVerificationTable = false;
 
 	/**
 	 * The node environment.
@@ -108,6 +120,13 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 
 	napi_value getStat(napi_env env, const std::string& statName);
 	napi_value getStats(napi_env env, bool all);
+
+	/**
+	 * Aggregates the summarized `txnlog.*` statistics across all of this
+	 * database's transaction logs into `total` (a sum of per-store
+	 * TransactionLogStoreStats fields) and `logCount` (the number of logs).
+	 */
+	void collectTransactionLogSummary(TransactionLogStoreStats& total, uint64_t& logCount);
 
 	void open(const std::string& path, const DBOptions& options);
 	bool opened() const;

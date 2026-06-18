@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { RocksDatabase, parseTransactionLog, versions } from '../dist/index.mjs';
+import { RocksDatabase, backups, parseTransactionLog, versions } from '../dist/index.mjs';
 import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -10,6 +10,7 @@ import repl from 'node:repl';
 import { inspect, parseArgs, styleText } from 'node:util';
 
 const COMMANDS = {
+	backups: backupsCommand,
 	clear: clearCommand,
 	columns: columnsCommand,
 	compact: compactCommand,
@@ -29,6 +30,11 @@ const COMMANDS = {
 	stats: statsCommand,
 	use: useCommand,
 };
+
+const BACKUP_SUBCOMMANDS = ['backup', 'restore', 'verify', 'delete', 'purge'];
+
+// Resolved backup dir -> BackupInfo[]; warmed by list operations, used for tab completion.
+let backupListCache = { dir: null, list: null };
 
 const { values: argv, positionals } = parseArgs({
 	allowPositionals: true,
@@ -88,7 +94,43 @@ function completer(line) {
 		}
 	}
 
+	if (command === 'backups') {
+		if (parts.length === 2) {
+			const arg = parts[1];
+			return [completePath(arg), arg];
+		}
+		if (parts.length === 3) {
+			const arg = parts[2];
+			const hits = BACKUP_SUBCOMMANDS.filter((s) => s.startsWith(arg)).map((s) => `${s} `);
+			return [hits.length ? hits : BACKUP_SUBCOMMANDS.map((s) => `${s} `), arg];
+		}
+		if (parts.length === 4 && backupListCache.dir === resolve(parts[1]) && backupListCache.list) {
+			const subcommand = parts[2];
+			const arg = parts[3];
+			let candidates = [];
+			if (['restore', 'verify', 'delete'].includes(subcommand)) {
+				candidates = backupListCache.list.map((b) => String(b.backupId));
+			} else if (subcommand === 'purge') {
+				candidates = backupListCache.list.map((_, i) => String(i + 1));
+			}
+			return [candidates.filter((c) => c.startsWith(arg)).map((c) => `${c} `), arg];
+		}
+	}
+
 	return [[], line];
+}
+
+function completePath(partial) {
+	const sep = partial.lastIndexOf('/');
+	const dir = sep === -1 ? '.' : partial.slice(0, sep + 1);
+	const prefix = sep === -1 ? partial : partial.slice(sep + 1);
+	try {
+		return readdirSync(dir, { withFileTypes: true })
+			.filter((entry) => entry.name.startsWith(prefix))
+			.map((entry) => `${sep === -1 ? '' : dir}${entry.name}${entry.isDirectory() ? '/' : ' '}`);
+	} catch {
+		return [];
+	}
 }
 
 function onSIGINT() {
@@ -200,6 +242,250 @@ async function ask(prompt) {
 	}
 }
 
+function invalidateBackupListCache() {
+	backupListCache = { dir: null, list: null };
+}
+
+async function fetchBackupList(backupDir) {
+	const list = await backups.list(backupDir);
+	backupListCache = { dir: backupDir, list };
+	return list;
+}
+
+function printBackupList(list) {
+	if (list.length === 0) {
+		console.log('No backups found');
+		return;
+	}
+	for (const backup of list) {
+		const ts = new Date(backup.timestamp * 1000).toISOString();
+		console.log(
+			`${String(backup.backupId).padStart(3)})  ${hl(ts)}  ${formatBytes(backup.size)}  ${backup.numberFiles} file${backup.numberFiles === 1 ? '' : 's'}`
+		);
+		if (backup.appMetadata) {
+			console.log(`      ${note(`metadata: ${backup.appMetadata}`)}`);
+		}
+	}
+}
+
+async function listBackups(backupDir) {
+	let list;
+	try {
+		list = await fetchBackupList(backupDir);
+	} catch (error) {
+		console.log(bad(`Unable to list backups: ${error.message ?? error}`));
+		console.log(note(`Check the path or create a first backup with "backups <dir> backup"`));
+		return null;
+	}
+	printBackupList(list);
+	return list;
+}
+
+async function requireBackupId(backupDir, idStr, list = null) {
+	if (!list) {
+		list = await fetchBackupList(backupDir);
+	}
+	const id = Number(idStr);
+	if (!Number.isInteger(id)) {
+		console.log(`Invalid backup id: ${hl(idStr)}\n`);
+		printBackupList(list);
+		return null;
+	}
+	const backup = list.find((b) => b.backupId === id);
+	if (!backup) {
+		console.log(`Backup ${hl(id)} does not exist\n`);
+		printBackupList(list);
+		return null;
+	}
+	return { id, backup };
+}
+
+async function dirSize(dir) {
+	let entries;
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		return 0;
+	}
+	let total = 0;
+	for (const entry of entries) {
+		const entryPath = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			total += await dirSize(entryPath);
+		} else if (entry.isFile()) {
+			try {
+				total += (await stat(entryPath)).size;
+			} catch {
+				// File removed while walking; skip it.
+			}
+		}
+	}
+	return total;
+}
+
+function closeAllDatabases() {
+	for (const [name, db] of Object.entries(dbs)) {
+		db?.close();
+		delete dbs[name];
+	}
+	currentDB = null;
+}
+
+function reopenDatabases(preferredColumn) {
+	currentDB = RocksDatabase.open(dbPath, { ...defaultOpenOptions });
+	dbs[currentDB.name] = currentDB;
+	if (
+		preferredColumn &&
+		preferredColumn !== currentDB.name &&
+		currentDB.columns.includes(preferredColumn)
+	) {
+		dbs[preferredColumn] = RocksDatabase.open(dbPath, {
+			name: preferredColumn,
+			...defaultOpenOptions,
+		});
+		currentDB = dbs[preferredColumn];
+	}
+	console.log(wrapColumns(currentDB.columns));
+}
+
+async function backupsCommand(args) {
+	const [dirArg, subcommand, extra] = args;
+	if (!dirArg) {
+		console.log(`Usage: ${hl('backups <dir> [subcommand] [arg]')}`);
+		console.log(`Subcommands: ${BACKUP_SUBCOMMANDS.map((s) => hl(s)).join(', ')}\n`);
+		return;
+	}
+
+	const backupDir = resolve(dirArg);
+
+	if (subcommand && !BACKUP_SUBCOMMANDS.includes(subcommand)) {
+		console.log(`Unknown subcommand: ${hl(subcommand)}`);
+		console.log(`Valid subcommands: ${BACKUP_SUBCOMMANDS.map((s) => hl(s)).join(', ')}\n`);
+		return;
+	}
+
+	// The backup engine creates the directory when creating a backup; everything
+	// else operates on an existing backup directory.
+	if (subcommand !== 'backup' && !existsSync(backupDir)) {
+		console.log(`Backup directory ${hl(backupDir)} does not exist`);
+		console.log(note(`Create a first backup with "backups ${dirArg} backup"\n`));
+		return;
+	}
+
+	if (!subcommand || subcommand === 'ls' || subcommand === 'list') {
+		await listBackups(backupDir);
+		console.log();
+		return;
+	}
+
+	if (subcommand === 'backup') {
+		const { result: id, time } = await run(() => currentDB.backup(backupDir));
+		invalidateBackupListCache();
+		console.log(`Created backup ${hl(id)} ${note(`(${time}ms)`)}\n`);
+		return;
+	}
+
+	if (extra === undefined) {
+		const list = await listBackups(backupDir);
+		if (list?.length) {
+			const argName = subcommand === 'purge' ? '<keep-count>' : '<backup-id>';
+			console.log(`\nUsage: ${hl(`backups ${dirArg} ${subcommand} ${argName}`)}`);
+		}
+		console.log();
+		return;
+	}
+
+	switch (subcommand) {
+		case 'restore': {
+			if (argv.readonly) {
+				console.log(
+					'Restore is not available in read-only mode. Restart without --readonly to restore.\n'
+				);
+				return;
+			}
+			if (backupDir === dbPath) {
+				console.log(bad('Backup directory and database directory must be different\n'));
+				return;
+			}
+			const found = await requireBackupId(backupDir, extra);
+			if (!found) {
+				console.log();
+				return;
+			}
+			const answer = await ask(`Are you sure you want to restore backup ${hl(found.id)}? (y/N) `);
+			if (answer !== 'y' && answer !== 'Y') {
+				console.log();
+				return;
+			}
+			const preferredColumn = currentDB?.name;
+			closeAllDatabases();
+			let time;
+			try {
+				({ time } = await run(() => backups.restore(backupDir, dbPath, { backupId: found.id })));
+			} catch (error) {
+				// Don't reopen: the destructive restore may have purged the database
+				// directory and a read-write open would create a new, empty database.
+				console.error(bad(`Restore failed, the database may be incomplete: ${error}`));
+				process.exit(1);
+			}
+			reopenDatabases(preferredColumn);
+			console.log(`Restored backup ${hl(found.id)} ${note(`(${time}ms)`)}\n`);
+			return;
+		}
+
+		case 'verify': {
+			const found = await requireBackupId(backupDir, extra);
+			if (!found) {
+				console.log();
+				return;
+			}
+			try {
+				const { time } = await run(() =>
+					backups.verify(backupDir, found.id, { verifyWithChecksum: true })
+				);
+				console.log(`Backup ${hl(found.id)} verified OK ${note(`(${time}ms)`)}\n`);
+			} catch (error) {
+				console.error(bad(`Verify failed: ${error.toString()}`));
+			}
+			return;
+		}
+
+		case 'delete': {
+			const found = await requireBackupId(backupDir, extra);
+			if (!found) {
+				console.log();
+				return;
+			}
+			const sizeBefore = await dirSize(backupDir);
+			const { time } = await run(() => backups.delete(backupDir, found.id));
+			invalidateBackupListCache();
+			const sizeAfter = await dirSize(backupDir);
+			console.log(
+				`Deleted backup ${hl(found.id)}, recovered ${hl(formatBytes(Math.max(0, sizeBefore - sizeAfter)))} ${note(`(${time}ms)`)}\n`
+			);
+			return;
+		}
+
+		case 'purge': {
+			const keepCount = Number(extra);
+			// The native layer reads keepCount as a uint32; values above that wrap.
+			if (!Number.isInteger(keepCount) || keepCount < 0 || keepCount > 0xffffffff) {
+				console.log(`Invalid keep count: ${hl(extra)}`);
+				console.log(`Usage: ${hl(`backups ${dirArg} purge <keep-count>`)}\n`);
+				return;
+			}
+			const sizeBefore = await dirSize(backupDir);
+			const { time } = await run(() => backups.purge(backupDir, keepCount));
+			invalidateBackupListCache();
+			const sizeAfter = await dirSize(backupDir);
+			console.log(
+				`Purged backups, keeping ${hl(keepCount)}, recovered ${hl(formatBytes(Math.max(0, sizeBefore - sizeAfter)))} ${note(`(${time}ms)`)}\n`
+			);
+			return;
+		}
+	}
+}
+
 async function clearCommand() {
 	const answer = await ask(`Are you sure you want to clear all data? (y/N) `);
 	if (answer !== 'y' && answer !== 'Y') {
@@ -300,6 +586,9 @@ async function propCommand(args) {
 }
 
 function helpCommand() {
+	console.log(
+		`${hl('backups <dir> [subcommand]')} Manage backups (list, backup, restore, verify, delete, purge)`
+	);
 	console.log(`${hl('clear')}                      Clear all data in the current column family`);
 	console.log(`${hl('columns')}                    List column families`);
 	console.log(`${hl('compact')}                    Compact the current column family`);
@@ -454,7 +743,6 @@ async function putCommand(args) {
 		value = value.slice(1, -1);
 	}
 	await currentDB.put(key, value);
-	console.log();
 }
 
 async function queryCommand(args) {

@@ -50,6 +50,7 @@ extern "C" int rocksdb_js_mock_madvise(void* addr, size_t len, int advice) {
 
 namespace {
 
+#ifdef MADV_COLD
 long pageSize() {
 	long ps = ::sysconf(_SC_PAGESIZE);
 	return ps > 0 ? ps : 4096;
@@ -82,6 +83,7 @@ std::unique_ptr<rocksdb_js::TransactionLogFile> makeMappedLog(size_t fileBytes, 
 	EXPECT_NE(map, nullptr);
 	return log;
 }
+#endif
 
 class TransactionLogMadviseTest : public ::testing::Test {
 protected:
@@ -92,7 +94,9 @@ protected:
 		g_madvise_advice = 0;
 		g_madvise_forced_result = 0;
 		g_madvise_errno = 0;
+#ifdef ROCKSDB_JS_NATIVE_TESTS
 		rocksdb_js::TransactionLogFile::resetAdviseColdSupportForTests();
+#endif
 	}
 };
 

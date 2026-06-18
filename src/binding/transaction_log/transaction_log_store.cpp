@@ -195,7 +195,7 @@ void TransactionLogStore::rotateToNextSequence(const std::shared_ptr<Transaction
 	if (oldFile) {
 		oldFile->downgradeMapToFrozen();
 	}
-	this->currentSequenceNumber.store(this->nextSequenceNumber++, std::memory_order_relaxed);
+	this->advanceSequence();
 }
 
 std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
@@ -333,16 +333,134 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 	return position;
 }
 
-void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
-	std::lock_guard<std::mutex> lock(this->writeMutex);
-	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
-	this->doPurge(visitor, all, before);
+void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
+	// identity
+	out.name = this->name;
+	out.path = this->path.string();
+
+	// lifetime counters and config are lock-free / immutable
+	out.transactionsWritten = this->transactionsWritten.load(std::memory_order_relaxed);
+	out.entriesWritten = this->entriesWritten.load(std::memory_order_relaxed);
+	out.bytesWritten = this->bytesWritten.load(std::memory_order_relaxed);
+	out.rotations = this->rotations.load(std::memory_order_relaxed);
+	out.filesPurged = this->filesPurged.load(std::memory_order_relaxed);
+	out.bytesPurged = this->bytesPurged.load(std::memory_order_relaxed);
+	out.purgeRuns = this->purgeRuns.load(std::memory_order_relaxed);
+	out.databaseFlushes = this->databaseFlushes.load(std::memory_order_relaxed);
+	out.writeFailures = this->writeFailures.load(std::memory_order_relaxed);
+	out.lastPurgeMs = this->lastPurgeMs.load(std::memory_order_relaxed);
+	out.maxFileSize = this->maxFileSize;
+	out.retentionMs = static_cast<uint64_t>(this->retentionMs.count());
+	out.maxAgeThreshold = this->maxAgeThreshold;
+	out.pendingTransactions = this->pendingTransactionCount.load(std::memory_order_relaxed);
+
+	// Read the flushed position before taking dataSetsMutex: getLastFlushedPosition()
+	// acquires flushedStateMutex, and the required lock ordering is
+	// dataSetsMutex → flushedStateMutex, so we must not already hold dataSetsMutex.
+	LogPosition flushedPosition = this->getLastFlushedPosition();
+	out.lastFlushedPosition = flushedPosition;
+
+	auto now = std::chrono::system_clock::now();
+	bool hasOldest = false;
+	std::chrono::system_clock::time_point oldestWriteTime;
+
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+
+	out.currentSequenceNumber = this->currentSequenceNumber;
+	out.nextLogPosition = this->nextLogPosition;
+	out.fileCount = static_cast<uint32_t>(this->sequenceFiles.size());
+	out.uncommittedTransactions = static_cast<uint32_t>(this->uncommittedTransactionPositions.size());
+	out.oldestSequenceNumber = this->sequenceFiles.empty() ? 0 : this->sequenceFiles.begin()->first;
+
+	if (this->lastCommittedPosition && this->lastCommittedPosition->fullPosition > 0) {
+		out.lastCommittedPosition = *this->lastCommittedPosition;
+		out.hasLastCommittedPosition = true;
+	}
+
+	const bool retentionEnabled = this->retentionMs.count() > 0;
+
+	for (const auto& [seq, logFile] : this->sequenceFiles) {
+		uint32_t fileSize = logFile->size.load(std::memory_order_relaxed);
+		out.totalSizeBytes += fileSize;
+		if (seq == this->currentSequenceNumber) {
+			out.currentFileSize = fileSize;
+		}
+
+		// memory: the memoryMap shared_ptr is guarded by the per-file fileMutex
+		// (not dataSetsMutex), so copy it under that lock. mapSize is immutable
+		// after construction, so it is safe to read once the pointer is copied.
+		std::shared_ptr<MemoryMap> memoryMap;
+		{
+			std::lock_guard<std::mutex> fileLock(logFile->fileMutex);
+			memoryMap = logFile->memoryMap;
+		}
+		if (memoryMap) {
+			out.mappedBytes += memoryMap->mapSize;
+			out.activeMaps++;
+		}
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
+		out.overlayBytes += logFile->lastOverlaySize.load(std::memory_order_relaxed);
+#endif
+
+		// replay gap: bytes from the flushed position up to the write head, summed
+		// across files. A file entirely before the flushed position contributes 0.
+		if (seq >= flushedPosition.logSequenceNumber) {
+			uint32_t from = (seq == flushedPosition.logSequenceNumber) ? flushedPosition.positionInLogFile : 0;
+			uint32_t to = (seq == this->nextLogPosition.logSequenceNumber) ? this->nextLogPosition.positionInLogFile : fileSize;
+			if (to > from) {
+				out.replayGapBytes += (to - from);
+			}
+		}
+
+		// purge / retention gauges — mirror the eligibility logic in doPurge().
+		// Uses the in-memory fileLastWriteTime (seeded from the on-disk mtime at
+		// registration/open and updated on every write) rather than stat()ing
+		// each file, so collectStats stays syscall-free while holding
+		// dataSetsMutex — important because stats may be polled frequently and
+		// writeBatch contends on this mutex.
+		auto mtime = logFile->fileLastWriteTime.load(std::memory_order_relaxed);
+		if (!hasOldest || mtime < oldestWriteTime) {
+			oldestWriteTime = mtime;
+			hasOldest = true;
+		}
+		if (retentionEnabled) {
+			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime);
+			if (fileAgeMs > this->retentionMs) {
+				// old enough to purge by retention; only actually purgeable if the
+				// whole file lies before the flushed position (see doPurge()).
+				bool fullyFlushed = !(seq > flushedPosition.logSequenceNumber ||
+					(seq == flushedPosition.logSequenceNumber && fileSize > flushedPosition.positionInLogFile));
+				if (fullyFlushed) {
+					out.purgeableFiles++;
+				} else {
+					out.retainedUnflushedFiles++;
+				}
+			}
+		}
+	}
+
+	if (hasOldest) {
+		out.oldestFileAgeMs = static_cast<double>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(now - oldestWriteTime).count());
+	}
 }
 
-void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
+void TransactionLogStore::purge(std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor, const bool all, const uint64_t before, const bool countEntries) {
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
+	this->doPurge(visitor, all, before, countEntries);
+}
+
+void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor, const bool all, const uint64_t before, const bool countEntries) {
 	if (this->sequenceFiles.empty()) {
 		return;
 	}
+
+	// record that a purge scan ran and when (observability only)
+	this->purgeRuns.fetch_add(1, std::memory_order_relaxed);
+	auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+	this->lastPurgeMs.store(static_cast<double>(nowMs), std::memory_order_relaxed);
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
@@ -395,13 +513,20 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			continue;
 		}
 
+		// count the entries before removing the file (counting is opt-in extra
+		// work; the file is gone by the time the visitor runs)
+		uint32_t entryCount = (visitor && countEntries) ? logFile->countEntries() : 0;
+
 		// delete the log file
+		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
 		auto removed = logFile->removeFile();
 		if (!removed) {
 			continue;
 		}
+		this->filesPurged.fetch_add(1, std::memory_order_relaxed);
+		this->bytesPurged.fetch_add(removedSize, std::memory_order_relaxed);
 		if (visitor) {
-			visitor(logFile->path);
+			visitor(logFile->path, entryCount);
 		}
 
 		// collect sequence number for removal
@@ -419,7 +544,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			// pairs. Existing shared_ptrs to the old memory map remain valid
 			// until released.
 			DEBUG_LOG("%p TransactionLogStore::purge Advancing sequence number from %u to %u\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber);
-			this->currentSequenceNumber.store(this->nextSequenceNumber++, std::memory_order_relaxed);
+			this->advanceSequence();
 			this->nextLogPosition = { 0, this->currentSequenceNumber.load(std::memory_order_relaxed) };
 			this->positionInsert(this->nextLogPosition);
 			LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
@@ -455,6 +580,19 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
 	this->sequenceFiles[sequenceNumber] = logFile;
+
+	// Seed the in-memory last-write time from the on-disk mtime so the
+	// retention gauges in collectStats() are correct for files that are
+	// registered at startup discovery but never opened this session. This is
+	// a one-time stat() at registration; collectStats() itself is syscall-free.
+	try {
+		logFile->fileLastWriteTime.store(
+			convertFileTimeToSystemTime(std::filesystem::last_write_time(path)),
+			std::memory_order_relaxed);
+	} catch (...) {
+		// file missing or racing a concurrent remove; keep the constructor's
+		// "now" seed
+	}
 
 	if (sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		if (!logFile->isOpen()) {
@@ -511,6 +649,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 					break;
 				} catch (const std::exception& e) {
 					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
+					this->writeFailures.fetch_add(1, std::memory_order_relaxed);
 					// move to next sequence number and try again
 					logFile = nullptr;
 				}
@@ -545,7 +684,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				this->retentionMs * (1 - this->maxAgeThreshold)
 			);
 			auto now = std::chrono::system_clock::now();
-			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - logFile->fileLastWriteTime);
+			auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - logFile->fileLastWriteTime.load(std::memory_order_relaxed));
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Max age threshold:  %f\n", this, this->maxAgeThreshold);
 			DEBUG_LOG("%p TransactionLogStore::writeBatch File age:           %lld ms (threshold %lld ms)\n",
 				this, fileAgeMs.count(), thresholdDuration.count());
@@ -563,8 +702,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed), this->maxFileSize);
 
 		// write as much as possible to this file
-		logFile->writeEntries(batch, this->maxFileSize);
-		logFile->fileLastWriteTime = std::chrono::system_clock::now();
+		try {
+			logFile->writeEntries(batch, this->maxFileSize);
+		} catch (...) {
+			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
+			throw;
+		}
+		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
@@ -582,11 +726,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Batch is not complete, advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
 			this->rotateToNextSequence(logFile);
 		}
+
 		{
 			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 			this->nextLogPosition = { logFile->size, this->currentSequenceNumber.load(std::memory_order_relaxed) };
 		}
 	}
+
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		this->positionInsert(this->nextLogPosition);
@@ -596,6 +742,15 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	// drop the pending count so that purgeTransactionLogs() can see this
 	// transaction as tracked by uncommittedTransactionPositions instead.
 	this->pendingTransactionCount--;
+
+	// record lifetime write counters (observability only)
+	uint64_t batchBytes = 0;
+	for (const auto& entry : batch.entries) {
+		batchBytes += entry->size;
+	}
+	this->transactionsWritten.fetch_add(1, std::memory_order_relaxed);
+	this->entriesWritten.fetch_add(batch.entries.size(), std::memory_order_relaxed);
+	this->bytesWritten.fetch_add(batchBytes, std::memory_order_relaxed);
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
 }
@@ -726,6 +881,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 		this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
 		this->flushedStateFile.flush();
 		lastWrittenFlushedPosition = latestSequencePosition;
+		this->databaseFlushes.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 

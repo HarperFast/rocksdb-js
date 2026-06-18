@@ -1,3 +1,4 @@
+import type { BackupOptions } from './backup.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
 import {
@@ -6,11 +7,12 @@ import {
 	globalListenerCount,
 	globalNotify,
 	removeGlobalListener,
-	type StatsHistogramData,
+	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type NativeTransactionOptions,
 } from './load-binding.js';
+import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
 import {
 	type ArrayBufferWithNotify,
 	CompactOptions,
@@ -22,6 +24,7 @@ import {
 	VALUE_BUFFER,
 } from './store.js';
 import {
+	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
@@ -57,8 +60,8 @@ export interface TransactionOptions extends NativeTransactionOptions {
 	retryOnBusy?: boolean;
 }
 
-export type RocksDBStat = number | StatsHistogramData;
-export type RocksDBStats = Record<string, RocksDBStat>;
+export type RocksDBStat = StatsValue;
+export type RocksDBStats = StatsDefault | StatsAll;
 
 /**
  * The main class for interacting with a RocksDB database.
@@ -151,6 +154,27 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	compact(options?: CompactOptions): Promise<void> {
 		return this.store.compact(options);
+	}
+
+	/**
+	 * Creates a backup of the entire database (all column families) into the
+	 * given directory, creating parent directories as needed, and resolves with
+	 * the new backup id. Use the `backups` namespace to restore, list, delete,
+	 * purge, or verify backups.
+	 *
+	 * When the database was opened with `disableWAL`, the memtable is flushed
+	 * before the backup by default so unflushed data is not lost.
+	 *
+	 * @example
+	 * ```typescript
+	 * import { backups } from '@harperfast/rocksdb-js';
+	 *
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const id = await db.backup('/path/to/backups');
+	 * ```
+	 */
+	backup(backupDir: string, options?: BackupOptions): Promise<number> {
+		return this.store.backup(backupDir, options);
 	}
 
 	/**
@@ -367,16 +391,24 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Gets the RocksDB statistics. Requires statistics to be enabled.
+	 * Gets the RocksDB statistics. The RocksDB ticker/histogram stats require
+	 * statistics to be enabled, but the result always includes a summarized,
+	 * aggregate set of `txnlog.*` keys (across all of this database's transaction
+	 * logs), regardless of whether statistics are enabled. For detailed per-log
+	 * statistics, including memory-map usage, use `log.getStats()` on the log
+	 * returned by {@link RocksDatabase#useLog}.
 	 *
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const stats = db.getStats();
+	 * stats['txnlog.totalSizeBytes']; // bytes across all transaction logs
 	 * ```
 	 */
-	getStats(all = false): RocksDBStats {
-		return this.store.db.getStats(all);
+	getStats(all?: false): StatsDefault;
+	getStats(all: true): StatsAll;
+	getStats(all = false): StatsDefault | StatsAll {
+		return all ? this.store.db.getStats(true) : this.store.db.getStats(false);
 	}
 
 	/**
@@ -426,6 +458,32 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	async ifNoExists(_key: Key): Promise<void> {
 		//
+	}
+
+	/**
+	 * Checks the process-global verification table for a fresh version match
+	 * on `key`. Returns `true` when the table currently records `version`. Use
+	 * this as a fast cache-freshness check before falling back to a full read:
+	 *
+	 * ```typescript
+	 * if (db.verifyVersion(key, cachedEntry.version)) {
+	 *   return cachedEntry.value;
+	 * }
+	 * const value = db.getSync(key);
+	 * db.populateVersion(key, extractVersion(value));
+	 * ```
+	 */
+	verifyVersion(key: Key, version: number): boolean {
+		return this.store.verifyVersion(key, version);
+	}
+
+	/**
+	 * Seeds the verification-table slot for `key` with `version`. Has no
+	 * effect if the slot is currently lock-tagged or if the verification
+	 * table is disabled.
+	 */
+	populateVersion(key: Key, version: number): void {
+		this.store.populateVersion(key, version);
 	}
 
 	/**
@@ -615,8 +673,15 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	/**
 	 * Purges transaction logs.
+	 *
+	 * By default returns the paths of the deleted log files. Pass
+	 * `includeEntryCounts: true` to instead return, for each deleted file, its
+	 * path and the number of entries it held (`{ path, entries }`).
 	 */
-	purgeLogs(options?: PurgeLogsOptions): string[] {
+	purgeLogs(options: PurgeLogsOptions & { includeEntryCounts: true }): PurgedLog[];
+	purgeLogs(options?: PurgeLogsOptions & { includeEntryCounts?: false }): string[];
+	purgeLogs(options?: PurgeLogsOptions): string[] | PurgedLog[];
+	purgeLogs(options?: PurgeLogsOptions): string[] | PurgedLog[] {
 		return this.store.db.purgeLogs(options);
 	}
 
@@ -662,9 +727,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				return this.#abortTransaction(txn, callbackErr);
 			}
 
+			let commitResult: typeof RETRY_NOW | void;
 			try {
-				await txn.commit();
-				return result;
+				commitResult = await txn.commit();
 			} catch (commitErr) {
 				if (commitErr instanceof TransactionAlreadyAbortedError) {
 					return;
@@ -672,13 +737,29 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				if (
 					commitErr instanceof TransactionIsBusyError &&
 					(options?.retryOnBusy ?? commitErr.hasLog) &&
-					attempt <= maxRetries
+					attempt < maxRetries
 				) {
 					// retry the transaction
 					continue;
 				}
 
 				this.#abandonTransaction(txn, commitErr);
+				return;
+			}
+
+			if (commitResult !== RETRY_NOW) {
+				return result;
+			}
+			// coordinatedRetry: the conflict resolved, retry immediately — but only
+			// if attempts remain. On the final attempt a RETRY_NOW must not fall
+			// out of the loop silently (that would resolve undefined and leave the
+			// transaction un-aborted); abandon it like an exhausted ERR_BUSY retry.
+			if (attempt >= maxRetries) {
+				this.#abandonTransaction(
+					txn,
+					new Error(`Transaction did not commit after ${maxRetries} coordinated retries`)
+				);
+				return;
 			}
 		}
 	}

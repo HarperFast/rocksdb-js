@@ -197,31 +197,33 @@ void TransactionLogFile::openFile() {
 	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
 	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
 	if (size > 0) {
-		this->findPositionByTimestamp(0, size, true);
+		// openFile() runs under fileMutex (held by open()); pass fileMutexHeld so
+		// findPositionByTimestamp() -> getMemoryMapLocked() does not re-lock it
+		// (std::mutex is not recursive — re-locking would self-deadlock/terminate).
+		// isCurrent is ignored by the Windows getMemoryMapLocked() (it always
+		// retains a strong reference), so the value passed here is immaterial.
+		this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
 }
 
+// Precondition: caller holds fileMutex (the guard for this->memoryMap /
+// this->fileHandle). The public getMemoryMap() wrapper acquires it; the open path
+// holds it already (and reaches here via findPositionByTimestamp(fileMutexHeld=true),
+// which calls getMemoryMapLocked() directly rather than re-acquiring fileMutex).
+//
 // On Windows the weak-for-frozen ownership optimization (POSIX) is not applied —
 // Windows is not Harper's memory-pressure target and uses a different mapping
 // model (the file is pre-extended to maxFileSize). The map is always retained
-// strongly, so `isCurrent` is ignored here.
-//
-// Unlike the POSIX implementation, this body is intentionally NOT wrapped in
-// fileMutex. Windows openFile() (which runs under fileMutex via open()) calls
-// findPositionByTimestamp() -> getMemoryMap(), so taking fileMutex here would
-// re-acquire it on the same thread and deadlock. (POSIX openFile() does not
-// index, so it has no such chain.) The pre-existing memoryMap reassignment race
-// with close()/removeFile() therefore remains on Windows; closing it would
-// require restructuring the open path and is out of scope for this Linux-focused
-// memory-pressure change.
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
+// strongly in this->memoryMap, so `isCurrent` is ignored here.
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
+	(void)isCurrent;
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty files.
 	if (fileSize == 0) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
 

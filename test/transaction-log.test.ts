@@ -1460,6 +1460,58 @@ describe('Transaction Log', () => {
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 			}));
+
+		it('query() throws a bounded RangeError when committed size over-reports the mapped buffer (#623)', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				// prime the query path so _lastCommittedPosition / _logBuffers init
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// Extract the committed size (low 32 bits of the position word). The last
+				// entry's header is fully present and well-formed; only the underlying
+				// buffer is short. This models a torn/truncated file (or page-rounded mmap
+				// shrink) where committed `size` legitimately exceeds the physical buffer.
+				const committedWord = new Uint32Array(
+					new Float64Array([log._lastCommittedPosition![0]]).buffer
+				);
+				const committedSize = committedWord[0];
+
+				// Return a buffer truncated mid-way through the final entry's data: the
+				// frame's declared length still fits within `committedSize`, but reading it
+				// would run past the physical buffer. Without bounding `limit` by the buffer
+				// length, `subarray` would silently hand back a truncated (misframed) entry.
+				const real = log._getMemoryMapOfFile(1)!;
+				const truncatedLength = committedSize - 5;
+				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				real.copy(copyBuffer, 0, 0, truncatedLength);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					expect(() => Array.from(log.query({ start: 0 }))).toThrow(/overruns the log/);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+				// once the real mmap is restored, the valid data must still be readable
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
 	});
 
 	describe('crash recovery (truncate-on-open)', () => {
@@ -1554,6 +1606,68 @@ describe('Transaction Log', () => {
 	});
 
 	describe('purgeLogs', () => {
+		// Build a transaction log file image with a valid header followed by
+		// `entryCount` well-formed v1 entry frames so the native counter has real
+		// framing to walk.
+		const buildLogFile = (entryCount: number, dataLen = 10): Buffer => {
+			const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+			header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+			header.writeUInt8(1, 4);
+			header.writeDoubleBE(Date.now(), 5);
+
+			const parts: Buffer[] = [header];
+			for (let i = 0; i < entryCount; i++) {
+				const entry = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + dataLen);
+				entry.writeDoubleBE(Date.now(), 0); // entry timestamp (non-zero)
+				entry.writeUInt32BE(dataLen, 8); // payload length
+				entry.writeUInt8(i === entryCount - 1 ? 0x01 : 0x00, 12); // last-entry flag on the final frame
+				entry.fill(0xab, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+				parts.push(entry);
+			}
+			return Buffer.concat(parts);
+		};
+
+		it('should return entry counts when includeEntryCounts is true', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(3));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true, includeEntryCounts: true })).toEqual([
+					{ path: logFile, entries: 3 },
+				]);
+				expect(existsSync(logFile)).toBe(false);
+			}));
+
+		it('should report zero entries for a header-only log file', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(0));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true, includeEntryCounts: true })).toEqual([
+					{ path: logFile, entries: 0 },
+				]);
+			}));
+
+		it('should return string paths by default when includeEntryCounts is omitted', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(2));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
+			}));
+
 		it('should purge all transaction log files', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

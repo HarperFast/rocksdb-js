@@ -1,4 +1,6 @@
 #include <cmath>
+#include <fstream>
+#include <limits>
 #include <sstream>
 #include <system_error>
 #include <vector>
@@ -83,12 +85,12 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	// Cache the file's effective last-write time now, once, so writeBatch can
 	// check the maxAgeThreshold without a stat() syscall on every commit.
 	if (this->size == 0) {
-		this->fileLastWriteTime = std::chrono::system_clock::now();
+		this->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 	} else {
 		try {
-			this->fileLastWriteTime = convertFileTimeToSystemTime(std::filesystem::last_write_time(this->path));
+			this->fileLastWriteTime.store(convertFileTimeToSystemTime(std::filesystem::last_write_time(this->path)), std::memory_order_relaxed);
 		} catch (...) {
-			this->fileLastWriteTime = std::chrono::system_clock::now();
+			this->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 		}
 	}
 
@@ -222,6 +224,56 @@ void TransactionLogFile::recoverTail() {
 	}
 }
 
+uint32_t TransactionLogFile::countEntries() const {
+	// Counting must never abort a purge, so swallow every failure (I/O errors and
+	// a std::bad_alloc from the whole-file buffer below) and report 0.
+	try {
+		std::error_code ec;
+		auto onDiskSize = std::filesystem::file_size(this->path, ec);
+		if (ec || onDiskSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+			// missing, empty, or header-only: no entries
+			return 0;
+		}
+		if (onDiskSize > std::numeric_limits<uint32_t>::max()) {
+			// transaction log files are bounded well under 4 GiB; refuse an absurd size
+			DEBUG_LOG("%p TransactionLogFile::countEntries File too large to count: %s (size=%llu)\n",
+				this, this->path.string().c_str(), static_cast<unsigned long long>(onDiskSize));
+			return 0;
+		}
+
+		auto fileSize = static_cast<uint32_t>(onDiskSize);
+		std::vector<char> buffer(fileSize);
+
+		// Read through a fresh handle rather than this->fd: old purgeable files are
+		// never opened (only the current sequence file is), and the read must work
+		// regardless. POSIX/Windows both share read access, so this is safe even when
+		// the file is concurrently open.
+		std::ifstream stream(this->path, std::ios::binary);
+		if (!stream) {
+			DEBUG_LOG("%p TransactionLogFile::countEntries Failed to open file for counting: %s\n",
+				this, this->path.string().c_str());
+			return 0;
+		}
+		stream.read(buffer.data(), fileSize);
+		auto bytesRead = stream.gcount();
+		if (bytesRead < 0) {
+			return 0;
+		}
+		if (static_cast<uint32_t>(bytesRead) != fileSize) {
+			// short read (e.g. the file shrank); count only what we actually read
+			DEBUG_LOG("%p TransactionLogFile::countEntries Short read while counting: %s (read=%lld, size=%u)\n",
+				this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
+			fileSize = static_cast<uint32_t>(bytesRead);
+		}
+
+		return countTransactionLogEntries(buffer.data(), fileSize);
+	} catch (...) {
+		DEBUG_LOG("%p TransactionLogFile::countEntries Failed to count entries: %s\n",
+			this, this->path.string().c_str());
+		return 0;
+	}
+}
+
 void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
 		this, batch.entries.size(), batch.currentEntryIndex, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
@@ -324,16 +376,38 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex);
 }
 
+// Public entry point: acquire fileMutex (the guard for memoryMap) and delegate to
+// the platform getMemoryMapLocked(). Callers that already hold fileMutex (the open
+// path, via findPositionByTimestamp) must call getMemoryMapLocked() directly.
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	return this->getMemoryMapLocked(fileSize, isCurrent);
+}
+
 /**
  * Find the position of a timestamp, specifically the position where there are no transactions with an earlier timestamp
  * @param timestamp - the timestamp to find the position of
  * @param mapSize - the size of the memory map to search in
  * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
  */
-uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent) {
+uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
-	std::lock_guard<std::mutex> indexLock(this->indexMutex);
-	auto memoryMap = this->getMemoryMap(mapSize, isCurrent);
+
+	// getMemoryMapLocked() (re)assigns this->memoryMap and so must run under
+	// fileMutex. The open() -> openFile() -> here path already holds it; every
+	// other caller does not. Take fileMutex only for the mapping call and release
+	// it before the scan: the scan reads through the pinned shared_ptr copy and
+	// must stay concurrent with appends (a zero timestamp mid-scan is a not-yet-
+	// visible append, not EOF — see hasAppendedSinceOpen; HarperFast/harper#1148).
+	// Acquiring fileMutex before indexMutex (and never the reverse) keeps the
+	// fileMutex -> indexMutex order; the open path nests them in that same order.
+	std::shared_ptr<MemoryMap> memoryMap;
+	if (fileMutexHeld) {
+		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
+	} else {
+		std::lock_guard<std::mutex> fileLock(this->fileMutex);
+		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
+	}
 
 	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
 	// to indicate the timestamp comes after this logfile
@@ -341,6 +415,8 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
 		return 0xFFFFFFFF;
 	}
+
+	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 
 	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;

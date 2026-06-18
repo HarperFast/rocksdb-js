@@ -144,19 +144,19 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed));
 }
 
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
+// Precondition: caller holds fileMutex (the guard for this->memoryMap /
+// this->fd / this->frozenMapCache). The public getMemoryMap() wrapper acquires
+// it; the open path holds it already. This is the only place memoryMap /
+// frozenMapCache are (re)assigned, so holding fileMutex makes that shared_ptr
+// access race-free against close()/removeFile()/adviseCold().
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
 	// mmap with length 0 has undefined behavior according to POSIX.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty or too-small files.
 	if (fileSize == 0) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
-
-	// Serialize against close()/removeFile()/adviseCold() and concurrent
-	// getMemoryMap() calls: this is the only place memoryMap/frozenMapCache are
-	// (re)assigned, so holding fileMutex here makes shared_ptr access race-free.
-	std::lock_guard<std::mutex> lock(this->fileMutex);
 
 	// Reuse an existing live mapping that is already large enough — the strong
 	// ref for the current file, or a still-live frozen handout.
@@ -282,6 +282,9 @@ size_t TransactionLogFile::adviseCold() {
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 void TransactionLogFile::updateMemoryMapOverlay() {
+	// Precondition: caller holds fileMutex (writeEntriesV1 holds it; getMemoryMap
+	// acquires it before calling in). Do not lock here — fileMutex is not
+	// recursive, so re-locking from getMemoryMap would deadlock.
 	if (!this->memoryMap || !this->memoryMap->map || this->fd < 0) return;
 
 	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize);

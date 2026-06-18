@@ -1,6 +1,7 @@
 import type { BufferWithDataView, Key } from './encoding.js';
+import { FRESH_VERSION_FLAG } from './load-binding.js';
 import type { NativeTransaction, TransactionLog } from './load-binding.js';
-import type { GetOptions, PutOptions, Store, StoreContext } from './store.js';
+import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.js';
 import type { Transaction } from './transaction.js';
 import { type MaybePromise, when } from './util.js';
 
@@ -92,7 +93,12 @@ export interface IteratorOptions extends RangeOptions {
 
 	// exactMatch?: boolean;
 
-	// limit?: number;
+	/**
+	 * The maximum number of entries to yield. When set, iteration stops after
+	 * `limit` entries regardless of the range bounds. Values <= 0 yield nothing.
+	 * Unset means no limit.
+	 */
+	limit?: number;
 
 	/**
 	 * A specific key to match which may result in zero, one, or many values.
@@ -185,8 +191,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return when(
 				() => this.getBinaryFast(key, options),
 				(result) => {
-					if (result === undefined) {
-						return undefined;
+					if (result === undefined || result === FRESH_VERSION_FLAG) {
+						return result;
 					}
 
 					if (options?.skipDecode) {
@@ -201,8 +207,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return when(
 			() => this.getBinary(key, options),
 			(result) =>
-				result === undefined
-					? undefined
+				result === undefined || result === FRESH_VERSION_FLAG
+					? result
 					: this.store.encoding === 'binary' || !this.store.decoder || options?.skipDecode
 						? result
 						: this.store.decodeValue(result as BufferWithDataView)
@@ -215,18 +221,18 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 *
 	 * Note: Used by HDBreplication.
 	 */
-	getBinary(key: Key, options?: GetOptions & T): MaybePromise<Buffer | undefined> {
+	getBinary(key: Key, options?: GetOptions & T): MaybePromise<Buffer | number | undefined> {
 		if (!this.store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		return this.store.get(this._context, key, true, this.store.getTxnId(options));
+		return this.store.get(this._context, key, true, options as StoreGetOptions);
 	}
 
 	/**
 	 * Synchronously retrieves the binary data for the given key.
 	 */
-	getBinarySync(key: Key, options?: GetOptions & T): Buffer | undefined {
+	getBinarySync(key: Key, options?: GetOptions & T): Buffer | number | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -244,12 +250,12 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * - `.byteLength` is set to the size of the full allocated memory area for
 	 *   the buffer (usually much larger).
 	 */
-	getBinaryFast(key: Key, options?: GetOptions & T): MaybePromise<Buffer | undefined> {
+	getBinaryFast(key: Key, options?: GetOptions & T): MaybePromise<Buffer | number | undefined> {
 		if (!this.store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
 
-		return this.store.get(this._context, key, false, this.store.getTxnId(options));
+		return this.store.get(this._context, key, false, options as StoreGetOptions);
 	}
 
 	/**
@@ -257,7 +263,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * preallocated, reusable buffer. Data in the buffer is only valid until the
 	 * next get operation (including cursor operations).
 	 */
-	getBinaryFastSync(key: Key, options?: GetOptions & T): Buffer | undefined {
+	getBinaryFastSync(key: Key, options?: GetOptions & T): Buffer | number | undefined {
 		if (!this.store.isOpen()) {
 			throw new Error('Database not open');
 		}
@@ -316,7 +322,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getSync(key: Key, options?: GetOptions & T): any | undefined {
 		if (this.store.decoderCopies) {
 			const bytes = this.getBinaryFastSync(key, options);
-			return bytes === undefined ? undefined : this.store.decodeValue(bytes as BufferWithDataView);
+			return bytes === undefined || bytes === FRESH_VERSION_FLAG
+				? bytes
+				: this.store.decodeValue(bytes as BufferWithDataView);
 		}
 
 		if (this.store.encoding === 'binary') {
@@ -325,7 +333,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 		if (this.store.decoder) {
 			const result = this.getBinarySync(key, options);
-			return result ? this.store.decodeValue(result as BufferWithDataView) : undefined;
+			return !result || result === FRESH_VERSION_FLAG
+				? result
+				: this.store.decodeValue(result as BufferWithDataView);
 		}
 
 		if (!this.store.isOpen()) {
