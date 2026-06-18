@@ -1601,6 +1601,68 @@ describe('Transaction Log', () => {
 	});
 
 	describe('purgeLogs', () => {
+		// Build a transaction log file image with a valid header followed by
+		// `entryCount` well-formed v1 entry frames so the native counter has real
+		// framing to walk.
+		const buildLogFile = (entryCount: number, dataLen = 10): Buffer => {
+			const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+			header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+			header.writeUInt8(1, 4);
+			header.writeDoubleBE(Date.now(), 5);
+
+			const parts: Buffer[] = [header];
+			for (let i = 0; i < entryCount; i++) {
+				const entry = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + dataLen);
+				entry.writeDoubleBE(Date.now(), 0); // entry timestamp (non-zero)
+				entry.writeUInt32BE(dataLen, 8); // payload length
+				entry.writeUInt8(i === entryCount - 1 ? 0x01 : 0x00, 12); // last-entry flag on the final frame
+				entry.fill(0xab, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+				parts.push(entry);
+			}
+			return Buffer.concat(parts);
+		};
+
+		it('should return entry counts when includeEntryCounts is true', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(3));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true, includeEntryCounts: true })).toEqual([
+					{ path: logFile, entries: 3 },
+				]);
+				expect(existsSync(logFile)).toBe(false);
+			}));
+
+		it('should report zero entries for a header-only log file', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(0));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true, includeEntryCounts: true })).toEqual([
+					{ path: logFile, entries: 0 },
+				]);
+			}));
+
+		it('should return string paths by default when includeEntryCounts is omitted', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(2));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
+			}));
+
 		it('should purge all transaction log files', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

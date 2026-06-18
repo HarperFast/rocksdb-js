@@ -221,6 +221,17 @@ struct TransactionLogFile final {
 	bool removeFile();
 
 	/**
+	 * Counts the committed entry frames in this log file by reading its on-disk
+	 * image and walking the v1 framing. Used by purge to report how many entries
+	 * each removed file held; counting is extra work, so it runs only when the
+	 * caller opts in. Cold path (purge only). Never throws — returns 0 if the
+	 * file is missing, unreadable, or malformed (a purge must not be aborted by a
+	 * counting failure). Reads through a fresh handle so it works whether or not
+	 * this file is currently open (POSIX uses pread; Windows shares read access).
+	 */
+	uint32_t countEntries() const;
+
+	/**
 	 * Writes a batch of transaction log entries to the log file.
 	 *
 	 * @param batch The batch of entries to write with state tracking.
