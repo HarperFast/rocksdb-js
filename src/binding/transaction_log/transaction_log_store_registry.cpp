@@ -300,6 +300,9 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 	bool destroy = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
 
+	bool includeEntryCounts = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "includeEntryCounts", includeEntryCounts));
+
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
 
@@ -334,12 +337,23 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 
 	// Phase 2: Process stores WITHOUT holding storesMutex
 	for (auto& store : storesToPurge) {
-		store->purge([&](const std::filesystem::path& filePath) -> void {
-			napi_value logFileValue;
+		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
 			auto path = filePath.string();
-			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
-			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-		}, destroy, before);
+			napi_value pathValue;
+			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &pathValue));
+
+			napi_value element = pathValue;
+			if (includeEntryCounts) {
+				// opt-in shape: { path: string, entries: number }
+				NAPI_STATUS_THROWS_VOID(::napi_create_object(env, &element));
+				NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, element, "path", pathValue));
+				napi_value entriesValue;
+				NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, entryCount, &entriesValue));
+				NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, element, "entries", entriesValue));
+			}
+
+			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, element));
+		}, destroy, before, includeEntryCounts);
 
 		if (destroy) {
 			store->tryClose();

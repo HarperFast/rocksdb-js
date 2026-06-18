@@ -427,13 +427,13 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	}
 }
 
-void TransactionLogStore::purge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
+void TransactionLogStore::purge(std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor, const bool all, const uint64_t before, const bool countEntries) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
-	this->doPurge(visitor, all, before);
+	this->doPurge(visitor, all, before, countEntries);
 }
 
-void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&)> visitor, const bool all, const uint64_t before) {
+void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor, const bool all, const uint64_t before, const bool countEntries) {
 	if (this->sequenceFiles.empty()) {
 		return;
 	}
@@ -495,6 +495,10 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			continue;
 		}
 
+		// count the entries before removing the file (counting is opt-in extra
+		// work; the file is gone by the time the visitor runs)
+		uint32_t entryCount = (visitor && countEntries) ? logFile->countEntries() : 0;
+
 		// delete the log file
 		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
 		auto removed = logFile->removeFile();
@@ -504,7 +508,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		this->filesPurged.fetch_add(1, std::memory_order_relaxed);
 		this->bytesPurged.fetch_add(removedSize, std::memory_order_relaxed);
 		if (visitor) {
-			visitor(logFile->path);
+			visitor(logFile->path, entryCount);
 		}
 
 		// collect sequence number for removal

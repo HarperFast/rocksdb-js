@@ -223,7 +223,22 @@ type RejectCallback = (err: Error) => void;
 
 export type UserSharedBufferCallback = () => void;
 
-export type PurgeLogsOptions = { before?: number; destroy?: boolean; name?: string };
+export type PurgeLogsOptions = {
+	before?: number;
+	destroy?: boolean;
+	/**
+	 * When `true`, count the entries in each purged log file (extra work) and
+	 * return `PurgedLog[]` instead of the default `string[]` of file paths.
+	 */
+	includeEntryCounts?: boolean;
+	name?: string;
+};
+
+/**
+ * A purged transaction log file and the number of entries it held, returned by
+ * `purgeLogs()` when `includeEntryCounts` is `true`.
+ */
+export type PurgedLog = { path: string; entries: number };
 
 export type NativeDatabase = {
 	new (): NativeDatabase;
@@ -279,7 +294,9 @@ export type NativeDatabase = {
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
 	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;
-	purgeLogs(options?: PurgeLogsOptions): string[];
+	purgeLogs(options: PurgeLogsOptions & { includeEntryCounts: true }): PurgedLog[];
+	purgeLogs(options?: PurgeLogsOptions & { includeEntryCounts?: false }): string[];
+	purgeLogs(options?: PurgeLogsOptions): string[] | PurgedLog[];
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;

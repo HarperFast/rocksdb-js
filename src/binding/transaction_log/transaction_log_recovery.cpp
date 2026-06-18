@@ -92,4 +92,28 @@ RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) 
 	}
 }
 
+uint32_t countTransactionLogEntries(const char* data, uint32_t fileSize) {
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return 0;
+	}
+
+	uint32_t count = 0;
+	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	while (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= fileSize) {
+		if (readDoubleBE(data + pos) == 0) {
+			// zero padding marks the end of entries (matches the reader/parser)
+			break;
+		}
+		uint32_t length = readUint32BE(data + pos + 8);
+		if (length == 0 ||
+			static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
+			// broken/torn frame; stop at the last well-formed entry
+			break;
+		}
+		++count;
+		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
+	}
+	return count;
+}
+
 } // namespace rocksdb_js

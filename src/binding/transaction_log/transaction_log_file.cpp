@@ -1,4 +1,6 @@
 #include <cmath>
+#include <fstream>
+#include <limits>
 #include <sstream>
 #include <system_error>
 #include <vector>
@@ -204,6 +206,56 @@ void TransactionLogFile::recoverTail() {
 					this, this->path.string().c_str());
 			}
 			return;
+	}
+}
+
+uint32_t TransactionLogFile::countEntries() const {
+	// Counting must never abort a purge, so swallow every failure (I/O errors and
+	// a std::bad_alloc from the whole-file buffer below) and report 0.
+	try {
+		std::error_code ec;
+		auto onDiskSize = std::filesystem::file_size(this->path, ec);
+		if (ec || onDiskSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+			// missing, empty, or header-only: no entries
+			return 0;
+		}
+		if (onDiskSize > std::numeric_limits<uint32_t>::max()) {
+			// transaction log files are bounded well under 4 GiB; refuse an absurd size
+			DEBUG_LOG("%p TransactionLogFile::countEntries File too large to count: %s (size=%llu)\n",
+				this, this->path.string().c_str(), static_cast<unsigned long long>(onDiskSize));
+			return 0;
+		}
+
+		auto fileSize = static_cast<uint32_t>(onDiskSize);
+		std::vector<char> buffer(fileSize);
+
+		// Read through a fresh handle rather than this->fd: old purgeable files are
+		// never opened (only the current sequence file is), and the read must work
+		// regardless. POSIX/Windows both share read access, so this is safe even when
+		// the file is concurrently open.
+		std::ifstream stream(this->path, std::ios::binary);
+		if (!stream) {
+			DEBUG_LOG("%p TransactionLogFile::countEntries Failed to open file for counting: %s\n",
+				this, this->path.string().c_str());
+			return 0;
+		}
+		stream.read(buffer.data(), fileSize);
+		auto bytesRead = stream.gcount();
+		if (bytesRead < 0) {
+			return 0;
+		}
+		if (static_cast<uint32_t>(bytesRead) != fileSize) {
+			// short read (e.g. the file shrank); count only what we actually read
+			DEBUG_LOG("%p TransactionLogFile::countEntries Short read while counting: %s (read=%lld, size=%u)\n",
+				this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
+			fileSize = static_cast<uint32_t>(bytesRead);
+		}
+
+		return countTransactionLogEntries(buffer.data(), fileSize);
+	} catch (...) {
+		DEBUG_LOG("%p TransactionLogFile::countEntries Failed to count entries: %s\n",
+			this, this->path.string().c_str());
+		return 0;
 	}
 }
 

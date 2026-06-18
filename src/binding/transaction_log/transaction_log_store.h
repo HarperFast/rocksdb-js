@@ -435,9 +435,10 @@ struct TransactionLogStore final {
 	 * than the specified timestamp. If `all` is true, it deletes all transaction log files.
 	 */
 	void purge(
-		std::function<void(const std::filesystem::path&)> visitor,
+		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor,
 		const bool all,
-		const uint64_t before
+		const uint64_t before,
+		const bool countEntries = false
 	);
 
 	/**
@@ -484,9 +485,10 @@ private:
 	std::shared_ptr<TransactionLogFile> getLogFile(const uint32_t sequenceNumber);
 
 	void doPurge(
-		std::function<void(const std::filesystem::path&)> visitor = nullptr,
+		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,
 		const bool all = false,
-		const uint64_t before = 0
+		const uint64_t before = 0,
+		const bool countEntries = false
 	);
 
 	/**
