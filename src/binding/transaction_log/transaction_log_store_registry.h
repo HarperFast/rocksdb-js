@@ -71,6 +71,21 @@ struct TransactionLogStoreRegistryEntry final {
 };
 
 /**
+ * Result of a CoolTransactionLogs() pass.
+ */
+struct TransactionLogCoolResult final {
+	/**
+	 * The number of memory maps that had pages advised cold.
+	 */
+	uint32_t maps = 0;
+
+	/**
+	 * The total number of file-backed bytes advised cold across all maps.
+	 */
+	uint64_t bytes = 0;
+};
+
+/**
  * Global registry that manages transaction log stores by database path.
  * This ensures that transaction log stores are shared across multiple
  * DBDescriptors (e.g., write and read-only) for the same database path.
@@ -181,6 +196,19 @@ public:
 	 * Gets the number of entries in the registry (for debugging/testing).
 	 */
 	static size_t Size();
+
+	/**
+	 * Advises the kernel that the file-backed pages of every mapped transaction
+	 * log across all registered database paths are cold (MADV_COLD), so they are
+	 * reclaimed first under memory pressure. Intended to be called periodically
+	 * by a single timer driven from the host (e.g. Harper's main thread); since
+	 * this registry is a process-global singleton shared across all worker
+	 * threads, one call covers every worker's maps. Safe to call concurrently
+	 * with reads and writes — see TransactionLogFile::adviseCold().
+	 *
+	 * @returns The number of maps cooled and total bytes advised.
+	 */
+	static TransactionLogCoolResult CoolTransactionLogs();
 };
 
 } // namespace rocksdb_js

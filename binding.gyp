@@ -211,6 +211,8 @@
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/json_test.cc',
+				'test/native/transaction_log_madvise_test.cc',
+				'test/native/transaction_log_mmap_test.cc',
 				'test/native/transaction_log_recovery_test.cc',
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/verification_table_test.cc',
@@ -218,6 +220,7 @@
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',
 				'ROCKSDB_JS_WRITEV=rocksdb_js_mock_writev',
+				'ROCKSDB_JS_MADVISE=rocksdb_js_mock_madvise',
 			],
 			'cflags!': [ '-fno-exceptions', '-std=c++17' ],
 			'cflags_cc!': [ '-fno-exceptions', '-std=c++17' ],

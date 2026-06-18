@@ -7,6 +7,7 @@ import {
 	globalListenerCount,
 	globalNotify,
 	removeGlobalListener,
+	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type NativeTransactionOptions,
@@ -672,8 +673,15 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	/**
 	 * Purges transaction logs.
+	 *
+	 * By default returns the paths of the deleted log files. Pass
+	 * `includeEntryCounts: true` to instead return, for each deleted file, its
+	 * path and the number of entries it held (`{ path, entries }`).
 	 */
-	purgeLogs(options?: PurgeLogsOptions): string[] {
+	purgeLogs(options: PurgeLogsOptions & { includeEntryCounts: true }): PurgedLog[];
+	purgeLogs(options?: PurgeLogsOptions & { includeEntryCounts?: false }): string[];
+	purgeLogs(options?: PurgeLogsOptions): string[] | PurgedLog[];
+	purgeLogs(options?: PurgeLogsOptions): string[] | PurgedLog[] {
 		return this.store.db.purgeLogs(options);
 	}
 

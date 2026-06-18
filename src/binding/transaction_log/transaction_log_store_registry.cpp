@@ -1,9 +1,11 @@
 #include "transaction_log_store_registry.h"
+#include "transaction_log_file.h"
 #include "napi/macros.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include <filesystem>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -298,6 +300,9 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 	bool destroy = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
 
+	bool includeEntryCounts = false;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "includeEntryCounts", includeEntryCounts));
+
 	std::string name;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
 
@@ -332,12 +337,23 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 
 	// Phase 2: Process stores WITHOUT holding storesMutex
 	for (auto& store : storesToPurge) {
-		store->purge([&](const std::filesystem::path& filePath) -> void {
-			napi_value logFileValue;
+		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
 			auto path = filePath.string();
-			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &logFileValue));
-			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, logFileValue));
-		}, destroy, before);
+			napi_value pathValue;
+			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &pathValue));
+
+			napi_value element = pathValue;
+			if (includeEntryCounts) {
+				// opt-in shape: { path: string, entries: number }
+				NAPI_STATUS_THROWS_VOID(::napi_create_object(env, &element));
+				NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, element, "path", pathValue));
+				napi_value entriesValue;
+				NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, entryCount, &entriesValue));
+				NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, element, "entries", entriesValue));
+			}
+
+			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, element));
+		}, destroy, before, includeEntryCounts);
 
 		if (destroy) {
 			store->tryClose();
@@ -418,6 +434,60 @@ size_t TransactionLogStoreRegistry::Size() {
 		return instance->entries.size();
 	}
 	return 0;
+}
+
+TransactionLogCoolResult TransactionLogStoreRegistry::CoolTransactionLogs() {
+	TransactionLogCoolResult result;
+	if (!instance) {
+		return result;
+	}
+
+	// Snapshot the structure level-by-level, releasing each mutex before
+	// descending, so we never hold a registry/store lock across the madvise()
+	// syscall in adviseCold(). The shared_ptr copies keep the entries/stores/
+	// files alive for the duration of the pass.
+	std::vector<std::shared_ptr<TransactionLogStoreRegistryEntry>> entriesCopy;
+	{
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		entriesCopy.reserve(instance->entries.size());
+		for (auto& [path, entry] : instance->entries) {
+			entriesCopy.push_back(entry);
+		}
+	}
+
+	for (auto& entry : entriesCopy) {
+		std::vector<std::shared_ptr<TransactionLogStore>> storesCopy;
+		{
+			std::lock_guard<std::mutex> lock(entry->storesMutex);
+			storesCopy.reserve(entry->stores.size());
+			for (auto& [name, store] : entry->stores) {
+				storesCopy.push_back(store);
+			}
+		}
+
+		for (auto& store : storesCopy) {
+			std::vector<std::shared_ptr<TransactionLogFile>> filesCopy;
+			{
+				std::lock_guard<std::mutex> lock(store->dataSetsMutex);
+				filesCopy.reserve(store->sequenceFiles.size());
+				for (auto& [seq, file] : store->sequenceFiles) {
+					filesCopy.push_back(file);
+				}
+			}
+
+			for (auto& file : filesCopy) {
+				size_t bytes = file->adviseCold();
+				if (bytes > 0) {
+					result.maps++;
+					result.bytes += bytes;
+				}
+			}
+		}
+	}
+
+	DEBUG_LOG("TransactionLogStoreRegistry::CoolTransactionLogs cooled %u maps (%llu bytes)\n",
+		result.maps, static_cast<unsigned long long>(result.bytes));
+	return result;
 }
 
 } // namespace rocksdb_js

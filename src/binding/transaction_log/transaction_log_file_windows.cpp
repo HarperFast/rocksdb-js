@@ -197,18 +197,37 @@ void TransactionLogFile::openFile() {
 	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
 	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
 	if (size > 0) {
-		this->findPositionByTimestamp(0, size);
+		// openFile() runs under fileMutex (held by open()); pass fileMutexHeld so
+		// findPositionByTimestamp() -> getMemoryMapLocked() does not re-lock it
+		// (std::mutex is not recursive — re-locking would self-deadlock/terminate).
+		// isCurrent is ignored by the Windows getMemoryMapLocked() (it always
+		// retains a strong reference), so the value passed here is immaterial.
+		this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
 }
 
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+// Precondition: caller holds fileMutex (the guard for this->memoryMap /
+// this->fileHandle). The public getMemoryMap() wrapper acquires it; the open path
+// holds it already (and reaches here via findPositionByTimestamp(fileMutexHeld=true),
+// which calls getMemoryMapLocked() directly rather than re-acquiring fileMutex).
+//
+// On Windows the weak-for-frozen ownership optimization (POSIX) is not applied:
+// Windows is not Harper's memory-pressure target and uses a different mapping
+// model (the file is pre-extended to maxFileSize). This function never consults
+// frozenMapCache and always stores the mapping strongly in this->memoryMap, so
+// `isCurrent` is ignored. (downgradeMapToFrozen() is shared code and still resets
+// this->memoryMap on rotation, but a later frozen read here simply re-creates the
+// mapping and re-pins it strongly for the rest of the file's life — so frozen maps
+// are neither weak-held nor deduped on Windows, by design.)
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
+	(void)isCurrent;
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty files.
 	if (fileSize == 0) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
 
@@ -471,6 +490,12 @@ void TransactionLogFile::updateMemoryMapOverlay() {
 	// No-op: Windows pre-extends the file to maxFileSize before mapping.
 }
 #endif
+
+size_t TransactionLogFile::adviseCold() {
+	// No-op: MADV_COLD is a Linux facility. Harper's memory-pressure target
+	// (Linux containers / Fabric) does not include Windows.
+	return 0;
+}
 
 } // namespace rocksdb_js
 

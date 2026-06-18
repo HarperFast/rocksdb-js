@@ -114,9 +114,38 @@ struct TransactionLogFile final {
 	std::atomic<std::chrono::system_clock::time_point> fileLastWriteTime = std::chrono::system_clock::now();
 
 	/**
-	 * The memory map of the file.
+	 * The memory map of the file. Guarded by fileMutex: every read, copy, and
+	 * reassignment of this shared_ptr (and every mutation of the pointed-to
+	 * MemoryMap, e.g. the MAP_FIXED overlay) must hold fileMutex. Concurrent
+	 * access to a single shared_ptr instance where one party writes is a data
+	 * race. The mapping is created/replaced only in getMemoryMapLocked(), which
+	 * requires fileMutex; the public getMemoryMap() wrapper acquires it.
+	 *
+	 * Held with a strong reference only while this is the store's current
+	 * (actively-written) log file — the writer extends the MAP_FIXED overlay
+	 * through it and findPositionByTimestamp indexes against it. Once the file is
+	 * frozen (rotated out via downgradeMapToFrozen), the strong reference is
+	 * dropped and the map lives in `frozenMapCache` instead, so the JS external
+	 * buffer becomes its sole owner and the mapping is unmapped when JS releases
+	 * it. (POSIX only; Windows always retains a strong reference here.)
+	 *
+	 * Lock order is fileMutex -> indexMutex (open() holds fileMutex and reaches
+	 * findPositionByTimestamp() -> indexMutex). findPositionByTimestamp() honors
+	 * that order: it takes fileMutex only for the getMemoryMapLocked() call and
+	 * releases it before taking indexMutex for the scan, so it never holds both
+	 * in the opposite order.
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
+
+	/**
+	 * Weak handle to the most recent map handed out for a frozen file. Lets
+	 * concurrent/subsequent readers of the same frozen log share one mapping
+	 * while a strong reference (a live JS external buffer, or a transient caller)
+	 * still exists, without the file itself retaining the mapping: when the last
+	 * such reference is released the mapping is unmapped. Re-mapped on demand if
+	 * it has expired by the time another reader asks.
+	 */
+	std::weak_ptr<MemoryMap> frozenMapCache;
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
@@ -210,6 +239,17 @@ struct TransactionLogFile final {
 	bool removeFile();
 
 	/**
+	 * Counts the committed entry frames in this log file by reading its on-disk
+	 * image and walking the v1 framing. Used by purge to report how many entries
+	 * each removed file held; counting is extra work, so it runs only when the
+	 * caller opts in. Cold path (purge only). Never throws — returns 0 if the
+	 * file is missing, unreadable, or malformed (a purge must not be aborted by a
+	 * counting failure). Reads through a fresh handle so it works whether or not
+	 * this file is currently open (POSIX uses pread; Windows shares read access).
+	 */
+	uint32_t countEntries() const;
+
+	/**
 	 * Writes a batch of transaction log entries to the log file.
 	 *
 	 * @param batch The batch of entries to write with state tracking.
@@ -218,15 +258,66 @@ struct TransactionLogFile final {
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
 
 	/**
-	 * Return a memory map of the file and mark it as in use
+	 * Return a memory map of the file and mark it as in use. Thin wrapper that
+	 * acquires fileMutex (the guard for memoryMap) and delegates to
+	 * getMemoryMapLocked(). Callers must NOT already hold fileMutex — a caller
+	 * that does (the open path) calls getMemoryMapLocked() directly instead.
+	 *
+	 * @param fileSize The size to map (max file size for the current file, which
+	 *   is still growing; the frozen file size otherwise).
+	 * @param isCurrent Whether this is the store's current (actively-written) log
+	 *   file. The current file retains a strong reference in `memoryMap` (the
+	 *   writer and index need it); a frozen file does not — it is weak-cached in
+	 *   `frozenMapCache` and ownership passes to the returned shared_ptr (and thus
+	 *   to the JS external buffer), so the mapping is freed when JS releases it.
+	 *   (POSIX only; Windows always retains a strong reference.)
 	 */
-	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize, bool isCurrent);
+
+	/**
+	 * Drops the strong reference to this file's memory map, retaining only a weak
+	 * handle. Called when the file is rotated out (no longer current): a reader
+	 * that mapped it while it was current would otherwise keep the mapping pinned
+	 * for the life of this object. After this, the mapping is owned solely by any
+	 * live JS external buffer and is unmapped when that buffer is released.
+	 */
+	void downgradeMapToFrozen();
+
+	/**
+	 * Platform-specific body of getMemoryMap(): creates or reuses the mapping and,
+	 * depending on isCurrent, (re)assigns this->memoryMap (strong ref, current
+	 * file) or retains only this->frozenMapCache (weak handle, frozen file).
+	 * Precondition: the caller already holds fileMutex. Returns nullptr for an
+	 * empty/too-small file.
+	 */
+	std::shared_ptr<MemoryMap> getMemoryMapLocked(uint32_t fileSize, bool isCurrent);
+
+	/**
+	 * Hints the kernel that this log's file-backed pages are cold (MADV_COLD),
+	 * so they are reclaimed first under memory pressure without being freed.
+	 * Scoped to the file-backed `[0, actualSize)` region only (page-floored) —
+	 * never the MAP_PRIVATE|MAP_ANONYMOUS zero-fill overlay tail, where eviction
+	 * would be destructive. Non-destructive and idempotent, so it is safe under
+	 * the concurrent, not-perfectly-sequential reader pattern (replication +
+	 * real-time consumers reading the same log at different offsets): a re-read
+	 * of a not-yet-reclaimed cold page just re-activates it for free.
+	 *
+	 * No-op on kernels without MADV_COLD (< 5.4, latched on EINVAL), on macOS,
+	 * and on Windows.
+	 *
+	 * @returns The number of bytes advised (0 if nothing was advised).
+	 */
+	size_t adviseCold();
 
 	/**
 	 * On POSIX, extends the MAP_FIXED file overlay to cover any new pages
 	 * written since the last overlay. Called after writes that grow the file
 	 * so that cached JS buffers see the new data without re-acquiring.
 	 * No-op on Windows where the file is pre-extended to maxFileSize.
+	 *
+	 * Precondition: the caller must already hold fileMutex (it touches
+	 * memoryMap). Both call sites satisfy this — writeEntriesV1() holds it, and
+	 * getMemoryMapLocked() runs with it held.
 	 */
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	void updateMemoryMapOverlay();
@@ -234,8 +325,17 @@ struct TransactionLogFile final {
 
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
+	 *
+	 * @param isCurrent Whether this is the store's current (actively-written) log
+	 *   file; forwarded to getMemoryMapLocked() to decide strong-vs-weak map
+	 *   ownership (see getMemoryMap).
+	 * @param fileMutexHeld true when the caller already holds fileMutex (the
+	 *   open() -> openFile() -> here path on Windows). When false, this acquires
+	 *   fileMutex only for the getMemoryMapLocked() call and releases it before
+	 *   scanning. Passing true while NOT holding fileMutex, or false while
+	 *   holding it, is a bug (the latter self-deadlocks).
 	 */
-	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize);
+	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false);
 
 	/**
 	 * Platform specific function that writes data to the log file.
@@ -246,9 +346,22 @@ struct TransactionLogFile final {
 	// Expose writeBatchToFile to the gtest test accessor without pulling
 	// gtest headers into the production build.
 	friend struct ::WriteBatchToFileTestAccessor;
+
+	/**
+	 * Resets the process-global MADV_COLD-unsupported latch (see adviseCold) so
+	 * that each test starts from a known state. Test-only.
+	 */
+	static void resetAdviseColdSupportForTests();
 #endif
 
 private:
+	/**
+	 * Latches `true` if madvise(MADV_COLD) ever returns EINVAL (kernel < 5.4),
+	 * after which adviseCold() no-ops without issuing the syscall. Process-global
+	 * because the kernel either supports the advice or it does not.
+	 */
+	static std::atomic<bool> madvColdUnsupported;
+
 	/**
 	 * Platform specific function that opens the log file for reading and writing.
 	 */
@@ -308,8 +421,17 @@ struct MemoryMap final {
 	 **/
 	uint32_t fileSize = 0;
 
+	/**
+	 * Count of live MemoryMap instances across the process. Lets tests verify
+	 * that releasing all JS references to a (frozen) log's external buffer
+	 * actually unmaps the mapping rather than leaving it retained.
+	 */
+	static std::atomic<int64_t> liveCount;
+
 	MemoryMap(void* map, uint32_t mapSize)
-		: map(map), mapSize(mapSize), fileSize(mapSize) {}
+		: map(map), mapSize(mapSize), fileSize(mapSize) {
+		liveCount.fetch_add(1, std::memory_order_relaxed);
+	}
 
 	~MemoryMap() {
 		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize);
@@ -322,6 +444,7 @@ struct MemoryMap final {
 			::munmap(this->map, this->mapSize);
 		}
 #endif
+		liveCount.fetch_sub(1, std::memory_order_relaxed);
 	}
 };
 

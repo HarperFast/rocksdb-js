@@ -1,5 +1,10 @@
 import { RocksDatabase, Transaction } from '../src/index.js';
-import { constants, type TransactionLog } from '../src/load-binding.js';
+import {
+	constants,
+	coolTransactionLogs,
+	type TransactionLog,
+	transactionLogMapCount,
+} from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { withResolvers } from '../src/util.js';
 import {
@@ -11,6 +16,7 @@ import {
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -1454,6 +1460,58 @@ describe('Transaction Log', () => {
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 			}));
+
+		it('query() throws a bounded RangeError when committed size over-reports the mapped buffer (#623)', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				// prime the query path so _lastCommittedPosition / _logBuffers init
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// Extract the committed size (low 32 bits of the position word). The last
+				// entry's header is fully present and well-formed; only the underlying
+				// buffer is short. This models a torn/truncated file (or page-rounded mmap
+				// shrink) where committed `size` legitimately exceeds the physical buffer.
+				const committedWord = new Uint32Array(
+					new Float64Array([log._lastCommittedPosition![0]]).buffer
+				);
+				const committedSize = committedWord[0];
+
+				// Return a buffer truncated mid-way through the final entry's data: the
+				// frame's declared length still fits within `committedSize`, but reading it
+				// would run past the physical buffer. Without bounding `limit` by the buffer
+				// length, `subarray` would silently hand back a truncated (misframed) entry.
+				const real = log._getMemoryMapOfFile(1)!;
+				const truncatedLength = committedSize - 5;
+				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				real.copy(copyBuffer, 0, 0, truncatedLength);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					expect(() => Array.from(log.query({ start: 0 }))).toThrow(/overruns the log/);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+				// once the real mmap is restored, the valid data must still be readable
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
 	});
 
 	describe('crash recovery (truncate-on-open)', () => {
@@ -1548,6 +1606,68 @@ describe('Transaction Log', () => {
 	});
 
 	describe('purgeLogs', () => {
+		// Build a transaction log file image with a valid header followed by
+		// `entryCount` well-formed v1 entry frames so the native counter has real
+		// framing to walk.
+		const buildLogFile = (entryCount: number, dataLen = 10): Buffer => {
+			const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+			header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+			header.writeUInt8(1, 4);
+			header.writeDoubleBE(Date.now(), 5);
+
+			const parts: Buffer[] = [header];
+			for (let i = 0; i < entryCount; i++) {
+				const entry = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + dataLen);
+				entry.writeDoubleBE(Date.now(), 0); // entry timestamp (non-zero)
+				entry.writeUInt32BE(dataLen, 8); // payload length
+				entry.writeUInt8(i === entryCount - 1 ? 0x01 : 0x00, 12); // last-entry flag on the final frame
+				entry.fill(0xab, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+				parts.push(entry);
+			}
+			return Buffer.concat(parts);
+		};
+
+		it('should return entry counts when includeEntryCounts is true', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(3));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true, includeEntryCounts: true })).toEqual([
+					{ path: logFile, entries: 3 },
+				]);
+				expect(existsSync(logFile)).toBe(false);
+			}));
+
+		it('should report zero entries for a header-only log file', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(0));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true, includeEntryCounts: true })).toEqual([
+					{ path: logFile, entries: 0 },
+				]);
+			}));
+
+		it('should return string paths by default when includeEntryCounts is omitted', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+				await writeFile(logFile, buildLogFile(2));
+				await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+				db.open();
+				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
+			}));
+
 		it('should purge all transaction log files', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
@@ -1803,5 +1923,149 @@ describe('Transaction Log', () => {
 				expect(u32s[1]).toBe(1);
 				expect(u32s[0]).toBeGreaterThan(200);
 			}));
+	});
+
+	describe('coolTransactionLogs()', () => {
+		// MADV_COLD is Linux 5.4+; on macOS/Windows/older kernels adviseCold()
+		// no-ops and reports zero, so only assert it did work where supported.
+		const [major = 0, minor = 0] =
+			process.platform === 'linux' ? release().split('.').map(Number) : [];
+		const madvColdSupported = major > 5 || (major === 5 && minor >= 4);
+
+		it('should advise mapped logs cold without corrupting their contents', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('cool');
+				// Write enough to span many pages so the floored advice length is
+				// non-zero even on large (16K/64K) page sizes.
+				const value = Buffer.alloc(4096, 'z');
+				const entryCount = 64;
+				await db.transaction(async (txn) => {
+					for (let i = 0; i < entryCount; i++) {
+						log.addEntry(value, txn.id);
+					}
+				});
+
+				// Querying maps the log file (the file-backed mmap exposed to JS).
+				const before = Array.from(log.query({ start: 0 }));
+				expect(before.length).toBe(entryCount);
+
+				const result = coolTransactionLogs();
+				expect(typeof result.maps).toBe('number');
+				expect(typeof result.bytes).toBe('number');
+				if (madvColdSupported) {
+					expect(result.maps).toBeGreaterThanOrEqual(1);
+					expect(result.bytes).toBeGreaterThan(0);
+				}
+
+				// MADV_COLD is non-destructive: the log must still read back intact.
+				const after = Array.from(log.query({ start: 0 }));
+				expect(after.length).toBe(entryCount);
+				for (let i = 0; i < entryCount; i++) {
+					expect(after[i].data.equals(value)).toBe(true);
+				}
+			}));
+
+		it('should be a safe no-op when no logs are mapped', () =>
+			dbRunner(async ({ db }) => {
+				db.open();
+				// No log written/mapped for this db; cooling must not throw and must
+				// return a well-formed result.
+				const result = coolTransactionLogs();
+				expect(typeof result.maps).toBe('number');
+				expect(typeof result.bytes).toBe('number');
+				expect(result.bytes).toBeGreaterThanOrEqual(0);
+			}));
+	});
+
+	describe('memory map lifecycle', () => {
+		// Repeatedly GC and wait until `cond` holds (or time runs out). Buffer
+		// finalization (which unmaps a released frozen map) is GC-driven.
+		const untilGc = async (cond: () => boolean, ms = 5000) => {
+			const end = Date.now() + ms;
+			while (Date.now() < end) {
+				globalThis.gc?.();
+				if (cond()) return;
+				await delay(20);
+			}
+		};
+
+		// POSIX-only: the weak-for-frozen optimization applies when a frozen file
+		// is mapped. On Windows getMemoryMap retains the map strongly regardless
+		// (by design — see transaction_log_file_windows.cpp), so a directly-mapped
+		// frozen log is not released until the file is closed/removed.
+		it.skipIf(!globalThis.gc || process.platform === 'win32')(
+			'unmaps a frozen log when all JS references to its buffer are released',
+			() =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					const value = Buffer.alloc(100, 'a');
+					// 20×~113B entries over a 1000B cap rotates to seq 1/2/3, so seq 1
+					// is frozen (no longer the current, actively-written file).
+					for (let i = 0; i < 20; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+
+					// Stabilize the process-global baseline first: flush any pending
+					// finalizers from earlier tests (their frozen buffers are weakly
+					// owned and may not have been collected yet) so the forced GC below
+					// can only be reclaiming the buffer under test.
+					await untilGc(() => false, 150);
+					const before = transactionLogMapCount();
+
+					// Map the frozen seq 1 directly (bypasses the query() WeakRef cache,
+					// so our local is the only strong reference to the buffer).
+					let buffer: Buffer | undefined = log._getMemoryMapOfFile(1);
+					expect(buffer).toBeDefined();
+					expect(transactionLogMapCount()).toBe(before + 1);
+					// Sanity: the frozen log reads back through the mapping.
+					expect(buffer!.subarray(0, 4).toString()).toBe('WOOF');
+
+					// Release the only strong reference; the frozen file holds just a
+					// weak handle, so GC → finalize must unmap it.
+					buffer = undefined;
+					await untilGc(() => transactionLogMapCount() === before);
+					expect(transactionLogMapCount()).toBe(before);
+				})
+		);
+
+		it.skipIf(!globalThis.gc)(
+			'unmaps a log that was mapped while current once it rotates out and is released',
+			() =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					const value = Buffer.alloc(100, 'a');
+					// A few entries — seq 1 is still the current (actively-written) file.
+					for (let i = 0; i < 3; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+
+					await untilGc(() => false, 150);
+					const before = transactionLogMapCount();
+
+					// Map seq 1 while it is current: the file retains a strong reference.
+					let buffer: Buffer | undefined = log._getMemoryMapOfFile(1);
+					expect(buffer).toBeDefined();
+					expect(transactionLogMapCount()).toBe(before + 1);
+
+					// Write enough to rotate past seq 1 (current advances to seq 2/3),
+					// which downgrades seq 1's strong reference to a weak handle.
+					for (let i = 0; i < 20; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+
+					// With the rotation downgrade, releasing the buffer is now the last
+					// strong reference, so GC must unmap it. (Without the downgrade the
+					// file would still pin it and this would never reach `before`.)
+					buffer = undefined;
+					await untilGc(() => transactionLogMapCount() === before);
+					expect(transactionLogMapCount()).toBe(before);
+				})
+		);
 	});
 });

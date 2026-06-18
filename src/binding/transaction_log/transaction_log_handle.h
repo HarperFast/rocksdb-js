@@ -60,7 +60,7 @@ struct TransactionLogHandle final : Closable {
 		uint32_t size
 	);
 
-	std::weak_ptr<MemoryMap> getMemoryMap(uint32_t sequenceNumber);
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t sequenceNumber);
 	LogPosition findPosition(double timestamp);
 	LogPosition getLastFlushed();
 	uint64_t getLogFileSize(uint32_t sequenceNumber);

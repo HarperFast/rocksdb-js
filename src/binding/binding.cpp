@@ -52,6 +52,40 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Advises the kernel that the file-backed pages of every mapped transaction log
+ * are cold (MADV_COLD), so they are reclaimed first under memory pressure. Meant
+ * to be called periodically from a single host-driven timer (see
+ * TransactionLogStoreRegistry::CoolTransactionLogs). Returns { maps, bytes }.
+ */
+napi_value CoolTransactionLogs(napi_env env, napi_callback_info info) {
+	TransactionLogCoolResult cooled = TransactionLogStoreRegistry::CoolTransactionLogs();
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value maps;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, cooled.maps, &maps));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "maps", maps));
+
+	napi_value bytes;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(cooled.bytes), &bytes));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "bytes", bytes));
+
+	return result;
+}
+
+/**
+ * Returns the number of live transaction-log memory maps across the process.
+ * Used by tests to verify that releasing a (frozen) log's external buffer
+ * actually unmaps the mapping rather than leaving it retained.
+ */
+napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, MemoryMap::liveCount.load(std::memory_order_relaxed), &result));
+	return result;
+}
+
+/**
  * The number of active `rocksdb-js` modules.
  *
  * There can be multiple instances of this module in the same Node.js process
@@ -137,6 +171,16 @@ NAPI_MODULE_INIT() {
 	napi_value currentThreadIdFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
+
+	// coolTransactionLogs function
+	napi_value coolTransactionLogsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "coolTransactionLogs", NAPI_AUTO_LENGTH, CoolTransactionLogs, nullptr, &coolTransactionLogsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "coolTransactionLogs", coolTransactionLogsFn));
+
+	// transactionLogMapCount function (test/diagnostics)
+	napi_value transactionLogMapCountFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
 
 	// constants
 	napi_value constants;

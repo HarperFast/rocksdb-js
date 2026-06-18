@@ -6,9 +6,12 @@
 #include "core/encoding.h"
 #include "core/platform.h"
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
+#include <unistd.h>
 #include <vector>
 
 // Hook point for unit tests: compile with -DROCKSDB_JS_WRITEV=my_mock_fn to
@@ -20,6 +23,17 @@
 extern "C" ssize_t ROCKSDB_JS_WRITEV(int, const struct iovec*, int);
 #else
 #define ROCKSDB_JS_WRITEV ::writev
+#endif
+
+// Hook point for unit tests: compile with -DROCKSDB_JS_MADVISE=my_mock_fn to
+// capture/intercept the madvise() call made by adviseCold() (e.g. to assert it
+// is scoped to the file-backed range, or to simulate an old kernel returning
+// EINVAL). The macro must expand to a callable with the same signature as
+// ::madvise. Production builds call ::madvise directly.
+#ifdef ROCKSDB_JS_MADVISE
+extern "C" int ROCKSDB_JS_MADVISE(void*, size_t, int);
+#else
+#define ROCKSDB_JS_MADVISE ::madvise
 #endif
 
 namespace rocksdb_js {
@@ -130,75 +144,152 @@ void TransactionLogFile::openFile() {
 		this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed));
 }
 
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+// Precondition: caller holds fileMutex (the guard for this->memoryMap /
+// this->fd / this->frozenMapCache). The public getMemoryMap() wrapper acquires
+// it; the open path holds it already. This is the only place memoryMap /
+// frozenMapCache are (re)assigned, so holding fileMutex makes that shared_ptr
+// access race-free against close()/removeFile()/adviseCold().
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
 	// mmap with length 0 has undefined behavior according to POSIX.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty or too-small files.
 	if (fileSize == 0) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap fileSize is 0, returning nullptr\n", this);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
 
+	// Reuse an existing live mapping that is already large enough — the strong
+	// ref for the current file, or a still-live frozen handout.
+	std::shared_ptr<MemoryMap> map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+	if (!(map && map->map && map->mapSize >= fileSize)) {
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
-	if (this->memoryMap) {
-		if (this->memoryMap->mapSize >= fileSize) {
-			this->updateMemoryMapOverlay();
-			this->memoryMap->fileSize = fileSize;
-			return this->memoryMap;
-		}
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map too small (mapSize=%u, fileSize=%u), remapping\n",
-			this, this->memoryMap->mapSize, fileSize);
-	}
-
-	// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
-	// pages entirely beyond the file. We first create an anonymous
-	// zero-filled mapping for the full region, then overlay the actual file
-	// content at the start via MAP_FIXED. Pages beyond the file remain
-	// anonymous and safely read as zero.
-	void* anonMap = ::mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	DEBUG_LOG("%p TransactionLogFile::getMemoryMap new anonymous map: %p (size=%u)\n", this, anonMap, fileSize);
-	if (anonMap == MAP_FAILED) {
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (anonymous) failed: %s\n", this, ::strerror(errno));
-		return nullptr;
-	}
-
-	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), fileSize);
-	if (actualSize > 0 && this->fd >= 0) {
-		void* fileMap = ::mmap(anonMap, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
-		if (fileMap == MAP_FAILED) {
-			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (file overlay) failed: %s\n", this, ::strerror(errno));
-			::munmap(anonMap, fileSize);
+		// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
+		// pages entirely beyond the file. We first create an anonymous
+		// zero-filled mapping for the full region, then overlay the actual file
+		// content at the start via MAP_FIXED. Pages beyond the file remain
+		// anonymous and safely read as zero.
+		void* anonMap = ::mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new anonymous map: %p (size=%u)\n", this, anonMap, fileSize);
+		if (anonMap == MAP_FAILED) {
+			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (anonymous) failed: %s\n", this, ::strerror(errno));
 			return nullptr;
 		}
-	}
-	this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
 
-	// The MemoryMap destructor calls munmap on the full region, which
-	// correctly frees both anonymous and file-backed pages. Removing files
-	// that are memory mapped is perfectly fine on POSIX, and the memory map
-	// can be safely used indefinitely.
-	this->memoryMap = std::make_shared<MemoryMap>(anonMap, fileSize);
+		uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), fileSize);
+		if (actualSize > 0 && this->fd >= 0) {
+			void* fileMap = ::mmap(anonMap, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
+			if (fileMap == MAP_FAILED) {
+				DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap (file overlay) failed: %s\n", this, ::strerror(errno));
+				::munmap(anonMap, fileSize);
+				return nullptr;
+			}
+		}
+		this->lastOverlaySize.store(actualSize, std::memory_order_relaxed);
+
+		// The MemoryMap destructor calls munmap on the full region, which
+		// correctly frees both anonymous and file-backed pages. Removing files
+		// that are memory mapped is perfectly fine on POSIX, and the memory map
+		// can be safely used indefinitely.
+		map = std::make_shared<MemoryMap>(anonMap, fileSize);
 #else
-	if (!this->memoryMap) {
-		void* map = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
-		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, map);
-		if (map == MAP_FAILED) {
+		void* newMap = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
+		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, newMap);
+		if (newMap == MAP_FAILED) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
-		// Note, that we do not need to do any cleanup from this class's
-		// destructor. Removing files that are memory mapped is perfectly fine,
-		// and the memory map can be safely used indefinitely (the file descriptor
-		// doesn't need to be kept open either).
-		this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
-	}
-	this->memoryMap->fileSize = fileSize;
+		map = std::make_shared<MemoryMap>(newMap, fileSize);
 #endif
-	return this->memoryMap;
+	}
+	map->fileSize = fileSize;
+
+	// Ownership: the current (actively-written) file keeps a strong reference —
+	// the writer extends its overlay and the index reads through it. A frozen
+	// file keeps only a weak handle, so the returned shared_ptr (and the JS
+	// external buffer it becomes) is the sole owner and the mapping is unmapped
+	// when JS releases it.
+	if (isCurrent) {
+		this->memoryMap = map;
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+		this->updateMemoryMapOverlay(); // extend the overlay if the file grew since this map was created
+#endif
+	} else {
+		// Frozen: keep only a weak handle so the returned shared_ptr (the JS
+		// external buffer) is the sole owner and the mapping is unmapped when JS
+		// releases it. (No need to set frozenMapCache on the current-file branch:
+		// it is read only when memoryMap is null, and downgradeMapToFrozen() seeds
+		// it from memoryMap at the moment the file is frozen.)
+		this->memoryMap.reset();
+		this->frozenMapCache = map;
+	}
+	return map;
+}
+
+size_t TransactionLogFile::adviseCold() {
+#ifdef MADV_COLD
+	// Once we observe EINVAL (kernel < 5.4 lacks MADV_COLD), latch off so we
+	// don't keep issuing a syscall that will always fail. Process-global: a
+	// kernel that lacks the feature lacks it for every log file.
+	if (madvColdUnsupported.load(std::memory_order_relaxed)) {
+		return 0;
+	}
+
+	// Pin the live map under fileMutex so a concurrent close()/removeFile()/
+	// getMemoryMap() (which (re)assign memoryMap under the same lock) cannot
+	// munmap it out from under the madvise() below. We hold only a shared_ptr
+	// copy across the syscall, not the lock. The current file holds a strong
+	// memoryMap; a frozen file's map lives in frozenMapCache (weak) while a JS
+	// buffer keeps it alive — cool that too while it is still resident.
+	std::shared_ptr<MemoryMap> map;
+	uint32_t actualSize;
+	{
+		std::lock_guard<std::mutex> lock(this->fileMutex);
+		map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+		if (!map || !map->map) {
+			return 0;
+		}
+		actualSize = std::min(this->size.load(std::memory_order_relaxed), map->mapSize);
+	}
+
+	// Floor the length to a page boundary. The mapping base is page-aligned (it
+	// comes from mmap), but actualSize is the exact file extent and is rarely a
+	// page multiple. Rounding *down* guarantees we never advise a page that
+	// overlaps the MAP_PRIVATE|MAP_ANONYMOUS zero-fill tail beyond actualSize —
+	// advising (let alone evicting) that region would be destructive.
+	long pageSize = ::sysconf(_SC_PAGESIZE);
+	if (pageSize <= 0) {
+		pageSize = 4096;
+	}
+	size_t length = static_cast<size_t>(actualSize) & ~(static_cast<size_t>(pageSize) - 1);
+	if (length == 0) {
+		return 0;
+	}
+
+	if (ROCKSDB_JS_MADVISE(map->map, length, MADV_COLD) != 0) {
+		if (errno == EINVAL) {
+			DEBUG_LOG("%p TransactionLogFile::adviseCold MADV_COLD unsupported (EINVAL); disabling\n", this);
+			madvColdUnsupported.store(true, std::memory_order_relaxed);
+		} else {
+			DEBUG_LOG("%p TransactionLogFile::adviseCold madvise failed: %s (errno=%d)\n",
+				this, ::strerror(errno), errno);
+		}
+		return 0;
+	}
+
+	DEBUG_LOG("%p TransactionLogFile::adviseCold MADV_COLD %zu bytes of %s\n",
+		this, length, this->path.string().c_str());
+	return length;
+#else
+	// macOS and other POSIX platforms without MADV_COLD: no-op.
+	return 0;
+#endif
 }
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 void TransactionLogFile::updateMemoryMapOverlay() {
+	// Precondition: caller holds fileMutex (writeEntriesV1 holds it; getMemoryMap
+	// acquires it before calling in). Do not lock here — fileMutex is not
+	// recursive, so re-locking from getMemoryMap would deadlock.
 	if (!this->memoryMap || !this->memoryMap->map || this->fd < 0) return;
 
 	uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize);

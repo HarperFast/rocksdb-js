@@ -9,6 +9,7 @@
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_recovery.h"
 
+using rocksdb_js::countTransactionLogEntries;
 using rocksdb_js::RecoveryScan;
 using rocksdb_js::scanTransactionLogForRecovery;
 
@@ -173,4 +174,43 @@ TEST(TransactionLogRecovery, ZeroLengthFrameAtTailTruncates) {
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
 	EXPECT_EQ(scan.validEnd, tornStart);
+}
+
+TEST(TransactionLogCount, HeaderOnlyHasNoEntries) {
+	LogImage img; // just the 13-byte header
+	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 0u);
+}
+
+TEST(TransactionLogCount, CountsEntriesEndingOnBoundary) {
+	LogImage img;
+	img.entry(10).entry(20).entry(30);
+	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 3u);
+}
+
+TEST(TransactionLogCount, StopsAtZeroPaddedTail) {
+	LogImage img;
+	img.entry(10).entry(20);
+	img.zeros(64); // trailing zero padding must not be counted as entries
+	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 2u);
+}
+
+TEST(TransactionLogCount, StopsAtTornTail) {
+	LogImage img;
+	img.entry(10).entry(20);
+	// header claims 5000 bytes of data but only 12 are present before EOF
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12);
+	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 2u);
+}
+
+TEST(TransactionLogCount, StopsAtPartialHeader) {
+	LogImage img;
+	img.entry(10).entry(20);
+	img.raw({ 0x42, 0x79, 0x05 }); // fewer than a full entry header remains
+	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 2u);
+}
+
+TEST(TransactionLogCount, CountsLargeEntryExceedingRotationSize) {
+	LogImage img;
+	img.entry(10).entry(64 * 1024).entry(20);
+	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 3u);
 }

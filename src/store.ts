@@ -692,7 +692,8 @@ export class Store {
 			new DBIterator(
 				new NativeIterator(context, flags, startKeyEnd, endKeyStart, endKeyEnd, advancedOptions),
 				this,
-				includeValues
+				includeValues,
+				options?.limit
 			)
 		);
 	}
