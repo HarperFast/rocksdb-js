@@ -173,5 +173,5 @@ worker benchmarks. **ASan does not work locally on recent macOS** — the runtim
 for a trivial binary, and Node additionally hangs under a DYLD-injected ASan runtime. Use Apple's
 **Guard Malloc** there instead (no rebuild needed): `DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib
 MallocScribble=1 node ...` faults immediately on an out-of-bounds access or use-after-free (it works
-with `worker_threads`). `scripts/gmalloc-worker-repro.mjs` reproduces the shared-descriptor teardown
-race this way in seconds; capture the stack with `lldb -b -o 'break set -n __cxa_throw' -o run -o bt`.
+with `worker_threads`). To reproduce a teardown/lifecycle race, drive the relevant workers in a tight
+loop under Guard Malloc and capture the stack with `lldb -b -o 'break set -n __cxa_throw' -o run -o bt`.
