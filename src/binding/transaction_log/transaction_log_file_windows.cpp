@@ -200,7 +200,9 @@ void TransactionLogFile::openFile() {
 		// openFile() runs under fileMutex (held by open()); pass fileMutexHeld so
 		// findPositionByTimestamp() -> getMemoryMapLocked() does not re-lock it
 		// (std::mutex is not recursive — re-locking would self-deadlock/terminate).
-		this->findPositionByTimestamp(0, size, /*fileMutexHeld=*/true);
+		// isCurrent is ignored by the Windows getMemoryMapLocked() (it always
+		// retains a strong reference), so the value passed here is immaterial.
+		this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
@@ -208,8 +210,19 @@ void TransactionLogFile::openFile() {
 
 // Precondition: caller holds fileMutex (the guard for this->memoryMap /
 // this->fileHandle). The public getMemoryMap() wrapper acquires it; the open path
-// holds it already.
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize) {
+// holds it already (and reaches here via findPositionByTimestamp(fileMutexHeld=true),
+// which calls getMemoryMapLocked() directly rather than re-acquiring fileMutex).
+//
+// On Windows the weak-for-frozen ownership optimization (POSIX) is not applied:
+// Windows is not Harper's memory-pressure target and uses a different mapping
+// model (the file is pre-extended to maxFileSize). This function never consults
+// frozenMapCache and always stores the mapping strongly in this->memoryMap, so
+// `isCurrent` is ignored. (downgradeMapToFrozen() is shared code and still resets
+// this->memoryMap on rotation, but a later frozen read here simply re-creates the
+// mapping and re-pins it strongly for the rest of the file's life — so frozen maps
+// are neither weak-held nor deduped on Windows, by design.)
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
+	(void)isCurrent;
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty files.
