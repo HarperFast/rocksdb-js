@@ -121,6 +121,14 @@ struct TransactionLogFile final {
 	 * race. The mapping is created/replaced only in getMemoryMapLocked(), which
 	 * requires fileMutex; the public getMemoryMap() wrapper acquires it.
 	 *
+	 * Held with a strong reference only while this is the store's current
+	 * (actively-written) log file — the writer extends the MAP_FIXED overlay
+	 * through it and findPositionByTimestamp indexes against it. Once the file is
+	 * frozen (rotated out via downgradeMapToFrozen), the strong reference is
+	 * dropped and the map lives in `frozenMapCache` instead, so the JS external
+	 * buffer becomes its sole owner and the mapping is unmapped when JS releases
+	 * it. (POSIX only; Windows always retains a strong reference here.)
+	 *
 	 * Lock order is fileMutex -> indexMutex (open() holds fileMutex and reaches
 	 * findPositionByTimestamp() -> indexMutex). findPositionByTimestamp() honors
 	 * that order: it takes fileMutex only for the getMemoryMapLocked() call and
@@ -128,6 +136,16 @@ struct TransactionLogFile final {
 	 * in the opposite order.
 	 */
 	std::shared_ptr<MemoryMap> memoryMap = nullptr;
+
+	/**
+	 * Weak handle to the most recent map handed out for a frozen file. Lets
+	 * concurrent/subsequent readers of the same frozen log share one mapping
+	 * while a strong reference (a live JS external buffer, or a transient caller)
+	 * still exists, without the file itself retaining the mapping: when the last
+	 * such reference is released the mapping is unmapped. Re-mapped on demand if
+	 * it has expired by the time another reader asks.
+	 */
+	std::weak_ptr<MemoryMap> frozenMapCache;
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
@@ -244,15 +262,35 @@ struct TransactionLogFile final {
 	 * acquires fileMutex (the guard for memoryMap) and delegates to
 	 * getMemoryMapLocked(). Callers must NOT already hold fileMutex — a caller
 	 * that does (the open path) calls getMemoryMapLocked() directly instead.
+	 *
+	 * @param fileSize The size to map (max file size for the current file, which
+	 *   is still growing; the frozen file size otherwise).
+	 * @param isCurrent Whether this is the store's current (actively-written) log
+	 *   file. The current file retains a strong reference in `memoryMap` (the
+	 *   writer and index need it); a frozen file does not — it is weak-cached in
+	 *   `frozenMapCache` and ownership passes to the returned shared_ptr (and thus
+	 *   to the JS external buffer), so the mapping is freed when JS releases it.
+	 *   (POSIX only; Windows always retains a strong reference.)
 	 */
-	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize);
+	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t fileSize, bool isCurrent);
 
 	/**
-	 * Platform-specific body of getMemoryMap(): creates or reuses the mapping and
-	 * (re)assigns this->memoryMap. Precondition: the caller already holds
-	 * fileMutex. Returns nullptr for an empty/too-small file.
+	 * Drops the strong reference to this file's memory map, retaining only a weak
+	 * handle. Called when the file is rotated out (no longer current): a reader
+	 * that mapped it while it was current would otherwise keep the mapping pinned
+	 * for the life of this object. After this, the mapping is owned solely by any
+	 * live JS external buffer and is unmapped when that buffer is released.
 	 */
-	std::shared_ptr<MemoryMap> getMemoryMapLocked(uint32_t fileSize);
+	void downgradeMapToFrozen();
+
+	/**
+	 * Platform-specific body of getMemoryMap(): creates or reuses the mapping and,
+	 * depending on isCurrent, (re)assigns this->memoryMap (strong ref, current
+	 * file) or retains only this->frozenMapCache (weak handle, frozen file).
+	 * Precondition: the caller already holds fileMutex. Returns nullptr for an
+	 * empty/too-small file.
+	 */
+	std::shared_ptr<MemoryMap> getMemoryMapLocked(uint32_t fileSize, bool isCurrent);
 
 	/**
 	 * Hints the kernel that this log's file-backed pages are cold (MADV_COLD),
@@ -288,13 +326,16 @@ struct TransactionLogFile final {
 	/**
 	 * Finds the position in this log file with the oldest transaction that is equal to, or newer than, the provided timestamp.
 	 *
+	 * @param isCurrent Whether this is the store's current (actively-written) log
+	 *   file; forwarded to getMemoryMapLocked() to decide strong-vs-weak map
+	 *   ownership (see getMemoryMap).
 	 * @param fileMutexHeld true when the caller already holds fileMutex (the
 	 *   open() -> openFile() -> here path on Windows). When false, this acquires
 	 *   fileMutex only for the getMemoryMapLocked() call and releases it before
 	 *   scanning. Passing true while NOT holding fileMutex, or false while
 	 *   holding it, is a bug (the latter self-deadlocks).
 	 */
-	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize, bool fileMutexHeld = false);
+	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false);
 
 	/**
 	 * Platform specific function that writes data to the log file.
@@ -380,8 +421,17 @@ struct MemoryMap final {
 	 **/
 	uint32_t fileSize = 0;
 
+	/**
+	 * Count of live MemoryMap instances across the process. Lets tests verify
+	 * that releasing all JS references to a (frozen) log's external buffer
+	 * actually unmaps the mapping rather than leaving it retained.
+	 */
+	static std::atomic<int64_t> liveCount;
+
 	MemoryMap(void* map, uint32_t mapSize)
-		: map(map), mapSize(mapSize), fileSize(mapSize) {}
+		: map(map), mapSize(mapSize), fileSize(mapSize) {
+		liveCount.fetch_add(1, std::memory_order_relaxed);
+	}
 
 	~MemoryMap() {
 		DEBUG_LOG("MemoryMap::~MemoryMap map=%p, mapSize=%u\n", this->map, this->mapSize);
@@ -394,6 +444,7 @@ struct MemoryMap final {
 			::munmap(this->map, this->mapSize);
 		}
 #endif
+		liveCount.fetch_sub(1, std::memory_order_relaxed);
 	}
 };
 

@@ -187,19 +187,54 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 	return logFile;
 }
 
-std::weak_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
+void TransactionLogStore::rotateToNextSequence(const std::shared_ptr<TransactionLogFile>& oldFile) {
+	// The file we are rotating away from is now frozen: drop its strong memory-map
+	// reference so the mapping is released once any JS buffers a reader mapped from
+	// it while it was current are GC'd, rather than staying pinned until the file
+	// is re-read as frozen or purged.
+	//
+	// Called under writeMutex (the write path). Take dataSetsMutex too so the
+	// downgrade + currentSequenceNumber bump are atomic with respect to readers
+	// that derive a file's strong-vs-weak map ownership from currentSequenceNumber
+	// — getMemoryMap() and findPositionByTimestamp() both compute `isCurrent` under
+	// dataSetsMutex. Without this, a reader could read currentSequenceNumber == N
+	// (isCurrent=true) and re-pin file N's map strongly in getMemoryMapLocked()
+	// after this method has already downgraded it, permanently retaining the
+	// mapping and defeating the release. Serializing here forces the reader to be
+	// wholly before (sees N, then this downgrade undoes its strong ref) or wholly
+	// after (sees N+1, maps frozen/weak). Lock order is writeMutex -> dataSetsMutex,
+	// consistent with the rest of the store; no caller holds dataSetsMutex already.
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	if (oldFile) {
+		oldFile->downgradeMapToFrozen();
+	}
+	this->advanceSequence();
+}
+
+std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	auto it = this->sequenceFiles.find(logSequenceNumber);
 	auto logFile = it != this->sequenceFiles.end() ? it->second.get() : nullptr;
 	if (!logFile) {
-		return std::weak_ptr<MemoryMap>(); // nullptr
+		return nullptr;
 	}
 	if (!logFile->isOpen()) {
 		logFile->open(this->latestTimestamp);
 	}
-	return logFile->getMemoryMap(this->currentSequenceNumber == logSequenceNumber ?
+	// Return a strong reference: for a frozen file the log file itself keeps only
+	// a weak handle, so this strong ref (and the JS external buffer it is handed
+	// to) is what keeps the mapping alive.
+	//
+	// `isCurrent` decides strong-vs-weak ownership down in getMemoryMapLocked().
+	// We hold dataSetsMutex across the read and the getMemoryMap() call, and
+	// rotateToNextSequence() takes the same lock around its downgrade + sequence
+	// bump, so this isCurrent value cannot go stale mid-call (a frozen file can
+	// never be re-pinned as current here).
+	bool isCurrent = this->currentSequenceNumber.load(std::memory_order_relaxed) == logSequenceNumber;
+	return logFile->getMemoryMap(isCurrent ?
 		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
-		logFile->size.load(std::memory_order_relaxed)); // otherwise it is frozen, use the file size
+		logFile->size.load(std::memory_order_relaxed), // otherwise it is frozen, use the file size
+		isCurrent);
 }
 
 uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
@@ -251,8 +286,9 @@ std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 			}
 			// Otherwise, use current position
 			else {
-				if (this->currentSequenceNumber > 0) {
-					initialPosition = { TRANSACTION_LOG_FILE_HEADER_SIZE, this->currentSequenceNumber };
+				uint32_t currentSeq = this->currentSequenceNumber.load(std::memory_order_relaxed);
+				if (currentSeq > 0) {
+					initialPosition = { TRANSACTION_LOG_FILE_HEADER_SIZE, currentSeq };
 				}
 			}
 
@@ -264,7 +300,7 @@ std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 
 LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	uint32_t sequenceNumber = this->currentSequenceNumber;
+	uint32_t sequenceNumber = this->currentSequenceNumber.load(std::memory_order_relaxed);
 	bool isCurrent = true;
 	uint32_t positionInLogFile = 0;
 	auto it = this->sequenceFiles.find(sequenceNumber);
@@ -277,14 +313,15 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 		auto logFile = it->second.get();
 		positionInLogFile = logFile->findPositionByTimestamp(
 			timestamp,
-			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed)
+			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
+			isCurrent
 		);
 		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
 		// we are in the correct log file to start searching
 		if (positionInLogFile > 0) {
 			if (positionInLogFile == 0xFFFFFFFF) {
 				// beyond the end of this log file
-				if (sequenceNumber < this->currentSequenceNumber) {
+				if (sequenceNumber < this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 					// revert to next one (because it exists)
 					break;
 				} else { // otherwise position at the end of the log file (JS code can filter from here)
@@ -517,7 +554,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// remove sequence files from the map
 	for (uint32_t sequenceNumber : sequenceNumbersToRemove) {
-		if (sequenceNumber == this->currentSequenceNumber) {
+		if (sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 			// erase only the stale sentinel for the current sequence - the guard
 			// above already verified no real uncommitted positions exist
 			this->positionErase(this->nextLogPosition);
@@ -525,9 +562,9 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			// Advance to maintain monotonicity of (sequenceNumber, position)
 			// pairs. Existing shared_ptrs to the old memory map remain valid
 			// until released.
-			DEBUG_LOG("%p TransactionLogStore::purge Advancing sequence number from %u to %u\n", this, this->currentSequenceNumber, this->nextSequenceNumber);
+			DEBUG_LOG("%p TransactionLogStore::purge Advancing sequence number from %u to %u\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber);
 			this->advanceSequence();
-			this->nextLogPosition = { 0, this->currentSequenceNumber };
+			this->nextLogPosition = { 0, this->currentSequenceNumber.load(std::memory_order_relaxed) };
 			this->positionInsert(this->nextLogPosition);
 			LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
 				? this->nextLogPosition
@@ -576,11 +613,11 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		// "now" seed
 	}
 
-	if (sequenceNumber >= this->currentSequenceNumber) {
+	if (sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		if (!logFile->isOpen()) {
 			logFile->open(this->latestTimestamp);
 		}
-		this->currentSequenceNumber = sequenceNumber;
+		this->currentSequenceNumber.store(sequenceNumber, std::memory_order_relaxed);
 		this->nextLogPosition = { logFile->size, sequenceNumber };
 	}
 
@@ -601,7 +638,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	}
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (current=%u, next=%u, timestamp=%llu)\n",
-		this, batch.entries.size(), this->name.c_str(), this->currentSequenceNumber, this->nextSequenceNumber, batch.timestamp);
+		this, batch.entries.size(), this->name.c_str(), this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, batch.timestamp);
 
 	{
 		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
@@ -620,7 +657,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// get the current log file and rotate if needed
 		while (logFile == nullptr) {
-			logFile = this->getLogFile(this->currentSequenceNumber);
+			logFile = this->getLogFile(this->currentSequenceNumber.load(std::memory_order_relaxed));
 
 			// we found a log file, check if it's already at max size
 			if (this->maxFileSize == 0 || logFile->size < this->maxFileSize) {
@@ -641,8 +678,8 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			// this prevents infinite loops when file open fails (even with maxIndexSize=0)
 			if (logFile == nullptr || this->maxFileSize > 0) {
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Advancing sequence number from %u to %u for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
-					this, this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
-				this->advanceSequence();
+					this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
+				this->rotateToNextSequence(logFile);
 				logFile = nullptr;
 			}
 		}
@@ -672,8 +709,8 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				this, fileAgeMs.count(), thresholdDuration.count());
 			if (fileAgeMs >= thresholdDuration) {
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Log file is older than threshold (%lld ms >= %lld ms), advancing from %u to %u for store \"%s\"\n",
-					this, fileAgeMs.count(), thresholdDuration.count(), this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str());
-				this->advanceSequence();
+					this, fileAgeMs.count(), thresholdDuration.count(), this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
+				this->rotateToNextSequence(logFile);
 				continue;
 			}
 		}
@@ -697,22 +734,24 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// if no progress was made, rotate to the next file to avoid infinite loop
 		if (logFile->size == sizeBefore) {
-			DEBUG_LOG("%p TransactionLogStore::writeBatch No progress made (size unchanged), advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str());
-			this->advanceSequence();
+			DEBUG_LOG("%p TransactionLogStore::writeBatch No progress made (size unchanged), advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
+			this->rotateToNextSequence(logFile);
 		} else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
 			// we've reached or exceeded the max size, rotate to the next file
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Log file reached max size, advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str());
-			this->advanceSequence();
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Log file reached max size, advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
+			this->rotateToNextSequence(logFile);
 		} else if (!batch.isComplete()) {
 			// we've written some entries, but the batch is not complete, rotate to the next file
-			DEBUG_LOG("%p TransactionLogStore::writeBatch Batch is not complete, advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber, this->nextSequenceNumber, this->name.c_str());
-			this->advanceSequence();
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Batch is not complete, advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
+			this->rotateToNextSequence(logFile);
 		}
+
 		{
 			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-			this->nextLogPosition = { logFile->size, this->currentSequenceNumber };
+			this->nextLogPosition = { logFile->size, this->currentSequenceNumber.load(std::memory_order_relaxed) };
 		}
 	}
+
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		this->positionInsert(this->nextLogPosition);
@@ -944,15 +983,16 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// already complete. Scan it once, here, rather than re-scanning every file as
 	// it transiently becomes the highest during registration. A truncation
 	// corrects logFile->size, so refresh nextLogPosition from it afterwards.
-	if (store->currentSequenceNumber > 0) {
-		auto currentIt = store->sequenceFiles.find(store->currentSequenceNumber);
+	uint32_t storeCurrentSeq = store->currentSequenceNumber.load(std::memory_order_relaxed);
+	if (storeCurrentSeq > 0) {
+		auto currentIt = store->sequenceFiles.find(storeCurrentSeq);
 		if (currentIt != store->sequenceFiles.end()) {
 			auto& currentFile = currentIt->second;
 			if (!currentFile->isOpen()) {
 				currentFile->open(store->latestTimestamp);
 			}
 			currentFile->recoverTail();
-			store->nextLogPosition = { currentFile->size, store->currentSequenceNumber };
+			store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 		}
 	}
 

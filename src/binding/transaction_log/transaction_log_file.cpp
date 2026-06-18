@@ -20,6 +20,8 @@ namespace rocksdb_js {
 
 std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
 
+std::atomic<int64_t> MemoryMap::liveCount{0};
+
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
@@ -28,6 +30,19 @@ void TransactionLogFile::resetAdviseColdSupportForTests() {
 
 TransactionLogFile::~TransactionLogFile() {
 	this->close();
+}
+
+void TransactionLogFile::downgradeMapToFrozen() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	if (this->memoryMap) {
+		// The file is no longer the current (actively-written) log, so drop the
+		// strong reference. Keep a weak handle for handout dedup; the mapping now
+		// lives exactly as long as the JS external buffer (if any reader mapped it
+		// while it was current) — once that is released, it is unmapped instead of
+		// staying pinned for the life of this TransactionLogFile.
+		this->frozenMapCache = this->memoryMap;
+		this->memoryMap.reset();
+	}
 }
 
 std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
@@ -364,9 +379,9 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 // Public entry point: acquire fileMutex (the guard for memoryMap) and delegate to
 // the platform getMemoryMapLocked(). Callers that already hold fileMutex (the open
 // path, via findPositionByTimestamp) must call getMemoryMapLocked() directly.
-std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
+std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-	return this->getMemoryMapLocked(fileSize);
+	return this->getMemoryMapLocked(fileSize, isCurrent);
 }
 
 /**
@@ -375,7 +390,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize) {
  * @param mapSize - the size of the memory map to search in
  * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
  */
-uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool fileMutexHeld) {
+uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
 
 	// getMemoryMapLocked() (re)assigns this->memoryMap and so must run under
@@ -388,10 +403,10 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// fileMutex -> indexMutex order; the open path nests them in that same order.
 	std::shared_ptr<MemoryMap> memoryMap;
 	if (fileMutexHeld) {
-		memoryMap = this->getMemoryMapLocked(mapSize);
+		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
 	} else {
 		std::lock_guard<std::mutex> fileLock(this->fileMutex);
-		memoryMap = this->getMemoryMapLocked(mapSize);
+		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
 	}
 
 	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
