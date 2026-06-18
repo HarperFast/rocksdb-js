@@ -23,6 +23,9 @@ describe('Concurrent cross-thread teardown', () => {
 
 		for (let round = 0; round < ROUNDS; round++) {
 			const path = generateDBPath();
+			// Shared barrier counter so every worker opens (sharing one
+			// descriptor) before any tears down — see the worker file.
+			const readyBuf = new SharedArrayBuffer(4);
 
 			const exitCodes = await Promise.all(
 				Array.from(
@@ -33,7 +36,7 @@ describe('Concurrent cross-thread teardown', () => {
 								createWorkerBootstrapScript('./test/workers/concurrent-teardown-worker.mts'),
 								{
 									eval: true,
-									workerData: { path, puts: 150, close: i % 2 === 0 },
+									workerData: { path, puts: 150, close: i % 2 === 0, readyBuf, total: WORKERS },
 								}
 							);
 							worker.on('error', reject);
