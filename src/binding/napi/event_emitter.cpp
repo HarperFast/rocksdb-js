@@ -308,10 +308,15 @@ bool EventEmitter::notify(const std::string& key, ListenerData* data) {
 	// a worker env could still free the tsfn out from under the post-unlock call
 	// (HarperFast/harper#1370).
 	//
-	// Holding the mutex across the calls cannot deadlock or block unduly:
-	// napi_call_threadsafe_function only enqueues (the JS trampoline runs later
-	// on the owning env's thread, never re-entering this mutex) and never blocks
-	// because the tsfns are created with an unbounded queue (max_queue_size 0).
+	// Holding the mutex across the calls cannot deadlock or block unduly: the
+	// call is made in napi_tsfn_nonblocking mode, so napi_call_threadsafe_function
+	// only enqueues (the JS trampoline runs later on the owning env's thread,
+	// never re-entering this mutex) and never blocks. With the unbounded queue
+	// (max_queue_size 0) nonblocking is equivalent to blocking on Node, but
+	// blocking mode could stall under this mutex on a runtime whose N-API shim
+	// treats the queue as bounded or drains it differently during env teardown;
+	// nonblocking removes that hazard (a full queue returns napi_queue_full,
+	// handled below, instead of blocking the lock holder).
 	//
 	// This relies on Node running an env's cleanup hooks before freeing that
 	// env's tsfns — the same ordering removeListenersByEnv already depends on.
@@ -346,9 +351,10 @@ bool EventEmitter::notify(const std::string& key, ListenerData* data) {
 				// tsfn trampoline (callListenerCallback) deletes the copy it receives.
 				ListenerData* listenerData = data ? new ListenerData(*data) : nullptr;
 
-				napi_status status = ::napi_call_threadsafe_function(tsfn, listenerData, napi_tsfn_blocking);
+				napi_status status = ::napi_call_threadsafe_function(tsfn, listenerData, napi_tsfn_nonblocking);
 				if (status != napi_ok) {
-					// e.g. napi_closing once the owning env starts tearing down; that
+					// e.g. napi_closing once the owning env starts tearing down (or
+					// napi_queue_full, which the unbounded queue never returns); that
 					// listener will be scrubbed by removeListenersByEnv. Not a crash:
 					// we hold the mutex, so the tsfn is still allocated, just closing.
 					DEBUG_LOG("%p EventEmitter::notify failed to call threadsafeCallback (status=%d)\n", this, status);

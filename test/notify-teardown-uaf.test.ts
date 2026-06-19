@@ -57,7 +57,16 @@ function spawnRepro(
 }
 
 describe('Per-database events notify() vs. worker teardown', () => {
-	it(
+	// Node-only. The fix this guards (holding the emitter mutex across the tsfn
+	// call) is safe because Node runs an exiting worker env's cleanup hook —
+	// which blocks on that same mutex via removeListenersByEnv — *before* freeing
+	// the env's tsfns. Deno and Bun have independent N-API implementations whose
+	// worker.terminate() teardown does not provide that ordering guarantee, so the
+	// assertion exercises their shim's teardown semantics, not our code: Deno
+	// (macOS) intermittently SIGABRTs freeing the env out from under the in-lock
+	// call, and Bun (Windows) can stall. Node is Harper's production runtime and
+	// is where harper#1370 reproduces and is fixed.
+	it.skipIf(Boolean(process.versions.deno || process.versions.bun))(
 		'should survive worker env teardown racing an in-flight committed notify (main + worker)',
 		() => expectSurvives(),
 		// Worker spawn/teardown dominates wall time and is slow on macOS/Windows:
