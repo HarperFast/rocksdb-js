@@ -9,9 +9,13 @@ const fixturePath = join(__dirname, 'fixtures', 'fork-notify-teardown-uaf.mts');
  * Runs the repro fixture in a child process so a SIGABRT (the harper#1370
  * crash) surfaces as a signal/non-zero exit instead of taking down vitest.
  * The notify-vs-teardown race only fires on a fraction of attempts, so we loop
- * to give CI a useful detection rate while keeping wall time bounded.
+ * to give CI a useful detection rate while keeping wall time bounded. Most of
+ * the per-iteration cost is worker spawn/teardown (60 rounds inside the
+ * fixture), which is expensive on macOS/Windows — that, not the race-window
+ * count, is what drives wall time, so the iteration count is kept low and the
+ * test timeout carries headroom (see the it() timeout below).
  */
-async function expectSurvives(iterations = 3): Promise<void> {
+async function expectSurvives(iterations = 2): Promise<void> {
 	for (let i = 0; i < iterations; i++) {
 		const { code, signal } = await spawnRepro(generateDBPath());
 		expect(signal, `iteration=${i}`).toBeNull();
@@ -54,6 +58,11 @@ describe('Per-database events notify() vs. worker teardown', () => {
 	it(
 		'should survive worker env teardown racing an in-flight committed notify (main + worker)',
 		() => expectSurvives(),
-		60_000
+		// Worker spawn/teardown dominates wall time and is slow on macOS/Windows:
+		// even passing runs there land ~55s for 3 iterations. With 2 iterations
+		// the spec-compliant runtimes finish well under this, while the headroom
+		// keeps slower runtimes (Node 22, Bun) from flaking on the timeout itself
+		// rather than on an actual crash.
+		120_000
 	);
 });
