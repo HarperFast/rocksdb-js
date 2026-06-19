@@ -506,6 +506,13 @@ export const currentThreadId: () => number = binding.currentThreadId;
 export const coolTransactionLogs: () => { maps: number; bytes: number } =
 	binding.coolTransactionLogs;
 
+/**
+ * Number of live transaction-log memory maps across the process. Internal —
+ * used by tests to verify that releasing a frozen log's external buffer unmaps
+ * the underlying mapping rather than leaving it retained.
+ */
+export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
+
 // Module-level backup management functions. These operate on a backup directory
 // and do not require an open database. Wrapped by the `backups` namespace in
 // `backup.ts`; creating a backup is a `RocksDatabase` instance method.

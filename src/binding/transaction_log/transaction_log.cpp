@@ -218,13 +218,16 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 
-	auto memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber).lock();
+	std::shared_ptr<MemoryMap> memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Create a shared_ptr on the heap that will be held until finalize is called
+	// Transfer ownership to the external buffer: this heap shared_ptr is held
+	// until finalize. For a frozen log the log file keeps only a weak handle, so
+	// this (plus any still-live buffer for the same file) is the sole owner — the
+	// mapping is unmapped when JS GCs the buffer.
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;

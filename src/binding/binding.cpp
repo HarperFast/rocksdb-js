@@ -75,6 +75,17 @@ napi_value CoolTransactionLogs(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns the number of live transaction-log memory maps across the process.
+ * Used by tests to verify that releasing a (frozen) log's external buffer
+ * actually unmaps the mapping rather than leaving it retained.
+ */
+napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, MemoryMap::liveCount.load(std::memory_order_relaxed), &result));
+	return result;
+}
+
+/**
  * The number of active `rocksdb-js` modules.
  *
  * There can be multiple instances of this module in the same Node.js process
@@ -165,6 +176,11 @@ NAPI_MODULE_INIT() {
 	napi_value coolTransactionLogsFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "coolTransactionLogs", NAPI_AUTO_LENGTH, CoolTransactionLogs, nullptr, &coolTransactionLogsFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "coolTransactionLogs", coolTransactionLogsFn));
+
+	// transactionLogMapCount function (test/diagnostics)
+	napi_value transactionLogMapCountFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
 
 	// constants
 	napi_value constants;

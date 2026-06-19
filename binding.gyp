@@ -188,6 +188,7 @@
 				'test/native/encoding_test.cc',
 				'test/native/json_test.cc',
 				'test/native/transaction_log_madvise_test.cc',
+				'test/native/transaction_log_mmap_test.cc',
 				'test/native/transaction_log_recovery_test.cc',
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/verification_table_test.cc',
