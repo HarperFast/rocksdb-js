@@ -15,7 +15,9 @@ const fixturePath = join(__dirname, 'fixtures', 'fork-notify-teardown-uaf.mts');
  * count, is what drives wall time, so the iteration count is kept low and the
  * test timeout carries headroom (see the it() timeout below).
  */
-async function expectSurvives(iterations = 2): Promise<void> {
+// Bun's worker lifecycle is far slower (see ROUNDS in the fixture); a single
+// iteration there keeps wall time under the timeout while Node/Deno run two.
+async function expectSurvives(iterations = process.versions.bun ? 1 : 2): Promise<void> {
 	for (let i = 0; i < iterations; i++) {
 		const { code, signal } = await spawnRepro(generateDBPath());
 		expect(signal, `iteration=${i}`).toBeNull();

@@ -39,8 +39,12 @@ if (!dbPath) {
 mkdirSync(dbPath, { recursive: true });
 
 // More rounds = more teardown-vs-notify windows per process; the race only
-// surfaces on a fraction of attempts.
-const ROUNDS = 60;
+// surfaces on a fraction of attempts. Bun's worker spawn/teardown is roughly an
+// order of magnitude slower than Node's (each round spawns + terminates a
+// worker), so a full 60 rounds blows the test timeout on Bun + macOS/Windows.
+// The race itself is a runtime-agnostic native C++ bug; Node/Deno carry the
+// primary detection, so Bun runs a reduced round count as secondary coverage.
+const ROUNDS = process.versions.bun ? 20 : 60;
 
 function spawnWorker(role: 'committer' | 'listener'): Promise<Worker> {
 	return new Promise((resolve, reject) => {
