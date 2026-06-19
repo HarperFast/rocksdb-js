@@ -173,6 +173,25 @@ public:
 	void close();
 	bool isClosing() const { return this->closing.load(); }
 
+	/**
+	 * Atomically transitions the descriptor into the closing state. Returns
+	 * true if this call performed the transition (the caller now owns the
+	 * close and must run `finishClose()`), false if it was already closing.
+	 *
+	 * Lets `DBRegistry::CloseDB` publish the closing state while still holding
+	 * `databasesMutex`, so a concurrent `OpenDB` (which inspects `isClosing()`
+	 * under the same lock) waits instead of handing the descriptor to a new
+	 * handle that would then be closed out from under it.
+	 */
+	bool beginClose() { return !this->closing.exchange(true); }
+
+	/**
+	 * Performs the actual close work (flush, close handles, release resources).
+	 * Only valid after `beginClose()` returned true; `close()` is the all-in-one
+	 * entry point that claims and then runs this.
+	 */
+	void finishClose();
+
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
 

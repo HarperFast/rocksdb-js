@@ -140,11 +140,15 @@ DBDescriptor::~DBDescriptor() {
  */
 void DBDescriptor::close() {
 	// check if already closing
-	if (this->closing.exchange(true)) {
+	if (!this->beginClose()) {
 		DEBUG_LOG("%p DBDescriptor::close Already closing \"%s\"\n", this, this->path.c_str());
 		return;
 	}
 
+	this->finishClose();
+}
+
+void DBDescriptor::finishClose() {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 

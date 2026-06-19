@@ -34,48 +34,70 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	}
 
 	DBKey key{handle->descriptor->path, handle->descriptor->readOnly};
-	DBRegistryEntry* entry = nullptr;
-
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		auto entryIterator = instance->databases.find(key);
-		if (entryIterator != instance->databases.end()) {
-			entry = &entryIterator->second;
-			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), key.path.c_str(), entry->descriptor->path.c_str(), entry->descriptor.use_count());
-		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), key.path.c_str());
-		}
-	}
 
 	handle->descriptor->detach(handle);
 
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DEBUG_LOG("%p DBRegistry::CloseDB Closed DBHandle %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), key.path.c_str(), entry && entry->descriptor ? entry->descriptor.use_count() : -1);
-
-	// since the registry itself always has a ref, we need to check for ref count 1
-	if (entry && entry->descriptor && entry->descriptor.use_count() <= 1) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Purging descriptor for \"%s\"\n", instance.get(), key.path.c_str());
-		entry->descriptor->close();
-
-		// Save the condition variable before erasing the entry. Accessing `entry`
-		// after erase is a use-after-free because `entry` is a raw pointer into
-		// the map's internal storage, which is freed when the element is erased.
-		std::shared_ptr<std::condition_variable> condition;
-		{
-			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			auto eraseIt = instance->databases.find(key);
-			if (eraseIt != instance->databases.end()) {
-				condition = eraseIt->second.condition;
-				instance->databases.erase(eraseIt);
+	// Decide whether to purge the descriptor and, if so, take ownership of it,
+	// all under databasesMutex. Two worker threads can reach CloseDB for the
+	// same path concurrently (each tearing down its own env's DBHandle while
+	// sharing one process-global DBDescriptor), so the decision MUST be atomic:
+	//
+	//   - We never hold a raw pointer into the map across the unlocked close()
+	//     below. The previous implementation cached `&entry` under the lock and
+	//     dereferenced it afterward; a concurrent CloseDB that erased the map
+	//     node freed that storage, so the survivor called close() on a freed
+	//     DBDescriptor and locked its destroyed mutex (manifests on glibc as
+	//     "malloc(): unaligned tcache chunk detected").
+	//   - The registry always holds one ref, so use_count() <= 1 means no open
+	//     DBHandles remain. OpenDB bumps use_count under this same lock, so the
+	//     check serializes with it: if an open raced ahead it already pushed the
+	//     count past 1 and we skip; if we win, beginClose() publishes the closing
+	//     state while we still hold the lock, so a subsequent OpenDB observes
+	//     isClosing() and waits instead of being handed a descriptor we then
+	//     close out from under it. beginClose() also makes the claim single-shot.
+	//   - The entry stays in the map (descriptor non-null and isClosing()) for
+	//     the duration of finishClose(), so a concurrent OpenDB keeps waiting on
+	//     the condition rather than re-opening the path mid-close.
+	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<std::condition_variable> condition;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		auto entryIterator = instance->databases.find(key);
+		if (entryIterator != instance->databases.end()) {
+			DBRegistryEntry& entry = entryIterator->second;
+			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), key.path.c_str(), entry.descriptor.use_count());
+			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
+				DEBUG_LOG("%p DBRegistry::CloseDB Claiming descriptor purge for \"%s\"\n", instance.get(), key.path.c_str());
+				descriptor = entry.descriptor;
+				condition = entry.condition;
 			}
+		} else {
+			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), key.path.c_str());
 		}
+	}
 
-		// notify only waiters for this specific path
-		if (condition) {
-			condition->notify_all();
+	if (descriptor) {
+		// We claimed the close under the lock via beginClose(); run the actual
+		// teardown now. The local copy keeps the descriptor alive throughout.
+		descriptor->finishClose();
+
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		auto eraseIt = instance->databases.find(key);
+		// Only erase the entry we claimed. OpenDB's wait predicate may have
+		// reset the map's descriptor ref to null while we closed; a brand-new
+		// descriptor cannot appear because OpenDB blocks until we notify below.
+		if (eraseIt != instance->databases.end()
+			&& (!eraseIt->second.descriptor || eraseIt->second.descriptor == descriptor)) {
+			instance->databases.erase(eraseIt);
 		}
+	}
+
+	// notify only waiters for this specific path
+	if (condition) {
+		condition->notify_all();
 	}
 }
 

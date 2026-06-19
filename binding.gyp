@@ -1,4 +1,10 @@
 {
+	# ASan toggle. Read from the ROCKSDB_ASAN env var at configure time (node -p
+	# is cross-platform and always present under node-gyp). `-D`/`GYP_DEFINES`
+	# do not reliably override a target-scoped default under node-gyp's make
+	# generator, so an explicit env read is used instead. Enable with:
+	#   ROCKSDB_ASAN=1 node-gyp rebuild
+	'variables': { "rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")" },
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
 	# Node Windows build is now compiled with ClangCL + ThinLTO, but this addon
@@ -111,6 +117,24 @@
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
 						'MACOSX_DEPLOYMENT_TARGET': '26.0',
 						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
+					}
+				}],
+				# AddressSanitizer instrumentation for diagnosing heap corruption
+				# in the binding. Enable with `ROCKSDB_ASAN=1 node-gyp rebuild`.
+				# RocksDB is linked as a non-instrumented prebuilt static lib;
+				# ASan's global malloc/free interceptors still catch overflows and
+				# use-after-free in binding-owned allocations. The .node must be
+				# run with the ASan runtime preloaded (Linux: LD_PRELOAD the
+				# libasan shared lib; macOS Node deadlocks under injected ASan, so
+				# use the standalone native-test target there instead).
+				['rocksdb_asan==1 and (OS=="mac" or OS=="linux")', {
+					'cflags+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'cflags_cc+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'ldflags+': ['-fsanitize=address'],
+					'xcode_settings': {
+						'OTHER_CFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_CPLUSPLUSFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_LDFLAGS+': ['-fsanitize=address'],
 					}
 				}]
 			],
@@ -245,6 +269,20 @@
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
 						'MACOSX_DEPLOYMENT_TARGET': '26.0',
 						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
+					}
+				}],
+				# ASan for the standalone (no-Node) GoogleTest binary. Unlike the
+				# .node, this executable runs natively under ASan on macOS, so it
+				# is the local vehicle for catching corruption in the txn-log /
+				# recovery / encoding code paths. Enable with ROCKSDB_ASAN=1.
+				['rocksdb_asan==1 and (OS=="mac" or OS=="linux")', {
+					'cflags+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'cflags_cc+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'ldflags+': ['-fsanitize=address'],
+					'xcode_settings': {
+						'OTHER_CFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_CPLUSPLUSFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_LDFLAGS+': ['-fsanitize=address'],
 					}
 				}]
 			],
