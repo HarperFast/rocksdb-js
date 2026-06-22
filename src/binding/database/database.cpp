@@ -1671,6 +1671,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "columns", nullptr, nullptr, Columns, nullptr, nullptr, napi_default, nullptr },
 		{ "compact", nullptr, Compact, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "compactSync", nullptr, CompactSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "createCheckpoint", nullptr, CreateCheckpoint, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },

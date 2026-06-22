@@ -178,6 +178,30 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Creates a hardlinked, point-in-time, fully independent copy of the entire
+	 * database (all column families) at `targetPath` and resolves once written.
+	 *
+	 * Unlike a backup, a checkpoint is a normal, writable sibling database: open
+	 * it with {@link RocksDatabase.open} and it diverges independently from the
+	 * source. SST files are hardlinked when the target is on the same filesystem,
+	 * so the operation is near-instant; only the memtable is flushed and copied.
+	 *
+	 * `targetPath` must not already exist and its parent directory must exist —
+	 * RocksDB creates the checkpoint directory itself. The caller is responsible
+	 * for eventual cleanup of the directory.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * await db.createCheckpoint('/path/to/checkpoint');
+	 * const branch = RocksDatabase.open('/path/to/checkpoint');
+	 * ```
+	 */
+	createCheckpoint(targetPath: string): Promise<void> {
+		return this.store.createCheckpoint(targetPath);
+	}
+
+	/**
 	 * Compacts the entire key range of the database synchronously.
 	 * This triggers manual compaction which removes tombstones and reclaims space.
 	 *
