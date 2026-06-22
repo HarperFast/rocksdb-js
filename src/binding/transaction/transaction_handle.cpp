@@ -1,4 +1,7 @@
+#include <chrono>
+#include <cstdlib>
 #include <sstream>
+#include <thread>
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -7,6 +10,21 @@
 #include "napi/macros.h"
 
 namespace rocksdb_js {
+
+/**
+ * Read-once test seam: returns milliseconds to sleep after
+ * waitForAsyncWorkCompletion() in close(), widening the window between PATH A
+ * (descriptor close on env M) and PATH B (commit complete callback on env W)
+ * so the close-vs-commit double-free race (HarperFast/harper#1370) reproduces
+ * deterministically. Zero in production (env var not set).
+ */
+static int txnCloseTestDelayMs() {
+	static const int delayMs = [] {
+		const char* value = ::getenv("ROCKSDB_JS_TXN_CLOSE_DELAY_MS");
+		return value ? ::atoi(value) : 0;
+	}();
+	return delayMs;
+}
 
 /**
  * Creates a new RocksDB transaction, enables snapshots, and sets the
@@ -25,7 +43,8 @@ TransactionHandle::TransactionHandle(
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
-	committedPosition(0, 0) {
+	committedPosition(0, 0),
+	envThreadId(std::this_thread::get_id()) {
 	this->resetTransaction();
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
@@ -161,8 +180,16 @@ void TransactionHandle::releaseIntent() {
 /**
  * Release the transaction. This is called after successful commit, after
  * the transaction has been aborted, or when the transaction is destroyed.
+ *
+ * The `closed` atomic gate ensures this runs at most once even when called
+ * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
+ * JS thread racing the async commit's complete callback on env W's JS thread).
  */
 void TransactionHandle::close() {
+	if (this->closed.exchange(true)) {
+		return;
+	}
+
 	if (this->dbHandle && this->dbHandle->descriptor) {
 		this->dbHandle->descriptor->transactionRemove(shared_from_this());
 	}
@@ -181,6 +208,15 @@ void TransactionHandle::close() {
 
 	// wait for all async work to complete before closing
 	this->waitForAsyncWorkCompletion();
+
+	// Test seam: widen the PATH A vs PATH B race window (see txnCloseTestDelayMs).
+	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
+	// unblocks); the seam makes it wide enough to reproduce deterministically.
+	// Noop in production.
+	const int testDelayMs = txnCloseTestDelayMs();
+	if (testDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(testDelayMs));
+	}
 
 	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
 	// to remove the committed position from the log store
@@ -219,9 +255,17 @@ void TransactionHandle::close() {
 	this->txn = nullptr;
 
 	if (this->jsDatabaseRef != nullptr) {
-		DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this);
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database");
-		DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this);
+		if (std::this_thread::get_id() == this->envThreadId) {
+			// On the owning JS thread — safe to call napi_delete_reference.
+			DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this);
+			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database");
+			DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this);
+		} else {
+			// Wrong thread (close() called from a different env's JS thread, e.g.
+			// DBDescriptor::close() PATH A). napi_delete_reference is not thread-safe
+			// across envs; skip and let Node clean up the weak ref on env teardown.
+			DEBUG_LOG("%p TransactionHandle::close Skipping napi_delete_reference (wrong thread)\n", this);
+		}
 		this->jsDatabaseRef = nullptr;
 	} else {
 		DEBUG_LOG("%p TransactionHandle::close jsDatabaseRef is already null\n", this);

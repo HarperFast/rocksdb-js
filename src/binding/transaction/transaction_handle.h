@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include "database/db_handle.h"
@@ -100,6 +101,28 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * The RocksDB transaction.
 	 */
 	rocksdb::Transaction* txn;
+
+	/**
+	 * One-shot close gate: set to true by the first close() caller. Subsequent
+	 * callers from any thread return immediately. Mirrors DBDescriptor::closing.
+	 *
+	 * Without this, DBDescriptor::close() (on env M's JS thread) and the async
+	 * commit's complete callback (on env W's JS thread) can both pass the
+	 * `!this->txn` check before either executes `delete this->txn`, causing a
+	 * double-free through ~OptimisticTransaction → ~PointLockTracker
+	 * (HarperFast/harper#1370, close-vs-commit variant).
+	 */
+	std::atomic<bool> closed{false};
+
+	/**
+	 * The thread ID of the JS thread that owns `env` (set at construction time).
+	 * Used in close() to guard napi_delete_reference: calling it from a thread
+	 * other than the owning JS thread is undefined behaviour and will crash.
+	 * When close() is invoked from a different env's JS thread (PATH A, the
+	 * DBDescriptor::close() path), the deletion is skipped and the ref is left
+	 * for Node to clean up on env teardown.
+	 */
+	std::thread::id envThreadId;
 
 	/**
 	 * A batch of log entries to write to the transaction log. It can only be
