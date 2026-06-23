@@ -198,7 +198,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	createCheckpoint(targetPath: string): Promise<void> {
-		return this.store.createCheckpoint(targetPath);
+		return new Promise((resolve, reject) =>
+			this.store.db.createCheckpoint(resolve, reject, targetPath)
+		);
 	}
 
 	/**

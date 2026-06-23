@@ -427,22 +427,6 @@ export class Store {
 	}
 
 	/**
-	 * Creates a hardlinked, point-in-time, fully independent copy of the entire
-	 * database at `targetPath` using RocksDB's checkpoint API and resolves once
-	 * written. `targetPath` must not already exist and its parent directory must
-	 * exist (RocksDB requires this). The caller is responsible for opening the
-	 * checkpoint as a new database and for eventual cleanup of the directory.
-	 *
-	 * @example
-	 * ```typescript
-	 * await db.createCheckpoint('/path/to/checkpoint');
-	 * ```
-	 */
-	createCheckpoint(targetPath: string): Promise<void> {
-		return new Promise((resolve, reject) => this.db.createCheckpoint(resolve, reject, targetPath));
-	}
-
-	/**
 	 * Compacts the entire key range of the database synchronously.
 	 * This triggers manual compaction which removes tombstones and reclaims space.
 	 *
