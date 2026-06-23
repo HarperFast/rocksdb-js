@@ -108,24 +108,36 @@ describe('Checkpoints', () => {
 			}
 		}));
 
-	it('should reject when the target path already exists', () =>
+	it('should reject with a simplified error when the target path already exists', () =>
 		dbRunner(async ({ db }) => {
 			await writeAll(db, 5);
 
 			const checkpointDir = tempDir();
 			mkdirSync(checkpointDir, { recursive: true });
 
-			await expect(db.createCheckpoint(checkpointDir)).rejects.toThrow();
+			await expect(db.createCheckpoint(checkpointDir)).rejects.toThrow(
+				'Create checkpoint failed: target path exists'
+			);
 		}));
 
-	it('should reject when the parent directory does not exist', () =>
+	it('should create missing parent directories', () =>
 		dbRunner(async ({ db }) => {
 			await writeAll(db, 5);
 
-			// Parent ("missing") is never created; RocksDB does not create parents.
+			// The "missing" parent does not exist; createCheckpoint creates it.
 			const checkpointDir = join(tempDir(), 'missing', 'checkpoint');
+			expect(existsSync(checkpointDir)).toBe(false);
 
-			await expect(db.createCheckpoint(checkpointDir)).rejects.toThrow();
+			await expect(db.createCheckpoint(checkpointDir)).resolves.toBeUndefined();
+			expect(existsSync(checkpointDir)).toBe(true);
+
+			const checkpoint = new RocksDatabase(checkpointDir);
+			checkpoint.open();
+			try {
+				expect(await checkpoint.get('key-0')).toBe('value-0');
+			} finally {
+				checkpoint.close();
+			}
 		}));
 
 	it('should not crash when closing during a checkpoint', () =>

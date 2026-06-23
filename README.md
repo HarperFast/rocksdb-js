@@ -1400,10 +1400,10 @@ result the operation is near-instant on the same filesystem and as costly as a f
 filesystems. The memtable is flushed so the checkpoint includes the latest writes even when the
 WAL is disabled.
 
-`targetPath` must not already exist (RocksDB creates it) and its parent directory must exist.
-The call rejects with the RocksDB status message on failure (e.g. the target already exists, the
-parent is missing, or the disk is full). The caller is responsible for opening the checkpoint and
-for eventually deleting the directory.
+Parent directories are created as needed. `targetPath` itself must not already exist — RocksDB
+creates the checkpoint directory — and the call rejects with `Create checkpoint failed: target
+path exists` if it does (other failures, such as a full disk, surface the RocksDB status message).
+The caller is responsible for opening the checkpoint and for eventually deleting the directory.
 
 ```typescript
 const db = RocksDatabase.open('/path/to/database');

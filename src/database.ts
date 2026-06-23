@@ -31,6 +31,8 @@ import {
 	TransactionIsBusyError,
 } from './transaction.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import * as orderedBinary from 'ordered-binary';
 
 export type TransactionCallback<T> = (txn: Transaction, attempt: number) => T | PromiseLike<T>;
@@ -189,9 +191,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * filesystem. The memtable is flushed so the checkpoint includes the latest
 	 * writes even when the WAL is disabled.
 	 *
-	 * `targetPath` must not already exist and its parent directory must exist —
-	 * RocksDB creates the checkpoint directory itself. The caller is responsible
-	 * for eventual cleanup of the directory.
+	 * Parent directories are created as needed. `targetPath` itself must not
+	 * already exist (RocksDB creates the checkpoint directory) and rejects with
+	 * `Create checkpoint failed: target path exists` if it does. The caller is
+	 * responsible for eventual cleanup of the directory.
 	 *
 	 * @example
 	 * ```typescript
@@ -201,9 +204,17 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	createCheckpoint(targetPath: string): Promise<void> {
-		return new Promise((resolve, reject) =>
-			this.store.db.createCheckpoint(resolve, reject, targetPath)
-		);
+		return new Promise((resolve, reject) => {
+			if (existsSync(targetPath)) {
+				reject(new Error('Create checkpoint failed: target path exists'));
+				return;
+			}
+			// Create parent directories as needed (a throw here rejects the promise),
+			// then hand off to the native worker synchronously so it registers its
+			// in-flight operation before this call returns.
+			mkdirSync(dirname(targetPath), { recursive: true });
+			this.store.db.createCheckpoint(resolve, reject, targetPath);
+		});
 	}
 
 	/**
