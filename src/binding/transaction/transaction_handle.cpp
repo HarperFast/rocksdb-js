@@ -43,8 +43,8 @@ TransactionHandle::TransactionHandle(
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
-	committedPosition(0, 0),
-	envThreadId(std::this_thread::get_id()) {
+	envThreadId(std::this_thread::get_id()),
+	committedPosition(0, 0) {
 	this->resetTransaction();
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
