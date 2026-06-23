@@ -326,7 +326,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
 			DEBUG_LOG("%p Transaction::Commit Complete callback entered (status=%d, txnId=%d)\n",
-				state->handle.get(), status, state->handle->id);
+				state->handle.get(), status, state->handle ? state->handle->id : 0);
 
 			state->deleteAsyncWork();
 
@@ -338,7 +338,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 						state->handle->close();
 						DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id);
 					} else {
-						DEBUG_LOG("%p Transaction::Commit Complete, but handle is null! (txnId=%u)\n", state->handle.get(), state->handle->id);
+						DEBUG_LOG("%p Transaction::Commit Complete, but handle is null!\n", state->handle.get());
 					}
 
 					state->callResolve();
@@ -419,7 +419,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					// Guard: keep Aborted if close() already set it (DB closing
 					// during commit) — don't let Transaction::Abort call Rollback()
 					// on a null txn.
-					if (state->handle->state == TransactionState::Committing) {
+					if (state->handle && state->handle->state == TransactionState::Committing) {
 						state->handle->state = TransactionState::Pending;
 					}
 					napi_value error;
