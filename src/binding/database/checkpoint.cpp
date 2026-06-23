@@ -126,10 +126,13 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		name,
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncCheckpointState*>(data);
-			// state->descriptor keeps the rocksdb::DB alive for the whole copy, so
-			// it is safe to use even if close() runs concurrently. isCancelled()
-			// lets us skip starting a checkpoint once close() has been requested.
-			if (!state->descriptor || !state->handle || state->handle->isCancelled()) {
+			// state->descriptor is a strong reference held for the whole copy, so it
+			// is always valid here; the operationsInFlight registration keeps
+			// finishClose() from resetting descriptor->db until this work completes,
+			// so the database stays valid even if close() runs concurrently.
+			// isCancelled() lets us skip starting a checkpoint once close() has been
+			// requested.
+			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during checkpoint operation");
 			} else {
 				rocksdb::Checkpoint* checkpoint = nullptr;
