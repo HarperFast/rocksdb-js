@@ -1385,6 +1385,34 @@ import { versions } from '@harperfast/rocksdb-js';
 console.log(versions); // { "rocksdb": "10.10.1", "rocksdb-js": "0.1.2" }
 ```
 
+## Checkpoints
+
+### `db.createCheckpoint(targetPath: string): Promise<void>`
+
+Creates a [checkpoint](https://github.com/facebook/rocksdb/wiki/Checkpoints) — a point-in-time,
+fully independent copy of the entire database (all column families) at `targetPath` — and resolves
+once written. Unlike a backup, a checkpoint is a normal, writable database: open it as a new
+`RocksDatabase` and it diverges independently from the source.
+
+SST and blob files are **hard-linked** when `targetPath` is on the **same filesystem** as the
+database, and **copied** otherwise; other files (such as the `MANIFEST`) are always copied. As a
+result the operation is near-instant on the same filesystem and as costly as a full copy across
+filesystems. The memtable is flushed so the checkpoint includes the latest writes even when the
+WAL is disabled.
+
+`targetPath` must not already exist (RocksDB creates it) and its parent directory must exist.
+The call rejects with the RocksDB status message on failure (e.g. the target already exists, the
+parent is missing, or the disk is full). The caller is responsible for opening the checkpoint and
+for eventually deleting the directory.
+
+```typescript
+const db = RocksDatabase.open('/path/to/database');
+await db.createCheckpoint('/path/to/checkpoint');
+
+// The checkpoint is a normal, writable database.
+const branch = RocksDatabase.open('/path/to/checkpoint');
+```
+
 ## Backups
 
 Backups use RocksDB's `BackupEngine` to capture consistent, incremental, checksum-verified

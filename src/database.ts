@@ -183,8 +183,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * Unlike a backup, a checkpoint is a normal, writable sibling database: open
 	 * it with {@link RocksDatabase.open} and it diverges independently from the
-	 * source. SST files are hardlinked when the target is on the same filesystem,
-	 * so the operation is near-instant; only the memtable is flushed and copied.
+	 * source. SST and blob files are hardlinked when `targetPath` is on the same
+	 * filesystem as the database and copied otherwise (other files such as the
+	 * MANIFEST are always copied), so the operation is near-instant on the same
+	 * filesystem. The memtable is flushed so the checkpoint includes the latest
+	 * writes even when the WAL is disabled.
 	 *
 	 * `targetPath` must not already exist and its parent directory must exist —
 	 * RocksDB creates the checkpoint directory itself. The caller is responsible
