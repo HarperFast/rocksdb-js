@@ -425,7 +425,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
 					napi_value hasLogValue;
-					napi_status status = ::napi_get_boolean(env, state->hasLog, &hasLogValue);
+					// #668: writeBatch is skipped on an IsBusy retry once the WAL batch is durable
+					// (committedPosition set), so state->hasLog is false this attempt. Fall back to
+					// committedPosition so the retry-on-busy heuristic still treats this as logged.
+					bool hasLog = state->hasLog ||
+						(state->handle && state->handle->committedPosition.logSequenceNumber > 0);
+					napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
 					if (status == napi_ok) {
 						::napi_set_named_property(env, error, "hasLog", hasLogValue);
 					}
@@ -518,7 +523,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
 		napi_value hasLogValue;
-		NAPI_STATUS_THROWS(::napi_get_boolean(env, hasLog, &hasLogValue));
+		// #668: writeBatch is skipped on an IsBusy retry (WAL already durable), so fall
+		// back to committedPosition so the caller keeps treating this as a logged txn.
+		NAPI_STATUS_THROWS(::napi_get_boolean(env,
+			hasLog || (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
 		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 	}

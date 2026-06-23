@@ -101,6 +101,23 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
 		this, entry->store->name.c_str(), this->id, entry->size);
 
+	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
+	// committedPosition is already set, this transaction's batch was durably written by a
+	// prior commit attempt (committedPosition survives resetTransaction). A commit that
+	// returned IsBusy is retried by re-running the transaction body to re-drive the RocksDB
+	// commit; re-staging the log here would write the records a second time at a new
+	// position, orphaning the original (commitFinished is gated on !IsBusy, so the original
+	// is never finalized) and pinning the committed-read watermark at it forever — silent
+	// committed-read truncation (HarperFast/harper-pro#426). Higher layers are expected to
+	// suppress the re-log on retry (e.g. harper's DatabaseTransaction.isRetry), but enforce
+	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
+	if (this->committedPosition.logSequenceNumber > 0) {
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %u "
+			"(WAL already written at seq %u)\n",
+			this, this->id, this->committedPosition.logSequenceNumber);
+		return;
+	}
+
 	// check if this transaction is already bound to a different log store
 	auto currentBoundStore = this->boundLogStore.lock();
 	if (currentBoundStore) {
