@@ -47,8 +47,7 @@ describe('Checkpoints', () => {
 			await expect(db.createCheckpoint(checkpointDir)).resolves.toBeUndefined();
 			expect(existsSync(checkpointDir)).toBe(true);
 
-			const checkpoint = new RocksDatabase(checkpointDir);
-			checkpoint.open();
+			const checkpoint = RocksDatabase.open(checkpointDir);
 			try {
 				for (let i = 0; i < 100; ++i) {
 					expect(await checkpoint.get(`key-${i}`)).toBe(`value-${i}`);
@@ -65,8 +64,7 @@ describe('Checkpoints', () => {
 			const checkpointDir = tempDir();
 			await db.createCheckpoint(checkpointDir);
 
-			const checkpoint = new RocksDatabase(checkpointDir);
-			checkpoint.open();
+			const checkpoint = RocksDatabase.open(checkpointDir);
 			try {
 				// Diverge both databases and assert they do not see each other's writes.
 				await db.put('only-source', 'source');
@@ -86,9 +84,8 @@ describe('Checkpoints', () => {
 			}
 		}));
 
-	it('should survive the source database being destroyed', () =>
-		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
-			db.open();
+	it('should survive the source database being destroyed with checkpoint closed', () =>
+		dbRunner(async ({ db, dbPath }) => {
 			await writeAll(db, 50);
 
 			const checkpointDir = tempDir();
@@ -101,8 +98,34 @@ describe('Checkpoints', () => {
 			// The checkpoint is independent: its SST files are hardlinks, so the
 			// data survives the source's deletion and it remains fully usable and
 			// writable.
-			const checkpoint = new RocksDatabase(checkpointDir);
-			checkpoint.open();
+			const checkpoint = RocksDatabase.open(checkpointDir);
+			try {
+				for (let i = 0; i < 50; ++i) {
+					expect(await checkpoint.get(`key-${i}`)).toBe(`value-${i}`);
+				}
+				await checkpoint.put('after-destroy', 'ok');
+				expect(await checkpoint.get('after-destroy')).toBe('ok');
+			} finally {
+				checkpoint.close();
+			}
+		}));
+
+	it('should survive the source database being destroyed with checkpoint opened', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			await writeAll(db, 50);
+
+			const checkpointDir = tempDir();
+			await db.createCheckpoint(checkpointDir);
+
+			const checkpoint = RocksDatabase.open(checkpointDir);
+
+			// Destroy the source entirely — its directory is removed from disk.
+			db.destroy();
+			expect(existsSync(dbPath)).toBe(false);
+
+			// The checkpoint is independent: its SST files are hardlinks, so the
+			// data survives the source's deletion and it remains fully usable and
+			// writable.
 			try {
 				for (let i = 0; i < 50; ++i) {
 					expect(await checkpoint.get(`key-${i}`)).toBe(`value-${i}`);
@@ -125,8 +148,7 @@ describe('Checkpoints', () => {
 			const checkpointDir = tempDir();
 			await db.createCheckpoint(checkpointDir);
 
-			const checkpoint = new RocksDatabase(checkpointDir);
-			checkpoint.open();
+			const checkpoint = RocksDatabase.open(checkpointDir);
 			try {
 				for (let i = 0; i < 25; ++i) {
 					expect(await checkpoint.get(`key-${i}`)).toBe(`value-${i}`);
@@ -159,8 +181,7 @@ describe('Checkpoints', () => {
 			await expect(db.createCheckpoint(checkpointDir)).resolves.toBeUndefined();
 			expect(existsSync(checkpointDir)).toBe(true);
 
-			const checkpoint = new RocksDatabase(checkpointDir);
-			checkpoint.open();
+			const checkpoint = RocksDatabase.open(checkpointDir);
 			try {
 				expect(await checkpoint.get('key-0')).toBe('value-0');
 			} finally {
@@ -169,8 +190,7 @@ describe('Checkpoints', () => {
 		}));
 
 	it('should not crash when closing during a checkpoint', () =>
-		dbRunner({ skipOpen: true }, async ({ db }) => {
-			db.open();
+		dbRunner(async ({ db }) => {
 			await writeAll(db, 200);
 
 			const checkpointDir = tempDir();
@@ -190,8 +210,7 @@ describe('Checkpoints', () => {
 		}));
 
 	it('should not free the database under an in-flight checkpoint when destroy() races it', () =>
-		dbRunner({ skipOpen: true }, async ({ db }) => {
-			db.open();
+		dbRunner(async ({ db }) => {
 			await writeAll(db, 200);
 
 			const checkpointDir = tempDir();
