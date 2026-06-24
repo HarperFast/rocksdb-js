@@ -385,10 +385,16 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, b
 }
 
 /**
- * Find the position of a timestamp, specifically the position where there are no transactions with an earlier timestamp
- * @param timestamp - the timestamp to find the position of
+ * Find the start position for a forward scan of all transactions with timestamp >= the given one:
+ * the position of the first entry whose timestamp is >= `timestamp`, such that no entry BEFORE it
+ * has a timestamp >= `timestamp` (a tight lower bound to begin scanning). This is a running-maxima
+ * index, so it gives no UPPER bound — on an out-of-order log, entries with timestamp >= `timestamp`
+ * may still appear after the returned position, and an absent `timestamp` scans to end-of-log. The
+ * caller filters each entry and is responsible for any stop condition.
+ * @param timestamp - the timestamp to find the start position for
  * @param mapSize - the size of the memory map to search in
- * @return the position of the timestamp, or zero if comes before this logfile, or 0xFFFFFFFF if it comes after this logfile
+ * @return the position of the first entry >= timestamp, or zero if it precedes this log file's
+ *         header timestamp, or 0xFFFFFFFF if it follows every entry in this log file
  */
 uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
