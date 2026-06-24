@@ -86,6 +86,34 @@ describe('Checkpoints', () => {
 			}
 		}));
 
+	it('should survive the source database being destroyed', () =>
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+			db.open();
+			await writeAll(db, 50);
+
+			const checkpointDir = tempDir();
+			await db.createCheckpoint(checkpointDir);
+
+			// Destroy the source entirely — its directory is removed from disk.
+			db.destroy();
+			expect(existsSync(dbPath)).toBe(false);
+
+			// The checkpoint is independent: its SST files are hardlinks, so the
+			// data survives the source's deletion and it remains fully usable and
+			// writable.
+			const checkpoint = new RocksDatabase(checkpointDir);
+			checkpoint.open();
+			try {
+				for (let i = 0; i < 50; ++i) {
+					expect(await checkpoint.get(`key-${i}`)).toBe(`value-${i}`);
+				}
+				await checkpoint.put('after-destroy', 'ok');
+				expect(await checkpoint.get('after-destroy')).toBe('ok');
+			} finally {
+				checkpoint.close();
+			}
+		}));
+
 	it('should flush unflushed memtable data into the checkpoint', () =>
 		dbRunner({ dbOptions: [{ disableWAL: true }] }, async ({ db }) => {
 			// No explicit flush — createCheckpoint flushes the memtable by default,
