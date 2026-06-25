@@ -1,5 +1,4 @@
 #include <chrono>
-#include <cstdlib>
 #include <sstream>
 #include <thread>
 #include "database/database.h"
@@ -7,6 +6,7 @@
 #include "database/db_settings.h"
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
+#include "core/test_seam.h"
 #include "napi/macros.h"
 
 namespace rocksdb_js {
@@ -18,13 +18,7 @@ namespace rocksdb_js {
  * so the close-vs-commit double-free race (HarperFast/harper#1370) reproduces
  * deterministically. Zero in production (env var not set).
  */
-static int txnCloseTestDelayMs() {
-	static const int delayMs = [] {
-		const char* value = ::getenv("ROCKSDB_JS_TXN_CLOSE_DELAY_MS");
-		return value ? ::atoi(value) : 0;
-	}();
-	return delayMs;
-}
+DEFINE_TEST_DELAY_MS(txnCloseTestDelayMs, "ROCKSDB_JS_TXN_CLOSE_DELAY_MS")
 
 /**
  * Creates a new RocksDB transaction, enables snapshots, and sets the

@@ -1,9 +1,9 @@
 #include "napi/event_emitter.h"
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <thread>
 #include "core/debug.h"
+#include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
 
@@ -12,13 +12,7 @@ namespace rocksdb_js {
 // Deterministic test seam for the notify-vs-teardown race (HarperFast/harper#1370).
 // Returns the configured artificial delay in ms (0 = disabled), read once from
 // ROCKSDB_JS_NOTIFY_DELAY_MS. Unset in production; see EventEmitter::notify.
-static int notifyTestDelayMs() {
-	static const int delayMs = [] {
-		const char* value = ::getenv("ROCKSDB_JS_NOTIFY_DELAY_MS");
-		return value ? ::atoi(value) : 0;
-	}();
-	return delayMs;
-}
+DEFINE_TEST_DELAY_MS(notifyTestDelayMs, "ROCKSDB_JS_NOTIFY_DELAY_MS")
 
 /**
  * Threadsafe-function finalizer. Node-API guarantees this runs on the JS
