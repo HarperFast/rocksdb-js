@@ -9,11 +9,6 @@
 
 namespace rocksdb_js {
 
-// Deterministic test seam for the notify-vs-teardown race (HarperFast/harper#1370).
-// Returns the configured artificial delay in ms (0 = disabled), read once from
-// ROCKSDB_JS_NOTIFY_DELAY_MS. Unset in production; see EventEmitter::notify.
-DEFINE_TEST_DELAY_MS(notifyTestDelayMs, "ROCKSDB_JS_NOTIFY_DELAY_MS")
-
 /**
  * Threadsafe-function finalizer. Node-API guarantees this runs on the JS
  * thread once the tsfn's ref count drops to zero, making it the safe place
@@ -328,8 +323,9 @@ bool EventEmitter::notify(const std::string& key, ListenerData* data) {
 			// concurrent removeListenersByEnv blocks on the mutex until we return,
 			// so the tsfn cannot be freed mid-call. Read once; a single cached-int
 			// branch per notify when unset.
-			if (notifyTestDelayMs() > 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(notifyTestDelayMs()));
+			const int delayMs = testDelayMs("ROCKSDB_JS_NOTIFY_DELAY_MS");
+			if (delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 			}
 			DEBUG_LOG("%p EventEmitter::notify calling %zu listener%s for key:",
 				this, it->second.size(), it->second.size() == 1 ? "" : "s");

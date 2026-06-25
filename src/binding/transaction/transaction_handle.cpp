@@ -12,15 +12,6 @@
 namespace rocksdb_js {
 
 /**
- * Read-once test seam: returns milliseconds to sleep after
- * waitForAsyncWorkCompletion() in close(), widening the window between PATH A
- * (descriptor close on env M) and PATH B (commit complete callback on env W)
- * so the close-vs-commit double-free race (HarperFast/harper#1370) reproduces
- * deterministically. Zero in production (env var not set).
- */
-DEFINE_TEST_DELAY_MS(txnCloseTestDelayMs, "ROCKSDB_JS_TXN_CLOSE_DELAY_MS")
-
-/**
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
@@ -207,9 +198,9 @@ void TransactionHandle::close() {
 	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
 	// unblocks); the seam makes it wide enough to reproduce deterministically.
 	// Noop in production.
-	const int testDelayMs = txnCloseTestDelayMs();
-	if (testDelayMs > 0) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(testDelayMs));
+	const int closeDelayMs = testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS");
+	if (closeDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
 	}
 
 	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
