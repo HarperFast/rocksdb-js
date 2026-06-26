@@ -255,6 +255,11 @@ export type NativeDatabase = {
 	compact(resolve: ResolveCallback<void>, reject: RejectCallback, start?: Key, end?: Key): void;
 	compactSync(start?: Key, end?: Key): void;
 	columns: string[];
+	createCheckpoint(
+		resolve: ResolveCallback<void>,
+		reject: RejectCallback,
+		targetPath: string
+	): void;
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;

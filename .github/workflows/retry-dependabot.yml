@@ -1,0 +1,72 @@
+name: Retry Dependabot Checks
+
+# Dependabot's `cooldown` only delays the *direct* dependency it bumps. When it
+# regenerates pnpm-lock.yaml, pnpm re-resolves transitive deps to their latest
+# versions, and any transitive dep published within pnpm's `minimumReleaseAge`
+# window (see pnpm-workspace.yaml) fails the supply-chain check at install time
+# — turning the whole PR red for reasons unrelated to the bump.
+#
+# Those deps always age past the cutoff within a day, so this workflow simply
+# re-runs the failed checks on open Dependabot PRs. It re-uses the exact same
+# committed lockfile (no `recreate`, which could pull in another fresh dep and
+# restart the clock); only time has passed, so the age check now passes.
+
+on:
+  schedule:
+    # Daily, after Dependabot's 05:15 UTC run. By 06:00 the previous day's deps
+    # have cleared the 24h cutoff; a PR opened today is retried tomorrow.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}
+
+jobs:
+  retry:
+    name: Retry failed Dependabot checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run failed checks on open Dependabot PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Head SHAs of every open Dependabot PR.
+          shas=$(gh pr list \
+            --author 'app/dependabot' \
+            --state open \
+            --json headRefOid \
+            --jq '.[].headRefOid')
+
+          if [ -z "$shas" ]; then
+            echo "No open Dependabot PRs."
+            exit 0
+          fi
+
+          for sha in $shas; do
+            echo "::group::PR head $sha"
+            # Failed workflow runs for this commit.
+            runs=$(gh run list \
+              --commit "$sha" \
+              --status failure \
+              --json databaseId \
+              --jq '.[].databaseId')
+
+            if [ -z "$runs" ]; then
+              echo "No failed runs."
+            else
+              for run in $runs; do
+                echo "Re-running failed jobs in run $run"
+                gh run rerun "$run" --failed || echo "Could not re-run $run (may be too old or already running)"
+              done
+            fi
+            echo "::endgroup::"
+          done

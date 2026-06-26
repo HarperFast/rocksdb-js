@@ -245,6 +245,7 @@ struct Database final {
 	static napi_value DropSync(napi_env env, napi_callback_info info);
 	static napi_value Compact(napi_env env, napi_callback_info info);
 	static napi_value CompactSync(napi_env env, napi_callback_info info);
+	static napi_value CreateCheckpoint(napi_env env, napi_callback_info info);
 	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
