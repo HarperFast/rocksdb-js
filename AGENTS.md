@@ -174,7 +174,12 @@ C++ code that needs to emit to JS without a database context should call
    running (a live lock — note the current process's own pid always reads as running), and otherwise
    reclaims a stale lock and claims the directory by writing its pid to a `temp_<rand>` file and
    `link()`-ing it into place (`link`, not `rename`: POSIX `rename` overwrites the target, so two racers
-   would both "win"; `link` fails if it exists). The lock is on disk precisely so it coordinates across
+   would both "win"; `link` fails if it exists). Breaking a stale lock renames it aside and then
+   re-checks the moved file — if it turns out to name a running pid (a racer reclaimed between our read
+   and our rename), it is restored via `link` and we abort — since `rename` is content-blind and would
+   otherwise move a live lock. This closes the two-process reclaim race; a ≥3-process reclaim of the
+   same stale lock still has a sub-millisecond residual window inherent to pidfile locking (only OS
+   advisory locks fully eliminate it). The lock is on disk precisely so it coordinates across
    processes and `worker_threads` — an in-memory lock cannot. Contention **rejects**; it does not queue,
    so a caller issuing overlapping backups to one directory must handle the "locked" error (e.g. retry).
    Read-only ops (`list`, `verify`, a restore's source read) are not locked since concurrent readers are

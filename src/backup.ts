@@ -107,7 +107,19 @@ function readLockHolder(lockPath: string): number | undefined {
 function acquireBackupDirLock(backupDir: string): string {
 	const lockPath = join(backupDir, LOCK_FILENAME);
 	const tempPath = join(backupDir, `temp_${randomBytes(8).toString('hex')}`);
-	writeFileSync(tempPath, `${process.pid}`);
+	const grabbedPath = `${tempPath}.stale`;
+
+	try {
+		writeFileSync(tempPath, `${process.pid}`);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+			// The backup directory doesn't exist. Surface a clear error rather than a
+			// raw ENOENT naming our internal temp file.
+			throw new Error(`Backup directory does not exist: ${backupDir}`);
+		}
+		throw err;
+	}
+
 	try {
 		if (tryClaimLock(tempPath, lockPath)) {
 			return lockPath;
@@ -120,19 +132,31 @@ function acquireBackupDirLock(backupDir: string): string {
 			throw new Error(`Backup directory is locked by running process ${holder}: ${lockPath}`);
 		}
 
-		// Stale lock (missing, dead, or unparseable pid). Break it atomically so
-		// that when several processes race to reclaim, only one removes it:
-		// renameSync moves the stale file aside and fails with ENOENT if another
-		// process already moved it. We must never blindly unlink `lockPath`, which
-		// could delete a live lock a racing process installed after our read.
+		// Stale lock (missing, dead, or unparseable pid). Break it by moving it
+		// aside with rename, which fails with ENOENT if another process already
+		// moved it. But rename is content-blind: between our staleness read above
+		// and this rename, a racing process may have reclaimed and installed a
+		// *live* lock, which we'd move aside. So re-check what we actually grabbed
+		// and, if it names a running process, put it back (via link, which won't
+		// clobber a still-newer claim) and abort. Never blindly discard it.
 		try {
-			renameSync(lockPath, `${tempPath}.stale`);
-			bestEffortUnlink(`${tempPath}.stale`);
+			renameSync(lockPath, grabbedPath);
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
 				throw err;
 			}
 			// Another process already broke the stale lock — fall through and retry.
+		}
+		const grabbedHolder = readLockHolder(grabbedPath);
+		if (grabbedHolder !== undefined && isProcessRunning(grabbedHolder)) {
+			try {
+				linkSync(grabbedPath, lockPath);
+			} catch {
+				// The directory was reclaimed again in the meantime; leave that lock be.
+			}
+			throw new Error(
+				`Backup directory is locked by running process ${grabbedHolder}: ${lockPath}`
+			);
 		}
 
 		// One more attempt. If a racing process reclaimed the directory first, it
@@ -143,6 +167,7 @@ function acquireBackupDirLock(backupDir: string): string {
 		throw new Error(`Backup directory is locked: ${lockPath}`);
 	} finally {
 		bestEffortUnlink(tempPath);
+		bestEffortUnlink(grabbedPath);
 	}
 }
 
