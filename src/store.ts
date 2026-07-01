@@ -1,4 +1,4 @@
-import type { BackupOptions } from './backup.js';
+import { type BackupOptions, withBackupDirLock } from './backup.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
@@ -423,7 +423,14 @@ export class Store {
 	 */
 	async backup(backupDir: string, options?: BackupOptions): Promise<number> {
 		await mkdir(backupDir, { recursive: true });
-		return new Promise((resolve, reject) => this.db.backup(resolve, reject, backupDir, options));
+		// Hold the on-disk lock for the directory: RocksDB has no cross-engine lock,
+		// so a concurrent backup here (even from another process) would corrupt the
+		// staging directory. Rejects if the directory is already locked. See
+		// `withBackupDirLock`.
+		return withBackupDirLock(
+			backupDir,
+			() => new Promise((resolve, reject) => this.db.backup(resolve, reject, backupDir, options))
+		);
 	}
 
 	/**
