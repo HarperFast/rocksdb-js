@@ -1423,6 +1423,14 @@ Creating a backup is an instance method (`db.backup()`) because it needs a live 
 remaining operations act on a backup directory and do not require an open database, so they are
 grouped under the `backups` namespace export.
 
+> **Only one backup per directory may be in-flight at a time.** RocksDB has no cross-engine lock on
+> a backup directory, so the writing operations — `db.backup()`, `backups.delete()`, and
+> `backups.purge()` — take an on-disk lock (a `.backup.lock` file) for the directory. A second
+> writing operation on the same directory, whether from the same process, a `worker_thread`, or a
+> separate process, **rejects** with a "locked" error rather than corrupting the backup; retry once
+> the in-flight operation finishes. Operations on _different_ directories run in parallel, and the
+> read-only operations (`list`, `verify`, `restore`) are not locked.
+
 ```typescript
 import { RocksDatabase, backups } from '@harperfast/rocksdb-js';
 
