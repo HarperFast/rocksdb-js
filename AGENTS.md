@@ -163,6 +163,28 @@ C++ code that needs to emit to JS without a database context should call
    pushes `use_count` past the purge threshold so a racing `CloseDB` skips) while leaving the entry in
    the map — descriptor non-null and `isClosing()` — until `close()` finishes, so a concurrent
    `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close.
+7. **One writable BackupEngine per backup directory (on-disk lock)**: each backup op opens its own
+   short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
+   RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
+   Two writers on the same directory (two `db.backup()` calls, or a `backup` racing a `delete`/`purge`),
+   in the same process or different ones, collide on the per-backup staging dir and both fail,
+   potentially leaving zero usable backups. `withBackupDirLock` in `src/backup.ts` (used by
+   `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer via a `.backup.lock`
+   pidfile at the directory root: it reads any existing lock, **throws** if the named pid is still
+   running (a live lock — note the current process's own pid always reads as running), and otherwise
+   reclaims a stale lock and claims the directory by writing its pid to a `temp_<rand>` file and
+   `link()`-ing it into place (`link`, not `rename`: POSIX `rename` overwrites the target, so two racers
+   would both "win"; `link` fails if it exists). Breaking a stale lock renames it aside and then
+   re-checks the moved file — if it turns out to name a running pid (a racer reclaimed between our read
+   and our rename), it is restored via `link` and we abort — since `rename` is content-blind and would
+   otherwise move a live lock. This closes the two-process reclaim race; a ≥3-process reclaim of the
+   same stale lock still has a sub-millisecond residual window inherent to pidfile locking (only OS
+   advisory locks fully eliminate it). The lock is on disk precisely so it coordinates across
+   processes and `worker_threads` — an in-memory lock cannot. Contention **rejects**; it does not queue,
+   so a caller issuing overlapping backups to one directory must handle the "locked" error (e.g. retry).
+   Read-only ops (`list`, `verify`, a restore's source read) are not locked since concurrent readers are
+   safe; a reader racing a `delete`/`purge` is a caller-managed hazard. Different directories are
+   independent (separate lock files) and run fully in parallel.
 
 ## Debugging native heap corruption
 
