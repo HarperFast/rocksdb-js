@@ -392,6 +392,14 @@ describe('Backups', () => {
 		await expect(backups.list(backupDir)).rejects.toThrow();
 	});
 
+	it('should reject a lock-taking op on a non-existent directory with a clear error', async () => {
+		// delete/purge do not create the directory; the on-disk lock must surface a
+		// clear "does not exist" error rather than a raw ENOENT naming a temp file.
+		const backupDir = join(tempDir(), 'does-not-exist');
+		await expect(backups.delete(backupDir, 1)).rejects.toThrow(/does not exist/);
+		await expect(backups.purge(backupDir, 1)).rejects.toThrow(/does not exist/);
+	});
+
 	it('should reject a concurrent backup to a directory locked by a running process', () =>
 		dbRunner(async ({ db }) => {
 			await writeAll(db, 100);
