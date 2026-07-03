@@ -1,3 +1,4 @@
+import type { BackupStreamOptions } from './backup-stream.js';
 import type { BackupOptions } from './backup.js';
 import { DBI, type DBITransactional } from './dbi.js';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
@@ -175,8 +176,31 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const id = await db.backup('/path/to/backups');
 	 * ```
 	 */
-	backup(backupDir: string, options?: BackupOptions): Promise<number> {
-		return this.store.backup(backupDir, options);
+	backup(backupDir: string, options?: BackupOptions): Promise<number>;
+	/**
+	 * Streams a consistent snapshot of the entire database to a `WritableStream`
+	 * as a tar archive, with no intermediate copy written to disk. Resolves once
+	 * the stream has been fully written and closed.
+	 *
+	 * Backpressure is honored end to end, so a slow consumer (e.g. a network or
+	 * S3 upload) paces the backup rather than buffering it in memory. The archive
+	 * unpacks with any tar tool into a directory that opens as a RocksDB database.
+	 *
+	 * @example
+	 * ```typescript
+	 * const file = await fetch(uploadUrl, { method: 'PUT', body: stream });
+	 * await db.backup(stream); // `stream` is the request's WritableStream
+	 * ```
+	 */
+	backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>;
+	backup(
+		target: string | WritableStream<Uint8Array>,
+		options?: BackupOptions | BackupStreamOptions
+	): Promise<number | void> {
+		if (typeof target === 'string') {
+			return this.store.backup(target, options as BackupOptions);
+		}
+		return this.store.backup(target, options as BackupStreamOptions);
 	}
 
 	/**

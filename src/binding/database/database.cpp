@@ -1665,6 +1665,7 @@ void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addListener", nullptr, AddListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "backup", nullptr, Backup, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "backupStream", nullptr, BackupStream, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
