@@ -34,16 +34,15 @@ const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
  * advisory lock (`flock` on POSIX, `LockFileEx` on Windows) held on a
  * `.backup.lock` file at the directory root.
  *
- * The lock is taken entirely in native code (`tryFileLock`),
- * which opens, locks, and later closes the file's OS handle without ever
- * exposing a descriptor to JS — the addon statically links its own C runtime,
- * so a Node/libuv fd is not usable across that boundary. The kernel owning the
- * lock buys two properties a pidfile cannot:
+ * The lock is taken entirely in native code (`tryFileLock`), which opens,
+ * locks, and later closes the file's OS handle without ever exposing a
+ * descriptor to JS — the addon statically links its own C runtime, so a
+ * Node/libuv fd is not usable across that boundary. The kernel owning the lock
+ * buys two properties a pidfile cannot:
  *
  * - No staleness heuristic. The lock is released when the holder's handle closes
  *   — normal release, crash, `kill -9`, container exit — so there is nothing to
- *   reclaim and no liveness check. Pid liveness in particular is meaningless
- *   across container pid namespaces (every container has a pid 1).
+ *   reclaim and no liveness check.
  * - True cross-context exclusion. The lock conflicts across processes, containers
  *   sharing a volume (same kernel), and `worker_threads`.
  *

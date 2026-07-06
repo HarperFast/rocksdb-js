@@ -1,6 +1,7 @@
 import { fileLockRelease, tryFileLock } from '../src/index.js';
 import { createWorkerBootstrapScript, generateDBPath, terminateWorker } from './lib/util.js';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -79,6 +80,22 @@ describe('File Lock', () => {
 		it('should throw when the parent directory does not exist', () => {
 			const file = join(tempDir(), 'missing', 'lock');
 			expect(() => tryFileLock(file)).toThrow(/does not exist/);
+		});
+
+		it('should acquire a lock on a non-ASCII path', () => {
+			const dir = join(tmpdir(), 'rocksdb-js-tests', 'café-répertoire-バックアップ');
+			mkdirSync(dir, { recursive: true });
+			tempDirs.push(dir);
+			const file = join(dir, '.test.lock');
+
+			const token = tryFileLock(file);
+			try {
+				expect(token).toBeGreaterThan(0);
+				expect(existsSync(file)).toBe(true);
+				expect(tryFileLock(file)).toBe(0);
+			} finally {
+				fileLockRelease(token);
+			}
 		});
 	});
 
