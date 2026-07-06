@@ -18,9 +18,6 @@ namespace rocksdb_js {
 
 namespace {
 
-/** Name of the on-disk lock file placed at the root of a backup directory. */
-constexpr const char* LOCK_FILENAME = ".backup.lock";
-
 #ifdef _WIN32
 using NativeHandle = HANDLE;
 #else
@@ -49,8 +46,8 @@ uint32_t registerHandle(NativeHandle handle) {
 
 } // namespace
 
-uint32_t tryAcquireFileLock(const std::string& backupDir) {
-	std::filesystem::path lockPath = std::filesystem::path(backupDir) / LOCK_FILENAME;
+uint32_t tryAcquireFileLock(const std::string& file) {
+	std::filesystem::path lockPath = file;
 
 #ifdef _WIN32
 	HANDLE handle = ::CreateFileW(
@@ -88,10 +85,10 @@ uint32_t tryAcquireFileLock(const std::string& backupDir) {
 #else
 	int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
 	if (fd < 0) {
-		// O_CREAT can't create the file when the backup directory itself is
-		// missing; surface a clear error rather than a raw ENOENT on the lock file.
+		// O_CREAT can't create the file when the file itself is missing; surface a
+		// clear error rather than a raw ENOENT.
 		if (errno == ENOENT) {
-			throw DBException("Backup directory does not exist: " + backupDir);
+			throw DBException("File does not exist: " + file);
 		}
 		throw DBException(std::string("tryAcquireFileLock: open failed: ") + std::strerror(errno));
 	}

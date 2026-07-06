@@ -996,6 +996,39 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
+## Exclusive File Locking
+
+`rocksdb-js` includes helper functions for creating lock files and releasing them using native APIs.
+This can be used to prevent multiple processes from concurrently accessing a resource. The lock is
+automatically released when the process exits.
+
+### `fileLockTryAcquire(file: string): number`
+
+Attempts to acquire a file lock for the given file. If the lock is available, the function returns `true`
+and the optional `onUnlocked` callback is never called. If the lock is not available, the function
+returns `false` and the `onUnlocked` callback is queued until the lock is released.
+
+```typescript
+import { fileLockTryAcquire } from '@harperfast/rocksdb-js';
+
+const token = fileLockTryAcquire('/path/to/lock');
+if (token) {
+	console.log('lock acquired');
+} else {
+	console.log('lock not available, another process is holding it');
+}
+```
+
+### `fileLockRelease(token: number): void`
+
+Releases the file lock for the given token.
+
+```typescript
+import { fileLockRelease } from '@harperfast/rocksdb-js';
+
+fileLockRelease(token);
+```
+
 ## Verification Table
 
 The verification table is a process-global, fixed-size structure that lets an application cheaply

@@ -1,19 +1,26 @@
 import {
 	nativeBackupDelete,
 	nativeBackupList,
-	nativeBackupLockRelease,
-	nativeBackupLockTryAcquire,
+	fileLockRelease,
+	tryFileLock,
 	nativeBackupPurge,
 	nativeBackupRestore,
 	nativeBackupVerify,
 } from './load-binding.js';
 import { mkdir } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { join } from 'node:path';
 
 /**
- * Acquires the on-disk lock for a backup directory and returns an opaque token
- * to pass to `releaseBackupDirLock`. Throws if another writer currently holds
- * the lock.
+ * Runs `fn` while holding a native file lock for `backupDir`, releasing it when
+ * `fn` settles. Used by the writable-engine operations (`Store.backup`,
+ * `backups.delete`, `backups.purge`). Throws immediately (without running `fn`)
+ * if another writer holds the directory lock.
+ *
+ * Read-only operations (`list`, `verify`, and a restore's source read) use
+ * `BackupEngineReadOnly` and are not locked: concurrent readers are safe.
+ * Running a reader concurrently with a `delete`/`purge` on the same directory is
+ * a caller-managed hazard, matching RocksDB's one-writable-engine-per-dir model.
  *
  * RocksDB only serializes work within a single `BackupEngine` instance and has
  * no lock on the backup directory itself. Two writable engines — in any
@@ -24,7 +31,7 @@ import { resolve as resolvePath } from 'node:path';
  * advisory lock (`flock` on POSIX, `LockFileEx` on Windows) held on a
  * `.backup.lock` file at the directory root.
  *
- * The lock is taken entirely in native code (`nativeBackupLockTryAcquire`),
+ * The lock is taken entirely in native code (`nativeFileLockTryAcquire`),
  * which opens, locks, and later closes the file's OS handle without ever
  * exposing a descriptor to JS — the addon statically links its own C runtime,
  * so a Node/libuv fd is not usable across that boundary. The kernel owning the
@@ -40,40 +47,15 @@ import { resolve as resolvePath } from 'node:path';
  * The lock file is never deleted, only locked and unlocked; an unlocked, empty
  * `.backup.lock` at the directory root is the steady state.
  */
-function acquireBackupDirLock(backupDir: string): number {
-	const token = nativeBackupLockTryAcquire(backupDir);
+export async function withBackupDirLock<T>(backupDir: string, fn: () => Promise<T>): Promise<T> {
+	const token = tryFileLock(join(backupDir, '.backup.lock'));
 	if (token === 0) {
 		throw new Error(`Backup directory is locked: ${backupDir}`);
 	}
-	return token;
-}
-
-/**
- * Releases a lock acquired by `acquireBackupDirLock`. The native side closes the
- * file handle, which releases the kernel lock. The lock file itself is
- * intentionally left in place (see `acquireBackupDirLock`).
- */
-function releaseBackupDirLock(token: number): void {
-	nativeBackupLockRelease(token);
-}
-
-/**
- * Runs `fn` while holding the on-disk lock for `backupDir`, releasing it when
- * `fn` settles. Used by the writable-engine operations (`Store.backup`,
- * `backups.delete`, `backups.purge`). Throws immediately (without running `fn`)
- * if another writer holds the directory lock.
- *
- * Read-only operations (`list`, `verify`, and a restore's source read) use
- * `BackupEngineReadOnly` and are not locked: concurrent readers are safe.
- * Running a reader concurrently with a `delete`/`purge` on the same directory is
- * a caller-managed hazard, matching RocksDB's one-writable-engine-per-dir model.
- */
-export async function withBackupDirLock<T>(backupDir: string, fn: () => Promise<T>): Promise<T> {
-	const token = acquireBackupDirLock(backupDir);
 	try {
 		return await fn();
 	} finally {
-		releaseBackupDirLock(token);
+		fileLockRelease(token);
 	}
 }
 

@@ -53,17 +53,17 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Takes the backup-directory lock by opening and exclusively locking the
- * `.backup.lock` file inside the given directory (see `tryAcquireFileLock`).
- * Returns an opaque non-zero token to pass to `backupLockRelease`, or `0` if
- * another holder currently has the lock. Throws on a hard error.
+ * Takes a file lock by opening and exclusively locking the given file (see
+ * `tryAcquireFileLock`). Returns an opaque non-zero token to pass to
+ * `fileLockRelease`, or `0` if another holder currently has the lock. Throws on
+ * a hard error.
  */
-napi_value BackupLockTryAcquire(napi_env env, napi_callback_info info) {
+napi_value TryFileLock(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
-	NAPI_GET_STRING(argv[0], backupDir, "Expected backup directory path");
+	NAPI_GET_STRING(argv[0], file, "Expected file path");
 
 	try {
-		uint32_t token = tryAcquireFileLock(backupDir);
+		uint32_t token = tryAcquireFileLock(file);
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, token, &result));
 		return result;
@@ -74,10 +74,10 @@ napi_value BackupLockTryAcquire(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Releases a backup-directory lock previously returned by `backupLockTryAcquire`
+ * Releases a file lock previously returned by `tryFileLock`
  * by closing its handle. A no-op for token `0` or an unknown token.
  */
-napi_value BackupLockRelease(napi_env env, napi_callback_info info) {
+napi_value FileLockRelease(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	uint32_t token;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &token));
@@ -206,14 +206,14 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
 
-	// backup directory lock functions (see src/backup.ts)
-	napi_value backupLockTryAcquireFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "backupLockTryAcquire", NAPI_AUTO_LENGTH, BackupLockTryAcquire, nullptr, &backupLockTryAcquireFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "backupLockTryAcquire", backupLockTryAcquireFn));
+	// file lock functions (see src/backup.ts)
+	napi_value tryFileLockFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "tryFileLock", NAPI_AUTO_LENGTH, TryFileLock, nullptr, &tryFileLockFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "tryFileLock", tryFileLockFn));
 
-	napi_value backupLockReleaseFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "backupLockRelease", NAPI_AUTO_LENGTH, BackupLockRelease, nullptr, &backupLockReleaseFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "backupLockRelease", backupLockReleaseFn));
+	napi_value fileLockReleaseFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "fileLockRelease", NAPI_AUTO_LENGTH, FileLockRelease, nullptr, &fileLockReleaseFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "fileLockRelease", fileLockReleaseFn));
 
 	// coolTransactionLogs function
 	napi_value coolTransactionLogsFn;

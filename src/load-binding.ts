@@ -519,22 +519,21 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
 /**
- * Takes the backup-directory lock by opening and exclusively locking the
- * `.backup.lock` file inside `backupDir` (`flock` on POSIX, `LockFileEx` on
- * Windows). Returns an opaque non-zero token to pass to `nativeBackupLockRelease`,
- * or `0` if another holder — in any process, container, or worker thread —
- * currently has it. Throws if `backupDir` is missing or on a hard error. The OS
- * handle is owned entirely in native code (no fd crosses into JS), and the kernel
- * releases the lock when the handle closes, including on process death.
+ * Creates a native file lock using the specified file path (`flock` on POSIX,
+ * `LockFileEx` on Windows). Returns an opaque non-zero token to pass to
+ * `fileLockRelease`, or `0` if another holder — in any process, container, or
+ * worker thread — currently has it. Throws if `file` is missing or on a hard
+ * error. The OS handle is owned entirely in native code (no fd crosses into
+ * JS), and the kernel releases the lock when the handle closes, including on
+ * process death.
  */
-export const nativeBackupLockTryAcquire: (backupDir: string) => number =
-	binding.backupLockTryAcquire;
+export const tryFileLock: (file: string) => number = binding.tryFileLock;
 
 /**
- * Releases a backup-directory lock acquired via `nativeBackupLockTryAcquire`. A
- * no-op for token `0` or an unknown token.
+ * Releases a file lock acquired via `tryFileLock`. A no-op for
+ * token `0` or an unknown token.
  */
-export const nativeBackupLockRelease: (token: number) => void = binding.backupLockRelease;
+export const fileLockRelease: (token: number) => void = binding.fileLockRelease;
 
 // Module-level backup management functions. These operate on a backup directory
 // and do not require an open database. Wrapped by the `backups` namespace in
