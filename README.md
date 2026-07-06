@@ -1002,16 +1002,16 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 This can be used to prevent multiple processes from concurrently accessing a resource. The lock is
 automatically released when the process exits.
 
-### `fileLockTryAcquire(file: string): number`
+### `tryFileLock(file: string): number`
 
 Attempts to acquire a file lock for the given file. If the lock is available, the function returns `true`
 and the optional `onUnlocked` callback is never called. If the lock is not available, the function
 returns `false` and the `onUnlocked` callback is queued until the lock is released.
 
 ```typescript
-import { fileLockTryAcquire } from '@harperfast/rocksdb-js';
+import { tryFileLock } from '@harperfast/rocksdb-js';
 
-const token = fileLockTryAcquire('/path/to/lock');
+const token = tryFileLock('/path/to/lock');
 if (token) {
 	console.log('lock acquired');
 } else {
