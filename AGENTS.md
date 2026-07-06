@@ -171,11 +171,15 @@ C++ code that needs to emit to JS without a database context should call
    potentially leaving zero usable backups. `withBackupDirLock` in `src/backup.ts` (used by
    `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer by holding a non-blocking
    exclusive OS advisory lock on the `.backup.lock` file at the directory root — `flock` on POSIX,
-   `LockFileEx` on Windows, exposed as the binding's `tryLockFile(fd)` and implemented in
-   `tryLockFileExclusive` (`src/binding/core/platform.cpp`). The kernel owns the lock, so there is **no
-   staleness heuristic**: the lock is released when the holder's descriptor closes — normal release,
-   crash, `kill -9`, container exit — and a dead holder can never wedge the directory. (An earlier
-   pidfile design broke in containers: pid liveness is meaningless across pid namespaces — every
+   `LockFileEx` on Windows. The lock is taken **entirely in native code** (`tryAcquireFileLock` /
+   `releaseFileLock` in `src/binding/core/file_lock.cpp`, exposed as the binding's `backupLockTryAcquire`
+   /`backupLockRelease`): native opens the file, locks it, and later closes its OS handle, returning only
+   an opaque uint32 token to JS. **No descriptor crosses the JS boundary** — this is deliberate: the addon
+   statically links its own C runtime (`binding.gyp` `RuntimeLibrary: 0` = `/MT`), so a Node/libuv fd is
+   not resolvable here and `_get_osfhandle` on such an fd fast-fails the process (`0xC0000409` on Windows).
+   The kernel owns the lock, so there is **no staleness heuristic**: it is released when the handle closes —
+   normal release, crash, `kill -9`, container exit — and a dead holder can never wedge the directory. (An
+   earlier pidfile design broke in containers: pid liveness is meaningless across pid namespaces — every
    container has a pid 1 — and pidfile reclaim races are only fully eliminated by OS locks.) The lock
    conflicts per _open file description_, so it excludes across processes, containers sharing a volume
    (same kernel), and `worker_threads` — an in-memory lock cannot. It does **not** coordinate across
@@ -183,14 +187,13 @@ C++ code that needs to emit to JS without a database context should call
    sharing a backup volume can both acquire — a caller-managed hazard the old pidfile also could not
    prevent (its reclaim used host-local pid liveness). On filesystems that don't implement `flock` at
    all (`EOPNOTSUPP`/`ENOTSUP` — e.g. the FUSE/9p mounts behind Docker Desktop bind mounts on
-   macOS/Windows), `tryLockFileExclusive` **degrades to a no-op "acquired"** rather than making backups
-   impossible: cross-writer protection is forfeited only where it was unattainable. The JS side opens
-   the lock fd `O_CLOEXEC` so a spawned child can't inherit the descriptor and hold the flock past
-   release. On Windows the locked byte sits far past EOF because Windows range locks are mandatory and
-   would otherwise block contenders from reading the file. The file's content is diagnostics only
-   (holder pid + hostname, for the contender's error message), and the file is **never unlinked** —
-   unlink-on-release races a concurrent acquirer holding a descriptor to the removed inode (two
-   "winners" on different inodes); an unlocked, empty `.backup.lock` is the steady state. Contention **rejects**; it does not queue, so a caller issuing
+   macOS/Windows), native **degrades to a no-op "acquired"** rather than making backups impossible:
+   cross-writer protection is forfeited only where it was unattainable. Native opens the handle with
+   `O_CLOEXEC` (POSIX) / non-inheritable (Windows) so a spawned child can't inherit it and hold the lock
+   past release. On Windows the locked byte sits far past EOF because Windows range locks are mandatory and
+   would otherwise block a contender from reading the file. The file is **never unlinked** — unlink-on-
+   release races a concurrent acquirer holding a handle to the removed inode (two "winners" on different
+   inodes); an unlocked, empty `.backup.lock` is the steady state. Contention **rejects**; it does not queue, so a caller issuing
    overlapping backups to one directory must handle the "locked" error (e.g. retry). Read-only ops
    (`list`, `verify`, a restore's source read) are not locked since concurrent readers are safe; a
    reader racing a `delete`/`purge` is a caller-managed hazard. Different directories are independent

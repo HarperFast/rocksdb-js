@@ -42,6 +42,7 @@
 				'src/binding/binding.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
+				'src/binding/core/file_lock.cpp',
 				'src/binding/core/verification_table.cpp',
 				'src/binding/napi/event_emitter.cpp',
 				'src/binding/napi/global_events.cpp',
@@ -205,6 +206,7 @@
 			'sources': [
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
+				'src/binding/core/file_lock.cpp',
 				'src/binding/core/verification_table.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
 				'src/binding/transaction_log/transaction_log_recovery.cpp',

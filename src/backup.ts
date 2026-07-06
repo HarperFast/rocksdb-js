@@ -1,30 +1,19 @@
 import {
 	nativeBackupDelete,
 	nativeBackupList,
+	nativeBackupLockRelease,
+	nativeBackupLockTryAcquire,
 	nativeBackupPurge,
 	nativeBackupRestore,
 	nativeBackupVerify,
-	nativeTryLockFile,
 } from './load-binding.js';
-import {
-	closeSync,
-	constants as fsConstants,
-	ftruncateSync,
-	openSync,
-	readFileSync,
-	writeSync,
-} from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { hostname } from 'node:os';
-import { join, resolve as resolvePath } from 'node:path';
-
-/** Name of the on-disk lock file placed at the root of a backup directory. */
-const LOCK_FILENAME = '.backup.lock';
+import { resolve as resolvePath } from 'node:path';
 
 /**
- * Acquires the on-disk lock for a backup directory and returns the open file
- * descriptor holding it (pass it to `releaseBackupDirLock`). Throws if another
- * writer currently holds the lock.
+ * Acquires the on-disk lock for a backup directory and returns an opaque token
+ * to pass to `releaseBackupDirLock`. Throws if another writer currently holds
+ * the lock.
  *
  * RocksDB only serializes work within a single `BackupEngine` instance and has
  * no lock on the backup directory itself. Two writable engines — in any
@@ -32,106 +21,40 @@ const LOCK_FILENAME = '.backup.lock';
  * concurrently race on the per-backup staging directory and both fail,
  * potentially leaving the directory with no usable backup. An in-memory lock
  * cannot prevent this across processes, so the lock lives on disk: a kernel
- * advisory lock (`flock` on POSIX, `LockFileEx` on Windows) held on the
+ * advisory lock (`flock` on POSIX, `LockFileEx` on Windows) held on a
  * `.backup.lock` file at the directory root.
  *
- * The kernel owning the lock buys two properties a pidfile cannot provide:
+ * The lock is taken entirely in native code (`nativeBackupLockTryAcquire`),
+ * which opens, locks, and later closes the file's OS handle without ever
+ * exposing a descriptor to JS — the addon statically links its own C runtime,
+ * so a Node/libuv fd is not usable across that boundary. The kernel owning the
+ * lock buys two properties a pidfile cannot:
  *
- * - No staleness heuristic. The lock is released when its holder's descriptor
- *   closes — normal release, crash, `kill -9`, container exit — so there is
- *   nothing to reclaim and no liveness check. Pid liveness in particular is
- *   meaningless across container pid namespaces (every container has a pid 1),
- *   so the lock must not depend on it.
- * - True cross-context exclusion. The lock conflicts across processes,
- *   containers sharing a volume (same kernel), and `worker_threads` — each
- *   acquisition opens its own file description, and the lock is per open file
- *   description, not per process.
+ * - No staleness heuristic. The lock is released when the holder's handle closes
+ *   — normal release, crash, `kill -9`, container exit — so there is nothing to
+ *   reclaim and no liveness check. Pid liveness in particular is meaningless
+ *   across container pid namespaces (every container has a pid 1).
+ * - True cross-context exclusion. The lock conflicts across processes, containers
+ *   sharing a volume (same kernel), and `worker_threads`.
  *
- * The lock file is never deleted, only locked and unlocked: unlink-on-release
- * would race a concurrent acquirer that already holds a descriptor to the
- * removed inode, leaving two "winners" on different inodes. An unlocked, empty
- * `.backup.lock` at the directory root is the steady state. The file content
- * is purely diagnostic: the holder writes its pid and hostname so a contender
- * can report who owns the directory.
+ * The lock file is never deleted, only locked and unlocked; an unlocked, empty
+ * `.backup.lock` at the directory root is the steady state.
  */
 function acquireBackupDirLock(backupDir: string): number {
-	const lockPath = join(backupDir, LOCK_FILENAME);
-
-	// Open read-write, creating the file if missing but never truncating it, so
-	// a live holder's diagnostics aren't clobbered before the lock is acquired.
-	let fd: number;
-	try {
-		// O_CLOEXEC so a child process this process may spawn while a backup runs
-		// does not inherit the lock fd: an inherited descriptor shares the open
-		// file description and would keep the flock held past our release, wedging
-		// the directory with no stale-reclaim path. (`?? 0` for Windows, where the
-		// constant is absent and CRT descriptors are non-inheritable anyway.)
-		fd = openSync(
-			lockPath,
-			fsConstants.O_RDWR |
-				fsConstants.O_CREAT |
-				((fsConstants as { O_CLOEXEC?: number }).O_CLOEXEC ?? 0)
-		);
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-			// The backup directory doesn't exist. Surface a clear error rather than a
-			// raw ENOENT naming the lock file.
-			throw new Error(`Backup directory does not exist: ${backupDir}`);
-		}
-		throw err;
+	const token = nativeBackupLockTryAcquire(backupDir);
+	if (token === 0) {
+		throw new Error(`Backup directory is locked: ${backupDir}`);
 	}
-
-	let locked = false;
-	try {
-		locked = nativeTryLockFile(fd);
-		if (!locked) {
-			let holder = '';
-			try {
-				// Diagnostics only, and the file may have been written by a foreign
-				// tool — cap the length so an oversized/garbage lock file can't bloat
-				// the error message or downstream logs.
-				holder = readFileSync(lockPath, 'utf8').trim().slice(0, 100);
-			} catch {
-				// Holder info is diagnostics only; the failed lock is what matters.
-			}
-			throw new Error(`Backup directory is locked${holder ? ` by ${holder}` : ''}: ${lockPath}`);
-		}
-
-		// Record who holds the lock — read by a contender to build its error
-		// message. Best-effort: the kernel lock is already held either way.
-		try {
-			ftruncateSync(fd, 0);
-			writeSync(fd, `pid ${process.pid} on ${hostname()}`, 0);
-		} catch {
-			// Diagnostics only.
-		}
-		return fd;
-	} finally {
-		if (!locked) {
-			try {
-				closeSync(fd);
-			} catch {
-				// Nothing useful to do with a failed close of an unlocked descriptor.
-			}
-		}
-	}
+	return token;
 }
 
 /**
- * Releases a lock acquired by `acquireBackupDirLock` by closing the descriptor —
- * the close is what releases the kernel lock. Best-effort: never throws, so it
- * can't mask the result of the operation it was guarding. The lock file itself
- * is intentionally left in place (see `acquireBackupDirLock`), and its
- * diagnostic content is left as-is: the next acquirer truncates and rewrites it,
- * and any contender reading it in between treats it as a best-effort hint (it
- * may name a just-released holder).
+ * Releases a lock acquired by `acquireBackupDirLock`. The native side closes the
+ * file handle, which releases the kernel lock. The lock file itself is
+ * intentionally left in place (see `acquireBackupDirLock`).
  */
-function releaseBackupDirLock(lockFd: number): void {
-	try {
-		closeSync(lockFd);
-	} catch {
-		// The kernel releases the lock even on a failed close; nothing to do.
-	}
+function releaseBackupDirLock(token: number): void {
+	nativeBackupLockRelease(token);
 }
 
 /**
@@ -146,11 +69,11 @@ function releaseBackupDirLock(lockFd: number): void {
  * a caller-managed hazard, matching RocksDB's one-writable-engine-per-dir model.
  */
 export async function withBackupDirLock<T>(backupDir: string, fn: () => Promise<T>): Promise<T> {
-	const lockFd = acquireBackupDirLock(backupDir);
+	const token = acquireBackupDirLock(backupDir);
 	try {
 		return await fn();
 	} finally {
-		releaseBackupDirLock(lockFd);
+		releaseBackupDirLock(token);
 	}
 }
 
