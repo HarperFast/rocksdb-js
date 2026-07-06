@@ -1,4 +1,5 @@
 #include "database/backup.h"
+#include "database/backup_transaction_logs.h"
 #include "database/database.h"
 #include "database/db_handle.h"
 #include "napi/async.h"
@@ -7,6 +8,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/backup_engine.h"
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +30,9 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	rocksdb::CreateBackupOptions createOptions;
 	std::string appMetadata;
 	rocksdb::BackupID backupId = 0;
+	// When true, snapshot the transaction log store into
+	// `<backupDir>/transaction_logs/<backupId>/` after the RocksDB backup.
+	bool backupTransactionLogs = false;
 
 	AsyncBackupState(
 		napi_env env,
@@ -182,6 +187,9 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(getProperty(env, options, "sync", engineOptions.sync));
 	NAPI_STATUS_THROWS(getProperty(env, options, "maxBackgroundOperations", engineOptions.max_background_operations));
 
+	bool backupTransactionLogs = false;
+	NAPI_STATUS_THROWS(getProperty(env, options, "transactionLogs", backupTransactionLogs));
+
 	auto state = new AsyncBackupState(
 		env,
 		*dbHandle,
@@ -190,6 +198,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		std::move(createOptions),
 		std::move(appMetadata)
 	);
+	state->backupTransactionLogs = backupTransactionLogs;
 
 	return queueBackupWork(
 		env,
@@ -217,6 +226,16 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 				}
 				delete engine;
 				state->status = s;
+
+				// After a successful RocksDB backup, snapshot the transaction logs
+				// into transaction_logs/<backupId>/ (all-or-nothing; not incremental).
+				if (state->status.ok() && state->backupTransactionLogs) {
+					state->status = backupTransactionLogsToDir(
+						state->descriptor.get(),
+						std::filesystem::path(state->engineOptions.backup_dir) / "transaction_logs" /
+							std::to_string(state->backupId)
+					);
+				}
 			}
 			state->signalExecuteCompleted();
 		},

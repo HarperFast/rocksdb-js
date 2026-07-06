@@ -249,14 +249,14 @@ export type NativeDatabase = {
 		backupDir: string,
 		options?: BackupOptions
 	): void;
-	// `emit` is invoked once per file header (kind 0: name, size) and once per
-	// payload chunk (kind 1: Buffer). It must return a promise; native awaits it
-	// before producing the next event (backpressure), and a rejection aborts.
+	// `emit` is invoked once per file header (kind 0: name, size, mtime) and once
+	// per payload chunk (kind 1: Buffer). It must return a promise; native awaits
+	// it before producing the next event (backpressure), and a rejection aborts.
 	backupStream(
 		resolve: ResolveCallback<void>,
 		reject: RejectCallback,
-		emit: (kind: number, data: string | Uint8Array, size: number) => Promise<void>,
-		options?: { flushBeforeBackup?: boolean }
+		emit: (kind: number, data: string | Uint8Array, size: number, mtime: number) => Promise<void>,
+		options?: { flushBeforeBackup?: boolean; transactionLogs?: boolean }
 	): void;
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;

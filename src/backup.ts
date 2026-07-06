@@ -7,9 +7,12 @@ import {
 	nativeBackupRestore,
 	nativeBackupVerify,
 } from './load-binding.js';
-import { mkdir } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { join, resolve as resolvePath } from 'node:path';
+
+/** Subdirectory (under a backup directory) holding per-backup transaction log snapshots. */
+const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
 
 /**
  * Runs `fn` while holding a native file lock for `backupDir`, releasing it when
@@ -31,7 +34,7 @@ import { join } from 'node:path';
  * advisory lock (`flock` on POSIX, `LockFileEx` on Windows) held on a
  * `.backup.lock` file at the directory root.
  *
- * The lock is taken entirely in native code (`nativeFileLockTryAcquire`),
+ * The lock is taken entirely in native code (`tryFileLock`),
  * which opens, locks, and later closes the file's OS handle without ever
  * exposing a descriptor to JS — the addon statically links its own C runtime,
  * so a Node/libuv fd is not usable across that boundary. The kernel owning the
@@ -106,6 +109,15 @@ export interface BackupOptions {
 	 * Number of background threads used to copy files. Defaults to `1`.
 	 */
 	maxBackgroundOperations?: number;
+
+	/**
+	 * Also snapshot the transaction log store into
+	 * `<backupDir>/transaction_logs/<backupId>/`. Defaults to `false`. This is an
+	 * all-or-nothing snapshot per backup (not incremental); `backups.delete()` and
+	 * `backups.purge()` remove the corresponding log snapshots, and
+	 * `backups.restore()` restores them into the database directory.
+	 */
+	transactionLogs?: boolean;
 }
 
 /**
@@ -164,6 +176,87 @@ export interface BackupInfo {
 }
 
 /**
+ * Removes `<backupDir>/transaction_logs/<id>` subtrees whose backup id no longer
+ * corresponds to a surviving backup. Called after a `purge` (which holds the
+ * backup-dir lock); a no-op when no transaction logs were backed up. Self-healing:
+ * it drops every log subtree without a live backup. Note the surviving set comes
+ * from `nativeBackupList`, which omits corrupt backups — a still-present but
+ * corrupt backup's logs may be pruned (acceptable: it cannot be restored anyway).
+ */
+async function pruneOrphanedTransactionLogs(backupDir: string): Promise<void> {
+	const logsRoot = join(backupDir, TRANSACTION_LOGS_DIRNAME);
+	let ids: string[];
+	try {
+		ids = await readdir(logsRoot);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+			return; // no transaction logs were backed up
+		}
+		throw err;
+	}
+
+	const list = await new Promise<BackupInfo[]>((resolve, reject) =>
+		nativeBackupList(resolve, reject, backupDir)
+	);
+	const surviving = new Set(list.map((info) => String(info.backupId)));
+
+	await Promise.all(
+		ids
+			.filter((id) => !surviving.has(id))
+			.map((id) => rm(join(logsRoot, id), { recursive: true, force: true }))
+	);
+}
+
+/**
+ * Restores the transaction log snapshot for the restored backup into
+ * `<dbDir>/transaction_logs/`, wiping the destination first so that restoring an
+ * older backup over a newer one cannot leave stale (newer) log files behind.
+ *
+ * Only acts when THIS backup actually captured logs: if the restored id has no
+ * snapshot, the destination is left untouched. Wiping unconditionally would
+ * destroy on-disk logs that a mixed-mode (`transactionLogs:false`) backup never
+ * managed.
+ *
+ * Offline only: the files are picked up when the database is next opened. mtimes
+ * are preserved because the store derives file age (rotation/retention) from
+ * mtime — a fresh mtime would break retention.
+ */
+async function restoreTransactionLogs(
+	backupDir: string,
+	dbDir: string,
+	backupId?: number
+): Promise<void> {
+	const logsRoot = join(backupDir, TRANSACTION_LOGS_DIRNAME);
+	if (!existsSync(logsRoot)) {
+		return; // this backup directory has no transaction log snapshots
+	}
+
+	// Resolve the restored backup id (the latest, when unspecified).
+	let id = backupId;
+	if (id === undefined) {
+		const list = await new Promise<BackupInfo[]>((resolve, reject) =>
+			nativeBackupList(resolve, reject, backupDir)
+		);
+		if (list.length === 0) {
+			return;
+		}
+		id = Math.max(...list.map((info) => info.backupId));
+	}
+
+	const logsSrc = join(logsRoot, String(id));
+	if (!existsSync(logsSrc)) {
+		// The restored backup captured no logs — do not touch the destination's
+		// existing transaction logs.
+		return;
+	}
+
+	// This backup has logs: wipe the destination, then restore its snapshot.
+	const logsDest = join(dbDir, TRANSACTION_LOGS_DIRNAME);
+	await rm(logsDest, { recursive: true, force: true });
+	await cp(logsSrc, logsDest, { recursive: true, preserveTimestamps: true });
+}
+
+/**
  * Backup management operations that act on a backup directory and do not
  * require an open database. To create a backup, use the `db.backup()` instance
  * method instead (it needs a live database for a consistent snapshot).
@@ -197,13 +290,17 @@ export const backups = {
 			await mkdir(walDir, { recursive: true });
 		}
 
-		return new Promise((resolve, reject) =>
+		await new Promise<void>((resolve, reject) =>
 			nativeBackupRestore(resolve, reject, backupDir, dbDir, walDir, {
 				backupId: options?.backupId,
 				keepLogFiles: options?.keepLogFiles,
 				mode: options?.mode,
 			})
 		);
+
+		// Restore the transaction log snapshot (if this backup included one). Wipes
+		// the destination first so an older restore leaves no newer log stragglers.
+		await restoreTransactionLogs(backupDir, dbDir, options?.backupId);
 	},
 
 	/**
@@ -218,22 +315,40 @@ export const backups = {
 	 * removed once no remaining backup references them.
 	 */
 	async delete(backupDir: string, backupId: number): Promise<void> {
-		return withBackupDirLock(
-			backupDir,
-			() =>
-				new Promise((resolve, reject) => nativeBackupDelete(resolve, reject, backupDir, backupId))
-		);
+		return withBackupDirLock(backupDir, async () => {
+			await new Promise<void>((resolve, reject) =>
+				nativeBackupDelete(resolve, reject, backupDir, backupId)
+			);
+			// Remove only this backup's own log snapshot: precise (no dependence on
+			// the backup listing, which omits corrupt backups) and best-effort (the
+			// backup is already gone, so a cleanup failure must not fail the delete).
+			try {
+				await rm(join(backupDir, TRANSACTION_LOGS_DIRNAME, String(backupId)), {
+					recursive: true,
+					force: true,
+				});
+			} catch {
+				// Best-effort: at worst an orphaned subtree remains for a later purge.
+			}
+		});
 	},
 
 	/**
 	 * Deletes all but the newest `keepCount` backups.
 	 */
 	async purge(backupDir: string, keepCount: number): Promise<void> {
-		return withBackupDirLock(
-			backupDir,
-			() =>
-				new Promise((resolve, reject) => nativeBackupPurge(resolve, reject, backupDir, keepCount))
-		);
+		return withBackupDirLock(backupDir, async () => {
+			await new Promise<void>((resolve, reject) =>
+				nativeBackupPurge(resolve, reject, backupDir, keepCount)
+			);
+			// Best-effort: the backups are already purged, so a log-cleanup failure
+			// must not fail the purge.
+			try {
+				await pruneOrphanedTransactionLogs(backupDir);
+			} catch {
+				// Best-effort orphan cleanup.
+			}
+		});
 	},
 
 	/**

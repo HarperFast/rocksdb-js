@@ -172,6 +172,33 @@ struct TransactionLogStoreStats {
 	X("txnlog.bytesWritten", bytesWritten) \
 	X("txnlog.replayGapBytes", replayGapBytes)
 
+/**
+ * A single file to include in a transaction log backup, produced by
+ * `TransactionLogStore::snapshotForBackup()`. `byteLimit` is the number of bytes
+ * to copy from the start of the file — for the current (actively-appended) log
+ * file this is the atomic `size` captured at snapshot time, a stable and
+ * complete prefix (the log is append-only and `size` is bumped only after the
+ * bytes land). `mtime` is the source's on-disk modified time and MUST be
+ * preserved on the destination: the store derives file age (rotation/retention)
+ * from mtime, so a restored file with a fresh mtime would break retention.
+ * `immutable` is true for rotated log files, which are never rewritten and so
+ * can be hard-linked instead of copied.
+ *
+ * `inlineContents`, when non-empty, holds the file's bytes captured at snapshot
+ * time; consumers write these instead of re-reading `sourcePath`. This is used
+ * for `txn.state`, which is rewritten in place (not appended) — re-reading it at
+ * copy time could observe a newer flushed position that points past the extents
+ * captured for the log files, so its content is frozen here.
+ */
+struct TransactionLogBackupEntry final {
+	std::string relativeName;              // e.g. "3.txnlog" or "txn.state"
+	std::filesystem::path sourcePath;      // absolute path to the live file
+	uint64_t byteLimit;                    // bytes to copy from offset 0
+	std::filesystem::file_time_type mtime; // source mtime, to preserve on the copy
+	bool immutable;                        // rotated log file → safe to hard-link
+	std::string inlineContents;            // if non-empty, use these bytes verbatim
+};
+
 struct TransactionLogStore final {
 	/**
 	 * The name of the transaction log store.
@@ -434,6 +461,15 @@ struct TransactionLogStore final {
 	 * Reads and returns the last flushed position from the txn.state file.
 	 */
 	LogPosition getLastFlushedPosition();
+
+	/**
+	 * Returns a point-in-time snapshot of the files that make up this store, for
+	 * backup. Enumerates the sequence files under `dataSetsMutex` (holding
+	 * shared_ptrs so they outlive the lock), capturing each file's current `size`
+	 * as the byte limit and its on-disk mtime, plus the `txn.state` side file if
+	 * present. Rotated files (sequence < current) are marked `immutable`.
+	 */
+	std::vector<TransactionLogBackupEntry> snapshotForBackup();
 
 	/**
 	 * Fills `out` with a point-in-time snapshot of this store's statistics

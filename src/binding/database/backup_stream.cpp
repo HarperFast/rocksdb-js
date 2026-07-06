@@ -1,3 +1,5 @@
+#include "core/platform.h"
+#include "database/backup_transaction_logs.h"
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
@@ -46,6 +48,7 @@ struct StreamEvent {
 	uint32_t kind;
 	std::string name;            // File: tar entry name
 	uint64_t fileSize = 0;       // File: declared size
+	int64_t mtime = 0;           // File: mtime (epoch seconds) for the tar header
 	const uint8_t* data = nullptr; // Chunk: borrowed payload pointer
 	size_t size = 0;             // Chunk: borrowed payload length
 };
@@ -82,6 +85,9 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	std::shared_ptr<DBDescriptor> descriptor;
 	napi_threadsafe_function tsfn = nullptr;
 	bool flushBeforeBackup = false;
+	// When true, append the transaction log snapshot as tar entries under
+	// `transaction_logs/<store>/` after the DB's live files.
+	bool backupTransactionLogs = false;
 
 	// Backpressure handshake between the worker thread (producer) and JS thread
 	// (consumer). Exactly one event is in flight at a time.
@@ -232,17 +238,19 @@ void emitTrampoline(napi_env env, napi_value emitFn, void* context, void* data) 
 	}
 
 	napi_value undefined;
-	napi_value argv[3];
+	napi_value argv[4];
 	if (::napi_get_undefined(env, &undefined) != napi_ok ||
 		::napi_create_uint32(env, ev->kind, &argv[0]) != napi_ok) {
 		state->signalAck(false, "Backup stream failed to build event");
 		return;
 	}
+	argv[3] = undefined; // File events overwrite with the mtime; chunks leave it undefined.
 
 	if (ev->kind == kEventFile) {
-		// File size may exceed uint32; pass as a double (JS number; exact to 2^53).
+		// File size/mtime may exceed uint32; pass as doubles (JS number; exact to 2^53).
 		if (::napi_create_string_utf8(env, ev->name.c_str(), ev->name.size(), &argv[1]) != napi_ok ||
-			::napi_create_double(env, static_cast<double>(ev->fileSize), &argv[2]) != napi_ok) {
+			::napi_create_double(env, static_cast<double>(ev->fileSize), &argv[2]) != napi_ok ||
+			::napi_create_double(env, static_cast<double>(ev->mtime), &argv[3]) != napi_ok) {
 			state->signalAck(false, "Backup stream failed to build file event");
 			return;
 		}
@@ -277,7 +285,7 @@ void emitTrampoline(napi_env env, napi_value emitFn, void* context, void* data) 
 	}
 
 	napi_value promise;
-	if (::napi_call_function(env, undefined, emitFn, 3, argv, &promise) != napi_ok) {
+	if (::napi_call_function(env, undefined, emitFn, 4, argv, &promise) != napi_ok) {
 		napi_value pending;
 		::napi_get_and_clear_last_exception(env, &pending);
 		state->signalAck(false, "Backup stream emit callback threw");
@@ -336,6 +344,54 @@ struct FileDeletionGuard {
 		}
 	}
 };
+
+/** Epoch seconds for a filesystem mtime, for the tar header. Delegates to the
+ *  shared, platform-correct conversion rather than re-deriving the clock offset. */
+int64_t fileTimeToEpochSeconds(std::filesystem::file_time_type ft) {
+	return std::chrono::duration_cast<std::chrono::seconds>(
+		convertFileTimeToSystemTime(ft).time_since_epoch()
+	).count();
+}
+
+/**
+ * Streams `[0, byteLimit)` of the file at `path` as chunk events. The caller
+ * must have already emitted the matching file-header event. Returns non-OK on a
+ * read error or a consumer abort.
+ */
+rocksdb::Status streamFilePrefix(
+	AsyncBackupStreamState* state,
+	rocksdb::Env* env,
+	const std::string& path,
+	uint64_t byteLimit,
+	std::vector<char>& buffer
+) {
+	std::unique_ptr<rocksdb::SequentialFile> seqFile;
+	rocksdb::Status s = env->NewSequentialFile(path, &seqFile, rocksdb::EnvOptions());
+	if (!s.ok()) {
+		return s;
+	}
+	uint64_t remaining = byteLimit;
+	while (remaining > 0) {
+		size_t toRead = static_cast<size_t>(std::min<uint64_t>(remaining, kChunkSize));
+		rocksdb::Slice result;
+		s = seqFile->Read(toRead, &result, buffer.data());
+		if (!s.ok()) {
+			return s;
+		}
+		if (result.empty()) {
+			return rocksdb::Status::Corruption("File shorter than recorded size", path);
+		}
+		auto ev = std::make_unique<StreamEvent>();
+		ev->kind = kEventChunk;
+		ev->data = reinterpret_cast<const uint8_t*>(result.data());
+		ev->size = result.size();
+		if (!state->emit(std::move(ev))) {
+			return rocksdb::Status::Aborted(state->abortMessage);
+		}
+		remaining -= result.size();
+	}
+	return rocksdb::Status::OK();
+}
 
 /**
  * The actual work, run on the worker thread. Enumerates the live files via
@@ -410,35 +466,70 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 			continue;
 		}
 
-		// Read the file and stream exactly `file.size` bytes. For the manifest
-		// `trim_to_size` is set and the file on disk may be longer; stopping at
-		// `file.size` is what makes the copy consistent.
+		// Stream exactly `file.size` bytes. For the manifest `trim_to_size` is set
+		// and the file on disk may be longer; stopping at `file.size` is what makes
+		// the copy consistent. (Shared with the transaction-log path below.)
 		std::string path = file.directory + "/" + file.relative_filename;
-		std::unique_ptr<rocksdb::SequentialFile> seqFile;
-		s = env->NewSequentialFile(path, &seqFile, rocksdb::EnvOptions());
+		s = streamFilePrefix(state, env, path, file.size, buffer);
 		if (!s.ok()) {
 			return s;
 		}
+	}
 
-		uint64_t remaining = file.size;
-		while (remaining > 0) {
-			size_t toRead = static_cast<size_t>(std::min<uint64_t>(remaining, kChunkSize));
-			rocksdb::Slice result;
-			s = seqFile->Read(toRead, &result, buffer.data());
-			if (!s.ok()) {
-				return s;
+	// Append the transaction log snapshot (if requested) as tar entries under
+	// transaction_logs/<store>/<file>. The current file is bounded by its
+	// captured size; each entry carries its real mtime (tar restores it on
+	// extract) so the restored store's age-based rotation/retention stays correct.
+	if (state->backupTransactionLogs) {
+		for (const auto& named : collectTransactionLogBackupEntries(state->descriptor.get())) {
+			std::string tarPath = "transaction_logs/" + named.storeName + "/" + named.file.relativeName;
+
+			if (!named.file.inlineContents.empty()) {
+				// Inline bytes (txn.state): emit the header + the captured bytes.
+				const std::string& contents = named.file.inlineContents;
+				auto fileEv = std::make_unique<StreamEvent>();
+				fileEv->kind = kEventFile;
+				fileEv->name = tarPath;
+				fileEv->fileSize = contents.size();
+				fileEv->mtime = fileTimeToEpochSeconds(named.file.mtime);
+				if (!state->emit(std::move(fileEv))) {
+					return rocksdb::Status::Aborted(state->abortMessage);
+				}
+				for (size_t offset = 0; offset < contents.size();) {
+					size_t n = std::min(kChunkSize, contents.size() - offset);
+					auto chunkEv = std::make_unique<StreamEvent>();
+					chunkEv->kind = kEventChunk;
+					chunkEv->data = reinterpret_cast<const uint8_t*>(contents.data()) + offset;
+					chunkEv->size = n;
+					if (!state->emit(std::move(chunkEv))) {
+						return rocksdb::Status::Aborted(state->abortMessage);
+					}
+					offset += n;
+				}
+				continue;
 			}
-			if (result.empty()) {
-				return rocksdb::Status::Corruption("Live file shorter than reported size", path);
+
+			// A concurrent retention purge can unlink a rotated file between the
+			// snapshot and now. Skip it (an expiring file dropped from the backup is
+			// fine) — and skip BEFORE emitting a header we could not then fulfill.
+			std::error_code existsEc;
+			if (!std::filesystem::exists(named.file.sourcePath, existsEc) || existsEc) {
+				continue;
 			}
-			auto ev = std::make_unique<StreamEvent>();
-			ev->kind = kEventChunk;
-			ev->data = reinterpret_cast<const uint8_t*>(result.data());
-			ev->size = result.size();
-			if (!state->emit(std::move(ev))) {
+
+			auto fileEv = std::make_unique<StreamEvent>();
+			fileEv->kind = kEventFile;
+			fileEv->name = tarPath;
+			fileEv->fileSize = named.file.byteLimit;
+			fileEv->mtime = fileTimeToEpochSeconds(named.file.mtime);
+			if (!state->emit(std::move(fileEv))) {
 				return rocksdb::Status::Aborted(state->abortMessage);
 			}
-			remaining -= result.size();
+			rocksdb::Status ls =
+				streamFilePrefix(state, env, named.file.sourcePath.string(), named.file.byteLimit, buffer);
+			if (!ls.ok()) {
+				return ls;
+			}
 		}
 	}
 
@@ -531,6 +622,9 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	bool flushBeforeBackup = (*dbHandle)->disableWAL;
 	NAPI_STATUS_THROWS(getProperty(env, options, "flushBeforeBackup", flushBeforeBackup));
 
+	bool backupTransactionLogs = false;
+	NAPI_STATUS_THROWS(getProperty(env, options, "transactionLogs", backupTransactionLogs));
+
 	// Claim an in-flight operation BEFORE queuing so destroy()/shutdown()/
 	// PurgeAll() teardown paths wait for this (potentially long) stream. Mirrors
 	// Database::CreateCheckpoint.
@@ -554,6 +648,7 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncBackupStreamState(env, *dbHandle, descriptor, flushBeforeBackup);
+	state->backupTransactionLogs = backupTransactionLogs;
 
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
