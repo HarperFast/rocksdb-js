@@ -211,6 +211,7 @@
 				'test/native/event_emitter_stub.cc',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/encoding_test.cc',
+				'test/native/file_lock_test.cc',
 				'test/native/json_test.cc',
 				'test/native/transaction_log_madvise_test.cc',
 				'test/native/transaction_log_mmap_test.cc',
