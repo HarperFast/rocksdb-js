@@ -44,10 +44,29 @@ uint32_t registerHandle(NativeHandle handle) {
 	return token;
 }
 
+#ifdef _WIN32
+// std::filesystem::path built from a std::string decodes it via the active code
+// page (ANSI), not UTF-8. Node strings crossing N-API are always UTF-8, so a
+// file path with non-ASCII characters would otherwise be corrupted on Windows.
+std::wstring utf8ToWide(const std::string& utf8) {
+	if (utf8.empty()) {
+		return L"";
+	}
+	int size = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+	std::wstring wide(size, L'\0');
+	::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), size);
+	return wide;
+}
+#endif
+
 } // namespace
 
 uint32_t tryAcquireFileLock(const std::string& file) {
+#ifdef _WIN32
+	std::filesystem::path lockPath = utf8ToWide(file);
+#else
 	std::filesystem::path lockPath = file;
+#endif
 
 #ifdef _WIN32
 	HANDLE handle = ::CreateFileW(
@@ -62,7 +81,7 @@ uint32_t tryAcquireFileLock(const std::string& file) {
 	if (handle == INVALID_HANDLE_VALUE) {
 		DWORD error = ::GetLastError();
 		if (error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND) {
-			throw DBException("Backup directory does not exist: " + backupDir);
+			throw DBException("File does not exist: " + file);
 		}
 		throw DBException("tryAcquireFileLock: CreateFile failed with error " + std::to_string(error));
 	}
