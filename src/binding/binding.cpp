@@ -52,6 +52,28 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Takes a non-blocking exclusive lock on an open file descriptor via
+ * `tryLockFileExclusive` (flock / LockFileEx). Returns `true` if the lock was
+ * acquired, `false` if another open file description holds it. The lock is
+ * released by closing the descriptor — there is no unlock export.
+ */
+napi_value TryLockFile(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t fd;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &fd));
+
+	try {
+		bool locked = tryLockFileExclusive(fd);
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, locked, &result));
+		return result;
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+}
+
+/**
  * Advises the kernel that the file-backed pages of every mapped transaction log
  * are cold (MADV_COLD), so they are reclaimed first under memory pressure. Meant
  * to be called periodically from a single host-driven timer (see
@@ -171,6 +193,11 @@ NAPI_MODULE_INIT() {
 	napi_value currentThreadIdFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
+
+	// tryLockFile function (backup directory lock; see src/backup.ts)
+	napi_value tryLockFileFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "tryLockFile", NAPI_AUTO_LENGTH, TryLockFile, nullptr, &tryLockFileFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "tryLockFile", tryLockFileFn));
 
 	// coolTransactionLogs function
 	napi_value coolTransactionLogsFn;

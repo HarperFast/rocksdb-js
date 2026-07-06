@@ -163,28 +163,38 @@ C++ code that needs to emit to JS without a database context should call
    pushes `use_count` past the purge threshold so a racing `CloseDB` skips) while leaving the entry in
    the map — descriptor non-null and `isClosing()` — until `close()` finishes, so a concurrent
    `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close.
-7. **One writable BackupEngine per backup directory (on-disk lock)**: each backup op opens its own
-   short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
+7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
+   own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
    Two writers on the same directory (two `db.backup()` calls, or a `backup` racing a `delete`/`purge`),
    in the same process or different ones, collide on the per-backup staging dir and both fail,
    potentially leaving zero usable backups. `withBackupDirLock` in `src/backup.ts` (used by
-   `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer via a `.backup.lock`
-   pidfile at the directory root: it reads any existing lock, **throws** if the named pid is still
-   running (a live lock — note the current process's own pid always reads as running), and otherwise
-   reclaims a stale lock and claims the directory by writing its pid to a `temp_<rand>` file and
-   `link()`-ing it into place (`link`, not `rename`: POSIX `rename` overwrites the target, so two racers
-   would both "win"; `link` fails if it exists). Breaking a stale lock renames it aside and then
-   re-checks the moved file — if it turns out to name a running pid (a racer reclaimed between our read
-   and our rename), it is restored via `link` and we abort — since `rename` is content-blind and would
-   otherwise move a live lock. This closes the two-process reclaim race; a ≥3-process reclaim of the
-   same stale lock still has a sub-millisecond residual window inherent to pidfile locking (only OS
-   advisory locks fully eliminate it). The lock is on disk precisely so it coordinates across
-   processes and `worker_threads` — an in-memory lock cannot. Contention **rejects**; it does not queue,
-   so a caller issuing overlapping backups to one directory must handle the "locked" error (e.g. retry).
-   Read-only ops (`list`, `verify`, a restore's source read) are not locked since concurrent readers are
-   safe; a reader racing a `delete`/`purge` is a caller-managed hazard. Different directories are
-   independent (separate lock files) and run fully in parallel.
+   `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer by holding a non-blocking
+   exclusive OS advisory lock on the `.backup.lock` file at the directory root — `flock` on POSIX,
+   `LockFileEx` on Windows, exposed as the binding's `tryLockFile(fd)` and implemented in
+   `tryLockFileExclusive` (`src/binding/core/platform.cpp`). The kernel owns the lock, so there is **no
+   staleness heuristic**: the lock is released when the holder's descriptor closes — normal release,
+   crash, `kill -9`, container exit — and a dead holder can never wedge the directory. (An earlier
+   pidfile design broke in containers: pid liveness is meaningless across pid namespaces — every
+   container has a pid 1 — and pidfile reclaim races are only fully eliminated by OS locks.) The lock
+   conflicts per _open file description_, so it excludes across processes, containers sharing a volume
+   (same kernel), and `worker_threads` — an in-memory lock cannot. It does **not** coordinate across
+   hosts: `flock` on many network filesystems (NFS `local_lock`, CIFS, 9p) is node-local, so two hosts
+   sharing a backup volume can both acquire — a caller-managed hazard the old pidfile also could not
+   prevent (its reclaim used host-local pid liveness). On filesystems that don't implement `flock` at
+   all (`EOPNOTSUPP`/`ENOTSUP` — e.g. the FUSE/9p mounts behind Docker Desktop bind mounts on
+   macOS/Windows), `tryLockFileExclusive` **degrades to a no-op "acquired"** rather than making backups
+   impossible: cross-writer protection is forfeited only where it was unattainable. The JS side opens
+   the lock fd `O_CLOEXEC` so a spawned child can't inherit the descriptor and hold the flock past
+   release. On Windows the locked byte sits far past EOF because Windows range locks are mandatory and
+   would otherwise block contenders from reading the file. The file's content is diagnostics only
+   (holder pid + hostname, for the contender's error message), and the file is **never unlinked** —
+   unlink-on-release races a concurrent acquirer holding a descriptor to the removed inode (two
+   "winners" on different inodes); an unlocked, empty `.backup.lock` is the steady state. Contention **rejects**; it does not queue, so a caller issuing
+   overlapping backups to one directory must handle the "locked" error (e.g. retry). Read-only ops
+   (`list`, `verify`, a restore's source read) are not locked since concurrent readers are safe; a
+   reader racing a `delete`/`purge` is a caller-managed hazard. Different directories are independent
+   (separate lock files) and run fully in parallel.
 
 ## Debugging native heap corruption
 

@@ -518,6 +518,16 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
+/**
+ * Takes a non-blocking exclusive lock on an open file descriptor (`flock` on
+ * POSIX, `LockFileEx` on Windows). Returns `true` if the lock was acquired,
+ * `false` if another open file description — in any process, container, or
+ * worker thread — holds it. The kernel releases the lock when the descriptor
+ * is closed, including implicitly when the holder dies, so there is no unlock
+ * function: close the fd. Used for the backup directory lock in `backup.ts`.
+ */
+export const nativeTryLockFile: (fd: number) => boolean = binding.tryLockFile;
+
 // Module-level backup management functions. These operate on a backup directory
 // and do not require an open database. Wrapped by the `backups` namespace in
 // `backup.ts`; creating a backup is a `RocksDatabase` instance method.
