@@ -58,6 +58,25 @@ TEST(FileLock, ReacquirableAcrossManyCycles) {
 	std::filesystem::remove_all(dir);
 }
 
+TEST(FileLock, AcquirableOnNonAsciiPath) {
+	// Node passes UTF-8 paths via N-API; on Windows tryAcquireFileLock converts to
+	// UTF-16 before CreateFileW. Build the path as UTF-8 bytes, not path::string()
+	// (which uses the ANSI code page on Windows).
+	auto dir = std::filesystem::temp_directory_path() / u8"rocksdb-js-file-lock-caf\u00e9";
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir);
+	auto lockPath = dir / u8".lock";
+	std::u8string lockPathUtf8 = lockPath.u8string();
+	std::string file(reinterpret_cast<const char*>(lockPathUtf8.data()), lockPathUtf8.size());
+
+	uint32_t token = tryAcquireFileLock(file);
+	EXPECT_NE(token, 0u);
+	EXPECT_EQ(tryAcquireFileLock(file), 0u);
+
+	releaseFileLock(token);
+	std::filesystem::remove_all(dir);
+}
+
 TEST(FileLock, ThrowsWhenParentDirectoryMissing) {
 	// delete/purge do not create the directory; a lock file whose parent
 	// directory is missing must surface a clear throw, not a silent lock on a
