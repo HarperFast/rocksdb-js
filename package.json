@@ -64,7 +64,7 @@
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "26.0.1",
+    "@types/node": "26.1.0",
     "@vitest/coverage-v8": "4.1.9",
     "cross-env": "10.1.0",
     "dotenv": "17.4.2",
@@ -78,7 +78,7 @@
     "tar": "7.5.19",
     "tsdown": "0.22.3",
     "tslib": "2.8.1",
-    "tsx": "4.22.4",
+    "tsx": "4.23.0",
     "typescript": "6.0.3",
     "vitest": "4.1.9"
   },
