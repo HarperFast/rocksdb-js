@@ -21,18 +21,19 @@ std::string makeTempDir(const char* name) {
 
 TEST(FileLock, ExclusiveWhileHeldThenReacquirable) {
 	std::string dir = makeTempDir("rocksdb-js-file-lock-exclusive");
+	std::string file = (std::filesystem::path(dir) / ".lock").string();
 
-	uint32_t first = tryAcquireFileLock(dir);
+	uint32_t first = tryAcquireFileLock(file);
 	EXPECT_NE(first, 0u);
-	// A second acquisition of the same directory opens its own handle on the same
-	// file and must fail to lock while the first is held — the exclusion two
-	// concurrent backup processes rely on. 0 means "already locked".
-	EXPECT_EQ(tryAcquireFileLock(dir), 0u);
+	// A second acquisition of the same file opens its own handle on it and must
+	// fail to lock while the first is held — the exclusion two concurrent
+	// backup processes rely on. 0 means "already locked".
+	EXPECT_EQ(tryAcquireFileLock(file), 0u);
 
 	// Releasing closes the handle, which releases the kernel lock, so the
-	// directory can be locked again.
+	// file can be locked again.
 	releaseFileLock(first);
-	uint32_t second = tryAcquireFileLock(dir);
+	uint32_t second = tryAcquireFileLock(file);
 	EXPECT_NE(second, 0u);
 	releaseFileLock(second);
 
@@ -41,12 +42,13 @@ TEST(FileLock, ExclusiveWhileHeldThenReacquirable) {
 
 TEST(FileLock, ReacquirableAcrossManyCycles) {
 	std::string dir = makeTempDir("rocksdb-js-file-lock-reacquire");
+	std::string file = (std::filesystem::path(dir) / ".lock").string();
 
 	// Sequential acquire/release cycles — the pattern every backup op follows —
 	// must always succeed, and tokens must be distinct and non-zero.
 	uint32_t prev = 0;
 	for (int i = 0; i < 5; i++) {
-		uint32_t token = tryAcquireFileLock(dir);
+		uint32_t token = tryAcquireFileLock(file);
 		EXPECT_NE(token, 0u);
 		EXPECT_NE(token, prev);
 		prev = token;
@@ -56,17 +58,19 @@ TEST(FileLock, ReacquirableAcrossManyCycles) {
 	std::filesystem::remove_all(dir);
 }
 
-TEST(FileLock, ThrowsWhenDirectoryMissing) {
-	// delete/purge do not create the directory; a missing directory must surface
-	// a clear throw, not a silent lock on a phantom path.
-	auto missing = (std::filesystem::temp_directory_path() / "rocksdb-js-file-lock-missing-xyz").string();
-	std::filesystem::remove_all(missing);
-	EXPECT_THROW(tryAcquireFileLock(missing), DBException);
+TEST(FileLock, ThrowsWhenParentDirectoryMissing) {
+	// delete/purge do not create the directory; a lock file whose parent
+	// directory is missing must surface a clear throw, not a silent lock on a
+	// phantom path.
+	auto missingDir = std::filesystem::temp_directory_path() / "rocksdb-js-file-lock-missing-xyz";
+	std::filesystem::remove_all(missingDir);
+	auto file = (missingDir / ".lock").string();
+	EXPECT_THROW(tryAcquireFileLock(file), DBException);
 }
 
 TEST(FileLock, ReleaseOfUnknownTokenIsNoop) {
 	// Release must tolerate token 0 and stale/unknown tokens without crashing —
-	// releaseBackupDirLock runs in a finally and must never throw.
+	// callers run it in a finally and it must never throw.
 	releaseFileLock(0);
 	releaseFileLock(0xFFFFFFFF);
 }

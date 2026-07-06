@@ -172,9 +172,10 @@ C++ code that needs to emit to JS without a database context should call
    `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer by holding a non-blocking
    exclusive OS advisory lock on the `.backup.lock` file at the directory root — `flock` on POSIX,
    `LockFileEx` on Windows. The lock is taken **entirely in native code** (`tryAcquireFileLock` /
-   `releaseFileLock` in `src/binding/core/file_lock.cpp`, exposed as the binding's `backupLockTryAcquire`
-   /`backupLockRelease`): native opens the file, locks it, and later closes its OS handle, returning only
-   an opaque uint32 token to JS. **No descriptor crosses the JS boundary** — this is deliberate: the addon
+   `releaseFileLock` in `src/binding/core/file_lock.cpp`, exposed generically as the binding's
+   `tryFileLock`/`fileLockRelease` — a public utility API, not backup-specific): native opens the file,
+   locks it, and later closes its OS handle, returning only an opaque uint32 token to JS. **No descriptor
+   crosses the JS boundary** — this is deliberate: the addon
    statically links its own C runtime (`binding.gyp` `RuntimeLibrary: 0` = `/MT`), so a Node/libuv fd is
    not resolvable here and `_get_osfhandle` on such an fd fast-fails the process (`0xC0000409` on Windows).
    The kernel owns the lock, so there is **no staleness heuristic**: it is released when the handle closes —
