@@ -358,7 +358,10 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 	// Disable deletions for the whole read so a compaction can't drop a live
 	// file before it has been streamed (see DB::GetLiveFilesStorageInfo docs).
 	rocksdb::Status disableStatus = db->DisableFileDeletions();
-	FileDeletionGuard deletionGuard{ db, disableStatus.ok() };
+	if (!disableStatus.ok()) {
+		return disableStatus;
+	}
+	FileDeletionGuard deletionGuard{ db, true };
 
 	rocksdb::LiveFilesStorageInfoOptions infoOpts;
 	// 0 == always flush the memtable; max == never (rely on the WAL instead).

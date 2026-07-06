@@ -47,10 +47,29 @@ uint32_t registerHandle(NativeHandle handle) {
 	return token;
 }
 
+#ifdef _WIN32
+// std::filesystem::path built from a std::string decodes it via the active code
+// page (ANSI), not UTF-8. Node strings crossing N-API are always UTF-8, so a
+// backupDir with non-ASCII characters would otherwise be corrupted on Windows.
+std::wstring utf8ToWide(const std::string& utf8) {
+	if (utf8.empty()) {
+		return L"";
+	}
+	int size = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+	std::wstring wide(size, L'\0');
+	::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), size);
+	return wide;
+}
+#endif
+
 } // namespace
 
 uint32_t tryAcquireFileLock(const std::string& backupDir) {
+#ifdef _WIN32
+	std::filesystem::path lockPath = std::filesystem::path(utf8ToWide(backupDir)) / LOCK_FILENAME;
+#else
 	std::filesystem::path lockPath = std::filesystem::path(backupDir) / LOCK_FILENAME;
+#endif
 
 #ifdef _WIN32
 	HANDLE handle = ::CreateFileW(
