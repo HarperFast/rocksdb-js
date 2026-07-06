@@ -9,21 +9,6 @@ namespace rocksdb_js {
 
 size_t getThreadId();
 
-/**
- * Attempts to take a non-blocking exclusive advisory lock on an open file
- * descriptor (`flock` on POSIX, `LockFileEx` on Windows). Returns `true` if the
- * lock was acquired, `false` if another open file description holds it —
- * including one in another process, container, or `worker_threads` worker.
- *
- * The kernel owns the lock: it is released when the descriptor is closed,
- * including implicitly when the holding process dies, so a crashed holder can
- * never leave a stale lock. There is no unlock function — close the descriptor.
- *
- * Throws `DBException` on real failures (bad descriptor, unsupported
- * filesystem).
- */
-bool tryLockFileExclusive(int fd);
-
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
 double getMonotonicTimestamp();

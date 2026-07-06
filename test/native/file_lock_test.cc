@@ -1,59 +1,72 @@
 #include <gtest/gtest.h>
-#include <cstdio>
 #include <filesystem>
+#include <string>
 #include "core/exception.h"
-#include "core/platform.h"
-#ifdef _WIN32
-#include <io.h>
-#define ROCKSDB_JS_FILENO ::_fileno
-#else
-#include <unistd.h>
-#define ROCKSDB_JS_FILENO ::fileno
-#endif
+#include "core/file_lock.h"
 
 using rocksdb_js::DBException;
-using rocksdb_js::tryLockFileExclusive;
+using rocksdb_js::releaseFileLock;
+using rocksdb_js::tryAcquireFileLock;
 
-TEST(FileLock, ExclusiveAcrossOpenFileDescriptions) {
-	auto path = std::filesystem::temp_directory_path() / "rocksdb-js-file-lock-exclusive.lock";
-	// Two distinct open file descriptions on the same file — the granularity the
-	// lock works at, and what two backup processes on one directory would each open.
-	std::FILE* holder = std::fopen(path.string().c_str(), "ab+");
-	ASSERT_NE(holder, nullptr);
-	std::FILE* contender = std::fopen(path.string().c_str(), "ab+");
-	ASSERT_NE(contender, nullptr);
+namespace {
 
-	EXPECT_TRUE(tryLockFileExclusive(ROCKSDB_JS_FILENO(holder)));
-	// A second open file description — same process or another — must not be able
-	// to take the lock while the first holds it.
-	EXPECT_FALSE(tryLockFileExclusive(ROCKSDB_JS_FILENO(contender)));
-
-	// Closing the holder's descriptor is the release; no unlock call exists.
-	std::fclose(holder);
-	EXPECT_TRUE(tryLockFileExclusive(ROCKSDB_JS_FILENO(contender)));
-	std::fclose(contender);
-
-	std::filesystem::remove(path);
+std::string makeTempDir(const char* name) {
+	auto dir = std::filesystem::temp_directory_path() / name;
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir);
+	return dir.string();
 }
 
-TEST(FileLock, ReacquirableAfterRelease) {
-	auto path = std::filesystem::temp_directory_path() / "rocksdb-js-file-lock-reacquire.lock";
+} // namespace
 
-	// Sequential acquire/release cycles on fresh descriptors — the pattern every
-	// backup operation follows — must always succeed.
-	for (int i = 0; i < 3; i++) {
-		std::FILE* file = std::fopen(path.string().c_str(), "ab+");
-		ASSERT_NE(file, nullptr);
-		EXPECT_TRUE(tryLockFileExclusive(ROCKSDB_JS_FILENO(file)));
-		std::fclose(file);
+TEST(FileLock, ExclusiveWhileHeldThenReacquirable) {
+	std::string dir = makeTempDir("rocksdb-js-file-lock-exclusive");
+
+	uint32_t first = tryAcquireFileLock(dir);
+	EXPECT_NE(first, 0u);
+	// A second acquisition of the same directory opens its own handle on the same
+	// file and must fail to lock while the first is held — the exclusion two
+	// concurrent backup processes rely on. 0 means "already locked".
+	EXPECT_EQ(tryAcquireFileLock(dir), 0u);
+
+	// Releasing closes the handle, which releases the kernel lock, so the
+	// directory can be locked again.
+	releaseFileLock(first);
+	uint32_t second = tryAcquireFileLock(dir);
+	EXPECT_NE(second, 0u);
+	releaseFileLock(second);
+
+	std::filesystem::remove_all(dir);
+}
+
+TEST(FileLock, ReacquirableAcrossManyCycles) {
+	std::string dir = makeTempDir("rocksdb-js-file-lock-reacquire");
+
+	// Sequential acquire/release cycles — the pattern every backup op follows —
+	// must always succeed, and tokens must be distinct and non-zero.
+	uint32_t prev = 0;
+	for (int i = 0; i < 5; i++) {
+		uint32_t token = tryAcquireFileLock(dir);
+		EXPECT_NE(token, 0u);
+		EXPECT_NE(token, prev);
+		prev = token;
+		releaseFileLock(token);
 	}
 
-	std::filesystem::remove(path);
+	std::filesystem::remove_all(dir);
 }
 
-TEST(FileLock, ThrowsOnInvalidDescriptor) {
-	// A genuinely bad descriptor is a programming error, not contention: it must
-	// surface as a throw (EBADF on POSIX, invalid handle on Windows), not be
-	// silently swallowed as "acquired" or "locked".
-	EXPECT_THROW(tryLockFileExclusive(-1), DBException);
+TEST(FileLock, ThrowsWhenDirectoryMissing) {
+	// delete/purge do not create the directory; a missing directory must surface
+	// a clear throw, not a silent lock on a phantom path.
+	auto missing = (std::filesystem::temp_directory_path() / "rocksdb-js-file-lock-missing-xyz").string();
+	std::filesystem::remove_all(missing);
+	EXPECT_THROW(tryAcquireFileLock(missing), DBException);
+}
+
+TEST(FileLock, ReleaseOfUnknownTokenIsNoop) {
+	// Release must tolerate token 0 and stale/unknown tokens without crashing —
+	// releaseBackupDirLock runs in a finally and must never throw.
+	releaseFileLock(0);
+	releaseFileLock(0xFFFFFFFF);
 }
