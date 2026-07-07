@@ -1,12 +1,62 @@
 import {
 	nativeBackupDelete,
 	nativeBackupList,
+	fileLockRelease,
+	tryFileLock,
 	nativeBackupPurge,
 	nativeBackupRestore,
 	nativeBackupVerify,
 } from './load-binding.js';
 import { mkdir } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { join } from 'node:path';
+
+/**
+ * Runs `fn` while holding a native file lock for `backupDir`, releasing it when
+ * `fn` settles. Used by the writable-engine operations (`Store.backup`,
+ * `backups.delete`, `backups.purge`). Throws immediately (without running `fn`)
+ * if another writer holds the directory lock.
+ *
+ * Read-only operations (`list`, `verify`, and a restore's source read) use
+ * `BackupEngineReadOnly` and are not locked: concurrent readers are safe.
+ * Running a reader concurrently with a `delete`/`purge` on the same directory is
+ * a caller-managed hazard, matching RocksDB's one-writable-engine-per-dir model.
+ *
+ * RocksDB only serializes work within a single `BackupEngine` instance and has
+ * no lock on the backup directory itself. Two writable engines — in any
+ * processes — creating/deleting/purging backups in the same directory
+ * concurrently race on the per-backup staging directory and both fail,
+ * potentially leaving the directory with no usable backup. An in-memory lock
+ * cannot prevent this across processes, so the lock lives on disk: a kernel
+ * advisory lock (`flock` on POSIX, `LockFileEx` on Windows) held on a
+ * `.backup.lock` file at the directory root.
+ *
+ * The lock is taken entirely in native code (`tryFileLock`), which opens,
+ * locks, and later closes the file's OS handle without ever exposing a
+ * descriptor to JS — the addon statically links its own C runtime, so a
+ * Node/libuv fd is not usable across that boundary. The kernel owning the lock
+ * buys two properties a pidfile cannot:
+ *
+ * - No staleness heuristic. The lock is released when the holder's handle closes
+ *   — normal release, crash, `kill -9`, container exit — so there is nothing to
+ *   reclaim and no liveness check.
+ * - True cross-context exclusion. The lock conflicts across processes, containers
+ *   sharing a volume (same kernel), and `worker_threads`.
+ *
+ * The lock file is never deleted, only locked and unlocked; an unlocked, empty
+ * `.backup.lock` at the directory root is the steady state.
+ */
+export async function withBackupDirLock<T>(backupDir: string, fn: () => Promise<T>): Promise<T> {
+	const token = tryFileLock(join(backupDir, '.backup.lock'));
+	if (token === 0) {
+		throw new Error(`Backup directory is locked: ${backupDir}`);
+	}
+	try {
+		return await fn();
+	} finally {
+		fileLockRelease(token);
+	}
+}
 
 /**
  * Options for creating a backup via `db.backup()`.
@@ -166,18 +216,22 @@ export const backups = {
 	 * Deletes a specific backup. Shared files are reference-counted and only
 	 * removed once no remaining backup references them.
 	 */
-	delete(backupDir: string, backupId: number): Promise<void> {
-		return new Promise((resolve, reject) =>
-			nativeBackupDelete(resolve, reject, backupDir, backupId)
+	async delete(backupDir: string, backupId: number): Promise<void> {
+		return withBackupDirLock(
+			backupDir,
+			() =>
+				new Promise((resolve, reject) => nativeBackupDelete(resolve, reject, backupDir, backupId))
 		);
 	},
 
 	/**
 	 * Deletes all but the newest `keepCount` backups.
 	 */
-	purge(backupDir: string, keepCount: number): Promise<void> {
-		return new Promise((resolve, reject) =>
-			nativeBackupPurge(resolve, reject, backupDir, keepCount)
+	async purge(backupDir: string, keepCount: number): Promise<void> {
+		return withBackupDirLock(
+			backupDir,
+			() =>
+				new Promise((resolve, reject) => nativeBackupPurge(resolve, reject, backupDir, keepCount))
 		);
 	},
 

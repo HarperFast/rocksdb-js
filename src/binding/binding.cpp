@@ -14,6 +14,7 @@
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/platform.h"
+#include "core/file_lock.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include <atomic>
@@ -49,6 +50,39 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 	auto threadId = getThreadId();
 	NAPI_STATUS_THROWS(::napi_create_int64(env, threadId, &result));
 	return result;
+}
+
+/**
+ * Takes a file lock by opening and exclusively locking the given file (see
+ * `tryAcquireFileLock`). Returns an opaque non-zero token to pass to
+ * `fileLockRelease`, or `0` if another holder currently has the lock. Throws on
+ * a hard error.
+ */
+napi_value TryFileLock(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	NAPI_GET_STRING(argv[0], file, "Expected file path");
+
+	try {
+		uint32_t token = tryAcquireFileLock(file);
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, token, &result));
+		return result;
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+}
+
+/**
+ * Releases a file lock previously returned by `tryFileLock`
+ * by closing its handle. A no-op for token `0` or an unknown token.
+ */
+napi_value FileLockRelease(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	uint32_t token;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &token));
+	releaseFileLock(token);
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -171,6 +205,15 @@ NAPI_MODULE_INIT() {
 	napi_value currentThreadIdFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
+
+	// file lock functions (see src/backup.ts)
+	napi_value tryFileLockFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "tryFileLock", NAPI_AUTO_LENGTH, TryFileLock, nullptr, &tryFileLockFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "tryFileLock", tryFileLockFn));
+
+	napi_value fileLockReleaseFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "fileLockRelease", NAPI_AUTO_LENGTH, FileLockRelease, nullptr, &fileLockReleaseFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "fileLockRelease", fileLockReleaseFn));
 
 	// coolTransactionLogs function
 	napi_value coolTransactionLogsFn;

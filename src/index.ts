@@ -7,6 +7,7 @@ export {
 	type RestoreMode,
 	type RestoreOptions,
 } from './backup.js';
+export type { BackupStreamOptions } from './backup-stream.js';
 export {
 	RocksDatabase,
 	type RocksDatabaseOptions,
@@ -21,6 +22,8 @@ export {
 	constants,
 	coolTransactionLogs,
 	currentThreadId,
+	fileLockRelease,
+	tryFileLock,
 	registryStatus,
 	stats,
 	shutdown,

@@ -1,9 +1,11 @@
 import { backups, RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
-import { rmSync } from 'node:fs';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+
+/** Name of the on-disk backup lock file (mirrors LOCK_FILENAME in src/backup.ts). */
+const LOCK_FILENAME = '.backup.lock';
 
 const tempDirs: string[] = [];
 
@@ -379,4 +381,102 @@ describe('Backups', () => {
 		const backupDir = join(tempDir(), 'does-not-exist');
 		await expect(backups.list(backupDir)).rejects.toThrow();
 	});
+
+	it('should reject a lock-taking op on a non-existent directory with a clear error', async () => {
+		// delete/purge do not create the directory; the on-disk lock must surface a
+		// clear "does not exist" error rather than a raw ENOENT naming a temp file.
+		const backupDir = join(tempDir(), 'does-not-exist');
+		await expect(backups.delete(backupDir, 1)).rejects.toThrow(/does not exist/);
+		await expect(backups.purge(backupDir, 1)).rejects.toThrow(/does not exist/);
+	});
+
+	it('should reject a concurrent backup to a directory locked by a running process', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 100);
+
+			const backupDir = tempDir();
+			// The on-disk lock lets exactly one writer hold the directory. The loser
+			// sees the live lock file and rejects rather than racing the winner's
+			// BackupEngine (which would corrupt the staging directory).
+			const results = await Promise.allSettled([db.backup(backupDir), db.backup(backupDir)]);
+			const fulfilled = results.filter((r) => r.status === 'fulfilled');
+			const rejected = results.filter((r) => r.status === 'rejected');
+			expect(fulfilled.length).toBe(1);
+			expect(rejected.length).toBe(1);
+			expect((rejected[0] as PromiseRejectedResult).reason.message).toMatch(/lock|claim/i);
+
+			// The winner produced a valid backup and released the lock, so a
+			// subsequent backup succeeds. The lock file itself stays behind by
+			// design — only the kernel lock on it is released, never the file.
+			const list = await backups.list(backupDir);
+			expect(list.map((b) => b.backupId)).toEqual([1]);
+			expect(existsSync(join(backupDir, LOCK_FILENAME))).toBe(true);
+			expect(await db.backup(backupDir)).toBe(2);
+		}));
+
+	it('should reject a concurrent backup from a second database to the same directory', () =>
+		dbRunner({ dbOptions: [{}, { path: generateDBPath() }] }, async ({ db }, { db: db2 }) => {
+			await writeAll(db, 100);
+			await writeAll(db2, 100);
+
+			// Two independent databases (the cross-process case, simulated in one
+			// process) can only be distinguished by the on-disk lock, not by any
+			// in-memory state. Exactly one backup wins the directory.
+			const backupDir = tempDir();
+			const results = await Promise.allSettled([db.backup(backupDir), db2.backup(backupDir)]);
+			expect(results.filter((r) => r.status === 'fulfilled').length).toBe(1);
+			const rejected = results.filter((r) => r.status === 'rejected');
+			expect(rejected.length).toBe(1);
+			expect((rejected[0] as PromiseRejectedResult).reason.message).toMatch(/lock|claim/i);
+
+			const list = await backups.list(backupDir);
+			expect(list.map((b) => b.backupId)).toEqual([1]);
+			await expect(
+				backups.verify(backupDir, 1, { verifyWithChecksum: true })
+			).resolves.toBeUndefined();
+		}));
+
+	it('should ignore a leftover lock file from a crashed process', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 50);
+
+			const backupDir = tempDir();
+			mkdirSync(backupDir, { recursive: true });
+			// A crashed backup leaves the lock file behind, but the kernel released
+			// its lock when the holder died — the file (whatever its content, here
+			// stale pidfile-style diagnostics) carries no lock of its own, so the
+			// next backup just acquires. No staleness heuristic is involved.
+			writeFileSync(join(backupDir, LOCK_FILENAME), 'pid 99999 on some-dead-host');
+
+			expect(await db.backup(backupDir)).toBe(1);
+			expect(existsSync(join(backupDir, LOCK_FILENAME))).toBe(true);
+		}));
+
+	it('should allow concurrent backups to different directories', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 100);
+
+			const dirA = tempDir();
+			const dirB = tempDir();
+			const [idA, idB] = await Promise.all([db.backup(dirA), db.backup(dirB)]);
+			expect(idA).toBe(1);
+			expect(idB).toBe(1);
+
+			for (const dir of [dirA, dirB]) {
+				const list = await backups.list(dir);
+				expect(list.map((b) => b.backupId)).toEqual([1]);
+				await expect(backups.verify(dir, 1, { verifyWithChecksum: true })).resolves.toBeUndefined();
+			}
+
+			// Both backups are independently restorable.
+			const restoreDir = tempDir();
+			await backups.restore(dirA, restoreDir);
+			const restored = new RocksDatabase(restoreDir);
+			restored.open();
+			try {
+				await readAll(restored, 100);
+			} finally {
+				restored.close();
+			}
+		}));
 });
