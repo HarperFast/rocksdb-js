@@ -16,9 +16,12 @@ const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
 
 /**
  * Runs `fn` while holding a native file lock for `backupDir`, releasing it when
- * `fn` settles. Used by the writable-engine operations (`Store.backup`,
- * `backups.delete`, `backups.purge`). Throws immediately (without running `fn`)
- * if another writer holds the directory lock.
+ * `fn` settles. Used by the writable-engine operations `backups.delete` and
+ * `backups.purge`; backup creation (`Store.backup`) takes the same lock on the
+ * same file natively inside `Database::Backup` (see `runCreateBackup` in
+ * `src/binding/database/backup.cpp`), where the backup directory is also
+ * created. Throws immediately (without running `fn`) if another writer holds
+ * the directory lock.
  *
  * Read-only operations (`list`, `verify`, and a restore's source read) use
  * `BackupEngineReadOnly` and are not locked: concurrent readers are safe.

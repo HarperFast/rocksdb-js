@@ -139,10 +139,15 @@ rocksdb::Status backupTransactionLogsToDir(
 			if (!linkEc) {
 				continue;
 			}
-			// Hard link unavailable (cross-filesystem, or platform without support);
-			// fall through to a byte copy.
+			// Hard link unavailable — typically EXDEV (destination on a different
+			// filesystem/volume, e.g. a mounted network share) or ENOTSUP (a
+			// filesystem without hard links, e.g. FAT/exFAT/ReFS on Windows). A
+			// link failure must never fail the backup: fall through to a byte copy.
 		}
 
+		// Byte-by-byte copy of the captured extent: exactly `byteLimit` bytes —
+		// the whole file for a rotated file, or the stable prefix of the current
+		// file (a concurrent append may be extending it past the snapshot).
 		rocksdb::Status s =
 			copyPrefixWithMtime(named.file.sourcePath, dst, named.file.byteLimit, named.file.mtime);
 		if (!s.ok()) {

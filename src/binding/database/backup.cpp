@@ -2,6 +2,7 @@
 #include "database/backup_transaction_logs.h"
 #include "database/database.h"
 #include "database/db_handle.h"
+#include "core/file_lock.h"
 #include "napi/async.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
@@ -137,6 +138,76 @@ static napi_value queueBackupWork(
 }
 
 /**
+ * Name of the on-disk lock file at the backup directory root. Must match the
+ * name used by `withBackupDirLock` in `src/backup.ts` (and mirrored in
+ * `test/backup.test.ts`) — every writer to a backup directory contends on the
+ * same file.
+ */
+static constexpr const char* BACKUP_LOCK_FILENAME = ".backup.lock";
+
+/**
+ * Worker-thread body of `Database::Backup`. Creates the backup directory
+ * (including missing parents — the lock file lives at the directory root and
+ * RocksDB itself only creates the leaf), then holds the single-writer
+ * directory lock for the duration of the RocksDB backup and the transaction
+ * log snapshot. RocksDB has no cross-engine lock on the directory, so a
+ * concurrent writer — even in another process — would corrupt the staging
+ * directory. Contention rejects rather than queues. `backups.delete`/`purge`
+ * take the same lock from JS via `withBackupDirLock` (see `src/backup.ts` and
+ * `core/file_lock.h`).
+ */
+static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
+	// state->descriptor keeps the rocksdb::DB alive for the whole copy, so it is
+	// safe to use even if close() runs concurrently. isCancelled() lets us skip
+	// starting a backup once close() has been requested.
+	if (!state->descriptor || !state->handle || state->handle->isCancelled()) {
+		return rocksdb::Status::Aborted("Database closed during backup operation");
+	}
+
+	const std::string& backupDir = state->engineOptions.backup_dir;
+
+	std::error_code ec;
+	std::filesystem::create_directories(std::filesystem::path(backupDir), ec);
+	if (ec) {
+		return rocksdb::Status::IOError("Failed to create backup directory: " + ec.message(), backupDir);
+	}
+
+	uint32_t lockToken = 0;
+	try {
+		lockToken = tryAcquireFileLock(backupDir + "/" + BACKUP_LOCK_FILENAME);
+	} catch (const std::exception& e) {
+		return rocksdb::Status::IOError(e.what());
+	}
+	if (lockToken == 0) {
+		return rocksdb::Status::Busy("Backup directory is locked: " + backupDir);
+	}
+
+	rocksdb::BackupEngine* engine = nullptr;
+	rocksdb::Status status = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
+	if (status.ok()) {
+		status = engine->CreateNewBackupWithMetadata(
+			state->createOptions,
+			state->descriptor->db.get(),
+			state->appMetadata,
+			&state->backupId
+		);
+	}
+	delete engine;
+
+	// After a successful RocksDB backup, snapshot the transaction logs into
+	// transaction_logs/<backupId>/ (all-or-nothing; not incremental).
+	if (status.ok() && state->backupTransactionLogs) {
+		status = backupTransactionLogsToDir(
+			state->descriptor.get(),
+			std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId)
+		);
+	}
+
+	releaseFileLock(lockToken);
+	return status;
+}
+
+/**
  * Maps a `RestoreOptions.mode` string to the RocksDB enum. Unknown/absent
  * values fall back to the (destructive) default `kPurgeAllFiles`.
  */
@@ -208,35 +279,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		state,
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
-			// state->descriptor keeps the rocksdb::DB alive for the whole copy, so
-			// it is safe to use even if close() runs concurrently. isCancelled()
-			// lets us skip starting a backup once close() has been requested.
-			if (!state->descriptor || !state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during backup operation");
-			} else {
-				rocksdb::BackupEngine* engine = nullptr;
-				rocksdb::IOStatus s = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
-				if (s.ok()) {
-					s = engine->CreateNewBackupWithMetadata(
-						state->createOptions,
-						state->descriptor->db.get(),
-						state->appMetadata,
-						&state->backupId
-					);
-				}
-				delete engine;
-				state->status = s;
-
-				// After a successful RocksDB backup, snapshot the transaction logs
-				// into transaction_logs/<backupId>/ (all-or-nothing; not incremental).
-				if (state->status.ok() && state->backupTransactionLogs) {
-					state->status = backupTransactionLogsToDir(
-						state->descriptor.get(),
-						std::filesystem::path(state->engineOptions.backup_dir) / "transaction_logs" /
-							std::to_string(state->backupId)
-					);
-				}
-			}
+			state->status = runCreateBackup(state);
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete

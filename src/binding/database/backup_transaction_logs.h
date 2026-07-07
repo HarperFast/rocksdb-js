@@ -34,11 +34,12 @@ std::vector<NamedTransactionLogBackupEntry> collectTransactionLogBackupEntries(D
  * Copies the transaction log snapshot into `destBaseDir` (e.g.
  * `<backupDir>/transaction_logs/<backupId>`), laying files out as
  * `<destBaseDir>/<store>/<file>`. Rotated (immutable) files are hard-linked
- * when possible, falling back to a byte copy across filesystems or on platforms
- * without hard-link support; the current file and `txn.state` are always copied
- * up to their captured byte limit. The source mtime is preserved on every
- * destination so the store's age-based rotation/retention stays correct after a
- * restore.
+ * when possible, falling back to a byte copy on any link failure (typically
+ * `EXDEV` for a destination on another filesystem — e.g. a mounted network
+ * volume — or `ENOTSUP` on filesystems without hard links); the current file
+ * and `txn.state` are always copied up to their captured byte limit. The
+ * source mtime is preserved on every destination so the store's age-based
+ * rotation/retention stays correct after a restore.
  */
 rocksdb::Status backupTransactionLogsToDir(
 	DBDescriptor* descriptor,

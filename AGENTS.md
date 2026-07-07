@@ -168,10 +168,13 @@ C++ code that needs to emit to JS without a database context should call
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
    Two writers on the same directory (two `db.backup()` calls, or a `backup` racing a `delete`/`purge`),
    in the same process or different ones, collide on the per-backup staging dir and both fail,
-   potentially leaving zero usable backups. `withBackupDirLock` in `src/backup.ts` (used by
-   `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer by holding a non-blocking
+   potentially leaving zero usable backups. A single writer is enforced by holding a non-blocking
    exclusive OS advisory lock on the `.backup.lock` file at the directory root — `flock` on POSIX,
-   `LockFileEx` on Windows. The lock is taken **entirely in native code** (`tryAcquireFileLock` /
+   `LockFileEx` on Windows. Backup creation acquires it natively inside `Database::Backup`
+   (`runCreateBackup` in `src/binding/database/backup.cpp`), which first creates the backup directory
+   (with missing parents); `backups.delete` and `backups.purge` acquire the same lock from JS via
+   `withBackupDirLock` in `src/backup.ts` (they do **not** create the directory — a missing directory
+   is a clear error there). The lock is taken **entirely in native code** (`tryAcquireFileLock` /
    `releaseFileLock` in `src/binding/core/file_lock.cpp`, exposed generically as the binding's
    `tryFileLock`/`fileLockRelease` — a public utility API, not backup-specific): native opens the file,
    locks it, and later closes its OS handle, returning only an opaque uint32 token to JS. **No descriptor
