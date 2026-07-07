@@ -1,3 +1,4 @@
+import { type BackupStreamOptions, backupToStream } from './backup-stream.js';
 import { type BackupOptions, withBackupDirLock } from './backup.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
@@ -421,15 +422,28 @@ export class Store {
 	 * const id = await db.backup('/path/to/backups');
 	 * ```
 	 */
-	async backup(backupDir: string, options?: BackupOptions): Promise<number> {
-		await mkdir(backupDir, { recursive: true });
+	async backup(backupDir: string, options?: BackupOptions): Promise<number>;
+	async backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>;
+	async backup(
+		target: string | WritableStream<Uint8Array>,
+		options?: BackupOptions | BackupStreamOptions
+	): Promise<number | void> {
+		// Duck-type rather than `instanceof WritableStream` so a stream from a
+		// different realm (or a polyfill) still routes to the streaming path.
+		if (typeof target !== 'string' && typeof target?.getWriter === 'function') {
+			return backupToStream(this.db, target, options as BackupStreamOptions);
+		}
+		await mkdir(target as string, { recursive: true });
 		// Hold the on-disk lock for the directory: RocksDB has no cross-engine lock,
 		// so a concurrent backup here (even from another process) would corrupt the
 		// staging directory. Rejects if the directory is already locked. See
 		// `withBackupDirLock`.
 		return withBackupDirLock(
-			backupDir,
-			() => new Promise((resolve, reject) => this.db.backup(resolve, reject, backupDir, options))
+			target as string,
+			() =>
+				new Promise((resolve, reject) =>
+					this.db.backup(resolve, reject, target as string, options as BackupOptions)
+				)
 		);
 	}
 

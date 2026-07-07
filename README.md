@@ -1004,9 +1004,10 @@ automatically released when the process exits.
 
 ### `tryFileLock(file: string): number`
 
-Attempts to acquire a file lock for the given file. If the lock is available, the function returns `true`
-and the optional `onUnlocked` callback is never called. If the lock is not available, the function
-returns `false` and the `onUnlocked` callback is queued until the lock is released.
+Attempts to acquire an exclusive lock on the given file, creating it if it doesn't exist. Returns a
+non-zero token to pass to `fileLockRelease` if the lock was acquired, or `0` if another holder — in
+any process, container, or worker thread — currently has it. Throws if the file's parent directory
+is missing or on a hard error.
 
 ```typescript
 import { tryFileLock } from '@harperfast/rocksdb-js';
@@ -1452,6 +1453,11 @@ Backups use RocksDB's `BackupEngine` to capture consistent, incremental, checksu
 snapshots of a database. A backup covers the **entire database** — every column family, the
 manifest, and (by default) the write-ahead log — so it is not scoped to an individual `Store`.
 
+A backup can be written to a local **directory** (incremental, with a management API) or streamed to
+a **`WritableStream`** as a tar archive with no intermediate copy on disk. See
+[docs/backups.md](docs/backups.md) for a full guide covering both modes, restore, checkpoints, and
+caveats.
+
 Creating a backup is an instance method (`db.backup()`) because it needs a live database. The
 remaining operations act on a backup directory and do not require an open database, so they are
 grouped under the `backups` namespace export.
@@ -1500,6 +1506,36 @@ const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' 
 | `backupLogFiles`          | `boolean` | `true`                 | Include write-ahead log files in the backup.                          |
 | `sync`                    | `boolean` | `true`                 | `fsync` backup files for crash consistency.                           |
 | `maxBackgroundOperations` | `number`  | `1`                    | Number of background threads used to copy files.                      |
+
+### `db.backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>`
+
+Streams a consistent snapshot of the entire database to `stream` as a tar archive, with **no
+intermediate copy written to disk**, and resolves once the stream has been fully written and closed.
+Backpressure is honored end to end, so a slow consumer (e.g. an upload) paces the backup rather than
+buffering it in memory. The archive unpacks with any tar tool into a directory that opens as a
+RocksDB database.
+
+```typescript
+import { createWriteStream } from 'node:fs';
+import { Writable } from 'node:stream';
+
+await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar')));
+// Restore: `tar -xf backup.tar -C /restored`, then open '/restored'.
+
+// Or gzip it (`tar -xzf backup.tar.gz` to restore):
+await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), { gzip: true });
+```
+
+`BackupStreamOptions`:
+
+| Option              | Type      | Default                | Description                                                         |
+| ------------------- | --------- | ---------------------- | ------------------------------------------------------------------- |
+| `flushBeforeBackup` | `boolean` | `true` if WAL disabled | Flush the memtable before streaming.                                |
+| `gzip`              | `boolean` | `false`                | Gzip-compress the archive, producing a `.tar.gz` instead of `.tar`. |
+
+Stream backups are always full snapshots (no incremental sharing), have no `backups.*` management
+API, and **cannot be resumed** — a failed transfer must be restarted from the beginning. See
+[docs/backups.md](docs/backups.md#stream-backups) for details.
 
 ### `backups.restore(backupDir: string, dbDir: string, options?: RestoreOptions): Promise<void>`
 
