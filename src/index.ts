@@ -21,6 +21,8 @@ export {
 	constants,
 	coolTransactionLogs,
 	currentThreadId,
+	fileLockRelease,
+	tryFileLock,
 	registryStatus,
 	stats,
 	shutdown,

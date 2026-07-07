@@ -518,6 +518,23 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
+/**
+ * Creates a native file lock using the specified file path (`flock` on POSIX,
+ * `LockFileEx` on Windows). Returns an opaque non-zero token to pass to
+ * `fileLockRelease`, or `0` if another holder — in any process, container, or
+ * worker thread — currently has it. Throws if `file` is missing or on a hard
+ * error. The OS handle is owned entirely in native code (no fd crosses into
+ * JS), and the kernel releases the lock when the handle closes, including on
+ * process death.
+ */
+export const tryFileLock: (file: string) => number = binding.tryFileLock;
+
+/**
+ * Releases a file lock acquired via `tryFileLock`. A no-op for
+ * token `0` or an unknown token.
+ */
+export const fileLockRelease: (token: number) => void = binding.fileLockRelease;
+
 // Module-level backup management functions. These operate on a backup directory
 // and do not require an open database. Wrapped by the `backups` namespace in
 // `backup.ts`; creating a backup is a `RocksDatabase` instance method.

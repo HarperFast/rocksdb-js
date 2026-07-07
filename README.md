@@ -996,6 +996,39 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
+## Exclusive File Locking
+
+`rocksdb-js` includes helper functions for creating lock files and releasing them using native APIs.
+This can be used to prevent multiple processes from concurrently accessing a resource. The lock is
+automatically released when the process exits.
+
+### `tryFileLock(file: string): number`
+
+Attempts to acquire a file lock for the given file. If the lock is available, the function returns `true`
+and the optional `onUnlocked` callback is never called. If the lock is not available, the function
+returns `false` and the `onUnlocked` callback is queued until the lock is released.
+
+```typescript
+import { tryFileLock } from '@harperfast/rocksdb-js';
+
+const token = tryFileLock('/path/to/lock');
+if (token) {
+	console.log('lock acquired');
+} else {
+	console.log('lock not available, another process is holding it');
+}
+```
+
+### `fileLockRelease(token: number): void`
+
+Releases the file lock for the given token.
+
+```typescript
+import { fileLockRelease } from '@harperfast/rocksdb-js';
+
+fileLockRelease(token);
+```
+
 ## Verification Table
 
 The verification table is a process-global, fixed-size structure that lets an application cheaply
@@ -1422,6 +1455,14 @@ manifest, and (by default) the write-ahead log — so it is not scoped to an ind
 Creating a backup is an instance method (`db.backup()`) because it needs a live database. The
 remaining operations act on a backup directory and do not require an open database, so they are
 grouped under the `backups` namespace export.
+
+> **Only one backup per directory may be in-flight at a time.** RocksDB has no cross-engine lock on
+> a backup directory, so the writing operations — `db.backup()`, `backups.delete()`, and
+> `backups.purge()` — take an on-disk lock (a `.backup.lock` file) for the directory. A second
+> writing operation on the same directory, whether from the same process, a `worker_thread`, or a
+> separate process, **rejects** with a "locked" error rather than corrupting the backup; retry once
+> the in-flight operation finishes. Operations on _different_ directories run in parallel, and the
+> read-only operations (`list`, `verify`, `restore`) are not locked.
 
 ```typescript
 import { RocksDatabase, backups } from '@harperfast/rocksdb-js';
