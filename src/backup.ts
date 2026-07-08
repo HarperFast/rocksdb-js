@@ -7,12 +7,21 @@ import {
 	nativeBackupRestore,
 	nativeBackupVerify,
 } from './load-binding.js';
-import { existsSync } from 'node:fs';
-import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 
 /** Subdirectory (under a backup directory) holding per-backup transaction log snapshots. */
 const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
+
+/** Non-blocking existence check (`fs.existsSync` would block the event loop). */
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Runs `fn` while holding a native file lock for `backupDir`, releasing it when
@@ -229,7 +238,7 @@ async function restoreTransactionLogs(
 	backupId?: number
 ): Promise<void> {
 	const logsRoot = join(backupDir, TRANSACTION_LOGS_DIRNAME);
-	if (!existsSync(logsRoot)) {
+	if (!(await exists(logsRoot))) {
 		return; // this backup directory has no transaction log snapshots
 	}
 
@@ -246,7 +255,7 @@ async function restoreTransactionLogs(
 	}
 
 	const logsSrc = join(logsRoot, String(id));
-	if (!existsSync(logsSrc)) {
+	if (!(await exists(logsSrc))) {
 		// The restored backup captured no logs — do not touch the destination's
 		// existing transaction logs.
 		return;

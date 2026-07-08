@@ -31,6 +31,7 @@ const MAX_NAME_LENGTH = 100;
 const MAX_PREFIX_LENGTH = 155;
 
 const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 /**
  * Destination for encoded bytes. Returning a promise applies backpressure: the
@@ -125,32 +126,35 @@ function writeChecksum(block: Uint8Array): void {
  * hit this; only a pathological log-store name would.
  */
 function splitTarName(path: string): { name: string; prefix: string } {
-	if (textEncoder.encode(path).length <= MAX_NAME_LENGTH) {
+	// Encode once and search the bytes: `/` is ASCII and UTF-8 never embeds an
+	// ASCII byte inside a multi-byte sequence, so every 0x2f byte is a real
+	// separator and both halves of a split there are valid UTF-8.
+	const encoded = textEncoder.encode(path);
+	if (encoded.length <= MAX_NAME_LENGTH) {
 		return { name: path, prefix: '' };
 	}
-	let best: { name: string; prefix: string } | undefined;
-	for (let i = 0; i < path.length; i++) {
-		if (path[i] !== '/') {
+	let best = -1;
+	for (let i = 0; i < encoded.length; i++) {
+		if (encoded[i] !== 0x2f) {
 			continue;
 		}
-		const prefix = path.slice(0, i);
-		const name = path.slice(i + 1);
-		if (
-			name.length > 0 &&
-			textEncoder.encode(name).length <= MAX_NAME_LENGTH &&
-			textEncoder.encode(prefix).length <= MAX_PREFIX_LENGTH
-		) {
+		const prefixLength = i;
+		const nameLength = encoded.length - i - 1;
+		if (nameLength > 0 && nameLength <= MAX_NAME_LENGTH && prefixLength <= MAX_PREFIX_LENGTH) {
 			// As the split moves right the prefix grows and the name shrinks, so the
 			// last split satisfying both bounds packs the most into `prefix`.
-			best = { name, prefix };
+			best = i;
 		}
 	}
-	if (best === undefined) {
+	if (best === -1) {
 		throw new RangeError(
 			`tar entry name ${JSON.stringify(path)} does not fit the USTAR name (<=${MAX_NAME_LENGTH}) + prefix (<=${MAX_PREFIX_LENGTH}) fields`
 		);
 	}
-	return best;
+	return {
+		name: textDecoder.decode(encoded.subarray(best + 1)),
+		prefix: textDecoder.decode(encoded.subarray(0, best)),
+	};
 }
 
 /**

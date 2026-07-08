@@ -187,6 +187,11 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 
 	uint32_t lockToken = 0;
 	try {
+		// Deliberately plain string concatenation: `backupDir` is UTF-8 from N-API,
+		// and on Windows a std::filesystem::path round-trip (string → path →
+		// .string()) re-encodes through the active code page, corrupting non-ASCII
+		// paths before tryAcquireFileLock's own UTF-8 → wide conversion. "/" is a
+		// valid separator on every platform.
 		lockToken = tryAcquireFileLock(backupDir + "/" + BACKUP_LOCK_FILENAME);
 	} catch (const std::exception& e) {
 		return rocksdb::Status::IOError(e.what());
@@ -204,17 +209,25 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 			state->appMetadata,
 			&state->backupId
 		);
+
+		// After a successful RocksDB backup, snapshot the transaction logs into
+		// transaction_logs/<backupId>/ (all-or-nothing; not incremental). On
+		// failure, roll the whole backup back: CreateNewBackupWithMetadata already
+		// registered the backup, so leaving it would produce a listed backup whose
+		// restore silently yields partial transaction logs. Both cleanups are
+		// best-effort — the snapshot's failure status is what rejects the call.
+		if (status.ok() && state->backupTransactionLogs) {
+			std::filesystem::path logsDir =
+				std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId);
+			status = backupTransactionLogsToDir(state->descriptor.get(), logsDir);
+			if (!status.ok()) {
+				std::error_code removeEc;
+				std::filesystem::remove_all(logsDir, removeEc);
+				engine->DeleteBackup(state->backupId).PermitUncheckedError();
+			}
+		}
 	}
 	delete engine;
-
-	// After a successful RocksDB backup, snapshot the transaction logs into
-	// transaction_logs/<backupId>/ (all-or-nothing; not incremental).
-	if (status.ok() && state->backupTransactionLogs) {
-		status = backupTransactionLogsToDir(
-			state->descriptor.get(),
-			std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId)
-		);
-	}
 
 	releaseFileLock(lockToken);
 	return status;

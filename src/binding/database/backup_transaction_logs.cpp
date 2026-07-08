@@ -53,6 +53,11 @@ static rocksdb::Status copyPrefixWithMtime(
 		std::streamsize toRead =
 			static_cast<std::streamsize>(std::min<uint64_t>(remaining, sizeof(buffer)));
 		in.read(buffer, toRead);
+		if (in.bad()) {
+			// badbit is a genuine read I/O failure (e.g. disk error), distinct from
+			// hitting EOF early — report it as such rather than as corruption.
+			return rocksdb::Status::IOError("Failed to read transaction log file", src.string());
+		}
 		std::streamsize got = in.gcount();
 		if (got <= 0) {
 			// Source shorter than the recorded extent — the tar/backup contract
