@@ -117,7 +117,8 @@ export interface BackupOptions {
 	shareTableFiles?: boolean;
 
 	/**
-	 * `fsync` backup files for crash consistency. Defaults to `true`.
+	 * `fsync` backup files — including the transaction log snapshot when
+	 * `transactionLogs` is enabled — for crash consistency. Defaults to `true`.
 	 */
 	sync?: boolean;
 
@@ -127,6 +128,16 @@ export interface BackupOptions {
 	 * all-or-nothing snapshot per backup (not incremental); `backups.delete()` and
 	 * `backups.purge()` remove the corresponding log snapshots, and
 	 * `backups.restore()` restores them into the database directory.
+	 *
+	 * The snapshot is staged and atomically renamed into place after every file
+	 * is copied (and fsynced, per `sync`), so a crash mid-backup can never leave
+	 * a partial snapshot: a backup id either has its complete log snapshot or
+	 * none at all.
+	 *
+	 * The log snapshot is captured just after the RocksDB engine snapshot, so it
+	 * may include entries committed between the two — the restored logs can run
+	 * slightly ahead of the restored key-value data, never behind it. That bias
+	 * is safe for redo-style logs that are replayed against the restored data.
 	 */
 	transactionLogs?: boolean;
 }
@@ -193,6 +204,9 @@ export interface BackupInfo {
  * it drops every log subtree without a live backup. Note the surviving set comes
  * from `nativeBackupList`, which omits corrupt backups — a still-present but
  * corrupt backup's logs may be pruned (acceptable: it cannot be restored anyway).
+ * This also sweeps `.staging-*` leftovers from a crashed backup process (a
+ * staging name never matches a live backup id); backup creation sweeps them
+ * natively as well, under the backup-dir lock.
  */
 async function pruneOrphanedTransactionLogs(backupDir: string): Promise<void> {
 	const logsRoot = join(backupDir, TRANSACTION_LOGS_DIRNAME);

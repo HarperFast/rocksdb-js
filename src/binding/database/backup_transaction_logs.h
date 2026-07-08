@@ -31,6 +31,24 @@ struct NamedTransactionLogBackupEntry final {
 std::vector<NamedTransactionLogBackupEntry> collectTransactionLogBackupEntries(DBDescriptor* descriptor);
 
 /**
+ * Prefix of the staging directory a snapshot is copied into before being
+ * atomically renamed to its final `<backupId>` name. Dot-prefixed so it can
+ * never collide with a backup id. A directory still carrying this prefix is a
+ * crashed backup's leftover: `removeStaleTransactionLogStaging` sweeps them at
+ * backup time (under the backup-dir lock) and `backups.purge` prunes them as
+ * orphans (they never match a live id).
+ */
+inline constexpr const char* TRANSACTION_LOG_STAGING_PREFIX = ".staging-";
+
+/**
+ * Best-effort removal of every `.staging-*` leftover under `logsRoot`
+ * (`<backupDir>/transaction_logs`). Must only run while holding the backup
+ * directory's single-writer lock — that lock is what guarantees no live backup
+ * is mid-stage. A missing `logsRoot` is a no-op.
+ */
+void removeStaleTransactionLogStaging(const std::filesystem::path& logsRoot);
+
+/**
  * Copies the transaction log snapshot into `destBaseDir` (e.g.
  * `<backupDir>/transaction_logs/<backupId>`), laying files out as
  * `<destBaseDir>/<store>/<file>`. Rotated (immutable) files are hard-linked
@@ -40,10 +58,23 @@ std::vector<NamedTransactionLogBackupEntry> collectTransactionLogBackupEntries(D
  * and `txn.state` are always copied up to their captured byte limit. The
  * source mtime is preserved on every destination so the store's age-based
  * rotation/retention stays correct after a restore.
+ *
+ * Crash atomicity: the snapshot is staged in a sibling
+ * `TRANSACTION_LOG_STAGING_PREFIX` directory and atomically renamed into
+ * `destBaseDir` only after every file copied — the final path either holds the
+ * complete snapshot or nothing, never a partial subtree (the backup id is
+ * already durably registered with RocksDB by the time this runs, so a partial
+ * subtree at the final path would silently restore incomplete logs). When no
+ * store has anything to snapshot, `destBaseDir` is not created at all.
+ *
+ * `sync` mirrors `BackupEngineOptions::sync`: when set, every written file,
+ * every created directory, and the publishing rename are fsynced, giving the
+ * log payload the same crash durability as the RocksDB files in the backup.
  */
 rocksdb::Status backupTransactionLogsToDir(
 	DBDescriptor* descriptor,
-	const std::filesystem::path& destBaseDir
+	const std::filesystem::path& destBaseDir,
+	bool sync
 );
 
 } // namespace rocksdb_js

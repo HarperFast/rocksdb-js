@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -179,6 +180,54 @@ describe('Transaction log backups', () => {
 			await backups.restore(backupDir, restoreDir);
 			expect(existsSync(straggler)).toBe(false);
 			expect(existsSync(join(restoreDir, 'transaction_logs', 'wipelog', '1.txnlog'))).toBe(true);
+		}));
+
+	it('sweeps stale staging directories left by a crashed backup', () =>
+		dbRunner(async ({ db }) => {
+			await writeLog(db, 'stagelog', 2);
+			const backupDir = tempPath();
+			await db.backup(backupDir, { transactionLogs: true });
+
+			// Simulate a backup process that died mid-snapshot: a partial staging
+			// directory that was never renamed into place.
+			const stale = join(backupDir, 'transaction_logs', '.staging-999');
+			mkdirSync(join(stale, 'stagelog'), { recursive: true });
+			writeFileSync(join(stale, 'stagelog', '1.txnlog'), 'partial');
+
+			const id = await db.backup(backupDir, { transactionLogs: true });
+			expect(existsSync(stale)).toBe(false);
+			expect(existsSync(join(backupDir, 'transaction_logs', String(id)))).toBe(true);
+		}));
+
+	it('purge prunes stale staging directories as orphans', () =>
+		dbRunner(async ({ db }) => {
+			await writeLog(db, 'stagepurge', 2);
+			const backupDir = tempPath();
+			await db.backup(backupDir, { transactionLogs: true });
+
+			const stale = join(backupDir, 'transaction_logs', '.staging-777');
+			mkdirSync(stale, { recursive: true });
+
+			await backups.purge(backupDir, 1);
+			expect(existsSync(stale)).toBe(false);
+		}));
+
+	it('a staged (unpublished) snapshot is never restored', () =>
+		dbRunner(async ({ db }) => {
+			await writeLog(db, 'partial', 3);
+			const backupDir = tempPath();
+			const id = await db.backup(backupDir, { transactionLogs: true });
+
+			// Simulate a crash before the atomic publish: the snapshot exists only
+			// under its staging name.
+			const logsRoot = join(backupDir, 'transaction_logs');
+			renameSync(join(logsRoot, String(id)), join(logsRoot, `.staging-${id}`));
+
+			// The restore succeeds and treats the backup as having captured no logs:
+			// the destination gets no (partial) transaction logs.
+			const restoreDir = tempPath();
+			await backups.restore(backupDir, restoreDir);
+			expect(existsSync(join(restoreDir, 'transaction_logs'))).toBe(false);
 		}));
 
 	it('restored logs do not contain entries written after the backup', () =>

@@ -200,6 +200,14 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		return rocksdb::Status::Busy("Backup directory is locked: " + backupDir);
 	}
 
+	// Holding the exclusive directory lock means no other writer can be
+	// mid-snapshot, so any transaction-log staging directory found here was left
+	// by a crashed backup — sweep it before creating the new backup
+	// (`backups.purge` also prunes such leftovers as orphans).
+	if (state->backupTransactionLogs) {
+		removeStaleTransactionLogStaging(std::filesystem::path(backupDir) / "transaction_logs");
+	}
+
 	rocksdb::BackupEngine* engine = nullptr;
 	rocksdb::Status status = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
 	if (status.ok()) {
@@ -211,18 +219,19 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		);
 
 		// After a successful RocksDB backup, snapshot the transaction logs into
-		// transaction_logs/<backupId>/ (all-or-nothing; not incremental). On
-		// failure, roll the whole backup back: CreateNewBackupWithMetadata already
-		// registered the backup, so leaving it would produce a listed backup whose
-		// restore silently yields partial transaction logs. Both cleanups are
-		// best-effort — the snapshot's failure status is what rejects the call.
+		// transaction_logs/<backupId>/ (all-or-nothing; not incremental). The
+		// snapshot is staged and atomically renamed into place — and fsynced when
+		// `sync` is set — inside backupTransactionLogsToDir, so a crash mid-copy
+		// can never leave a partial subtree at the final path. On failure, roll
+		// the whole backup back: CreateNewBackupWithMetadata already registered
+		// the backup, so leaving it would produce a listed backup whose restore
+		// silently yields no transaction logs. The rollback is best-effort — the
+		// snapshot's failure status is what rejects the call.
 		if (status.ok() && state->backupTransactionLogs) {
 			std::filesystem::path logsDir =
 				std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId);
-			status = backupTransactionLogsToDir(state->descriptor.get(), logsDir);
+			status = backupTransactionLogsToDir(state->descriptor.get(), logsDir, state->engineOptions.sync);
 			if (!status.ok()) {
-				std::error_code removeEc;
-				std::filesystem::remove_all(logsDir, removeEc);
 				engine->DeleteBackup(state->backupId).PermitUncheckedError();
 			}
 		}
