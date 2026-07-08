@@ -260,9 +260,15 @@ static void executeLogWork(TransactionCommitState* state) {
  */
 static void executeCommitWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
-	// The log stage already failed the commit on any invalid-handle condition;
-	// only proceed past here with a usable handle.
-	if (txnHandle && txnHandle->dbHandle && txnHandle->dbHandle->descriptor) {
+	// The log stage already failed the commit on any invalid-handle condition,
+	// but the handle can also be torn out between the stages (e.g. a timed-out
+	// DBHandle::close() resetting the descriptor mid-pipeline). Never let a
+	// commit that was skipped here resolve as success.
+	if (!txnHandle || !txnHandle->dbHandle || !txnHandle->dbHandle->descriptor) {
+		if (state->status.ok()) {
+			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+		}
+	} else {
 		auto descriptor = txnHandle->dbHandle->descriptor;
 
 		// ensure the log stage (or handle validation) hasn't errored
@@ -477,6 +483,13 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 		if (descriptor) {
 			descriptor->finishCommitCompletion(env);
 		}
+	} else if (state->handle) {
+		// Still close the txn handle so it is removed from the descriptor's
+		// transactions map and the native RocksDB transaction is destroyed —
+		// the descriptor may be shared with (and outlive us on) other envs.
+		// close() is cross-thread safe: it skips its napi_delete_reference
+		// off the owning thread.
+		state->handle->close();
 	}
 
 	delete state;
@@ -555,6 +568,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 	auto dbHandle = (*txnHandle)->dbHandle;
 	CommitThreadMode mode = commitThreadMode();
+	bool completionsClosed = false;
 	if (mode != CommitThreadMode::Legacy && dbHandle && dbHandle->descriptor) {
 		// The commit lanes are owned by the descriptor and drained/joined before
 		// the descriptor is destroyed; and an in-flight commit's state pins the
@@ -565,44 +579,53 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 		// Ensure this env has a completion tsfn and account the dispatch (refs
 		// the tsfn as the env goes idle->busy so the event loop stays alive).
-		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs));
+		// When the descriptor's completion plumbing has already shut down (a
+		// commit racing another env's close), fall through to the legacy path
+		// below rather than re-creating a tsfn the close will never release.
+		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed));
+		if (!completionsClosed) {
+			// register the commit with the transaction handle so close() can wait
+			(*txnHandle)->registerAsyncWork();
 
-		// register the commit with the transaction handle so close() can wait
-		(*txnHandle)->registerAsyncWork();
+			// Commit-lane stage: RocksDB commit, then marshal the completion
+			// back to the originating env.
+			auto commitStage = [descriptor, state]() {
+				executeCommitWork(state);
+				if (unsigned delay = commitDelayMs()) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+				}
+				if (!descriptor->dispatchCommitCompletion(state->env, state)) {
+					// Env torn down (e.g. worker terminate) — the completion has
+					// nowhere to run. Close the txn handle (cross-thread safe) so
+					// the shared descriptor doesn't retain the transaction, then
+					// drop the state.
+					DEBUG_LOG("%p Transaction::Commit commit thread: env gone, dropping completion\n", state);
+					if (state->handle) {
+						state->handle->close();
+					}
+					delete state;
+				}
+			};
 
-		// Commit-lane stage: RocksDB commit, then marshal the completion back
-		// to the originating env. dispatchCommitCompletion returns false if
-		// that env was torn down (e.g. worker terminate) — the completion has
-		// nowhere to run, so drop the state.
-		auto commitStage = [descriptor, state]() {
-			executeCommitWork(state);
-			if (unsigned delay = commitDelayMs()) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+			if (mode == CommitThreadMode::TwoLane) {
+				// Two-lane pipeline: the log lane writes the transaction-log
+				// batch, then forwards to the commit lane. Every commit passes
+				// through both lanes so total order is preserved.
+				descriptor->logWorker.enqueue([descriptor, state, commitStage]() {
+					executeLogWork(state);
+					descriptor->commitWorker.enqueue(commitStage);
+				});
+			} else {
+				// Single lane (default): both stages run back to back on the
+				// commit lane.
+				descriptor->commitWorker.enqueue([state, commitStage]() {
+					executeLogWork(state);
+					commitStage();
+				});
 			}
-			if (!descriptor->dispatchCommitCompletion(state->env, state)) {
-				DEBUG_LOG("%p Transaction::Commit commit thread: env gone, dropping completion\n", state);
-				delete state;
-			}
-		};
 
-		if (mode == CommitThreadMode::TwoLane) {
-			// Two-lane pipeline: the log lane writes the transaction-log batch,
-			// then forwards to the commit lane. Every commit passes through
-			// both lanes so total order is preserved.
-			descriptor->logWorker.enqueue([descriptor, state, commitStage]() {
-				executeLogWork(state);
-				descriptor->commitWorker.enqueue(commitStage);
-			});
-		} else {
-			// Single lane (default): both stages run back to back on the
-			// commit lane.
-			descriptor->commitWorker.enqueue([state, commitStage]() {
-				executeLogWork(state);
-				commitStage();
-			});
+			NAPI_RETURN_UNDEFINED();
 		}
-
-		NAPI_RETURN_UNDEFINED();
 	}
 
 	// Legacy path: dispatch the commit to the libuv threadpool.

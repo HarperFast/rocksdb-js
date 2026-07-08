@@ -194,6 +194,10 @@ void DBDescriptor::finishClose() {
 			}
 		}
 		this->commitCompletions.clear();
+		// Block any later registerCommitCompletion (a commit racing this close
+		// from another env) from re-creating a tsfn that would never be
+		// released; such commits fall back to the legacy libuv path.
+		this->commitCompletionsClosed = true;
 	}
 
 	// We want to ensure that all in-memory data is written to disk
@@ -271,8 +275,12 @@ void DBDescriptor::finishClose() {
 	this->db.reset();
 }
 
-napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs) {
+napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
 	std::lock_guard<std::mutex> lock(this->commitMutex);
+	closed = this->commitCompletionsClosed;
+	if (closed) {
+		return napi_ok;
+	}
 	CommitCompletion& completion = this->commitCompletions[env];
 	if (completion.tsfn == nullptr) {
 		napi_value resourceName;

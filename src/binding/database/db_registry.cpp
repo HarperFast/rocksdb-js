@@ -148,18 +148,27 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
 	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<std::condition_variable> condition;
 
-	// Find and remove the descriptor from the registry
+	// Claim the descriptor under the lock but leave the entry in the map until
+	// the close completes (same discipline as CloseDB): the entry is how the
+	// env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
+	// find shared descriptors, so erasing before close would let a worker env
+	// tear down in that window without scrubbing its tsfns from this
+	// descriptor — the close's own release pass would then touch freed tsfns.
+	// It also keeps a concurrent OpenDB waiting on the entry's condition
+	// instead of re-opening the path while its files are being destroyed.
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
-			if (it->first.path == path) {
-				descriptor = it->second.descriptor;
-				it = instance->databases.erase(it);
-				DEBUG_LOG("%p DBRegistry::DestroyDB Found and removed descriptor from registry (ref count = %ld)\n",
-					instance.get(), descriptor ? descriptor.use_count() : 0);
-			} else {
-				++it;
+		for (auto& [key, entry] : instance->databases) {
+			if (key.path == path && entry.descriptor) {
+				if (entry.descriptor->beginClose()) {
+					descriptor = entry.descriptor;
+					condition = entry.condition;
+					DEBUG_LOG("%p DBRegistry::DestroyDB Claimed descriptor close (ref count = %ld)\n",
+						instance.get(), descriptor.use_count());
+				}
+				break;
 			}
 		}
 	}
@@ -169,7 +178,23 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// This should release all DBHandle references
 		DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
 			instance.get(), descriptor.use_count());
-		descriptor->close();
+		descriptor->finishClose();
+
+		// Now that the close is complete, remove the path's entries and wake
+		// any OpenDB waiting on this path.
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
+				if (it->first.path == path) {
+					it = instance->databases.erase(it);
+				} else {
+					++it;
+				}
+			}
+		}
+		if (condition) {
+			condition->notify_all();
+		}
 
 		// After closing, check if there are still lingering references
 		// Should only be our local reference (= 1) at this point
@@ -185,6 +210,17 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// This will trigger the destructor which properly closes the DB
 		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor reference\n", instance.get());
 		descriptor.reset();
+	} else {
+		// No open descriptor claimed; remove any placeholder entries for the
+		// path (an entry mid-close is erased by its closer's guarded erase).
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
+			if (it->first.path == path && !it->second.descriptor) {
+				it = instance->databases.erase(it);
+			} else {
+				++it;
+			}
+		}
 	}
 
 	// Now the database lock should be released, safe to destroy
