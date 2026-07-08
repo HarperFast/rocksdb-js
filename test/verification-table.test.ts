@@ -210,5 +210,156 @@ describe('Verification Table', () => {
 				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
 				expect(db.verifyVersion(key, futureVersion)).toBe(true);
 			}));
+
+		// FIX D: Sequence-number gate for backdated replicated versions.
+		// A version whose wall-clock timestamp predates the oldest open snapshot's
+		// creation time passes Gate 1 (the original wall-clock check), but if that
+		// version was written locally AFTER the snapshot was taken (i.e. its write
+		// sequence number > oldest_snapshot_seq), the snapshot cannot see it.
+		// Gate 2 (sequence-number check) blocks publication in that case.
+		//
+		// Note: rocksdb.oldest-snapshot-sequence returns 0 when no prior writes
+		// exist in the DB (sequence starts at 0). We write a sentinel key first
+		// so the snapshot is taken at sequence >= 1, making Gate 2 detectable.
+		it('suppresses seeding for backdated version written after the open snapshot (FIX D)', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('backdated-key');
+				// A very old timestamp (2001-09-09) that pre-dates any plausible local
+				// snapshot creation time → Gate 1 passes for this version, even with
+				// a snapshot open right now.
+				const backdatedVersion = 1.0e12;
+
+				// Write a sentinel first so the DB has a non-zero write sequence.
+				// Without this, a snapshot taken on an empty DB gets seq=0 and
+				// rocksdb.oldest-snapshot-sequence returns 0 (Gate 2 cannot fire).
+				await db.put(Buffer.from('sentinel'), makeValue(1.5e12));
+
+				// Open a snapshot to pin the current DB sequence (S1 >= 1).
+				const snap = new Transaction(db.store);
+				snap.getBinarySync(Buffer.from('sentinel')); // forces SetSnapshot
+
+				try {
+					// Write the backdated version AFTER the snapshot is open (seq S2 > S1).
+					// This models a replicated write: origin timestamp is old but the local
+					// apply sequence is newer than the open snapshot.
+					await db.put(key, makeValue(backdatedVersion));
+
+					// Attempt to seed the VT. Gate 1 would pass (backdatedVersion << now).
+					// Gate 2 must block because oldest_snapshot_seq (S1) < latest_seq (S2).
+					const native = (db as any).store.db;
+					native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+					expect(db.verifyVersion(key, backdatedVersion)).toBe(false);
+				} finally {
+					snap.abort();
+				}
+
+				// After snapshot drains, the sequence gate passes and the slot settles.
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, backdatedVersion)).toBe(true);
+			}));
+	});
+
+	// FIX A: clear() must invalidate the VT.
+	describe('VT invalidation on clear()', () => {
+		it('verifyVersion returns false after clearSync() on a VT-enabled store', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('clear-me');
+				const version = 1.7e12;
+				await db.put(key, makeValue(version));
+
+				// Seed the VT slot with the version.
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(true);
+
+				// Synchronous clear: VT sweep must follow the data delete.
+				db.clearSync();
+
+				// Slot should be advanced to settled-empty; stale version no longer fresh.
+				expect(db.verifyVersion(key, version)).toBe(false);
+			}));
+
+		it('verifyVersion returns false after async clear() on a VT-enabled store', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('clear-me-async');
+				const version = 1.71e12;
+				await db.put(key, makeValue(version));
+
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(true);
+
+				await db.clear();
+
+				expect(db.verifyVersion(key, version)).toBe(false);
+			}));
+
+		it('a stale expectedVersion read after clearSync does not return FRESH', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('stale-after-clear');
+				const version = 1.72e12;
+				await db.put(key, makeValue(version));
+
+				const native = (db as any).store.db;
+				// Seed the slot.
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(true);
+
+				db.clearSync();
+
+				// A getSync with expectedVersion (the harper "check cache freshness" path)
+				// must fall through to a DB read (key not found), not return FRESH.
+				const result = native.getSync(key, 0, undefined, version);
+				expect(result).not.toBe(FRESH_VERSION_FLAG);
+				expect(result).toBeUndefined();
+			}));
+	});
+
+	// FIX B: non-transactional putSync/removeSync must invalidate the VT.
+	describe('VT invalidation on non-transactional putSync/removeSync', () => {
+		it('putSync advances the slot so a stale expectedVersion is no longer FRESH', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('non-txn-put');
+				const v1 = 1.7e12;
+				const v2 = 1.8e12;
+				await db.put(key, makeValue(v1));
+
+				const native = (db as any).store.db;
+				// Seed the slot with v1.
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, v1)).toBe(true);
+
+				// Non-transactional putSync with a new version.
+				native.putSync(key, makeValue(v2));
+
+				// v1 must no longer verify as FRESH (slot advanced by the write).
+				expect(db.verifyVersion(key, v1)).toBe(false);
+
+				// A getSync with stale expectedVersion must NOT return FRESH_VERSION_FLAG.
+				const result = native.getSync(key, 0, undefined, v1);
+				expect(result).not.toBe(FRESH_VERSION_FLAG);
+			}));
+
+		it('removeSync advances the slot so a stale expectedVersion is no longer FRESH', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('non-txn-remove');
+				const v1 = 1.7e12;
+				await db.put(key, makeValue(v1));
+
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, v1)).toBe(true);
+
+				// Non-transactional removeSync invalidates the slot.
+				native.removeSync(key);
+
+				expect(db.verifyVersion(key, v1)).toBe(false);
+
+				// Key is gone and slot is settled-empty; FRESH_VERSION_FLAG must NOT fire.
+				const result = native.getSync(key, 0, undefined, v1);
+				expect(result).not.toBe(FRESH_VERSION_FLAG);
+				expect(result).toBeUndefined();
+			}));
 	});
 });
