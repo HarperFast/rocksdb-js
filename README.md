@@ -1497,15 +1497,16 @@ const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' 
 
 `BackupOptions`:
 
-| Option                    | Type      | Default                | Description                                                           |
-| ------------------------- | --------- | ---------------------- | --------------------------------------------------------------------- |
-| `flushBeforeBackup`       | `boolean` | `true` if WAL disabled | Flush the memtable before backing up.                                 |
-| `metadata`                | `string`  | `''`                   | Application metadata stored with the backup, returned by `list()`.    |
-| `shareTableFiles`         | `boolean` | `true`                 | Share files between backups to enable incremental backups.            |
-| `shareFilesWithChecksum`  | `boolean` | `true`                 | Distinguish shared files by checksum to avoid cross-database clashes. |
-| `backupLogFiles`          | `boolean` | `true`                 | Include write-ahead log files in the backup.                          |
-| `sync`                    | `boolean` | `true`                 | `fsync` backup files for crash consistency.                           |
-| `maxBackgroundOperations` | `number`  | `1`                    | Number of background threads used to copy files.                      |
+| Option                    | Type      | Default                | Description                                                                         |
+| ------------------------- | --------- | ---------------------- | ----------------------------------------------------------------------------------- |
+| `backupLogFiles`          | `boolean` | `true`                 | Include write-ahead log files in the backup.                                        |
+| `flushBeforeBackup`       | `boolean` | `true` if WAL disabled | Flush the memtable before backing up.                                               |
+| `maxBackgroundOperations` | `number`  | `1`                    | Number of background threads used to copy files.                                    |
+| `metadata`                | `string`  | `''`                   | Application metadata stored with the backup, returned by `list()`.                  |
+| `shareFilesWithChecksum`  | `boolean` | `true`                 | Distinguish shared files by checksum to avoid cross-database clashes.               |
+| `shareTableFiles`         | `boolean` | `true`                 | Share files between backups to enable incremental backups.                          |
+| `sync`                    | `boolean` | `true`                 | `fsync` backup files for crash consistency.                                         |
+| `transactionLogs`         | `boolean` | `false`                | Snapshot the transaction log store into `<backupDir>/transaction_logs/<backupId>/`. |
 
 ### `db.backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>`
 

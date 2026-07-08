@@ -73,11 +73,21 @@ export async function withBackupDirLock<T>(backupDir: string, fn: () => Promise<
  */
 export interface BackupOptions {
 	/**
+	 * Include write-ahead log files in the backup. Defaults to `true`.
+	 */
+	backupLogFiles?: boolean;
+
+	/**
 	 * Flush the memtable before backing up. Defaults to `true` when the database
 	 * was opened with `disableWAL` (otherwise unflushed data would be lost from
 	 * the backup), and `false` otherwise.
 	 */
 	flushBeforeBackup?: boolean;
+
+	/**
+	 * Number of background threads used to copy files. Defaults to `1`.
+	 */
+	maxBackgroundOperations?: number;
 
 	/**
 	 * Arbitrary application metadata stored with the backup and returned by
@@ -86,21 +96,16 @@ export interface BackupOptions {
 	metadata?: string;
 
 	/**
-	 * Share table/blob files between backups in the same directory to enable
-	 * incremental backups. Defaults to `true`.
-	 */
-	shareTableFiles?: boolean;
-
-	/**
 	 * Distinguish shared files by checksum to avoid collisions across databases.
 	 * Defaults to `true`. Only relevant when `shareTableFiles` is enabled.
 	 */
 	shareFilesWithChecksum?: boolean;
 
 	/**
-	 * Include write-ahead log files in the backup. Defaults to `true`.
+	 * Share table/blob files between backups in the same directory to enable
+	 * incremental backups. Defaults to `true`.
 	 */
-	backupLogFiles?: boolean;
+	shareTableFiles?: boolean;
 
 	/**
 	 * `fsync` backup files for crash consistency. Defaults to `true`.
@@ -108,12 +113,7 @@ export interface BackupOptions {
 	sync?: boolean;
 
 	/**
-	 * Number of background threads used to copy files. Defaults to `1`.
-	 */
-	maxBackgroundOperations?: number;
-
-	/**
-	 * Also snapshot the transaction log store into
+	 * Snapshot the transaction log store into
 	 * `<backupDir>/transaction_logs/<backupId>/`. Defaults to `false`. This is an
 	 * all-or-nothing snapshot per backup (not incremental); `backups.delete()` and
 	 * `backups.purge()` remove the corresponding log snapshots, and
