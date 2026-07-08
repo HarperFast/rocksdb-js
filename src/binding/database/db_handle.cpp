@@ -101,7 +101,7 @@ rocksdb::Status DBHandle::clear() {
 	rocksdb::Status clearStatus = rocksdb::DeleteFilesInRange(
 		this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr
 	);
-	// FIX A: After data is deleted, advance all non-lock VT slots to fresh
+	// After data is deleted, advance all non-lock VT slots to fresh
 	// settled-empty generations. This prevents stale pre-clear versions from
 	// being re-published via a concurrent populate CAS. The sweep is coarse
 	// (covers all slots in the process-global table) since slot provenance is

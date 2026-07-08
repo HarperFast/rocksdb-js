@@ -1019,7 +1019,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
-	// FIX C: For transactional reads, establish the snapshot BEFORE loading
+	// For transactional reads, establish the snapshot BEFORE loading
 	// the VT slot. If we loaded the slot first, a complete write cycle
 	// (lock → commit → settle) landing between the slot load and
 	// ensureSnapshot() would let us pass the FRESH check for V_old while
@@ -1489,7 +1489,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
-		// FIX B: Lock the VT slot before the write and settle it after, so
+		// Lock the VT slot before the write and settle it after, so
 		// readers see a lock (not a stale version) during the write window.
 		// This mirrors the transactional path (putSync → lockVTSlot → commit →
 		// releaseWriteIntent). Without pre-locking, a reader that observes the
@@ -1558,7 +1558,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
-		// FIX B: Same lock-before-write, settle-after pattern as PutSync above.
+		// Same lock-before-write, settle-after pattern as PutSync above.
 		VerificationTable* vt = (*dbHandle)->enableVerificationTable
 			? DBSettings::getInstance().getVerificationTableRaw()
 			: nullptr;

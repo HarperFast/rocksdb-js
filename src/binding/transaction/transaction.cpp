@@ -650,7 +650,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
-	// FIX C: Establish the transaction snapshot BEFORE loading the VT slot.
+	// Establish the transaction snapshot BEFORE loading the VT slot.
 	// If we loaded the slot first, a complete write cycle (lock → commit →
 	// settle) landing in the window between the slot load and the snapshot-set
 	// could let us observe V_old in the slot, pass the fast-path check, and

@@ -117,7 +117,7 @@ inline void vtPopulateIfSettled(
 		if (version == 0 || vtIsLock(version)) return;
 	}
 
-	// FIX D: Two-gate snapshot check.
+	// Two-gate snapshot check.
 	//
 	// Gate 1 (wall-clock, pre-filter): suppresses publication when the version
 	// is forward-dated relative to the oldest open snapshot — the common case
