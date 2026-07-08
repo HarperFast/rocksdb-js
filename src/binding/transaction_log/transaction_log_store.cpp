@@ -362,6 +362,16 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 	TransactionLogBackupEntry stateEntry;
 	bool hasStateEntry = false;
 	{
+		// databaseFlushed() (RocksDB's OnFlushComplete callback) rewrites txn.state
+		// in place under flushedStateMutex, and a flush can fire mid-backup — an
+		// unsynchronized read could tear, decoding a position that is neither the
+		// old nor the new value and may point past the log extents captured below
+		// (same discipline as getLastFlushedPosition()). The lock is scoped to this
+		// block, which touches nothing but the 8-byte state file, and is released
+		// before dataSetsMutex is taken below (ordering: dataSetsMutex →
+		// flushedStateMutex, never the reverse).
+		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+
 		std::filesystem::path statePath = this->path / "txn.state";
 		std::error_code existsEc;
 		if (std::filesystem::exists(statePath, existsEc) && !existsEc) {
