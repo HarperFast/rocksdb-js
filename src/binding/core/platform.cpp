@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstring>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -82,8 +83,12 @@ int32_t deriveMaxOpenFiles(uint64_t effectiveOpenFileLimit) {
 
 void setThreadName(const char* name) {
 #if defined(__linux__)
-	// Linux caps thread names at 16 bytes including the null terminator.
-	::pthread_setname_np(::pthread_self(), name);
+	// Linux caps thread names at 16 bytes including the null terminator;
+	// longer names fail with ERANGE (not truncated), so truncate ourselves.
+	char truncated[16];
+	::strncpy(truncated, name, sizeof(truncated) - 1);
+	truncated[sizeof(truncated) - 1] = '\0';
+	::pthread_setname_np(::pthread_self(), truncated);
 #elif defined(__APPLE__)
 	::pthread_setname_np(name);
 #elif defined(_WIN32)

@@ -11,7 +11,15 @@ const fixturePath = join(__dirname, 'fixtures', 'fork-commit-teardown.mts');
  * signal / non-zero exit instead of taking down vitest. Loops a few iterations
  * to give CI a useful detection rate while keeping wall time bounded.
  */
-async function expectSurvives(iterations = process.versions.bun ? 1 : 2): Promise<void> {
+// One iteration where worker spawns are slow (Bun; macOS/Windows CI), two on
+// Linux Node — see the fixture's ROUNDS note.
+async function expectSurvives(
+	iterations = process.versions.bun ||
+	process.platform === 'darwin' ||
+	process.platform === 'win32'
+		? 1
+		: 2
+): Promise<void> {
 	for (let i = 0; i < iterations; i++) {
 		const { code, signal } = await spawnRepro(generateDBPath());
 		expect(signal, `iteration=${i}`).toBeNull();
