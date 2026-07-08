@@ -9,6 +9,7 @@
 #include "database/db_settings.h"
 #include "napi/macros.h"
 #include "transaction/transaction.h"
+#include "transaction/transaction_handle.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -473,6 +474,14 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 		// owns the unregister; the name may now point to a freshly-created
 		// family, so unregistering here would corrupt the registry.
 		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+		// Dropping a column family bulk-deletes its data exactly like clear();
+		// sweep the VT so pre-drop versions can no longer verify FRESH (see
+		// DBHandle::clear). Only on the ok path — on already-dropped, the
+		// handle that performed the drop owns the sweep.
+		if ((*dbHandle)->enableVerificationTable) {
+			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) vt->settleAllSlots();
+		}
 	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -519,6 +528,14 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 		// owns the unregister; the name may now point to a freshly-created
 		// family, so unregistering here would corrupt the registry.
 		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+		// Dropping a column family bulk-deletes its data exactly like clear();
+		// sweep the VT so pre-drop versions can no longer verify FRESH (see
+		// DBHandle::clear). Only on the ok path — on already-dropped, the
+		// handle that performed the drop owns the sweep.
+		if ((*dbHandle)->enableVerificationTable) {
+			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) vt->settleAllSlots();
+		}
 	}
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
@@ -1002,10 +1019,32 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
+	// For transactional reads, establish the snapshot BEFORE loading
+	// the VT slot. If we loaded the slot first, a complete write cycle
+	// (lock → commit → settle) landing between the slot load and
+	// ensureSnapshot() would let us pass the FRESH check for V_old while
+	// pinning a snapshot that already sees V_new — a torn view. Establishing
+	// the snapshot first ensures the write cycle's lock is visible in the VT
+	// before our load, so any FRESH hit is consistent with the snapshot.
+	// For non-transactional reads (no txnId) there is no snapshot to establish,
+	// so the TOCTOU does not apply.
+	std::shared_ptr<TransactionHandle> txnHandle;
+	if (txnIdType == napi_number) {
+		uint32_t txnId;
+		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
+		txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		if (!txnHandle) {
+			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
+			NAPI_RETURN_UNDEFINED();
+		}
+		txnHandle->ensureSnapshot();
+	}
+
 	std::atomic<uint64_t>* vtSlot = nullptr;
-	// Slot value observed up front (before the read below). Reused for both the
-	// fast-path check and the post-read conditional CAS, so the populate only
-	// succeeds if nothing changed the slot across the read.
+	// Slot value observed up front (after snapshot is established). Reused for
+	// both the fast-path check and the post-read conditional CAS, so the
+	// populate only succeeds if nothing changed the slot across the read.
 	uint64_t vtObserved = 0;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
@@ -1013,22 +1052,8 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	// Fast path: caller-supplied version matches the table — return FRESH
-	// sentinel without touching RocksDB.
+	// sentinel without touching RocksDB. Snapshot already established above.
 	if (vtSlot != nullptr && hasExpectedVersion && vtObserved == expectedVersion) {
-		// When this read belongs to a transaction, still establish that
-		// transaction's snapshot even though the value is served from the VT.
-		// Optimistic conflict detection at commit time needs a read-time
-		// snapshot baseline; skipping it lets a read-modify-write whose read
-		// is served from the VT commit with no snapshot, so concurrent writes
-		// to the same key are not detected (lost updates).
-		if (txnIdType == napi_number) {
-			uint32_t txnId;
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
-			auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
-			if (txnHandle) {
-				txnHandle->ensureSnapshot();
-			}
-		}
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 		return result;
@@ -1043,16 +1068,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// Tracks the snapshot the read observed (nullptr ⇒ latest committed state),
 	// so the VT populate can tell whether the value just read is the latest.
 	const rocksdb::Snapshot* readSnapshot = nullptr;
-	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
-
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
-		if (!txnHandle) {
-			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
-		}
+	if (txnHandle) {
 		status = txnHandle->getSync(keySlice, value, readOptions, *dbHandle);
 		readSnapshot = txnHandle->readSnapshot();
 	} else {
@@ -1473,6 +1489,23 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
+		// Lock the VT slot before the write and settle it after, so
+		// readers see a lock (not a stale version) during the write window.
+		// This mirrors the transactional path (putSync → lockVTSlot → commit →
+		// releaseWriteIntent). Without pre-locking, a reader that observes the
+		// old VT version just before the write and populates it just after the
+		// write completes (but before any settle) could publish a stale value.
+		VerificationTable* vt = (*dbHandle)->enableVerificationTable
+			? DBSettings::getInstance().getVerificationTableRaw()
+			: nullptr;
+		std::atomic<uint64_t>* vtSlot = nullptr;
+		LockTracker* vtTracker = nullptr;
+		if (vt) {
+			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
+			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
+			vtTracker = vt->lockSlotForWrite(vtSlot, dbPtr);
+		}
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		status = (*dbHandle)->descriptor->db->Put(
@@ -1481,6 +1514,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			keySlice,
 			valueSlice
 		);
+		if (vt && vtSlot) {
+			vt->releaseWriteIntent(vtSlot, vtTracker);
+		}
 	}
 
 	if (!status.ok()) {
@@ -1522,6 +1558,18 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
+		// Same lock-before-write, settle-after pattern as PutSync above.
+		VerificationTable* vt = (*dbHandle)->enableVerificationTable
+			? DBSettings::getInstance().getVerificationTableRaw()
+			: nullptr;
+		std::atomic<uint64_t>* vtSlot = nullptr;
+		LockTracker* vtTracker = nullptr;
+		if (vt) {
+			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
+			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
+			vtTracker = vt->lockSlotForWrite(vtSlot, dbPtr);
+		}
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		status = (*dbHandle)->descriptor->db->Delete(
@@ -1529,6 +1577,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			(*dbHandle)->getColumnFamilyHandle(),
 			keySlice
 		);
+		if (vt && vtSlot) {
+			vt->releaseWriteIntent(vtSlot, vtTracker);
+		}
 	}
 
 	if (!status.ok()) {

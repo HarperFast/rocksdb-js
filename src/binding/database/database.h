@@ -117,20 +117,52 @@ inline void vtPopulateIfSettled(
 		if (version == 0 || vtIsLock(version)) return;
 	}
 
+	// Two-gate snapshot check.
+	//
+	// Gate 1 (wall-clock, pre-filter): suppresses publication when the version
+	// is forward-dated relative to the oldest open snapshot — the common case
+	// for locally-minted versions that race with a snapshot reader. Fast: a
+	// single GetIntProperty call.
+	//
+	// Gate 2 (sequence number): suppresses publication when any open snapshot
+	// predates the latest write in the DB. This catches backdated replicated /
+	// catch-up writes whose origin timestamp (Gate 1's comparand) lies BEFORE
+	// the oldest snapshot's creation time but whose local write sequence lies
+	// AFTER the snapshot's sequence — a case Gate 1 incorrectly passes. We
+	// capture the latest sequence at the point of population; if oldest-snapshot
+	// sequence < latest sequence, some snapshot does not see the latest write
+	// and we defer publication until the snapshot drains.
+	//
+	// Gate 2 is conservative in active systems (any open snapshot + any write
+	// after the snapshot blocks publication). In practice Harper transaction
+	// bodies are short-lived, so slots settle quickly between transactions.
+	// "rocksdb.oldest-snapshot-sequence" is available in the vendored RocksDB
+	// (confirmed in include/rocksdb/db.h kOldestSnapshotSequence).
 	uint64_t oldestSnapshotSec = 0;
-	// rocksdb.oldest-snapshot-time is the wall-clock unix-seconds creation time
-	// of the oldest live snapshot, or 0 when none are open.
-	if (db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
-	    oldestSnapshotSec != 0) {
-		// `version` is the host-endian bit pattern of the float64 ms timestamp
-		// Harper writes at offset 0 of each record; reinterpret it to compare
-		// against the snapshot's wall-clock time. Conservative at second
-		// granularity: require the oldest snapshot to have been created at/after
-		// the latest version's millisecond, so every open snapshot already sees
-		// it (single accessible value). Otherwise leave the slot unpopulated.
+	bool hasOpenSnapshot = db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
+	                       oldestSnapshotSec != 0;
+	if (hasOpenSnapshot) {
+		// Gate 1: forward-dated version.
 		double versionMs;
 		std::memcpy(&versionMs, &version, sizeof(double));
 		if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) {
+			return;
+		}
+		// Gate 2: sequence-number gate for backdated replicated versions.
+		// Only run when Gate 1 passes (there IS an open snapshot, but the
+		// version's timestamp predates it — exactly the backdated-write case).
+		// No `oldestSnapshotSeq != 0` guard: a snapshot taken on a fresh DB
+		// legitimately has sequence 0, and exempting it would let a backdated
+		// write at seq > 0 publish past it. hasOpenSnapshot already guarantees
+		// a snapshot exists; if GetIntProperty fails (property unsupported)
+		// the && short-circuit skips the gate.
+		uint64_t oldestSnapshotSeq = 0;
+		uint64_t latestSeq = db->GetLatestSequenceNumber();
+		if (db->GetIntProperty(cf, "rocksdb.oldest-snapshot-sequence", &oldestSnapshotSeq) &&
+		    oldestSnapshotSeq < latestSeq) {
+			// Some snapshot was taken before the latest write. We cannot
+			// determine without the key's individual write sequence whether
+			// that snapshot sees this version, so we defer conservatively.
 			return;
 		}
 	}

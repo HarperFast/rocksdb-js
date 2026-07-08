@@ -2,7 +2,9 @@
 #include "database/db_handle.h"
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
+#include "database/db_settings.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/verification_table.h"
 
 namespace rocksdb_js {
 
@@ -96,7 +98,24 @@ rocksdb::Status DBHandle::clear() {
 		return status;
 	}
 	// it appears we do not need to call WaitForCompact for this to work
-	return rocksdb::DeleteFilesInRange(this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr);
+	rocksdb::Status clearStatus = rocksdb::DeleteFilesInRange(
+		this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr
+	);
+	// After data is deleted, advance all non-lock VT slots to fresh
+	// settled-empty generations. This prevents stale pre-clear versions from
+	// being re-published via a concurrent populate CAS. The sweep is coarse
+	// (covers all slots in the process-global table) since slot provenance is
+	// not tracked for non-lock slots; the cost is spurious cache misses for
+	// other stores, which is acceptable given clear() is already a rare,
+	// expensive operation. Lock slots are skipped — the write-intent lifecycle
+	// handles them independently. We sweep regardless of clearStatus: if the
+	// delete partially succeeded, any keys that were removed must not remain
+	// cacheable via stale VT entries.
+	if (this->enableVerificationTable) {
+		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) vt->settleAllSlots();
+	}
+	return clearStatus;
 }
 
 /**
