@@ -650,9 +650,19 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 
 	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
 
+	// FIX C: Establish the transaction snapshot BEFORE loading the VT slot.
+	// If we loaded the slot first, a complete write cycle (lock → commit →
+	// settle) landing in the window between the slot load and the snapshot-set
+	// could let us observe V_old in the slot, pass the fast-path check, and
+	// then pin a snapshot that already sees V_new — a torn view where the VT
+	// says FRESH for V_old but the transaction's snapshot is post-V_new.
+	// Pinning the snapshot first ensures that the write cycle's lock clears
+	// the slot before our load, so a FRESH hit is consistent with the snapshot.
+	(*txnHandle)->ensureSnapshot();
+
 	std::atomic<uint64_t>* vtSlot = nullptr;
-	// Observe the slot before the read; reused for the fast-path check and the
-	// post-read conditional CAS.
+	// Observe the slot after the snapshot is established; reused for the
+	// fast-path check and the post-read conditional CAS.
 	uint64_t vtObserved = 0;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
@@ -661,10 +671,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 
 	// VT fast-path: caller-supplied version matches the table → return FRESH
 	if (vtSlot && hasExpectedVersion && vtObserved == expectedVersion) {
-		// Serving from the VT still counts as a read within this transaction:
-		// establish the snapshot so optimistic conflict detection has a
-		// read-time baseline (see TransactionHandle::ensureSnapshot).
-		(*txnHandle)->ensureSnapshot();
+		// Snapshot already established above; no further action needed.
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 		return result;
