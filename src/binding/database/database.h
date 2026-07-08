@@ -151,10 +151,15 @@ inline void vtPopulateIfSettled(
 		// Gate 2: sequence-number gate for backdated replicated versions.
 		// Only run when Gate 1 passes (there IS an open snapshot, but the
 		// version's timestamp predates it — exactly the backdated-write case).
+		// No `oldestSnapshotSeq != 0` guard: a snapshot taken on a fresh DB
+		// legitimately has sequence 0, and exempting it would let a backdated
+		// write at seq > 0 publish past it. hasOpenSnapshot already guarantees
+		// a snapshot exists; if GetIntProperty fails (property unsupported)
+		// the && short-circuit skips the gate.
 		uint64_t oldestSnapshotSeq = 0;
 		uint64_t latestSeq = db->GetLatestSequenceNumber();
 		if (db->GetIntProperty(cf, "rocksdb.oldest-snapshot-sequence", &oldestSnapshotSeq) &&
-		    oldestSnapshotSeq != 0 && oldestSnapshotSeq < latestSeq) {
+		    oldestSnapshotSeq < latestSeq) {
 			// Some snapshot was taken before the latest write. We cannot
 			// determine without the key's individual write sequence whether
 			// that snapshot sees this version, so we defer conservatively.

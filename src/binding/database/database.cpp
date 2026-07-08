@@ -474,6 +474,14 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 		// owns the unregister; the name may now point to a freshly-created
 		// family, so unregistering here would corrupt the registry.
 		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+		// Dropping a column family bulk-deletes its data exactly like clear();
+		// sweep the VT so pre-drop versions can no longer verify FRESH (see
+		// DBHandle::clear). Only on the ok path — on already-dropped, the
+		// handle that performed the drop owns the sweep.
+		if ((*dbHandle)->enableVerificationTable) {
+			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) vt->settleAllSlots();
+		}
 	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -520,6 +528,14 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 		// owns the unregister; the name may now point to a freshly-created
 		// family, so unregistering here would corrupt the registry.
 		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
+		// Dropping a column family bulk-deletes its data exactly like clear();
+		// sweep the VT so pre-drop versions can no longer verify FRESH (see
+		// DBHandle::clear). Only on the ok path — on already-dropped, the
+		// handle that performed the drop owns the sweep.
+		if ((*dbHandle)->enableVerificationTable) {
+			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) vt->settleAllSlots();
+		}
 	}
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());

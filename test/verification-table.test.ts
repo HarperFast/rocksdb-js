@@ -218,9 +218,8 @@ describe('Verification Table', () => {
 		// sequence number > oldest_snapshot_seq), the snapshot cannot see it.
 		// Gate 2 (sequence-number check) blocks publication in that case.
 		//
-		// Note: rocksdb.oldest-snapshot-sequence returns 0 when no prior writes
-		// exist in the DB (sequence starts at 0). We write a sentinel key first
-		// so the snapshot is taken at sequence >= 1, making Gate 2 detectable.
+		// This case uses a sentinel write so the snapshot sits at sequence >= 1;
+		// the following test covers a snapshot taken at sequence 0 (fresh DB).
 		it('suppresses seeding for backdated version written after the open snapshot (FIX D)', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = Buffer.from('backdated-key');
@@ -229,9 +228,7 @@ describe('Verification Table', () => {
 				// a snapshot open right now.
 				const backdatedVersion = 1.0e12;
 
-				// Write a sentinel first so the DB has a non-zero write sequence.
-				// Without this, a snapshot taken on an empty DB gets seq=0 and
-				// rocksdb.oldest-snapshot-sequence returns 0 (Gate 2 cannot fire).
+				// Sentinel write so the snapshot is taken at a non-zero sequence.
 				await db.put(Buffer.from('sentinel'), makeValue(1.5e12));
 
 				// Open a snapshot to pin the current DB sequence (S1 >= 1).
@@ -254,6 +251,35 @@ describe('Verification Table', () => {
 				}
 
 				// After snapshot drains, the sequence gate passes and the slot settles.
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, backdatedVersion)).toBe(true);
+			}));
+
+		// A snapshot taken on a fresh DB legitimately has sequence 0; Gate 2 must
+		// still protect it (no `oldestSnapshotSeq != 0` exemption — a backdated
+		// write at seq > 0 would otherwise publish past the seq-0 snapshot).
+		it('suppresses seeding for a backdated write past a snapshot taken at sequence 0 (FIX D)', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('backdated-seq0');
+				const backdatedVersion = 1.0e12;
+
+				// No sentinel write: the snapshot is taken on the fresh DB at seq 0.
+				const snap = new Transaction(db.store);
+				snap.getBinarySync(Buffer.from('missing')); // forces SetSnapshot at seq 0
+
+				try {
+					// Backdated write after the snapshot (seq > 0).
+					await db.put(key, makeValue(backdatedVersion));
+
+					const native = (db as any).store.db;
+					native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+					expect(db.verifyVersion(key, backdatedVersion)).toBe(false);
+				} finally {
+					snap.abort();
+				}
+
+				// Snapshot drained → publication resumes.
 				const native = (db as any).store.db;
 				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
 				expect(db.verifyVersion(key, backdatedVersion)).toBe(true);
@@ -314,6 +340,46 @@ describe('Verification Table', () => {
 				expect(result).not.toBe(FRESH_VERSION_FLAG);
 				expect(result).toBeUndefined();
 			}));
+	});
+
+	// Drop of a non-default column family bulk-deletes like clear() and must
+	// sweep the VT the same way (default-CF drop routes to clear(), covered above).
+	describe('VT invalidation on drop of a non-default column family', () => {
+		it('verifyVersion returns false after dropSync()', () =>
+			dbRunner(
+				{ dbOptions: [{ name: 'droppable', encoding: false, verificationTable: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('drop-me');
+					const version = 1.73e12;
+					await db.put(key, makeValue(version));
+
+					const native = (db as any).store.db;
+					native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+					expect(db.verifyVersion(key, version)).toBe(true);
+
+					db.dropSync();
+
+					expect(db.verifyVersion(key, version)).toBe(false);
+				}
+			));
+
+		it('verifyVersion returns false after async drop()', () =>
+			dbRunner(
+				{ dbOptions: [{ name: 'droppable-async', encoding: false, verificationTable: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('drop-me-async');
+					const version = 1.74e12;
+					await db.put(key, makeValue(version));
+
+					const native = (db as any).store.db;
+					native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+					expect(db.verifyVersion(key, version)).toBe(true);
+
+					await db.drop();
+
+					expect(db.verifyVersion(key, version)).toBe(false);
+				}
+			));
 	});
 
 	// FIX B: non-transactional putSync/removeSync must invalidate the VT.

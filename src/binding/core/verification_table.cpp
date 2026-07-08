@@ -258,6 +258,11 @@ void VerificationTable::unrefTracker(LockTracker* t) {
 void VerificationTable::settleAllSlots() {
 	if (!slots_) return;
 	size_t n = mask_ + 1;
+	// One fresh generation shared by every slot in this sweep: the CAS is
+	// per-slot, so uniqueness only matters versus values a reader may have
+	// previously observed in that slot — a just-minted generation satisfies
+	// that for all slots, and hoisting avoids n atomic fetch-adds.
+	const uint64_t settledValue = vtEncodeSettled(vtNextSettleGen());
 	for (size_t i = 0; i < n; ++i) {
 		uint64_t v = slots_[i].load(std::memory_order_acquire);
 		// Skip lock slots — the write-intent lifecycle (releaseWriteIntent)
@@ -266,19 +271,17 @@ void VerificationTable::settleAllSlots() {
 		// writerMutex_) that can race with our CAS; if it wins, the slot is a
 		// lock that will advance further when committed/aborted — still correct.
 		if (vtIsLock(v)) continue;
-		// CAS non-lock (version or settled-empty) to a fresh generation. On CAS
-		// failure the current value is loaded into v; if it's now a lock we
-		// stop (handled above). If it's a different non-lock value (concurrent
-		// populate or another sweep) we retry once more to ensure advancement.
+		// CAS non-lock (version or settled-empty) to the sweep generation,
+		// retrying until the CAS lands or the slot turns into a lock (each
+		// failed CAS reloads v; a lock exits via the loop condition).
 		while (!vtIsLock(v)) {
 			if (slots_[i].compare_exchange_strong(
 					v,
-					vtEncodeSettled(vtNextSettleGen()),
+					settledValue,
 					std::memory_order_release,
 					std::memory_order_acquire)) {
 				break;
 			}
-			// v has been reloaded by the failed CAS; if now a lock, exit.
 		}
 	}
 }
