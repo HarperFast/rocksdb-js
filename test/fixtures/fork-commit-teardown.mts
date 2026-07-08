@@ -38,10 +38,16 @@ if (!dbPath) {
 
 mkdirSync(dbPath, { recursive: true });
 
-// Bun's worker spawn/teardown is far slower, so it runs fewer rounds; the race
-// is a runtime-agnostic native lifecycle bug and Node/Deno carry the primary
-// detection.
-const ROUNDS = process.versions.bun ? 15 : 40;
+// Worker spawn/teardown dominates the wall time and each round queues
+// ROCKSDB_JS_COMMIT_DELAY_MS x IN_FLIGHT of delayed commit work on the shared
+// commit thread, so round count is scaled down where spawns are slow (Bun
+// everywhere; macOS/Windows CI runners). The race is a runtime-agnostic
+// native lifecycle bug and Linux Node carries the primary detection rate.
+const ROUNDS = process.versions.bun
+	? 10
+	: process.platform === 'darwin' || process.platform === 'win32'
+		? 16
+		: 40;
 
 function spawnCommitter(): Promise<Worker> {
 	return new Promise((resolve, reject) => {
