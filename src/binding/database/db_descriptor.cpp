@@ -173,6 +173,29 @@ void DBDescriptor::finishClose() {
 	}
 	DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
+	// Drain the commit pipeline before flushing so its data is included in
+	// the flush. The log lane feeds the commit lane, so it must drain first;
+	// its final tasks enqueue onto the still-running commit lane (or run
+	// inline once that lane stops).
+	this->logWorker.shutdown();
+	this->commitWorker.shutdown();
+
+	// Release any remaining per-env commit-completion tsfns. An in-flight
+	// commit pins this descriptor (state -> txnHandle -> dbHandle -> descriptor),
+	// so reaching here means no commit is in flight; only idle (unref'd) tsfns
+	// for still-living envs can remain, and those envs will issue no further
+	// commits to this descriptor. Queued completions already handed to a tsfn
+	// are still delivered (napi_tsfn_release, not abort).
+	{
+		std::lock_guard<std::mutex> lock(this->commitMutex);
+		for (auto& [env, completion] : this->commitCompletions) {
+			if (completion.tsfn) {
+				::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
+			}
+		}
+		this->commitCompletions.clear();
+	}
+
 	// We want to ensure that all in-memory data is written to disk
 	this->flush();
 
@@ -246,6 +269,77 @@ void DBDescriptor::finishClose() {
 	this->events.releaseAll();
 
 	this->db.reset();
+}
+
+napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs) {
+	std::lock_guard<std::mutex> lock(this->commitMutex);
+	CommitCompletion& completion = this->commitCompletions[env];
+	if (completion.tsfn == nullptr) {
+		napi_value resourceName;
+		napi_status status = ::napi_create_string_utf8(env, "rocksdb.commit", NAPI_AUTO_LENGTH, &resourceName);
+		if (status != napi_ok) {
+			return status;
+		}
+		// Created ref'd (thread count 1 for the commit thread), which is what we
+		// want with a commit about to be dispatched.
+		status = ::napi_create_threadsafe_function(
+			env,
+			nullptr,   // func: callJs does all the work
+			nullptr,   // async_resource
+			resourceName,
+			0,         // unlimited queue
+			1,         // initial thread count: the commit thread
+			nullptr,   // finalize data
+			nullptr,   // finalize cb
+			nullptr,   // context
+			callJs,
+			&completion.tsfn
+		);
+		if (status != napi_ok) {
+			this->commitCompletions.erase(env);
+			return status;
+		}
+	} else if (completion.pending == 0) {
+		// Waking from idle: keep the event loop alive until completion.
+		napi_status status = ::napi_ref_threadsafe_function(env, completion.tsfn);
+		if (status != napi_ok) {
+			return status;
+		}
+	}
+	completion.pending++;
+	return napi_ok;
+}
+
+bool DBDescriptor::dispatchCommitCompletion(napi_env env, void* state) {
+	std::lock_guard<std::mutex> lock(this->commitMutex);
+	auto it = this->commitCompletions.find(env);
+	if (it == this->commitCompletions.end() || it->second.tsfn == nullptr) {
+		// env was torn down / released; the caller drops the state.
+		return false;
+	}
+	napi_status status = ::napi_call_threadsafe_function(it->second.tsfn, state, napi_tsfn_nonblocking);
+	return status == napi_ok;
+}
+
+void DBDescriptor::finishCommitCompletion(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->commitMutex);
+	auto it = this->commitCompletions.find(env);
+	if (it != this->commitCompletions.end() && --it->second.pending == 0 && it->second.tsfn != nullptr) {
+		// Idle: allow the event loop to exit.
+		::napi_unref_threadsafe_function(env, it->second.tsfn);
+	}
+}
+
+void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->commitMutex);
+	auto it = this->commitCompletions.find(env);
+	if (it != this->commitCompletions.end()) {
+		if (it->second.tsfn != nullptr) {
+			// Queued completions are still delivered before the tsfn finalizes.
+			::napi_release_threadsafe_function(it->second.tsfn, napi_tsfn_release);
+		}
+		this->commitCompletions.erase(it);
+	}
 }
 
 /**

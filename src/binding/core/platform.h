@@ -28,6 +28,13 @@ uint64_t getEffectiveOpenFileLimit();
  */
 int32_t deriveMaxOpenFiles(uint64_t effectiveOpenFileLimit);
 
+/**
+ * Sets the current thread's name for diagnostics (visible in top, gdb, etc.).
+ * Best-effort and platform-guarded; names longer than the OS limit (15 chars
+ * on Linux) are truncated by the platform.
+ */
+void setThreadName(const char* name);
+
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
 double getMonotonicTimestamp();

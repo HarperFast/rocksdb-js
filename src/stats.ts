@@ -49,6 +49,8 @@ export type StatsBasics = {
 	'txnlog.transactionsWritten': number;
 	'txnlog.bytesWritten': number;
 	'txnlog.replayGapBytes': number;
+	'commitPipeline.logQueueDepth': number;
+	'commitPipeline.commitQueueDepth': number;
 };
 
 export type StatsCuratedExtras = {

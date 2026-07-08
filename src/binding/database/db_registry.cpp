@@ -466,6 +466,35 @@ void DBRegistry::RemoveListenersByEnv(napi_env env) {
 }
 
 /**
+ * Release each descriptor's commit-completion tsfn owned by the given env.
+ * Called from the module env-cleanup hook so a worker thread exiting does not
+ * leave a threadsafe-fn the shared commit thread would later call into a
+ * torn-down env. Mirrors RemoveListenersByEnv: snapshot the descriptors under
+ * databasesMutex, then release outside the lock (releaseCommitCompletionsByEnv
+ * takes each descriptor's own commitMutex).
+ */
+void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->releaseCommitCompletionsByEnv(env);
+	}
+}
+
+/**
  * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
  */
 void DBRegistry::Shutdown() {

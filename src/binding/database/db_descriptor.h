@@ -4,8 +4,10 @@
 #include <memory>
 #include <node_api.h>
 #include <atomic>
+#include <mutex>
 #include <queue>
 #include <set>
+#include <unordered_map>
 #include <functional>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
@@ -13,6 +15,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
+#include "database/commit_worker.h"
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/platform.h"
@@ -172,6 +175,78 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * cleared when the descriptor itself closes.
 	 */
 	EventEmitter events;
+
+	/**
+	 * Commit lanes executing async transaction commits off the libuv
+	 * threadpool, shared by all envs/handles on this database. In the default
+	 * single-lane mode only commitWorker runs: each commit executes its log
+	 * write and RocksDB commit back to back in dispatch order (logWorker is
+	 * never started). In two-lane mode (ROCKSDB_JS_COMMIT_THREAD=2) the log
+	 * lane writes the transaction-log batch (a pass-through no-op for txns
+	 * with no log entries, preserving total order), then forwards to the
+	 * commit lane, letting the stages overlap across transactions while each
+	 * lane preserves order — see commitThreadMode() in transaction.cpp and
+	 * CommitWorker for the rationale.
+	 *
+	 * Declared commit-lane-first so member destruction (reverse order) tears
+	 * down the log lane before the commit lane it feeds; finishClose() shuts
+	 * both down explicitly in that order first.
+	 */
+	CommitWorker commitWorker{"rocksdb-commit"};
+	CommitWorker logWorker{"rocksdb-txnlog"};
+
+	/**
+	 * Per-env commit-completion plumbing. The commit thread is shared across
+	 * every env that opened this database, but each async commit's completion
+	 * must run on the env that issued it — so completions are marshalled back
+	 * via a threadsafe function created lazily per env.
+	 *
+	 * `commitMutex` guards both the commit thread's tsfn call
+	 * (`dispatchCommitCompletion`) and the release of an env's tsfn
+	 * (`releaseCommitCompletionsByEnv`, run from the module env-cleanup hook
+	 * when a worker env exits). Making the call while holding the mutex is what
+	 * keeps it safe against env teardown: a dying env's cleanup hook must take
+	 * the same mutex to release, and Node runs that hook before freeing the
+	 * env's tsfns — so the tsfn cannot be freed mid-call. This is the same
+	 * discipline `EventEmitter::notify` uses (HarperFast/harper#1370). A
+	 * per-commit `napi_acquire_threadsafe_function` does NOT close this window
+	 * (env teardown does not honor the tsfn-level acquire count).
+	 */
+	struct CommitCompletion {
+		napi_threadsafe_function tsfn = nullptr;
+		// In-flight commits for this env; drives ref/unref so the event loop is
+		// kept alive until completions run, but can still exit when idle.
+		uint32_t pending = 0;
+	};
+	std::mutex commitMutex;
+	std::unordered_map<napi_env, CommitCompletion> commitCompletions;
+
+	/**
+	 * JS thread. Ensures a completion tsfn exists for `env` (created with
+	 * `callJs`) and accounts a newly dispatched commit, ref-ing the tsfn as the
+	 * env goes from idle to busy. Call on the env's own JS thread before
+	 * enqueuing the commit.
+	 */
+	napi_status registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs);
+
+	/**
+	 * Commit thread. Delivers a completed commit's `state` to its originating
+	 * env. Returns false if that env's completion tsfn is gone (env torn down
+	 * or released) — the caller then drops the state.
+	 */
+	bool dispatchCommitCompletion(napi_env env, void* state);
+
+	/**
+	 * JS thread (completion callback). Accounts a finished commit, unref-ing the
+	 * tsfn when the env goes idle so the event loop can exit.
+	 */
+	void finishCommitCompletion(napi_env env);
+
+	/**
+	 * Module env-cleanup hook. Releases and forgets a dying env's completion
+	 * tsfn so the commit thread stops marshalling into a torn-down env.
+	 */
+	void releaseCommitCompletionsByEnv(napi_env env);
 
 private:
 	DBDescriptor(

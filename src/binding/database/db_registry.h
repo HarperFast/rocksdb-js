@@ -96,6 +96,7 @@ public:
 	static void PurgeIfUnreferenced(const std::string& path, bool readOnly);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void RemoveListenersByEnv(napi_env env);
+	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void Shutdown();
 	static size_t Size();
 };
