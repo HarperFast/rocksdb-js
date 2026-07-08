@@ -1,3 +1,7 @@
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <thread>
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
@@ -201,6 +205,327 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 };
 
 /**
+ * Log-lane stage of the commit: validates the handle and writes the
+ * transaction-log batch (recording the committed position). Runs off the JS
+ * thread — on the database's log lane, or on a libuv threadpool thread in the
+ * legacy path (which runs both stages back to back). A pass-through no-op for
+ * transactions with no log entries so total dispatch order is preserved into
+ * the commit lane.
+ */
+static void executeLogWork(TransactionCommitState* state) {
+	auto txnHandle = state->handle;
+	if (!txnHandle) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr txnHandle\n", txnHandle.get());
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (txnHandle->isCancelled()) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with txnHandle cancelled\n", txnHandle.get());
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (!txnHandle->dbHandle) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr dbHandle\n", txnHandle.get());
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (!txnHandle->dbHandle->opened()) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (txnHandle->logEntryBatch) {
+		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
+			txnHandle.get(), txnHandle->id);
+		auto store = txnHandle->boundLogStore.lock();
+		if (store) {
+			try {
+				// write the batch to the store
+				store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
+				// free the batch after writing to avoid memory leak
+				txnHandle->logEntryBatch.reset();
+				state->hasLog = true;
+			} catch (const std::exception& e) {
+				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
+				state->status = rocksdb::Status::Aborted(e.what());
+			}
+		} else {
+			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
+			state->status = rocksdb::Status::Aborted("Log store not found for transaction");
+		}
+	}
+}
+
+/**
+ * Commit-lane stage of the commit: commits the RocksDB transaction and records
+ * the committed position against the RocksDB sequence number. Runs off the JS
+ * thread — on the database's commit lane, or on a libuv threadpool thread in
+ * the legacy path. Always runs after executeLogWork on the same state; skips
+ * the RocksDB commit if the log stage failed. This stage's commitFinished can
+ * run concurrently with the log lane's writeBatch for a later transaction —
+ * the store synchronizes the shared position state on dataSetsMutex (the same
+ * interleaving the legacy multi-threaded libuv path exercised).
+ */
+static void executeCommitWork(TransactionCommitState* state) {
+	auto txnHandle = state->handle;
+	// The log stage already failed the commit on any invalid-handle condition;
+	// only proceed past here with a usable handle.
+	if (txnHandle && txnHandle->dbHandle && txnHandle->dbHandle->descriptor) {
+		auto descriptor = txnHandle->dbHandle->descriptor;
+
+		// ensure the log stage (or handle validation) hasn't errored
+		if (state->status.ok()) {
+			if (testForceTryAgain()) {
+				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
+				// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
+				// rollback (e.g. underlying DB corruption) is a real error, not a simulated one —
+				// surface it rather than masking it behind the forced TryAgain.
+				rocksdb::Status rollbackStatus = txnHandle->txn->Rollback();
+				state->status = rollbackStatus.ok()
+					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
+					: rollbackStatus;
+			} else {
+				state->status = txnHandle->txn->Commit();
+			}
+
+			// For coordinated retry: save slot pointers before
+			// releaseIntent() clears them so the complete callback
+			// can park on any new lock installed on those slots.
+			if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
+				state->savedSlots = txnHandle->lockedVTSlots;
+			}
+
+			// Release VT locks that were installed at putSync/removeSync
+			// time, regardless of commit outcome (success or IsBusy).
+			if (!txnHandle->lockedVTSlots.empty()) {
+				txnHandle->releaseIntent();
+			}
+		}
+
+		// Publish the log entries (advance the committed-read watermark) only when the data
+		// transaction actually committed. IsBusy and TryAgain are both retried on a reset
+		// transaction (committedPosition survives, so the WAL batch is not rewritten — #668),
+		// and the eventual successful commit is what publishes. A hard error is abandoned:
+		// close()'s commitAborted drops the position from the uncommitted set so it stops
+		// pinning the watermark (the bytes themselves cannot be unwritten — abandoning a
+		// logged transaction remains the loudly-flagged ERR_TRANSACTION_ABANDONED case).
+		// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
+		// the entry visible while the record was rolled back and only re-committed later on a
+		// retry — a change-feed entry ahead of its data for every reader in that window.
+		if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
+			auto store = txnHandle->boundLogStore.lock();
+			if (store) {
+				store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
+			} else {
+				DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
+				state->status = rocksdb::Status::Aborted("Log store not found for transaction");
+			}
+		}
+
+		if (state->status.ok()) {
+			DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id);
+			txnHandle->state = TransactionState::Committed;
+			descriptor->notify("committed", nullptr);
+		} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
+			DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with %s, resetting transaction\n",
+				txnHandle.get(), state->status.IsBusy() ? "IsBusy" : "TryAgain");
+			// Clear/delete the previous transaction and create a new one so the retry re-drives the
+			// commit. resetTransaction preserves committedPosition (the WAL batch stays write-once,
+			// #668) but takes a fresh RocksDB snapshot: IsBusy converges by re-tracking keys at the
+			// current sequence, and TryAgain — whose snapshot was stranded outside the memtable
+			// window after a flush, so recommitting the same transaction re-checks the same lost
+			// history forever (harper#1695) — converges because the re-run reads and validates
+			// against current state instead. The caller must re-run the transaction body so the
+			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
+			txnHandle->resetTransaction();
+		}
+	}
+	// signal that execute handler is complete
+	state->signalExecuteCompleted();
+}
+
+// forward declaration; defined after completeCommitWork
+static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* context, void* data);
+
+/**
+ * Completes the commit on the JS thread: resolves/rejects the commit promise,
+ * handles the coordinated-retry parking, and closes the transaction handle.
+ * Shared by the legacy async-work complete callback and the commit-thread
+ * tsfn callback. Does NOT free the state.
+ */
+static void completeCommitWork(napi_env env, TransactionCommitState* state) {
+	if (state->status.ok()) {
+		if (state->handle) {
+			DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%u)\n", state->handle.get(), state->handle->id);
+			state->handle->close();
+			DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id);
+		} else {
+			DEBUG_LOG("%p Transaction::Commit Complete, but handle is null!\n", state->handle.get());
+		}
+
+		state->callResolve();
+	} else if (
+		state->status.IsBusy() &&
+		state->handle &&
+		state->handle->coordinatedRetry
+	) {
+		// Coordinated-retry path: signal RETRY_NOW to JS instead of
+		// rejecting. The native layer may park on an active VT lock
+		// before firing the resolve, so JS retries only after the
+		// conflicting transaction has released its write intent.
+		// Intentionally IsBusy-only: RETRY_NOW parks on the conflicting
+		// holder's VT-slot lock, and TryAgain (stranded snapshot after a
+		// flush) has no lock holder to park on — it takes the normal
+		// reject→reset→retry path below instead.
+		if (state->handle->state == TransactionState::Committing) {
+			state->handle->state = TransactionState::Pending;
+		}
+
+		// Transfer resolve/reject refs from state to a RetryNowContext
+		// so the TSFN finalize can clean them up.
+		auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
+		state->resolveRef = nullptr;
+		state->rejectRef = nullptr;
+
+		bool parked = false;
+		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		for (auto* slot : state->savedSlots) {
+			// refTrackerIfLocked takes a temporary reference under the VT
+			// writer mutex, so the tracker cannot be freed by a concurrent
+			// releaseWriteIntent between loading the slot and referencing it
+			// (the old load-then-incref use-after-free).
+			LockTracker* t = vt ? vt->refTrackerIfLocked(slot) : nullptr;
+			if (!t) continue;
+
+			// Create a TSFN that calls resolve(RETRY_NOW) when fired.
+			napi_value resource_name;
+			::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
+			napi_threadsafe_function tsfn;
+			::napi_create_threadsafe_function(
+				env, nullptr, nullptr, resource_name,
+				0, 1,
+				ctx, retryNowFinalize,
+				ctx, retryNowCallJs,
+				&tsfn
+			);
+			::napi_unref_threadsafe_function(env, tsfn);
+
+			// Register wake callback; if the tracker already fired wake()
+			// before we got here, addWakeCallback returns false and we
+			// call+release the TSFN immediately (async on the JS thread).
+			bool registered = t->addWakeCallback([tsfn]() {
+				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+			});
+			if (!registered) {
+				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+			}
+
+			vt->unrefTracker(t);
+			parked = true;
+			break;
+		}
+
+		if (!parked) {
+			// No active lock found; resolve RETRY_NOW directly (we are on
+			// the JS thread in this complete callback).
+			napi_value global, resolveFn, retryVal;
+			::napi_get_global(env, &global);
+			::napi_get_reference_value(env, ctx->resolveRef, &resolveFn);
+			::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
+			::napi_call_function(env, global, resolveFn, 1, &retryVal, nullptr);
+			::napi_delete_reference(env, ctx->resolveRef);
+			::napi_delete_reference(env, ctx->rejectRef);
+			delete ctx;
+		}
+		// If parked, ctx is owned by the TSFN finalize; do not free here.
+	} else {
+		// Normal error path: reset to Pending so JS can retry.
+		// Guard: keep Aborted if close() already set it (DB closing
+		// during commit) — don't let Transaction::Abort call Rollback()
+		// on a null txn.
+		if (state->handle && state->handle->state == TransactionState::Committing) {
+			state->handle->state = TransactionState::Pending;
+		}
+		napi_value error;
+		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
+		napi_value hasLogValue;
+		// #668: writeBatch is skipped on an IsBusy/TryAgain retry once the WAL batch is durable
+		// (committedPosition set), so state->hasLog is false this attempt. Fall back to
+		// committedPosition so the retry heuristic still treats this as logged.
+		bool hasLog = state->hasLog ||
+			(state->handle && state->handle->committedPosition.logSequenceNumber > 0);
+		napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
+		if (status == napi_ok) {
+			::napi_set_named_property(env, error, "hasLog", hasLogValue);
+		}
+		state->callReject(error);
+	}
+}
+
+/**
+ * TSFN callback: completes a commit dispatched to the commit thread on the
+ * originating JS thread, accounts the completion (unref-ing the tsfn when the
+ * env goes idle), and frees the state.
+ */
+static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* context, void* data) {
+	TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
+
+	// env is nullptr when the env is tearing down; nothing left to resolve and
+	// the descriptor's per-env tsfn is being released — do not touch napi.
+	if (env != nullptr) {
+		// Pin the descriptor across completion: completeCommitWork may close the
+		// txn handle (dropping the state's references), but we still need the
+		// descriptor for the pending accounting below. The state pins it here
+		// (state -> txnHandle -> dbHandle -> descriptor).
+		std::shared_ptr<DBDescriptor> descriptor =
+			(state->handle && state->handle->dbHandle) ? state->handle->dbHandle->descriptor : nullptr;
+		completeCommitWork(env, state);
+		if (descriptor) {
+			descriptor->finishCommitCompletion(env);
+		}
+	}
+
+	delete state;
+}
+
+/**
+ * How async commits are executed, selected by ROCKSDB_JS_COMMIT_THREAD:
+ * - `0` / `false`: legacy path — one libuv async-work item per commit.
+ * - unset / anything else: single dedicated commit thread per database
+ *   (default) — both the log write and the RocksDB commit run on the commit
+ *   lane. Best measured throughput (no inter-lane handoff, full cache
+ *   locality).
+ * - `2`: two-lane pipeline — the log lane writes the transaction-log batch,
+ *   then forwards to the commit lane for the RocksDB commit, letting the
+ *   stages overlap across transactions. Measured slower than single-lane on
+ *   synthetic loads (the per-txn handoff outweighs the overlap for small
+ *   commits); selectable for evaluation on real workloads.
+ */
+enum class CommitThreadMode { Legacy, SingleLane, TwoLane };
+
+static CommitThreadMode commitThreadMode() {
+	static const CommitThreadMode mode = []() {
+		const char* v = ::getenv("ROCKSDB_JS_COMMIT_THREAD");
+		if (v != nullptr && (::strcmp(v, "0") == 0 || ::strcmp(v, "false") == 0)) {
+			return CommitThreadMode::Legacy;
+		}
+		if (v != nullptr && ::strcmp(v, "2") == 0) {
+			return CommitThreadMode::TwoLane;
+		}
+		return CommitThreadMode::SingleLane;
+	}();
+	return mode;
+}
+
+/**
+ * Test-only seam: milliseconds the commit thread sleeps after executing the
+ * commit and before calling back into JS. Widens the window in which env
+ * teardown can race an in-flight commit completion so the worker-teardown
+ * test reproduces deterministically. Zero (unset) in production.
+ */
+static unsigned commitDelayMs() {
+	static const unsigned ms = []() -> unsigned {
+		const char* v = ::getenv("ROCKSDB_JS_COMMIT_DELAY_MS");
+		return v != nullptr ? static_cast<unsigned>(::atoi(v)) : 0;
+	}();
+	return ms;
+}
+
+/**
  * Commits the transaction.
  */
 napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
@@ -228,6 +553,59 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;
 
+	auto dbHandle = (*txnHandle)->dbHandle;
+	CommitThreadMode mode = commitThreadMode();
+	if (mode != CommitThreadMode::Legacy && dbHandle && dbHandle->descriptor) {
+		// The commit lanes are owned by the descriptor and drained/joined before
+		// the descriptor is destroyed; and an in-flight commit's state pins the
+		// descriptor alive (state -> txnHandle -> dbHandle -> descriptor). So a
+		// raw pointer captured into the worker task is valid for the task's
+		// lifetime and cannot form a reference cycle with the worker thread.
+		DBDescriptor* descriptor = dbHandle->descriptor.get();
+
+		// Ensure this env has a completion tsfn and account the dispatch (refs
+		// the tsfn as the env goes idle->busy so the event loop stays alive).
+		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs));
+
+		// register the commit with the transaction handle so close() can wait
+		(*txnHandle)->registerAsyncWork();
+
+		// Commit-lane stage: RocksDB commit, then marshal the completion back
+		// to the originating env. dispatchCommitCompletion returns false if
+		// that env was torn down (e.g. worker terminate) — the completion has
+		// nowhere to run, so drop the state.
+		auto commitStage = [descriptor, state]() {
+			executeCommitWork(state);
+			if (unsigned delay = commitDelayMs()) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+			}
+			if (!descriptor->dispatchCommitCompletion(state->env, state)) {
+				DEBUG_LOG("%p Transaction::Commit commit thread: env gone, dropping completion\n", state);
+				delete state;
+			}
+		};
+
+		if (mode == CommitThreadMode::TwoLane) {
+			// Two-lane pipeline: the log lane writes the transaction-log batch,
+			// then forwards to the commit lane. Every commit passes through
+			// both lanes so total order is preserved.
+			descriptor->logWorker.enqueue([descriptor, state, commitStage]() {
+				executeLogWork(state);
+				descriptor->commitWorker.enqueue(commitStage);
+			});
+		} else {
+			// Single lane (default): both stages run back to back on the
+			// commit lane.
+			descriptor->commitWorker.enqueue([state, commitStage]() {
+				executeLogWork(state);
+				commitStage();
+			});
+		}
+
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	// Legacy path: dispatch the commit to the libuv threadpool.
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
 		env,
@@ -242,115 +620,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
-			auto txnHandle = state->handle;
-			if (!txnHandle) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr txnHandle\n", txnHandle.get());
-				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-			} else if (txnHandle->isCancelled()) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: Called with txnHandle cancelled\n", txnHandle.get());
-				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-			} else if (!txnHandle->dbHandle) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr dbHandle\n", txnHandle.get());
-				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-			} else if (!txnHandle->dbHandle->opened()) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
-				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-			} else {
-				auto descriptor = txnHandle->dbHandle->descriptor;
-				std::shared_ptr<TransactionLogStore> store = nullptr;
-
-				if (txnHandle->logEntryBatch) {
-					DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
-						txnHandle.get(), txnHandle->id);
-					store = txnHandle->boundLogStore.lock();
-					if (store) {
-						try {
-							// write the batch to the store
-							store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
-							// free the batch after writing to avoid memory leak
-							txnHandle->logEntryBatch.reset();
-							state->hasLog = true;
-						} catch (const std::exception& e) {
-							DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
-							state->status = rocksdb::Status::Aborted(e.what());
-						}
-					} else {
-						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
-						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
-					}
-				}
-
-				// ensure we haven't errored above
-				if (state->status.ok()) {
-					if (testForceTryAgain()) {
-						// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
-						// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
-						// rollback (e.g. underlying DB corruption) is a real error, not a simulated one —
-						// surface it rather than masking it behind the forced TryAgain.
-						rocksdb::Status rollbackStatus = txnHandle->txn->Rollback();
-						state->status = rollbackStatus.ok()
-							? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
-							: rollbackStatus;
-					} else {
-						state->status = txnHandle->txn->Commit();
-					}
-
-					// For coordinated retry: save slot pointers before
-					// releaseIntent() clears them so the complete callback
-					// can park on any new lock installed on those slots.
-					if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
-						state->savedSlots = txnHandle->lockedVTSlots;
-					}
-
-					// Release VT locks that were installed at putSync/removeSync
-					// time, regardless of commit outcome (success or IsBusy).
-					if (!txnHandle->lockedVTSlots.empty()) {
-						txnHandle->releaseIntent();
-					}
-				}
-
-				// Publish the log entries (advance the committed-read watermark) only when the data
-				// transaction actually committed. IsBusy and TryAgain are both retried on a reset
-				// transaction (committedPosition survives, so the WAL batch is not rewritten — #668),
-				// and the eventual successful commit is what publishes. A hard error is abandoned:
-				// close()'s commitAborted drops the position from the uncommitted set so it stops
-				// pinning the watermark (the bytes themselves cannot be unwritten — abandoning a
-				// logged transaction remains the loudly-flagged ERR_TRANSACTION_ABANDONED case).
-				// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
-				// the entry visible while the record was rolled back and only re-committed later on a
-				// retry — a change-feed entry ahead of its data for every reader in that window.
-				if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
-					if (!store) {
-						store = txnHandle->boundLogStore.lock();
-					}
-					if (store) {
-						store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
-					} else {
-						DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
-						state->status = rocksdb::Status::Aborted("Log store not found for transaction");
-					}
-				}
-
-				if (state->status.ok()) {
-					DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id);
-					txnHandle->state = TransactionState::Committed;
-					descriptor->notify("committed", nullptr);
-				} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
-					DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with %s, resetting transaction\n",
-						txnHandle.get(), state->status.IsBusy() ? "IsBusy" : "TryAgain");
-					// Clear/delete the previous transaction and create a new one so the retry re-drives the
-					// commit. resetTransaction preserves committedPosition (the WAL batch stays write-once,
-					// #668) but takes a fresh RocksDB snapshot: IsBusy converges by re-tracking keys at the
-					// current sequence, and TryAgain — whose snapshot was stranded outside the memtable
-					// window after a flush, so recommitting the same transaction re-checks the same lost
-					// history forever (harper#1695) — converges because the re-run reads and validates
-					// against current state instead. The caller must re-run the transaction body so the
-					// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
-					txnHandle->resetTransaction();
-				}
-			}
-			// signal that execute handler is complete
-			state->signalExecuteCompleted();
+			executeLogWork(state);
+			executeCommitWork(state);
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
@@ -362,114 +633,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					if (state->handle) {
-						DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%u)\n", state->handle.get(), state->handle->id);
-						state->handle->close();
-						DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id);
-					} else {
-						DEBUG_LOG("%p Transaction::Commit Complete, but handle is null!\n", state->handle.get());
-					}
-
-					state->callResolve();
-				} else if (
-					state->status.IsBusy() &&
-					state->handle &&
-					state->handle->coordinatedRetry
-				) {
-					// Coordinated-retry path: signal RETRY_NOW to JS instead of
-					// rejecting. The native layer may park on an active VT lock
-					// before firing the resolve, so JS retries only after the
-					// conflicting transaction has released its write intent.
-					// Intentionally IsBusy-only: RETRY_NOW parks on the conflicting
-					// holder's VT-slot lock, and TryAgain (stranded snapshot after a
-					// flush) has no lock holder to park on — it takes the normal
-					// reject→reset→retry path below instead.
-					if (state->handle->state == TransactionState::Committing) {
-						state->handle->state = TransactionState::Pending;
-					}
-
-					// Transfer resolve/reject refs from state to a RetryNowContext
-					// so the TSFN finalize can clean them up.
-					auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
-					state->resolveRef = nullptr;
-					state->rejectRef = nullptr;
-
-					bool parked = false;
-					VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-					for (auto* slot : state->savedSlots) {
-						// refTrackerIfLocked takes a temporary reference under the VT
-						// writer mutex, so the tracker cannot be freed by a concurrent
-						// releaseWriteIntent between loading the slot and referencing it
-						// (the old load-then-incref use-after-free).
-						LockTracker* t = vt ? vt->refTrackerIfLocked(slot) : nullptr;
-						if (!t) continue;
-
-						// Create a TSFN that calls resolve(RETRY_NOW) when fired.
-						napi_value resource_name;
-						::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
-						napi_threadsafe_function tsfn;
-						::napi_create_threadsafe_function(
-							env, nullptr, nullptr, resource_name,
-							0, 1,
-							ctx, retryNowFinalize,
-							ctx, retryNowCallJs,
-							&tsfn
-						);
-						::napi_unref_threadsafe_function(env, tsfn);
-
-						// Register wake callback; if the tracker already fired wake()
-						// before we got here, addWakeCallback returns false and we
-						// call+release the TSFN immediately (async on the JS thread).
-						bool registered = t->addWakeCallback([tsfn]() {
-							::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-							::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
-						});
-						if (!registered) {
-							::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-							::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
-						}
-
-						vt->unrefTracker(t);
-						parked = true;
-						break;
-					}
-
-					if (!parked) {
-						// No active lock found; resolve RETRY_NOW directly (we are on
-						// the JS thread in this complete callback).
-						napi_value global, resolveFn, retryVal;
-						::napi_get_global(env, &global);
-						::napi_get_reference_value(env, ctx->resolveRef, &resolveFn);
-						::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
-						::napi_call_function(env, global, resolveFn, 1, &retryVal, nullptr);
-						::napi_delete_reference(env, ctx->resolveRef);
-						::napi_delete_reference(env, ctx->rejectRef);
-						delete ctx;
-					}
-					// If parked, ctx is owned by the TSFN finalize; do not free here.
-				} else {
-					// Normal error path: reset to Pending so JS can retry.
-					// Guard: keep Aborted if close() already set it (DB closing
-					// during commit) — don't let Transaction::Abort call Rollback()
-					// on a null txn.
-					if (state->handle && state->handle->state == TransactionState::Committing) {
-						state->handle->state = TransactionState::Pending;
-					}
-					napi_value error;
-					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
-					napi_value hasLogValue;
-					// #668: writeBatch is skipped on an IsBusy/TryAgain retry once the WAL batch is durable
-					// (committedPosition set), so state->hasLog is false this attempt. Fall back to
-					// committedPosition so the retry heuristic still treats this as logged.
-					bool hasLog = state->hasLog ||
-						(state->handle && state->handle->committedPosition.logSequenceNumber > 0);
-					napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
-					if (status == napi_ok) {
-						::napi_set_named_property(env, error, "hasLog", hasLogValue);
-					}
-					state->callReject(error);
-				}
+				completeCommitWork(env, state);
 			}
 
 			delete state;

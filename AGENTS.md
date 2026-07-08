@@ -125,12 +125,33 @@ C++ code that needs to emit to JS without a database context should call
 `emitGlobalEvent(key, data)` from `napi/global_events.h`. Use namespaced keys
 (`'transactionLog:warning'`) for internal events to avoid collisions with user-defined ones.
 
+### Commit execution
+
+Async `Transaction.commit()` does not use the libuv threadpool: each database
+has a dedicated commit thread (`CommitWorker`, owned by the shared
+`DBDescriptor`) that runs the txn-log write + RocksDB commit in dispatch order,
+so slow commits cannot starve fs/dns/crypto/async-get work sharing the libuv
+pool. `ROCKSDB_JS_COMMIT_THREAD` selects the mode (`0`/`false` = legacy libuv
+path, default = single lane, `2` = experimental two-lane txnlog→commit
+pipeline). Completions are marshalled back to the originating env via per-env
+tsfns held on the descriptor under `commitMutex`; the commit thread calls them
+under that mutex and a dying env's tsfn is released from the module env-cleanup
+hook (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown
+discipline as `EventEmitter::notify` above. A per-commit tsfn acquire is NOT
+sufficient (env teardown does not honor tsfn acquire counts); see
+`test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
+
 ## Environment Variables
 
 - `ROCKSDB_VERSION` - Override RocksDB version (default from package.json, or 'latest')
 - `ROCKSDB_PATH` - Build from local RocksDB source instead of prebuilt
 - `MINIFY=1` - Enable minification of TypeScript bundle
 - `KEEP_FILES=1` - Don't delete temporary test databases for debugging purposes
+- `ROCKSDB_JS_COMMIT_THREAD` - Async-commit execution mode: `0`/`false` = legacy
+  libuv threadpool, unset = dedicated per-database commit thread (default),
+  `2` = experimental two-lane pipeline
+- `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
+  each completion callback (widens teardown race windows)
 
 ## Test Structure
 

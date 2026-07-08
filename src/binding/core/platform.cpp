@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <limits>
+#include <string>
 #include <thread>
 #include "core/debug.h"
 #include "core/exception.h"
@@ -12,6 +13,7 @@
 #elif defined(__linux__)
 #include <sys/syscall.h>
 #include <sys/resource.h>
+#include <pthread.h>
 #elif defined(__APPLE__)
 #include <pthread.h>
 #include <sys/resource.h>
@@ -76,6 +78,24 @@ int32_t deriveMaxOpenFiles(uint64_t effectiveOpenFileLimit) {
 		budget = maxBudget;
 	}
 	return static_cast<int32_t>(budget);
+}
+
+void setThreadName(const char* name) {
+#if defined(__linux__)
+	// Linux caps thread names at 16 bytes including the null terminator.
+	::pthread_setname_np(::pthread_self(), name);
+#elif defined(__APPLE__)
+	::pthread_setname_np(name);
+#elif defined(_WIN32)
+	int len = ::MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+	if (len > 0) {
+		std::wstring wide(static_cast<size_t>(len), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, name, -1, wide.data(), len);
+		::SetThreadDescription(::GetCurrentThread(), wide.c_str());
+	}
+#else
+	(void)name;
+#endif
 }
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(

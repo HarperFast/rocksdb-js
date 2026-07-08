@@ -10,6 +10,10 @@ namespace rocksdb_js {
 
 namespace {
 
+// Commit-pipeline queue-depth gauges (see docs/stats.md).
+constexpr const char* COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY = "commitPipeline.logQueueDepth";
+constexpr const char* COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY = "commitPipeline.commitQueueDepth";
+
 bool lookupTxnlogSummaryStat(
 	const std::string& statName,
 	const TransactionLogStoreStats& total,
@@ -163,6 +167,20 @@ std::string DBHandle::getColumnFamilyName() const {
 }
 
 napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
+	// commit-pipeline queue depths (per-database lanes, not RocksDB stats)
+	if (statName.rfind("commitPipeline.", 0) == 0) {
+		napi_value jsValue;
+		if (statName == COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY) {
+			NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->logWorker.depth()), &jsValue));
+		} else if (statName == COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY) {
+			NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.depth()), &jsValue));
+		} else {
+			// unknown commitPipeline.* key: never a RocksDB ticker/property
+			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue));
+		}
+		return jsValue;
+	}
+
 	// transaction log summary stats are computed here (not RocksDB tickers or
 	// column-family properties), so resolve them before anything else.
 	if (statName.rfind("txnlog.", 0) == 0) {
@@ -267,6 +285,17 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		uint64_t logCount = 0;
 		this->collectTransactionLogSummary(total, logCount);
 		setTxnlogSummaryStatsOnObject(env, result, total, logCount);
+	}
+
+	// commit-pipeline queue depths
+	{
+		napi_value jsValue;
+		if (::napi_create_double(env, static_cast<double>(this->descriptor->logWorker.depth()), &jsValue) == napi_ok) {
+			::napi_set_named_property(env, result, COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY, jsValue);
+		}
+		if (::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.depth()), &jsValue) == napi_ok) {
+			::napi_set_named_property(env, result, COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY, jsValue);
+		}
 	}
 
 	return result;

@@ -141,8 +141,10 @@ describe('Statistics', () => {
 			stats = db.getStats();
 			expect(stats).toBeDefined();
 			// the curated column-family set stays small; the always-present txnlog.*
-			// summary keys are counted separately.
-			const nonTxnlogKeys = Object.keys(stats).filter((key) => !key.startsWith('txnlog.'));
+			// and commitPipeline.* summary keys are counted separately.
+			const nonTxnlogKeys = Object.keys(stats).filter(
+				(key) => !key.startsWith('txnlog.') && !key.startsWith('commitPipeline.')
+			);
 			expect(nonTxnlogKeys.length).toBeLessThanOrEqual(25);
 
 			// internal stats

@@ -183,6 +183,10 @@ NAPI_MODULE_INIT() {
 		napi_env dyingEnv = static_cast<napi_env>(data);
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
 		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
+		// Release this env's commit-completion tsfns before Node frees the env's
+		// tsfns, so the shared commit thread stops marshalling into a torn-down
+		// env (mirrors the listener cleanup above).
+		rocksdb_js::DBRegistry::ReleaseCommitCompletionsByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
