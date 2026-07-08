@@ -211,6 +211,29 @@ public:
 	 */
 	void cancelForDB(uintptr_t dbPtr);
 
+	/**
+	 * Sweeps every non-lock slot in the table and advances it to a fresh
+	 * settled-empty generation. Called after a bulk-delete operation (clear)
+	 * to ensure that any pre-clear version cached in a slot can no longer be
+	 * re-published via a concurrent populate CAS. The sweep is coarse (it
+	 * covers all slots, not just those for the cleared store) because slot
+	 * identities are not tracked in version or settled-empty slots — only in
+	 * LockTracker, which belongs to lock slots that are intentionally skipped.
+	 *
+	 * Lock slots are skipped: the write-intent lifecycle already advances them
+	 * to a fresh settled-empty generation when the last holder releases. A
+	 * concurrent lockSlotForWrite may overwrite a slot we just settled via an
+	 * unconditional store (not a CAS) — this is safe because the subsequent
+	 * commit+releaseWriteIntent also advances to a new generation, blocking
+	 * any pre-clear populate that observed the slot value before the clear.
+	 *
+	 * Ordering: call AFTER the data-delete operations complete. Any stale
+	 * version that a concurrent reader published between delete-start and
+	 * sweep-start is overwritten by the sweep; after the sweep verifyVersion
+	 * with any pre-clear version returns false.
+	 */
+	void settleAllSlots();
+
 	// ---- Write-intent lifecycle (LockTracker management) ----
 	//
 	// These four methods own the full lifecycle of a slot's LockTracker and are

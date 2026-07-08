@@ -255,6 +255,34 @@ void VerificationTable::unrefTracker(LockTracker* t) {
 	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
 }
 
+void VerificationTable::settleAllSlots() {
+	if (!slots_) return;
+	size_t n = mask_ + 1;
+	for (size_t i = 0; i < n; ++i) {
+		uint64_t v = slots_[i].load(std::memory_order_acquire);
+		// Skip lock slots — the write-intent lifecycle (releaseWriteIntent)
+		// advances them to a fresh settled-empty when the last holder releases.
+		// A concurrent lockSlotForWrite uses an unconditional store (under
+		// writerMutex_) that can race with our CAS; if it wins, the slot is a
+		// lock that will advance further when committed/aborted — still correct.
+		if (vtIsLock(v)) continue;
+		// CAS non-lock (version or settled-empty) to a fresh generation. On CAS
+		// failure the current value is loaded into v; if it's now a lock we
+		// stop (handled above). If it's a different non-lock value (concurrent
+		// populate or another sweep) we retry once more to ensure advancement.
+		while (!vtIsLock(v)) {
+			if (slots_[i].compare_exchange_strong(
+					v,
+					vtEncodeSettled(vtNextSettleGen()),
+					std::memory_order_release,
+					std::memory_order_acquire)) {
+				break;
+			}
+			// v has been reloaded by the failed CAS; if now a lock, exit.
+		}
+	}
+}
+
 void VerificationTable::cancelForDB(uintptr_t dbPtr) {
 	if (!slots_) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
