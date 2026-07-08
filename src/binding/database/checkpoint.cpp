@@ -1,5 +1,6 @@
 #include "database/database.h"
 #include "database/db_handle.h"
+#include "database/db_registry.h"
 #include "napi/async.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
@@ -28,10 +29,9 @@ namespace rocksdb_js {
  * freed `rocksdb::DB`.
  *
  * Note: like backup, pinning the descriptor defers the registry purge if a
- * caller closes the database before the checkpoint settles. That shared
- * lifecycle wrinkle is tracked separately (HarperFast/rocksdb-js#672); this
- * method intentionally matches the existing backup behavior rather than
- * diverging.
+ * caller closes the database before the checkpoint settles
+ * (HarperFast/rocksdb-js#672); the destructor retries the purge when the ref
+ * is released so the deferral is temporary rather than a permanent leak.
  */
 struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -46,6 +46,15 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
 		descriptor(std::move(descriptor)),
 		targetPath(std::move(targetPath)) {}
+
+	~AsyncCheckpointState() override {
+		if (this->descriptor) {
+			std::string path = this->descriptor->path;
+			bool readOnly = this->descriptor->readOnly;
+			this->descriptor.reset();
+			DBRegistry::PurgeIfUnreferenced(path, readOnly);
+		}
+	}
 };
 
 /**

@@ -3,6 +3,7 @@
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
+#include "database/db_registry.h"
 #include "napi/async.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
@@ -124,6 +125,18 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
 		descriptor(std::move(descriptor)),
 		flushBeforeBackup(flushBeforeBackup) {}
+
+	// Our descriptor ref can be the reason a concurrent close skipped its
+	// registry purge (use_count() > 1), so on release we must retry the purge or
+	// the registry entry — and the open RocksDB — would linger forever.
+	~AsyncBackupStreamState() override {
+		if (this->descriptor) {
+			std::string path = this->descriptor->path;
+			bool readOnly = this->descriptor->readOnly;
+			this->descriptor.reset();
+			DBRegistry::PurgeIfUnreferenced(path, readOnly);
+		}
+	}
 
 	/**
 	 * Called on the JS thread (promise continuation / failure path) to wake the

@@ -162,7 +162,12 @@ C++ code that needs to emit to JS without a database context should call
    design takes a `shared_ptr` copy of the descriptor under the lock as a single-purge claim (the copy
    pushes `use_count` past the purge threshold so a racing `CloseDB` skips) while leaving the entry in
    the map — descriptor non-null and `isClosing()` — until `close()` finishes, so a concurrent
-   `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close.
+   `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close. This
+   purge tail lives in `DBRegistry::PurgeIfUnreferenced`. Async ops that pin the descriptor with
+   their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
+   racing close skip the purge (`use_count > 1`), so their state destructors re-run
+   `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672).
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.

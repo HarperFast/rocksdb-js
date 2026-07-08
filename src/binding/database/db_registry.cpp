@@ -40,27 +40,47 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	// Decide whether to purge the descriptor and, if so, take ownership of it,
-	// all under databasesMutex. Two worker threads can reach CloseDB for the
-	// same path concurrently (each tearing down its own env's DBHandle while
-	// sharing one process-global DBDescriptor), so the decision MUST be atomic:
-	//
-	//   - We never hold a raw pointer into the map across the unlocked close()
-	//     below. The previous implementation cached `&entry` under the lock and
-	//     dereferenced it afterward; a concurrent CloseDB that erased the map
-	//     node freed that storage, so the survivor called close() on a freed
-	//     DBDescriptor and locked its destroyed mutex (manifests on glibc as
-	//     "malloc(): unaligned tcache chunk detected").
-	//   - The registry always holds one ref, so use_count() <= 1 means no open
-	//     DBHandles remain. OpenDB bumps use_count under this same lock, so the
-	//     check serializes with it: if an open raced ahead it already pushed the
-	//     count past 1 and we skip; if we win, beginClose() publishes the closing
-	//     state while we still hold the lock, so a subsequent OpenDB observes
-	//     isClosing() and waits instead of being handed a descriptor we then
-	//     close out from under it. beginClose() also makes the claim single-shot.
-	//   - The entry stays in the map (descriptor non-null and isClosing()) for
-	//     the duration of finishClose(), so a concurrent OpenDB keeps waiting on
-	//     the condition rather than re-opening the path mid-close.
+	DBRegistry::PurgeIfUnreferenced(key.path, key.readOnly);
+}
+
+/**
+ * Purges (closes and erases) the registry entry for `path` if no DBHandle
+ * references its descriptor anymore; a no-op otherwise. This is the tail of
+ * every close: CloseDB calls it after detaching the handle, and the async
+ * operations that hold their own `shared_ptr<DBDescriptor>` for the duration
+ * of a copy (backup, backup stream, checkpoint) call it when they release that
+ * reference — a close that raced such an operation saw use_count() > 1 and
+ * skipped the purge, so the releasing operation must retry it or the entry
+ * (and the open RocksDB) would linger in the registry forever.
+ *
+ * The decision is made, and ownership of the descriptor taken, all under
+ * databasesMutex. Multiple threads can race here for one path (worker envs
+ * tearing down concurrently, or an async op's release racing a CloseDB), so
+ * the decision MUST be atomic:
+ *
+ *   - We never hold a raw pointer into the map across the unlocked
+ *     finishClose() below. An earlier implementation cached `&entry` under the
+ *     lock and dereferenced it afterward; a concurrent purge that erased the
+ *     map node freed that storage, so the survivor called close() on a freed
+ *     DBDescriptor and locked its destroyed mutex (manifests on glibc as
+ *     "malloc(): unaligned tcache chunk detected").
+ *   - The registry always holds one ref, so use_count() <= 1 means no open
+ *     DBHandles remain. OpenDB bumps use_count under this same lock, so the
+ *     check serializes with it: if an open raced ahead it already pushed the
+ *     count past 1 and we skip; if we win, beginClose() publishes the closing
+ *     state while we still hold the lock, so a subsequent OpenDB observes
+ *     isClosing() and waits instead of being handed a descriptor we then
+ *     close out from under it. beginClose() also makes the claim single-shot.
+ *   - The entry stays in the map (descriptor non-null and isClosing()) for
+ *     the duration of finishClose(), so a concurrent OpenDB keeps waiting on
+ *     the condition rather than re-opening the path mid-close.
+ */
+void DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
+	if (!instance) {
+		return;
+	}
+
+	DBKey key{path, readOnly};
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 	{
@@ -68,14 +88,14 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		auto entryIterator = instance->databases.find(key);
 		if (entryIterator != instance->databases.end()) {
 			DBRegistryEntry& entry = entryIterator->second;
-			DEBUG_LOG("%p DBRegistry::CloseDB Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), key.path.c_str(), entry.descriptor.use_count());
+			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), key.path.c_str(), entry.descriptor.use_count());
 			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
-				DEBUG_LOG("%p DBRegistry::CloseDB Claiming descriptor purge for \"%s\"\n", instance.get(), key.path.c_str());
+				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance.get(), key.path.c_str());
 				descriptor = entry.descriptor;
 				condition = entry.condition;
 			}
 		} else {
-			DEBUG_LOG("%p DBRegistry::CloseDB DBDescriptor not found! \"%s\"\n", instance.get(), key.path.c_str());
+			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance.get(), key.path.c_str());
 		}
 	}
 
