@@ -65,12 +65,12 @@
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
     "@types/node": "26.1.0",
-    "@vitest/coverage-v8": "4.1.9",
+    "@vitest/coverage-v8": "4.1.10",
     "cross-env": "10.1.0",
     "dotenv": "17.4.2",
     "lefthook": "2.1.9",
     "lmdb": "3.5.6",
-    "node-gyp": "13.0.0",
+    "node-gyp": "13.0.1",
     "oxfmt": "0.58.0",
     "oxlint": "1.73.0",
     "prebuildify": "6.0.1",
@@ -80,7 +80,7 @@
     "tslib": "2.8.1",
     "tsx": "4.23.0",
     "typescript": "6.0.3",
-    "vitest": "4.1.9"
+    "vitest": "4.1.10"
   },
   "optionalDependencies": {
     "@harperfast/rocksdb-js-darwin-arm64": "2.3.0",
