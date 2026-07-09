@@ -93,6 +93,7 @@ public:
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
+	static void PurgeIfUnreferenced(const std::string& path, bool readOnly);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void RemoveListenersByEnv(napi_env env);
 	static void Shutdown();

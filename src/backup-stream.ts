@@ -22,6 +22,15 @@ export interface BackupStreamOptions {
 	 * data and the configured compression.
 	 */
 	gzip?: boolean;
+
+	/**
+	 * Also stream the transaction log store as `transaction_logs/<store>/…`
+	 * entries (each `*.txnlog` and `txn.state` file) after the database files.
+	 * Defaults to `false`. Extraction reconstructs them next to the database, and
+	 * their mtimes are preserved so the store's age-based rotation/retention stays
+	 * correct.
+	 */
+	transactionLogs?: boolean;
 }
 
 /** Native event discriminator: a new file header (vs. a payload chunk). */
@@ -65,9 +74,14 @@ export async function backupToStream(
 	// Native invokes `emit` once per file header and once per payload chunk, and
 	// awaits the returned promise before producing the next event. A rejection
 	// here (e.g. the consumer errored) aborts the native stream.
-	const emit = async (kind: number, data: string | Uint8Array, size: number): Promise<void> => {
+	const emit = async (
+		kind: number,
+		data: string | Uint8Array,
+		size: number,
+		mtime: number
+	): Promise<void> => {
 		if (kind === EVENT_FILE) {
-			await tar.addFile(data as string, size);
+			await tar.addFile(data as string, size, { mtime });
 		} else {
 			await tar.writeData(data as Uint8Array);
 		}

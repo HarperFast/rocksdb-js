@@ -1,5 +1,5 @@
 import { type BackupStreamOptions, backupToStream } from './backup-stream.js';
-import { type BackupOptions, withBackupDirLock } from './backup.js';
+import type { BackupOptions } from './backup.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
@@ -25,7 +25,6 @@ import {
 } from './load-binding.js';
 import { parseDuration } from './util.js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
-import { mkdir } from 'node:fs/promises';
 
 const {
 	ONLY_IF_IN_MEMORY_CACHE_FLAG,
@@ -433,17 +432,12 @@ export class Store {
 		if (typeof target !== 'string' && typeof target?.getWriter === 'function') {
 			return backupToStream(this.db, target, options as BackupStreamOptions);
 		}
-		await mkdir(target as string, { recursive: true });
-		// Hold the on-disk lock for the directory: RocksDB has no cross-engine lock,
-		// so a concurrent backup here (even from another process) would corrupt the
-		// staging directory. Rejects if the directory is already locked. See
-		// `withBackupDirLock`.
-		return withBackupDirLock(
-			target as string,
-			() =>
-				new Promise((resolve, reject) =>
-					this.db.backup(resolve, reject, target as string, options as BackupOptions)
-				)
+		// The native side creates the directory (with missing parents) and holds
+		// the on-disk single-writer lock for the duration of the backup — see
+		// `runCreateBackup` in `src/binding/database/backup.cpp` and
+		// `withBackupDirLock`. Rejects if the directory is already locked.
+		return new Promise((resolve, reject) =>
+			this.db.backup(resolve, reject, target as string, options as BackupOptions)
 		);
 	}
 

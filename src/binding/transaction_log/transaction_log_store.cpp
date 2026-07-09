@@ -352,6 +352,102 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 	return position;
 }
 
+std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() {
+	// Capture txn.state (the flushed-position side file) FIRST, and inline its
+	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
+	// position is <= the sizes we capture next (sizes only grow), so a restored
+	// store never sees a committed/flushed offset past the backed-up bytes. It is
+	// captured inline (not re-read at copy time) because it is rewritten in place
+	// — a later re-read could observe a newer position past the captured extents.
+	TransactionLogBackupEntry stateEntry;
+	bool hasStateEntry = false;
+	{
+		// databaseFlushed() (RocksDB's OnFlushComplete callback) rewrites txn.state
+		// in place under flushedStateMutex, and a flush can fire mid-backup — an
+		// unsynchronized read could tear, decoding a position that is neither the
+		// old nor the new value and may point past the log extents captured below
+		// (same discipline as getLastFlushedPosition()). The lock is scoped to this
+		// block, which touches nothing but the 8-byte state file, and is released
+		// before dataSetsMutex is taken below (ordering: dataSetsMutex →
+		// flushedStateMutex, never the reverse).
+		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+
+		std::filesystem::path statePath = this->path / "txn.state";
+		std::error_code existsEc;
+		if (std::filesystem::exists(statePath, existsEc) && !existsEc) {
+			std::error_code timeEc;
+			auto stateMtime = std::filesystem::last_write_time(statePath, timeEc);
+			std::ifstream in(statePath, std::ios::binary | std::ios::ate);
+			if (in && !timeEc) {
+				std::streamoff len = in.tellg();
+				if (len > 0) {
+					std::string contents(static_cast<size_t>(len), '\0');
+					in.seekg(0);
+					in.read(contents.data(), len);
+					if (in) {
+						stateEntry.relativeName = "txn.state";
+						stateEntry.sourcePath = statePath;
+						stateEntry.byteLimit = static_cast<uint64_t>(len);
+						stateEntry.mtime = stateMtime;
+						stateEntry.immutable = false;
+						stateEntry.inlineContents = std::move(contents);
+						hasStateEntry = true;
+					}
+				}
+			}
+		}
+	}
+
+	// Snapshot the sequence files under dataSetsMutex, copying shared_ptrs so the
+	// files outlive the lock (the CoolTransactionLogs pattern). Also capture the
+	// current sequence so we can mark rotated (immutable) files.
+	std::vector<std::pair<uint32_t, std::shared_ptr<TransactionLogFile>>> files;
+	uint32_t current;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		current = this->currentSequenceNumber.load(std::memory_order_relaxed);
+		files.reserve(this->sequenceFiles.size());
+		for (const auto& [seq, file] : this->sequenceFiles) {
+			files.emplace_back(seq, file);
+		}
+	}
+
+	std::vector<TransactionLogBackupEntry> entries;
+	entries.reserve(files.size() + 1);
+	for (const auto& [seq, file] : files) {
+		// `size` is atomic and append-owned, so [0, byteLimit) is a stable,
+		// complete prefix even if a concurrent append is in flight (we simply
+		// capture the pre-append extent).
+		uint64_t byteLimit = file->size.load(std::memory_order_relaxed);
+		if (byteLimit == 0) {
+			// A just-created current file whose header has not landed yet — nothing
+			// to back up, and a header-less file would confuse recovery on restore.
+			continue;
+		}
+		std::error_code ec;
+		auto mtime = std::filesystem::last_write_time(file->path, ec);
+		if (ec) {
+			// The file was purged out from under us between the snapshot and now;
+			// skip it (a rotated file that's gone contributes nothing to restore).
+			continue;
+		}
+		entries.push_back({
+			file->path.filename().string(),
+			file->path,
+			byteLimit,
+			mtime,
+			seq != current, // rotated files are immutable → hard-linkable
+			{}, // read from disk, not inline
+		});
+	}
+
+	if (hasStateEntry) {
+		entries.push_back(std::move(stateEntry));
+	}
+
+	return entries;
+}
+
 void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	// identity
 	out.name = this->name;
