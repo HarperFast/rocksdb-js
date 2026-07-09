@@ -94,7 +94,12 @@ jobs:
             name: linux-x64-musl
             libc: musl
             target: x64
-          - runner: windows-11-arm
+          # windows-11-vs2026-arm (not windows-11-arm, which only has VS 2022):
+          # rocksdb-prebuilds are compiled with VS 2026 (MSVC 14.5x), whose STL
+          # emits ARM64 vector-algorithm symbols (__std_find_trivial_1, etc.)
+          # that VS 2022's ARM64 STL libs don't provide, so linking fails with
+          # LNK2001 unresolved externals unless we link with VS 2026 too.
+          - runner: windows-11-vs2026-arm
             name: win32-arm64
             target: arm64
           - runner: windows-latest
