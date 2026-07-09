@@ -1,4 +1,4 @@
-import { backups, RocksDatabase } from '../src/index.js';
+import { backups, registryStatus, RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -375,6 +375,12 @@ describe('Backups', () => {
 					() => 'settled'
 				)
 			).resolves.toBe('settled');
+
+			// The backup's descriptor ref made close() skip the registry purge; the
+			// backup must retry it on release so the entry does not leak (a leaked
+			// entry keeps the RocksDB open forever and shows up in registryStatus()
+			// long after every handle is closed).
+			expect(registryStatus().length).toBe(0);
 		}));
 
 	it('should reject listing a non-existent backup directory', async () => {

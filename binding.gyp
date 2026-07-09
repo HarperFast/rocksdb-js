@@ -49,6 +49,7 @@
 				'src/binding/napi/helpers.cpp',
 				'src/binding/database/backup.cpp',
 				'src/binding/database/backup_stream.cpp',
+				'src/binding/database/backup_transaction_logs.cpp',
 				'src/binding/database/checkpoint.cpp',
 				'src/binding/database/database.cpp',
 				'src/binding/database/database_events.cpp',

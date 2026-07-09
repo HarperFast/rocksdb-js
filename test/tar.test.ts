@@ -137,6 +137,19 @@ describe('TarEncoder', () => {
 		expect(header![124] & 0x80).toBe(0x80);
 	});
 
+	it('splits a long path across the USTAR name and prefix fields', async () => {
+		const { sink, bytes } = collector();
+		const tar = new TarEncoder(sink);
+		// > 100 bytes total, with a '/' boundary that lets it split.
+		const longPath = `transaction_logs/${'s'.repeat(120)}/3.txnlog`;
+		await tar.addFileData(longPath, Buffer.from('log-bytes'));
+		await tar.finalize();
+
+		const [entry] = await parseTar(bytes());
+		expect(entry.path).toBe(longPath); // reader rejoins prefix + '/' + name
+		expect(entry.data).toEqual(Buffer.from('log-bytes'));
+	});
+
 	describe('misuse is rejected', () => {
 		it('throws when more data than declared is written', async () => {
 			const { sink } = collector();
@@ -160,10 +173,11 @@ describe('TarEncoder', () => {
 			await expect(tar.finalize()).rejects.toThrow(/unwritten/);
 		});
 
-		it('throws when a name exceeds the USTAR name field', async () => {
+		it('throws when a single path component exceeds the name field', async () => {
 			const { sink } = collector();
 			const tar = new TarEncoder(sink);
-			await expect(tar.addFile('n'.repeat(101), 0)).rejects.toThrow(/exceeds/);
+			// No '/' to split on and >100 bytes: cannot be represented.
+			await expect(tar.addFile('n'.repeat(101), 0)).rejects.toThrow(/does not fit/);
 		});
 
 		it('throws on use after finalize', async () => {

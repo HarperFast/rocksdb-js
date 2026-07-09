@@ -162,16 +162,24 @@ C++ code that needs to emit to JS without a database context should call
    design takes a `shared_ptr` copy of the descriptor under the lock as a single-purge claim (the copy
    pushes `use_count` past the purge threshold so a racing `CloseDB` skips) while leaving the entry in
    the map — descriptor non-null and `isClosing()` — until `close()` finishes, so a concurrent
-   `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close.
+   `OpenDB` keeps waiting on the entry's condition instead of re-opening the path mid-close. This
+   purge tail lives in `DBRegistry::PurgeIfUnreferenced`. Async ops that pin the descriptor with
+   their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
+   racing close skip the purge (`use_count > 1`), so their state destructors re-run
+   `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672).
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
    Two writers on the same directory (two `db.backup()` calls, or a `backup` racing a `delete`/`purge`),
    in the same process or different ones, collide on the per-backup staging dir and both fail,
-   potentially leaving zero usable backups. `withBackupDirLock` in `src/backup.ts` (used by
-   `Store.backup`, `backups.delete`, `backups.purge`) enforces a single writer by holding a non-blocking
+   potentially leaving zero usable backups. A single writer is enforced by holding a non-blocking
    exclusive OS advisory lock on the `.backup.lock` file at the directory root — `flock` on POSIX,
-   `LockFileEx` on Windows. The lock is taken **entirely in native code** (`tryAcquireFileLock` /
+   `LockFileEx` on Windows. Backup creation acquires it natively inside `Database::Backup`
+   (`runCreateBackup` in `src/binding/database/backup.cpp`), which first creates the backup directory
+   (with missing parents); `backups.delete` and `backups.purge` acquire the same lock from JS via
+   `withBackupDirLock` in `src/backup.ts` (they do **not** create the directory — a missing directory
+   is a clear error there). The lock is taken **entirely in native code** (`tryAcquireFileLock` /
    `releaseFileLock` in `src/binding/core/file_lock.cpp`, exposed generically as the binding's
    `tryFileLock`/`fileLockRelease` — a public utility API, not backup-specific): native opens the file,
    locks it, and later closes its OS handle, returning only an opaque uint32 token to JS. **No descriptor
