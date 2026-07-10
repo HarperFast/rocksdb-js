@@ -1372,6 +1372,55 @@ Returns an object containing all of the information in the log file.
   - `length: number` The size of the entry data.
   - `timestamp: number` The entry timestamp.
 
+### Transaction Log Validation
+
+#### `validateTransactionLogStore(path, options?)`
+
+Validates a transaction log store directory (`<dbDir>/transaction_logs/<name>`): every
+`<sequence>.txnlog` file is checked for a valid header and intact entry framing (using the same
+scan as open-time crash recovery), file-name and sequence continuity are checked, and the
+`txn.state` side file (when present) is checked for shape and a plausible flushed position.
+
+Validation runs natively on a worker thread and does not require (or open) a database, so it works
+on the store of a closed database and on backup snapshots alike. It resolves with a report rather
+than throwing when the store is invalid — check `result.valid`. It rejects only when `path` does
+not exist.
+
+```typescript
+const result = await validateTransactionLogStore('/path/to/db/transaction_logs/mylog');
+if (!result.valid) {
+	console.error(result.errors);
+	for (const file of result.files) {
+		console.error(file.file, file.errors, file.warnings);
+	}
+}
+```
+
+Returns a `TransactionLogStoreValidation` object:
+
+- `path: string` The validated store directory.
+- `valid: boolean` `true` when there are no store-level errors and every log file is valid.
+- `errors: string[]` Store-level errors (malformed file names, corrupt `txn.state`).
+- `warnings: string[]` Store-level warnings (sequence gaps, unexpected files).
+- `files: TransactionLogFileValidation[]` Per-file results, ordered by sequence number.
+  - `file: string` File name, e.g. `"3.txnlog"`.
+  - `sequence: number` Sequence number parsed from the file name.
+  - `size: number` On-disk file size in bytes.
+  - `entries: number` Number of well-formed entries.
+  - `validBytes: number` End offset of the validly framed data.
+  - `valid: boolean` `true` when the file has no errors.
+  - `errors: string[]` Bad header, unsupported version, or mid-file framing corruption.
+  - `warnings: string[]` Torn tail (recoverable on next open) and per-entry anomalies.
+
+Options:
+
+- `strict?: boolean` Report recoverable torn tails as errors instead of warnings. A torn tail on a
+  live store is a normal crash artifact that open-time recovery truncates, but a backup snapshot
+  must be framing-clean end to end — `backups.verify()` uses `strict: true`. Defaults to `false`.
+
+Validating a store that is being actively appended to can spuriously report a torn tail for the
+current log file — the tail of an in-flight append is indistinguishable from a crash artifact.
+
 ### `currentThreadId(): number`
 
 Returns the current thread ID.
@@ -1592,10 +1641,16 @@ backup references them, so this is not equivalent to deleting files manually.
 
 Deletes all but the newest `keepCount` backups.
 
-### `backups.verify(backupDir: string, backupId: number, options?: { verifyWithChecksum?: boolean }): Promise<void>`
+### `backups.verify(backupDir: string, backupId: number, options?: { verifyWithChecksum?: boolean; verifyTransactionLogs?: boolean }): Promise<void>`
 
 Verifies a backup's file sizes, and optionally their checksums (which requires reading all
 backed-up data). Resolves if the backup is intact and rejects otherwise.
+
+When the backup was created with `transactionLogs: true`, the backup's transaction log snapshot
+(`<backupDir>/transaction_logs/<backupId>/`) is also validated with
+[`validateTransactionLogStore`](#validatetransactionlogstorepath-options) in strict mode — every
+log file's header and entry framing must be intact (snapshots are copied on committed entry
+boundaries, so even a torn tail fails verification). Set `verifyTransactionLogs: false` to skip.
 
 ```typescript
 await backups.verify('/path/to/backups', 1, { verifyWithChecksum: true });
@@ -1756,8 +1811,9 @@ Available commands:
 - `backups <dir> [subcommand]` Manage database backups; with no subcommand or `ls`/`list`, lists the backups in
   `<dir>`. Subcommands: `backup` (create a backup of the open database), `restore <backup-id>`
   (restore into the open database after confirmation; unavailable in read-only mode),
-  `verify <backup-id>` (checksum verification), `delete <backup-id>`, and `purge <keep-count>`
-  (delete all but the newest backups). `delete` and `purge` report the recovered disk space.
+  `verify <backup-id>` (checksum verification, including the backup's transaction log snapshot),
+  `delete <backup-id>`, and `purge <keep-count>` (delete all but the newest backups). `delete` and
+  `purge` report the recovered disk space.
 - `clear` Clear all data in the current column family
 - `columns` List column families
 - `compact` Compact the current column family
@@ -1775,6 +1831,7 @@ Available commands:
 - `repl` Open a JS sub-REPL; "db" refers to the current column family
 - `stats` Show the statistics for the current column family
 - `use [column]` Create a new column family or switch to an existing one
+- `verify-logs [name]` Validate the transaction log store files (all stores if no name)
 
 ## Development
 

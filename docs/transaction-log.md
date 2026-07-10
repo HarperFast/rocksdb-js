@@ -206,6 +206,15 @@ await db.transaction((txn) => {
 - Commit with unknown transaction ID throws an error
 - Invalid data is detected during read operations
 
+### Validation
+
+A store directory can be validated offline with `validateTransactionLogStore(path, options?)`: it
+checks every log file's header (token, version) and entry framing using the same scan as open-time
+crash recovery, plus file-name/sequence continuity and the `txn.state` side file. A torn tail is a
+warning by default (open-time recovery truncates it losslessly) and an error with
+`{ strict: true }`, which `backups.verify()` uses for backup snapshots. The CLI exposes the same
+check as `verify-logs [name]`.
+
 ## Reading The Transaction Log
 
 Log entries are not guaranteed to be in order, but are guaranteed to have a monotonic timestamp.
