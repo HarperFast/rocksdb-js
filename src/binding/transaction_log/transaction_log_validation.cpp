@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <memory>
 
 namespace rocksdb_js {
 
@@ -102,6 +103,21 @@ TransactionLogFileValidation validateTransactionLogImage(
 		case RecoveryScan::Kind::Clean:
 			break;
 		case RecoveryScan::Kind::TruncateTail: {
+			// An all-zero tail is padding, not a torn entry: Windows pre-extends and
+			// zero-pads log files, and rotation can leave fewer than
+			// TRANSACTION_LOG_ENTRY_HEADER_SIZE padding bytes at the end — too few
+			// for the recovery scan to see a zero timestamp there. A real torn
+			// header always begins with a nonzero timestamp byte.
+			bool allZeroTail = true;
+			for (uint32_t i = scan.validEnd; i < fileSize; i++) {
+				if (data[i] != 0) {
+					allZeroTail = false;
+					break;
+				}
+			}
+			if (allZeroTail) {
+				break;
+			}
 			std::string message =
 				"Torn/partial entry at offset " + offsetHex(scan.validEnd) + " (" +
 				std::to_string(fileSize - scan.validEnd) +
@@ -167,7 +183,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 ) {
 	if (!std::filesystem::is_directory(path)) {
 		throw DBException(
-			"Transaction log store directory does not exist: " + path.string()
+			"Transaction log store directory does not exist or is not a directory: " + path.string()
 		);
 	}
 
@@ -195,10 +211,12 @@ TransactionLogStoreValidation validateTransactionLogStore(
 		}
 
 		// the file name must be `<sequence>.txnlog` where sequence is a positive
-		// integer — anything else was not written by the store
+		// integer without leading zeros — anything else was not written by the
+		// store (and "01.txnlog" would duplicate "1.txnlog"'s sequence)
 		const std::string stem = filename.substr(0, filename.size() - 7);
 		uint64_t sequence = 0;
-		bool validName = !stem.empty() && stem.size() <= 10;
+		bool validName =
+			!stem.empty() && stem.size() <= 10 && !(stem.size() > 1 && stem[0] == '0');
 		for (size_t i = 0; validName && i < stem.size(); i++) {
 			if (stem[i] < '0' || stem[i] > '9') {
 				validName = false;
@@ -230,15 +248,17 @@ TransactionLogStoreValidation validateTransactionLogStore(
 		} else {
 			fileValidation.size = size;
 			std::ifstream file(dirEntry.path(), std::ios::binary | std::ios::in);
-			std::vector<char> image(static_cast<size_t>(size));
+			// uninitialized buffer: read() overwrites it, and pre-zeroing a
+			// multi-megabyte log file would touch every byte twice
+			std::unique_ptr<char[]> image(new char[static_cast<size_t>(size)]);
 			if (size > 0) {
-				file.read(image.data(), static_cast<std::streamsize>(size));
+				file.read(image.get(), static_cast<std::streamsize>(size));
 			}
 			if (!file) {
 				fileValidation.result.errors.push_back("Unable to read file");
 			} else {
 				fileValidation.result =
-					validateTransactionLogImage(image.data(), static_cast<uint32_t>(size), strict);
+					validateTransactionLogImage(image.get(), static_cast<uint32_t>(size), strict);
 			}
 		}
 
@@ -257,12 +277,13 @@ TransactionLogStoreValidation validateTransactionLogStore(
 
 	// Sequence continuity: purge always removes the oldest files first, so the
 	// surviving sequence numbers should be contiguous. A hole means a file was
-	// removed out-of-band (or a backup snapshot is incomplete).
+	// removed out-of-band; in strict mode (backup snapshots, which capture every
+	// surviving file) that is missing data, so it escalates to an error.
 	for (size_t i = 1; i < store.files.size(); i++) {
 		uint32_t prev = store.files[i - 1].sequenceNumber;
 		uint32_t next = store.files[i].sequenceNumber;
 		if (next != prev + 1) {
-			store.warnings.push_back(
+			(strict ? store.errors : store.warnings).push_back(
 				"Gap in log file sequence: " + std::to_string(prev + 1) +
 				(next - prev == 2 ? "" : ".." + std::to_string(next - 1)) + " missing"
 			);
@@ -297,7 +318,10 @@ TransactionLogStoreValidation validateTransactionLogStore(
 				if (flushedSequence != 0 && !store.files.empty()) {
 					uint32_t newestSequence = store.files.back().sequenceNumber;
 					if (flushedSequence > newestSequence) {
-						store.warnings.push_back(
+						// A backup snapshot captures txn.state before enumerating the log
+						// files, so its flushed sequence always exists in the snapshot —
+						// beyond-newest there means the newest file is missing (strict).
+						(strict ? store.errors : store.warnings).push_back(
 							"txn.state flushed position references sequence " +
 							std::to_string(flushedSequence) + ", newer than the newest log file (" +
 							std::to_string(newestSequence) + ")"

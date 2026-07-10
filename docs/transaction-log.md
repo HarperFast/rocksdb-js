@@ -210,10 +210,11 @@ await db.transaction((txn) => {
 
 A store directory can be validated offline with `validateTransactionLogStore(path, options?)`: it
 checks every log file's header (token, version) and entry framing using the same scan as open-time
-crash recovery, plus file-name/sequence continuity and the `txn.state` side file. A torn tail is a
-warning by default (open-time recovery truncates it losslessly) and an error with
-`{ strict: true }`, which `backups.verify()` uses for backup snapshots. The CLI exposes the same
-check as `verify-logs [name]`.
+crash recovery, plus file-name/sequence continuity and the `txn.state` side file. A torn tail,
+sequence gap, or implausible `txn.state` position is a warning by default (a torn tail is
+recoverable — open-time recovery truncates it losslessly) and an error with `{ strict: true }`,
+which `backups.verify()` uses for backup snapshots since an intact snapshot can have none of them.
+The CLI exposes the same check as `verify-logs [name]`.
 
 ## Reading The Transaction Log
 

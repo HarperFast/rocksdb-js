@@ -82,6 +82,12 @@ struct TransactionLogStoreValidation final {
  * sequence continuity are checked, and the `txn.state` side file (when
  * present) is checked for shape and a plausible flushed position.
  *
+ * With `strict`, conditions that indicate an incomplete snapshot — a torn
+ * tail, a sequence gap, or a `txn.state` flushed position beyond the newest
+ * log file — are errors instead of warnings. Backup snapshots capture every
+ * surviving file on committed entry boundaries (and `txn.state` first), so
+ * none of these can occur in an intact snapshot.
+ *
  * Intended for offline stores (a closed database, or a backup's transaction
  * log snapshot). Running it against a store that is being actively appended
  * to can spuriously report a torn tail for the current file — the tail of an

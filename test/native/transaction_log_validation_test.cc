@@ -184,6 +184,35 @@ TEST(TransactionLogValidation, HeaderTimestampAnomalyIsWarning) {
 	EXPECT_NE(result.warnings[0].find("Header timestamp"), std::string::npos);
 }
 
+TEST(TransactionLogValidation, SubHeaderZeroPaddingIsClean) {
+	// Windows pre-extends and zero-pads log files, and rotation can leave fewer
+	// than an entry header's worth (13 bytes) of padding at the end — too few for
+	// the zero-timestamp end marker to be visible. That is padding, not a torn
+	// entry, even in strict mode.
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t entriesEnd = img.size();
+	img.zeros(5);
+	for (bool strict : { false, true }) {
+		auto result = validateTransactionLogImage(img.data(), img.size(), strict);
+		EXPECT_TRUE(result.valid);
+		EXPECT_TRUE(result.errors.empty());
+		EXPECT_TRUE(result.warnings.empty());
+		EXPECT_EQ(result.entryCount, 2u);
+		EXPECT_EQ(result.validBytes, entriesEnd);
+	}
+}
+
+TEST(TransactionLogValidation, NonZeroPartialHeaderTailIsTorn) {
+	LogImage img;
+	img.entry(10);
+	img.raw({ 0x42, 0x79, 0x05 }); // nonzero partial header: a real torn write
+	auto result = validateTransactionLogImage(img.data(), img.size(), false);
+	EXPECT_TRUE(result.valid);
+	ASSERT_EQ(result.warnings.size(), 1u);
+	EXPECT_NE(result.warnings[0].find("Torn/partial entry"), std::string::npos);
+}
+
 TEST(TransactionLogValidation, TornTailIsWarningByDefault) {
 	LogImage img;
 	img.entry(10).entry(20);
@@ -334,12 +363,46 @@ TEST(TransactionLogValidation, MalformedFileNameIsError) {
 	img.writeTo(dir / "1.txnlog");
 	img.writeTo(dir / "12abc.txnlog");
 	img.writeTo(dir / "0.txnlog");
+	// a leading zero would alias another file's sequence ("01" == "1")
+	img.writeTo(dir / "01.txnlog");
 
 	auto result = validateTransactionLogStore(dir, false);
 	EXPECT_FALSE(result.valid);
-	EXPECT_EQ(result.errors.size(), 2u);
+	EXPECT_EQ(result.errors.size(), 3u);
 	// malformed names are not validated as log files
 	ASSERT_EQ(result.files.size(), 1u);
+
+	std::filesystem::remove_all(dir);
+}
+
+TEST(TransactionLogValidation, StrictSequenceGapIsError) {
+	auto dir = makeTempStoreDir("rocksdb-js-validation-strict-gap-store");
+	LogImage img;
+	img.entry(10);
+	img.writeTo(dir / "1.txnlog");
+	img.writeTo(dir / "3.txnlog");
+
+	EXPECT_TRUE(validateTransactionLogStore(dir, false).valid);
+	auto result = validateTransactionLogStore(dir, true);
+	EXPECT_FALSE(result.valid);
+	ASSERT_EQ(result.errors.size(), 1u);
+	EXPECT_NE(result.errors[0].find("Gap in log file sequence"), std::string::npos);
+
+	std::filesystem::remove_all(dir);
+}
+
+TEST(TransactionLogValidation, StrictTxnStateBeyondNewestIsError) {
+	auto dir = makeTempStoreDir("rocksdb-js-validation-strict-state-store");
+	LogImage img;
+	img.entry(10);
+	img.writeTo(dir / "1.txnlog");
+	writeTxnState(dir, /*offset=*/13, /*sequence=*/7);
+
+	EXPECT_TRUE(validateTransactionLogStore(dir, false).valid);
+	auto result = validateTransactionLogStore(dir, true);
+	EXPECT_FALSE(result.valid);
+	ASSERT_EQ(result.errors.size(), 1u);
+	EXPECT_NE(result.errors[0].find("newer than the newest log file"), std::string::npos);
 
 	std::filesystem::remove_all(dir);
 }

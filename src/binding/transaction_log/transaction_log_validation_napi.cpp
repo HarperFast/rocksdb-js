@@ -131,6 +131,16 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 					buildValidationResult(env, state->result, result);
 					if (result != nullptr) {
 						state->callResolve(result);
+					} else {
+						// object creation failed outright — reject (best-effort) rather
+						// than leaving the promise forever pending
+						napi_value message;
+						napi_value error;
+						if (::napi_create_string_utf8(env, "Failed to build validation result",
+								NAPI_AUTO_LENGTH, &message) == napi_ok &&
+							::napi_create_error(env, nullptr, message, &error) == napi_ok) {
+							state->callReject(error);
+						}
 					}
 				} else {
 					napi_value message;

@@ -1384,7 +1384,7 @@ scan as open-time crash recovery), file-name and sequence continuity are checked
 Validation runs natively on a worker thread and does not require (or open) a database, so it works
 on the store of a closed database and on backup snapshots alike. It resolves with a report rather
 than throwing when the store is invalid — check `result.valid`. It rejects only when `path` does
-not exist.
+not exist or is not a directory.
 
 ```typescript
 const result = await validateTransactionLogStore('/path/to/db/transaction_logs/mylog');
@@ -1414,9 +1414,11 @@ Returns a `TransactionLogStoreValidation` object:
 
 Options:
 
-- `strict?: boolean` Report recoverable torn tails as errors instead of warnings. A torn tail on a
-  live store is a normal crash artifact that open-time recovery truncates, but a backup snapshot
-  must be framing-clean end to end — `backups.verify()` uses `strict: true`. Defaults to `false`.
+- `strict?: boolean` Report conditions that indicate an incomplete snapshot — a torn tail, a
+  sequence gap, or a `txn.state` flushed position beyond the newest log file — as errors instead of
+  warnings. A torn tail on a live store is a normal crash artifact that open-time recovery
+  truncates, but a backup snapshot must be clean end to end — `backups.verify()` uses
+  `strict: true`. Defaults to `false`.
 
 Validating a store that is being actively appended to can spuriously report a torn tail for the
 current log file — the tail of an in-flight append is indistinguishable from a crash artifact.
