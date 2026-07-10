@@ -25,17 +25,29 @@ async function exists(path: string): Promise<boolean> {
 
 /**
  * Runs `fn` while holding a native file lock for `backupDir`, releasing it when
- * `fn` settles. Used by the writable-engine operations `backups.delete` and
- * `backups.purge`; backup creation (`Store.backup`) takes the same lock on the
- * same file natively inside `Database::Backup` (see `runCreateBackup` in
+ * `fn` settles. The lock is exclusive by default — used by the writable-engine
+ * operations `backups.delete` and `backups.purge`; backup creation
+ * (`Store.backup`) takes the same exclusive lock on the same file natively
+ * inside `Database::Backup` (see `runCreateBackup` in
  * `src/binding/database/backup.cpp`), where the backup directory is also
- * created. Throws immediately (without running `fn`) if another writer holds
- * the directory lock.
+ * created. Throws immediately (without running `fn`) if the backup directory
+ * is missing — `tryFileLock` creates missing parents, but `delete`/`purge`/
+ * `restore` on a nonexistent directory is a caller error and must not conjure
+ * an empty one — or if a conflicting holder has the directory lock.
  *
- * Read-only operations (`list`, `verify`, and a restore's source read) use
- * `BackupEngineReadOnly` and are not locked: concurrent readers are safe.
- * Running a reader concurrently with a `delete`/`purge` on the same directory is
- * a caller-managed hazard, matching RocksDB's one-writable-engine-per-dir model.
+ * `backups.restore` holds the lock in `shared` mode for its source read:
+ * shared holders coexist (concurrent restores are safe), but a writer's
+ * exclusive acquisition rejects while a restore is in flight — and vice versa.
+ * Without this, a `purge`/`delete` racing a restore can delete the very files
+ * the restore is copying, after the restore's default `purgeAllFiles` mode has
+ * already wiped the destination — failing the restore with no fallback. A
+ * rejected writer, by contrast, just retries later.
+ *
+ * The remaining read-only operations (`list`, `verify`) use
+ * `BackupEngineReadOnly` and are not locked: concurrent readers are safe, and
+ * locking them would make cheap listings reject during a long backup. Running
+ * them concurrently with a `delete`/`purge` on the same directory is a
+ * caller-managed hazard, matching RocksDB's one-writable-engine-per-dir model.
  *
  * RocksDB only serializes work within a single `BackupEngine` instance and has
  * no lock on the backup directory itself. Two writable engines — in any
@@ -61,8 +73,15 @@ async function exists(path: string): Promise<boolean> {
  * The lock file is never deleted, only locked and unlocked; an unlocked, empty
  * `.backup.lock` at the directory root is the steady state.
  */
-export async function withBackupDirLock<T>(backupDir: string, fn: () => Promise<T>): Promise<T> {
-	const token = tryFileLock(join(backupDir, '.backup.lock'));
+export async function withBackupDirLock<T>(
+	backupDir: string,
+	fn: () => Promise<T>,
+	options?: { shared?: boolean }
+): Promise<T> {
+	if (!(await exists(backupDir))) {
+		throw new Error(`Backup directory does not exist: ${backupDir}`);
+	}
+	const token = tryFileLock(join(backupDir, '.backup.lock'), options?.shared === true);
 	if (token === 0) {
 		throw new Error(`Backup directory is locked: ${backupDir}`);
 	}
@@ -300,6 +319,11 @@ export const backups = {
 	 * Restores a database from a backup directory into a (closed) database
 	 * directory. The default mode purges the destination directory, so it must
 	 * not point at a live database.
+	 *
+	 * Holds the backup directory lock in shared mode for the duration: multiple
+	 * restores can read concurrently, but a writer (`db.backup()`, `delete`,
+	 * `purge`) rejects while a restore is in flight rather than deleting files
+	 * out from under it — and a restore rejects while a writer holds the lock.
 	 */
 	async restore(backupDir: string, dbDir: string, options?: RestoreOptions): Promise<void> {
 		// Normalize before comparing so trailing slashes or relative/absolute
@@ -309,23 +333,29 @@ export const backups = {
 			throw new Error('Backup directory and database directory must be different');
 		}
 
-		const walDir = options?.walDir ?? dbDir;
-		await mkdir(dbDir, { recursive: true });
-		if (walDir !== dbDir) {
-			await mkdir(walDir, { recursive: true });
-		}
+		return withBackupDirLock(
+			backupDir,
+			async () => {
+				const walDir = options?.walDir ?? dbDir;
+				await mkdir(dbDir, { recursive: true });
+				if (walDir !== dbDir) {
+					await mkdir(walDir, { recursive: true });
+				}
 
-		await new Promise<void>((resolve, reject) =>
-			nativeBackupRestore(resolve, reject, backupDir, dbDir, walDir, {
-				backupId: options?.backupId,
-				keepLogFiles: options?.keepLogFiles,
-				mode: options?.mode,
-			})
+				await new Promise<void>((resolve, reject) =>
+					nativeBackupRestore(resolve, reject, backupDir, dbDir, walDir, {
+						backupId: options?.backupId,
+						keepLogFiles: options?.keepLogFiles,
+						mode: options?.mode,
+					})
+				);
+
+				// Restore the transaction log snapshot (if this backup included one). Wipes
+				// the destination first so an older restore leaves no newer log stragglers.
+				await restoreTransactionLogs(backupDir, dbDir, options?.backupId);
+			},
+			{ shared: true }
 		);
-
-		// Restore the transaction log snapshot (if this backup included one). Wipes
-		// the destination first so an older restore leaves no newer log stragglers.
-		await restoreTransactionLogs(backupDir, dbDir, options?.backupId);
 	},
 
 	/**

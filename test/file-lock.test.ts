@@ -77,9 +77,58 @@ describe('File Lock', () => {
 			}
 		});
 
-		it('should throw when the parent directory does not exist', () => {
-			const file = join(tempDir(), 'missing', 'lock');
-			expect(() => tryFileLock(file)).toThrow(/does not exist/);
+		it('should create missing parent directories', () => {
+			const file = join(tempDir(), 'missing', 'nested', 'lock');
+			const token = tryFileLock(file);
+			try {
+				expect(token).toBeGreaterThan(0);
+				expect(existsSync(file)).toBe(true);
+			} finally {
+				fileLockRelease(token);
+			}
+		});
+
+		it('should allow multiple shared holders on the same file', () => {
+			const file = lockPath();
+			const token1 = tryFileLock(file, true);
+			const token2 = tryFileLock(file, true);
+			try {
+				expect(token1).toBeGreaterThan(0);
+				expect(token2).toBeGreaterThan(0);
+			} finally {
+				fileLockRelease(token1);
+				fileLockRelease(token2);
+			}
+		});
+
+		it('should reject an exclusive acquire while a shared holder exists', () => {
+			const file = lockPath();
+			const shared = tryFileLock(file, true);
+			try {
+				expect(shared).toBeGreaterThan(0);
+				expect(tryFileLock(file)).toBe(0);
+			} finally {
+				fileLockRelease(shared);
+			}
+
+			// Once the shared holder releases, the exclusive acquire succeeds.
+			const exclusive = tryFileLock(file);
+			try {
+				expect(exclusive).toBeGreaterThan(0);
+			} finally {
+				fileLockRelease(exclusive);
+			}
+		});
+
+		it('should reject a shared acquire while an exclusive holder exists', () => {
+			const file = lockPath();
+			const exclusive = tryFileLock(file);
+			try {
+				expect(exclusive).toBeGreaterThan(0);
+				expect(tryFileLock(file, true)).toBe(0);
+			} finally {
+				fileLockRelease(exclusive);
+			}
 		});
 
 		it('should acquire a lock on a non-ASCII path', () => {

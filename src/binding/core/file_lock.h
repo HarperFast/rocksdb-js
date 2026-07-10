@@ -7,11 +7,13 @@
 namespace rocksdb_js {
 
 /**
- * Opens `file` (creating it if missing) and takes a non-blocking exclusive
- * advisory lock on it — `flock` on POSIX, `LockFileEx` on Windows. Returns an
- * opaque non-zero token to pass to `releaseFileLock`, `0` if another holder
- * currently has the lock, or throws `DBException` on a hard error (including a
- * clear "does not exist" message when `file`'s parent directory is missing).
+ * Opens `file` (creating it and any missing parent directories) and takes a
+ * non-blocking advisory lock on it — `flock` on POSIX, `LockFileEx` on
+ * Windows. The lock is exclusive by default; pass `shared` for a shared
+ * (reader) lock, which coexists with other shared holders but conflicts with
+ * an exclusive holder in either direction. Returns an opaque non-zero token to
+ * pass to `releaseFileLock`, `0` if a conflicting holder currently has the
+ * lock, or throws `DBException` on a hard error.
  *
  * The OS handle is opened, held, and closed entirely within native code and is
  * never exposed to JavaScript. This is deliberate: the addon statically links
@@ -25,7 +27,7 @@ namespace rocksdb_js {
  * e.g. some FUSE/9p mounts) it degrades to a successful no-op lock rather than
  * making backups impossible.
  */
-uint32_t tryAcquireFileLock(const std::string& file);
+uint32_t tryAcquireFileLock(const std::string& file, bool shared = false);
 
 /**
  * Releases a lock previously returned by `tryAcquireFileLock` by closing its

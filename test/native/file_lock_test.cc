@@ -1,10 +1,8 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <string>
-#include "core/exception.h"
 #include "core/file_lock.h"
 
-using rocksdb_js::DBException;
 using rocksdb_js::releaseFileLock;
 using rocksdb_js::tryAcquireFileLock;
 
@@ -58,6 +56,32 @@ TEST(FileLock, ReacquirableAcrossManyCycles) {
 	std::filesystem::remove_all(dir);
 }
 
+TEST(FileLock, SharedHoldersCoexistButExcludeExclusive) {
+	std::string dir = makeTempDir("rocksdb-js-file-lock-shared");
+	std::string file = (std::filesystem::path(dir) / ".lock").string();
+
+	// Shared holders coexist — the pattern concurrent restores rely on.
+	uint32_t reader1 = tryAcquireFileLock(file, true);
+	uint32_t reader2 = tryAcquireFileLock(file, true);
+	EXPECT_NE(reader1, 0u);
+	EXPECT_NE(reader2, 0u);
+
+	// A writer (exclusive) must fail while any shared holder remains — this is
+	// what stops a purge from deleting files out from under a running restore.
+	EXPECT_EQ(tryAcquireFileLock(file), 0u);
+	releaseFileLock(reader1);
+	EXPECT_EQ(tryAcquireFileLock(file), 0u);
+	releaseFileLock(reader2);
+
+	uint32_t writer = tryAcquireFileLock(file);
+	EXPECT_NE(writer, 0u);
+	// And a shared acquire must fail while the exclusive holder remains.
+	EXPECT_EQ(tryAcquireFileLock(file, true), 0u);
+	releaseFileLock(writer);
+
+	std::filesystem::remove_all(dir);
+}
+
 TEST(FileLock, AcquirableOnNonAsciiPath) {
 	// Node passes UTF-8 paths via N-API; on Windows tryAcquireFileLock converts to
 	// UTF-16 before CreateFileW. Build the path as UTF-8 bytes, not path::string()
@@ -77,14 +101,20 @@ TEST(FileLock, AcquirableOnNonAsciiPath) {
 	std::filesystem::remove_all(dir);
 }
 
-TEST(FileLock, ThrowsWhenParentDirectoryMissing) {
-	// delete/purge do not create the directory; a lock file whose parent
-	// directory is missing must surface a clear throw, not a silent lock on a
-	// phantom path.
+TEST(FileLock, CreatesMissingParentDirectories) {
+	// The caller's intent is "make this lock exist" — missing parents are
+	// created, not surfaced as errors. (Backup ops that must reject a missing
+	// directory check its existence explicitly in withBackupDirLock.)
 	auto missingDir = std::filesystem::temp_directory_path() / "rocksdb-js-file-lock-missing-xyz";
 	std::filesystem::remove_all(missingDir);
-	auto file = (missingDir / ".lock").string();
-	EXPECT_THROW(tryAcquireFileLock(file), DBException);
+	auto file = (missingDir / "nested" / ".lock").string();
+
+	uint32_t token = tryAcquireFileLock(file);
+	EXPECT_NE(token, 0u);
+	EXPECT_TRUE(std::filesystem::exists(file));
+	releaseFileLock(token);
+
+	std::filesystem::remove_all(missingDir);
 }
 
 TEST(FileLock, ReleaseOfUnknownTokenIsNoop) {

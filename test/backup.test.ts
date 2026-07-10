@@ -1,4 +1,10 @@
-import { backups, registryStatus, RocksDatabase } from '../src/index.js';
+import {
+	backups,
+	fileLockRelease,
+	registryStatus,
+	RocksDatabase,
+	tryFileLock,
+} from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -389,11 +395,14 @@ describe('Backups', () => {
 	});
 
 	it('should reject a lock-taking op on a non-existent directory with a clear error', async () => {
-		// delete/purge do not create the directory; the on-disk lock must surface a
-		// clear "does not exist" error rather than a raw ENOENT naming a temp file.
+		// delete/purge/restore must not conjure an empty backup directory
+		// (tryFileLock creates missing parents); withBackupDirLock checks the
+		// directory exists and surfaces a clear error.
 		const backupDir = join(tempDir(), 'does-not-exist');
 		await expect(backups.delete(backupDir, 1)).rejects.toThrow(/does not exist/);
 		await expect(backups.purge(backupDir, 1)).rejects.toThrow(/does not exist/);
+		await expect(backups.restore(backupDir, tempDir())).rejects.toThrow(/does not exist/);
+		expect(existsSync(backupDir)).toBe(false);
 	});
 
 	it('should reject a concurrent backup to a directory locked by a running process', () =>
@@ -456,6 +465,69 @@ describe('Backups', () => {
 
 			expect(await db.backup(backupDir)).toBe(1);
 			expect(existsSync(join(backupDir, LOCK_FILENAME))).toBe(true);
+		}));
+
+	it('should reject writers while a restore holds the shared lock, but allow the restore', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 50);
+
+			const backupDir = tempDir();
+			await db.backup(backupDir);
+
+			// Simulate an in-flight restore by holding the shared lock it takes.
+			const sharedToken = tryFileLock(join(backupDir, LOCK_FILENAME), true);
+			expect(sharedToken).toBeGreaterThan(0);
+			try {
+				// Writers must reject rather than delete files out from under the
+				// restore (whose destination is already purged — a failed restore
+				// would leave no usable database).
+				await expect(backups.purge(backupDir, 1)).rejects.toThrow(/locked/);
+				await expect(backups.delete(backupDir, 1)).rejects.toThrow(/locked/);
+				await expect(db.backup(backupDir)).rejects.toThrow(/locked/);
+
+				// A restore coexists with another shared holder.
+				const restoreDir = tempDir();
+				await backups.restore(backupDir, restoreDir);
+				const restored = new RocksDatabase(restoreDir);
+				restored.open();
+				try {
+					await readAll(restored, 50);
+				} finally {
+					restored.close();
+				}
+			} finally {
+				fileLockRelease(sharedToken);
+			}
+
+			// Once the restore's shared lock is gone, writers proceed.
+			await expect(backups.purge(backupDir, 1)).resolves.toBeUndefined();
+		}));
+
+	it('should reject a restore while a writer holds the lock', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 50);
+
+			const backupDir = tempDir();
+			await db.backup(backupDir);
+
+			// Simulate an in-flight backup/delete/purge by holding the exclusive lock.
+			const exclusiveToken = tryFileLock(join(backupDir, LOCK_FILENAME));
+			expect(exclusiveToken).toBeGreaterThan(0);
+			try {
+				await expect(backups.restore(backupDir, tempDir())).rejects.toThrow(/locked/);
+			} finally {
+				fileLockRelease(exclusiveToken);
+			}
+
+			const restoreDir = tempDir();
+			await backups.restore(backupDir, restoreDir);
+			const restored = new RocksDatabase(restoreDir);
+			restored.open();
+			try {
+				await readAll(restored, 50);
+			} finally {
+				restored.close();
+			}
 		}));
 
 	it('should allow concurrent backups to different directories', () =>

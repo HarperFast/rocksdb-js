@@ -53,17 +53,23 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Takes a file lock by opening and exclusively locking the given file (see
- * `tryAcquireFileLock`). Returns an opaque non-zero token to pass to
- * `fileLockRelease`, or `0` if another holder currently has the lock. Throws on
- * a hard error.
+ * Takes a file lock by opening and locking the given file (see
+ * `tryAcquireFileLock`) — exclusive by default, shared when the optional second
+ * argument is truthy. Returns an opaque non-zero token to pass to
+ * `fileLockRelease`, or `0` if a conflicting holder currently has the lock.
+ * Throws on a hard error.
  */
 napi_value TryFileLock(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], file, "Expected file path");
 
+	bool shared = false;
+	napi_value sharedValue;
+	NAPI_STATUS_THROWS(::napi_coerce_to_bool(env, argv[1], &sharedValue));
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, sharedValue, &shared));
+
 	try {
-		uint32_t token = tryAcquireFileLock(file);
+		uint32_t token = tryAcquireFileLock(file, shared);
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, token, &result));
 		return result;

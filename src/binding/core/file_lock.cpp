@@ -61,12 +61,23 @@ std::wstring utf8ToWide(const std::string& utf8) {
 
 } // namespace
 
-uint32_t tryAcquireFileLock(const std::string& file) {
+uint32_t tryAcquireFileLock(const std::string& file, bool shared) {
 #ifdef _WIN32
 	std::filesystem::path lockPath = utf8ToWide(file);
 #else
 	std::filesystem::path lockPath = file;
 #endif
+
+	// The caller's intent is "make this lock exist" — create missing parent
+	// directories rather than erroring on them.
+	std::filesystem::path parent = lockPath.parent_path();
+	if (!parent.empty()) {
+		std::error_code ec;
+		std::filesystem::create_directories(parent, ec);
+		if (ec) {
+			throw DBException("tryAcquireFileLock: failed to create parent directory: " + ec.message());
+		}
+	}
 
 #ifdef _WIN32
 	HANDLE handle = ::CreateFileW(
@@ -80,9 +91,6 @@ uint32_t tryAcquireFileLock(const std::string& file) {
 	);
 	if (handle == INVALID_HANDLE_VALUE) {
 		DWORD error = ::GetLastError();
-		if (error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND) {
-			throw DBException("File does not exist: " + file);
-		}
 		throw DBException("tryAcquireFileLock: CreateFile failed with error " + std::to_string(error));
 	}
 	// Lock a single byte far past EOF: Windows range locks are mandatory and would
@@ -90,7 +98,11 @@ uint32_t tryAcquireFileLock(const std::string& file) {
 	OVERLAPPED overlapped{};
 	overlapped.Offset = 0xFFFFFFFE;
 	overlapped.OffsetHigh = 0x7FFFFFFF;
-	if (!::LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)) {
+	DWORD flags = LOCKFILE_FAIL_IMMEDIATELY;
+	if (!shared) {
+		flags |= LOCKFILE_EXCLUSIVE_LOCK;
+	}
+	if (!::LockFileEx(handle, flags, 0, 1, 0, &overlapped)) {
 		DWORD error = ::GetLastError();
 		::CloseHandle(handle);
 		// A non-blocking conflict surfaces as ERROR_LOCK_VIOLATION, or as
@@ -104,14 +116,9 @@ uint32_t tryAcquireFileLock(const std::string& file) {
 #else
 	int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
 	if (fd < 0) {
-		// O_CREAT can't create the file when the file itself is missing; surface a
-		// clear error rather than a raw ENOENT.
-		if (errno == ENOENT) {
-			throw DBException("File does not exist: " + file);
-		}
 		throw DBException(std::string("tryAcquireFileLock: open failed: ") + std::strerror(errno));
 	}
-	while (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+	while (::flock(fd, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) != 0) {
 		if (errno == EWOULDBLOCK) {
 			::close(fd);
 			return 0;
