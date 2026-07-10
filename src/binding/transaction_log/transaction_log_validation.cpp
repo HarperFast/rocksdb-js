@@ -308,8 +308,11 @@ TransactionLogStoreValidation validateTransactionLogStore(
 			if (!stateFile) {
 				store.errors.push_back("Unable to read txn.state");
 			} else {
-				// txn.state is a raw little-endian LogPosition dump:
-				// uint32 positionInLogFile, uint32 logSequenceNumber
+				// txn.state is a raw host-endian LogPosition dump (uint32
+				// positionInLogFile, uint32 logSequenceNumber) — the writer
+				// (databaseFlushed) writes the struct's memory directly, so decoding
+				// with memcpy on the same host convention is the only decode that
+				// round-trips (all supported platforms are little-endian)
 				uint32_t flushedOffset = 0;
 				uint32_t flushedSequence = 0;
 				std::memcpy(&flushedOffset, stateBytes, 4);
