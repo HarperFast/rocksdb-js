@@ -391,6 +391,22 @@ TEST(TransactionLogValidation, StrictSequenceGapIsError) {
 	std::filesystem::remove_all(dir);
 }
 
+TEST(TransactionLogValidation, StrictTxnStateOffsetBeyondFileSizeIsError) {
+	auto dir = makeTempStoreDir("rocksdb-js-validation-strict-offset-store");
+	LogImage img;
+	img.entry(10);
+	img.writeTo(dir / "1.txnlog");
+	writeTxnState(dir, /*offset=*/img.size() + 1000, /*sequence=*/1);
+
+	EXPECT_TRUE(validateTransactionLogStore(dir, false).valid);
+	auto result = validateTransactionLogStore(dir, true);
+	EXPECT_FALSE(result.valid);
+	ASSERT_EQ(result.errors.size(), 1u);
+	EXPECT_NE(result.errors[0].find("exceeds the size of 1.txnlog"), std::string::npos);
+
+	std::filesystem::remove_all(dir);
+}
+
 TEST(TransactionLogValidation, StrictTxnStateBeyondNewestIsError) {
 	auto dir = makeTempStoreDir("rocksdb-js-validation-strict-state-store");
 	LogImage img;

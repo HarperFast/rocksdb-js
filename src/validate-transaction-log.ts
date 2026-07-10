@@ -63,11 +63,12 @@ export interface ValidateTransactionLogStoreOptions {
 	/**
 	 * Report conditions that indicate an incomplete snapshot — a torn tail, a
 	 * sequence gap, or a `txn.state` flushed position beyond the newest log
-	 * file — as errors instead of warnings. A torn tail on a live store is a
-	 * normal crash artifact that open-time recovery truncates, but a backup
-	 * snapshot captures every surviving file on committed entry boundaries and
-	 * must be clean end to end — `backups.verify()` validates snapshots with
-	 * `strict: true`. Defaults to `false`.
+	 * file or beyond its file's actual size — as errors instead of warnings. A
+	 * torn tail on a live store is a normal crash artifact that open-time
+	 * recovery truncates, but a backup snapshot captures every surviving file
+	 * on committed entry boundaries and must be clean end to end —
+	 * `backups.verify()` validates snapshots with `strict: true`. Defaults to
+	 * `false`.
 	 */
 	strict?: boolean;
 }

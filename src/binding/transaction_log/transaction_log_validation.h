@@ -84,9 +84,10 @@ struct TransactionLogStoreValidation final {
  *
  * With `strict`, conditions that indicate an incomplete snapshot — a torn
  * tail, a sequence gap, or a `txn.state` flushed position beyond the newest
- * log file — are errors instead of warnings. Backup snapshots capture every
- * surviving file on committed entry boundaries (and `txn.state` first), so
- * none of these can occur in an intact snapshot.
+ * log file or beyond its file's actual size — are errors instead of warnings.
+ * Backup snapshots capture every surviving file on committed entry boundaries
+ * (and `txn.state` first, so files can only have grown relative to it), which
+ * means none of these can occur in an intact snapshot.
  *
  * Intended for offline stores (a closed database, or a backup's transaction
  * log snapshot). Running it against a store that is being actively appended

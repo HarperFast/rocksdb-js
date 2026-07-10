@@ -139,9 +139,11 @@ TransactionLogFileValidation validateTransactionLogImage(
 
 	// Walk the well-formed frames (everything in [header, validEnd) is framed
 	// correctly by construction) counting entries and per-entry anomalies.
+	// pos is uint64_t so the bounds safety is self-evident here, not implicit
+	// in the recovery scan's own widened arithmetic.
 	size_t anomalyCount = 0;
-	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	while (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= scan.validEnd) {
+	uint64_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	while (pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= scan.validEnd) {
 		double timestamp = readDoubleBE(data + pos);
 		if (timestamp == 0) {
 			// zero padding marks the end of entries (matches the reader/parser)
@@ -335,7 +337,10 @@ TransactionLogStoreValidation validateTransactionLogStore(
 								return f.sequenceNumber == flushedSequence;
 							});
 						if (it != store.files.end() && flushedOffset > it->size) {
-							store.warnings.push_back(
+							// same snapshot-ordering argument as beyond-newest above: files
+							// can only have grown after txn.state was captured, so a file
+							// shorter than its flushed offset means missing data (strict)
+							(strict ? store.errors : store.warnings).push_back(
 								"txn.state flushed offset " + std::to_string(flushedOffset) +
 								" exceeds the size of " + it->file + " (" + std::to_string(it->size) +
 								" bytes)"

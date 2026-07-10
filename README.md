@@ -1415,10 +1415,10 @@ Returns a `TransactionLogStoreValidation` object:
 Options:
 
 - `strict?: boolean` Report conditions that indicate an incomplete snapshot — a torn tail, a
-  sequence gap, or a `txn.state` flushed position beyond the newest log file — as errors instead of
-  warnings. A torn tail on a live store is a normal crash artifact that open-time recovery
-  truncates, but a backup snapshot must be clean end to end — `backups.verify()` uses
-  `strict: true`. Defaults to `false`.
+  sequence gap, or a `txn.state` flushed position beyond the newest log file or beyond its file's
+  actual size — as errors instead of warnings. A torn tail on a live store is a normal crash
+  artifact that open-time recovery truncates, but a backup snapshot must be clean end to end —
+  `backups.verify()` uses `strict: true`. Defaults to `false`.
 
 Validating a store that is being actively appended to can spuriously report a torn tail for the
 current log file — the tail of an in-flight append is indistinguishable from a crash artifact.
