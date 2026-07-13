@@ -55,6 +55,9 @@ This is a Node.js binding for RocksDB that provides both TypeScript and C++ laye
 - **`transaction-log.ts`** - Transaction log implementation for storing transaction related data
 - **`transaction.ts`** - Transaction-specific context for transactional operations
 - **`util.ts`** - Various helpers
+- **`validate-transaction-log.ts`** - `validateTransactionLogStore()` over the native validator
+  (`src/binding/transaction_log/transaction_log_validation.cpp`); also used by `backups.verify()`
+  (strict mode) and the CLI `verify-logs` command
 
 ### C++ Native Layer (`src/binding/`)
 

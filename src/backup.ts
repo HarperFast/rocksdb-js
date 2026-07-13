@@ -7,6 +7,7 @@ import {
 	nativeBackupRestore,
 	nativeBackupVerify,
 } from './load-binding.js';
+import { validateTransactionLogStore } from './validate-transaction-log.js';
 import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 
@@ -409,14 +410,52 @@ export const backups = {
 	/**
 	 * Verifies a backup's file sizes, and optionally their checksums (which
 	 * requires reading all backed-up data).
+	 *
+	 * When the backup was created with `transactionLogs: true`, the backup's
+	 * transaction log snapshot (`<backupDir>/transaction_logs/<backupId>/`) is
+	 * also validated — every log file's header and entry framing must be intact
+	 * (snapshots are copied on committed entry boundaries, so even a torn tail
+	 * is a verification failure). Set `verifyTransactionLogs: false` to skip.
 	 */
-	verify(
+	async verify(
 		backupDir: string,
 		backupId: number,
-		options?: { verifyWithChecksum?: boolean }
+		options?: { verifyWithChecksum?: boolean; verifyTransactionLogs?: boolean }
 	): Promise<void> {
-		return new Promise((resolve, reject) =>
+		await new Promise<void>((resolve, reject) =>
 			nativeBackupVerify(resolve, reject, backupDir, backupId, options?.verifyWithChecksum ?? false)
 		);
+
+		if (options?.verifyTransactionLogs === false) {
+			return;
+		}
+
+		const logsDir = join(backupDir, TRANSACTION_LOGS_DIRNAME, String(backupId));
+		if (!(await exists(logsDir))) {
+			// this backup captured no transaction logs
+			return;
+		}
+
+		const failures: string[] = [];
+		for (const entry of await readdir(logsDir, { withFileTypes: true })) {
+			if (!entry.isDirectory()) {
+				continue;
+			}
+			const result = await validateTransactionLogStore(join(logsDir, entry.name), {
+				strict: true,
+			});
+			if (!result.valid) {
+				const details = [
+					...result.errors,
+					...result.files.flatMap((file) => file.errors.map((error) => `${file.file}: ${error}`)),
+				];
+				failures.push(`${entry.name}: ${details.join('; ')}`);
+			}
+		}
+		if (failures.length > 0) {
+			throw new Error(
+				`Backup ${backupId} transaction log verification failed: ${failures.join('\n')}`
+			);
+		}
 	},
 };

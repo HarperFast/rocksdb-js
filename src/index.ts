@@ -34,6 +34,12 @@ export {
 } from './load-binding.js';
 export * from './parse-transaction-log.js';
 export {
+	validateTransactionLogStore,
+	type TransactionLogFileValidation,
+	type TransactionLogStoreValidation,
+	type ValidateTransactionLogStoreOptions,
+} from './validate-transaction-log.js';
+export {
 	Store,
 	type StoreContext,
 	type StoreGetOptions,

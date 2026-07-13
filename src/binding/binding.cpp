@@ -13,6 +13,7 @@
 #include "transaction_log/transaction_log.h"
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "transaction_log/transaction_log_validation_napi.h"
 #include "core/platform.h"
 #include "core/file_lock.h"
 #include "napi/helpers.h"
@@ -192,6 +193,9 @@ NAPI_MODULE_INIT() {
 
 	// transaction log
 	rocksdb_js::TransactionLog::Init(env, exports);
+
+	// transaction log store validation (module-level, no open database needed)
+	rocksdb_js::initTransactionLogValidationExports(env, exports);
 
 	// db iterator
 	rocksdb_js::DBIterator::Init(env, exports);

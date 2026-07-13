@@ -73,6 +73,13 @@ await backups.delete('/path/to/backups', id); // remove one backup
 await backups.purge('/path/to/backups', 3); // keep the newest 3
 ```
 
+`backups.verify` also validates the backup's transaction log snapshot when one was captured
+(`transactionLogs: true`): every log file's header and entry framing must be intact, in strict mode
+(snapshots are copied on committed entry boundaries, so even a recoverable torn tail fails
+verification). Pass `verifyTransactionLogs: false` to check only the RocksDB files. Standalone
+stores (e.g. the `transaction_logs` directory of a closed database) can be validated directly with
+`validateTransactionLogStore()`.
+
 ### Restoring
 
 ```typescript
