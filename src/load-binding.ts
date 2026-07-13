@@ -3,6 +3,7 @@ import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.js';
 import type { StoreContext } from './store.js';
+import type { TransactionLogStoreValidation } from './validate-transaction-log.js';
 export type {
 	GetStatsMethod,
 	StatsAll,
@@ -579,6 +580,17 @@ export const nativeBackupVerify: (
 	backupId: number,
 	verifyWithChecksum: boolean
 ) => void = binding.backupVerify;
+
+// Module-level transaction log store validation. Operates on a store directory
+// (a closed database's store or a backup snapshot) and does not require an open
+// database. Wrapped by `validateTransactionLogStore` in
+// `validate-transaction-log.ts`.
+export const nativeValidateTransactionLog: (
+	resolve: ResolveCallback<TransactionLogStoreValidation>,
+	reject: RejectCallback,
+	path: string,
+	strict: boolean
+) => void = binding.validateTransactionLog;
 
 export const stats: {
 	StatsLevel: {

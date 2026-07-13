@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
-import { RocksDatabase, backups, parseTransactionLog, versions } from '../dist/index.mjs';
+import {
+	RocksDatabase,
+	backups,
+	parseTransactionLog,
+	validateTransactionLogStore,
+	versions,
+} from '../dist/index.mjs';
 import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -29,6 +35,7 @@ const COMMANDS = {
 	repl: replCommand,
 	stats: statsCommand,
 	use: useCommand,
+	'verify-logs': verifyLogsCommand,
 };
 
 const BACKUP_SUBCOMMANDS = ['backup', 'restore', 'verify', 'delete', 'purge'];
@@ -73,13 +80,19 @@ function completer(line) {
 		return [hits.length ? hits : columns, arg];
 	}
 
-	if ((command === 'log' || command === 'logs') && currentDB) {
+	if (
+		(command === 'log' ||
+			command === 'logs' ||
+			command === 'verify-logs' ||
+			command === 'purge-logs') &&
+		currentDB
+	) {
 		if (parts.length === 2) {
 			const arg = parts[1];
 			const logs = currentDB.listLogs();
 			const hits = logs.filter((l) => l.startsWith(arg));
 			return [(hits.length ? hits : logs).map((s) => `${s} `), arg];
-		} else if (parts.length === 3) {
+		} else if (parts.length === 3 && (command === 'log' || command === 'logs')) {
 			const [name, store] = parts.slice(1);
 			const logs = currentDB.listLogs();
 			const hit = logs.find((l) => l === name);
@@ -616,6 +629,9 @@ function helpCommand() {
 	console.log(
 		`${hl('use [column]')}               Create a new column family or switch to an existing one`
 	);
+	console.log(
+		`${hl('verify-logs [name]')}         Validate transaction log store files (all stores if no name)`
+	);
 	console.log();
 }
 
@@ -728,6 +744,54 @@ async function purgeLogsCommand(args) {
 	);
 	for (const file of removed) {
 		console.log(hl(file));
+	}
+	console.log();
+}
+
+async function verifyLogsCommand(args) {
+	const [name] = args;
+	const logs = currentDB.listLogs();
+	if (name && !logs.includes(name)) {
+		console.log(`Log store ${hl(name)} does not exist\n`);
+		return;
+	}
+	if (logs.length === 0) {
+		console.log('No log stores found\n');
+		return;
+	}
+
+	let invalidStores = 0;
+	for (const storeName of name ? [name] : logs) {
+		const storePath = join(currentDB.path, 'transaction_logs', storeName);
+		const { result, time } = await run(() => validateTransactionLogStore(storePath));
+		console.log(`${hl(storeName)}  ${result.valid ? 'OK' : bad('INVALID')} ${note(`(${time}ms)`)}`);
+		if (!result.valid) {
+			invalidStores++;
+		}
+		for (const error of result.errors) {
+			console.log(`  ${bad(`! ${error}`)}`);
+		}
+		for (const warning of result.warnings) {
+			console.log(`  ${warn(`! ${warning}`)}`);
+		}
+		for (const file of result.files) {
+			console.log(
+				`  ${file.file}  ${file.valid ? 'OK' : bad('INVALID')}  ${note(
+					`${file.entries.toLocaleString()} entr${file.entries === 1 ? 'y' : 'ies'}, ${formatBytes(file.size)}`
+				)}`
+			);
+			for (const error of file.errors) {
+				console.log(`    ${bad(`! ${error}`)}`);
+			}
+			for (const warning of file.warnings) {
+				console.log(`    ${warn(`! ${warning}`)}`);
+			}
+		}
+	}
+	if (invalidStores > 0) {
+		console.log(
+			`\n${bad(`${invalidStores} log store${invalidStores === 1 ? ' is' : 's are'} invalid`)}`
+		);
 	}
 	console.log();
 }
