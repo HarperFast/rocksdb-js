@@ -1,6 +1,6 @@
 import { fileLockRelease, tryFileLock } from '../src/index.js';
 import { createWorkerBootstrapScript, generateDBPath, terminateWorker } from './lib/util.js';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -130,6 +130,51 @@ describe('File Lock', () => {
 				fileLockRelease(exclusive);
 			}
 		});
+
+		// A shared (reader) lock must not need write access — a restore reads a
+		// backup directory that may be mounted read-only. Opening read-only lets a
+		// shared acquire succeed against an already-created lock file whose write bit
+		// is stripped, where the old write-always open would have failed with EACCES.
+		it.skipIf(process.platform === 'win32')(
+			'should acquire a shared lock on a read-only lock file',
+			() => {
+				const file = lockPath();
+				fileLockRelease(tryFileLock(file)); // create the file
+				chmodSync(file, 0o444);
+				const shared = tryFileLock(file, true);
+				try {
+					expect(shared).toBeGreaterThan(0);
+				} finally {
+					fileLockRelease(shared);
+					chmodSync(file, 0o644); // let afterEach clean up
+				}
+			}
+		);
+
+		// On a genuinely read-only backup directory no exclusive holder can exist,
+		// so a shared lock protects nothing: rather than hard-fail the restore, the
+		// shared path degrades to a no-op "acquired". Exclusive still hard-fails.
+		// Skipped as root, which bypasses the directory permission bits.
+		it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+			'should degrade a shared lock to a no-op on a read-only directory',
+			() => {
+				const dir = tempDir();
+				mkdirSync(dir, { recursive: true });
+				const file = join(dir, '.backup.lock'); // does not exist yet
+				chmodSync(dir, 0o555); // read-only: the lock file cannot be created
+				try {
+					const token = tryFileLock(file, true);
+					expect(token).toBeGreaterThan(0); // degraded no-op acquire
+					expect(existsSync(file)).toBe(false); // nothing was conjured
+					expect(() => fileLockRelease(token)).not.toThrow();
+
+					// Exclusive acquisition has no such degrade — it must hard-fail.
+					expect(() => tryFileLock(file)).toThrow();
+				} finally {
+					chmodSync(dir, 0o755); // let afterEach clean up
+				}
+			}
+		);
 
 		it('should acquire a lock on a non-ASCII path', () => {
 			const dir = join(tmpdir(), 'rocksdb-js-tests', 'café-répertoire-バックアップ');

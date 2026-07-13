@@ -103,6 +103,11 @@ Restore modes:
 - **`verifyChecksum`**: reuse existing destination files whose checksums match the backup, replacing
   only mismatched/corrupt files.
 
+Restore reads the backup directory and holds its lock in shared mode, so multiple restores run
+concurrently but a writer (`db.backup()` / `delete` / `purge`) and a restore exclude each other.
+Because the restore only reads, the source may be a **read-only backup directory** — an
+immutable/WORM store or a read-only-mounted volume — even though writers require a writable one.
+
 ### Caveats
 
 - **The data is duplicated onto local disk.** A backup is a real, separate copy in the backup

@@ -21,6 +21,15 @@ namespace rocksdb_js {
  * by Node/libuv is not resolvable here — `_get_osfhandle` on such an fd would
  * fault. Owning the handle natively sidesteps the cross-runtime boundary.
  *
+ * A shared lock opens the file read-only and never creates it, so a reader
+ * (e.g. a restore) can lock an existing lock file on a read-only backup
+ * directory (immutable/WORM store, read-only NFS/bind mount) — the exclusive
+ * path still opens read-write and creates the file. When even that read-only
+ * open fails because the directory is read-only (`EROFS`/`EACCES`, or
+ * `ERROR_ACCESS_DENIED`/`ERROR_WRITE_PROTECT`), the shared lock degrades to a
+ * successful no-op: no exclusive holder can exist on a directory nothing can
+ * write, so the lock would protect nothing there.
+ *
  * The kernel owns the lock, so it is released when the handle is closed —
  * including implicitly when the process dies — with no staleness heuristic.
  * On filesystems that don't implement advisory locking (`EOPNOTSUPP`/`ENOTSUP`,

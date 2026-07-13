@@ -1010,6 +1010,13 @@ with other shared holders but conflicts with an exclusive holder in either direc
 non-zero token to pass to `fileLockRelease` if the lock was acquired, or `0` if a conflicting
 holder — in any process, container, or worker thread — currently has it. Throws on a hard error.
 
+A shared lock needs only read access: it opens the file read-only and does not create it (falling
+back to create only when the file is missing on a writable directory), so it can lock an existing
+lock file on a read-only filesystem. If the directory is read-only enough that the open fails
+outright, a shared acquire degrades to a successful no-op token — there can be no exclusive holder
+to exclude on a directory nothing can write. An exclusive lock always opens read-write and creates
+the file, and so requires a writable location.
+
 ```typescript
 import { tryFileLock } from '@harperfast/rocksdb-js';
 
@@ -1610,6 +1617,13 @@ The restore holds the backup directory's `.backup.lock` in shared mode for its d
 rejects with a "locked" error while a writer (`db.backup()`, `backups.delete()`, `backups.purge()`)
 is in flight — and writers reject while the restore runs. Concurrent restores from the same
 directory are allowed.
+
+Because a restore only reads the backup, the shared lock needs no write access to `backupDir`:
+restoring from a **read-only backup directory** (an immutable/WORM store or a read-only-mounted
+volume) works — it locks the existing `.backup.lock` read-only, and if the directory is read-only
+enough that even that fails, the lock degrades to a no-op (nothing can write the directory, so no
+writer can be racing the restore anyway). Writers, which do need write access, still fail on a
+read-only directory.
 
 ```typescript
 // Restore the latest backup.

@@ -325,6 +325,11 @@ export const backups = {
 	 * restores can read concurrently, but a writer (`db.backup()`, `delete`,
 	 * `purge`) rejects while a restore is in flight rather than deleting files
 	 * out from under it — and a restore rejects while a writer holds the lock.
+	 *
+	 * The shared lock needs no write access to `backupDir`, so restoring from a
+	 * read-only backup directory (immutable/WORM store, read-only-mounted volume)
+	 * works: the lock is taken on an existing `.backup.lock` read-only, degrading
+	 * to a no-op if the directory is too read-only to open it at all.
 	 */
 	async restore(backupDir: string, dbDir: string, options?: RestoreOptions): Promise<void> {
 		// Normalize before comparing so trailing slashes or relative/absolute

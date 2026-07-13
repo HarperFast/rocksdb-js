@@ -1,8 +1,14 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <string>
+#include "core/exception.h"
 #include "core/file_lock.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
+using rocksdb_js::DBException;
 using rocksdb_js::releaseFileLock;
 using rocksdb_js::tryAcquireFileLock;
 
@@ -116,6 +122,32 @@ TEST(FileLock, CreatesMissingParentDirectories) {
 
 	std::filesystem::remove_all(missingDir);
 }
+
+#ifndef _WIN32
+TEST(FileLock, SharedDegradesOnReadOnlyDirectory) {
+	// A restore reads a backup directory that may be mounted read-only. No writer
+	// can exist there, so a shared lock protects nothing: it degrades to a no-op
+	// "acquired" rather than hard-failing the restore. Exclusive has no such
+	// degrade. Skipped as root, which bypasses the directory permission bits.
+	if (geteuid() == 0) {
+		GTEST_SKIP() << "permission bits are bypassed when running as root";
+	}
+	std::string dir = makeTempDir("rocksdb-js-file-lock-readonly");
+	std::string file = (std::filesystem::path(dir) / ".backup.lock").string();
+	ASSERT_EQ(::chmod(dir.c_str(), 0555), 0); // read-only: lock file cannot be created
+
+	uint32_t token = tryAcquireFileLock(file, true);
+	EXPECT_NE(token, 0u);                        // degraded no-op acquire
+	EXPECT_FALSE(std::filesystem::exists(file)); // nothing was conjured
+	releaseFileLock(token);                      // must be a safe no-op
+
+	// Exclusive acquisition must still hard-fail on a read-only directory.
+	EXPECT_THROW(tryAcquireFileLock(file), DBException);
+
+	::chmod(dir.c_str(), 0755); // allow remove_all cleanup
+	std::filesystem::remove_all(dir);
+}
+#endif
 
 TEST(FileLock, ReleaseOfUnknownTokenIsNoop) {
 	// Release must tolerate token 0 and stale/unknown tokens without crashing —

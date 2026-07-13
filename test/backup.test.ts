@@ -6,7 +6,15 @@ import {
 	tryFileLock,
 } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -36,6 +44,18 @@ async function writeAll(db: RocksDatabase, count: number, prefix = 'value'): Pro
 		await db.put(`key-${i}`, `${prefix}-${i}`);
 	}
 	await db.flush();
+}
+
+/** Recursively chmod a tree (children before the containing directory). */
+function chmodTree(path: string, dirMode: number, fileMode: number): void {
+	if (statSync(path).isDirectory()) {
+		for (const entry of readdirSync(path)) {
+			chmodTree(join(path, entry), dirMode, fileMode);
+		}
+		chmodSync(path, dirMode);
+	} else {
+		chmodSync(path, fileMode);
+	}
 }
 
 describe('Backups', () => {
@@ -529,6 +549,34 @@ describe('Backups', () => {
 				restored.close();
 			}
 		}));
+
+	// Restoring from an immutable/WORM or read-only-mounted backup store is a
+	// legitimate disaster-recovery pattern. A restore is pure-read, so its shared
+	// lock must not require write access to the backup directory (Windows chmod
+	// semantics differ, so POSIX-only).
+	it.skipIf(process.platform === 'win32')('should restore from a read-only backup directory', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 50);
+
+			const backupDir = tempDir();
+			await db.backup(backupDir);
+
+			chmodTree(backupDir, 0o555, 0o444);
+			try {
+				const restoreDir = tempDir();
+				await backups.restore(backupDir, restoreDir);
+				const restored = new RocksDatabase(restoreDir);
+				restored.open();
+				try {
+					await readAll(restored, 50);
+				} finally {
+					restored.close();
+				}
+			} finally {
+				chmodTree(backupDir, 0o755, 0o644); // let afterEach clean up
+			}
+		})
+	);
 
 	it('should allow concurrent backups to different directories', () =>
 		dbRunner(async ({ db }) => {
