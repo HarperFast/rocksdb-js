@@ -20,8 +20,13 @@ namespace {
 
 #ifdef _WIN32
 using NativeHandle = HANDLE;
+// Sentinel for a degraded no-op lock (see the read-only backup directory case in
+// tryAcquireFileLock): no OS handle was acquired, so release must not close it.
+// Distinct from INVALID_HANDLE_VALUE ((HANDLE)-1), which CreateFileW returns on error.
+constexpr NativeHandle kNoHandle = nullptr;
 #else
 using NativeHandle = int;
+constexpr NativeHandle kNoHandle = -1;
 #endif
 
 // The registry is a process-global singleton shared across every Node env that
@@ -61,27 +66,65 @@ std::wstring utf8ToWide(const std::string& utf8) {
 
 } // namespace
 
-uint32_t tryAcquireFileLock(const std::string& file) {
+uint32_t tryAcquireFileLock(const std::string& file, bool shared) {
 #ifdef _WIN32
 	std::filesystem::path lockPath = utf8ToWide(file);
 #else
 	std::filesystem::path lockPath = file;
 #endif
 
+	// The caller's intent is "make this lock exist" — create missing parent
+	// directories rather than erroring on them.
+	std::filesystem::path parent = lockPath.parent_path();
+	if (!parent.empty()) {
+		std::error_code ec;
+		std::filesystem::create_directories(parent, ec);
+		if (ec) {
+			throw DBException("tryAcquireFileLock: failed to create parent directory: " + ec.message());
+		}
+	}
+
 #ifdef _WIN32
+	// Shared (reader) locks need only read access and must not create the file:
+	// a restore reads a backup directory that may be mounted read-only
+	// (immutable/WORM store, read-only bind mount). A shared LockFileEx is
+	// satisfied by a GENERIC_READ handle.
+	DWORD access = shared ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
+	DWORD disposition = shared ? OPEN_EXISTING : OPEN_ALWAYS;
 	HANDLE handle = ::CreateFileW(
 		lockPath.c_str(),
-		GENERIC_READ | GENERIC_WRITE,
+		access,
 		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		nullptr,
-		OPEN_ALWAYS,
+		disposition,
 		FILE_ATTRIBUTE_NORMAL,
 		nullptr
 	);
+	if (handle == INVALID_HANDLE_VALUE && shared) {
+		DWORD error = ::GetLastError();
+		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+			// No lock file yet (writable directory, first-ever restore): create it.
+			handle = ::CreateFileW(
+				lockPath.c_str(),
+				GENERIC_READ | GENERIC_WRITE,
+				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				nullptr,
+				OPEN_ALWAYS,
+				FILE_ATTRIBUTE_NORMAL,
+				nullptr
+			);
+		}
+	}
 	if (handle == INVALID_HANDLE_VALUE) {
 		DWORD error = ::GetLastError();
-		if (error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND) {
-			throw DBException("File does not exist: " + file);
+		// Media-level read-only volume (ERROR_WRITE_PROTECT): read-only for *every*
+		// process, so no exclusive holder can exist and the shared lock would protect
+		// nothing. Degrade to a no-op "acquired" (same rationale as the
+		// flock-unsupported path on POSIX). ERROR_ACCESS_DENIED is deliberately NOT
+		// degraded: it means only *this* account is denied, so a more-privileged
+		// writer could still hold the lock — hard-fail rather than skip coordination.
+		if (shared && error == ERROR_WRITE_PROTECT) {
+			return registerHandle(kNoHandle);
 		}
 		throw DBException("tryAcquireFileLock: CreateFile failed with error " + std::to_string(error));
 	}
@@ -90,7 +133,11 @@ uint32_t tryAcquireFileLock(const std::string& file) {
 	OVERLAPPED overlapped{};
 	overlapped.Offset = 0xFFFFFFFE;
 	overlapped.OffsetHigh = 0x7FFFFFFF;
-	if (!::LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)) {
+	DWORD flags = LOCKFILE_FAIL_IMMEDIATELY;
+	if (!shared) {
+		flags |= LOCKFILE_EXCLUSIVE_LOCK;
+	}
+	if (!::LockFileEx(handle, flags, 0, 1, 0, &overlapped)) {
 		DWORD error = ::GetLastError();
 		::CloseHandle(handle);
 		// A non-blocking conflict surfaces as ERROR_LOCK_VIOLATION, or as
@@ -102,16 +149,38 @@ uint32_t tryAcquireFileLock(const std::string& file) {
 	}
 	return registerHandle(handle);
 #else
-	int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-	if (fd < 0) {
-		// O_CREAT can't create the file when the file itself is missing; surface a
-		// clear error rather than a raw ENOENT.
-		if (errno == ENOENT) {
-			throw DBException("File does not exist: " + file);
+	int fd;
+	if (shared) {
+		// Shared (reader) locks need only read access and must not create the file:
+		// a restore reads a backup directory that may be mounted read-only
+		// (immutable/WORM store, read-only NFS/bind mount). flock(LOCK_SH) works on
+		// a read-only fd.
+		fd = ::open(lockPath.c_str(), O_RDONLY | O_CLOEXEC);
+		if (fd < 0 && errno == ENOENT) {
+			// No lock file yet (writable directory, first-ever restore): create it.
+			fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
 		}
+		if (fd < 0 && errno == EROFS) {
+			// Media-level read-only (EROFS): the directory is read-only for *every*
+			// process, so no writer can hold an exclusive lock and the shared lock
+			// would protect nothing. Degrade to a no-op "acquired" (same rationale as
+			// the flock-unsupported path below) so the restore proceeds; there is no
+			// OS handle to release. EACCES/EPERM are deliberately NOT degraded: they
+			// mean only *this* uid/ACL is denied, so a more-privileged writer (e.g. a
+			// purge running as the service account that created the backup) could
+			// still hold a real exclusive lock — falling through to hard-fail is safer
+			// than silently skipping coordination. (EPERM from `chattr +i` is
+			// uid-independent, but it also fires for ordinary permission cases, so
+			// EROFS is the only error that *proves* no writer can exist.)
+			return registerHandle(kNoHandle);
+		}
+	} else {
+		fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+	}
+	if (fd < 0) {
 		throw DBException(std::string("tryAcquireFileLock: open failed: ") + std::strerror(errno));
 	}
-	while (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+	while (::flock(fd, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) != 0) {
 		if (errno == EWOULDBLOCK) {
 			::close(fd);
 			return 0;
@@ -148,6 +217,10 @@ void releaseFileLock(uint32_t token) {
 		}
 		handle = it->second;
 		g_locks.erase(it);
+	}
+	// A degraded no-op lock (read-only mount) has no OS handle to close.
+	if (handle == kNoHandle) {
+		return;
 	}
 	// Closing the handle releases the kernel lock.
 #ifdef _WIN32

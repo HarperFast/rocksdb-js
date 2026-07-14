@@ -530,14 +530,16 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 
 /**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
- * `LockFileEx` on Windows). Returns an opaque non-zero token to pass to
- * `fileLockRelease`, or `0` if another holder — in any process, container, or
- * worker thread — currently has it. Throws if `file` is missing or on a hard
- * error. The OS handle is owned entirely in native code (no fd crosses into
- * JS), and the kernel releases the lock when the handle closes, including on
- * process death.
+ * `LockFileEx` on Windows), creating the file and any missing parent
+ * directories. Exclusive by default; pass `shared` for a shared (reader) lock
+ * that coexists with other shared holders but conflicts with an exclusive
+ * holder in either direction. Returns an opaque non-zero token to pass to
+ * `fileLockRelease`, or `0` if a conflicting holder — in any process,
+ * container, or worker thread — currently has it. Throws on a hard error. The
+ * OS handle is owned entirely in native code (no fd crosses into JS), and the
+ * kernel releases the lock when the handle closes, including on process death.
  */
-export const tryFileLock: (file: string) => number = binding.tryFileLock;
+export const tryFileLock: (file: string, shared?: boolean) => number = binding.tryFileLock;
 
 /**
  * Releases a file lock acquired via `tryFileLock`. A no-op for

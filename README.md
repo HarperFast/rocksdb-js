@@ -996,18 +996,28 @@ Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
-## Exclusive File Locking
+## File Locking
 
 `rocksdb-js` includes helper functions for creating lock files and releasing them using native APIs.
 This can be used to prevent multiple processes from concurrently accessing a resource. The lock is
 automatically released when the process exits.
 
-### `tryFileLock(file: string): number`
+### `tryFileLock(file: string, shared?: boolean): number`
 
-Attempts to acquire an exclusive lock on the given file, creating it if it doesn't exist. Returns a
-non-zero token to pass to `fileLockRelease` if the lock was acquired, or `0` if another holder — in
-any process, container, or worker thread — currently has it. Throws if the file's parent directory
-is missing or on a hard error.
+Attempts to acquire a lock on the given file, creating the file and any missing parent directories.
+The lock is exclusive by default; pass `shared: true` for a shared (reader) lock, which coexists
+with other shared holders but conflicts with an exclusive holder in either direction. Returns a
+non-zero token to pass to `fileLockRelease` if the lock was acquired, or `0` if a conflicting
+holder — in any process, container, or worker thread — currently has it. Throws on a hard error.
+
+A shared lock needs only read access: it opens the file read-only and does not create it (falling
+back to create only when the file is missing on a writable directory), so it can lock an existing
+lock file on a read-only filesystem. If the media is read-only for every process (`EROFS` /
+`ERROR_WRITE_PROTECT`) so the open fails outright, a shared acquire degrades to a successful no-op
+token — there can be no exclusive holder to exclude on a directory nothing can write. A plain
+permission denial (`EACCES` / `ERROR_ACCESS_DENIED`) is _not_ degraded — only the caller is blocked,
+so a privileged holder may still exist — and throws instead. An exclusive lock always opens
+read-write and creates the file, and so requires a writable location.
 
 ```typescript
 import { tryFileLock } from '@harperfast/rocksdb-js';
@@ -1515,11 +1525,14 @@ grouped under the `backups` namespace export.
 
 > **Only one backup per directory may be in-flight at a time.** RocksDB has no cross-engine lock on
 > a backup directory, so the writing operations — `db.backup()`, `backups.delete()`, and
-> `backups.purge()` — take an on-disk lock (a `.backup.lock` file) for the directory. A second
-> writing operation on the same directory, whether from the same process, a `worker_thread`, or a
-> separate process, **rejects** with a "locked" error rather than corrupting the backup; retry once
-> the in-flight operation finishes. Operations on _different_ directories run in parallel, and the
-> read-only operations (`list`, `verify`, `restore`) are not locked.
+> `backups.purge()` — take an on-disk lock (a `.backup.lock` file) for the directory.
+> `backups.restore()` takes the same lock in **shared** mode: concurrent restores run in parallel,
+> but a writer and a restore on the same directory exclude each other, so a `purge` cannot delete
+> the backup a restore is copying from. A conflicting operation on the same directory, whether from
+> the same process, a `worker_thread`, or a separate process, **rejects** with a "locked" error
+> rather than corrupting the backup; retry once the in-flight operation finishes. Operations on
+> _different_ directories run in parallel, and the read-only operations (`list`, `verify`) are not
+> locked.
 
 ```typescript
 import { RocksDatabase, backups } from '@harperfast/rocksdb-js';
@@ -1601,6 +1614,20 @@ API, and **cannot be resumed** — a failed transfer must be restarted from the 
 Restores a backup from `backupDir` into `dbDir` (creating parent directories as needed). The
 database must **not** be open at `dbDir`, and the default restore mode is **destructive** — it
 purges `dbDir` before restoring. Restoring into the backup directory itself is rejected.
+
+The restore holds the backup directory's `.backup.lock` in shared mode for its duration, so it
+rejects with a "locked" error while a writer (`db.backup()`, `backups.delete()`, `backups.purge()`)
+is in flight — and writers reject while the restore runs. Concurrent restores from the same
+directory are allowed.
+
+Because a restore only reads the backup, the shared lock needs no write access to `backupDir`:
+restoring from a **read-only backup directory** (an immutable/WORM store or a read-only-mounted
+volume) works — it locks the existing `.backup.lock` read-only, and if the media is read-only for
+every process (`EROFS`), the lock degrades to a no-op, since nothing can write the directory and so
+no writer can be racing the restore. A mere permission denial is _not_ treated this way — it means
+only the current identity is blocked, so a more-privileged writer could still be running, and the
+restore fails loudly rather than skipping coordination. Writers always need write access and fail on
+a read-only directory.
 
 ```typescript
 // Restore the latest backup.

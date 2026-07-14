@@ -181,10 +181,12 @@ C++ code that needs to emit to JS without a database context should call
    `LockFileEx` on Windows. Backup creation acquires it natively inside `Database::Backup`
    (`runCreateBackup` in `src/binding/database/backup.cpp`), which first creates the backup directory
    (with missing parents); `backups.delete` and `backups.purge` acquire the same lock from JS via
-   `withBackupDirLock` in `src/backup.ts` (they do **not** create the directory — a missing directory
-   is a clear error there). The lock is taken **entirely in native code** (`tryAcquireFileLock` /
-   `releaseFileLock` in `src/binding/core/file_lock.cpp`, exposed generically as the binding's
-   `tryFileLock`/`fileLockRelease` — a public utility API, not backup-specific): native opens the file,
+   `withBackupDirLock` in `src/backup.ts`, which first rejects a missing backup directory with a
+   clear error — `tryFileLock` itself creates missing parents, so without that explicit check a
+   `delete` on a typo'd path would conjure an empty directory. The lock is taken **entirely in
+   native code** (`tryAcquireFileLock` / `releaseFileLock` in `src/binding/core/file_lock.cpp`,
+   exposed generically as the binding's `tryFileLock`/`fileLockRelease` — a public utility API, not
+   backup-specific): native opens the file,
    locks it, and later closes its OS handle, returning only an opaque uint32 token to JS. **No descriptor
    crosses the JS boundary** — this is deliberate: the addon
    statically links its own C runtime (`binding.gyp` `RuntimeLibrary: 0` = `/MT`), so a Node/libuv fd is
@@ -206,10 +208,29 @@ C++ code that needs to emit to JS without a database context should call
    would otherwise block a contender from reading the file. The file is **never unlinked** — unlink-on-
    release races a concurrent acquirer holding a handle to the removed inode (two "winners" on different
    inodes); an unlocked, empty `.backup.lock` is the steady state. Contention **rejects**; it does not queue, so a caller issuing
-   overlapping backups to one directory must handle the "locked" error (e.g. retry). Read-only ops
-   (`list`, `verify`, a restore's source read) are not locked since concurrent readers are safe; a
-   reader racing a `delete`/`purge` is a caller-managed hazard. Different directories are independent
-   (separate lock files) and run fully in parallel.
+   overlapping backups to one directory must handle the "locked" error (e.g. retry).
+   `backups.restore` holds the same lock in **shared** mode (`tryFileLock(file, true)` → `flock`
+   `LOCK_SH` / `LockFileEx` without `LOCKFILE_EXCLUSIVE_LOCK`) for its source read: concurrent
+   restores coexist, but a writer racing a restore rejects instead of deleting the files the restore
+   is copying — the asymmetry matters because the default `purgeAllFiles` restore mode wipes the
+   destination before copying, so a restore failed mid-purge leaves no usable database while a
+   rejected writer just retries. A restore is pure-read (`BackupEngineReadOnly` + copy out), so the
+   shared path must not require write access to the backup directory: it opens the lock file
+   **read-only** and never creates it (the exclusive path still opens read-write / creates), letting
+   a restore lock an existing `.backup.lock` on an immutable/WORM or read-only-mounted backup store.
+   If even the read-only open fails because the media is read-only for **every** process (`EROFS` on
+   POSIX, `ERROR_WRITE_PROTECT` on Windows), the shared lock **degrades to a no-op "acquired"** rather
+   than hard-failing the restore — the same reasoning as the `flock`-unsupported degrade: no writer
+   can exist on a directory nothing can write, so the lock would protect nothing there. Permission
+   denial (`EACCES`/`EPERM`, `ERROR_ACCESS_DENIED`) is deliberately **not** degraded: it means only
+   the _calling_ identity is blocked, so a more-privileged writer (e.g. a `purge` running as the
+   service account that created the backup) could still hold a real exclusive lock — degrading there
+   would let a lesser-privileged restore silently read a directory mid-purge. Those cases hard-fail.
+   (Exclusive acquisition has no degrade either — writers legitimately need write access and hard-fail.)
+   The remaining read-only ops (`list`, `verify`) are not locked since
+   concurrent readers are safe (and locking them would make cheap listings reject during a long
+   backup); a `list`/`verify` racing a `delete`/`purge` is a caller-managed hazard. Different
+   directories are independent (separate lock files) and run fully in parallel.
 
 ## Debugging native heap corruption
 
