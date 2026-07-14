@@ -15,7 +15,7 @@ import {
 	statSync,
 	writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /** Name of the on-disk backup lock file (mirrors LOCK_FILENAME in src/backup.ts). */
@@ -120,6 +120,21 @@ describe('Backups', () => {
 			expect(readdirSync(dbPath).sort()).toEqual(before);
 			expect(existsSync(join(dbPath, 'backups'))).toBe(false);
 		}));
+
+	// On case-insensitive filesystems (macOS/Windows defaults) a casing
+	// difference must not slip a backup into the database directory.
+	it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
+		'should reject a case-differing path into the database directory on case-insensitive filesystems',
+		() =>
+			dbRunner(async ({ db }) => {
+				await writeAll(db, 5);
+
+				const dbPath = db.store.path;
+				// Same on-disk directory, different casing of the db segment.
+				const cased = join(dirname(dbPath), basename(dbPath).toUpperCase(), 'backups');
+				await expect(db.backup(cased)).rejects.toThrow(/must not be inside the database directory/);
+			})
+	);
 
 	it('should allow backing up to a sibling directory of the database', () =>
 		dbRunner(async ({ db }) => {
