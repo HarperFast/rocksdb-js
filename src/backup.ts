@@ -107,6 +107,25 @@ export interface BackupOptions {
 	backupLogFiles?: boolean;
 
 	/**
+	 * Preflight the destination volume and reject the backup when it lacks room.
+	 * Defaults to `true`. The rejection is an I/O error whose message reports the
+	 * available and required bytes (it is not distinguishable by an `err.code`).
+	 *
+	 * The required size is estimated conservatively as a *full* copy of the
+	 * database's live files, plus the transaction-log snapshot when
+	 * `transactionLogs` is enabled (a backup only ever copies files, so this can
+	 * never under-estimate the bytes written). For incremental backups to a
+	 * right-sized volume this may over-reject — set `false` to skip the check in
+	 * that case. The check also self-disables when free space is unknowable (e.g.
+	 * some network filesystems report 0), so it never blocks a backup on an
+	 * untrustworthy number.
+	 *
+	 * Only applies to directory-target backups; the streaming backup path is
+	 * unaffected.
+	 */
+	checkDiskSpace?: boolean;
+
+	/**
 	 * Flush the memtable before backing up. Defaults to `true` when the database
 	 * was opened with `disableWAL` (otherwise unflushed data would be lost from
 	 * the backup), and `false` otherwise.

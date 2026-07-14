@@ -119,6 +119,28 @@ describe('Backups', () => {
 			}
 		}));
 
+	it('should back up with the disk-space preflight enabled (default) and disabled', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 20);
+
+			// Default: the preflight is on and a normal DB has ample room, so the
+			// backup succeeds (guards against the check false-rejecting). The reject
+			// and degrade branches are covered deterministically in the native test
+			// (test/native/backup_disk_space_test.cc), which can fake free space.
+			const enabledDir = tempDir();
+			expect(await db.backup(enabledDir)).toBe(1);
+
+			// Explicitly disabling the check must also succeed and skip the preflight.
+			const disabledDir = tempDir();
+			expect(await db.backup(disabledDir, { checkDiskSpace: false })).toBe(1);
+
+			// The preflight also sizes the transaction-log snapshot (written to the
+			// same volume); a normal DB has room, so this succeeds with both the
+			// check and log capture enabled.
+			const logsDir = tempDir();
+			expect(await db.backup(logsDir, { checkDiskSpace: true, transactionLogs: true })).toBe(1);
+		}));
+
 	it('should store and return application metadata', () =>
 		dbRunner(async ({ db }) => {
 			await writeAll(db, 5);
