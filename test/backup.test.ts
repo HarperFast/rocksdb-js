@@ -98,6 +98,38 @@ describe('Backups', () => {
 			expect(existsSync(backupDir)).toBe(true);
 		}));
 
+	it('should reject backing up into the database directory or a subdirectory', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 5);
+
+			const dbPath = db.store.path;
+			const before = readdirSync(dbPath).sort();
+
+			// The database directory itself.
+			await expect(db.backup(dbPath)).rejects.toThrow(/must not be inside the database directory/);
+			// A subdirectory of the database directory.
+			await expect(db.backup(join(dbPath, 'backups'))).rejects.toThrow(
+				/must not be inside the database directory/
+			);
+			// Trailing-slash / relative variants must not slip past the guard.
+			await expect(db.backup(join(dbPath, 'nested', '..'))).rejects.toThrow(
+				/must not be inside the database directory/
+			);
+
+			// The guard runs before any directory is created or files are written.
+			expect(readdirSync(dbPath).sort()).toEqual(before);
+			expect(existsSync(join(dbPath, 'backups'))).toBe(false);
+		}));
+
+	it('should allow backing up to a sibling directory of the database', () =>
+		dbRunner(async ({ db }) => {
+			await writeAll(db, 5);
+
+			const backupDir = join(db.store.path, '..', 'sibling-backups');
+			tempDirs.push(backupDir);
+			expect(await db.backup(backupDir)).toBe(1);
+		}));
+
 	it('should create incremental backups and list them', () =>
 		dbRunner(async ({ db }) => {
 			const backupDir = tempDir();

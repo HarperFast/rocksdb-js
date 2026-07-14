@@ -1,5 +1,5 @@
 import { type BackupStreamOptions, backupToStream } from './backup-stream.js';
-import type { BackupOptions } from './backup.js';
+import { assertBackupDirOutsideDatabase, type BackupOptions } from './backup.js';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
 import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
 import {
@@ -432,6 +432,9 @@ export class Store {
 		if (typeof target !== 'string' && typeof target?.getWriter === 'function') {
 			return backupToStream(this.db, target, options as BackupStreamOptions);
 		}
+		// Refuse to write backup files into the live database directory (or a
+		// subdirectory of it), which would clobber RocksDB's own files.
+		assertBackupDirOutsideDatabase(this.path, target as string);
 		// The native side creates the directory (with missing parents) and holds
 		// the on-disk single-writer lock for the duration of the backup — see
 		// `runCreateBackup` in `src/binding/database/backup.cpp` and
