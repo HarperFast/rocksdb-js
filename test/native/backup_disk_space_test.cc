@@ -4,6 +4,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <system_error>
 #include "database/backup_disk_space.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
@@ -57,7 +58,10 @@ struct OpenDb {
 
 	~OpenDb() {
 		db.reset();
-		std::filesystem::remove_all(dir);
+		// Destructors are implicitly noexcept; use the error_code overload so a
+		// cleanup failure can't throw during unwinding and std::terminate the run.
+		std::error_code ec;
+		std::filesystem::remove_all(dir, ec);
 	}
 };
 
