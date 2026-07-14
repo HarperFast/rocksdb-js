@@ -117,11 +117,13 @@ uint32_t tryAcquireFileLock(const std::string& file, bool shared) {
 	}
 	if (handle == INVALID_HANDLE_VALUE) {
 		DWORD error = ::GetLastError();
-		// Read-only backup directory: nothing can write it, so no exclusive holder
-		// can exist and the shared lock would protect nothing. Degrade to a no-op
-		// "acquired" (same rationale as the flock-unsupported path on POSIX) so the
-		// restore proceeds. There is no OS handle to release.
-		if (shared && (error == ERROR_ACCESS_DENIED || error == ERROR_WRITE_PROTECT)) {
+		// Media-level read-only volume (ERROR_WRITE_PROTECT): read-only for *every*
+		// process, so no exclusive holder can exist and the shared lock would protect
+		// nothing. Degrade to a no-op "acquired" (same rationale as the
+		// flock-unsupported path on POSIX). ERROR_ACCESS_DENIED is deliberately NOT
+		// degraded: it means only *this* account is denied, so a more-privileged
+		// writer could still hold the lock — hard-fail rather than skip coordination.
+		if (shared && error == ERROR_WRITE_PROTECT) {
 			return registerHandle(kNoHandle);
 		}
 		throw DBException("tryAcquireFileLock: CreateFile failed with error " + std::to_string(error));
@@ -158,11 +160,18 @@ uint32_t tryAcquireFileLock(const std::string& file, bool shared) {
 			// No lock file yet (writable directory, first-ever restore): create it.
 			fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
 		}
-		if (fd < 0 && (errno == EROFS || errno == EACCES || errno == EPERM)) {
-			// Read-only backup directory: nothing can write it, so no exclusive
-			// holder can exist and the shared lock would protect nothing. Degrade to
-			// a no-op "acquired" (same rationale as the flock-unsupported path below)
-			// so the restore proceeds. There is no OS handle to release.
+		if (fd < 0 && errno == EROFS) {
+			// Media-level read-only (EROFS): the directory is read-only for *every*
+			// process, so no writer can hold an exclusive lock and the shared lock
+			// would protect nothing. Degrade to a no-op "acquired" (same rationale as
+			// the flock-unsupported path below) so the restore proceeds; there is no
+			// OS handle to release. EACCES/EPERM are deliberately NOT degraded: they
+			// mean only *this* uid/ACL is denied, so a more-privileged writer (e.g. a
+			// purge running as the service account that created the backup) could
+			// still hold a real exclusive lock — falling through to hard-fail is safer
+			// than silently skipping coordination. (EPERM from `chattr +i` is
+			// uid-independent, but it also fires for ordinary permission cases, so
+			// EROFS is the only error that *proves* no writer can exist.)
 			return registerHandle(kNoHandle);
 		}
 	} else {

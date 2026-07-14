@@ -218,11 +218,15 @@ C++ code that needs to emit to JS without a database context should call
    shared path must not require write access to the backup directory: it opens the lock file
    **read-only** and never creates it (the exclusive path still opens read-write / creates), letting
    a restore lock an existing `.backup.lock` on an immutable/WORM or read-only-mounted backup store.
-   If even the read-only open fails because the directory itself is read-only (`EROFS`/`EACCES`, or
-   `ERROR_ACCESS_DENIED`/`ERROR_WRITE_PROTECT`), the shared lock **degrades to a no-op "acquired"**
-   rather than hard-failing the restore — the same reasoning as the `flock`-unsupported degrade: no
-   writer can exist on a directory nothing can write, so the lock would protect nothing there.
-   (Exclusive acquisition has no such degrade — writers legitimately need write access and hard-fail.)
+   If even the read-only open fails because the media is read-only for **every** process (`EROFS` on
+   POSIX, `ERROR_WRITE_PROTECT` on Windows), the shared lock **degrades to a no-op "acquired"** rather
+   than hard-failing the restore — the same reasoning as the `flock`-unsupported degrade: no writer
+   can exist on a directory nothing can write, so the lock would protect nothing there. Permission
+   denial (`EACCES`/`EPERM`, `ERROR_ACCESS_DENIED`) is deliberately **not** degraded: it means only
+   the _calling_ identity is blocked, so a more-privileged writer (e.g. a `purge` running as the
+   service account that created the backup) could still hold a real exclusive lock — degrading there
+   would let a lesser-privileged restore silently read a directory mid-purge. Those cases hard-fail.
+   (Exclusive acquisition has no degrade either — writers legitimately need write access and hard-fail.)
    The remaining read-only ops (`list`, `verify`) are not locked since
    concurrent readers are safe (and locking them would make cheap listings reject during a long
    backup); a `list`/`verify` racing a `delete`/`purge` is a caller-managed hazard. Different

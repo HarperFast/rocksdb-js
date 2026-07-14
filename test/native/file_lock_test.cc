@@ -124,25 +124,25 @@ TEST(FileLock, CreatesMissingParentDirectories) {
 }
 
 #ifndef _WIN32
-TEST(FileLock, SharedDegradesOnReadOnlyDirectory) {
-	// A restore reads a backup directory that may be mounted read-only. No writer
-	// can exist there, so a shared lock protects nothing: it degrades to a no-op
-	// "acquired" rather than hard-failing the restore. Exclusive has no such
-	// degrade. Skipped as root, which bypasses the directory permission bits.
+TEST(FileLock, SharedHardFailsOnPermissionDenied) {
+	// A shared lock degrades to a no-op only on media-level read-only (EROFS),
+	// where no process can write and thus no exclusive holder can exist — that
+	// needs a real read-only mount to exercise. Permission denial (EACCES) must
+	// NOT degrade: only this uid is blocked, so a more-privileged writer could
+	// still hold a real exclusive lock, and a shared acquire that can't open the
+	// lock file must hard-fail rather than silently skip coordination. Skipped as
+	// root, which bypasses the directory permission bits.
 	if (geteuid() == 0) {
 		GTEST_SKIP() << "permission bits are bypassed when running as root";
 	}
-	std::string dir = makeTempDir("rocksdb-js-file-lock-readonly");
+	std::string dir = makeTempDir("rocksdb-js-file-lock-perm-denied");
 	std::string file = (std::filesystem::path(dir) / ".backup.lock").string();
-	ASSERT_EQ(::chmod(dir.c_str(), 0555), 0); // read-only: lock file cannot be created
+	ASSERT_EQ(::chmod(dir.c_str(), 0555), 0); // permission denied: cannot create the lock file
 
-	uint32_t token = tryAcquireFileLock(file, true);
-	EXPECT_NE(token, 0u);                        // degraded no-op acquire
-	EXPECT_FALSE(std::filesystem::exists(file)); // nothing was conjured
-	releaseFileLock(token);                      // must be a safe no-op
-
-	// Exclusive acquisition must still hard-fail on a read-only directory.
+	// Both shared and exclusive must throw; neither may conjure the file.
+	EXPECT_THROW(tryAcquireFileLock(file, true), DBException);
 	EXPECT_THROW(tryAcquireFileLock(file), DBException);
+	EXPECT_FALSE(std::filesystem::exists(file));
 
 	::chmod(dir.c_str(), 0755); // allow remove_all cleanup
 	std::filesystem::remove_all(dir);

@@ -329,7 +329,9 @@ export const backups = {
 	 * The shared lock needs no write access to `backupDir`, so restoring from a
 	 * read-only backup directory (immutable/WORM store, read-only-mounted volume)
 	 * works: the lock is taken on an existing `.backup.lock` read-only, degrading
-	 * to a no-op if the directory is too read-only to open it at all.
+	 * to a no-op only when the media is read-only for every process (`EROFS`). A
+	 * mere permission denial hard-fails instead — it doesn't prove a privileged
+	 * writer isn't running.
 	 */
 	async restore(backupDir: string, dbDir: string, options?: RestoreOptions): Promise<void> {
 		// Normalize before comparing so trailing slashes or relative/absolute

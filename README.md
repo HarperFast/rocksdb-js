@@ -1012,10 +1012,12 @@ holder — in any process, container, or worker thread — currently has it. Thr
 
 A shared lock needs only read access: it opens the file read-only and does not create it (falling
 back to create only when the file is missing on a writable directory), so it can lock an existing
-lock file on a read-only filesystem. If the directory is read-only enough that the open fails
-outright, a shared acquire degrades to a successful no-op token — there can be no exclusive holder
-to exclude on a directory nothing can write. An exclusive lock always opens read-write and creates
-the file, and so requires a writable location.
+lock file on a read-only filesystem. If the media is read-only for every process (`EROFS` /
+`ERROR_WRITE_PROTECT`) so the open fails outright, a shared acquire degrades to a successful no-op
+token — there can be no exclusive holder to exclude on a directory nothing can write. A plain
+permission denial (`EACCES` / `ERROR_ACCESS_DENIED`) is _not_ degraded — only the caller is blocked,
+so a privileged holder may still exist — and throws instead. An exclusive lock always opens
+read-write and creates the file, and so requires a writable location.
 
 ```typescript
 import { tryFileLock } from '@harperfast/rocksdb-js';
@@ -1620,10 +1622,12 @@ directory are allowed.
 
 Because a restore only reads the backup, the shared lock needs no write access to `backupDir`:
 restoring from a **read-only backup directory** (an immutable/WORM store or a read-only-mounted
-volume) works — it locks the existing `.backup.lock` read-only, and if the directory is read-only
-enough that even that fails, the lock degrades to a no-op (nothing can write the directory, so no
-writer can be racing the restore anyway). Writers, which do need write access, still fail on a
-read-only directory.
+volume) works — it locks the existing `.backup.lock` read-only, and if the media is read-only for
+every process (`EROFS`), the lock degrades to a no-op, since nothing can write the directory and so
+no writer can be racing the restore. A mere permission denial is _not_ treated this way — it means
+only the current identity is blocked, so a more-privileged writer could still be running, and the
+restore fails loudly rather than skipping coordination. Writers always need write access and fail on
+a read-only directory.
 
 ```typescript
 // Restore the latest backup.

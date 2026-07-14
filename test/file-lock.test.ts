@@ -151,24 +151,26 @@ describe('File Lock', () => {
 			}
 		);
 
-		// On a genuinely read-only backup directory no exclusive holder can exist,
-		// so a shared lock protects nothing: rather than hard-fail the restore, the
-		// shared path degrades to a no-op "acquired". Exclusive still hard-fails.
-		// Skipped as root, which bypasses the directory permission bits.
+		// A shared lock degrades to a no-op only on *media-level* read-only (EROFS),
+		// where no process can write and thus no exclusive holder can exist. That
+		// needs a real read-only mount to exercise, so it isn't unit-tested here.
+		// Permission denial (EACCES) is the opposite: only this uid is blocked, so a
+		// more-privileged writer could still hold a real exclusive lock — a shared
+		// acquire that can't open the lock file must hard-fail, not silently skip
+		// coordination. Skipped as root, which bypasses the directory permission bits.
 		it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
-			'should degrade a shared lock to a no-op on a read-only directory',
+			'should hard-fail a shared lock on a permission-denied directory (not degrade)',
 			() => {
 				const dir = tempDir();
 				mkdirSync(dir, { recursive: true });
 				const file = join(dir, '.backup.lock'); // does not exist yet
-				chmodSync(dir, 0o555); // read-only: the lock file cannot be created
+				chmodSync(dir, 0o555); // permission denied: the lock file cannot be created
 				try {
-					const token = tryFileLock(file, true);
-					expect(token).toBeGreaterThan(0); // degraded no-op acquire
+					// Shared must throw rather than degrade — EACCES does not prove the
+					// absence of a writer.
+					expect(() => tryFileLock(file, true)).toThrow();
 					expect(existsSync(file)).toBe(false); // nothing was conjured
-					expect(() => fileLockRelease(token)).not.toThrow();
-
-					// Exclusive acquisition has no such degrade — it must hard-fail.
+					// Exclusive has never degraded — it must hard-fail too.
 					expect(() => tryFileLock(file)).toThrow();
 				} finally {
 					chmodSync(dir, 0o755); // let afterEach clean up

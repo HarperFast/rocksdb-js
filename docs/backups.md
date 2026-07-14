@@ -106,7 +106,10 @@ Restore modes:
 Restore reads the backup directory and holds its lock in shared mode, so multiple restores run
 concurrently but a writer (`db.backup()` / `delete` / `purge`) and a restore exclude each other.
 Because the restore only reads, the source may be a **read-only backup directory** — an
-immutable/WORM store or a read-only-mounted volume — even though writers require a writable one.
+immutable/WORM store or a read-only-mounted volume — even though writers require a writable one. The
+lock is taken read-only on the existing lock file; if the media is read-only for every process it
+degrades to a no-op (no writer can be racing), but a plain permission denial fails loudly rather than
+skip coordination, since a more-privileged writer could still be active.
 
 ### Caveats
 
