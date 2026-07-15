@@ -1555,6 +1555,10 @@ re-copied.
 When the database was opened with `disableWAL`, the memtable is flushed before the backup by
 default so unflushed data is not lost; otherwise flushing follows `options.flushBeforeBackup`.
 
+`backupDir` must not be the database directory itself or a path beneath it — backing up into the
+live database directory would write backup files on top of RocksDB's own files. Such a call rejects
+before anything is written.
+
 ```typescript
 const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' });
 ```

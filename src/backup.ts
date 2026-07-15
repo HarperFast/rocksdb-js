@@ -9,7 +9,7 @@ import {
 } from './load-binding.js';
 import { validateTransactionLogStore } from './validate-transaction-log.js';
 import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
-import { join, resolve as resolvePath } from 'node:path';
+import { isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 
 /** Subdirectory (under a backup directory) holding per-backup transaction log snapshots. */
 const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
@@ -90,6 +90,46 @@ export async function withBackupDirLock<T>(
 		return await fn();
 	} finally {
 		fileLockRelease(token);
+	}
+}
+
+/**
+ * Throws if `backupDir` resolves to the database directory itself or any path
+ * beneath it. Backing up into the live database directory would write backup
+ * files (the `.backup.lock`, `meta/`, `shared/`, `private/` subtrees) on top of
+ * RocksDB's own files, and every subsequent backup would recursively capture
+ * the prior ones. Both paths are resolved first so trailing slashes and
+ * relative/absolute variants of the same location cannot slip past the check.
+ *
+ * Only the "backup dir at or under the database dir" direction is rejected —
+ * the case the user hits by pointing a backup at `<db>` or `<db>/backups`. The
+ * reverse (a database nested under the backup dir) is left to the caller: a
+ * backup engine writes into named subtrees, not on top of arbitrary sibling
+ * files, so it does not clobber the database in place.
+ *
+ * On case-insensitive filesystems `<db>` and `<db>/../DB/backup` are the same
+ * directory on disk, but `relative()` compares case-sensitively and would call
+ * the second one "outside". We case-fold both paths on the platforms whose
+ * default filesystem is case-insensitive (macOS, Windows) so a casing
+ * difference cannot slip a backup into the database directory. This is a
+ * platform heuristic, not a per-volume probe (a case-sensitive macOS/Windows
+ * volume exists), so it can over-reject a legitimately differently-cased
+ * sibling there — the safe direction for a guard against clobbering the live
+ * database.
+ */
+export function assertBackupDirOutsideDatabase(dbPath: string, backupDir: string): void {
+	let resolvedDb = resolvePath(dbPath);
+	let resolvedBackup = resolvePath(backupDir);
+	if (process.platform === 'win32' || process.platform === 'darwin') {
+		resolvedDb = resolvedDb.toLowerCase();
+		resolvedBackup = resolvedBackup.toLowerCase();
+	}
+	const rel = relative(resolvedDb, resolvedBackup);
+	const outside = rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+	if (!outside) {
+		throw new Error(
+			`Backup directory must not be inside the database directory: ${backupDir} is at or within ${dbPath}`
+		);
 	}
 }
 
