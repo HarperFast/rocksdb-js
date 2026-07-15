@@ -7,6 +7,7 @@
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
@@ -281,7 +282,14 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 				// ensure we haven't errored above
 				if (state->status.ok()) {
-					state->status = txnHandle->txn->Commit();
+					if (testForceTryAgain()) {
+						// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
+						// so the retry path (reset onto a fresh snapshot + re-run) is exercised.
+						txnHandle->txn->Rollback();
+						state->status = rocksdb::Status::TryAgain("forced stranded snapshot (test seam)");
+					} else {
+						state->status = txnHandle->txn->Commit();
+					}
 
 					// For coordinated retry: save slot pointers before
 					// releaseIntent() clears them so the complete callback
@@ -297,7 +305,16 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					}
 				}
 
-				if (txnHandle->committedPosition.logSequenceNumber > 0 && !state->status.IsBusy()) {
+				// Publish the log entries (advance the committed-read watermark) only when the data
+				// transaction actually committed. IsBusy and TryAgain are both retried on a reset
+				// transaction (committedPosition survives, so the WAL batch is not rewritten — #668),
+				// and the eventual successful commit is what publishes; a hard error is abandoned and
+				// its position is un-published by commitAborted in close(). Gating on !IsBusy (rather
+				// than ok()) published on a failed TryAgain commit, making the entry visible while the
+				// record was rolled back and only re-committed later on a retry — a change-feed entry
+				// ahead of its data, and a permanent phantom if the retry was ultimately abandoned,
+				// since commitAborted cannot pull the watermark back past an already-advanced position.
+				if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
 					if (!store) {
 						store = txnHandle->boundLogStore.lock();
 					}
@@ -313,9 +330,17 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id);
 					txnHandle->state = TransactionState::Committed;
 					descriptor->notify("committed", nullptr);
-				} else if (state->status.IsBusy()) {
-					DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with IsBusy, resetting transaction\n", txnHandle.get());
-					// clear/delete the previous transaction and create a new transaction so that it can be retried
+				} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
+					DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with %s, resetting transaction\n",
+						txnHandle.get(), state->status.IsBusy() ? "IsBusy" : "TryAgain");
+					// Clear/delete the previous transaction and create a new one so the retry re-drives the
+					// commit. resetTransaction preserves committedPosition (the WAL batch stays write-once,
+					// #668) but takes a fresh RocksDB snapshot: IsBusy converges by re-tracking keys at the
+					// current sequence, and TryAgain — whose snapshot was stranded outside the memtable
+					// window after a flush, so recommitting the same transaction re-checks the same lost
+					// history forever (harper#1695) — converges because the re-run reads and validates
+					// against current state instead. The caller must re-run the transaction body so the
+					// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
 					txnHandle->resetTransaction();
 				}
 			}
@@ -425,9 +450,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					napi_value error;
 					ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
 					napi_value hasLogValue;
-					// #668: writeBatch is skipped on an IsBusy retry once the WAL batch is durable
+					// #668: writeBatch is skipped on an IsBusy/TryAgain retry once the WAL batch is durable
 					// (committedPosition set), so state->hasLog is false this attempt. Fall back to
-					// committedPosition so the retry-on-busy heuristic still treats this as logged.
+					// committedPosition so the retry heuristic still treats this as logged.
 					bool hasLog = state->hasLog ||
 						(state->handle && state->handle->committedPosition.logSequenceNumber > 0);
 					napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
@@ -492,7 +517,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->releaseIntent();
 	}
 
-	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && !status.IsBusy()) {
+	// Publish only on a real commit; IsBusy/TryAgain defer to the retry's eventual success, and a
+	// hard error is un-published by commitAborted in close(). See the async Commit path for detail.
+	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && status.ok()) {
 		if (!store) {
 			store = (*txnHandle)->boundLogStore.lock();
 		}
@@ -512,9 +539,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
 		(*txnHandle)->close();
 	} else {
-		if (status.IsBusy()) {
-			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with IsBusy, resetting transaction\n", (*txnHandle).get());
-			// clear/delete the previous transaction and create a new transaction so that it can be retried
+		if (status.IsBusy() || status.IsTryAgain()) {
+			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with %s, resetting transaction\n",
+				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
+			// Reset onto a fresh snapshot so the retry re-drives the commit against current state
+			// (committedPosition survives, keeping the WAL write-once, #668). See async Commit.
 			(*txnHandle)->resetTransaction();
 		}
 		if ((*txnHandle)->state == TransactionState::Committing) {
@@ -523,7 +552,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
 		napi_value hasLogValue;
-		// #668: writeBatch is skipped on an IsBusy retry (WAL already durable), so fall
+		// #668: writeBatch is skipped on an IsBusy/TryAgain retry (WAL already durable), so fall
 		// back to committedPosition so the caller keeps treating this as a logged txn.
 		NAPI_STATUS_THROWS(::napi_get_boolean(env,
 			hasLog || (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
