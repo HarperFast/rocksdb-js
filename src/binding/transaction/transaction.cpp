@@ -308,12 +308,13 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				// Publish the log entries (advance the committed-read watermark) only when the data
 				// transaction actually committed. IsBusy and TryAgain are both retried on a reset
 				// transaction (committedPosition survives, so the WAL batch is not rewritten — #668),
-				// and the eventual successful commit is what publishes; a hard error is abandoned and
-				// its position is un-published by commitAborted in close(). Gating on !IsBusy (rather
-				// than ok()) published on a failed TryAgain commit, making the entry visible while the
-				// record was rolled back and only re-committed later on a retry — a change-feed entry
-				// ahead of its data, and a permanent phantom if the retry was ultimately abandoned,
-				// since commitAborted cannot pull the watermark back past an already-advanced position.
+				// and the eventual successful commit is what publishes. A hard error is abandoned:
+				// close()'s commitAborted drops the position from the uncommitted set so it stops
+				// pinning the watermark (the bytes themselves cannot be unwritten — abandoning a
+				// logged transaction remains the loudly-flagged ERR_TRANSACTION_ABANDONED case).
+				// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
+				// the entry visible while the record was rolled back and only re-committed later on a
+				// retry — a change-feed entry ahead of its data for every reader in that window.
 				if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
 					if (!store) {
 						store = txnHandle->boundLogStore.lock();
@@ -517,8 +518,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->releaseIntent();
 	}
 
-	// Publish only on a real commit; IsBusy/TryAgain defer to the retry's eventual success, and a
-	// hard error is un-published by commitAborted in close(). See the async Commit path for detail.
+	// Publish only on a real commit; IsBusy/TryAgain defer to the retry's eventual success, and on
+	// a hard error close()'s commitAborted stops the position pinning the watermark. See the async
+	// Commit path for detail.
 	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && status.ok()) {
 		if (!store) {
 			store = (*txnHandle)->boundLogStore.lock();
