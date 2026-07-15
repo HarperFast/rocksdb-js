@@ -377,6 +377,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					// rejecting. The native layer may park on an active VT lock
 					// before firing the resolve, so JS retries only after the
 					// conflicting transaction has released its write intent.
+					// Intentionally IsBusy-only: RETRY_NOW parks on the conflicting
+					// holder's VT-slot lock, and TryAgain (stranded snapshot after a
+					// flush) has no lock holder to park on — it takes the normal
+					// reject→reset→retry path below instead.
 					if (state->handle->state == TransactionState::Committing) {
 						state->handle->state = TransactionState::Pending;
 					}
