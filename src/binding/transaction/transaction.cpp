@@ -284,9 +284,13 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				if (state->status.ok()) {
 					if (testForceTryAgain()) {
 						// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
-						// so the retry path (reset onto a fresh snapshot + re-run) is exercised.
-						txnHandle->txn->Rollback();
-						state->status = rocksdb::Status::TryAgain("forced stranded snapshot (test seam)");
+						// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
+						// rollback (e.g. underlying DB corruption) is a real error, not a simulated one —
+						// surface it rather than masking it behind the forced TryAgain.
+						rocksdb::Status rollbackStatus = txnHandle->txn->Rollback();
+						state->status = rollbackStatus.ok()
+							? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
+							: rollbackStatus;
 					} else {
 						state->status = txnHandle->txn->Commit();
 					}

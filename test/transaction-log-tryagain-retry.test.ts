@@ -19,25 +19,10 @@
 // native reset makes that unnecessary), writing the log entry once and keeping committed reads
 // intact.
 
-import { constants, forceTryAgainForTesting } from '../src/load-binding.js';
+import { forceTryAgainForTesting } from '../src/load-binding.js';
 import { Transaction } from '../src/transaction.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
-import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
-
-async function transactionLogBytes(logDir: string): Promise<number> {
-	let size = 0;
-	for (const file of await readdir(logDir).catch(() => [])) {
-		const info = await stat(join(logDir, file)).catch(() => undefined);
-		if (info?.isFile()) {
-			size += info.size;
-		}
-	}
-	return size;
-}
 
 // Record the commit-error code of every failed commit attempt so the test can assert the
 // failure was actually TryAgain (a Busy conflict would otherwise pass silently and prove nothing).
@@ -55,7 +40,7 @@ function spyOnCommitCodes() {
 
 describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges', () => {
 	it('converges on the same transaction after a stranded snapshot, WAL written once', () =>
-		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 			const key = 'k';
 			const payload = Buffer.alloc(128, 'z');
 			const log = db.useLog('repl');
@@ -107,12 +92,14 @@ describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges',
 			expect(await db.get(key)).toBe('committed');
 
 			// The WAL holds exactly one copy — committedPosition survived the reset, so the retry
-			// did not rewrite the batch.
-			const logDir = join(dbPath, 'transaction_logs', 'repl');
-			const bytes = await transactionLogBytes(logDir);
-			expect(bytes).toBe(
-				TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + payload.length
-			);
+			// did not rewrite the batch. Asserted via the store's own logical write counter, not a
+			// raw filesystem stat: the discriminating query above (on the still-active log file)
+			// pre-extends the on-disk file to its configured max size on Windows (SetEndOfFile,
+			// only shrunk back by a reopen recovery scan — never on close), so a stat()-based byte
+			// count is platform-fragile once that query has run. getStats().totals.entriesWritten
+			// only increments in writeBatch() (once per transaction, skipped entirely by the
+			// write-once retry no-op), immune to that.
+			expect(log.getStats().totals.entriesWritten).toBe(1);
 
 			// A committed read from the start reaches the entry — the watermark advanced to head on
 			// the successful commit, not on the earlier failed TryAgain attempt.
