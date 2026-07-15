@@ -29,8 +29,7 @@ import {
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
-	TransactionIsBusyError,
-	TransactionTryAgainError,
+	TransactionRetryableError,
 } from './transaction.js';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -800,8 +799,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					return;
 				}
 				if (
-					(commitErr instanceof TransactionIsBusyError ||
-						commitErr instanceof TransactionTryAgainError) &&
+					commitErr instanceof TransactionRetryableError &&
 					(options?.retryOnBusy ?? commitErr.hasLog) &&
 					attempt < maxRetries
 				) {
@@ -859,7 +857,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		const isRetryable = (err: Error | unknown, attempt: number) => {
 			return (
-				(err instanceof TransactionIsBusyError || err instanceof TransactionTryAgainError) &&
+				err instanceof TransactionRetryableError &&
 				(options?.retryOnBusy ?? err.hasLog) &&
 				attempt <= maxRetries
 			);
