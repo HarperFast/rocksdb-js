@@ -14,9 +14,7 @@ const fixturePath = join(__dirname, 'fixtures', 'fork-commit-teardown.mts');
 // One iteration where worker spawns are slow (Bun; macOS/Windows CI), two on
 // Linux Node — see the fixture's ROUNDS note.
 async function expectSurvives(
-	iterations = process.versions.bun ||
-	process.platform === 'darwin' ||
-	process.platform === 'win32'
+	iterations = process.versions.bun || process.platform === 'darwin' || process.platform === 'win32'
 		? 1
 		: 2
 ): Promise<void> {
