@@ -1555,6 +1555,10 @@ re-copied.
 When the database was opened with `disableWAL`, the memtable is flushed before the backup by
 default so unflushed data is not lost; otherwise flushing follows `options.flushBeforeBackup`.
 
+`backupDir` must not be the database directory itself or a path beneath it — backing up into the
+live database directory would write backup files on top of RocksDB's own files. Such a call rejects
+before anything is written.
+
 ```typescript
 const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' });
 ```
@@ -1564,6 +1568,7 @@ const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' 
 | Option                    | Type      | Default                | Description                                                                          |
 | ------------------------- | --------- | ---------------------- | ------------------------------------------------------------------------------------ |
 | `backupLogFiles`          | `boolean` | `true`                 | Include write-ahead log files in the backup.                                         |
+| `checkDiskSpace`          | `boolean` | `true`                 | Preflight the destination volume and reject if it lacks room for the backup.         |
 | `flushBeforeBackup`       | `boolean` | `true` if WAL disabled | Flush the memtable before backing up.                                                |
 | `maxBackgroundOperations` | `number`  | `1`                    | Number of background threads used to copy files.                                     |
 | `metadata`                | `string`  | `''`                   | Application metadata stored with the backup, returned by `list()`.                   |
@@ -1578,6 +1583,16 @@ When `transactionLogs` is enabled, the log snapshot is staged and atomically ren
 backup either has its complete snapshot or none. The snapshot is captured just after the RocksDB
 engine snapshot, so restored logs may run slightly ahead of the restored key-value data (never
 behind it), which is safe for redo-style logs replayed against the restored data.
+
+`checkDiskSpace` (on by default) rejects with an I/O error — its message reports the available and
+required bytes — before any files are copied, so a full destination fails fast instead of partway
+through (a mid-copy failure can leave zero usable backups). The required size is estimated
+conservatively as a full copy of the database's live files, plus the transaction-log snapshot when
+`transactionLogs` is set; since a backup only ever copies files, this can never under-estimate.
+Incremental backups to a right-sized volume may therefore be over-rejected — set `checkDiskSpace:
+false` to skip the check. It also self-disables when free space can't be determined (e.g. some
+network filesystems report `0`), so it never blocks a backup on an untrustworthy number. Only
+directory-target backups are checked; the streaming backup path is unaffected.
 
 ### `db.backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>`
 
