@@ -1,4 +1,5 @@
 #include "database/backup.h"
+#include "database/backup_disk_space.h"
 #include "database/backup_transaction_logs.h"
 #include "database/database.h"
 #include "database/db_handle.h"
@@ -35,6 +36,9 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	// When true, snapshot the transaction log store into
 	// `<backupDir>/transaction_logs/<backupId>/` after the RocksDB backup.
 	bool backupTransactionLogs = false;
+	// When true, reject the backup up front if the destination volume clearly
+	// lacks room for a full copy of the live files (see checkBackupDiskSpace).
+	bool checkDiskSpace = true;
 
 	AsyncBackupState(
 		napi_env env,
@@ -185,6 +189,38 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		return rocksdb::Status::IOError("Failed to create backup directory: " + ec.message(), backupDir);
 	}
 
+	// Preflight the destination volume before taking the writer lock — the check
+	// is a read on the DB and the directory, so it needn't hold the lock, and
+	// failing fast avoids contending with a concurrent backup just to reject.
+	if (state->checkDiskSpace) {
+		// The transaction-log snapshot (when enabled) writes to the same volume
+		// but is not part of the RocksDB live-file set, so size it separately and
+		// fold it into the requirement. snapshotForBackup only reads file sizes
+		// (plus the tiny inline txn.state), so this second snapshot is cheap; it
+		// captures a slightly different instant than the one the real backup takes
+		// later, which is fine for an estimate. Hard-linkable (same-volume) log
+		// files are counted at full size — conservative, matching how the live-file
+		// sum counts SSTs that BackupEngine will hard-link.
+		uint64_t transactionLogBytes = 0;
+		if (state->backupTransactionLogs) {
+			for (const auto& entry : collectTransactionLogBackupEntries(state->descriptor.get())) {
+				transactionLogBytes +=
+					entry.file.inlineContents.empty() ? entry.file.byteLimit : entry.file.inlineContents.size();
+			}
+		}
+
+		rocksdb::Status space = checkBackupDiskSpace(
+			state->descriptor->db.get(),
+			backupDir,
+			state->createOptions.flush_before_backup,
+			transactionLogBytes,
+			rocksdb::Env::Default()
+		);
+		if (!space.ok()) {
+			return space;
+		}
+	}
+
 	uint32_t lockToken = 0;
 	try {
 		// Deliberately plain string concatenation: `backupDir` is UTF-8 from N-API,
@@ -296,6 +332,9 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 	bool backupTransactionLogs = false;
 	NAPI_STATUS_THROWS(getProperty(env, options, "transactionLogs", backupTransactionLogs));
 
+	bool checkDiskSpace = true;
+	NAPI_STATUS_THROWS(getProperty(env, options, "checkDiskSpace", checkDiskSpace));
+
 	auto state = new AsyncBackupState(
 		env,
 		*dbHandle,
@@ -305,6 +344,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		std::move(appMetadata)
 	);
 	state->backupTransactionLogs = backupTransactionLogs;
+	state->checkDiskSpace = checkDiskSpace;
 
 	return queueBackupWork(
 		env,
