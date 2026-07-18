@@ -15,9 +15,14 @@
  *    by the DBHandle finalizer, but the commit thread may still call it to
  *    complete the worker's already-queued commits.
  *
- * The per-commit acquire on the commit tsfn keeps it alive until every
- * dispatched commit has been completed (or the call has been observed to fail
- * during teardown), so the commit thread never touches a finalized tsfn.
+ * Crash-safety comes from the persistent per-env tsfn on
+ * `DBDescriptor::commitCompletions`: the module env-cleanup hook
+ * (`DBRegistry::ReleaseCommitCompletionsByEnv`) releases the worker's entry
+ * under `commitMutex` before Node frees the env's tsfns, and the commit
+ * thread only calls a completion under that same mutex — so it either
+ * delivers safely or observes the entry gone and drops it. A per-commit
+ * `napi_acquire_threadsafe_function` would NOT close this window (env
+ * teardown does not honor the tsfn-level acquire count).
  * Exit 0 = survived; a crash exits via signal / non-zero.
  *
  * Set ROCKSDB_JS_COMMIT_DELAY_MS (see the test) to widen the window so the
