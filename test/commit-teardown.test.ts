@@ -47,7 +47,7 @@ function spawnRepro(
 		// Widen the commit-thread completion window via the test seam so the
 		// completion-vs-teardown race reproduces deterministically; natural
 		// timing only surfaces it at production scale.
-		const env = { ...process.env, ROCKSDB_JS_COMMIT_DELAY_MS: '25' };
+		const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_COMMIT_DELAY_MS: '25' };
 		if (commitThreadMode === undefined) {
 			delete env.ROCKSDB_JS_COMMIT_THREAD;
 		} else {
