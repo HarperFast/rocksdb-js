@@ -31,7 +31,8 @@ int32_t deriveMaxOpenFiles(uint64_t effectiveOpenFileLimit);
 /**
  * Sets the current thread's name for diagnostics (visible in top, gdb, etc.).
  * Best-effort and platform-guarded; names longer than the OS limit (15 chars
- * on Linux) are truncated by the platform.
+ * on Linux) are truncated to fit (manually on Linux, where the OS errors
+ * instead of truncating).
  */
 void setThreadName(const char* name);
 
