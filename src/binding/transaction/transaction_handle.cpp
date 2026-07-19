@@ -144,7 +144,7 @@ void TransactionHandle::lockVTSlot(
 	// descriptor pointer, which is reused across a close/reopen of the same path).
 	// All column families of the same physical DB share the same epoch, separated
 	// by cfId.
-	uint64_t dbId = this->dbHandle->descriptor->vtEpoch;
+	uint64_t dbId = dbHandle->descriptor->vtEpoch;
 	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
 	auto* slot = vt->slotFor(dbId, cfId, key);
 	if (!slot) return;
