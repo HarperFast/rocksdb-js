@@ -428,4 +428,136 @@ describe('Verification Table', () => {
 				expect(result).toBeUndefined();
 			}));
 	});
+
+	// #1864: VT slot identity uses the DBDescriptor's per-open epoch, not its heap
+	// pointer. A descriptor pointer is freed on close and routinely re-used by the
+	// allocator on the next open of the same (or another) path, while RocksDB keeps
+	// cfId stable across reopens — so before the epoch, a version cached by a prior
+	// in-process incarnation could be addressed (and trusted, as a spurious FRESH)
+	// by a later one, resolving present/absent keys wrongly until the slots settled.
+	// A fresh empty DB opened right after a close is the most likely address-reuse
+	// victim; these tests exercise the end-to-end read paths across a close/reopen.
+	describe('VT identity across DB open/close lifecycle (#1864)', () => {
+		const settledVersion = 1.5e12; // well in the past → immediately cacheable
+
+		it('a version cached before close never leaks into a later incarnation (non-resurrection)', async () => {
+			const key = Buffer.from('reused-slot-key');
+			// Loop so allocator address-reuse (the real-world trigger) is very likely
+			// to occur at least once; the epoch makes every iteration read cold.
+			for (let i = 0; i < 40; i++) {
+				const db = new RocksDatabase(generateDBPath(), {
+					encoding: false,
+					verificationTable: true,
+				});
+				db.open();
+				try {
+					const native = (db as any).store.db;
+					// This incarnation is a brand-new, empty DB: the key does not exist
+					// here. A stale slot from the just-closed prior incarnation (which
+					// seeded `settledVersion` below) must NOT surface as FRESH — it must
+					// read through and report not-found.
+					const stale = native.getSync(key, 0, undefined, settledVersion);
+					expect(stale).not.toBe(FRESH_VERSION_FLAG);
+					expect(stale).toBeUndefined();
+					expect(db.verifyVersion(key, settledVersion)).toBe(false);
+
+					// Seed this incarnation's slot so the NEXT iteration's (likely
+					// address-reusing) descriptor would observe it without the epoch.
+					await db.put(key, makeValue(settledVersion));
+					native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+					expect(db.verifyVersion(key, settledVersion)).toBe(true);
+				} finally {
+					db.close();
+				}
+			}
+		});
+
+		it('a transactional point-get after write/flush/close/reopen returns the persisted value and agrees with range/raw', async () => {
+			const path = generateDBPath();
+			const key = Buffer.from('persisted-key');
+			const value = makeValue(settledVersion);
+
+			// Incarnation 1: persist + flush to disk, seed the VT slot, then close.
+			{
+				const db = new RocksDatabase(path, { encoding: false, verificationTable: true });
+				db.open();
+				const native = (db as any).store.db;
+				await db.put(key, value);
+				await db.flush();
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, settledVersion)).toBe(true);
+				db.close();
+			}
+
+			// Incarnation 2: reopen the same path (pre-existing persisted data). A
+			// transactional point-get must return the actual persisted bytes,
+			// agreeing with getRange and raw getBinarySync. (A cache-freshness read
+			// carrying the pre-close version may legitimately answer FRESH when the
+			// descriptor was reused for the same unchanged data; the false-positive
+			// paths — absent/deleted keys — are covered by the other two tests.)
+			{
+				const db = new RocksDatabase(path, { encoding: false, verificationTable: true });
+				db.open();
+				try {
+					const raw = db.getBinarySync(key) as Buffer;
+					expect(raw).toBeDefined();
+					expect(Buffer.from(raw).equals(value)).toBe(true);
+
+					const fromRange = [...db.getRange()].map((e: any) => e.value as Buffer);
+					expect(fromRange.length).toBe(1);
+					expect(Buffer.from(fromRange[0]).equals(value)).toBe(true);
+
+					await db.transaction(async (txn: Transaction) => {
+						const got = txn.getBinarySync(key);
+						expect(got).toBeDefined();
+						expect(Buffer.from(got as Buffer).equals(value)).toBe(true);
+					});
+				} finally {
+					db.close();
+				}
+			}
+		});
+
+		it('a delete in a reopened incarnation is not resurrected by a stale slot and holds under a snapshot', async () => {
+			const path = generateDBPath();
+			const key = Buffer.from('delete-me');
+			const value = makeValue(settledVersion);
+
+			// Incarnation 1: write + seed the slot, close (slot may hold the version).
+			{
+				const db = new RocksDatabase(path, { encoding: false, verificationTable: true });
+				db.open();
+				const native = (db as any).store.db;
+				await db.put(key, value);
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, settledVersion)).toBe(true);
+				db.close();
+			}
+
+			// Incarnation 2: reopen, delete the record, then confirm no read path
+			// resurrects it via a stale slot — including a transactional read carrying
+			// the old version, and a snapshot opened after the delete.
+			{
+				const db = new RocksDatabase(path, { encoding: false, verificationTable: true });
+				db.open();
+				try {
+					const native = (db as any).store.db;
+					expect(db.getBinarySync(key)).toBeDefined(); // persisted row is present
+					native.removeSync(key);
+
+					expect(db.verifyVersion(key, settledVersion)).toBe(false);
+					expect(db.getBinarySync(key)).toBeUndefined();
+					expect([...db.getRange()].length).toBe(0);
+
+					await db.transaction(async (txn: Transaction) => {
+						const got = txn.getBinarySync(key, { expectedVersion: settledVersion } as any);
+						expect(got).not.toBe(FRESH_VERSION_FLAG);
+						expect(got).toBeUndefined();
+					});
+				} finally {
+					db.close();
+				}
+			}
+		});
+	});
 });

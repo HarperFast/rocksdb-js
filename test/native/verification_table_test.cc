@@ -105,6 +105,43 @@ TEST(VerificationTable, ColdPopulateSucceedsFromSettledWhenReobserved) {
 	EXPECT_TRUE(VerificationTable::verifyVersion(slot, kV2));
 }
 
+// Cross-incarnation isolation (HarperFast/harper#1864). A slot is addressed by
+// (dbId, cfId, key) where dbId is DBDescriptor::vtEpoch — a process-unique per-open
+// value. A later in-process reopen of the same path gets a fresh epoch, so even
+// though the reused descriptor address and (stable) cfId could be identical, the
+// new incarnation addresses a different, cold slot and can never observe the prior
+// incarnation's cached version (which previously surfaced as a spurious FRESH hit
+// resolving present keys as stale/absent). Deterministic: skip the rare hash
+// collision and assert on the first independent slot, which is found immediately.
+TEST(VerificationTable, DistinctDbEpochsAddressIndependentSlots) {
+	VerificationTable vt(1 << 12, 0xABCD);
+	rocksdb::Slice key("record-key");
+	const uint64_t epochOld = 1;
+
+	auto* slotOld = vt.slotFor(epochOld, 0, key);
+	ASSERT_NE(slotOld, nullptr);
+	ASSERT_TRUE(VerificationTable::populateVersion(slotOld, kV1));
+	ASSERT_TRUE(VerificationTable::verifyVersion(slotOld, kV1));
+
+	for (uint64_t epochNew = 2; epochNew < 100; ++epochNew) {
+		auto* slotNew = vt.slotFor(epochNew, 0, key);
+		if (slotNew == slotOld) continue;  // rare hash collision — try the next epoch
+		EXPECT_FALSE(VerificationTable::verifyVersion(slotNew, kV1))
+			<< "epoch " << epochNew << " must not see a prior incarnation's version";
+		EXPECT_EQ(slotNew->load(), 0u);  // fresh/cold, not a leaked version
+		return;
+	}
+	FAIL() << "expected at least one distinct slot across epochs";
+}
+
+// The same (dbId, cfId, key) is stable: a live incarnation keeps addressing its
+// own slot for the life of the open.
+TEST(VerificationTable, SameDbEpochIsStable) {
+	VerificationTable vt(1 << 12, 0xABCD);
+	rocksdb::Slice key("record-key");
+	EXPECT_EQ(vt.slotFor(7, 3, key), vt.slotFor(7, 3, key));
+}
+
 // Encoding classes (version / lock / settled / empty) are mutually exclusive.
 TEST(VerificationTable, EncodingClassesAreDisjoint) {
 	EXPECT_TRUE(vtIsVersion(kV1));
