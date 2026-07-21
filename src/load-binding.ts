@@ -197,6 +197,7 @@ export type NativeDatabaseOptions = {
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;
+	maxOpenFiles?: number;
 	maxWriteBufferNumber?: number;
 	maxWriteBufferSizeToMaintain?: number;
 	mode?: NativeDatabaseMode;

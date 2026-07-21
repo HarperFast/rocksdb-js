@@ -47,6 +47,13 @@ Creates a new database instance.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
     Defaults to `false`.
+  - `maxOpenFiles: number` The maximum number of table files RocksDB keeps open. `0` (the default)
+    derives a budget from the effective per-process open-file limit (an eighth of the limit —
+    several databases can share one process — clamped to `[1024, 262144]`); `-1` holds every table
+    file open (the RocksDB default, which can exhaust the process file-descriptor limit when
+    compaction falls behind under sustained ingest); a positive `int32` is an explicit cap. Reads
+    only pay a reopen cost when the number of live table files exceeds the budget, so raise the
+    process fd limit (and with it the derived budget) for very large databases.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.

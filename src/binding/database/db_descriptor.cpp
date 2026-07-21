@@ -1,3 +1,4 @@
+#include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "transaction_log/transaction_log_store_registry.h"
@@ -699,6 +700,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		dbOptions.write_buffer_manager = wbm;
 	}
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
+	// Bound how many table files RocksDB holds open: with the RocksDB default
+	// (-1, every SST open forever) compaction lag under sustained ingest can
+	// run the process out of fds (HarperFast/harper#1785 environment).
+	dbOptions.max_open_files = options.maxOpenFiles == 0
+		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
+		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 	dbOptions.persist_user_defined_timestamps = true;
 	if (options.enableStats) {

@@ -11,8 +11,11 @@
 #include <windows.h>
 #elif defined(__linux__)
 #include <sys/syscall.h>
+#include <sys/resource.h>
 #elif defined(__APPLE__)
 #include <pthread.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace rocksdb_js {
@@ -29,6 +32,45 @@ size_t getThreadId() {
 #else
 	return std::hash<std::thread::id>{}(std::this_thread::get_id());
 #endif
+}
+
+uint64_t getEffectiveOpenFileLimit() {
+#ifdef _WIN32
+	return 0;
+#else
+	struct rlimit limit;
+	if (::getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
+		return 0;
+	}
+	uint64_t effectiveLimit = static_cast<uint64_t>(limit.rlim_cur);
+	#ifdef __APPLE__
+	// macOS enforces kern.maxfilesperproc even when the rlimit is higher
+	int32_t maxFilesPerProc = 0;
+	size_t size = sizeof(maxFilesPerProc);
+	if (::sysctlbyname("kern.maxfilesperproc", &maxFilesPerProc, &size, nullptr, 0) == 0 &&
+		maxFilesPerProc > 0 &&
+		static_cast<uint64_t>(maxFilesPerProc) < effectiveLimit
+	) {
+		effectiveLimit = static_cast<uint64_t>(maxFilesPerProc);
+	}
+	#endif
+	return effectiveLimit;
+#endif
+}
+
+int32_t deriveMaxOpenFiles(uint64_t effectiveOpenFileLimit) {
+	if (effectiveOpenFileLimit == 0) {
+		return -1;
+	}
+	constexpr uint64_t minBudget = 1024;
+	constexpr uint64_t maxBudget = 262144;
+	uint64_t budget = effectiveOpenFileLimit / 8;
+	if (budget < minBudget) {
+		budget = minBudget;
+	} else if (budget > maxBudget) {
+		budget = maxBudget;
+	}
+	return static_cast<int32_t>(budget);
 }
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(

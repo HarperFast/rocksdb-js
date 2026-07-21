@@ -205,6 +205,17 @@ export class Store {
 	maxKeySize: number;
 
 	/**
+	 * The maximum number of table files RocksDB keeps open. `0` (the default)
+	 * derives a budget from the effective per-process open-file limit (an
+	 * eighth of the limit — several databases can share one process — clamped
+	 * to `[1024, 262144]`); `-1` holds every table file open (the RocksDB
+	 * default, which can exhaust the process file-descriptor limit when
+	 * compaction falls behind under sustained ingest); a positive `int32` is
+	 * an explicit cap.
+	 */
+	maxOpenFiles?: number;
+
+	/**
 	 * The maximum number of memtables that can be queued per column family
 	 * before writes stall. Higher values absorb write bursts while flushes catch
 	 * up, at the cost of memory.
@@ -355,6 +366,7 @@ export class Store {
 		this.keyBuffer = KEY_BUFFER;
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
+		this.maxOpenFiles = options?.maxOpenFiles;
 		this.maxWriteBufferNumber = options?.maxWriteBufferNumber;
 		this.maxWriteBufferSizeToMaintain = options?.maxWriteBufferSizeToMaintain;
 		this.name = options?.name ?? 'default';
@@ -846,6 +858,7 @@ export class Store {
 			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,
+			maxOpenFiles: this.maxOpenFiles,
 			maxWriteBufferNumber: this.maxWriteBufferNumber,
 			maxWriteBufferSizeToMaintain: this.maxWriteBufferSizeToMaintain,
 			mode: this.pessimistic ? 'pessimistic' : 'optimistic',

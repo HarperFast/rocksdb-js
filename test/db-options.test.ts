@@ -39,6 +39,32 @@ describe('Database write buffer options', () => {
 			}
 		));
 
+	it('should open with an explicit maxOpenFiles cap and serve reads across evicted table handles', () =>
+		dbRunner({ dbOptions: [{ maxOpenFiles: 32, writeBufferSize: 64 * 1024 }] }, async ({ db }) => {
+			// A small memtable produces many small SSTs so reads must reopen
+			// table files evicted from the 32-handle table cache.
+			const value = 'x'.repeat(1024);
+			for (let i = 0; i < 512; i++) {
+				await db.put(`key-${i.toString().padStart(6, '0')}`, value);
+			}
+			await db.flush();
+			expect(await db.get('key-000000')).toBe(value);
+			expect(await db.get('key-000511')).toBe(value);
+		}));
+
+	it('should open with maxOpenFiles -1 (unlimited, the previous default)', () =>
+		dbRunner({ dbOptions: [{ maxOpenFiles: -1 }] }, async ({ db }) => {
+			await db.put('foo', 'bar');
+			expect(await db.get('foo')).toBe('bar');
+		}));
+
+	it('should reject maxOpenFiles below -1', () =>
+		dbRunner({ dbOptions: [{ maxOpenFiles: -2 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow(
+				'maxOpenFiles must be -1 (unlimited), 0 (auto), or a positive number'
+			);
+		}));
+
 	it('should flush memtables when writeBufferSize is exceeded', () =>
 		dbRunner({ dbOptions: [{ writeBufferSize: 64 * 1024 }] }, async ({ db }) => {
 			// 64KB memtable; write enough data to force at least one flush.
