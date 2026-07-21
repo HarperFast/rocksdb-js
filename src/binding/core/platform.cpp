@@ -39,10 +39,15 @@ uint64_t getEffectiveOpenFileLimit() {
 	return 0;
 #else
 	struct rlimit limit;
-	if (::getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
+	if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
 		return 0;
 	}
-	uint64_t effectiveLimit = static_cast<uint64_t>(limit.rlim_cur);
+	// An unlimited soft rlimit is "no rlimit constraint", not "unknown": it
+	// still flows through the macOS kernel cap below and the derivation
+	// ceiling in deriveMaxOpenFiles.
+	uint64_t effectiveLimit = limit.rlim_cur == RLIM_INFINITY
+		? std::numeric_limits<uint64_t>::max()
+		: static_cast<uint64_t>(limit.rlim_cur);
 	#ifdef __APPLE__
 	// macOS enforces kern.maxfilesperproc even when the rlimit is higher
 	int32_t maxFilesPerProc = 0;
