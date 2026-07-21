@@ -16,6 +16,7 @@
 #include "transaction_log/transaction_log_validation_napi.h"
 #include "core/platform.h"
 #include "core/file_lock.h"
+#include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include <atomic>
@@ -38,6 +39,21 @@ namespace rocksdb_js {
 napi_value Shutdown(napi_env env, napi_callback_info info) {
 	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+/**
+ * Test-only: arm the stranded-snapshot seam so the next `n` transaction commits fail with
+ * TryAgain (rolled back, so no data is committed). Used by the ERR_TRY_AGAIN retry test; inert
+ * unless called. See core/test_seam.h.
+ */
+napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t count = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &count));
+	forceTryAgainCounter().store(count, std::memory_order_relaxed);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -210,6 +226,11 @@ NAPI_MODULE_INIT() {
 	napi_value shutdownFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdown", NAPI_AUTO_LENGTH, Shutdown, nullptr, &shutdownFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdown", shutdownFn));
+
+	// test-only stranded-snapshot seam (see core/test_seam.h)
+	napi_value forceTryAgainFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

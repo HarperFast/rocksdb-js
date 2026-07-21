@@ -14,8 +14,18 @@ export class TransactionAlreadyAbortedError extends Error {
 	readonly code = 'ERR_ALREADY_ABORTED';
 }
 
-export class TransactionIsBusyError extends Error {
-	readonly code = 'ERR_BUSY';
+/**
+ * Base for commit conflicts the native layer has already recovered from by resetting the
+ * transaction in place (fresh RocksDB snapshot; `committedPosition` preserved, so a staged
+ * transaction-log batch stays write-once): the caller should re-run the transaction body
+ * and retry the commit — the handling is identical for every subclass. `hasLog` reports
+ * whether the transaction wrote to a transaction log (drives the default retry decision).
+ *
+ * {@link TransactionAbandonedError} shares this field shape but deliberately does NOT
+ * extend this class — an abandoned transaction is not retryable, and retryability is the
+ * boundary this hierarchy expresses.
+ */
+export class TransactionRetryableError extends Error {
 	readonly hasLog: boolean;
 	readonly txn: Transaction;
 
@@ -24,6 +34,23 @@ export class TransactionIsBusyError extends Error {
 		this.hasLog = (error as Error & { hasLog?: boolean }).hasLog ?? false;
 		this.txn = txn;
 	}
+}
+
+/**
+ * An optimistic commit detected a write conflict with a concurrently committed
+ * transaction (RocksDB `Busy`).
+ */
+export class TransactionIsBusyError extends TransactionRetryableError {
+	readonly code = 'ERR_BUSY';
+}
+
+/**
+ * An optimistic commit could not be validated: the transaction's snapshot was stranded
+ * outside the memtable window (its sequence history was flushed away — RocksDB
+ * `TryAgain`), so the conflict check had nothing to validate against.
+ */
+export class TransactionTryAgainError extends TransactionRetryableError {
+	readonly code = 'ERR_TRY_AGAIN';
 }
 
 export class TransactionAbandonedError extends Error {
@@ -127,6 +154,9 @@ export class Transaction extends DBI {
 			}
 			if (err.code === 'ERR_BUSY') {
 				return new TransactionIsBusyError(err, this);
+			}
+			if (err.code === 'ERR_TRY_AGAIN') {
+				return new TransactionTryAgainError(err, this);
 			}
 		}
 		return err as Error;

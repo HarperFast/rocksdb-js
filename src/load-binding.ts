@@ -529,6 +529,13 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
 /**
+ * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so
+ * no data is committed), reproducing a stranded-snapshot conflict deterministically. Pass 0 to
+ * disarm. Used by the ERR_TRY_AGAIN retry regression test.
+ */
+export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
+
+/**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
  * `LockFileEx` on Windows), creating the file and any missing parent
  * directories. Exclusive by default; pass `shared` for a shared (reader) lock
