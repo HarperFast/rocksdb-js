@@ -61,8 +61,18 @@ describe('Database write buffer options', () => {
 	it('should reject maxOpenFiles below -1', () =>
 		dbRunner({ dbOptions: [{ maxOpenFiles: -2 }], skipOpen: true }, async ({ db }) => {
 			expect(() => db.open()).toThrow(
-				'maxOpenFiles must be -1 (unlimited), 0 (auto), or a positive number'
+				'maxOpenFiles must be -1 (unlimited), 0 (auto), or a positive 32-bit integer'
 			);
+		}));
+
+	it('should reject non-integer maxOpenFiles instead of truncating to -1', () =>
+		dbRunner({ dbOptions: [{ maxOpenFiles: -1.5 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow('maxOpenFiles must be');
+		}));
+
+	it('should reject maxOpenFiles beyond int32 range instead of wrapping', () =>
+		dbRunner({ dbOptions: [{ maxOpenFiles: 2 ** 32 - 1 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow('maxOpenFiles must be');
 		}));
 
 	it('should flush memtables when writeBufferSize is exceeded', () =>

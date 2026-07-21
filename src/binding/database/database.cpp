@@ -1,5 +1,6 @@
 #include <node_api.h>
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include "database/database.h"
 #include "database/db_handle.h"
@@ -1399,11 +1400,18 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "writeBufferSize", dbHandleOptions.writeBufferSize));
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxOpenFiles", dbHandleOptions.maxOpenFiles));
-	if (dbHandleOptions.maxOpenFiles < -1) {
-		::napi_throw_error(env, nullptr, "maxOpenFiles must be -1 (unlimited), 0 (auto), or a positive number");
+	// Parse as double and validate BEFORE narrowing: napi_get_value_int32
+	// truncates (-1.5 -> -1) and wraps modulo 2^32 (4294967295 -> -1), which
+	// would silently turn invalid values into "unlimited".
+	double maxOpenFilesValue = static_cast<double>(dbHandleOptions.maxOpenFiles);
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxOpenFiles", maxOpenFilesValue));
+	if (std::isnan(maxOpenFilesValue) || maxOpenFilesValue != std::trunc(maxOpenFilesValue) ||
+		maxOpenFilesValue < -1.0 || maxOpenFilesValue > 2147483647.0
+	) {
+		::napi_throw_error(env, nullptr, "maxOpenFiles must be -1 (unlimited), 0 (auto), or a positive 32-bit integer");
 		return nullptr;
 	}
+	dbHandleOptions.maxOpenFiles = static_cast<int32_t>(maxOpenFilesValue);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferNumber", dbHandleOptions.maxWriteBufferNumber));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbHandleOptions.dbWriteBufferSize));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferSizeToMaintain", dbHandleOptions.maxWriteBufferSizeToMaintain));
