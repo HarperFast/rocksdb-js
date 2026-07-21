@@ -42,9 +42,11 @@ inline std::atomic<uint64_t>* vtSlotFor(
 	const rocksdb::Slice& key
 ) {
 	if (!vt) return nullptr;
-	uintptr_t dbPtr = reinterpret_cast<uintptr_t>(dbHandle->descriptor.get());
+	// Per-open epoch, not the descriptor pointer: the pointer is reused across a
+	// close/reopen of the same path while cfId stays stable (HarperFast/harper#1864).
+	uint64_t dbId = dbHandle->descriptor->vtEpoch;
 	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
-	return vt->slotFor(dbPtr, cfId, key);
+	return vt->slotFor(dbId, cfId, key);
 }
 
 /**

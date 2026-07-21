@@ -10,6 +10,15 @@ namespace rocksdb_js {
 // forward declarations
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
 
+// Process-global monotonic source for DBDescriptor::vtEpoch. Starts at 1 so a
+// valid epoch is never 0. 64-bit: never wraps in practice, so every descriptor
+// open across the process lifetime gets a distinct VerificationTable identity.
+static std::atomic<uint64_t> vtEpochCounter{1};
+
+static uint64_t nextVtEpoch() {
+	return vtEpochCounter.fetch_add(1, std::memory_order_relaxed);
+}
+
 struct JobTracker final {
 	int columnFamilyCount = 0;
 	rocksdb::SequenceNumber flushedSequence = 0;
@@ -118,6 +127,7 @@ DBDescriptor::DBDescriptor(
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
 	path(path),
+	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
 	db(db),
@@ -218,7 +228,7 @@ void DBDescriptor::finishClose() {
 	{
 		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
 		if (vt) {
-			vt->cancelForDB(reinterpret_cast<uintptr_t>(this));
+			vt->cancelForDB(this->vtEpoch);
 		}
 	}
 

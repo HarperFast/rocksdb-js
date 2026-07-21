@@ -92,14 +92,14 @@ struct LockTracker {
 	std::atomic<uint32_t> holders{0};   // count of active intent registrations
 	uint16_t              generation;   // immutable after install; matches slot encoding
 	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
-	uintptr_t             dbPtr;        // identity of the owning DB descriptor
+	uint64_t              dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)
 
 	bool                               woken{false};
 	std::mutex                         wakeCallbacksMutex;
 	std::vector<std::function<void()>> wakeCallbacks;
 
-	LockTracker(size_t idx, uint16_t gen, uintptr_t dbPtr)
-		: refcount(1), holders(0), generation(gen), slotIndex(idx), dbPtr(dbPtr) {}
+	LockTracker(size_t idx, uint16_t gen, uint64_t dbId)
+		: refcount(1), holders(0), generation(gen), slotIndex(idx), dbId(dbId) {}
 
 	/**
 	 * Registers a callback to be invoked when wake() is called.
@@ -142,7 +142,7 @@ public:
 	 * when the table is disabled.
 	 */
 	std::atomic<uint64_t>* slotFor(
-		uintptr_t dbPtr,
+		uint64_t dbId,
 		uint32_t cfId,
 		const rocksdb::Slice& key
 	) const;
@@ -209,7 +209,7 @@ public:
 	 * this via releaseIntent(); cancelForDB() is a defensive final pass for
 	 * unexpected races or shutdown ordering issues.
 	 */
-	void cancelForDB(uintptr_t dbPtr);
+	void cancelForDB(uint64_t dbId);
 
 	/**
 	 * Sweeps every non-lock slot in the table and advances it to a fresh
@@ -252,7 +252,7 @@ public:
 	 * tracker. Returns the tracker the caller now holds an intent on (to be
 	 * passed to releaseWriteIntent), or nullptr if the slot is null.
 	 */
-	LockTracker* lockSlotForWrite(std::atomic<uint64_t>* slot, uintptr_t dbPtr);
+	LockTracker* lockSlotForWrite(std::atomic<uint64_t>* slot, uint64_t dbId);
 
 	/**
 	 * Releases one write intent previously taken via lockSlotForWrite. When the
