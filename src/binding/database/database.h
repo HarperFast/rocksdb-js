@@ -364,16 +364,22 @@ struct AsyncGetState final : BaseAsyncState<T> {
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
-		std::string key
+		std::string key,
+		std::shared_ptr<ColumnFamilyDescriptor> targetColumnDescriptor = nullptr
 	) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
-		key(std::move(key)) {}
+		key(std::move(key)),
+		targetColumnDescriptor(std::move(targetColumnDescriptor)) {}
 
 	rocksdb::ReadOptions readOptions;
 	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
 	std::string key;
 	std::string value;
+	// Pins a transaction read's resolved column family until the native worker
+	// finishes. It must be reset before signalling transaction completion, which
+	// may allow the database to close.
+	std::shared_ptr<ColumnFamilyDescriptor> targetColumnDescriptor;
 
 	// Verification table state for post-read check and populate.
 	bool hasExpectedVersion = false;

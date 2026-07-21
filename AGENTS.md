@@ -245,6 +245,13 @@ C++ code that needs to emit to JS without a database context should call
    unsupported/errored or reporting 0 (which also lets a genuinely-full local volume through — a real 0
    is indistinguishable from the spurious 0 some network filesystems report). The stream-target backup
    path never opens a `BackupEngine` against a volume and is not checked.
+9. **Transaction reads are database-wide, but column-family-specific**: one native transaction may
+   serve stores backed by any column family in its database. `TransactionHandle::get` must therefore
+   use the column family resolved from its `dbHandleOverride` in both the synchronous cache probe and
+   the queued disk read. The async state pins that `ColumnFamilyDescriptor` while the worker uses its
+   native handle, then releases the pin before `signalExecuteCompleted()` because that signal may let
+   transaction/database teardown proceed (HarperFast/harper#1881). Keep the cold-read cross-column-
+   family coverage in `test/transactions.test.ts`; cache hits alone do not exercise the async path.
 
 ## Debugging native heap corruption
 

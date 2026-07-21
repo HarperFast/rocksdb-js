@@ -364,7 +364,13 @@ napi_value TransactionHandle::get(
 	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	auto state = new AsyncGetState<TransactionHandle*>(
+		env,
+		this,
+		readOptions,
+		std::move(key),
+		dbHandle->columnDescriptor
+	);
 	state->vtSlot = vtSlot;
 	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -380,16 +386,19 @@ napi_value TransactionHandle::get(
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
 			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
+			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled() || !state->targetColumnDescriptor) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
 			} else {
 				state->status = state->handle->txn->Get(
 					state->readOptions,
-					state->handle->dbHandle->getColumnFamilyHandle(),
+					state->targetColumnDescriptor->column.get(),
 					state->key,
 					&state->value
 				);
 			}
+			// Transaction completion can allow database teardown, so release the
+			// column-family pin before signalling that the worker is done.
+			state->targetColumnDescriptor.reset();
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},

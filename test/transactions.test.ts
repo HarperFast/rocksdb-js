@@ -184,6 +184,33 @@ for (const { name, options, txnOptions } of testOptions) {
 				}
 			));
 
+		it(`${name} async should read cold values across column families`, () =>
+			dbRunner(
+				{
+					dbOptions: [
+						{ ...options, noBlockCache: true },
+						{ ...options, name: 'foo', noBlockCache: true },
+					],
+				},
+				async ({ db }, { db: db2 }) => {
+					await db.put('shared-key', 'default-column-value');
+					await db2.put('shared-key', 'other-column-before');
+					await Promise.all([db.flush(), db2.flush()]);
+
+					await db.transaction(async (txn: Transaction) => {
+						await db.get('shared-key', { transaction: txn });
+						await db2.put('shared-key', 'other-column-after');
+						await db2.flush();
+
+						const value = db2.get('shared-key', { transaction: txn });
+						expect(value).toBeInstanceOf(Promise);
+						expect(await value).toBe(
+							txnOptions?.disableSnapshot ? 'other-column-after' : 'other-column-before'
+						);
+					}, txnOptions);
+				}
+			));
+
 		it(`${name} async should allow multiple transactions to run in parallel`, () =>
 			dbRunner(
 				{ dbOptions: [options, { ...options, path: generateDBPath() }] },
