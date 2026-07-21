@@ -766,6 +766,12 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&state->asyncWork // -> result
 	));
 
+	// Balances the unregisterAsyncWork() that BaseAsyncState::signalExecuteCompleted()
+	// performs at the end of the execute handler. Without it the count goes negative,
+	// so close() does not wait for this read and the worker dereferences a descriptor
+	// that close() has already reset.
+	(*dbHandle)->registerAsyncWork();
+
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 
 	napi_value returnStatus;
