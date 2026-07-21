@@ -223,6 +223,7 @@
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',
 				'test/native/json_test.cc',
+				'test/native/platform_fd_limit_test.cc',
 				'test/native/transaction_log_madvise_test.cc',
 				'test/native/transaction_log_mmap_test.cc',
 				'test/native/transaction_log_recovery_test.cc',

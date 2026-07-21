@@ -37,6 +37,11 @@ struct DBOptions final {
 	// `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default
 	// for OptimisticTransactionDB).
 	int64_t maxWriteBufferSizeToMaintain = -1;
+	// Maximum number of table files RocksDB keeps open (`max_open_files`).
+	// 0 = auto: derive a budget from the effective per-process open-file limit
+	// (see `deriveMaxOpenFiles`); -1 = unlimited (every SST held open — can
+	// exhaust the process fd limit under compaction lag); >0 = explicit cap.
+	int32_t maxOpenFiles = 0;
 	DBMode mode = DBMode::Optimistic;
 	std::string name;
 	bool noBlockCache = false;
