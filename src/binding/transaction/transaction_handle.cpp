@@ -368,11 +368,10 @@ napi_value TransactionHandle::get(
 	// Read against the column family the caller issued the read on, which is not
 	// necessarily the one this transaction was created with. Resolve the column
 	// family here on the JS thread and hold it, so the worker never traverses a
-	// DBHandle that close() may concurrently tear down.
+	// DBHandle that close() may concurrently tear down. The block-cache attempt
+	// above already dereferenced columnDescriptor on this thread, so it is live.
 	state->readDbHandle = dbHandle;
-	if (dbHandle->columnDescriptor) {
-		state->readColumnFamily = dbHandle->columnDescriptor->column;
-	}
+	state->readColumnFamily = dbHandle->columnDescriptor->column;
 	state->vtSlot = vtSlot;
 	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -389,10 +388,11 @@ napi_value TransactionHandle::get(
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
 			// check if database is still open before proceeding
 			auto& readDbHandle = state->readDbHandle;
+			// Abort if either the transaction or the column family being read was
+			// torn down after this work was queued.
 			if (
 				!state->handle
-				|| !readDbHandle
-				|| !state->readColumnFamily
+				|| state->handle->isCancelled()
 				|| !readDbHandle->opened()
 				|| readDbHandle->isCancelled()
 			) {
