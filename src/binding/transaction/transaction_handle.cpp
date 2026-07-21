@@ -365,6 +365,14 @@ napi_value TransactionHandle::get(
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	// Read against the column family the caller issued the read on, which is not
+	// necessarily the one this transaction was created with. Resolve the column
+	// family here on the JS thread and hold it, so the worker never traverses a
+	// DBHandle that close() may concurrently tear down.
+	state->readDbHandle = dbHandle;
+	if (dbHandle->columnDescriptor) {
+		state->readColumnFamily = dbHandle->columnDescriptor->column;
+	}
 	state->vtSlot = vtSlot;
 	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -380,12 +388,19 @@ napi_value TransactionHandle::get(
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
 			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->dbHandle || !state->handle->dbHandle->opened() || state->handle->dbHandle->isCancelled()) {
+			auto& readDbHandle = state->readDbHandle;
+			if (
+				!state->handle
+				|| !readDbHandle
+				|| !state->readColumnFamily
+				|| !readDbHandle->opened()
+				|| readDbHandle->isCancelled()
+			) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
 			} else {
 				state->status = state->handle->txn->Get(
 					state->readOptions,
-					state->handle->dbHandle->getColumnFamilyHandle(),
+					state->readColumnFamily.get(),
 					state->key,
 					&state->value
 				);
@@ -421,7 +436,8 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(this, itOptions);
+	std::unique_ptr<DBIteratorHandle> itHandle =
+		std::make_unique<DBIteratorHandle>(this, itOptions, dbHandleOverride);
 	for (count = 0; itHandle->iterator->Valid(); ++count) {
 		itHandle->iterator->Next();
 	}
