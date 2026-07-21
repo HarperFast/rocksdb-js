@@ -245,6 +245,21 @@ C++ code that needs to emit to JS without a database context should call
    unsupported/errored or reporting 0 (which also lets a genuinely-full local volume through — a real 0
    is indistinguishable from the spurious 0 some network filesystems report). The stream-target backup
    path never opens a `BackupEngine` against a volume and is not checked.
+9. **Transactional reads are database-wide, but async column-family pins end before teardown**:
+   a RocksDB transaction can read any column family in its database, so a read issued through another
+   `RocksDatabase` must use that caller's `ColumnFamilyDescriptor`, not the transaction's original
+   `DBHandle`. Register setup briefly against the caller's `DBHandle` before copying its descriptor,
+   so a cross-environment close cannot reset the descriptor between the open check and the pin. The
+   transaction itself must be registered before inspecting `txn`/state, then that registration is
+   transferred to the queued async state; failed N-API setup must release refs/work/state without
+   double-unregistering or retaining the descriptor.
+   cold-cache async path then pins that descriptor in `AsyncGetState` while the worker uses its native
+   column-family handle, and resets the pin **before** `signalExecuteCompleted()`; that
+   signal can unblock transaction/database close, which destroys column families before the RocksDB
+   database. Do not retain a raw/native column-family handle into the N-API completion callback or
+   inspect a concurrently closing `DBHandle` from the worker. Transactional count iterators must also
+   pass the transaction snapshot through `ReadOptions`; `disableSnapshot` intentionally leaves it null
+   so counts observe the latest committed state.
 
 ## Debugging native heap corruption
 
