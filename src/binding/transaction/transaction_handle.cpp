@@ -11,6 +11,70 @@
 
 namespace rocksdb_js {
 
+namespace {
+
+/**
+ * Keeps a target DBHandle open while a transaction resolves and pins that
+ * handle's column descriptor. This bridges the gap between the caller's open
+ * check and the transaction's async-work registration without making the
+ * worker access a concurrently closing DBHandle.
+ */
+struct ScopedAsyncWorkRegistration {
+	AsyncWorkHandle* handle;
+
+	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle)
+		: handle(handle) {
+		if (this->handle) {
+			this->handle->registerAsyncWork();
+		}
+	}
+
+	~ScopedAsyncWorkRegistration() {
+		if (this->handle) {
+			this->handle->unregisterAsyncWork();
+		}
+	}
+
+	ScopedAsyncWorkRegistration(const ScopedAsyncWorkRegistration&) = delete;
+	ScopedAsyncWorkRegistration& operator=(const ScopedAsyncWorkRegistration&) = delete;
+
+	void release() {
+		this->handle = nullptr;
+	}
+};
+
+template<typename State>
+struct PendingAsyncState {
+	napi_env env;
+	State* state;
+
+	PendingAsyncState(napi_env env, State* state)
+		: env(env), state(state) {}
+
+	~PendingAsyncState() {
+		if (!this->state) return;
+		if (this->state->resolveRef) {
+			::napi_delete_reference(this->env, this->state->resolveRef);
+			this->state->resolveRef = nullptr;
+		}
+		if (this->state->rejectRef) {
+			::napi_delete_reference(this->env, this->state->rejectRef);
+			this->state->rejectRef = nullptr;
+		}
+		this->state->deleteAsyncWork();
+		delete this->state;
+	}
+
+	void release() {
+		this->state = nullptr;
+	}
+
+	PendingAsyncState(const PendingAsyncState&) = delete;
+	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
+};
+
+} // namespace
+
 /**
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
@@ -298,7 +362,12 @@ napi_value TransactionHandle::get(
 	uint64_t expectedVersion,
 	bool wantsPopulate
 ) {
-	if (!this->txn) {
+	// Register before inspecting txn/state. Descriptor-wide close can select the
+	// transaction before the target DBHandle, and close() must not reset txn in
+	// the middle of this setup. Async fallback transfers this registration to its
+	// state; synchronous and failed setup paths release it on return.
+	ScopedAsyncWorkRegistration transactionRegistration(this);
+	if (this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
 	}
@@ -317,6 +386,15 @@ napi_value TransactionHandle::get(
 	napi_value returnStatus;
 	std::string value;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	// Cross-column-family reads enter through another DBHandle. Register against
+	// that handle while copying its descriptor so a concurrent close cannot reset
+	// columnDescriptor in the gap between the caller's open check and this read.
+	ScopedAsyncWorkRegistration targetHandleRegistration(dbHandleOverride.get());
+	if (dbHandleOverride && dbHandle->isCancelled()) {
+		::napi_throw_error(env, nullptr, "Database closed during transaction get operation");
+		return nullptr;
+	}
+	auto readColumnDescriptor = dbHandle->columnDescriptor;
 
 	rocksdb::ReadOptions readOptions;
 	if (this->snapshotSet) {
@@ -326,7 +404,7 @@ napi_value TransactionHandle::get(
 
 	rocksdb::Status status = this->txn->Get(
 		readOptions,
-		dbHandle->getColumnFamilyHandle(),
+		readColumnDescriptor->column.get(),
 		key,
 		&value
 	);
@@ -367,13 +445,14 @@ napi_value TransactionHandle::get(
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
-	// Read against the column family the caller issued the read on, which is not
-	// necessarily the one this transaction was created with. Resolve the column
-	// family here on the JS thread and hold it, so the worker never traverses a
-	// DBHandle that close() may concurrently tear down. The block-cache attempt
-	// above already dereferenced columnDescriptor on this thread, so it is live.
-	state->readDbHandle = dbHandle;
-	state->readColumnFamily = dbHandle->columnDescriptor->column;
+	// Until the transaction registration is transferred below, setup failures
+	// must delete this state without unregistering work it does not own.
+	state->completed.store(true);
+	PendingAsyncState pendingState(env, state);
+	// Resolve and pin the caller's column family on the JS thread. The worker
+	// releases this descriptor before signaling completion so the native column
+	// family handle cannot outlive its RocksDB database during teardown.
+	state->readColumnDescriptor = std::move(readColumnDescriptor);
 	state->vtSlot = vtSlot;
 	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -388,25 +467,17 @@ napi_value TransactionHandle::get(
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
-			// check if database is still open before proceeding
-			auto& readDbHandle = state->readDbHandle;
-			// Abort if either the transaction or the column family being read was
-			// torn down after this work was queued.
-			if (
-				!state->handle
-				|| state->handle->isCancelled()
-				|| !readDbHandle->opened()
-				|| readDbHandle->isCancelled()
-			) {
+			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
 			} else {
 				state->status = state->handle->txn->Get(
 					state->readOptions,
-					state->readColumnFamily.get(),
+					state->readColumnDescriptor->column.get(),
 					state->key,
 					&state->value
 				);
 			}
+			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},
@@ -424,10 +495,14 @@ napi_value TransactionHandle::get(
 		&state->asyncWork // -> result
 	));
 
-	// register the async work with the transaction handle
-	this->registerAsyncWork();
-
+	// Transfer the registration claimed at function entry to the queued state.
+	// If queueing fails, PendingAsyncState deletes the state, whose base
+	// destructor releases the registration and whose derived members release the
+	// column descriptor first.
+	state->completed.store(false);
+	transactionRegistration.release();
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	pendingState.release();
 
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
 	return returnStatus;
@@ -438,6 +513,11 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	this->ensureSnapshot();
+	if (this->snapshotSet) {
+		itOptions.readOptions.snapshot = this->txn->GetSnapshot();
+	}
+
 	std::unique_ptr<DBIteratorHandle> itHandle =
 		std::make_unique<DBIteratorHandle>(this, itOptions, dbHandleOverride);
 	for (count = 0; itHandle->iterator->Valid(); ++count) {

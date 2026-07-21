@@ -125,6 +125,29 @@ describe('transaction reads across column families', () => {
 		}
 	});
 
+	it('finishes queued reads after the target column family handle closes', async () => {
+		const { db, other, third } = await seedAndReopen();
+		try {
+			await db.transaction(async (txn: Transaction) => {
+				const reads = Array.from({ length: 25 }, (_, i) =>
+					other.get(`key-${i}`, { transaction: txn })
+				);
+
+				// Transactional reads register against the transaction, not this DBI.
+				// Closing the caller must not invalidate the descriptor already pinned
+				// by the queued workers.
+				other.close();
+				await expect(Promise.all(reads)).resolves.toEqual(
+					Array.from({ length: 25 }, (_, i) => `value-${i}`)
+				);
+			});
+		} finally {
+			third.close();
+			other.close();
+			db.close();
+		}
+	});
+
 	it('getKeysCount on another column family counts that column family', async () => {
 		const { db, other, third } = await seedAndReopen();
 		try {
@@ -133,7 +156,22 @@ describe('transaction reads across column families', () => {
 				expect(other.getKeysCount({ transaction: txn })).toBe(25);
 				expect(third.getKeysCount({ transaction: txn })).toBe(25);
 				expect(db.getKeysCount({ transaction: txn })).toBe(26);
+
+				// The first count establishes the transaction snapshot. A committed
+				// write outside the transaction must not change subsequent counts.
+				await other.put('after-snapshot', 'new-value');
+				expect(other.getKeysCount({ transaction: txn })).toBe(25);
 			});
+			expect(other.getKeysCount()).toBe(26);
+
+			await db.transaction(
+				async (txn: Transaction) => {
+					expect(other.getKeysCount({ transaction: txn })).toBe(26);
+					await other.put('latest-value', 'newer-value');
+					expect(other.getKeysCount({ transaction: txn })).toBe(27);
+				},
+				{ disableSnapshot: true }
+			);
 		} finally {
 			third.close();
 			other.close();
