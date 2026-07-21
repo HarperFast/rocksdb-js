@@ -377,6 +377,20 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	std::string key;
 	std::string value;
 
+	// Column family the read was issued against. A transaction belongs to a
+	// database rather than a single column family, so a read routed through
+	// another DBI in the same database must resolve against that DBI's column
+	// family, not the one the transaction was created with.
+	std::shared_ptr<DBHandle> readDbHandle;
+
+	// The column family handle itself, resolved on the JS thread. A transactional
+	// read registers its async work on the TransactionHandle, so closing the DBI
+	// being read does not wait for it; DBHandle::close() then resets
+	// columnDescriptor and getColumnFamilyHandle() would dereference null on the
+	// worker thread. Holding the handle keeps it alive for the read regardless of
+	// close ordering.
+	std::shared_ptr<rocksdb::ColumnFamilyHandle> readColumnFamily;
+
 	// Verification table state for post-read check and populate.
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;

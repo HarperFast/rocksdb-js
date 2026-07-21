@@ -30,9 +30,10 @@ DBIteratorHandle::DBIteratorHandle(
 
 DBIteratorHandle::DBIteratorHandle(
 	TransactionHandle* txnHandle,
-	DBIteratorOptions& options
+	DBIteratorOptions& options,
+	std::shared_ptr<DBHandle> dbHandleOverride
 ) :
-	dbHandle(txnHandle->dbHandle),
+	dbHandle(dbHandleOverride ? dbHandleOverride : txnHandle->dbHandle),
 	exclusiveStart(options.exclusiveStart),
 	inclusiveEnd(options.inclusiveEnd),
 	reverse(options.reverse),
@@ -45,7 +46,7 @@ DBIteratorHandle::DBIteratorHandle(
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
 		txnHandle->txn->GetIterator(
 			options.readOptions,
-			txnHandle->dbHandle->getColumnFamilyHandle()
+			this->dbHandle->getColumnFamilyHandle()
 		)
 	);
 
