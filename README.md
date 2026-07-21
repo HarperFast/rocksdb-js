@@ -372,6 +372,7 @@ const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys
 Returns an approximate count of keys within the specified range using RocksDB's size approximation API. This method is much faster than `getKeysCount()` for large ranges but returns an estimate rather than an exact count.
 
 **Key Features:**
+
 - Uses `GetApproximateSizes()` for SST files and `GetApproximateMemTableStats()` for memtable data
 - Calculates mean entry size from table properties for better accuracy
 - Caches the mean entry size for optimal performance on subsequent calls
