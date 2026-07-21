@@ -140,11 +140,13 @@ void TransactionHandle::lockVTSlot(
 	auto* vt = DBSettings::getInstance().getVerificationTableRaw();
 	if (!vt) return;
 
-	// Use the transaction's base descriptor as the database identity key.
-	// All column families of the same physical DB share the same descriptor.
-	uintptr_t dbPtr = reinterpret_cast<uintptr_t>(this->dbHandle->descriptor.get());
+	// Use the descriptor's per-open epoch as the database identity key (not the
+	// descriptor pointer, which is reused across a close/reopen of the same path).
+	// All column families of the same physical DB share the same epoch, separated
+	// by cfId.
+	uint64_t dbId = dbHandle->descriptor->vtEpoch;
 	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
-	auto* slot = vt->slotFor(dbPtr, cfId, key);
+	auto* slot = vt->slotFor(dbId, cfId, key);
 	if (!slot) return;
 
 	// Register a write intent on the slot. lockSlotForWrite installs a new
@@ -154,7 +156,7 @@ void TransactionHandle::lockVTSlot(
 	// if a second concurrent writer skipped registering an intent, a reader
 	// could repopulate the slot with a now-stale version after the first writer
 	// released but before the second committed.
-	LockTracker* t = vt->lockSlotForWrite(slot, dbPtr);
+	LockTracker* t = vt->lockSlotForWrite(slot, dbId);
 	if (t) {
 		lockedVTSlots.push_back(slot);
 		heldTrackers.push_back(t);

@@ -1501,10 +1501,11 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		std::atomic<uint64_t>* vtSlot = nullptr;
 		LockTracker* vtTracker = nullptr;
 		if (vt) {
-			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+			// Per-open epoch, not the descriptor pointer (reused across reopen).
+			uint64_t dbId = (*dbHandle)->descriptor->vtEpoch;
 			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
-			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
-			vtTracker = vt->lockSlotForWrite(vtSlot, dbPtr);
+			vtSlot = vt->slotFor(dbId, cfId, keySlice);
+			vtTracker = vt->lockSlotForWrite(vtSlot, dbId);
 		}
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
@@ -1565,10 +1566,11 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		std::atomic<uint64_t>* vtSlot = nullptr;
 		LockTracker* vtTracker = nullptr;
 		if (vt) {
-			uintptr_t dbPtr = reinterpret_cast<uintptr_t>((*dbHandle)->descriptor.get());
+			// Per-open epoch, not the descriptor pointer (reused across reopen).
+			uint64_t dbId = (*dbHandle)->descriptor->vtEpoch;
 			uint32_t cfId = (*dbHandle)->getColumnFamilyHandle()->GetID();
-			vtSlot = vt->slotFor(dbPtr, cfId, keySlice);
-			vtTracker = vt->lockSlotForWrite(vtSlot, dbPtr);
+			vtSlot = vt->slotFor(dbId, cfId, keySlice);
+			vtTracker = vt->lockSlotForWrite(vtSlot, dbId);
 		}
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;

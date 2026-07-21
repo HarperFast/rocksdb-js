@@ -231,6 +231,20 @@ C++ code that needs to emit to JS without a database context should call
    concurrent readers are safe (and locking them would make cheap listings reject during a long
    backup); a `list`/`verify` racing a `delete`/`purge` is a caller-managed hazard. Different
    directories are independent (separate lock files) and run fully in parallel.
+8. **Backup disk-space preflight is conservative and best-effort**: directory-target `db.backup()`
+   preflights the destination volume before taking the writer lock (`checkBackupDiskSpace` in
+   `src/binding/database/backup_disk_space.cpp`, defaulted on via the `checkDiskSpace` option). It is
+   extracted into a Node-free translation unit **so a GoogleTest can exercise it** — N-API TUs can't
+   link into the native-test target — with a `rocksdb::Env*` param a fake env overrides in tests. The
+   required size is deliberately the _full_ live-file footprint (`GetLiveFilesStorageInfo`, summed) plus
+   the transaction-log snapshot bytes when `transactionLogs` is set (those write to the same volume but
+   aren't RocksDB live files) plus the current memtable when flushing — never the incremental delta,
+   because a backup only ever _copies_ files, so full size can't under-estimate the bytes written. It
+   therefore over-rejects incrementals to tight volumes (opt out with `checkDiskSpace:false`) and, like
+   the backup lock, **degrades to a skip** where the answer is untrustworthy: `GetFreeSpace`
+   unsupported/errored or reporting 0 (which also lets a genuinely-full local volume through — a real 0
+   is indistinguishable from the spurious 0 some network filesystems report). The stream-target backup
+   path never opens a `BackupEngine` against a volume and is not checked.
 
 ## Debugging native heap corruption
 

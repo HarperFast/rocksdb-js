@@ -62,6 +62,22 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::string path;
 
 	/**
+	 * Process-unique identity for this descriptor's *open lifecycle*, used as the
+	 * database component of every VerificationTable slot address (with cfId + key).
+	 *
+	 * The descriptor heap pointer is NOT usable for this: it is freed on close and
+	 * routinely re-used by the allocator on the next reopen of the same path, while
+	 * RocksDB keeps cfId stable across reopens. That let a version cached by a prior
+	 * in-process incarnation be addressed — and trusted (spurious FRESH) — by the
+	 * next one, resolving present keys as stale/absent until the slots settled
+	 * (HarperFast/harper#1864). A monotonic per-open epoch is unique across the whole
+	 * process lifetime, so a reopened DB can never collide with a prior incarnation's
+	 * slots regardless of address reuse. It is only ever compared for equality (slot
+	 * hashing, cancelForDB), never dereferenced.
+	 */
+	const uint64_t vtEpoch;
+
+	/**
 	 * The mode of the database: optimistic or pessimistic. `DBRegistry`
 	 * defaults this to `DBMode::Optimistic`.
 	 */

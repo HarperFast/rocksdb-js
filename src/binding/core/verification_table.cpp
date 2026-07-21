@@ -97,7 +97,7 @@ VerificationTable::VerificationTable(size_t numEntries, uint64_t seed)
 VerificationTable::~VerificationTable() = default;
 
 std::atomic<uint64_t>* VerificationTable::slotFor(
-	uintptr_t dbPtr,
+	uint64_t dbId,
 	uint32_t cfId,
 	const rocksdb::Slice& key
 ) const {
@@ -105,7 +105,7 @@ std::atomic<uint64_t>* VerificationTable::slotFor(
 		return nullptr;
 	}
 	uint64_t h = seed_;
-	h ^= static_cast<uint64_t>(dbPtr);
+	h ^= dbId;
 	h = mix64(h);
 	h ^= static_cast<uint64_t>(cfId);
 	h = mix64(h);
@@ -196,7 +196,7 @@ uint64_t vtNextSettleGen() {
 	return vtGlobalSettleGen.fetch_add(1, std::memory_order_relaxed) & VT_SETTLED_GEN_MASK;
 }
 
-LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, uintptr_t dbPtr) {
+LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, uint64_t dbId) {
 	if (!slot) return nullptr;
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	uint64_t v = slot->load(std::memory_order_acquire);
@@ -213,7 +213,7 @@ LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, ui
 	}
 	// Slot holds 0 or a version — install a fresh tracker.
 	uint16_t gen = vtNextGen();
-	LockTracker* t = new LockTracker(slotIndexOf(slot), gen, dbPtr);
+	LockTracker* t = new LockTracker(slotIndexOf(slot), gen, dbId);
 	t->holders.store(1, std::memory_order_relaxed);
 	t->refcount.store(1, std::memory_order_relaxed); // 1 reference == this holder
 	slot->store(vtEncodeLock(t, gen), std::memory_order_release);
@@ -286,7 +286,7 @@ void VerificationTable::settleAllSlots() {
 	}
 }
 
-void VerificationTable::cancelForDB(uintptr_t dbPtr) {
+void VerificationTable::cancelForDB(uint64_t dbId) {
 	if (!slots_) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	size_t n = mask_ + 1;
@@ -298,7 +298,7 @@ void VerificationTable::cancelForDB(uintptr_t dbPtr) {
 		// out from under us, so the loaded pointer is safe to dereference.
 		LockTracker* t = vtDecodeLock(v);
 		uint16_t gen = vtGenFromLock(v);
-		if (t->dbPtr != dbPtr) continue;
+		if (t->dbId != dbId) continue;
 
 		// Settle the slot to a fresh settled-empty generation; may fail
 		// harmlessly if it changed. (Like releaseWriteIntent, never back to 0.)
