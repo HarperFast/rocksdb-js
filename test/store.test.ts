@@ -30,12 +30,15 @@ describe('Custom Store', () => {
 		}
 	});
 
-	it("should use one instance's store for another database", () =>
+	it('should allow sharing the store between databases', () =>
 		dbRunner(async ({ db }) => {
 			await db.put('foo', 'bar');
 
 			const db2 = new RocksDatabase(db.store);
 			expect(db2.isOpen()).toBe(true);
 			expect(await db2.get('foo')).toBe('bar');
+
+			db.close();
+			expect(db2.isOpen()).toBe(false);
 		}));
 });
