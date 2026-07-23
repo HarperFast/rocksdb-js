@@ -38,6 +38,9 @@ describe('Custom Store', () => {
 			expect(db2.isOpen()).toBe(true);
 			expect(await db2.get('foo')).toBe('bar');
 
+			await db2.put('foo', 'bar2');
+			expect(await db.get('foo')).toBe('bar2');
+
 			db.close();
 			expect(db2.isOpen()).toBe(false);
 		}));
