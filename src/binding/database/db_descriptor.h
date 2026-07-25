@@ -93,6 +93,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	bool readOnly;
 
 	/**
+	 * The column family options `DB::Open` was given, retained so families
+	 * created later are configured the same way.
+	 */
+	rocksdb::ColumnFamilyOptions cfOptions;
+
+	/**
 	 * The RocksDB database instance.
 	 */
 	std::shared_ptr<rocksdb::DB> db;
@@ -259,6 +265,7 @@ private:
 	DBDescriptor(
 		const std::string& path,
 		const DBOptions& options,
+		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 		std::shared_ptr<rocksdb::Statistics> statistics
