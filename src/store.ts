@@ -90,7 +90,8 @@ export interface StoreOptions extends Omit<
 	 * Naming an algorithm the build lacks throws.
 	 *
 	 * Applies database-wide and is fixed by the first `open()` of a path, since
-	 * every handle shares one RocksDB instance.
+	 * every handle shares one RocksDB instance. A later handle may omit it; a
+	 * conflicting value throws.
 	 */
 	compression?: boolean | RocksDBCompression;
 

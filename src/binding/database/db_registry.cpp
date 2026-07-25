@@ -1,5 +1,6 @@
 #include "database/db_registry.h"
 #include "napi/macros.h"
+#include "core/compression.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -310,6 +311,22 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
 				"' mode"
 			);
+		}
+
+		// Resolved types, not names: an omitted option leaves RocksDB's default.
+		if (!options.compression.empty()) {
+			rocksdb::CompressionType requested;
+			std::string error;
+			if (!tryResolveCompressionType(options.compression, requested, error)) {
+				throw rocksdb_js::DBException(error);
+			}
+			if (requested != entry.descriptor->cfOptions.compression) {
+				throw rocksdb_js::DBException(
+					"Database already open with compression '" +
+					(entry.descriptor->compression.empty() ? std::string("default") : entry.descriptor->compression) +
+					"', requested '" + options.compression + "'"
+				);
+			}
 		}
 
 		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());

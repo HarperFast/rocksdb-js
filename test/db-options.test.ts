@@ -244,4 +244,61 @@ describe('Database compression options', () => {
 			}
 		);
 	});
+
+	it('should reject a conflicting compression on an already-open path', () =>
+		dbRunner(
+			{
+				dbOptions: [{ compression: 'none' }, { compression: 'zlib', name: 'other' }],
+				skipOpen: true,
+			},
+			async ({ db: first }, { db: second }) => {
+				first.open();
+				// All handles on a path share one RocksDB instance, so the second
+				// request cannot be honored — reject instead of silently ignoring it.
+				expect(() => second.open()).toThrow('Database already open with compression');
+			}
+		));
+
+	it('should not treat an omitted compression and an explicit none as a conflict', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ compression: false },
+					{ name: 'omittedSecond' },
+					{ compression: false, name: 'noneSecond' },
+				],
+				skipOpen: true,
+			},
+			async ({ db: first }, { db: omittedSecond }, { db: noneSecond }) => {
+				first.open();
+				expect(() => omittedSecond.open()).not.toThrow();
+				expect(() => noneSecond.open()).not.toThrow();
+			}
+		));
+
+	it('should not treat an explicit none after an omitted compression as a conflict', () =>
+		dbRunner(
+			{ dbOptions: [{}, { compression: false, name: 'other' }], skipOpen: true },
+			async ({ db: first }, { db: second }) => {
+				first.open();
+				expect(() => second.open()).not.toThrow();
+			}
+		));
+
+	it('should allow reopening an open path with a matching or omitted compression', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ compression: 'zlib' },
+					{ compression: 'zlib', name: 'matching' },
+					{ name: 'omitted' },
+				],
+				skipOpen: true,
+			},
+			async ({ db: first }, { db: matching }, { db: omitted }) => {
+				first.open();
+				expect(() => matching.open()).not.toThrow();
+				expect(() => omitted.open()).not.toThrow();
+			}
+		));
 });

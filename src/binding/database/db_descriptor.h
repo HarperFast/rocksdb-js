@@ -92,6 +92,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	bool readOnly;
 
+	/** Compression name the database was opened with; empty means unset. */
+	std::string compression;
+
 	/**
 	 * The column family options `DB::Open` was given, retained so families
 	 * created later are configured the same way.

@@ -133,6 +133,7 @@ DBDescriptor::DBDescriptor(
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
+	compression(options.compression),
 	cfOptions(cfOptions),
 	db(db),
 	columns(std::move(columns)),
