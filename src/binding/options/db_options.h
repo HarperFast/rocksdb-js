@@ -20,6 +20,9 @@ enum class DBMode {
  * values passed in from public `open()` method.
  */
 struct DBOptions final {
+	// Normalized compression name (see `tryResolveCompressionType`). Empty
+	// leaves the RocksDB default. Applies to the whole database, not one CF.
+	std::string compression;
 	// Global memtable size trigger across all column families. When the sum of
 	// all memtables reaches this size, the largest memtable is flushed. With
 	// `atomic_flush = true`, this triggers flushes across every CF. 0 disables

@@ -1,3 +1,4 @@
+import { RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
@@ -124,4 +125,123 @@ describe('Database write buffer options', () => {
 			expect(sstSize).toBeDefined();
 			expect(sstSize!).toBeGreaterThan(0);
 		}));
+});
+
+// Highly compressible so zlib wins decisively, and below min_blob_size (2048)
+// so the values stay in SST blocks — blob files are not affected by this option.
+const COMPRESSIBLE_VALUE = 'a'.repeat(1000);
+
+/**
+ * Writes a compressible payload and returns the resulting on-disk SST size.
+ * Comparing this between two otherwise-identical databases is the only way to
+ * observe that compression was really applied: an ignored `compression` option
+ * still reads and writes correctly, just without shrinking anything.
+ */
+async function writeCompressiblePayload(db: RocksDatabase): Promise<number> {
+	for (let i = 0; i < 1500; i++) {
+		await db.put(`key-${i.toString().padStart(6, '0')}`, COMPRESSIBLE_VALUE);
+	}
+	await db.flush();
+	const size = db.getDBIntProperty('rocksdb.total-sst-files-size');
+	expect(size).toBeGreaterThan(0);
+	return size!;
+}
+
+describe('Database compression options', () => {
+	it('should round-trip data with compression enabled (true -> zlib)', () =>
+		dbRunner({ dbOptions: [{ compression: true }] }, async ({ db }) => {
+			await db.put('foo', 'bar');
+			expect(await db.get('foo')).toBe('bar');
+		}));
+
+	it('should round-trip data with an explicit zlib algorithm', () =>
+		dbRunner({ dbOptions: [{ compression: 'zlib' }] }, async ({ db }) => {
+			await db.put('foo', 'bar');
+			expect(await db.get('foo')).toBe('bar');
+		}));
+
+	it('should round-trip data with compression disabled (false -> none)', () =>
+		dbRunner({ dbOptions: [{ compression: false }] }, async ({ db }) => {
+			await db.put('foo', 'bar');
+			expect(await db.get('foo')).toBe('bar');
+		}));
+
+	it('should reject an unknown compression type on open', () =>
+		dbRunner({ dbOptions: [{ compression: 'gzip' as any }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow('Unknown compression type');
+			// The message must point at what this build can actually use.
+			expect(() => db.open()).toThrow('Available in this build');
+		}));
+
+	it('should reject an unknown compression type when the path is already open', () =>
+		dbRunner(
+			{ dbOptions: [{}, { compression: 'gzip' as any, name: 'other' }], skipOpen: true },
+			async ({ db: first }, { db: second }) => {
+				first.open();
+				// Validation must not depend on this open being the one that
+				// creates the descriptor.
+				expect(() => second.open()).toThrow('Unknown compression type');
+			}
+		));
+
+	it('should write smaller table files with zlib than with no compression', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ path: generateDBPath(), compression: 'none', writeBufferSize: 64 * 1024 },
+					{ path: generateDBPath(), compression: 'zlib', writeBufferSize: 64 * 1024 },
+				],
+			},
+			async ({ db: uncompressed }, { db: compressed }) => {
+				const uncompressedSize = await writeCompressiblePayload(uncompressed);
+				const compressedSize = await writeCompressiblePayload(compressed);
+				expect(compressedSize).toBeLessThan(uncompressedSize);
+
+				// Data still reads back correctly through the compressed path.
+				expect(await compressed.get('key-000000')).toBe(COMPRESSIBLE_VALUE);
+				expect(await compressed.get('key-001499')).toBe(COMPRESSIBLE_VALUE);
+			}
+		));
+
+	// A named column family does not exist on a fresh path, so it is created
+	// after `DB::Open` rather than being handed the open options. It must still
+	// get the requested compression.
+	it('should compress a named column family created at open time', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ path: generateDBPath(), name: 'mycf', compression: 'none' },
+					{ path: generateDBPath(), name: 'mycf', compression: 'zlib' },
+				],
+			},
+			async ({ db: uncompressed }, { db: compressed }) => {
+				const uncompressedSize = await writeCompressiblePayload(uncompressed);
+				const compressedSize = await writeCompressiblePayload(compressed);
+				expect(compressedSize).toBeLessThan(uncompressedSize);
+				expect(await compressed.get('key-000000')).toBe(COMPRESSIBLE_VALUE);
+			}
+		));
+
+	// Same requirement for a column family added to a database that is already
+	// open, which goes through the registry rather than `DBDescriptor::open`.
+	it('should compress a column family added to an already-open database', () => {
+		const uncompressedPath = generateDBPath();
+		const compressedPath = generateDBPath();
+		return dbRunner(
+			{
+				dbOptions: [
+					{ path: uncompressedPath, compression: 'none' },
+					{ path: uncompressedPath, name: 'late' },
+					{ path: compressedPath, compression: 'zlib' },
+					{ path: compressedPath, name: 'late' },
+				],
+			},
+			async (_base, { db: lateUncompressed }, _compressedBase, { db: lateCompressed }) => {
+				const uncompressedSize = await writeCompressiblePayload(lateUncompressed);
+				const compressedSize = await writeCompressiblePayload(lateCompressed);
+				expect(compressedSize).toBeLessThan(uncompressedSize);
+				expect(await lateCompressed.get('key-000000')).toBe(COMPRESSIBLE_VALUE);
+			}
+		);
+	});
 });

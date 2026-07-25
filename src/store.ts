@@ -19,6 +19,7 @@ import {
 	type NativeDatabaseOptions,
 	NativeIterator,
 	NativeTransaction,
+	type RocksDBCompression,
 	stats,
 	type TransactionLog,
 	type UserSharedBufferCallback,
@@ -79,8 +80,20 @@ export type CompactOptions = {
  */
 export interface StoreOptions extends Omit<
 	NativeDatabaseOptions,
-	'mode' | 'transactionLogRetentionMs'
+	'compression' | 'mode' | 'transactionLogRetentionMs'
 > {
+	/**
+	 * Enables SST block compression for newly written table files. `true`
+	 * selects `'zlib'`, the only algorithm the published prebuilt links; `false`
+	 * means none. Omitting it leaves whatever your RocksDB build defaults to,
+	 * which is none in the published prebuilt but snappy in a build linking it.
+	 * Naming an algorithm the build lacks throws.
+	 *
+	 * Applies database-wide and is fixed by the first `open()` of a path, since
+	 * every handle shares one RocksDB instance.
+	 */
+	compression?: boolean | RocksDBCompression;
+
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
@@ -151,6 +164,11 @@ export class Store {
 	 * owner temporarily closed is still recognized as in-use. See `claim()`.
 	 */
 	#claimed: boolean = false;
+
+	/**
+	 * The SST block compression algorithm, or a boolean shorthand.
+	 */
+	compression?: boolean | RocksDBCompression;
 
 	/**
 	 * The database instance.
@@ -365,6 +383,7 @@ export class Store {
 			options?.keyEncoder
 		);
 
+		this.compression = options?.compression;
 		this.db = new NativeDatabase();
 		this.dbWriteBufferSize = options?.dbWriteBufferSize;
 		this.decoder = options?.decoder ?? null;
@@ -879,6 +898,7 @@ export class Store {
 		}
 
 		this.db.open(this.path, {
+			compression: normalizeCompression(this.compression),
 			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,
@@ -1007,6 +1027,26 @@ export class Store {
 
 		return this.db.withLock(this.encodeKey(key), callback);
 	}
+}
+
+/**
+ * Resolves the `compression` option's boolean shorthand to the algorithm name
+ * the native layer expects. `undefined` is passed through so the native layer
+ * leaves the RocksDB default in place.
+ */
+function normalizeCompression(
+	compression: boolean | RocksDBCompression | undefined
+): RocksDBCompression | undefined {
+	if (compression === undefined) {
+		return undefined;
+	}
+	if (compression === true) {
+		return 'zlib';
+	}
+	if (compression === false) {
+		return 'none';
+	}
+	return compression;
 }
 
 /**

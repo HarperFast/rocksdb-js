@@ -43,6 +43,13 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not need to exist, but the
   parent directories do.
 - `options: object` [optional]
+  - `compression: boolean | string` Enables SST block compression for newly written table files.
+    `true` selects `'zlib'`, the only algorithm the published prebuilt links (and slower per
+    write than `lz4`/`snappy`, so benchmark write-heavy databases); `false` means none. Omitting
+    it leaves whatever your RocksDB build defaults to, which is none in the published prebuilt but
+    is snappy in a build that links it. Naming another algorithm (`'snappy'`, `'lz4'`, `'lz4hc'`,
+    `'zstd'`, `'bzip2'`, `'none'`) throws unless your build links it. Applies database-wide and is fixed by the first `open()` of a
+    path, since every handle on a path shares one RocksDB instance.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.

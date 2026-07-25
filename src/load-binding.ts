@@ -193,7 +193,16 @@ export declare class NativeIteratorCls {
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
+/**
+ * Algorithm names the native layer accepts. Which ones work depends on the
+ * compressors linked into the RocksDB build; requesting an unlinked one throws
+ * on open rather than silently writing uncompressed data.
+ */
+export type RocksDBCompression = 'none' | 'snappy' | 'zlib' | 'bzip2' | 'lz4' | 'lz4hc' | 'zstd';
+
 export type NativeDatabaseOptions = {
+	/** Already normalized: the `boolean` shorthand is resolved before this point. */
+	compression?: RocksDBCompression;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;

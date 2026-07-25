@@ -1,3 +1,4 @@
+#include "core/compression.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -837,6 +838,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	// Applies to every column family opened below, not just `options.name`.
+	if (!options.compression.empty()) {
+		std::string error;
+		if (!tryResolveCompressionType(options.compression, cfOptions.compression, error)) {
+			throw rocksdb_js::DBException(error);
+		}
+	}
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener

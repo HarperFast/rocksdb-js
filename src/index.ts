@@ -25,6 +25,7 @@ export {
 	fileLockRelease,
 	tryFileLock,
 	registryStatus,
+	type RocksDBCompression,
 	stats,
 	shutdown,
 	TransactionLog,

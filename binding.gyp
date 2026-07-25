@@ -40,6 +40,7 @@
 			],
 			'sources': [
 				'src/binding/binding.cpp',
+				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
@@ -209,6 +210,7 @@
 				'deps/googletest/googlemock/include',
 			],
 			'sources': [
+				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
@@ -220,6 +222,7 @@
 				'test/native/event_emitter_stub.cc',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/backup_disk_space_test.cc',
+				'test/native/compression_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',
 				'test/native/json_test.cc',

@@ -11,6 +11,7 @@
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
+#include "core/compression.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -1402,6 +1403,19 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", dbHandleOptions.name));
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "compression", dbHandleOptions.compression));
+	// Validated here, not in DBDescriptor::open: an open that reuses an
+	// already-open path never reaches it.
+	if (!dbHandleOptions.compression.empty()) {
+		rocksdb::CompressionType compressionType;
+		std::string compressionError;
+		if (!rocksdb_js::tryResolveCompressionType(
+			dbHandleOptions.compression, compressionType, compressionError
+		)) {
+			::napi_throw_error(env, nullptr, compressionError.c_str());
+			return nullptr;
+		}
+	}
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
