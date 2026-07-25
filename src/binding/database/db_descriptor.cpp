@@ -123,6 +123,7 @@ private:
 DBDescriptor::DBDescriptor(
 	const std::string& path,
 	const DBOptions& options,
+	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 	std::shared_ptr<rocksdb::Statistics> statistics
@@ -131,6 +132,7 @@ DBDescriptor::DBDescriptor(
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
+	cfOptions(cfOptions),
 	db(db),
 	columns(std::move(columns)),
 	statistics(statistics)
@@ -918,13 +920,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		}
 	}
 	if (!columnExists) {
-		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name);
+		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfOptions);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 
 	// set the weak pointer for the event listener
 	*descriptorWeakPtr = descriptor;

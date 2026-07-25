@@ -1,4 +1,4 @@
-import { dbRunner } from './lib/util.js';
+import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 describe('Database write buffer options', () => {
@@ -74,6 +74,40 @@ describe('Database write buffer options', () => {
 		dbRunner({ dbOptions: [{ maxOpenFiles: 2 ** 32 - 1 }], skipOpen: true }, async ({ db }) => {
 			expect(() => db.open()).toThrow('maxOpenFiles must be');
 		}));
+
+	// A named CF is created after DB::Open, so it misses the open options.
+	// Observed via flush behavior: RocksDB exposes no property for the size.
+	it('should apply writeBufferSize to a named column family', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ path: generateDBPath(), name: 'mycf', writeBufferSize: 64 * 1024 },
+					{ path: generateDBPath(), name: 'mycf', writeBufferSize: 64 * 1024 * 1024 },
+				],
+			},
+			async ({ db: smallBuffer }, { db: largeBuffer }) => {
+				const value = 'x'.repeat(1024);
+				for (const db of [smallBuffer, largeBuffer]) {
+					for (let i = 0; i < 512; i++) {
+						await db.put(`key-${i.toString().padStart(6, '0')}`, value);
+					}
+				}
+
+				// Flushes run in the background.
+				const deadline = Date.now() + 5000;
+				let smallBufferSize = 0;
+				while (Date.now() < deadline) {
+					smallBufferSize = smallBuffer.getDBIntProperty('rocksdb.total-sst-files-size') ?? 0;
+					if (smallBufferSize > 0) {
+						break;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+
+				expect(smallBufferSize).toBeGreaterThan(0);
+				expect(largeBuffer.getDBIntProperty('rocksdb.total-sst-files-size')).toBe(0);
+			}
+		));
 
 	it('should flush memtables when writeBufferSize is exceeded', () =>
 		dbRunner({ dbOptions: [{ writeBufferSize: 64 * 1024 }] }, async ({ db }) => {

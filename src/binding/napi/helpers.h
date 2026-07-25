@@ -25,7 +25,16 @@ namespace rocksdb_js {
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
 
-std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name);
+/**
+ * Creates a column family on an already-open database. Takes the database's own
+ * `ColumnFamilyOptions`, which only reach families that existed at `DB::Open`;
+ * rebuilding a set here would silently drop every configured tunable.
+ */
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(
+	const std::shared_ptr<rocksdb::DB> db,
+	const std::string& name,
+	const rocksdb::ColumnFamilyOptions& cfOptions
+);
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error);
 
