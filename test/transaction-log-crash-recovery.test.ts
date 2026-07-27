@@ -18,13 +18,18 @@ function runCrashFixture(dbPath: string, env: Record<string, string> = {}) {
 				: ['node_modules/tsx/dist/cli.mjs', fixture, dbPath];
 		let output = '';
 		const child = spawn(process.execPath, args, { env: { ...process.env, ...env } });
+		child.stdout.setEncoding('utf8');
+		child.stderr.setEncoding('utf8');
 		child.stdout.on('data', (chunk) => (output += chunk));
 		child.stderr.on('data', (chunk) => (output += chunk));
 		child.on('error', reject);
 		child.on('close', (code, signal) => {
-			// The fixture SIGKILLs itself once its writes are durable. Depending on the
-			// loader, the signal surfaces directly or as an exit code of 128 + SIGKILL.
-			if ((signal === 'SIGKILL' || code === 137) && output.includes('ready')) {
+			// The fixture SIGKILLs itself once its writes are durable, so the `ready`
+			// handshake is what distinguishes a deliberate kill from a real failure. How
+			// the kill surfaces varies: the signal directly, an exit code of 128 + SIGKILL
+			// through a loader, or code 1 on Windows (where Node maps a self-kill to
+			// TerminateProcess).
+			if ((signal === 'SIGKILL' || code === 137 || code === 1) && output.includes('ready')) {
 				resolve();
 			} else {
 				reject(

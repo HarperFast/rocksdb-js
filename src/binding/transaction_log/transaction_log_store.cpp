@@ -1106,7 +1106,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// sentinel insert above, with no transaction in flight in a freshly loaded store — is
 	// exactly nextLogPosition. recoverTail() has already truncated any torn tail, so
 	// nextLogPosition is the end of the last structurally valid entry. A store with no log
-	// files yet leaves it at {0, 0} for the lazy path to resolve.
+	// files yet leaves it at {0, 0} for the lazy path to resolve. A complete tail entry whose
+	// RocksDB commit never landed becomes visible too — the same exposure commitAborted()
+	// already produces at runtime for a written-but-uncommitted batch, and the consumer
+	// reconciles it by replaying the tail into the database.
 	if (store->nextLogPosition.fullPosition > 0) {
 		*store->lastCommittedPosition = store->nextLogPosition;
 	}
