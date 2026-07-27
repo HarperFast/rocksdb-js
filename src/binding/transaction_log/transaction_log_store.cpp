@@ -1094,6 +1094,23 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	store->positionInsert(store->nextLogPosition);
 
+	// Seed the committed watermark at the recovered write head. lastCommittedPosition is
+	// in-memory only; without this, getLastCommittedPosition() lazily seeds it from txn.state —
+	// the *flushed* position, i.e. how far RocksDB has already absorbed the log — which after an
+	// unclean exit sits behind the recovered tail. Every committed read is bounded by this
+	// watermark, so that stale seed leaves entries that are durable on disk (and that the
+	// consumer's boot replay re-applies via readUncommitted) invisible to committed readers
+	// until some later unrelated commit advances the watermark past the whole tail at once
+	// (HarperFast/harper#1949). This is not a new recovery rule: commitFinished() already
+	// defines the watermark as the front of uncommittedTransactionPositions, which — after the
+	// sentinel insert above, with no transaction in flight in a freshly loaded store — is
+	// exactly nextLogPosition. recoverTail() has already truncated any torn tail, so
+	// nextLogPosition is the end of the last structurally valid entry. A store with no log
+	// files yet leaves it at {0, 0} for the lazy path to resolve.
+	if (store->nextLogPosition.fullPosition > 0) {
+		*store->lastCommittedPosition = store->nextLogPosition;
+	}
+
 	return store;
 }
 
