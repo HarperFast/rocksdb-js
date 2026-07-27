@@ -785,7 +785,15 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
-	UNWRAP_DB_HANDLE_AND_OPEN();
+	// Check the transaction's OWN database handle. UNWRAP_DB_HANDLE_AND_OPEN() cannot be used
+	// here: it unwraps `jsThis`, which for this method is the Transaction, so it reinterprets a
+	// shared_ptr<TransactionHandle> as a shared_ptr<DBHandle> and calls opened() through it —
+	// type-confused, and it rejected every async transactional read. Every other Transaction
+	// method relies on the handle's own checks (TransactionHandle::get() validates txn/state).
+	if (!(*txnHandle)->dbHandle || !(*txnHandle)->dbHandle->opened()) {
+		::napi_throw_error(env, nullptr, "Database not open");
+		return nullptr;
+	}
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
 		return nullptr;
@@ -914,15 +922,21 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	if (!status.ok()) {
-		::napi_throw_error(env, nullptr, status.ToString().c_str());
-		return nullptr;
-	}
-
 	napi_value result;
+	// Must precede the generic !ok() check: Incomplete is not ok(), so testing ok()
+	// first turns a kBlockCacheTier miss (the caller asked for cache-only via
+	// ONLY_IF_IN_MEMORY_CACHE_FLAG) into a thrown "Result incomplete" error and leaves
+	// the sentinel branch unreachable. The JS layer needs the sentinel to fall back to
+	// an async kReadAllTier read (see Store.get()), so a value that merely isn't cached
+	// would surface as an error instead of being read from disk. Mirrors Database::GetSync.
 	if (status.IsIncomplete()) {
 		NAPI_STATUS_THROWS(::napi_create_int32(env, NOT_IN_MEMORY_CACHE_FLAG, &result));
 		return result;
+	}
+
+	if (!status.ok()) {
+		::napi_throw_error(env, nullptr, status.ToString().c_str());
+		return nullptr;
 	}
 
 	// Seed the slot with the key's LATEST committed version, gated so it only
