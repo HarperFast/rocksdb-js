@@ -1,8 +1,8 @@
 import { RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -76,6 +76,48 @@ describe('Transaction log crash recovery', () => {
 					reopened.addEntry(Buffer.alloc(24, 'y'), txn.id);
 				});
 				expect(Array.from(reopened.query({ start: 0 })).length).toBe(4);
+			} finally {
+				database.close();
+			}
+		}));
+
+	// Only a batch's final entry carries TRANSACTION_LOG_ENTRY_LAST_FLAG, so a crash partway
+	// through a multi-entry transaction leaves whole, well-framed entries that are only a prefix
+	// of it. Those bytes are kept (a readUncommitted replay still wants them), but the committed
+	// watermark must stop before them — otherwise committed readers see a transaction that never
+	// closed, and the next transaction's flag closes the phantom group.
+	it('stops the committed watermark before a transaction that never closed', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			let database = db;
+			try {
+				const log = database.useLog('foo');
+				const value = Buffer.alloc(24, 'x');
+				// one complete single-entry transaction
+				await database.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				const afterComplete = statSync(logPath).size;
+
+				// then a three-entry transaction; only its last entry closes it
+				await database.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+					log.addEntry(value, txn.id);
+					log.addEntry(value, txn.id);
+				});
+				const entrySize = (statSync(logPath).size - afterComplete) / 3;
+				database.close();
+
+				// simulate a crash after two of the three entries reached disk
+				const image = readFileSync(logPath);
+				await writeFile(logPath, image.subarray(0, image.length - entrySize));
+
+				database = RocksDatabase.open(dbPath);
+				const reopened = database.useLog('foo');
+				// the surviving prefix is still on disk and still replayable...
+				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+				// ...but committed reads stop at the last transaction that actually closed
+				expect(Array.from(reopened.query({ start: 0 })).length).toBe(1);
 			} finally {
 				database.close();
 			}

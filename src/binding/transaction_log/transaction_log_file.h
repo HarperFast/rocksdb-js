@@ -103,6 +103,16 @@ struct TransactionLogFile final {
 	uint32_t lastFlushedSize = 0;
 
 	/**
+	 * Offset just past the last entry that closed a transaction (carried
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`), as observed by the open-time recovery
+	 * scan; 0 if this file holds no complete transaction or was never scanned.
+	 * Only written by recoverTail() before the store is published, and read by
+	 * TransactionLogStore::load() to seed the committed watermark — see
+	 * scanForLastCompleteTransactionEnd() for files that skip recovery.
+	 */
+	std::atomic<uint32_t> lastCompleteTransactionEnd = 0;
+
+	/**
 	 * The time of the last write to this file, kept in-memory to avoid a
 	 * stat() syscall on every commit for the maxAgeThreshold check and on
 	 * every stats poll for the retention gauges. Seeded to "now" at
@@ -230,6 +240,14 @@ struct TransactionLogFile final {
 	 * (current) log file.
 	 */
 	void recoverTail();
+
+	/**
+	 * Reads this file and returns the offset just past its last complete
+	 * transaction (0 if it holds none). recoverTail() already computes this for
+	 * the active file; this is for the older, rotated files the store walks back
+	 * through when the active one ends mid-transaction.
+	 */
+	uint32_t scanForLastCompleteTransactionEnd();
 
 	/**
 	 * Closes the log file and removes it.
