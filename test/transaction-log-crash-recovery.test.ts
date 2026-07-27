@@ -25,11 +25,14 @@ function runCrashFixture(dbPath: string, env: Record<string, string> = {}) {
 		child.on('error', reject);
 		child.on('close', (code, signal) => {
 			// The fixture SIGKILLs itself once its writes are durable, so the `ready`
-			// handshake is what distinguishes a deliberate kill from a real failure. How
-			// the kill surfaces varies: the signal directly, an exit code of 128 + SIGKILL
-			// through a loader, or code 1 on Windows (where Node maps a self-kill to
-			// TerminateProcess).
-			if ((signal === 'SIGKILL' || code === 137 || code === 1) && output.includes('ready')) {
+			// handshake is what distinguishes a deliberate kill from a real failure. The
+			// kill surfaces as the signal directly, or as 128 + SIGKILL through a loader.
+			// Windows has no real signals — Node maps a self-kill to TerminateProcess(h, 1)
+			// — so exit code 1 counts as abrupt only there; accepting it everywhere would
+			// let a POSIX run whose kill() threw after `ready` pass with normal teardown.
+			const diedAbruptly =
+				signal === 'SIGKILL' || code === 137 || (process.platform === 'win32' && code === 1);
+			if (diedAbruptly && output.includes('ready')) {
 				resolve();
 			} else {
 				reject(
