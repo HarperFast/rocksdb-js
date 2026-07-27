@@ -137,7 +137,11 @@ describe('Drop', () => {
 				});
 				expect(victim.getSync('k3')).toBe('v3');
 
-				// removes go through a separate write path, so cover it too
+				// removeSync is a separate write path with its own write options, so
+				// poison it independently: a remove through the dropped handle must
+				// also be discarded rather than fatal, and must leave the unrelated
+				// family's own removes working
+				stale.removeSync('k1');
 				victim.removeSync('k0');
 				expect(victim.getSync('k0')).toBeUndefined();
 
@@ -152,19 +156,11 @@ describe('Drop', () => {
 			}
 		));
 
-	// The transactional path behaves differently from the two non-transactional
-	// ones above, and it is worth pinning: a commit whose batch names a dropped
-	// column family is rejected by an earlier RocksDB check that
-	// `ignore_missing_column_families` does not gate, so it fails cleanly - with
-	// an error that NAMES the column family, and without poisoning anything -
-	// rather than being silently discarded. That check is also why a transaction
-	// commit never partially applied here.
-	//
-	// The case matters for a second reason: async commits run on the database's
-	// dedicated commit thread, so these can genuinely be merged into one RocksDB
-	// write group, and RocksDB applies a merged group under the GROUP LEADER's
-	// write options. That is what would break if the write options were set on
-	// only some writers instead of every one of them.
+	// Transactions deliberately do NOT get `ignore_missing_column_families` (see
+	// DBHandle::transactionWriteOptions). In optimistic mode - the default -
+	// conflict validation rejects a commit naming a dropped family early, with an
+	// error that names the family, so the transaction is lost whole rather than
+	// discarded in part.
 	it('should reject only the dropped-family commit when transactions race a drop', () =>
 		dbRunner(
 			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
@@ -201,6 +197,43 @@ describe('Drop', () => {
 				// and the environment is still writable afterwards
 				victim.putSync('d', '4');
 				expect(victim.getSync('d')).toBe('4');
+			}
+		));
+
+	// The atomicity guard that keeps `ignore_missing_column_families` off the
+	// transactional path. A pessimistic transaction sends its batch straight
+	// through RocksDB's write path under the transaction's own write options, so
+	// setting the flag there would make a commit spanning a live family and a
+	// dropped one apply the live half, discard the dropped half, and return OK -
+	// a silent partial commit reported as success, which the transaction log
+	// would then mark committed.
+	//
+	// Losing the whole transaction is the correct outcome. (In this mode the
+	// commit also poisons the environment on its way out; that is a separate,
+	// pre-existing bug which needs the drop interlocked against in-flight
+	// transactions, so this test asserts only atomicity and leaves the handles
+	// to dbRunner's per-test database.)
+	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ name: 'victim', pessimistic: true },
+					{ name: 'doomed', pessimistic: true },
+					{ name: 'doomed', pessimistic: true },
+				],
+			},
+			async ({ db: victim }, { db: doomed }, { db: stale }) => {
+				await expect(
+					stale.transaction(async (txn: Transaction) => {
+						await victim.put('live', 'A', { transaction: txn });
+						await stale.put('dead', 'B', { transaction: txn });
+						// the drop lands after both writes are staged
+						doomed.dropSync();
+					})
+				).rejects.toThrow();
+
+				// the live half must NOT have been applied
+				expect(victim.getSync('live')).toBeUndefined();
 			}
 		));
 
