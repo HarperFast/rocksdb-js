@@ -30,18 +30,21 @@ describe('Custom Store', () => {
 		}
 	});
 
-	it('should allow sharing the store between databases', () =>
+	it('should not allow a store to be used by another RocksDatabase instance', () =>
 		dbRunner(async ({ db }) => {
 			await db.put('foo', 'bar');
+			expect(() => new RocksDatabase(db.store)).toThrow(
+				'Store is already in use by another RocksDatabase instance'
+			);
+		}));
 
-			const db2 = new RocksDatabase(db.store);
-			expect(db2.isOpen()).toBe(true);
-			expect(await db2.get('foo')).toBe('bar');
-
-			await db2.put('foo', 'bar2');
-			expect(await db.get('foo')).toBe('bar2');
-
+	it('should reject a reused store even after its owner temporarily closed', () =>
+		dbRunner(async ({ db }) => {
+			// The claim is durable: closing the owner does not release the store.
 			db.close();
-			expect(db2.isOpen()).toBe(false);
+			expect(() => new RocksDatabase(db.store)).toThrow(
+				'Store is already in use by another RocksDatabase instance'
+			);
+			db.open();
 		}));
 });
