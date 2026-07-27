@@ -3,6 +3,7 @@
 // itself so no shutdown/close ever runs. The parent asserts the post-flush window is
 // still readable by a *committed* query after reopening. See HarperFast/harper#1949.
 import { RocksDatabase } from '../../src/index.js';
+import { writeSync } from 'node:fs';
 
 if (process.argv.length < 3) {
 	throw new Error('Missing database path');
@@ -16,10 +17,11 @@ const db = RocksDatabase.open(dbPath);
 const log = db.useLog('foo');
 
 async function write(count: number, prefix: string) {
+	const value = Buffer.alloc(24, prefix);
 	for (let i = 0; i < count; i++) {
 		await db.transaction(async (txn) => {
 			txn.putSync(`${prefix}-${i}`, { i });
-			log.addEntry(Buffer.alloc(24, prefix), txn.id);
+			log.addEntry(value, txn.id);
 		});
 	}
 }
@@ -29,5 +31,7 @@ await write(beforeFlush, 'a');
 await db.flush();
 await write(afterFlush, 'b');
 
-console.log('ready');
+// Synchronous write: stdout is a pipe here, so a queued async console.log would be lost
+// to the SIGKILL on the next line and the parent would never see the handshake.
+writeSync(1, 'ready\n');
 process.kill(process.pid, 'SIGKILL');
