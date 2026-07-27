@@ -86,13 +86,19 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	#name: string;
 
 	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions) {
+		// A store is bound to a single RocksDatabase instance. Each database claims
+		// its store on construction; passing a store another database already owns
+		// throws (see Store#claim).
+		let store: Store;
 		if (typeof pathOrStore === 'string') {
-			super(new Store(pathOrStore, options));
+			store = new Store(pathOrStore, options);
 		} else if (pathOrStore instanceof Store) {
-			super(pathOrStore);
+			store = pathOrStore;
 		} else {
 			throw new TypeError('Invalid database path or store');
 		}
+		store.claim();
+		super(store);
 		this.#name = options?.name ?? 'default';
 	}
 
