@@ -334,6 +334,8 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->descriptor = std::move(handleParams->descriptor);
 	this->disableWAL = options.disableWAL;
 	this->enableVerificationTable = options.verificationTable;
+	this->writeOpts.disableWAL = options.disableWAL;
+	this->writeOpts.ignore_missing_column_families = true;
 
 	// Note: We cannot attach this handle to the descriptor because we don't
 	// have the smart pointer to the dbHandle instance, so the caller needs to
@@ -353,14 +355,12 @@ bool DBHandle::opened() const {
 }
 
 /**
- * Builds the write options for this handle. See the declaration in db_handle.h
- * for why `ignore_missing_column_families` must be set on every writer.
+ * The write options for this handle, built in open(). See the declaration in
+ * db_handle.h for why `ignore_missing_column_families` must be set on every
+ * writer.
  */
-rocksdb::WriteOptions DBHandle::writeOptions() const {
-	rocksdb::WriteOptions writeOptions;
-	writeOptions.disableWAL = this->disableWAL;
-	writeOptions.ignore_missing_column_families = true;
-	return writeOptions;
+const rocksdb::WriteOptions& DBHandle::writeOptions() const {
+	return this->writeOpts;
 }
 
 /**

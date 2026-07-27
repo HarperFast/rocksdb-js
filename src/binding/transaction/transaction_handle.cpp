@@ -111,7 +111,7 @@ void TransactionHandle::resetTransaction(){
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	auto dbHandle = this->dbHandle;
-	rocksdb::WriteOptions writeOptions = dbHandle->writeOptions();
+	const rocksdb::WriteOptions& writeOptions = dbHandle->writeOptions();
 
 	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());

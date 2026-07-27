@@ -152,6 +152,58 @@ describe('Drop', () => {
 			}
 		));
 
+	// The transactional path behaves differently from the two non-transactional
+	// ones above, and it is worth pinning: a commit whose batch names a dropped
+	// column family is rejected by an earlier RocksDB check that
+	// `ignore_missing_column_families` does not gate, so it fails cleanly - with
+	// an error that NAMES the column family, and without poisoning anything -
+	// rather than being silently discarded. That check is also why a transaction
+	// commit never partially applied here.
+	//
+	// The case matters for a second reason: async commits run on the database's
+	// dedicated commit thread, so these can genuinely be merged into one RocksDB
+	// write group, and RocksDB applies a merged group under the GROUP LEADER's
+	// write options. That is what would break if the write options were set on
+	// only some writers instead of every one of them.
+	it('should reject only the dropped-family commit when transactions race a drop', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
+			async ({ db: victim }, { db: doomed }, { db: stale }) => {
+				doomed.dropSync();
+
+				const results = await Promise.allSettled([
+					stale.transaction(async (txn: Transaction) => {
+						await stale.put('a', '1', { transaction: txn });
+					}),
+					victim.transaction(async (txn: Transaction) => {
+						await victim.put('b', '2', { transaction: txn });
+					}),
+					victim.transaction(async (txn: Transaction) => {
+						await victim.put('c', '3', { transaction: txn });
+					}),
+				]);
+				expect(results.map((result) => result.status)).toEqual([
+					'rejected',
+					'fulfilled',
+					'fulfilled',
+				]);
+
+				// the rejection identifies the column family it could not reach,
+				// instead of the unattributable environment-wide message
+				const [staleResult] = results;
+				expect(staleResult.status === 'rejected' && staleResult.reason.message).toMatch(
+					/Could not access column family \d+/
+				);
+
+				expect(victim.getSync('b')).toBe('2');
+				expect(victim.getSync('c')).toBe('3');
+
+				// and the environment is still writable afterwards
+				victim.putSync('d', '4');
+				expect(victim.getSync('d')).toBe('4');
+			}
+		));
+
 	// Dropping an already-dropped column family must be idempotent. Harper
 	// broadcasts drops to all worker threads, so multiple handles to the same
 	// shared column family can each issue a drop; RocksDB rejects the second

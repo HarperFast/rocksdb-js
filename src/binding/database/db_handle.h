@@ -50,6 +50,13 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool disableWAL = false;
 
 	/**
+	 * The write options every write path on this handle uses, built once in
+	 * open() rather than per write. Read it through writeOptions(), which
+	 * documents why the flags matter.
+	 */
+	rocksdb::WriteOptions writeOpts;
+
+	/**
 	 * Whether to register writes from this column family into the
 	 * VerificationTable so that cached record versions are invalidated
 	 * on commit. Set via the `verificationTable: true` open option.
@@ -153,7 +160,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * the *leader's* write options. Construct write options here and nowhere
 	 * else.
 	 */
-	rocksdb::WriteOptions writeOptions() const;
+	const rocksdb::WriteOptions& writeOptions() const;
 };
 
 } // namespace rocksdb_js
