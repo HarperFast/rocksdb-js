@@ -434,6 +434,18 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	bool stoppedAtUnindexedTail = false;
 	while (this->lastIndexedPosition < this->size) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
+		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
+		// zero there (e.g. an unset/epoch file timestamp) must not be mistaken for the
+		// zero-padding end-of-data marker below — that heuristic only applies once we're
+		// scanning actual entries past the header. Record it and advance to the first entry
+		// unconditionally, before the end-of-data check gets a chance to truncate this->size
+		// back into the header itself.
+		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
+			// specifically record the log file timestamp as the first entry with a position of zero
+			positionByTimestampIndex.insert({entryTimestamp, 0});
+			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
+			continue;
+		}
 		if (entryTimestamp == 0) {
 			// A zero timestamp marks the end of the written data. Only correct this->size down to the
 			// true written extent when no entries have been appended since (re)open — i.e. during
@@ -452,16 +464,10 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			}
 			break;
 		}
-		// for the first iteration, we insert the log file timestamp at the beginning of the index
-		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
-			// specifically record the log file timestamp as the first entry with a position of zero
-			positionByTimestampIndex.insert({entryTimestamp, 0});
-			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
-			continue;
-			// else check that the timestamp is greater than any previously indexed timestamp,
-			// otherwise we don't record it, because we want to start at the first position with a timestamp that
-			// is greater than the requested timestamp:
-		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+		// check that the timestamp is greater than any previously indexed timestamp,
+		// otherwise we don't record it, because we want to start at the first position with a timestamp that
+		// is greater than the requested timestamp:
+		if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
 			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
 		}
