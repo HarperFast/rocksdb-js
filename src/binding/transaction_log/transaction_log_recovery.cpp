@@ -56,28 +56,38 @@ bool validFramingResumes(const char* data, uint32_t from, uint32_t fileSize) {
 } // namespace
 
 RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
+	// End of the last entry that closed a transaction, plus a description of the
+	// entries after it — all tracked in the same walk so open-time recovery gets
+	// them without a second pass over the file.
+	uint32_t lastCompleteEnd = 0;
+	uint32_t tailEntries = 0;
+	double tailTimestamp = 0;
+	bool tailUniformTimestamp = true;
+	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
+		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
+			tailEntries > 0 && tailUniformTimestamp };
+	};
+
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
-		return { RecoveryScan::Kind::Clean, fileSize, 0 };
+		return scan(RecoveryScan::Kind::Clean, fileSize);
 	}
 
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	// End of the last entry that closed a transaction; tracked in the same walk so
-	// open-time recovery gets it without a second pass over the file.
-	uint32_t lastCompleteEnd = 0;
 	while (true) {
 		if (pos == fileSize) {
 			// reached the end exactly on an entry boundary
-			return { RecoveryScan::Kind::Clean, fileSize, lastCompleteEnd };
+			return scan(RecoveryScan::Kind::Clean, fileSize);
 		}
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
 			// fewer than a full entry header remains: a partial header at the
 			// tail. Nothing valid can follow, so this is a torn tail.
-			return { RecoveryScan::Kind::TruncateTail, pos, lastCompleteEnd };
+			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
-		if (readDoubleBE(data + pos) == 0) {
+		double timestamp = readDoubleBE(data + pos);
+		if (timestamp == 0) {
 			// zero padding marks the end of entries (matches the reader/parser);
 			// everything before it is valid.
-			return { RecoveryScan::Kind::Clean, pos, lastCompleteEnd };
+			return scan(RecoveryScan::Kind::Clean, pos);
 		}
 		uint32_t length = readUint32BE(data + pos + 8);
 		if (length == 0 ||
@@ -87,15 +97,22 @@ RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) 
 			// are still framed, so leave it for the caller to surface. Otherwise
 			// it is a torn tail we can safely drop back to `pos`.
 			if (validFramingResumes(data, pos + 1, fileSize)) {
-				return { RecoveryScan::Kind::MidFileCorruption, pos, lastCompleteEnd };
+				return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 			}
-			return { RecoveryScan::Kind::TruncateTail, pos, lastCompleteEnd };
+			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		// flags byte sits at the end of the entry header (timestamp 0-7, length 8-11, flags 12)
 		bool closesTransaction = (readUint8(data + pos + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+		if (tailEntries++ == 0) {
+			tailTimestamp = timestamp;
+		} else if (timestamp != tailTimestamp) {
+			tailUniformTimestamp = false;
+		}
 		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
 		if (closesTransaction) {
 			lastCompleteEnd = pos;
+			tailEntries = 0;
+			tailUniformTimestamp = true;
 		}
 	}
 }

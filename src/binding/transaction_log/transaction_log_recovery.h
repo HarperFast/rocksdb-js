@@ -43,11 +43,25 @@ struct RecoveryScan final {
 	 * A batch's entries are written together but only its final entry carries the
 	 * flag, so a crash mid-batch can leave whole, well-framed entries that are
 	 * only a *prefix* of a transaction. `validEnd` accepts that prefix (the frames
-	 * are intact, and truncating them would discard data a `readUncommitted`
-	 * replay still wants); this is the stricter bound for anything that must not
-	 * observe a partial transaction, notably the committed-read watermark.
+	 * are intact); this is the stricter bound for anything that must not observe a
+	 * partial transaction, notably the committed-read watermark and the open-time
+	 * discard of an interrupted batch.
 	 */
 	uint32_t lastCompleteTransactionEnd;
+	/** Number of entries between `lastCompleteTransactionEnd` and the end of the entries. */
+	uint32_t unclosedTailEntries;
+	/**
+	 * True when that trailing run exists and every entry in it carries the same
+	 * timestamp — the evidence that it is exactly one interrupted batch, since
+	 * writeEntriesV1() stamps every entry of a batch with the batch timestamp.
+	 *
+	 * This is the safety gate on discarding the run. Two distinct timestamps mean
+	 * more than one transaction went unflagged, which a writer that sets
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG` cannot produce — so the file is not ours
+	 * to repair (a log written before the flag existed, or corruption that
+	 * survived the framing walk), and the bytes are kept.
+	 */
+	bool unclosedTailIsOneTransaction;
 };
 
 /**
