@@ -210,9 +210,10 @@ describe('Drop', () => {
 	//
 	// Losing the whole transaction is the correct outcome. (In this mode the
 	// commit also poisons the environment on its way out; that is a separate,
-	// pre-existing bug which needs the drop interlocked against in-flight
-	// transactions, so this test asserts only atomicity and leaves the handles
-	// to dbRunner's per-test database.)
+	// pre-existing bug tracked as
+	// https://github.com/HarperFast/rocksdb-js/issues/726 (needs the drop
+	// interlocked against in-flight transactions), so this test asserts only
+	// atomicity and leaves the handles to dbRunner's per-test database.)
 	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
 		dbRunner(
 			{

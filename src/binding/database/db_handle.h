@@ -178,9 +178,10 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * to fail. In optimistic mode (the default) it fails cleanly and early, with
 	 * an error naming the column family it could not reach. In pessimistic mode
 	 * it reaches the fatal path described above and poisons the environment —
-	 * a pre-existing bug that needs the drop to be interlocked against in-flight
-	 * transactions to fix properly. Trading it for silent partial commits would
-	 * be a bad bargain.
+	 * a pre-existing bug, unchanged by this file, tracked as
+	 * https://github.com/HarperFast/rocksdb-js/issues/726 (needs the drop
+	 * interlocked against in-flight transactions to fix properly). Trading it
+	 * for silent partial commits would be a bad bargain.
 	 */
 	const rocksdb::WriteOptions& transactionWriteOptions() const;
 };
