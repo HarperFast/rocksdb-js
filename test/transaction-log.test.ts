@@ -1565,9 +1565,11 @@ describe('Transaction Log', () => {
 						database = RocksDatabase.open(dbPath);
 						const reopened = database.useLog('foo');
 						expect(statSync(logPath).size).toBe(validSize);
-						// the committed position isn't persisted without a RocksDB flush,
-						// so read uncommitted to verify the entries survived on disk
+						// the surviving entries are visible to committed reads too: load()
+						// seeds the committed watermark at the recovered write head, so a
+						// truncated tail costs only the torn entry (HarperFast/harper#1949)
 						expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+						expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
 
 						// the log must remain writable and consistent after recovery
 						await database.transaction(async (txn) => {
@@ -1599,6 +1601,7 @@ describe('Transaction Log', () => {
 					const reopened = database.useLog('foo');
 					expect(statSync(logPathFor(dbPath, 'foo')).size).toBe(validSize);
 					expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+					expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
 				} finally {
 					database.close();
 				}
