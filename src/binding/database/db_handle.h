@@ -132,6 +132,28 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool opened() const;
 	void unrefLog(const std::string& name);
 	napi_value useLog(napi_env env, napi_value jsDatabase, std::string& name);
+
+	/**
+	 * The write options every write path on this handle must use.
+	 *
+	 * `ignore_missing_column_families` is the load-bearing one. Without it, a
+	 * single write naming a dropped column family fails inside RocksDB *after*
+	 * the batch has reached the WAL but before it reaches the memtables. RocksDB
+	 * treats that as unrecoverable inconsistency and latches a background error
+	 * on the whole environment, so from that instant every write to every column
+	 * family on this path — including families created afterwards — fails with
+	 * the same `Invalid argument: Invalid column family specified in write batch`
+	 * until the environment is closed and reopened. One racing writer takes the
+	 * whole database down. With the flag set, RocksDB skips the entries naming a
+	 * dropped family and applies the rest of the batch, which is the documented
+	 * behaviour for exactly this case.
+	 *
+	 * Note this must be set on EVERY writer, not just the one that races a drop:
+	 * RocksDB merges concurrent writes into a group and applies the group under
+	 * the *leader's* write options. Construct write options here and nowhere
+	 * else.
+	 */
+	rocksdb::WriteOptions writeOptions() const;
 };
 
 } // namespace rocksdb_js

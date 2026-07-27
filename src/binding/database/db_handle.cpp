@@ -94,8 +94,8 @@ rocksdb::Status DBHandle::clear() {
 	);
 	if (!status.ok()) {
 		// A dropped column family is effectively already empty — clear is a no-op.
-		// Callers that subsequently write to the same handle will receive
-		// kColumnFamilyDropped at write time and can handle recovery there.
+		// Writes a caller subsequently issues on the same handle are discarded by
+		// RocksDB rather than applied (see DBHandle::writeOptions).
 		if (status.IsColumnFamilyDropped()) {
 			return rocksdb::Status::OK();
 		}
@@ -350,6 +350,17 @@ bool DBHandle::opened() const {
 		return true;
 	}
 	return false;
+}
+
+/**
+ * Builds the write options for this handle. See the declaration in db_handle.h
+ * for why `ignore_missing_column_families` must be set on every writer.
+ */
+rocksdb::WriteOptions DBHandle::writeOptions() const {
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = this->disableWAL;
+	writeOptions.ignore_missing_column_families = true;
+	return writeOptions;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { RocksDatabase } from '../src/index.js';
+import type { Transaction } from '../src/transaction.js';
 import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
@@ -82,8 +83,17 @@ describe('Drop', () => {
 				expect(db2.getSync('key')).toBe('value');
 				expect(db2.getSync('key2')).toBe('value2');
 
+				// a write through the dropped handle is discarded rather than
+				// applied, and does not throw. This used to be the LAST assertion in
+				// the test, because the failed write contaminated the env's shared
+				// write path and every other handle's writes failed afterward too;
+				// see 'should not poison the database' below.
+				db2.putSync('key4', 'value4');
+				expect(db2.getSync('key4')).toBeUndefined();
+
 				// reopening by the same name creates a fresh, WRITABLE column
-				// family instead of reusing the dropped handle
+				// family instead of reusing the dropped handle - and it stays
+				// writable even after the discarded write above
 				const db3 = RocksDatabase.open(dbPath, { name: 'test' });
 				try {
 					db3.putSync('key3', 'value3');
@@ -94,13 +104,51 @@ describe('Drop', () => {
 				} finally {
 					db3.close();
 				}
+			}
+		));
 
-				// writes through the dropped handle fail. NOTE: this must stay the
-				// LAST assertion - the failed write contaminates the env's shared
-				// write path, so writes through OTHER handles in this database fail
-				// afterward too (the same poison the eviction fix prevents callers
-				// from triggering accidentally via reopen-by-name)
-				expect(() => db2.putSync('key4', 'value4')).toThrow();
+	// Regression test for the environment-wide poison. RocksDB applies a write
+	// batch to the WAL first and to the memtables second; a batch naming a
+	// dropped column family fails in between, which RocksDB treats as
+	// unrecoverable inconsistency and records as a background error on the whole
+	// environment. Every subsequent write to EVERY column family on that path
+	// then failed with the same, unattributable 'Invalid column family specified
+	// in write batch' until the environment was closed and reopened - one racing
+	// writer took the whole database down. Harper hit this by dropping a table
+	// while background cache writes to it were still in flight, and lost 44
+	// unrelated tests in one shard to the cascade.
+	it('should not poison the database when a stale handle writes to a dropped column family', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
+			async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
+				victim.putSync('k0', 'v0');
+				doomed.dropSync();
+
+				// the poisoning write: `stale` still holds the dropped family
+				stale.putSync('k1', 'v1');
+
+				// an unrelated column family is unaffected, synchronously...
+				victim.putSync('k2', 'v2');
+				expect(victim.getSync('k2')).toBe('v2');
+
+				// ...and transactionally, which is the path Harper's writes take
+				await victim.transaction(async (txn: Transaction) => {
+					await victim.put('k3', 'v3', { transaction: txn });
+				});
+				expect(victim.getSync('k3')).toBe('v3');
+
+				// removes go through a separate write path, so cover it too
+				victim.removeSync('k0');
+				expect(victim.getSync('k0')).toBeUndefined();
+
+				// a column family created AFTER the poisoning write is writable too
+				const fresh = RocksDatabase.open(dbPath, { name: 'fresh' });
+				try {
+					fresh.putSync('k4', 'v4');
+					expect(fresh.getSync('k4')).toBe('v4');
+				} finally {
+					fresh.close();
+				}
 			}
 		));
 
