@@ -35,6 +35,19 @@ struct RecoveryScan final {
 	 * For `Clean`: the validated end of the entries.
 	 */
 	uint32_t validEnd;
+	/**
+	 * Offset just past the last entry carrying `TRANSACTION_LOG_ENTRY_LAST_FLAG`
+	 * — i.e. the end of the last COMPLETE transaction in this file — or 0 if the
+	 * file contains no complete transaction. Always <= `validEnd`.
+	 *
+	 * A batch's entries are written together but only its final entry carries the
+	 * flag, so a crash mid-batch can leave whole, well-framed entries that are
+	 * only a *prefix* of a transaction. `validEnd` accepts that prefix (the frames
+	 * are intact, and truncating them would discard data a `readUncommitted`
+	 * replay still wants); this is the stricter bound for anything that must not
+	 * observe a partial transaction, notably the committed-read watermark.
+	 */
+	uint32_t lastCompleteTransactionEnd;
 };
 
 /**
@@ -62,6 +75,19 @@ RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize);
  * @param fileSize Number of bytes in `data`.
  */
 uint32_t countTransactionLogEntries(const char* data, uint32_t fileSize);
+
+/**
+ * Returns the offset just past the last entry carrying
+ * `TRANSACTION_LOG_ENTRY_LAST_FLAG` in an in-memory transaction log image, or 0
+ * if it contains no complete transaction. Pure (no I/O) so it can be unit-tested
+ * standalone, and shares the framing walk with scanTransactionLogForRecovery().
+ * Used for log files that did not go through open-time recovery (which already
+ * reports the same value in `RecoveryScan::lastCompleteTransactionEnd`).
+ *
+ * @param data     Pointer to the full file image.
+ * @param fileSize Number of bytes in `data`.
+ */
+uint32_t findLastCompleteTransactionEnd(const char* data, uint32_t fileSize);
 
 } // namespace rocksdb_js
 

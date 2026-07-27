@@ -151,6 +151,31 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	}
 }
 
+uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+
+	if (this->version != 1) {
+		return 0;
+	}
+
+	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return 0; // header-only or empty: no transactions at all
+	}
+
+	std::vector<char> buffer(fileSize);
+	int64_t bytesRead = this->readFromFile(buffer.data(), fileSize, 0);
+	if (bytesRead < 0 || static_cast<uint32_t>(bytesRead) != fileSize) {
+		DEBUG_LOG("%p TransactionLogFile::scanForLastCompleteTransactionEnd Failed to read file: %s (read=%lld, size=%u)\n",
+			this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
+		return 0;
+	}
+
+	uint32_t end = findLastCompleteTransactionEnd(buffer.data(), fileSize);
+	this->lastCompleteTransactionEnd.store(end, std::memory_order_relaxed);
+	return end;
+}
+
 void TransactionLogFile::recoverTail() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
@@ -174,6 +199,9 @@ void TransactionLogFile::recoverTail() {
 	}
 
 	RecoveryScan scan = scanTransactionLogForRecovery(buffer.data(), fileSize);
+	// Publish the complete-transaction boundary from this same scan so the store can
+	// seed its committed watermark without re-reading the file.
+	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
 			return;

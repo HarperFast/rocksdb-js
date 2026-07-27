@@ -57,24 +57,27 @@ bool validFramingResumes(const char* data, uint32_t from, uint32_t fileSize) {
 
 RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
-		return { RecoveryScan::Kind::Clean, fileSize };
+		return { RecoveryScan::Kind::Clean, fileSize, 0 };
 	}
 
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	// End of the last entry that closed a transaction; tracked in the same walk so
+	// open-time recovery gets it without a second pass over the file.
+	uint32_t lastCompleteEnd = 0;
 	while (true) {
 		if (pos == fileSize) {
 			// reached the end exactly on an entry boundary
-			return { RecoveryScan::Kind::Clean, fileSize };
+			return { RecoveryScan::Kind::Clean, fileSize, lastCompleteEnd };
 		}
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
 			// fewer than a full entry header remains: a partial header at the
 			// tail. Nothing valid can follow, so this is a torn tail.
-			return { RecoveryScan::Kind::TruncateTail, pos };
+			return { RecoveryScan::Kind::TruncateTail, pos, lastCompleteEnd };
 		}
 		if (readDoubleBE(data + pos) == 0) {
 			// zero padding marks the end of entries (matches the reader/parser);
 			// everything before it is valid.
-			return { RecoveryScan::Kind::Clean, pos };
+			return { RecoveryScan::Kind::Clean, pos, lastCompleteEnd };
 		}
 		uint32_t length = readUint32BE(data + pos + 8);
 		if (length == 0 ||
@@ -84,12 +87,21 @@ RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) 
 			// are still framed, so leave it for the caller to surface. Otherwise
 			// it is a torn tail we can safely drop back to `pos`.
 			if (validFramingResumes(data, pos + 1, fileSize)) {
-				return { RecoveryScan::Kind::MidFileCorruption, pos };
+				return { RecoveryScan::Kind::MidFileCorruption, pos, lastCompleteEnd };
 			}
-			return { RecoveryScan::Kind::TruncateTail, pos };
+			return { RecoveryScan::Kind::TruncateTail, pos, lastCompleteEnd };
 		}
+		// flags byte sits at the end of the entry header (timestamp 0-7, length 8-11, flags 12)
+		bool closesTransaction = (readUint8(data + pos + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
 		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
+		if (closesTransaction) {
+			lastCompleteEnd = pos;
+		}
 	}
+}
+
+uint32_t findLastCompleteTransactionEnd(const char* data, uint32_t fileSize) {
+	return scanTransactionLogForRecovery(data, fileSize).lastCompleteTransactionEnd;
 }
 
 uint32_t countTransactionLogEntries(const char* data, uint32_t fileSize) {

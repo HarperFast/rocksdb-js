@@ -10,6 +10,7 @@
 #include "transaction_log/transaction_log_recovery.h"
 
 using rocksdb_js::countTransactionLogEntries;
+using rocksdb_js::findLastCompleteTransactionEnd;
 using rocksdb_js::RecoveryScan;
 using rocksdb_js::scanTransactionLogForRecovery;
 
@@ -213,4 +214,61 @@ TEST(TransactionLogCount, CountsLargeEntryExceedingRotationSize) {
 	LogImage img;
 	img.entry(10).entry(64 * 1024).entry(20);
 	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 3u);
+}
+
+// findLastCompleteTransactionEnd — the stricter bound the committed watermark uses.
+// Only a batch's final entry carries TRANSACTION_LOG_ENTRY_LAST_FLAG, so a crash
+// mid-batch leaves well-framed entries that are only a prefix of a transaction:
+// structurally valid (validEnd accepts them) but not yet a closed transaction.
+
+TEST(TransactionLogLastComplete, HeaderOnlyHasNoCompleteTransaction) {
+	LogImage img;
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), 0u);
+}
+
+TEST(TransactionLogLastComplete, SingleEntryTransactionEndsAtEof) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), img.size());
+}
+
+TEST(TransactionLogLastComplete, StopsBeforeAnUnflaggedTail) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	const uint32_t afterFirst = img.size();
+	// a second transaction's entries, none of which closed it
+	img.entry(20, /*flags=*/0).entry(30, /*flags=*/0);
+	// the frames are all valid...
+	EXPECT_EQ(scanTransactionLogForRecovery(img.data(), img.size()).validEnd, img.size());
+	// ...but the watermark must stop at the last transaction that actually closed
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), afterFirst);
+}
+
+TEST(TransactionLogLastComplete, MultiEntryTransactionEndsOnItsFlaggedEntry) {
+	LogImage img;
+	img.entry(10, /*flags=*/0).entry(20, /*flags=*/0).entry(30, /*flags=*/1);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), img.size());
+}
+
+TEST(TransactionLogLastComplete, NoneWhenNoTransactionEverClosed) {
+	LogImage img;
+	img.entry(10, /*flags=*/0).entry(20, /*flags=*/0);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), 0u);
+}
+
+TEST(TransactionLogLastComplete, IgnoresATornTailAfterAClosedTransaction) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	const uint32_t afterFirst = img.size();
+	img.entry(20, /*flags=*/0); // prefix of the next transaction
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12, /*flags=*/1); // torn
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), afterFirst);
+}
+
+TEST(TransactionLogLastComplete, StopsAtZeroPaddedTail) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	const uint32_t afterFirst = img.size();
+	img.zeros(64);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), afterFirst);
 }
