@@ -7,7 +7,9 @@
 #include "core/platform.h"
 #include <aclapi.h>
 #include <sddl.h>
+#include <algorithm>
 #include <cstdio>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -456,6 +458,41 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	// false keeps recoverTail()'s TruncateTail branch a safe no-op here.
 	(void)newSize;
 	return false;
+}
+
+bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
+	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
+		return false;
+	}
+
+	// These are whole entries, so unlike a torn tail they are not already hidden by
+	// the zero padding — overwrite them with zeros to restore the end-of-entries
+	// marker at `newSize`. The file keeps its pre-extended length and the next
+	// append (which writes at `size`, not at EOF) reuses the range.
+	constexpr uint32_t CHUNK = 64 * 1024;
+	std::vector<char> zeros(std::min(CHUNK, entriesEnd - newSize), 0);
+	for (uint32_t offset = newSize; offset < entriesEnd;) {
+		uint32_t chunk = std::min(static_cast<uint32_t>(zeros.size()), entriesEnd - offset);
+		int64_t written = this->writeToFile(zeros.data(), chunk, offset);
+		if (written <= 0) {
+			DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to zero %u bytes at offset %u in %s (error=%lu)\n",
+				this, chunk, offset, this->path.string().c_str(), ::GetLastError());
+			return false;
+		}
+		offset += static_cast<uint32_t>(written);
+	}
+
+	if (!::FlushFileBuffers(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::eraseTail FlushFileBuffers failed for %s (error=%lu)\n",
+			this, this->path.string().c_str(), ::GetLastError());
+		// the zeros are written; a later flush() will sync again
+	}
+
+	// Mapped views and WriteFile are not guaranteed coherent, and open() has already
+	// mapped this file to index it. Drop our reference so the next reader maps the
+	// zeroed image; views other callers still hold keep their own.
+	this->memoryMap.reset();
+	return true;
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {

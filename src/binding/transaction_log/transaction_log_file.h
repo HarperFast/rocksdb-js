@@ -57,6 +57,9 @@ namespace rocksdb_js {
 // forward declarations
 struct MemoryMap;
 struct TransactionLogEntryBatch;
+// defined in transaction_log_recovery.h, which includes this header for the
+// framing constants — so it can only be forward declared here
+struct RecoveryScan;
 
 struct TransactionLogFile final {
 	/**
@@ -235,11 +238,30 @@ struct TransactionLogFile final {
 	 * boundary and flushes. If a framing break is found mid-file with valid
 	 * entries still following it, the file is left intact — truncating would
 	 * discard committed/replicated entries — and the break is logged so the
-	 * reader's per-entry guards can surface it. Must be called after open() and
-	 * before the file receives any appends; only meaningful for the active
-	 * (current) log file.
+	 * reader's per-entry guards can surface it. Then, via
+	 * discardUnclosedTransaction(), drops any whole entries left over from a batch
+	 * that never closed. Must be called after open() and before the file receives
+	 * any appends; only meaningful for the active (current) log file.
 	 */
 	void recoverTail();
+
+	/**
+	 * Drops the trailing entries of a transaction that never closed, so the file
+	 * ends on a transaction boundary. Unlike the torn-tail truncation these are
+	 * whole, well-framed entries — only the batch's final entry carries
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves valid framing
+	 * around an incomplete transaction. Keeping them would let the *next* batch's
+	 * flag close the phantom group once the committed watermark moves past them.
+	 *
+	 * No-op unless the scan proves the run is exactly one interrupted batch of a
+	 * flag-setting writer (see `RecoveryScan::unclosedTailIsOneTransaction` and
+	 * `lastCompleteTransactionEnd`); ambiguous tails are kept and warned about.
+	 * Called by recoverTail() with fileMutex held.
+	 *
+	 * @param scan       The scan recoverTail() already ran on this file.
+	 * @param entriesEnd End of the entries after any torn-tail truncation.
+	 */
+	void discardUnclosedTransaction(const RecoveryScan& scan, uint32_t entriesEnd);
 
 	/**
 	 * Reads this file and returns the offset just past its last complete
@@ -412,6 +434,18 @@ private:
 	 * files (torn tails are handled there by the zero-padding end marker).
 	 */
 	bool truncateFile(uint32_t newSize);
+
+	/**
+	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`
+	 * disappear from every reader and frees the range for the next append. Unlike
+	 * truncateFile() this must work on Windows too: the bytes are real entries, not
+	 * the partial tail that Windows' zero-padding already hides. POSIX truncates;
+	 * Windows overwrites the range with zeros (its files are pre-extended and
+	 * zero-padded, so a zero timestamp is the end-of-entries marker) and drops the
+	 * cached read-only mapping, which is not coherent with WriteFile. Returns
+	 * `true` on success. Caller holds fileMutex and must update `size` itself.
+	 */
+	bool eraseTail(uint32_t newSize, uint32_t entriesEnd);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1

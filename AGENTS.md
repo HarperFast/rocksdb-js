@@ -281,6 +281,23 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    inspect a concurrently closing `DBHandle` from the worker. Transactional count iterators must also
    pass the transaction snapshot through `ReadOptions`; `disableSnapshot` intentionally leaves it null
    so counts observe the latest committed state.
+10. **A recovered transaction log ends on a transaction boundary**: only a batch's final entry
+    carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
+    entries that are a _prefix_ of a transaction. `recoverTail()` discards them
+    (`discardUnclosedTransaction`) rather than leaving them for the committed watermark to step
+    around: kept bytes are only invisible until the next commit moves the watermark past them, and
+    then that batch's flag closes the phantom group — two source transactions merged into one for
+    anything grouping on the flag. Discarding is safe because `writeBatch()` completes before
+    `Transaction::Commit()` in every commit path and both commit-thread lanes preserve dispatch
+    order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
+    never ran. It is gated on proof that the writer sets the flag — a boundary earlier in the same
+    file — plus a single timestamp across the trailing run (every entry of a batch is stamped with
+    the batch timestamp, and `getMonotonicTimestamp()` never repeats). Without that proof the bytes
+    are kept and warned about: a batch split across a rotation has no boundary in the active file,
+    and a log written before the flag existed would otherwise be truncated wholesale. There the
+    watermark seed in `TransactionLogStore::load()` still keeps committed readers off the partial
+    transaction. POSIX truncates; Windows overwrites the range with zeros (its pre-extended files
+    use a zero timestamp as the end marker) and drops the cached mapping.
 
 ## Debugging native heap corruption
 

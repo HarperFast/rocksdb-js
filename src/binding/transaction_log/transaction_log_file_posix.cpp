@@ -422,6 +422,14 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	return true;
 }
 
+bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
+	// Truncation is the whole job here: the file is opened O_APPEND, so writes
+	// always land at the end of file and zero-filling in place would leave the
+	// next append writing past the zeros, where no reader would reach it.
+	(void)entriesEnd;
+	return this->truncateFile(newSize);
+}
+
 } // namespace rocksdb_js
 
 #endif

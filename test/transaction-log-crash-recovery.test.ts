@@ -1,4 +1,6 @@
 import { RocksDatabase } from '../src/index.js';
+import { constants } from '../src/load-binding.js';
+import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -8,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
 function runCrashFixture(dbPath: string, env: Record<string, string> = {}) {
 	return new Promise<void>((resolve, reject) => {
@@ -83,10 +86,11 @@ describe('Transaction log crash recovery', () => {
 
 	// Only a batch's final entry carries TRANSACTION_LOG_ENTRY_LAST_FLAG, so a crash partway
 	// through a multi-entry transaction leaves whole, well-framed entries that are only a prefix
-	// of it. Those bytes are kept (a readUncommitted replay still wants them), but the committed
-	// watermark must stop before them — otherwise committed readers see a transaction that never
-	// closed, and the next transaction's flag closes the phantom group.
-	it('stops the committed watermark before a transaction that never closed', () =>
+	// of it. Recovery discards them: writeBatch() always completes before the RocksDB commit, so
+	// an interrupted log write is the newest thing in the log and nothing durable depends on it.
+	// Keeping the bytes and merely holding the watermark short of them is not enough — the next
+	// transaction's flag would close the phantom group once the watermark moves past.
+	it('discards a transaction that never closed so the log ends on a boundary', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			let database = db;
 			try {
@@ -114,9 +118,62 @@ describe('Transaction log crash recovery', () => {
 
 				database = RocksDatabase.open(dbPath);
 				const reopened = database.useLog('foo');
-				// the surviving prefix is still on disk and still replayable...
+				// the prefix is gone from the file itself, not just hidden behind the watermark
+				expect(statSync(logPath).size).toBe(afterComplete);
+				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(1);
+				expect(Array.from(reopened.query({ start: 0 })).length).toBe(1);
+
+				// so the next transaction appends at the boundary and its closing flag has
+				// nothing stale to swallow into its group
+				await database.transaction(async (txn) => {
+					reopened.addEntry(Buffer.alloc(24, 'y'), txn.id);
+				});
+				expect(Array.from(reopened.query({ start: 0 })).length).toBe(2);
+				expect(parseTransactionLog(logPath).entries.map((entry) => entry.flags)).toEqual([1, 1]);
+			} finally {
+				database.close();
+			}
+		}));
+
+	// The discard is gated on proof that the trailing run is one interrupted batch of a
+	// flag-setting writer: a boundary earlier in the same file, and a single timestamp across the
+	// run. A log written before the flag existed satisfies neither (its transactions are all
+	// unflagged and each carries its own timestamp), and must be left alone — truncating there
+	// would drop complete transactions.
+	it('keeps an unflagged tail that spans transactions', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			let database = db;
+			try {
+				const log = database.useLog('foo');
+				const value = Buffer.alloc(24, 'x');
+				for (let i = 0; i < 3; i++) {
+					await database.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				database.close();
+
+				// rewrite the last two entries as a pre-flag writer would have left them
+				const image = readFileSync(logPath);
+				const { entries } = parseTransactionLog(logPath);
+				let offset = TRANSACTION_LOG_FILE_HEADER_SIZE;
+				const flagOffsets = entries.map((entry) => {
+					const flagOffset = offset + TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1;
+					offset += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry.length;
+					return flagOffset;
+				});
+				image[flagOffsets[1]] = 0;
+				image[flagOffsets[2]] = 0;
+				await writeFile(logPath, image);
+
+				database = RocksDatabase.open(dbPath);
+				const reopened = database.useLog('foo');
+				// two unflagged entries with different timestamps cannot be one interrupted
+				// batch, so nothing is dropped...
+				expect(statSync(logPath).size).toBe(image.length);
 				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
-				// ...but committed reads stop at the last transaction that actually closed
+				// ...and the watermark still stops at the last transaction that closed
 				expect(Array.from(reopened.query({ start: 0 })).length).toBe(1);
 			} finally {
 				database.close();

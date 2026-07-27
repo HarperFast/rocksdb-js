@@ -1105,12 +1105,14 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	//
 	// The boundary is the last entry flagged TRANSACTION_LOG_ENTRY_LAST_FLAG, not the write head:
 	// only a batch's final entry carries that flag, so a crash mid-batch leaves whole, well-framed
-	// entries that are merely a *prefix* of a transaction. recoverTail() deliberately keeps those
-	// bytes (a readUncommitted replay still wants them, and they are structurally valid), but
-	// publishing them to committed readers would expose a transaction that never closed — and the
-	// next transaction's flag would then close the phantom group. Since writeBatch() writes a batch
-	// "across multiple log files" when it crosses a rotation, that prefix can span files, so the
-	// walk falls back through older sequences until one ends on a real boundary.
+	// entries that are merely a *prefix* of a transaction. recoverTail() normally discards those
+	// entries outright (discardUnclosedTransaction), in which case this walk finds the boundary at
+	// the active file's new write head. It keeps them in the two cases it cannot prove are an
+	// interrupted batch of a flag-setting writer: a batch that writeBatch() split "across multiple
+	// log files" at a rotation (no flagged entry in the active file at all), and a file written
+	// before the flag existed. There the bytes stay and this walk falls back through older
+	// sequences until one ends on a real boundary — so committed readers still never see a
+	// transaction that never closed, even where the file could not be repaired.
 	//
 	// Otherwise this is not a new recovery rule: commitFinished() already defines the watermark as
 	// the front of uncommittedTransactionPositions, which — after the sentinel insert above, with
