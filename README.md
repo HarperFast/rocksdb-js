@@ -67,7 +67,8 @@ Creates a new database instance.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
     overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
-    `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for
+    `Transaction` instances and the native database interface. A store is bound to a single
+    `RocksDatabase` instance and cannot be shared between them. See [Custom Store](#custom-store) for
     more information.
   - `transactionLogMaxAgeThreshold: number` The threshold for the transaction log file's last
     modified time to be older than the retention period before it is rotated to the next sequence
@@ -1766,6 +1767,13 @@ const db = RocksDatabase.open(myStore);
 await db.put('foo', 'bar');
 console.log(await db.get('foo'));
 ```
+
+> [!NOTE]
+> A `Store` is bound to a single `RocksDatabase` instance. Passing a store that another
+> `RocksDatabase` already owns throws `Store is already in use by another RocksDatabase instance`.
+> The claim is durable across `db.close()`, so reopening the original owner does not release it.
+> (Sharing a store with the owning database's `Transaction` instances is expected and handled
+> internally.)
 
 > [!IMPORTANT]
 > If your custom store overrides `putSync()` without calling `super.putSync()` and it performs its

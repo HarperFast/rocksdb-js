@@ -138,9 +138,20 @@ export type ArrayBufferWithNotify = ArrayBuffer & { cancel: () => void; notify: 
  * single database instance can be shared between the main `RocksDatabase`
  * instance and the `Transaction` instance.
  *
- * This store should not be shared between `RocksDatabase` instances.
+ * A store is bound to a single `RocksDatabase` instance and must not be shared
+ * between `RocksDatabase` instances. Each `RocksDatabase` claims its store on
+ * construction (see `claim()`); passing a store that another `RocksDatabase`
+ * already owns throws. (Sharing with the owning database's `Transaction`
+ * instances is expected and allowed.)
  */
 export class Store {
+	/**
+	 * Whether a `RocksDatabase` has claimed this store. Durable across
+	 * close/reopen (unlike the handle's open state), so a store reused after its
+	 * owner temporarily closed is still recognized as in-use. See `claim()`.
+	 */
+	#claimed: boolean = false;
+
 	/**
 	 * The database instance.
 	 */
@@ -393,6 +404,19 @@ export class Store {
 	 */
 	close(): void {
 		this.db.close();
+	}
+
+	/**
+	 * Claims this store for a `RocksDatabase`. A store is bound to a single
+	 * database instance, so claiming a store that another `RocksDatabase` has
+	 * already claimed throws. The claim is durable across close/reopen, so a
+	 * store reused after its owner temporarily closed still throws.
+	 */
+	claim(): void {
+		if (this.#claimed) {
+			throw new Error('Store is already in use by another RocksDatabase instance');
+		}
+		this.#claimed = true;
 	}
 
 	/**
