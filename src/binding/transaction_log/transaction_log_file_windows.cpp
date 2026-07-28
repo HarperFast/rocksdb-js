@@ -469,15 +469,32 @@ bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 	// the zero padding — overwrite them with zeros to restore the end-of-entries
 	// marker at `newSize`. The file keeps its pre-extended length and the next
 	// append (which writes at `size`, not at EOF) reuses the range.
+	//
+	// A reader stops at the first zero timestamp regardless of what follows it, so
+	// establish that 8-byte marker at `newSize` with its own write before the bulk
+	// zeroing below. Once it lands, `newSize` is a safe end-of-log position even if
+	// a later chunk write fails partway through the rest of the range — the caller
+	// can trust the returned success and lower `size` to `newSize` unconditionally,
+	// instead of leaving `size` at `entriesEnd` while the on-disk marker is already
+	// at `newSize`, which would make the next append land past where readers stop.
+	char terminator[8] = { 0 };
+	if (this->writeToFile(terminator, sizeof(terminator), newSize) != static_cast<int64_t>(sizeof(terminator))) {
+		DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to write end-of-entries marker at offset %u in %s (error=%lu)\n",
+			this, newSize, this->path.string().c_str(), ::GetLastError());
+		return false;
+	}
+
 	constexpr uint32_t CHUNK = 64 * 1024;
 	std::vector<char> zeros(std::min(CHUNK, entriesEnd - newSize), 0);
 	for (uint32_t offset = newSize; offset < entriesEnd;) {
 		uint32_t chunk = std::min(static_cast<uint32_t>(zeros.size()), entriesEnd - offset);
 		int64_t written = this->writeToFile(zeros.data(), chunk, offset);
 		if (written <= 0) {
-			DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to zero %u bytes at offset %u in %s (error=%lu)\n",
-				this, chunk, offset, this->path.string().c_str(), ::GetLastError());
-			return false;
+			DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to zero %u bytes at offset %u in %s (error=%lu); "
+				"end-of-entries marker at %u is already committed, so the unzeroed remainder is unreachable dead "
+				"space that a future append will overwrite\n",
+				this, chunk, offset, this->path.string().c_str(), ::GetLastError(), newSize);
+			break;
 		}
 		offset += static_cast<uint32_t>(written);
 	}
