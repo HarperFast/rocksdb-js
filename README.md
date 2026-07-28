@@ -10,6 +10,7 @@ A Node.js binding for the RocksDB library.
 - Transaction log system for recording transaction related data
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
+- Configurable block/blob compression (LZ4, Zstd, Zlib, and more)
 - Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
@@ -43,6 +44,15 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not need to exist, but the
   parent directories do.
 - `options: object` [optional]
+  - `compression: string | { algorithm: string, level?: number }` The block/blob compression
+    algorithm for this column family. Pass an algorithm name — one of `'none'`, `'snappy'`,
+    `'zlib'`, `'bzip2'`, `'lz4'`, `'lz4hc'`, `'xpress'`, or `'zstd'` — or an object with an
+    `algorithm` and an optional `level` (forwarded to RocksDB's `compression_opts.level`; the
+    meaning is algorithm-specific). Applies to both SST data blocks and blob files (large values).
+    Defaults to `'lz4'` when the native build supports it, otherwise RocksDB's own default (Snappy
+    when linked, else no compression). See [Compression](#compression). Throws if the algorithm is
+    not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
+    the available list.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
@@ -108,6 +118,17 @@ console.log(db.columns); // ['default']
 
 const db2 = new RocksDatabase('path/to/db', { name: 'users' });
 console.log(db.columns); // ['default', 'users']
+```
+
+### `db.compression: string`
+
+Returns the compression algorithm currently in effect for this database's column family, read live
+from RocksDB (e.g. `'lz4'`, `'zstd'`, `'none'`). The database must be open. See
+[Compression](#compression).
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { compression: 'zstd' });
+console.log(db.compression); // 'zstd'
 ```
 
 ### `db.config(options)`
@@ -911,6 +932,71 @@ An object is a record with the following properties:
 - `percentile99: number` A double containing the 99th percentile value.
 - `standardDeviation: number` A double containing the standard deviation.
 - `sum: number` An unsigned 64-bit integer containing the sum of all values.
+
+## Compression
+
+RocksDB compresses data blocks in SST files (and, in `rocksdb-js`, blob files that hold large
+values) using a configurable algorithm. Compression trades CPU for disk space and, because it
+reduces bytes read from disk, often improves read throughput on I/O-bound workloads.
+
+The following algorithm names are recognized. Which ones are actually usable depends on the native
+build — see **Availability** below.
+
+| Name     | Notes                                                                         |
+| -------- | ----------------------------------------------------------------------------- |
+| `none`   | No compression. Always available.                                             |
+| `snappy` | Fast, modest ratio. RocksDB's own stock default when linked.                  |
+| `zlib`   | Higher ratio, slower. Supports `level` (see zlib's manual).                   |
+| `bzip2`  | High ratio, slow; rarely worth it over zstd.                                  |
+| `lz4`    | Very fast, modest ratio. `rocksdb-js` default when available.                 |
+| `lz4hc`  | LZ4 high-compression variant: better ratio, slower writes, same fast reads.   |
+| `xpress` | Windows-only (Microsoft Xpress).                                              |
+| `zstd`   | Best ratio-for-speed of the set; supports `level` (higher = smaller, slower). |
+
+Set the algorithm per column family with the `compression` option when opening a database:
+
+```typescript
+// Algorithm name
+const db = RocksDatabase.open('/path/to/db', { compression: 'zstd' });
+
+// Or an object with an explicit level
+const db2 = RocksDatabase.open('/path/to/db2', { compression: { algorithm: 'zstd', level: 3 } });
+
+// Disable compression entirely
+const db3 = RocksDatabase.open('/path/to/db3', { compression: 'none' });
+```
+
+**Default.** When `compression` is omitted, `rocksdb-js` defaults to **LZ4** if the native build
+supports it. LZ4 is fast with a modest compression ratio, making it a good general-purpose default.
+If LZ4 is not compiled in, the default falls back to RocksDB's own default — Snappy when it is
+linked, otherwise no compression. (RocksDB's stock default is Snappy; `rocksdb-js` overrides it to
+LZ4.) Read the algorithm actually in effect with the [`db.compression`](#dbcompression-string)
+getter.
+
+**Availability.** The set of algorithms depends on which compression libraries the native binding
+was compiled against, so it varies by build. Always check
+[`supportedCompression`](#supportedcompression) at runtime — opening with an unavailable algorithm
+throws. `'none'` is always available.
+
+**Scope and mutability.** Compression is a per-column-family, dynamically-changeable setting.
+Reopening a database with a different algorithm governs files written afterward; existing SST/blob
+files keep their original compression until they are rewritten by compaction. It also applies to
+blob files (large values), whose compression otherwise defaults to none.
+
+### `supportedCompression`
+
+A module-level, frozen array of the compression algorithm names compiled into the loaded native
+binding. The set is fixed for a given binary. `'none'` is always present.
+
+```typescript
+import { supportedCompression } from '@harperfast/rocksdb-js';
+
+console.log(supportedCompression); // e.g. ['none', 'snappy', 'lz4', 'zstd']
+
+if (supportedCompression.includes('zstd')) {
+	// safe to open with { compression: 'zstd' }
+}
+```
 
 ## Exclusive Locking
 

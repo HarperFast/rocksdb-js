@@ -1,6 +1,7 @@
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
+#include "napi/helpers.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/listener.h"
 #include <algorithm>
@@ -835,6 +836,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	applyCompression(cfOptions, options.compression, options.compressionLevel);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
@@ -918,7 +920,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		}
 	}
 	if (!columnExists) {
-		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name);
+		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, options.compression, options.compressionLevel);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;
 	}

@@ -2,8 +2,10 @@
 #define __DB_OPTIONS_H__
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <thread>
+#include "rocksdb/compression_type.h"
 
 namespace rocksdb_js {
 
@@ -59,6 +61,21 @@ struct DBOptions final {
 	// Opt-in per-CF flag enabling Verification Table slot locking/tracking for
 	// this column family's writes (see core/verification_table.h).
 	bool verificationTable = false;
+	// Block/blob compression algorithm for this column family. `std::nullopt`
+	// leaves RocksDB's own default in place (Snappy when linked, else none). The
+	// TypeScript layer defaults this to LZ4 when supported, so an unset value
+	// here reaching the native layer means "use RocksDB's default". Applied to
+	// both `ColumnFamilyOptions::compression` (SST blocks) and
+	// `blob_compression_type` (large values stored as blobs), which otherwise
+	// defaults to no compression. Compression is a dynamically-changeable
+	// option: on reopen the new algorithm governs subsequently written SST/blob
+	// files; existing files keep their original compression until rewritten by
+	// compaction.
+	std::optional<rocksdb::CompressionType> compression;
+	// Compression level passed to `compression_opts.level`. `std::nullopt` keeps
+	// RocksDB's per-algorithm default level. Meaning is algorithm-specific (see
+	// CompressionOptions::level).
+	std::optional<int> compressionLevel;
 };
 
 } // namespace rocksdb_js

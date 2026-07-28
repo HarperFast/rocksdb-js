@@ -20,6 +20,7 @@ import {
 	NativeIterator,
 	NativeTransaction,
 	stats,
+	supportedCompression,
 	type TransactionLog,
 	type UserSharedBufferCallback,
 } from './load-binding.js';
@@ -75,12 +76,94 @@ export type CompactOptions = {
 };
 
 /**
+ * A RocksDB block/blob compression algorithm. Which algorithms are actually
+ * available depends on the libraries the native binding was compiled with —
+ * check `supportedCompression` at runtime. `'none'` disables compression and
+ * is always available.
+ */
+export type CompressionAlgorithm =
+	| 'none'
+	| 'snappy'
+	| 'zlib'
+	| 'bzip2'
+	| 'lz4'
+	| 'lz4hc'
+	| 'xpress'
+	| 'zstd';
+
+/**
+ * The `compression` open option: either an algorithm name, or an object with
+ * an algorithm and an optional level (forwarded to RocksDB's
+ * `compression_opts.level`; meaning is algorithm-specific).
+ */
+export type CompressionOption =
+	| CompressionAlgorithm
+	| { algorithm: CompressionAlgorithm; level?: number };
+
+/**
+ * Normalizes the public `compression` option into the primitive fields the
+ * native layer expects. When `option` is omitted, defaults to LZ4 if that
+ * algorithm is compiled into the binding, otherwise leaves RocksDB's own
+ * default in place (Snappy when linked, else no compression). Throws for an
+ * algorithm that isn't supported by this build.
+ */
+export function normalizeCompression(option: CompressionOption | undefined): {
+	compression?: string;
+	compressionLevel?: number;
+} {
+	let algorithm: string | undefined;
+	let level: number | undefined;
+
+	if (option === undefined || option === null) {
+		// Project default: LZ4 when available (RocksDB's own default is Snappy).
+		algorithm = supportedCompression.includes('lz4') ? 'lz4' : undefined;
+	} else if (typeof option === 'string') {
+		algorithm = option;
+	} else if (typeof option === 'object') {
+		algorithm = option.algorithm;
+		level = option.level;
+	} else {
+		throw new TypeError('compression must be a string or an { algorithm, level } object');
+	}
+
+	if (algorithm === undefined) {
+		return {};
+	}
+
+	if (!supportedCompression.includes(algorithm)) {
+		throw new Error(
+			`Unsupported compression algorithm "${algorithm}". This build supports: ${supportedCompression.join(', ')}`
+		);
+	}
+
+	return { compression: algorithm, compressionLevel: level };
+}
+
+/**
  * Options for the `Store` class.
  */
 export interface StoreOptions extends Omit<
 	NativeDatabaseOptions,
-	'mode' | 'transactionLogRetentionMs'
+	'compression' | 'compressionLevel' | 'mode' | 'transactionLogRetentionMs'
 > {
+	/**
+	 * The block/blob compression algorithm for this column family. Accepts an
+	 * algorithm name (`'lz4'`, `'zstd'`, `'none'`, ...) or an object with an
+	 * `algorithm` and optional `level`. Applies to both SST blocks and blob
+	 * files (large values). Which algorithms are available depends on the native
+	 * build — see `supportedCompression`.
+	 *
+	 * When omitted, defaults to LZ4 if the build supports it, otherwise RocksDB's
+	 * own default (Snappy when linked, else no compression). Compression is a
+	 * dynamically-changeable option: reopening with a different algorithm governs
+	 * subsequently written files; existing files keep their compression until
+	 * rewritten by compaction. Use the `compression` getter to read the value
+	 * currently in effect.
+	 *
+	 * @default 'lz4'
+	 */
+	compression?: CompressionOption;
+
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
@@ -167,6 +250,13 @@ export class Store {
 	 * Whether the decoder copies the buffer when encoding values.
 	 */
 	decoderCopies: boolean = false;
+
+	/**
+	 * The compression algorithm (or `{ algorithm, level }`) requested for this
+	 * store's column family. Normalized and applied when the database opens; use
+	 * the `getCompression()` method to read the algorithm actually in effect.
+	 */
+	compression?: CompressionOption;
 
 	/**
 	 * Whether to disable the write ahead log.
@@ -366,6 +456,7 @@ export class Store {
 		);
 
 		this.db = new NativeDatabase();
+		this.compression = options?.compression;
 		this.dbWriteBufferSize = options?.dbWriteBufferSize;
 		this.decoder = options?.decoder ?? null;
 		this.disableWAL = options?.disableWAL ?? false;
@@ -861,6 +952,19 @@ export class Store {
 	}
 
 	/**
+	 * Returns the compression algorithm currently in effect for this store's
+	 * column family, read live from the open RocksDB. The database must be open.
+	 *
+	 * @returns the algorithm name (e.g. `'lz4'`, `'zstd'`, `'none'`).
+	 */
+	getCompression(): CompressionAlgorithm {
+		if (!this.db.opened) {
+			throw new Error('Database not open');
+		}
+		return this.db.getCompression() as CompressionAlgorithm;
+	}
+
+	/**
 	 * Lists all transaction log names.
 	 *
 	 * @returns an array of transaction log names.
@@ -878,7 +982,11 @@ export class Store {
 			return true;
 		}
 
+		const { compression, compressionLevel } = normalizeCompression(this.compression);
+
 		this.db.open(this.path, {
+			compression,
+			compressionLevel,
 			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,

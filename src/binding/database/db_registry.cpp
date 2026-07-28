@@ -333,7 +333,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
 			}
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
-			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);
+			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name, options.compression, options.compressionLevel);
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;

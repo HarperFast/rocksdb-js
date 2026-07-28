@@ -85,6 +85,18 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
    (`src/binding/database/backup.cpp`). Creating a backup is the `Database::Backup` instance
    method (needs the open DB); restore/list/delete/purge/verify are module-level functions
    operating on a backup directory with no open DB.
+6. **Compression**: a per-column-family open option (`compression`), resolved in the TS Store layer
+   (`normalizeCompression`) to a native string + level and applied in the native CF-options builders
+   (`applyCompression` in `napi/helpers.cpp`, used by both `DBDescriptor::open` and
+   `createRocksDBColumnFamily`). Two non-obvious points: (a) the algorithm is applied to **both**
+   `ColumnFamilyOptions::compression` (SST blocks) **and** `blob_compression_type` — this codebase
+   enables blob files for values ≥ 2KB, and blob compression defaults to none, so setting only the
+   block compression would leave large values uncompressed; (b) the default is **LZ4** (overriding
+   RocksDB's own Snappy default), but the set of algorithms is build-dependent, so the default
+   falls back to RocksDB's default when LZ4 isn't linked. `supportedCompression` (a module constant
+   built from `rocksdb::GetSupportedCompressions()`) is the source of truth; name↔enum mapping and
+   the supported list live in the Node-free `core/compression.{h,cpp}` (GoogleTest-covered). The
+   `db.compression` getter reads the live value via `DB::GetOptions`.
 
 ### Transaction Architecture
 

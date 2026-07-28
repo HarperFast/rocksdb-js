@@ -15,6 +15,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
+#include "core/compression.h"
 
 namespace rocksdb_js {
 
@@ -780,6 +781,29 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns the compression algorithm currently in effect for this database's
+ * column family as a friendly name (e.g. "lz4", "zstd", "none"), read live from
+ * the open RocksDB via `GetOptions`.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * db.getCompression(); // 'lz4'
+ * ```
+ */
+napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	rocksdb::Options opts = (*dbHandle)->descriptor->db->GetOptions((*dbHandle)->getColumnFamilyHandle());
+	std::string name = compressionNameFromType(opts.compression);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), NAPI_AUTO_LENGTH, &result));
+	return result;
+}
+
+/**
  * Gets the number of keys within a range or in the entire RocksDB database.
  *
  * @example
@@ -1384,6 +1408,33 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", dbHandleOptions.disableWAL));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "verificationTable", dbHandleOptions.verificationTable));
 
+	// compression: a friendly algorithm name (e.g. "lz4", "zstd", "none"). The
+	// TypeScript layer normalizes the string|object public option and validates
+	// against the supported list before we get here; this is the defensive
+	// backstop for a name that isn't recognized or isn't compiled in.
+	std::string compressionName;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "compression", compressionName));
+	if (!compressionName.empty()) {
+		std::optional<rocksdb::CompressionType> type = compressionTypeFromName(compressionName);
+		if (!type || !isCompressionSupported(*type)) {
+			std::string errorMsg = "Unsupported compression algorithm: " + compressionName;
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
+			return nullptr;
+		}
+		dbHandleOptions.compression = *type;
+
+		double compressionLevel = 0;
+		if (rocksdb_js::getProperty(env, options, "compressionLevel", compressionLevel, true) == napi_ok) {
+			if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
+				compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
+			) {
+				::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
+				return nullptr;
+			}
+			dbHandleOptions.compressionLevel = static_cast<int>(compressionLevel);
+		}
+	}
+
 	// statistics
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "enableStats", dbHandleOptions.enableStats));
 	if (dbHandleOptions.enableStats) {
@@ -1751,6 +1802,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },

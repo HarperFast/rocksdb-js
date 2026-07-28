@@ -229,7 +229,31 @@ std::string getNapiExtendedError(napi_env env, napi_status& status, const char* 
 	return std::string(errorStr);
 }
 
-std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std::shared_ptr<rocksdb::DB> db, const std::string& name) {
+void applyCompression(
+	rocksdb::ColumnFamilyOptions& cfOptions,
+	const std::optional<rocksdb::CompressionType>& compression,
+	const std::optional<int>& compressionLevel
+) {
+	if (!compression) {
+		return;
+	}
+	cfOptions.compression = *compression;
+	// Large values are stored in blob files (enable_blob_files), which have
+	// their own compression setting that defaults to none. Apply the same
+	// algorithm there so the option compresses the whole dataset, not just the
+	// inline (< min_blob_size) portion.
+	cfOptions.blob_compression_type = *compression;
+	if (compressionLevel) {
+		cfOptions.compression_opts.level = *compressionLevel;
+	}
+}
+
+std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(
+	const std::shared_ptr<rocksdb::DB> db,
+	const std::string& name,
+	const std::optional<rocksdb::CompressionType>& compression,
+	const std::optional<int>& compressionLevel
+) {
 	rocksdb::ColumnFamilyHandle* cfHandle;
 	rocksdb::BlockBasedTableOptions tableOptions;
 	DBSettings& settings = DBSettings::getInstance();
@@ -238,6 +262,7 @@ std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(const std
 	cfOptions.enable_blob_files = true;
 	cfOptions.min_blob_size = 2048;
 	cfOptions.enable_blob_garbage_collection = true;
+	applyCompression(cfOptions, compression, compressionLevel);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	rocksdb::Status status = db->CreateColumnFamily(cfOptions, name, &cfHandle);
