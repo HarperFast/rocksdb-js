@@ -24,8 +24,17 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 
 	/**
 	 * Initializes the iterator handle using a transaction handle.
+	 *
+	 * `dbHandleOverride` selects the column family to iterate. A transaction
+	 * belongs to a database rather than a single column family, so a caller
+	 * iterating through another DBI in the same database passes that DBI's
+	 * handle here. Defaults to the transaction's own column family.
 	 */
-	DBIteratorHandle(TransactionHandle* txnHandle, DBIteratorOptions& options);
+	DBIteratorHandle(
+		TransactionHandle* txnHandle,
+		DBIteratorOptions& options,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
 
 	/**
 	 * Cleans up the iterator handle.

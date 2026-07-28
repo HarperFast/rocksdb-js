@@ -375,6 +375,12 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	std::string key;
 	std::string value;
 
+	// A transaction belongs to the database rather than a single column family,
+	// so pin the descriptor selected by the caller until the worker finishes.
+	// The pin must be released before async completion is signaled because that
+	// signal can unblock database teardown.
+	std::shared_ptr<ColumnFamilyDescriptor> readColumnDescriptor;
+
 	// Verification table state for post-read check and populate.
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
