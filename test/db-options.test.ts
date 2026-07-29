@@ -1,6 +1,24 @@
-import { RocksDatabase } from '../src/index.js';
+import { RocksDatabase, type RocksDBCompression } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
+import { rmSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+
+function isCompressionSupported(compression: RocksDBCompression): boolean {
+	const path = generateDBPath();
+	const db = new RocksDatabase(path, { compression });
+	try {
+		db.open();
+		return true;
+	} catch (error) {
+		if (error instanceof Error && error.message.includes('not supported by this RocksDB build')) {
+			return false;
+		}
+		throw error;
+	} finally {
+		db.close();
+		rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+	}
+}
 
 describe('Database write buffer options', () => {
 	it('should open with default write buffer settings', () =>
@@ -110,6 +128,40 @@ describe('Database write buffer options', () => {
 			}
 		));
 
+	it('should apply the current handle memory options to a late column family', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ writeBufferSize: 64 * 1024 * 1024 },
+					{ name: 'late', writeBufferSize: 64 * 1024 },
+				],
+				skipOpen: true,
+			},
+			async ({ db: first }, { db: late }) => {
+				first.open();
+				late.open();
+
+				const value = 'x'.repeat(1024);
+				for (let i = 0; i < 512; i++) {
+					await late.put(`key-${i.toString().padStart(6, '0')}`, value);
+				}
+
+				// Do not force a flush: automatic flush behavior is what distinguishes
+				// the late handle's requested 64 KiB buffer from the first opener's 64 MiB.
+				const deadline = Date.now() + 5000;
+				let lateBufferSize = 0;
+				while (Date.now() < deadline) {
+					lateBufferSize = late.getDBIntProperty('rocksdb.total-sst-files-size') ?? 0;
+					if (lateBufferSize > 0) {
+						break;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+
+				expect(lateBufferSize).toBeGreaterThan(0);
+			}
+		));
+
 	it('should flush memtables when writeBufferSize is exceeded', () =>
 		dbRunner({ dbOptions: [{ writeBufferSize: 64 * 1024 }] }, async ({ db }) => {
 			// 64KB memtable; write enough data to force at least one flush.
@@ -147,18 +199,27 @@ async function writeCompressiblePayload(db: RocksDatabase): Promise<number> {
 	return size!;
 }
 
+const zlibSupported = isCompressionSupported('zlib');
+const zlibIt = zlibSupported ? it : it.skip;
+
 describe('Database compression options', () => {
-	it('should round-trip data with compression enabled (true -> zlib)', () =>
-		dbRunner({ dbOptions: [{ compression: true }] }, async ({ db }) => {
-			await db.put('foo', 'bar');
-			expect(await db.get('foo')).toBe('bar');
+	it('should resolve true to zlib when supported and reject it otherwise', () =>
+		dbRunner({ dbOptions: [{ compression: true }], skipOpen: true }, async ({ db }) => {
+			if (zlibSupported) {
+				db.open();
+				await db.put('foo', 'bar');
+				expect(await db.get('foo')).toBe('bar');
+			} else {
+				expect(() => db.open()).toThrow('not supported by this RocksDB build');
+			}
 		}));
 
-	it('should round-trip data with an explicit zlib algorithm', () =>
+	zlibIt('should round-trip data with an explicit zlib algorithm', () =>
 		dbRunner({ dbOptions: [{ compression: 'zlib' }] }, async ({ db }) => {
 			await db.put('foo', 'bar');
 			expect(await db.get('foo')).toBe('bar');
-		}));
+		})
+	);
 
 	it('should round-trip data with compression disabled (false -> none)', () =>
 		dbRunner({ dbOptions: [{ compression: false }] }, async ({ db }) => {
@@ -184,7 +245,16 @@ describe('Database compression options', () => {
 			}
 		));
 
-	it('should write smaller table files with zlib than with no compression', () =>
+	it('should reject an explicitly empty compression instead of treating it as omitted', () =>
+		dbRunner(
+			{ dbOptions: [{}, { compression: '' as any, name: 'other' }], skipOpen: true },
+			async ({ db: first }, { db: second }) => {
+				first.open();
+				expect(() => second.open()).toThrow('Unknown compression type');
+			}
+		));
+
+	zlibIt('should write smaller table files with zlib than with no compression', () =>
 		dbRunner(
 			{
 				dbOptions: [
@@ -201,12 +271,13 @@ describe('Database compression options', () => {
 				expect(await compressed.get('key-000000')).toBe(COMPRESSIBLE_VALUE);
 				expect(await compressed.get('key-001499')).toBe(COMPRESSIBLE_VALUE);
 			}
-		));
+		)
+	);
 
 	// A named column family does not exist on a fresh path, so it is created
 	// after `DB::Open` rather than being handed the open options. It must still
 	// get the requested compression.
-	it('should compress a named column family created at open time', () =>
+	zlibIt('should compress a named column family created at open time', () =>
 		dbRunner(
 			{
 				dbOptions: [
@@ -220,11 +291,12 @@ describe('Database compression options', () => {
 				expect(compressedSize).toBeLessThan(uncompressedSize);
 				expect(await compressed.get('key-000000')).toBe(COMPRESSIBLE_VALUE);
 			}
-		));
+		)
+	);
 
 	// Same requirement for a column family added to a database that is already
 	// open, which goes through the registry rather than `DBDescriptor::open`.
-	it('should compress a column family added to an already-open database', () => {
+	zlibIt('should compress a column family added to an already-open database', () => {
 		const uncompressedPath = generateDBPath();
 		const compressedPath = generateDBPath();
 		return dbRunner(
@@ -245,7 +317,7 @@ describe('Database compression options', () => {
 		);
 	});
 
-	it('should reject a conflicting compression on an already-open path', () =>
+	zlibIt('should reject a conflicting compression on an already-open path', () =>
 		dbRunner(
 			{
 				dbOptions: [{ compression: 'none' }, { compression: 'zlib', name: 'other' }],
@@ -257,7 +329,8 @@ describe('Database compression options', () => {
 				// request cannot be honored — reject instead of silently ignoring it.
 				expect(() => second.open()).toThrow('Database already open with compression');
 			}
-		));
+		)
+	);
 
 	it('should not treat an omitted compression and an explicit none as a conflict', () =>
 		dbRunner(
@@ -276,16 +349,21 @@ describe('Database compression options', () => {
 			}
 		));
 
-	it('should not treat an explicit none after an omitted compression as a conflict', () =>
+	it('should compare explicit none against the effective omitted compression', () =>
 		dbRunner(
 			{ dbOptions: [{}, { compression: false, name: 'other' }], skipOpen: true },
 			async ({ db: first }, { db: second }) => {
+				const snappySupported = isCompressionSupported('snappy');
 				first.open();
-				expect(() => second.open()).not.toThrow();
+				if (snappySupported) {
+					expect(() => second.open()).toThrow('Database already open with compression');
+				} else {
+					expect(() => second.open()).not.toThrow();
+				}
 			}
 		));
 
-	it('should allow reopening an open path with a matching or omitted compression', () =>
+	zlibIt('should allow reopening an open path with a matching or omitted compression', () =>
 		dbRunner(
 			{
 				dbOptions: [
@@ -300,5 +378,6 @@ describe('Database compression options', () => {
 				expect(() => matching.open()).not.toThrow();
 				expect(() => omitted.open()).not.toThrow();
 			}
-		));
+		)
+	);
 });

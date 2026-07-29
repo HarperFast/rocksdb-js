@@ -83,11 +83,14 @@ export interface StoreOptions extends Omit<
 	'compression' | 'mode' | 'transactionLogRetentionMs'
 > {
 	/**
-	 * Enables SST block compression for newly written table files. `true`
-	 * selects `'zlib'`, the only algorithm the published prebuilt links; `false`
-	 * means none. Omitting it leaves whatever your RocksDB build defaults to,
-	 * which is none in the published prebuilt but snappy in a build linking it.
-	 * Naming an algorithm the build lacks throws.
+	 * Enables SST block compression for newly written table files. Values whose
+	 * uncompressed size is 2,048 bytes or greater are stored in blob files, which
+	 * remain uncompressed; this option does not affect them.
+	 *
+	 * `true` selects `'zlib'`, the only algorithm the published prebuilt links;
+	 * `false` means none. Omitting it leaves whatever your RocksDB build defaults
+	 * to, which is none in the published prebuilt but snappy in a build linking
+	 * it. Naming an algorithm the build lacks throws.
 	 *
 	 * Applies database-wide and is fixed by the first `open()` of a path, since
 	 * every handle shares one RocksDB instance. A later handle may omit it; a

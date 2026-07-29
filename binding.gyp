@@ -4,7 +4,10 @@
 	# do not reliably override a target-scoped default under node-gyp's make
 	# generator, so an explicit env read is used instead. Enable with:
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
-	'variables': { "rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")" },
+	'variables': {
+		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
+		"rocksdb_from_source%": "<!(node -p \"process.env.ROCKSDB_PATH?1:0\")",
+	},
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
 	# Node Windows build is now compiled with ClangCL + ThinLTO, but this addon
@@ -113,18 +116,23 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
-							# bundle it; link the zlib static lib shipped alongside it in the
-							# RocksDB prebuild so the compressor object resolves when the linker
-							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
-							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
 						]
 					},
 					'xcode_settings': {
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
 						'MACOSX_DEPLOYMENT_TARGET': '26.0',
 						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
+					}
+				}],
+				['(OS=="linux" or OS=="mac") and rocksdb_from_source==0', {
+					'link_settings': {
+						'libraries': [
+							# The downloaded prebuild's librocksdb.a references zlib but does
+							# not bundle it. ROCKSDB_PATH builds supply their own dependency
+							# linkage and must not be forced to provide this prebuild-only file.
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+						]
 					}
 				}],
 				# AddressSanitizer instrumentation for diagnosing heap corruption
@@ -274,18 +282,23 @@
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
-							# bundle it; link the zlib static lib shipped alongside it in the
-							# RocksDB prebuild so the compressor object resolves when the linker
-							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
-							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a'
 						]
 					},
 					'xcode_settings': {
 						'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
 						'MACOSX_DEPLOYMENT_TARGET': '26.0',
 						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
+					}
+				}],
+				['(OS=="linux" or OS=="mac") and rocksdb_from_source==0', {
+					'link_settings': {
+						'libraries': [
+							# The downloaded prebuild's librocksdb.a references zlib but does
+							# not bundle it. ROCKSDB_PATH builds supply their own dependency
+							# linkage and must not be forced to provide this prebuild-only file.
+							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+						]
 					}
 				}],
 				# ASan for the standalone (no-Node) GoogleTest binary. Unlike the

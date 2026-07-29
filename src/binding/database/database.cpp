@@ -1,6 +1,7 @@
 #include <node_api.h>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <sstream>
 #include "database/database.h"
 #include "database/db_handle.h"
@@ -1403,18 +1404,21 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", dbHandleOptions.name));
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "compression", dbHandleOptions.compression));
+	std::optional<std::string> compression;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "compression", compression));
 	// Validated here, not in DBDescriptor::open: an open that reuses an
-	// already-open path never reaches it.
-	if (!dbHandleOptions.compression.empty()) {
+	// already-open path never reaches it. Preserve property presence so an
+	// explicit empty string is rejected rather than treated as omission.
+	if (compression.has_value()) {
 		rocksdb::CompressionType compressionType;
 		std::string compressionError;
 		if (!rocksdb_js::tryResolveCompressionType(
-			dbHandleOptions.compression, compressionType, compressionError
+			*compression, compressionType, compressionError
 		)) {
 			::napi_throw_error(env, nullptr, compressionError.c_str());
 			return nullptr;
 		}
+		dbHandleOptions.compression = *compression;
 	}
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));

@@ -71,16 +71,6 @@ TEST(CompressionTest, EveryKnownNameEitherResolvesOrReportsUnsupported) {
 	}
 }
 
-// zlib backs the `compression: true` shorthand, and the prebuilt links libz
-// explicitly for this reason. If this fails on a platform, that shorthand is
-// broken there and needs a different default.
-TEST(CompressionTest, ZlibIsAvailable) {
-	rocksdb::CompressionType type = rocksdb::kNoCompression;
-	std::string error;
-	EXPECT_TRUE(tryResolveCompressionType("zlib", type, error)) << error;
-	EXPECT_EQ(type, rocksdb::kZlibCompression);
-}
-
 TEST(CompressionTest, SupportedNamesAlwaysIncludesNone) {
 	EXPECT_NE(supportedCompressionNames().find("none"), std::string::npos);
 }
