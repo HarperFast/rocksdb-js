@@ -114,12 +114,24 @@ describe('Transaction log crash recovery', () => {
 
 				// simulate a crash after two of the three entries reached disk
 				const image = readFileSync(logPath);
-				await writeFile(logPath, image.subarray(0, image.length - entrySize));
+				const crashedSize = image.length - entrySize;
+				await writeFile(logPath, image.subarray(0, crashedSize));
 
 				database = RocksDatabase.open(dbPath);
 				const reopened = database.useLog('foo');
-				// the prefix is gone from the file itself, not just hidden behind the watermark
-				expect(statSync(logPath).size).toBe(afterComplete);
+				// The prefix is gone from the file itself, not just hidden behind the watermark.
+				// POSIX truncates it; Windows keeps the physical allocation and zeroes the range.
+				// Check this before query() because Windows may extend the current file for mapping.
+				const recoveredImage = readFileSync(logPath);
+				if (process.platform === 'win32') {
+					expect(recoveredImage.length).toBe(crashedSize);
+					expect(recoveredImage.subarray(afterComplete)).toEqual(
+						Buffer.alloc(crashedSize - afterComplete)
+					);
+				} else {
+					expect(recoveredImage.length).toBe(afterComplete);
+				}
+				expect(parseTransactionLog(logPath).size).toBe(afterComplete);
 				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(1);
 				expect(Array.from(reopened.query({ start: 0 })).length).toBe(1);
 
