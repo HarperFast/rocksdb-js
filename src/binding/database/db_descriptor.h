@@ -93,8 +93,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	bool readOnly;
 
 	/**
-	 * The column family options `DB::Open` was given, retained so families
-	 * created later are configured the same way.
+	 * Base column family options retained from `DB::Open`. Families created
+	 * later preserve these table/blob settings while applying the current
+	 * handle's per-CF memory options.
 	 */
 	rocksdb::ColumnFamilyOptions cfOptions;
 
