@@ -4,7 +4,16 @@
 	# do not reliably override a target-scoped default under node-gyp's make
 	# generator, so an explicit env read is used instead. Enable with:
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
-	'variables': { "rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")" },
+	'variables': {
+		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
+		# Compression static libs the resolved RocksDB prebuild actually ships,
+		# enumerated at configure time. Older prebuilds ship only zlib; a
+		# compression-enabled prebuild adds snappy/lz4/zstd/bzip2. Linking exactly
+		# what is present lets both build (a missing lib errors "no such file"; an
+		# unlinked one the prebuild needs errors "undefined symbols"). See
+		# scripts/rocksdb-link-libs.mjs.
+		'rocksdb_compression_libs': ['<!@(node <(module_root_dir)/scripts/rocksdb-link-libs.mjs)'],
+	},
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
 	# Node Windows build is now compiled with ClangCL + ThinLTO, but this addon
@@ -114,11 +123,12 @@
 					'link_settings': {
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
-							# bundle it; link the zlib static lib shipped alongside it in the
-							# RocksDB prebuild so the compressor object resolves when the linker
-							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
-							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+							# Compression libs the prebuild actually ships (zlib only on older
+							# prebuilds; snappy/lz4/zstd/bzip2 too on compression-enabled ones),
+							# enumerated by scripts/rocksdb-link-libs.mjs. Spliced after
+							# librocksdb.a because GNU ld is order-sensitive (it references their
+							# symbols).
+							'<@(rocksdb_compression_libs)'
 						]
 					},
 					'xcode_settings': {
@@ -161,7 +171,9 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'rocksdb.lib',
+								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
+								'<@(rocksdb_compression_libs)'
 							]
 						}
 					}
@@ -186,7 +198,9 @@
 							],
 							'AdditionalDependencies': [
 								# 'rocksdbd.lib',
-								'rocksdb.lib'
+								'rocksdb.lib',
+								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
+								'<@(rocksdb_compression_libs)'
 							]
 						}
 					},
@@ -264,7 +278,9 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'rocksdb.lib',
+								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
+								'<@(rocksdb_compression_libs)'
 							]
 						}
 					}
@@ -275,11 +291,12 @@
 					'link_settings': {
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
-							# bundle it; link the zlib static lib shipped alongside it in the
-							# RocksDB prebuild so the compressor object resolves when the linker
-							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
-							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+							# Compression libs the prebuild actually ships (zlib only on older
+							# prebuilds; snappy/lz4/zstd/bzip2 too on compression-enabled ones),
+							# enumerated by scripts/rocksdb-link-libs.mjs. Spliced after
+							# librocksdb.a because GNU ld is order-sensitive (it references their
+							# symbols).
+							'<@(rocksdb_compression_libs)'
 						]
 					},
 					'xcode_settings': {
@@ -316,7 +333,9 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'rocksdb.lib',
+								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
+								'<@(rocksdb_compression_libs)'
 							]
 						}
 					}
@@ -335,7 +354,9 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'rocksdb.lib',
+								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
+								'<@(rocksdb_compression_libs)'
 							]
 						}
 					},
