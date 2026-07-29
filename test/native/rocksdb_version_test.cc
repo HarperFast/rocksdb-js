@@ -24,7 +24,13 @@ TEST(RocksDBVersion, MatchesPackagePin) {
 
 	std::string expected = expectedVersion();
 	if (!expected.empty()) {
-		EXPECT_EQ(version, expected) << "Linked librocksdb version should match package.json rocksdb.version";
+		// package.json may pin a downstream prebuild revision suffix (e.g.
+		// "11.1.2-1") that RocksDB's own version.h does not encode. Compare
+		// against the base MAJOR.MINOR.PATCH, ignoring any "-N" suffix.
+		std::string expectedBase = expected.substr(0, expected.find('-'));
+		EXPECT_EQ(version, expectedBase)
+			<< "Linked librocksdb version should match package.json rocksdb.version "
+			<< "(base version, ignoring any -N prebuild revision suffix)";
 	} else {
 		EXPECT_FALSE(version.empty());
 	}
