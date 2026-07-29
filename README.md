@@ -46,7 +46,7 @@ Creates a new database instance.
 - `options: object` [optional]
   - `compression: string | { algorithm: string, level?: number }` The block/blob compression
     algorithm for this column family. Pass an algorithm name — one of `'none'`, `'snappy'`,
-    `'zlib'`, `'bzip2'`, `'lz4'`, `'lz4hc'`, `'xpress'`, or `'zstd'` — or an object with an
+    `'zlib'`, `'bzip2'`, `'lz4'`, `'lz4hc'`, or `'zstd'` — or an object with an
     `algorithm` and an optional `level` (forwarded to RocksDB's `compression_opts.level`; the
     meaning is algorithm-specific). Applies to both SST data blocks and blob files (large values).
     Defaults to `'lz4'` when the native build supports it, otherwise RocksDB's own default (Snappy
@@ -950,7 +950,6 @@ build — see **Availability** below.
 | `bzip2`  | High ratio, slow; rarely worth it over zstd.                                  |
 | `lz4`    | Very fast, modest ratio. `rocksdb-js` default when available.                 |
 | `lz4hc`  | LZ4 high-compression variant: better ratio, slower writes, same fast reads.   |
-| `xpress` | Windows-only (Microsoft Xpress).                                              |
 | `zstd`   | Best ratio-for-speed of the set; supports `level` (higher = smaller, slower). |
 
 Set the algorithm per column family with the `compression` option when opening a database:
