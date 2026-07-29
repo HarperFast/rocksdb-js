@@ -123,11 +123,6 @@
 					'link_settings': {
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# Compression libs the prebuild actually ships (zlib only on older
-							# prebuilds; snappy/lz4/zstd/bzip2 too on compression-enabled ones),
-							# enumerated by scripts/rocksdb-link-libs.mjs. Spliced after
-							# librocksdb.a because GNU ld is order-sensitive (it references their
-							# symbols).
 							'<@(rocksdb_compression_libs)'
 						]
 					},
@@ -172,7 +167,6 @@
 							],
 							'AdditionalDependencies': [
 								'rocksdb.lib',
-								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
 								'<@(rocksdb_compression_libs)'
 							]
 						}
@@ -199,7 +193,6 @@
 							'AdditionalDependencies': [
 								# 'rocksdbd.lib',
 								'rocksdb.lib',
-								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
 								'<@(rocksdb_compression_libs)'
 							]
 						}
@@ -279,7 +272,6 @@
 							],
 							'AdditionalDependencies': [
 								'rocksdb.lib',
-								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
 								'<@(rocksdb_compression_libs)'
 							]
 						}
@@ -291,11 +283,6 @@
 					'link_settings': {
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# Compression libs the prebuild actually ships (zlib only on older
-							# prebuilds; snappy/lz4/zstd/bzip2 too on compression-enabled ones),
-							# enumerated by scripts/rocksdb-link-libs.mjs. Spliced after
-							# librocksdb.a because GNU ld is order-sensitive (it references their
-							# symbols).
 							'<@(rocksdb_compression_libs)'
 						]
 					},
@@ -334,7 +321,6 @@
 							],
 							'AdditionalDependencies': [
 								'rocksdb.lib',
-								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
 								'<@(rocksdb_compression_libs)'
 							]
 						}
@@ -355,7 +341,6 @@
 							],
 							'AdditionalDependencies': [
 								'rocksdb.lib',
-								# Compression libs the prebuild ships (see rocksdb-link-libs.mjs).
 								'<@(rocksdb_compression_libs)'
 							]
 						}
