@@ -54,6 +54,15 @@ describe('init-rocksdb version-check', () => {
 			expect(installedSatisfiesPin(undefined, '11.1.2-1', undefined)).toBe(false);
 			expect(installedSatisfiesPin({ version: undefined }, '11.1.2-1', undefined)).toBe(false);
 		});
+
+		it('is false and does not throw on invalid semver input', () => {
+			expect(installedSatisfiesPin({ version: 'not-a-version' }, '11.1.2-1', undefined)).toBe(
+				false
+			);
+			expect(installedSatisfiesPin({ version: '11.1.2-1' }, 'not-a-version', undefined)).toBe(
+				false
+			);
+		});
 	});
 
 	describe('prebuildIsRedundant', () => {
@@ -83,6 +92,15 @@ describe('init-rocksdb version-check', () => {
 			expect(
 				prebuildIsRedundant({ version: '11.1.2', runtime: '-glibc' }, 'latest', '11.1.2', '-musl')
 			).toBe(false);
+		});
+
+		it('does not block and does not throw on invalid semver input', () => {
+			expect(prebuildIsRedundant({ version: 'not-a-version' }, 'latest', '11.1.2', undefined)).toBe(
+				false
+			);
+			expect(prebuildIsRedundant({ version: '11.1.2' }, 'latest', 'not-a-version', undefined)).toBe(
+				false
+			);
 		});
 	});
 

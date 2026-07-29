@@ -33,6 +33,11 @@ export function installedSatisfiesPin(
 	return (
 		isExactVersionPin(desiredVersion) &&
 		!!installed?.version &&
+		// Guard against a corrupted rocksdb.json or a non-semver ROCKSDB_VERSION:
+		// semver.eq throws on invalid input. Treating them as "not satisfied"
+		// falls through to getPrebuild, which fails with a clear "not found".
+		!!semver.valid(installed.version) &&
+		!!semver.valid(desiredVersion) &&
 		semver.eq(installed.version, desiredVersion) &&
 		runtimeMatches(installed, runtime)
 	);
@@ -55,6 +60,10 @@ export function prebuildIsRedundant(
 	return (
 		!isExactVersionPin(desiredVersion) &&
 		!!installed?.version &&
+		// See installedSatisfiesPin: guard invalid input so a corrupted version
+		// never throws. "Not redundant" falls through to a (re)download.
+		!!semver.valid(installed.version) &&
+		!!semver.valid(prebuildVersion) &&
 		semver.lte(prebuildVersion, installed.version) &&
 		runtimeMatches(installed, runtime)
 	);
