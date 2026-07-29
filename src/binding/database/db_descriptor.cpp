@@ -836,7 +836,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
-	applyCompression(cfOptions, options.compression, options.compressionLevel);
+	if (options.compression) {
+		cfOptions.compression = *options.compression;
+		// Large values are stored in blob files (enable_blob_files), which have
+		// their own compression setting that defaults to none. Apply the same
+		// algorithm there so the option compresses the whole dataset, not just the
+		// inline (< min_blob_size) portion.
+		cfOptions.blob_compression_type = *options.compression;
+		if (options.compressionLevel) {
+			cfOptions.compression_opts.level = *options.compressionLevel;
+		}
+	}
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener

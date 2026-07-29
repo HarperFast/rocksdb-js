@@ -153,12 +153,12 @@ export interface StoreOptions extends Omit<
 	 * files (large values). Which algorithms are available depends on the native
 	 * build — see `supportedCompression`.
 	 *
-	 * When omitted, defaults to LZ4 if the build supports it, otherwise RocksDB's
-	 * own default (Snappy when linked, else no compression). Compression is a
-	 * dynamically-changeable option: reopening with a different algorithm governs
-	 * subsequently written files; existing files keep their compression until
-	 * rewritten by compaction. Use the `compression` getter to read the value
-	 * currently in effect.
+	 * When omitted, defaults to `lz4` if the build supports it, otherwise
+	 * RocksDB's own default (Snappy when linked, else no compression).
+	 * Compression is a dynamically-changeable option: reopening with a
+	 * different algorithm governs subsequently written files; existing files
+	 * keep their compression until rewritten by compaction. Use the
+	 * `compression` getter to read the value currently in effect.
 	 *
 	 * @default 'lz4'
 	 */
@@ -253,8 +253,7 @@ export class Store {
 
 	/**
 	 * The compression algorithm (or `{ algorithm, level }`) requested for this
-	 * store's column family. Normalized and applied when the database opens; use
-	 * the `getCompression()` method to read the algorithm actually in effect.
+	 * store's column family. Normalized and applied when the database opens.
 	 */
 	compression?: CompressionOption;
 
@@ -949,19 +948,6 @@ export class Store {
 	 */
 	isOpen(): boolean {
 		return this.db.opened;
-	}
-
-	/**
-	 * Returns the compression algorithm currently in effect for this store's
-	 * column family, read live from the open RocksDB. The database must be open.
-	 *
-	 * @returns the algorithm name (e.g. `'lz4'`, `'zstd'`, `'none'`).
-	 */
-	getCompression(): CompressionAlgorithm {
-		if (!this.db.opened) {
-			throw new Error('Database not open');
-		}
-		return this.db.getCompression() as CompressionAlgorithm;
 	}
 
 	/**

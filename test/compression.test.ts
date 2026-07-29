@@ -124,6 +124,11 @@ describe('Compression', () => {
 				db.close();
 			}
 		});
+
+		it('should error if database is not open', () => {
+			const db = new RocksDatabase(tempPath());
+			expect(() => db.compression).toThrow('Database not open');
+		});
 	});
 
 	describe('validation', () => {

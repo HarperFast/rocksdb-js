@@ -281,7 +281,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	get compression(): CompressionAlgorithm {
-		return this.store.getCompression();
+		return this.store.db.getCompression() as CompressionAlgorithm;
 	}
 
 	/**

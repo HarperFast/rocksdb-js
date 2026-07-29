@@ -25,18 +25,6 @@ namespace rocksdb_js {
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error);
 
-/**
- * Applies a compression algorithm and optional level to column family options.
- * When `compression` is set, it governs both SST block compression and blob
- * file compression (`blob_compression_type`), which otherwise defaults to no
- * compression. A `nullopt` compression leaves RocksDB's own defaults in place.
- */
-void applyCompression(
-	rocksdb::ColumnFamilyOptions& cfOptions,
-	const std::optional<rocksdb::CompressionType>& compression,
-	const std::optional<int>& compressionLevel
-);
-
 std::shared_ptr<rocksdb::ColumnFamilyHandle> createRocksDBColumnFamily(
 	const std::shared_ptr<rocksdb::DB> db,
 	const std::string& name,
