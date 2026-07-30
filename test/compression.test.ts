@@ -371,22 +371,29 @@ describe('Compression', () => {
 	});
 
 	describe('configure-rocksdb.mjs (build script)', () => {
-		it('emits only whitespace-free link tokens (safe for gyp <!@() under spaced paths)', () => {
-			// binding.gyp splices the script's stdout via <!@(), which splits on
-			// whitespace. Every emitted token must therefore be whitespace-free — no
-			// absolute path that could carry a space from a spaced checkout dir.
-			const out = execFileSync(
-				process.execPath,
-				[join(repoRoot, 'scripts', 'configure-rocksdb.mjs')],
-				{ cwd: repoRoot, encoding: 'utf8' }
-			).trim();
-			const tokens = out ? out.split('\n') : [];
-			for (const token of tokens) {
-				expect(token).not.toMatch(/\s/);
-				// POSIX: `-l:libX.a` / `-lX`; Windows: `X.lib`.
-				expect(token.startsWith('-l') || token.endsWith('.lib')).toBe(true);
+		// node-gyp always runs this script with `node`; under Bun/Deno the test's
+		// `process.execPath` would be the wrong runtime (and tsx's CLI isn't
+		// Bun-compatible), so only exercise it on the runtime the build uses.
+		const nonNodeRuntime = !!process.versions.bun || !!process.versions.deno;
+		it.skipIf(nonNodeRuntime)(
+			'emits only whitespace-free link tokens (safe for gyp <!@() under spaced paths)',
+			() => {
+				// binding.gyp splices the script's stdout via <!@(), which splits on
+				// whitespace. Every emitted token must therefore be whitespace-free — no
+				// absolute path that could carry a space from a spaced checkout dir.
+				const out = execFileSync(
+					process.execPath,
+					[join(repoRoot, 'scripts', 'configure-rocksdb.mjs')],
+					{ cwd: repoRoot, encoding: 'utf8' }
+				).trim();
+				const tokens = out ? out.split('\n') : [];
+				for (const token of tokens) {
+					expect(token).not.toMatch(/\s/);
+					// POSIX: `-l:libX.a` / `-lX`; Windows: `X.lib`.
+					expect(token.startsWith('-l') || token.endsWith('.lib')).toBe(true);
+				}
 			}
-		});
+		);
 	});
 
 	describe('compression getter shape', () => {
