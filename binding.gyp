@@ -42,7 +42,6 @@
 	'targets': [
 		{
 			'target_name': 'rocksdb-js',
-			'dependencies': ['prepare-rocksdb'],
 			'include_dirs': [
 				'deps/rocksdb/include',
 				'src/binding',
@@ -209,7 +208,7 @@
 		{
 			'target_name': 'rocksdb-js-native-tests',
 			'type': 'executable',
-			'dependencies': ['prepare-rocksdb', 'deps/gtest.gyp:gtest_main'],
+			'dependencies': ['deps/gtest.gyp:gtest_main'],
 			'include_dirs': [
 				'deps/rocksdb/include',
 				'src/binding',
@@ -353,26 +352,6 @@
 					}
 				}
 			}
-		},
-		{
-			'target_name': 'prepare-rocksdb',
-			'type': 'none',
-			'actions': [
-				{
-					'action_name': 'prepare_rocksdb',
-					'message': 'Preparing RocksDB...',
-					'action': [
-						'<(module_root_dir)/node_modules/.bin/tsx',
-						'<(module_root_dir)/scripts/init-rocksdb/main.ts',
-					],
-					'inputs': [
-						'<(module_root_dir)/scripts/init-rocksdb/main.ts',
-					],
-					'outputs': [
-						'deps/rocksdb/include',
-					],
-				}
-			]
 		},
 	]
 }

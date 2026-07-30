@@ -31,16 +31,19 @@ const candidates = isWin
 	: ['libsnappy.a', 'liblz4.a', 'libzstd.a', 'libbz2.a', 'libz.a'];
 
 // Reconcile deps/rocksdb to the pinned version BEFORE enumerating. This runs at
-// gyp configure time, which is before the prepare-rocksdb build action, so the
-// installed prebuild may be absent OR a different version than package.json
-// pins — either way the lib set on disk would be stale. init-rocksdb downloads
-// (or builds) the pinned version on a mismatch and no-ops when already correct,
-// so the enumeration below reflects the version that will actually be linked.
-// We must always run it, not just when librocksdb is missing: a wrong-version
-// librocksdb is present but has the wrong compression lib set. Its stdout is
-// discarded — only the library list may reach gyp on our stdout. `shell` on
-// Windows so the `.cmd` shim resolves (mirrors scripts/native-test/run.mjs).
-spawnSync(
+// gyp configure time — before any target compiles or links — and is the sole
+// step that provisions the prebuild (there is no separate build-time action, so
+// every node-gyp invocation self-provisions via this configure-time spawn). It
+// must always run: the installed prebuild may be absent OR a different version
+// than package.json pins — either way the lib set on disk would be stale.
+// init-rocksdb downloads (or builds) the pinned version on a mismatch and no-ops
+// when already correct, so the enumeration below reflects the version that will
+// actually be linked. We must always run it, not just when librocksdb is
+// missing: a wrong-version librocksdb is present but has the wrong compression
+// lib set. Its stdout is discarded — only the library list may reach gyp on our
+// stdout. `shell` on Windows so the `.cmd` shim resolves (mirrors
+// scripts/native-test/run.mjs).
+const result = spawnSync(
 	join(root, 'node_modules', '.bin', 'tsx'),
 	[join(root, 'scripts', 'init-rocksdb', 'main.ts')],
 	{
@@ -50,14 +53,32 @@ spawnSync(
 	}
 );
 
-let present = [];
-try {
-	const files = new Set(readdirSync(libDir));
-	present = candidates.filter((name) => files.has(name));
-} catch {
-	// deps/rocksdb/lib still missing (prep failed); emit nothing. The static
-	// librocksdb path in binding.gyp will surface a clear link error.
+// Provisioning is a hard prerequisite: if it failed, enumerating below would
+// emit a stale or empty lib set and defer the failure to a confusing link
+// error. A non-zero exit here aborts gyp configure. init-rocksdb prints its own
+// diagnostics to inherited stderr.
+if (result.error) {
+	// tsx itself could not be launched (e.g. ENOENT / missing dependency).
+	console.error(`Failed to run init-rocksdb: ${result.error.message}`);
+	process.exit(1);
 }
+if (result.status !== 0) {
+	process.exit(result.status ?? 1);
+}
+
+// init-rocksdb succeeded, so deps/rocksdb/lib exists (both the download and
+// build-from-source paths create it). An empty enumeration is legitimate — a
+// build-from-source tree ships only librocksdb.a, and a none-only prebuild has
+// no compression archives — but a missing dir despite a successful prep is an
+// invariant violation, so fail loudly rather than emit a misleading empty list.
+let files;
+try {
+	files = new Set(readdirSync(libDir));
+} catch (error) {
+	console.error(`init-rocksdb succeeded but ${libDir} is missing: ${error.message}`);
+	process.exit(1);
+}
+const present = candidates.filter((name) => files.has(name));
 
 // One path per line; gyp's `<!@()` splits on whitespace into a list. POSIX
 // needs full paths (used directly in `libraries`); Windows uses bare names
