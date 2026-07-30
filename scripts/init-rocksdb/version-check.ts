@@ -34,11 +34,14 @@ export function installedSatisfiesPin(
 		isExactVersionPin(desiredVersion) &&
 		!!installed?.version &&
 		// Guard against a corrupted rocksdb.json or a non-semver ROCKSDB_VERSION:
-		// semver.eq throws on invalid input. Treating them as "not satisfied"
-		// falls through to getPrebuild, which fails with a clear "not found".
+		// the semver comparators throw on invalid input. Treating them as "not
+		// satisfied" falls through to getPrebuild, which fails with a clear "not
+		// found". Use compareBuild (not eq) so build metadata is part of the
+		// identity — an exact pin like 11.1.2+rev2 must not be satisfied by an
+		// installed 11.1.2+rev1 (eq ignores everything after `+`).
 		!!semver.valid(installed.version) &&
 		!!semver.valid(desiredVersion) &&
-		semver.eq(installed.version, desiredVersion) &&
+		semver.compareBuild(installed.version, desiredVersion) === 0 &&
 		runtimeMatches(installed, runtime)
 	);
 }

@@ -3,8 +3,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,12 +34,28 @@ const binaryName =
 	process.platform === 'win32' ? 'rocksdb-js-native-tests.exe' : 'rocksdb-js-native-tests';
 const binary = join(root, 'build', config, binaryName);
 
-if (!existsSync(binary) || process.env.NATIVE_TEST_REBUILD === '1') {
+// The compiled binary is only valid for the RocksDB version it was built
+// against. `RocksDBVersion.MatchesPackagePin` checks the base MAJOR.MINOR.PATCH
+// (a `-N` revision suffix isn't in RocksDB's version.h), so a stale binary from
+// an earlier revision (e.g. 11.1.2-1 when the pin is now 11.1.2-2) would still
+// pass. Record the pinned version alongside the binary and force a rebuild when
+// it changes, so the runner never reuses a binary built for a different pin.
+const versionMarker = join(root, 'build', config, '.rocksdb-test-version');
+const builtVersion = existsSync(versionMarker) ? readFileSync(versionMarker, 'utf8').trim() : '';
+
+if (
+	!existsSync(binary) ||
+	process.env.NATIVE_TEST_REBUILD === '1' ||
+	builtVersion !== expectedVersion
+) {
 	const gypArgs = ['rebuild'];
 	if (process.env.NATIVE_TEST_DEBUG === '1') {
 		gypArgs.push('--debug');
 	}
 	run('pnpm', ['exec', 'node-gyp', ...gypArgs]);
+	// Record the pin this binary was built against (node-gyp's prepare-rocksdb
+	// action has reconciled deps/rocksdb to it by now).
+	writeFileSync(versionMarker, expectedVersion);
 }
 
 if (!existsSync(binary)) {

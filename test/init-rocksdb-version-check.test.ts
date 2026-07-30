@@ -32,6 +32,17 @@ describe('init-rocksdb version-check', () => {
 			expect(installedSatisfiesPin({ version: '11.1.2-1' }, '11.1.2-2', undefined)).toBe(false);
 		});
 
+		it('is false when only the build metadata differs (compareBuild, not eq)', () => {
+			// semver.eq ignores everything after `+`, so an exact pin like
+			// 11.1.2+rev2 must not be considered already-satisfied by 11.1.2+rev1.
+			expect(installedSatisfiesPin({ version: '11.1.2+rev1' }, '11.1.2+rev2', undefined)).toBe(
+				false
+			);
+			expect(installedSatisfiesPin({ version: '11.1.2+rev1' }, '11.1.2+rev1', undefined)).toBe(
+				true
+			);
+		});
+
 		it('is false for "latest" or an unset desired version', () => {
 			expect(installedSatisfiesPin({ version: '11.1.2' }, 'latest', undefined)).toBe(false);
 			expect(installedSatisfiesPin({ version: '11.1.2' }, undefined, undefined)).toBe(false);
