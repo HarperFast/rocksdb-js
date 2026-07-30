@@ -790,7 +790,11 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	// shared_ptr<TransactionHandle> as a shared_ptr<DBHandle> and calls opened() through it —
 	// type-confused, and it rejected every async transactional read. Every other Transaction
 	// method relies on the handle's own checks (TransactionHandle::get() validates txn/state).
-	if (!(*txnHandle)->dbHandle || !(*txnHandle)->dbHandle->opened()) {
+	if (!(*txnHandle)->dbHandle) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+	if (!(*txnHandle)->dbHandle->opened()) {
 		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
 	}
