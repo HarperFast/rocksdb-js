@@ -1411,7 +1411,11 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	// compression: a friendly algorithm name (e.g. "lz4", "zstd", "none"). The
 	// TypeScript layer normalizes the string|object public option and validates
 	// against the supported list before we get here; this is the defensive
-	// backstop for a name that isn't recognized or isn't compiled in.
+	// backstop for a name that isn't recognized or isn't compiled in. When the
+	// caller does not specify one, default to LZ4 where the build supports it
+	// (otherwise leave RocksDB's own default). The default is not marked
+	// explicit, so a plain reopen of an already-open column family does not
+	// conflict with its live algorithm (see DBRegistry::OpenDB).
 	std::string compressionName;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "compression", compressionName));
 	if (!compressionName.empty()) {
@@ -1422,6 +1426,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		dbHandleOptions.compression = *type;
+		dbHandleOptions.compressionExplicit = true;
 
 		double compressionLevel = 0;
 		if (rocksdb_js::getProperty(env, options, "compressionLevel", compressionLevel, true) == napi_ok) {
@@ -1433,6 +1438,8 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 			}
 			dbHandleOptions.compressionLevel = static_cast<int>(compressionLevel);
 		}
+	} else if (isCompressionSupported(rocksdb::kLZ4Compression)) {
+		dbHandleOptions.compression = rocksdb::kLZ4Compression;
 	}
 
 	// statistics

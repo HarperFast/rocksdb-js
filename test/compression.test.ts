@@ -1,4 +1,5 @@
 import { type CompressionAlgorithm, RocksDatabase, supportedCompression } from '../src/index.js';
+import { normalizeCompression } from '../src/store.js';
 import { generateDBPath } from './lib/util.js';
 import { readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -198,5 +199,83 @@ describe('Compression', () => {
 				expect(dirSize(paths.compressed)).toBeLessThan(dirSize(paths.none));
 			}
 		);
+	});
+
+	describe('already-open column family', () => {
+		it.skipIf(!realCompressor)(
+			'throws when a second open explicitly requests a different compression',
+			() => {
+				const path = tempPath();
+				const dbA = RocksDatabase.open(path, { compression: 'none' });
+				try {
+					expect(() => RocksDatabase.open(path, { compression: realCompressor })).toThrow(
+						/already open with compression/
+					);
+				} finally {
+					dbA.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor)('allows a second open requesting the same compression', () => {
+			const path = tempPath();
+			const dbA = RocksDatabase.open(path, { compression: realCompressor });
+			let dbB: RocksDatabase | undefined;
+			try {
+				dbB = RocksDatabase.open(path, { compression: realCompressor });
+				expect(dbB.compression).toBe(realCompressor);
+			} finally {
+				dbA.close();
+				dbB?.close();
+			}
+		});
+
+		it.skipIf(!realCompressor)(
+			'allows a plain reopen without specifying compression (inherits the live setting)',
+			() => {
+				// The default compression is not "explicit", so a plain reopen must
+				// not conflict with the already-open column family's algorithm.
+				const path = tempPath();
+				const dbA = RocksDatabase.open(path, { compression: realCompressor });
+				let dbB: RocksDatabase | undefined;
+				try {
+					dbB = RocksDatabase.open(path);
+					expect(dbB.compression).toBe(realCompressor);
+				} finally {
+					dbA.close();
+					dbB?.close();
+				}
+			}
+		);
+	});
+
+	describe('normalizeCompression', () => {
+		it('returns empty (native default) for an unset option', () => {
+			expect(normalizeCompression(undefined)).toEqual({});
+			expect(normalizeCompression(null as never)).toEqual({});
+		});
+
+		it('throws for an object without an algorithm', () => {
+			expect(() => normalizeCompression({ level: 3 } as never)).toThrow(TypeError);
+			expect(() => normalizeCompression({} as never)).toThrow(TypeError);
+			expect(() => normalizeCompression([] as never)).toThrow(TypeError);
+		});
+
+		it('throws for an unsupported algorithm as string or object', () => {
+			expect(() => normalizeCompression('gzip' as never)).toThrow(/Unsupported/);
+			expect(() => normalizeCompression({ algorithm: 'gzip' as never })).toThrow(/Unsupported/);
+		});
+
+		it('passes through a supported algorithm and level', () => {
+			expect(normalizeCompression('none')).toEqual({
+				compression: 'none',
+				compressionLevel: undefined,
+			});
+			const algorithm = realCompressor ?? 'none';
+			expect(normalizeCompression({ algorithm, level: 6 })).toEqual({
+				compression: algorithm,
+				compressionLevel: 6,
+			});
+		});
 	});
 });

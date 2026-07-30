@@ -10,9 +10,9 @@
 		# enumerated at configure time. Older prebuilds ship only zlib; a
 		# compression-enabled prebuild adds snappy/lz4/zstd/bzip2. Linking exactly
 		# what is present lets both build (a missing lib errors "no such file"; an
-		# unlinked one the prebuild needs errors "undefined symbols"). See
-		# scripts/rocksdb-link-libs.mjs.
-		'rocksdb_compression_libs': ['<!@(node <(module_root_dir)/scripts/rocksdb-link-libs.mjs)'],
+		# unlinked one the prebuild needs errors "undefined symbols"). The script
+		# also provisions the pinned prebuild first (see scripts/configure-rocksdb.mjs).
+		'rocksdb_compression_libs': ['<!@(node <(module_root_dir)/scripts/configure-rocksdb.mjs)'],
 	},
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official

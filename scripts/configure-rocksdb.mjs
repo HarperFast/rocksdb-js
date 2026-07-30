@@ -1,7 +1,13 @@
 /**
- * Emits the compression static libraries to link against the RocksDB prebuild,
- * one per line, for the current platform. `binding.gyp` runs this at configure
- * time via `<!@()` and splices the result into the link settings.
+ * Configure-time RocksDB step for the native build. `binding.gyp` runs this via
+ * `<!@()` and does two things with it:
+ *
+ *   1. Provisions the pinned RocksDB prebuild (delegates to scripts/init-rocksdb),
+ *      failing the build hard if that cannot be done — configure runs before the
+ *      `prepare-rocksdb` build action, so the prebuild must be present here for
+ *      the enumeration below to be correct.
+ *   2. Emits the compression static libraries to link, one per line, for the
+ *      current platform; gyp splices them into the link settings.
  *
  * RocksDB prebuilds vary in which compression libraries they were compiled
  * with: an older prebuild may ship only zlib, while a compression-enabled one
@@ -24,25 +30,10 @@ const isWin = process.platform === 'win32';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const libDir = join(root, 'deps', 'rocksdb', 'lib');
 
-// Compression archives a prebuild MAY ship. `zs.lib` is zlib on the Windows
-// builds (the POSIX counterpart is `libz.a`).
 const candidates = isWin
 	? ['snappy.lib', 'lz4.lib', 'zstd.lib', 'bz2.lib', 'zs.lib']
 	: ['libsnappy.a', 'liblz4.a', 'libzstd.a', 'libbz2.a', 'libz.a'];
 
-// Reconcile deps/rocksdb to the pinned version BEFORE enumerating. This runs at
-// gyp configure time — before any target compiles or links — and is the sole
-// step that provisions the prebuild (there is no separate build-time action, so
-// every node-gyp invocation self-provisions via this configure-time spawn). It
-// must always run: the installed prebuild may be absent OR a different version
-// than package.json pins — either way the lib set on disk would be stale.
-// init-rocksdb downloads (or builds) the pinned version on a mismatch and no-ops
-// when already correct, so the enumeration below reflects the version that will
-// actually be linked. We must always run it, not just when librocksdb is
-// missing: a wrong-version librocksdb is present but has the wrong compression
-// lib set. Its stdout is discarded — only the library list may reach gyp on our
-// stdout. `shell` on Windows so the `.cmd` shim resolves (mirrors
-// scripts/native-test/run.mjs).
 const result = spawnSync(
 	join(root, 'node_modules', '.bin', 'tsx'),
 	[join(root, 'scripts', 'init-rocksdb', 'main.ts')],

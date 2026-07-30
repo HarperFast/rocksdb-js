@@ -102,32 +102,31 @@ export type CompressionOption =
 
 /**
  * Normalizes the public `compression` option into the primitive fields the
- * native layer expects. When `option` is omitted, defaults to LZ4 if that
- * algorithm is compiled into the binding, otherwise leaves RocksDB's own
- * default in place (Snappy when linked, else no compression). Throws for an
- * algorithm that isn't supported by this build.
+ * native layer expects. When `option` is omitted, returns an empty object and
+ * lets the native layer apply the default (LZ4 when the build supports it, else
+ * RocksDB's own default). Throws a `TypeError` for a malformed option and an
+ * `Error` for an algorithm that isn't supported by this build.
  */
 export function normalizeCompression(option: CompressionOption | undefined): {
 	compression?: string;
 	compressionLevel?: number;
 } {
-	let algorithm: string | undefined;
+	// When unset, leave compression to the native layer, which defaults to LZ4
+	// when the build supports it (see Database::Open).
+	if (option === undefined || option === null) {
+		return {};
+	}
+
+	let algorithm: string;
 	let level: number | undefined;
 
-	if (option === undefined || option === null) {
-		// Project default: LZ4 when available (RocksDB's own default is Snappy).
-		algorithm = supportedCompression.includes('lz4') ? 'lz4' : undefined;
-	} else if (typeof option === 'string') {
+	if (typeof option === 'string') {
 		algorithm = option;
-	} else if (typeof option === 'object') {
+	} else if (typeof option === 'object' && option.algorithm !== undefined) {
 		algorithm = option.algorithm;
 		level = option.level;
 	} else {
-		throw new TypeError('compression must be a string or an { algorithm, level } object');
-	}
-
-	if (algorithm === undefined) {
-		return {};
+		throw new TypeError('compression must be an algorithm name or an { algorithm, level } object');
 	}
 
 	if (!supportedCompression.includes(algorithm)) {

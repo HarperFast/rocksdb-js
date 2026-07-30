@@ -1,6 +1,7 @@
 #include "database/db_registry.h"
 #include "napi/macros.h"
 #include "core/platform.h"
+#include "core/compression.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/table.h"
@@ -337,6 +338,23 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
+		} else if (options.compressionExplicit && options.compression) {
+			// The column family is already open in this process (the DBDescriptor
+			// is process-global and shared across handles/envs). Compression is
+			// fixed per column family at creation, so a second open explicitly
+			// asking for a different algorithm cannot take effect on the reused
+			// handle — reject it rather than silently ignore the request. A plain
+			// reopen (compression defaulted, not explicit) inherits the live
+			// setting and skips this check.
+			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
+			rocksdb::CompressionType current = entry.descriptor->db->GetOptions(cf).compression;
+			if (current != *options.compression) {
+				throw rocksdb_js::DBException(
+					"Column family \"" + name + "\" is already open with compression \"" +
+					rocksdb_js::compressionNameFromType(current) + "\"; cannot reopen it with \"" +
+					rocksdb_js::compressionNameFromType(*options.compression) + "\""
+				);
+			}
 		}
 	} else {
 		try {
