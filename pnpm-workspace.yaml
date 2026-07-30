@@ -3,6 +3,8 @@ allowBuilds:
   lefthook: true
   lmdb: true
   msgpackr-extract: true
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
 minimumReleaseAgeExclude:
   - '@harperfast/*'
   - 'lmdb'
