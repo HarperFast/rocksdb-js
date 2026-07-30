@@ -34,13 +34,20 @@ const candidates = isWin
 	? ['snappy.lib', 'lz4.lib', 'zstd.lib', 'bz2.lib', 'zs.lib']
 	: ['libsnappy.a', 'liblz4.a', 'libzstd.a', 'libbz2.a', 'libz.a'];
 
+// Run tsx via `node <tsx-cli> <script>` rather than the `.bin/tsx` shim. On
+// Windows the shim is a `.cmd`/`.ps1` wrapper that requires `shell: true` to
+// launch (slower, and mis-parses a repo path containing spaces); invoking the
+// current Node executable against tsx's CLI entry avoids the shell entirely and
+// is identical across platforms.
 const result = spawnSync(
-	join(root, 'node_modules', '.bin', 'tsx'),
-	[join(root, 'scripts', 'init-rocksdb', 'main.ts')],
+	process.execPath,
+	[
+		join(root, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+		join(root, 'scripts', 'init-rocksdb', 'main.ts'),
+	],
 	{
 		cwd: root,
 		stdio: ['ignore', 'ignore', 'inherit'],
-		shell: isWin,
 	}
 );
 
