@@ -781,14 +781,15 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Returns the compression algorithm currently in effect for this database's
- * column family as a friendly name (e.g. "lz4", "zstd", "none"), read live from
- * the open RocksDB via `GetOptions`.
+ * Returns the compression currently in effect for this database's column family,
+ * read live from the open RocksDB via `GetOptions`, as an object
+ * `{ algorithm, level? }`. `algorithm` is a friendly name (e.g. "lz4", "zstd",
+ * "none"); `level` is included only when a non-default compression level is set.
  *
  * @example
  * ```typescript
  * const db = NativeDatabase.open('path/to/db');
- * db.getCompression(); // 'lz4'
+ * db.getCompression(); // { algorithm: 'zstd', level: 3 }
  * ```
  */
 napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
@@ -799,7 +800,21 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 	std::string name = compressionNameFromType(opts.compression);
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), NAPI_AUTO_LENGTH, &result));
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value algorithm;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), NAPI_AUTO_LENGTH, &algorithm));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "algorithm", algorithm));
+
+	// compression_opts.level defaults to kDefaultCompressionLevel (a sentinel
+	// meaning "use the algorithm's own default"); only surface a level that was
+	// explicitly configured.
+	if (opts.compression_opts.level != rocksdb::CompressionOptions::kDefaultCompressionLevel) {
+		napi_value level;
+		NAPI_STATUS_THROWS(::napi_create_int32(env, opts.compression_opts.level, &level));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "level", level));
+	}
+
 	return result;
 }
 
@@ -1428,15 +1443,32 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		dbHandleOptions.compression = *type;
 		dbHandleOptions.compressionExplicit = true;
 
-		double compressionLevel = 0;
-		if (rocksdb_js::getProperty(env, options, "compressionLevel", compressionLevel, true) == napi_ok) {
-			if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
-				compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
-			) {
-				::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
-				return nullptr;
+		// compressionLevel is optional, but a present value must be a valid 32-bit
+		// integer. Distinguish "absent" (leave RocksDB's per-algorithm default)
+		// from "present but wrong type" (throw) so a malformed level is never
+		// silently ignored — the TS layer validates too; this is the backstop.
+		bool hasLevel = false;
+		NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "compressionLevel", &hasLevel));
+		if (hasLevel) {
+			napi_value levelValue;
+			NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "compressionLevel", &levelValue));
+			napi_valuetype levelType;
+			NAPI_STATUS_THROWS(::napi_typeof(env, levelValue, &levelType));
+			if (levelType != napi_undefined && levelType != napi_null) {
+				if (levelType != napi_number) {
+					::napi_throw_error(env, nullptr, "compressionLevel must be a number");
+					return nullptr;
+				}
+				double compressionLevel = 0;
+				NAPI_STATUS_THROWS(::napi_get_value_double(env, levelValue, &compressionLevel));
+				if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
+					compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
+				) {
+					::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
+					return nullptr;
+				}
+				dbHandleOptions.compressionLevel = static_cast<int>(compressionLevel);
 			}
-			dbHandleOptions.compressionLevel = static_cast<int>(compressionLevel);
 		}
 	} else if (isCompressionSupported(rocksdb::kLZ4Compression)) {
 		dbHandleOptions.compression = rocksdb::kLZ4Compression;

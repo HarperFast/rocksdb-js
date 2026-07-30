@@ -78,8 +78,24 @@ try {
 }
 const present = candidates.filter((name) => files.has(name));
 
-// One path per line; gyp's `<!@()` splits on whitespace into a list. POSIX
-// needs full paths (used directly in `libraries`); Windows uses bare names
-// resolved via `AdditionalLibraryDirectories`.
-const tokens = present.map((name) => (isWin ? name : join(libDir, name)));
+// One token per line; gyp's `<!@()` splits the output on whitespace into a list,
+// so every token MUST be whitespace-free — an absolute path under a repo checked
+// out to `/tmp/rocks db` would otherwise be split into broken entries. We emit
+// only names/flags and let `binding.gyp` supply the (single, gyp-quoted, so
+// space-safe) library search directory:
+//   - Windows: bare `snappy.lib` names, resolved via `AdditionalLibraryDirectories`.
+//   - Linux:   `-l:libsnappy.a` — force the exact static archive from the search dir.
+//   - macOS:   `-lsnappy` — ld64 has no `-l:`, but the search dir holds only the
+//              `.a` (no dylib), so the static archive is selected.
+const isLinux = process.platform === 'linux';
+const tokens = present.map((name) => {
+	if (isWin) {
+		return name;
+	}
+	if (isLinux) {
+		return `-l:${name}`;
+	}
+	// libsnappy.a -> -lsnappy
+	return '-l' + name.replace(/^lib/, '').replace(/\.a$/, '');
+});
 process.stdout.write(tokens.join('\n'));

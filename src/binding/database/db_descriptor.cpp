@@ -3,9 +3,12 @@
 #include "database/db_settings.h"
 #include "napi/helpers.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "rocksdb/convenience.h"
 #include "rocksdb/listener.h"
+#include "rocksdb/utilities/options_util.h"
 #include <algorithm>
 #include <memory>
+#include <unordered_map>
 
 namespace rocksdb_js {
 
@@ -19,6 +22,61 @@ static std::atomic<uint64_t> vtEpochCounter{1};
 
 static uint64_t nextVtEpoch() {
 	return vtEpochCounter.fetch_add(1, std::memory_order_relaxed);
+}
+
+// A column family's persisted compression, recovered from the on-disk OPTIONS
+// file so a cold open of one CF does not clobber the others (compression is
+// per-CF).
+struct PersistedCompression {
+	rocksdb::CompressionType compression;
+	rocksdb::CompressionType blobCompression;
+	rocksdb::CompressionOptions compressionOpts;
+};
+
+// Applies a compression algorithm (and optional level) to both the SST block
+// compression and the blob-file compression of the given column family options.
+static void applyCompression(
+	rocksdb::ColumnFamilyOptions& cfOptions,
+	rocksdb::CompressionType compression,
+	const std::optional<int>& level
+) {
+	cfOptions.compression = compression;
+	// Large values are stored in blob files (enable_blob_files), which have their
+	// own compression that defaults to none; apply the same algorithm so the
+	// whole dataset is compressed, not just the inline (< min_blob_size) portion.
+	cfOptions.blob_compression_type = compression;
+	if (level) {
+		cfOptions.compression_opts.level = *level;
+	}
+}
+
+// Reads each existing column family's persisted compression from the database's
+// latest OPTIONS file. Returns an empty map when the DB has no OPTIONS file yet
+// (fresh DB) or the file cannot be parsed — callers then fall back to RocksDB's
+// defaults for CFs they are not explicitly configuring.
+static std::unordered_map<std::string, PersistedCompression> loadPersistedCompression(
+	const std::string& path
+) {
+	std::unordered_map<std::string, PersistedCompression> result;
+	rocksdb::ConfigOptions configOptions;
+	// Be permissive: we only read compression fields, so unknown/unsupported
+	// options in the persisted file must not fail the load.
+	configOptions.ignore_unknown_options = true;
+	configOptions.ignore_unsupported_options = true;
+	rocksdb::DBOptions loadedDbOptions;
+	std::vector<rocksdb::ColumnFamilyDescriptor> loadedCfDescriptors;
+	rocksdb::Status status =
+		rocksdb::LoadLatestOptions(configOptions, path, &loadedDbOptions, &loadedCfDescriptors);
+	if (status.ok()) {
+		for (const auto& descriptor : loadedCfDescriptors) {
+			result[descriptor.name] = PersistedCompression{
+				descriptor.options.compression,
+				descriptor.options.blob_compression_type,
+				descriptor.options.compression_opts,
+			};
+		}
+	}
+	return result;
 }
 
 struct JobTracker final {
@@ -828,7 +886,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		dbOptions.statistics = nullptr;
 	}
 
-	// Define base ColumnFamilyOptions that include blob settings
+	// Base ColumnFamilyOptions (blob + write-buffer + table settings) shared by
+	// every column family. Compression is intentionally NOT set here: it is
+	// per-CF, so it is applied per descriptor below.
 	rocksdb::ColumnFamilyOptions cfOptions;
 	cfOptions.enable_blob_files = true;
 	cfOptions.min_blob_size = 2048;
@@ -836,17 +896,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
-	if (options.compression) {
-		cfOptions.compression = *options.compression;
-		// Large values are stored in blob files (enable_blob_files), which have
-		// their own compression setting that defaults to none. Apply the same
-		// algorithm there so the option compresses the whole dataset, not just the
-		// inline (< min_blob_size) portion.
-		cfOptions.blob_compression_type = *options.compression;
-		if (options.compressionLevel) {
-			cfOptions.compression_opts.level = *options.compressionLevel;
-		}
-	}
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
@@ -862,17 +911,38 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
-		// database exists, use existing column families
+		// Database exists. Compression is per-CF: opening one column family must
+		// not change another's algorithm, and RocksDB requires opening every CF
+		// at once with the options we supply (it does not restore persisted
+		// per-CF options on its own). So preserve each CF's persisted compression,
+		// and apply the caller's request ONLY to the target CF (options.name), and
+		// only when it was explicitly requested — the LZ4 default must never
+		// override an existing CF's stored algorithm (a plain reopen inherits it).
+		std::unordered_map<std::string, PersistedCompression> persisted = loadPersistedCompression(path);
 		for (const auto& cfName : columnFamilyNames) {
 			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str());
-			cfDescriptors.emplace_back(cfName, cfOptions); // Use cfOptions here
+			rocksdb::ColumnFamilyOptions cfo = cfOptions;
+			auto it = persisted.find(cfName);
+			if (it != persisted.end()) {
+				cfo.compression = it->second.compression;
+				cfo.blob_compression_type = it->second.blobCompression;
+				cfo.compression_opts = it->second.compressionOpts;
+			}
+			if (cfName == name && options.compression && options.compressionExplicit) {
+				applyCompression(cfo, *options.compression, options.compressionLevel);
+			}
+			cfDescriptors.emplace_back(cfName, cfo);
 		}
 	} else {
-		// database doesn't exist or no column families found, use default
+		// Database doesn't exist or no column families found. Create the default
+		// column family; apply the requested compression to it only when it is the
+		// target (a freshly-created CF gets the request — default or explicit).
 		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n");
-		cfDescriptors = {
-			rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfOptions) // Use cfOptions here
-		};
+		rocksdb::ColumnFamilyOptions cfo = cfOptions;
+		if (options.compression && name == rocksdb::kDefaultColumnFamilyName) {
+			applyCompression(cfo, *options.compression, options.compressionLevel);
+		}
+		cfDescriptors = { rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfo) };
 	}
 
 	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;

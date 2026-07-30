@@ -101,6 +101,13 @@ export type CompressionOption =
 	| { algorithm: CompressionAlgorithm; level?: number };
 
 /**
+ * The compression currently in effect for a column family, as returned by the
+ * `compression` getter. `level` is present only when a non-default compression
+ * level is configured.
+ */
+export type CompressionInfo = { algorithm: CompressionAlgorithm; level?: number };
+
+/**
  * Normalizes the public `compression` option into the primitive fields the
  * native layer expects. When `option` is omitted, returns an empty object and
  * lets the native layer apply the default (LZ4 when the build supports it, else
@@ -124,7 +131,19 @@ export function normalizeCompression(option: CompressionOption | undefined): {
 		algorithm = option;
 	} else if (typeof option === 'object' && option.algorithm !== undefined) {
 		algorithm = option.algorithm;
-		level = option.level;
+		if (option.level !== undefined && option.level !== null) {
+			// TypeScript types `level` as a number, but coerce defensively (e.g. a
+			// numeric string from loosely-typed config) and reject anything that is
+			// not a finite 32-bit integer rather than letting the native layer
+			// silently drop it.
+			const coerced = Number(option.level);
+			if (!Number.isInteger(coerced) || coerced < -2147483648 || coerced > 2147483647) {
+				throw new TypeError(
+					`compression level must be a 32-bit integer, got ${JSON.stringify(option.level)}`
+				);
+			}
+			level = coerced;
+		}
 	} else {
 		throw new TypeError('compression must be an algorithm name or an { algorithm, level } object');
 	}

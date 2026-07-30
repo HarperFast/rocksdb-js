@@ -85,22 +85,36 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
    (`src/binding/database/backup.cpp`). Creating a backup is the `Database::Backup` instance
    method (needs the open DB); restore/list/delete/purge/verify are module-level functions
    operating on a backup directory with no open DB.
-6. **Compression**: a per-column-family open option (`compression`), normalized in the TS Store layer
-   (`normalizeCompression`) to a native string + level, then applied to the column-family options in
-   both CF-build sites (`DBDescriptor::open` for existing/first CFs and `createRocksDBColumnFamily`
-   for later ones — the small apply block is inlined verbatim in each). Non-obvious points: (a) the
-   algorithm is applied to **both** `ColumnFamilyOptions::compression` (SST blocks) **and**
-   `blob_compression_type` — this codebase enables blob files for values ≥ 2KB, and blob compression
-   defaults to none, so setting only the block compression would leave large values uncompressed;
-   (b) the default is **LZ4** (overriding RocksDB's own Snappy default), applied natively in
-   `Database::Open` when the option is unset — but the set of algorithms is build-dependent, so the
-   default falls back to RocksDB's default when LZ4 isn't linked. The native default is marked
-   non-explicit (`DBOptions::compressionExplicit`) so a second in-process open of an already-open
-   column family only rejects (throws in `DBRegistry::OpenDB`) when the caller _explicitly_ requests
-   a different algorithm — a plain reopen inherits the live setting. `supportedCompression` (a module
-   constant built from `rocksdb::GetSupportedCompressions()`) is the source of truth; name↔enum
-   mapping and the supported list live in the Node-free `core/compression.{h,cpp}` (GoogleTest-
-   covered). The `db.compression` getter reads the live value via `DB::GetOptions`.
+6. **Compression**: a **per-column-family** open option (`compression`), normalized in the TS Store
+   layer (`normalizeCompression` — string | `{algorithm, level}` → native string + validated int32
+   level) and applied to the target CF's options. Non-obvious points:
+   - The algorithm is applied to **both** `ColumnFamilyOptions::compression` (SST blocks) **and**
+     `blob_compression_type` — this codebase enables blob files for values ≥ 2KB, and blob
+     compression defaults to none, so setting only block compression leaves large values
+     uncompressed. `compression_opts.level` carries an optional level.
+   - **Per-CF preservation is load-bearing and easy to get wrong.** RocksDB requires opening _every_
+     CF at once with the options you pass, and does **not** restore persisted per-CF options on its
+     own. So `DBDescriptor::open` calls `LoadLatestOptions` (`rocksdb/utilities/options_util.h`) to
+     read each existing CF's persisted compression, opens each CF with _its own_ value, and applies
+     the caller's request **only** to the target CF (`options.name`) — and only when it was
+     _explicitly_ requested. A cold open of one CF must never restamp the others (that was the bug
+     Kris caught: first-open order used to dictate every CF's algorithm). New CFs
+     (`createRocksDBColumnFamily`) get the request/default.
+   - The default is **LZ4** (overriding RocksDB's Snappy default), applied natively in
+     `Database::Open` when unset; build-dependent, so it falls back to RocksDB's default when LZ4
+     isn't linked. The default is marked **non-explicit** (`DBOptions::compressionExplicit`) so it
+     never overrides an existing CF and a plain reopen inherits the live value.
+   - A second in-process open of an already-open CF (the `DBDescriptor` is process-global, shared
+     across handles/`worker_threads`) with an **explicitly different** algorithm _or_ level is
+     **rejected** (throws in `DBRegistry::OpenDB`, comparing both against the live `GetOptions`).
+   - `supportedCompression` (module constant from `rocksdb::GetSupportedCompressions()`) is the
+     source of truth; name↔enum mapping lives in the Node-free `core/compression.{h,cpp}`
+     (GoogleTest-covered). The `db.compression` getter returns `{ algorithm, level? }` read live via
+     `DB::GetOptions` (level omitted when it is the default sentinel).
+   - `scripts/configure-rocksdb.mjs` (run by `binding.gyp` at configure) provisions the pinned
+     prebuild then emits the compression libs to link as **whitespace-free** `-l` flags / `.lib`
+     names (never absolute paths), resolved via a single `library_dirs` entry — so a repo checked
+     out under a path with spaces still links (gyp `<!@()` splits output on whitespace).
 
 ### Transaction Architecture
 

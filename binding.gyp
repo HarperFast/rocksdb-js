@@ -6,13 +6,16 @@
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
 	'variables': {
 		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
-		# Compression static libs the resolved RocksDB prebuild actually ships,
-		# enumerated at configure time. Older prebuilds ship only zlib; a
-		# compression-enabled prebuild adds snappy/lz4/zstd/bzip2. Linking exactly
-		# what is present lets both build (a missing lib errors "no such file"; an
-		# unlinked one the prebuild needs errors "undefined symbols"). The script
-		# also provisions the pinned prebuild first (see scripts/configure-rocksdb.mjs).
-		'rocksdb_compression_libs': ['<!@(node <(module_root_dir)/scripts/configure-rocksdb.mjs)'],
+		# Compression libraries the resolved RocksDB prebuild actually ships (as
+		# `-l` flags / `.lib` names, not absolute paths — see configure-rocksdb.mjs
+		# for why), resolved against the library search dir configured in each
+		# target's link settings. Older prebuilds ship only zlib; a compression-
+		# enabled prebuild adds snappy/lz4/zstd/bzip2. Linking exactly what is
+		# present lets both build (a missing lib errors "no such file"; an unlinked
+		# one the prebuild needs errors "undefined symbols"). The script also
+		# provisions the pinned prebuild first. The script path is quoted so a
+		# repo checkout under a path with spaces still launches it.
+		'rocksdb_compression_libs': ['<!@(node "<(module_root_dir)/scripts/configure-rocksdb.mjs")'],
 	},
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
@@ -120,6 +123,9 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
+						'library_dirs': [
+							'<(module_root_dir)/deps/rocksdb/lib'
+						],
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
 							'<@(rocksdb_compression_libs)'
@@ -280,6 +286,9 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
+						'library_dirs': [
+							'<(module_root_dir)/deps/rocksdb/lib'
+						],
 						'libraries': [
 							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
 							'<@(rocksdb_compression_libs)'

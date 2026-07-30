@@ -120,15 +120,16 @@ const db2 = new RocksDatabase('path/to/db', { name: 'users' });
 console.log(db.columns); // ['default', 'users']
 ```
 
-### `db.compression: string`
+### `db.compression: { algorithm: string, level?: number }`
 
-Returns the compression algorithm currently in effect for this database's column family, read live
-from RocksDB (e.g. `'lz4'`, `'zstd'`, `'none'`). The database must be open. See
+Returns the compression currently in effect for this database's column family, read live from
+RocksDB. `algorithm` is a friendly name (e.g. `'lz4'`, `'zstd'`, `'none'`); `level` is present only
+when a non-default compression level is set. The database must be open. See
 [Compression](#compression).
 
 ```typescript
-const db = RocksDatabase.open('path/to/db', { compression: 'zstd' });
-console.log(db.compression); // 'zstd'
+const db = RocksDatabase.open('path/to/db', { compression: { algorithm: 'zstd', level: 3 } });
+console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
 ### `db.config(options)`
@@ -969,18 +970,25 @@ const db3 = RocksDatabase.open('/path/to/db3', { compression: 'none' });
 supports it. LZ4 is fast with a modest compression ratio, making it a good general-purpose default.
 If LZ4 is not compiled in, the default falls back to RocksDB's own default — Snappy when it is
 linked, otherwise no compression. (RocksDB's stock default is Snappy; `rocksdb-js` overrides it to
-LZ4.) Read the algorithm actually in effect with the [`db.compression`](#dbcompression-string)
-getter.
+LZ4.) Read the algorithm actually in effect with the `db.compression` getter.
 
 **Availability.** The set of algorithms depends on which compression libraries the native binding
 was compiled against, so it varies by build. Always check
 [`supportedCompression`](#supportedcompression) at runtime — opening with an unavailable algorithm
 throws. `'none'` is always available.
 
-**Scope and mutability.** Compression is a per-column-family, dynamically-changeable setting.
-Reopening a database with a different algorithm governs files written afterward; existing SST/blob
-files keep their original compression until they are rewritten by compaction. It also applies to
-blob files (large values), whose compression otherwise defaults to none.
+**Scope and mutability.** Compression is genuinely **per-column-family**. Each `RocksDatabase`
+targets one column family (`name`), and its `compression` applies only to that CF — opening one CF
+never changes another's algorithm, regardless of open order. A column family keeps its own
+compression across a close/reopen (a plain reopen inherits it); the algorithm is dynamically
+changeable, so an explicit change governs files written afterward while existing SST/blob files keep
+their original compression until rewritten by compaction. It also applies to blob files (large
+values), whose compression otherwise defaults to none.
+
+Because a column family's compression is fixed while it is open, if the same column family is opened
+a second time in the same process (another `RocksDatabase` on the same path/`name`, including from a
+`worker_thread`) with an **explicitly different** algorithm or level, the second open **throws** — a
+plain reopen (no `compression`) instead inherits the live setting.
 
 ### `supportedCompression`
 

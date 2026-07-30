@@ -1,9 +1,13 @@
 import { type CompressionAlgorithm, RocksDatabase, supportedCompression } from '../src/index.js';
 import { normalizeCompression } from '../src/store.js';
 import { generateDBPath } from './lib/util.js';
+import { execFileSync } from 'node:child_process';
 import { readdirSync, rmSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const tempPaths: string[] = [];
 
@@ -60,6 +64,10 @@ function populate(db: RocksDatabase, count: number): void {
 // tests are conditional on one being present.
 const algorithms = supportedCompression as readonly CompressionAlgorithm[];
 const realCompressor = algorithms.find((name) => name !== 'none');
+// A compressor that honors a compression level, if the build has one.
+const levelCompressor = algorithms.find((name) =>
+	(['zstd', 'zlib', 'lz4', 'lz4hc', 'bzip2'] as const).includes(name as never)
+);
 
 describe('Compression', () => {
 	describe('supportedCompression', () => {
@@ -75,7 +83,7 @@ describe('Compression', () => {
 		it('reports a supported algorithm by default', () => {
 			const db = RocksDatabase.open(tempPath());
 			try {
-				expect(supportedCompression).toContain(db.compression);
+				expect(supportedCompression).toContain(db.compression.algorithm);
 			} finally {
 				db.close();
 			}
@@ -85,11 +93,11 @@ describe('Compression', () => {
 			const db = RocksDatabase.open(tempPath());
 			try {
 				if (supportedCompression.includes('lz4')) {
-					expect(db.compression).toBe('lz4');
+					expect(db.compression.algorithm).toBe('lz4');
 				} else {
 					// No LZ4: falls back to RocksDB's own default (snappy if linked,
 					// otherwise none). Either way it must be a supported value.
-					expect(supportedCompression).toContain(db.compression);
+					expect(supportedCompression).toContain(db.compression.algorithm);
 				}
 			} finally {
 				db.close();
@@ -100,7 +108,7 @@ describe('Compression', () => {
 			for (const algorithm of algorithms) {
 				const db = RocksDatabase.open(tempPath(), { compression: algorithm });
 				try {
-					expect(db.compression).toBe(algorithm);
+					expect(db.compression.algorithm).toBe(algorithm);
 				} finally {
 					db.close();
 				}
@@ -111,7 +119,7 @@ describe('Compression', () => {
 			const algorithm = realCompressor ?? 'none';
 			const db = RocksDatabase.open(tempPath(), { compression: { algorithm, level: 6 } });
 			try {
-				expect(db.compression).toBe(algorithm);
+				expect(db.compression.algorithm).toBe(algorithm);
 			} finally {
 				db.close();
 			}
@@ -120,7 +128,7 @@ describe('Compression', () => {
 		it('can explicitly disable compression', () => {
 			const db = RocksDatabase.open(tempPath(), { compression: 'none' });
 			try {
-				expect(db.compression).toBe('none');
+				expect(db.compression.algorithm).toBe('none');
 			} finally {
 				db.close();
 			}
@@ -161,7 +169,7 @@ describe('Compression', () => {
 					compression: realCompressor,
 				});
 				populate(compressedDb, 10_000);
-				expect(compressedDb.compression).toBe(realCompressor);
+				expect(compressedDb.compression.algorithm).toBe(realCompressor);
 				compressedDb.close();
 
 				const noneSize = dirSize(nonePath);
@@ -190,8 +198,8 @@ describe('Compression', () => {
 				populate(dbNone, 10_000);
 				populate(dbCompressed, 10_000);
 
-				expect(dbNone.compression).toBe('none');
-				expect(dbCompressed.compression).toBe(realCompressor);
+				expect(dbNone.compression.algorithm).toBe('none');
+				expect(dbCompressed.compression.algorithm).toBe(realCompressor);
 
 				dbNone.close();
 				dbCompressed.close();
@@ -223,7 +231,7 @@ describe('Compression', () => {
 			let dbB: RocksDatabase | undefined;
 			try {
 				dbB = RocksDatabase.open(path, { compression: realCompressor });
-				expect(dbB.compression).toBe(realCompressor);
+				expect(dbB.compression.algorithm).toBe(realCompressor);
 			} finally {
 				dbA.close();
 				dbB?.close();
@@ -240,10 +248,72 @@ describe('Compression', () => {
 				let dbB: RocksDatabase | undefined;
 				try {
 					dbB = RocksDatabase.open(path);
-					expect(dbB.compression).toBe(realCompressor);
+					expect(dbB.compression.algorithm).toBe(realCompressor);
 				} finally {
 					dbA.close();
 					dbB?.close();
+				}
+			}
+		);
+
+		it.skipIf(!levelCompressor)(
+			'throws when a second open requests a different level for the same algorithm',
+			() => {
+				const path = tempPath();
+				const dbA = RocksDatabase.open(path, {
+					compression: { algorithm: levelCompressor!, level: 4 },
+				});
+				let dbSame: RocksDatabase | undefined;
+				try {
+					// Same algorithm + level: allowed.
+					dbSame = RocksDatabase.open(path, {
+						compression: { algorithm: levelCompressor!, level: 4 },
+					});
+					expect(dbSame.compression).toEqual({ algorithm: levelCompressor, level: 4 });
+					// Different level: rejected.
+					expect(() =>
+						RocksDatabase.open(path, { compression: { algorithm: levelCompressor!, level: 6 } })
+					).toThrow(/already open with compression/);
+				} finally {
+					dbA.close();
+					dbSame?.close();
+				}
+			}
+		);
+	});
+
+	describe('per-column-family', () => {
+		it.skipIf(!realCompressor)(
+			'a cold reopen of one column family preserves another CF’s compression',
+			() => {
+				// Regression: the old shared-cfOptions open stamped the opener's
+				// algorithm onto every column family, so first-open order dictated all
+				// CFs. Each CF must keep its own algorithm across a close/reopen.
+				const path = tempPath();
+				const dbPlain = RocksDatabase.open(path, { name: 'plain', compression: 'none' });
+				const dbComp = RocksDatabase.open(path, {
+					name: 'compressed',
+					compression: realCompressor,
+				});
+				dbPlain.putSync(1, 'x');
+				dbComp.putSync(1, 'y');
+				dbPlain.flushSync();
+				dbComp.flushSync();
+				dbPlain.close();
+				dbComp.close();
+
+				// Cold-reopen the 'plain' CF FIRST (explicitly 'none'). The old code
+				// would have opened every CF with 'none'; per-CF must leave
+				// 'compressed' at its own algorithm.
+				const dbPlain2 = RocksDatabase.open(path, { name: 'plain', compression: 'none' });
+				let dbComp2: RocksDatabase | undefined;
+				try {
+					expect(dbPlain2.compression.algorithm).toBe('none');
+					dbComp2 = RocksDatabase.open(path, { name: 'compressed' }); // plain reopen inherits persisted
+					expect(dbComp2.compression.algorithm).toBe(realCompressor);
+				} finally {
+					dbPlain2.close();
+					dbComp2?.close();
 				}
 			}
 		);
@@ -276,6 +346,68 @@ describe('Compression', () => {
 				compression: algorithm,
 				compressionLevel: 6,
 			});
+		});
+
+		it('coerces a numeric-string level and treats null/undefined as omitted', () => {
+			expect(normalizeCompression({ algorithm: 'none', level: '5' as never })).toEqual({
+				compression: 'none',
+				compressionLevel: 5,
+			});
+			expect(normalizeCompression({ algorithm: 'none', level: null as never })).toEqual({
+				compression: 'none',
+				compressionLevel: undefined,
+			});
+		});
+
+		it('throws for a non-integer, out-of-range, or non-numeric level', () => {
+			expect(() => normalizeCompression({ algorithm: 'none', level: '9.5' as never })).toThrow(
+				TypeError
+			);
+			expect(() => normalizeCompression({ algorithm: 'none', level: 'abc' as never })).toThrow(
+				TypeError
+			);
+			expect(() => normalizeCompression({ algorithm: 'none', level: 1e10 })).toThrow(TypeError);
+		});
+	});
+
+	describe('configure-rocksdb.mjs (build script)', () => {
+		it('emits only whitespace-free link tokens (safe for gyp <!@() under spaced paths)', () => {
+			// binding.gyp splices the script's stdout via <!@(), which splits on
+			// whitespace. Every emitted token must therefore be whitespace-free — no
+			// absolute path that could carry a space from a spaced checkout dir.
+			const out = execFileSync(
+				process.execPath,
+				[join(repoRoot, 'scripts', 'configure-rocksdb.mjs')],
+				{ cwd: repoRoot, encoding: 'utf8' }
+			).trim();
+			const tokens = out ? out.split('\n') : [];
+			for (const token of tokens) {
+				expect(token).not.toMatch(/\s/);
+				// POSIX: `-l:libX.a` / `-lX`; Windows: `X.lib`.
+				expect(token.startsWith('-l') || token.endsWith('.lib')).toBe(true);
+			}
+		});
+	});
+
+	describe('compression getter shape', () => {
+		it('omits level when none is configured', () => {
+			const db = RocksDatabase.open(tempPath(), { compression: 'none' });
+			try {
+				expect(db.compression).toEqual({ algorithm: 'none' });
+			} finally {
+				db.close();
+			}
+		});
+
+		it.skipIf(!levelCompressor)('returns the configured level', () => {
+			const db = RocksDatabase.open(tempPath(), {
+				compression: { algorithm: levelCompressor!, level: 5 },
+			});
+			try {
+				expect(db.compression).toEqual({ algorithm: levelCompressor, level: 5 });
+			} finally {
+				db.close();
+			}
 		});
 	});
 });

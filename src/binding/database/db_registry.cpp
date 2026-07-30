@@ -342,17 +342,25 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// The column family is already open in this process (the DBDescriptor
 			// is process-global and shared across handles/envs). Compression is
 			// fixed per column family at creation, so a second open explicitly
-			// asking for a different algorithm cannot take effect on the reused
-			// handle — reject it rather than silently ignore the request. A plain
-			// reopen (compression defaulted, not explicit) inherits the live
+			// asking for a different algorithm or level cannot take effect on the
+			// reused handle — reject it rather than silently ignore the request. A
+			// plain reopen (compression defaulted, not explicit) inherits the live
 			// setting and skips this check.
 			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
-			rocksdb::CompressionType current = entry.descriptor->db->GetOptions(cf).compression;
-			if (current != *options.compression) {
+			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+			bool algorithmDiffers = current.compression != *options.compression;
+			bool levelDiffers = options.compressionLevel &&
+				current.compression_opts.level != *options.compressionLevel;
+			if (algorithmDiffers || levelDiffers) {
+				std::string requested = rocksdb_js::compressionNameFromType(*options.compression);
+				if (options.compressionLevel) {
+					requested += " (level " + std::to_string(*options.compressionLevel) + ")";
+				}
 				throw rocksdb_js::DBException(
 					"Column family \"" + name + "\" is already open with compression \"" +
-					rocksdb_js::compressionNameFromType(current) + "\"; cannot reopen it with \"" +
-					rocksdb_js::compressionNameFromType(*options.compression) + "\""
+					rocksdb_js::compressionNameFromType(current.compression) + " (level " +
+					std::to_string(current.compression_opts.level) + ")\"; cannot reopen it with \"" +
+					requested + "\""
 				);
 			}
 		}
