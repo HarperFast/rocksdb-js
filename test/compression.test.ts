@@ -405,10 +405,17 @@ describe('Compression', () => {
 			expect(normalizeCompression(null as never)).toEqual({});
 		});
 
-		it('throws for an object without an algorithm', () => {
-			expect(() => normalizeCompression({ level: 3 } as never)).toThrow(TypeError);
-			expect(() => normalizeCompression({} as never)).toThrow(TypeError);
+		it('treats an object without an algorithm as unset', () => {
+			expect(normalizeCompression({} as never)).toEqual({});
+			expect(normalizeCompression({ algorithm: undefined } as never)).toEqual({});
+			expect(normalizeCompression({ algorithm: null } as never)).toEqual({});
+			expect(normalizeCompression({ level: 3 } as never)).toEqual({});
+		});
+
+		it('throws for a non-object, non-string option', () => {
 			expect(() => normalizeCompression([] as never)).toThrow(TypeError);
+			expect(() => normalizeCompression(6 as never)).toThrow(TypeError);
+			expect(() => normalizeCompression(true as never)).toThrow(TypeError);
 		});
 
 		it('throws for an unsupported algorithm as string or object', () => {
