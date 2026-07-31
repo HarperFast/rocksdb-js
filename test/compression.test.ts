@@ -1,8 +1,18 @@
 import { type CompressionAlgorithm, RocksDatabase, supportedCompression } from '../src/index.js';
 import { normalizeCompression } from '../src/store.js';
 import { generateDBPath } from './lib/util.js';
-import { execFileSync } from 'node:child_process';
-import { readdirSync, rmSync, statSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -393,6 +403,72 @@ describe('Compression', () => {
 					expect(token.startsWith('-l') || token.endsWith('.lib')).toBe(true);
 				}
 			}
+		);
+
+		// A real `node-gyp configure` from a checkout whose path contains a space.
+		// The whitespace-free-token check above only exercises the helper; this
+		// drives gyp end-to-end so it also covers the gtest.gyp command quoting
+		// and binding.gyp's module-relative link inputs — both of which break a
+		// spaced checkout differently (a shell-split `<!()` command vs. an
+		// unquoted absolute path emitted into LDFLAGS/LIBS).
+		const gypBin = join(repoRoot, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
+		const spacedConfigureRunnable =
+			!nonNodeRuntime &&
+			process.platform !== 'win32' && // spaces break the make generator; MSVS quotes
+			existsSync(join(repoRoot, 'deps', 'rocksdb', 'lib', 'librocksdb.a')) &&
+			existsSync(gypBin);
+
+		it.skipIf(!spacedConfigureRunnable)(
+			'configures cleanly from a checkout path containing a space',
+			() => {
+				// A spaced "checkout" that symlinks the heavy trees back to the real
+				// repo (nothing copied or downloaded), but keeps the two .gyp files as
+				// REAL files: a symlinked .gyp resolves to its real, unspaced path and
+				// would defeat the test. module_root_dir becomes the spaced path.
+				const spaced = join(tmpdir(), `rocksdb js gyp ${process.pid}`);
+				rmSync(spaced, { recursive: true, force: true });
+				mkdirSync(join(spaced, 'deps'), { recursive: true });
+				try {
+					for (const entry of readdirSync(repoRoot)) {
+						if (entry === 'deps' || entry === 'build' || entry === '.git') {
+							continue;
+						}
+						if (entry === 'binding.gyp') {
+							cpSync(join(repoRoot, entry), join(spaced, entry));
+						} else {
+							symlinkSync(join(repoRoot, entry), join(spaced, entry));
+						}
+					}
+					for (const entry of readdirSync(join(repoRoot, 'deps'))) {
+						const dst = join(spaced, 'deps', entry);
+						if (entry === 'gtest.gyp') {
+							cpSync(join(repoRoot, 'deps', entry), dst);
+						} else {
+							symlinkSync(join(repoRoot, 'deps', entry), dst);
+						}
+					}
+
+					const res = spawnSync(process.execPath, [gypBin, 'configure'], {
+						cwd: spaced,
+						encoding: 'utf8',
+					});
+					// A shell-split gtest.gyp command aborts configure here (exit != 0).
+					expect(res.stderr + res.stdout).not.toMatch(/No such file or directory/);
+					expect(res.status).toBe(0);
+
+					// The generated link settings must carry no absolute path bearing the
+					// spaced root (which the link shell would split), and must link
+					// rocksdb via a search-dir-resolved `-l` token rather than a path.
+					for (const target of ['rocksdb-js.target.mk', 'rocksdb-js-native-tests.target.mk']) {
+						const mk = readFileSync(join(spaced, 'build', target), 'utf8');
+						expect(mk).not.toContain(spaced);
+						expect(mk).toMatch(/-l:?(lib)?rocksdb(\.a)?\b/);
+					}
+				} finally {
+					rmSync(spaced, { recursive: true, force: true });
+				}
+			},
+			120_000
 		);
 	});
 

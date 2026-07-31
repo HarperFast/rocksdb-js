@@ -6,16 +6,17 @@
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
 	'variables': {
 		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
-		# Compression libraries the resolved RocksDB prebuild actually ships (as
-		# `-l` flags / `.lib` names, not absolute paths — see configure-rocksdb.mjs
-		# for why), resolved against the library search dir configured in each
-		# target's link settings. Older prebuilds ship only zlib; a compression-
-		# enabled prebuild adds snappy/lz4/zstd/bzip2. Linking exactly what is
-		# present lets both build (a missing lib errors "no such file"; an unlinked
-		# one the prebuild needs errors "undefined symbols"). The script also
-		# provisions the pinned prebuild first. The script path is quoted so a
-		# repo checkout under a path with spaces still launches it.
-		'rocksdb_compression_libs': ['<!@(node "<(module_root_dir)/scripts/configure-rocksdb.mjs")'],
+		# RocksDB link libraries — the core `librocksdb` archive plus the compression
+		# libs the resolved prebuild actually ships — emitted as `-l` flags / `.lib`
+		# names (not absolute paths — see configure-rocksdb.mjs for why), resolved
+		# against the library search dir configured in each target's link settings.
+		# Older prebuilds ship only zlib; a compression-enabled prebuild adds
+		# snappy/lz4/zstd/bzip2. Linking exactly what is present lets both build (a
+		# missing lib errors "no such file"; an unlinked one the prebuild needs
+		# errors "undefined symbols"). The script also provisions the pinned prebuild
+		# first. The script path is quoted so a repo checkout under a path with
+		# spaces still launches it.
+		'rocksdb_link_libs': ['<!@(node "<(module_root_dir)/scripts/configure-rocksdb.mjs")'],
 	},
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
@@ -123,12 +124,19 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
+						# All link libraries (core librocksdb + the compression libs) come
+						# from configure-rocksdb.mjs as `-l` tokens, not absolute paths,
+						# resolved against this search dir. The search dir is module-relative
+						# (not <(module_root_dir)/...) so GYP rebases it to a ../-only path
+						# under the build dir: an absolute path carrying a spaced
+						# module_root_dir is emitted unquoted into LDFLAGS/LIBS and the link
+						# shell splits it, while a ../-relative path has no space to split
+						# (fixes a checkout under e.g. /tmp/rocks db).
 						'library_dirs': [
-							'<(module_root_dir)/deps/rocksdb/lib'
+							'deps/rocksdb/lib'
 						],
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							'<@(rocksdb_compression_libs)'
+							'<@(rocksdb_link_libs)'
 						]
 					},
 					'xcode_settings': {
@@ -171,8 +179,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib',
-								'<@(rocksdb_compression_libs)'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					}
@@ -196,9 +203,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								# 'rocksdbd.lib',
-								'rocksdb.lib',
-								'<@(rocksdb_compression_libs)'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					},
@@ -276,8 +281,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib',
-								'<@(rocksdb_compression_libs)'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					}
@@ -286,12 +290,19 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
+						# All link libraries (core librocksdb + the compression libs) come
+						# from configure-rocksdb.mjs as `-l` tokens, not absolute paths,
+						# resolved against this search dir. The search dir is module-relative
+						# (not <(module_root_dir)/...) so GYP rebases it to a ../-only path
+						# under the build dir: an absolute path carrying a spaced
+						# module_root_dir is emitted unquoted into LDFLAGS/LIBS and the link
+						# shell splits it, while a ../-relative path has no space to split
+						# (fixes a checkout under e.g. /tmp/rocks db).
 						'library_dirs': [
-							'<(module_root_dir)/deps/rocksdb/lib'
+							'deps/rocksdb/lib'
 						],
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							'<@(rocksdb_compression_libs)'
+							'<@(rocksdb_link_libs)'
 						]
 					},
 					'xcode_settings': {
@@ -328,8 +339,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib',
-								'<@(rocksdb_compression_libs)'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					}
@@ -348,8 +358,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib',
-								'<@(rocksdb_compression_libs)'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					},
