@@ -33,6 +33,11 @@ struct TransactionHandle;
 struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
+rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
+	const DBOptions& options,
+	rocksdb::ColumnFamilyOptions cfOptions = {}
+);
+
 /**
  * Custom deleter for RocksDB that waits for any background compaction to
  * complete before destroying the database instance. Compaction is triggered

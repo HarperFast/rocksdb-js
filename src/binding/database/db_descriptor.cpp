@@ -55,6 +55,27 @@ static void applyCompression(
 		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
+rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
+	const DBOptions& options,
+	rocksdb::ColumnFamilyOptions cfOptions
+) {
+	rocksdb::BlockBasedTableOptions tableOptions;
+	if (options.noBlockCache) {
+		tableOptions.no_block_cache = true;
+	} else {
+		tableOptions.block_cache = DBSettings::getInstance().getBlockCache();
+	}
+
+	cfOptions.enable_blob_files = true;
+	cfOptions.min_blob_size = 2048;
+	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
+	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
+	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+	return cfOptions;
+}
+
 // Reads each existing column family's persisted compression from the database's
 // latest OPTIONS file into `result`, returning the RocksDB status. The OPTIONS
 // file is the ONLY authoritative source for a CF's stored compression (RocksDB
@@ -856,14 +877,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
-	// set or disable the block cache
 	DBSettings& settings = DBSettings::getInstance();
-	rocksdb::BlockBasedTableOptions tableOptions;
-	if (options.noBlockCache) {
-		tableOptions.no_block_cache = true;
-	} else {
-		tableOptions.block_cache = settings.getBlockCache();
-	}
 
 	// set the database options
 	rocksdb::Options dbOptions;
@@ -896,17 +910,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		dbOptions.statistics = nullptr;
 	}
 
-	// Base ColumnFamilyOptions (blob + write-buffer + table settings) shared by
-	// every column family. Compression is intentionally NOT set here: it is
-	// per-CF, so it is applied per descriptor below.
-	rocksdb::ColumnFamilyOptions cfOptions;
-	cfOptions.enable_blob_files = true;
-	cfOptions.min_blob_size = 2048;
-	cfOptions.enable_blob_garbage_collection = true;
-	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
-	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
-	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+	// Base options shared by every column family. Compression is applied per CF
+	// below so opening one family cannot restamp another's algorithm.
+	auto cfOptions = buildColumnFamilyOptions(options);
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
 	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();

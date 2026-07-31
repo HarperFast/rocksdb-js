@@ -334,9 +334,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
 			}
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
-			// Preserve retained settings while applying the current handle's
-			// per-CF compression and memory options.
-			auto cfOptions = entry.descriptor->cfOptions;
+			// Preserve retained settings while applying every per-CF option from
+			// the handle creating this family.
+			auto cfOptions = buildColumnFamilyOptions(options, entry.descriptor->cfOptions);
 			if (options.compression) {
 				cfOptions.compression = *options.compression;
 				cfOptions.blob_compression_type = *options.compression;
@@ -344,9 +344,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					? *options.compressionLevel
 					: rocksdb::CompressionOptions::kDefaultCompressionLevel;
 			}
-			cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
-			cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-			cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
 			auto column = rocksdb_js::createRocksDBColumnFamily(
 				entry.descriptor->db, name, cfOptions
 			);
