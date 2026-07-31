@@ -45,19 +45,27 @@ static void applyCompression(
 	// own compression that defaults to none; apply the same algorithm so the
 	// whole dataset is compressed, not just the inline (< min_blob_size) portion.
 	cfOptions.blob_compression_type = compression;
-	if (level) {
-		cfOptions.compression_opts.level = *level;
-	}
+	// An explicit request is "algorithm + optional level"; omitting the level
+	// means the algorithm's default. When applied over a CF that inherited a
+	// persisted level (e.g. cold-reopening a zstd-level-19 CF as zlib), that
+	// inherited level must NOT carry over — reset it to the default sentinel so
+	// the effective request matches what the API documents (and what the registry
+	// warm-reopen check compares against).
+	cfOptions.compression_opts.level =
+		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
 // Reads each existing column family's persisted compression from the database's
-// latest OPTIONS file. Returns an empty map when the DB has no OPTIONS file yet
-// (fresh DB) or the file cannot be parsed — callers then fall back to RocksDB's
-// defaults for CFs they are not explicitly configuring.
-static std::unordered_map<std::string, PersistedCompression> loadPersistedCompression(
-	const std::string& path
+// latest OPTIONS file into `result`, returning the RocksDB status. The OPTIONS
+// file is the ONLY authoritative source for a CF's stored compression (RocksDB
+// does not restore per-CF options on open), so callers must treat a non-OK
+// status as fatal for an existing DB rather than falling back to defaults —
+// doing so would open the non-target CFs with the base default and silently
+// restamp their compression on the next OPTIONS write.
+static rocksdb::Status loadPersistedCompression(
+	const std::string& path,
+	std::unordered_map<std::string, PersistedCompression>& result
 ) {
-	std::unordered_map<std::string, PersistedCompression> result;
 	rocksdb::ConfigOptions configOptions;
 	// Be permissive: we only read compression fields, so unknown/unsupported
 	// options in the persisted file must not fail the load.
@@ -76,7 +84,7 @@ static std::unordered_map<std::string, PersistedCompression> loadPersistedCompre
 			};
 		}
 	}
-	return result;
+	return status;
 }
 
 struct JobTracker final {
@@ -918,7 +926,18 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// and apply the caller's request ONLY to the target CF (options.name), and
 		// only when it was explicitly requested — the LZ4 default must never
 		// override an existing CF's stored algorithm (a plain reopen inherits it).
-		std::unordered_map<std::string, PersistedCompression> persisted = loadPersistedCompression(path);
+		std::unordered_map<std::string, PersistedCompression> persisted;
+		rocksdb::Status persistedStatus = loadPersistedCompression(path, persisted);
+		if (!persistedStatus.ok()) {
+			// The DB exists (we just listed its column families), so a missing or
+			// unparseable OPTIONS file is NOT the fresh-DB case — we cannot recover
+			// each CF's persisted compression, and opening them with the base
+			// defaults would silently restamp the non-target CFs. Fail loudly.
+			throw rocksdb_js::DBException(
+				"Failed to load persisted column family options for \"" + path +
+				"\": " + persistedStatus.ToString()
+			);
+		}
 		for (const auto& cfName : columnFamilyNames) {
 			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str());
 			rocksdb::ColumnFamilyOptions cfo = cfOptions;

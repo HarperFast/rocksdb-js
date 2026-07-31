@@ -132,11 +132,18 @@ export function normalizeCompression(option: CompressionOption | undefined): {
 	} else if (typeof option === 'object' && option.algorithm !== undefined) {
 		algorithm = option.algorithm;
 		if (option.level !== undefined && option.level !== null) {
-			// TypeScript types `level` as a number, but coerce defensively (e.g. a
-			// numeric string from loosely-typed config) and reject anything that is
-			// not a finite 32-bit integer rather than letting the native layer
-			// silently drop it.
-			const coerced = Number(option.level);
+			// TypeScript types `level` as a number. Accept a numeric string too (a
+			// common shape from loosely-typed config), but do NOT let bare `Number()`
+			// coerce other loose inputs — `true`, `[]`, `[6]`, and `''`/whitespace all
+			// become numbers and would silently mis-tune or drop compression. Anything
+			// that is not a number or a non-blank numeric string is rejected.
+			const raw = option.level as unknown;
+			const coerced =
+				typeof raw === 'number'
+					? raw
+					: typeof raw === 'string' && raw.trim() !== ''
+						? Number(raw)
+						: Number.NaN;
 			if (!Number.isInteger(coerced) || coerced < -2147483648 || coerced > 2147483647) {
 				throw new TypeError(
 					`compression level must be a 32-bit integer, got ${JSON.stringify(option.level)}`

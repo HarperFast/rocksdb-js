@@ -290,6 +290,26 @@ describe('Compression', () => {
 				}
 			}
 		);
+
+		it.skipIf(!levelCompressor)(
+			'throws when a second open omits the level but the CF is live at a non-default level',
+			() => {
+				// Omitting the level means "the algorithm's default level", which differs
+				// from the live level 4 — so an explicit reopen must conflict rather than
+				// silently inherit 4.
+				const path = tempPath();
+				const dbA = RocksDatabase.open(path, {
+					compression: { algorithm: levelCompressor!, level: 4 },
+				});
+				try {
+					expect(() => RocksDatabase.open(path, { compression: levelCompressor! })).toThrow(
+						/already open with compression/
+					);
+				} finally {
+					dbA.close();
+				}
+			}
+		);
 	});
 
 	describe('per-column-family', () => {
@@ -327,6 +347,56 @@ describe('Compression', () => {
 				}
 			}
 		);
+
+		it.skipIf(!levelCompressor)(
+			'a cold reopen with an explicit algorithm and no level resets the persisted level',
+			() => {
+				// A CF persisted at level 4, cold-reopened as the same algorithm without
+				// a level, must fall back to the algorithm's default level (getter omits
+				// it) — not silently inherit the persisted 4.
+				const path = tempPath();
+				const dbA = RocksDatabase.open(path, {
+					compression: { algorithm: levelCompressor!, level: 4 },
+				});
+				dbA.putSync(1, 'x');
+				dbA.flushSync();
+				dbA.close();
+
+				const dbB = RocksDatabase.open(path, { compression: levelCompressor! });
+				try {
+					expect(dbB.compression).toEqual({ algorithm: levelCompressor });
+				} finally {
+					dbB.close();
+				}
+			}
+		);
+
+		it('fails the open when an existing DB’s OPTIONS file cannot be read', () => {
+			// The persisted OPTIONS file is the only authoritative source for each
+			// CF's compression. If it is missing/corrupt for a DB that already exists,
+			// opening every CF with the base defaults would silently restamp the
+			// non-target CFs — so the open must fail loudly instead.
+			const path = tempPath();
+			const db = RocksDatabase.open(path, { name: 'plain', compression: 'none' });
+			db.putSync(1, 'x');
+			db.close();
+
+			// Remove every OPTIONS-* file. RocksDB still opens the DB (it does not
+			// require OPTIONS) and ListColumnFamilies still succeeds from the MANIFEST,
+			// but LoadLatestOptions can no longer recover the persisted compression.
+			let removed = 0;
+			for (const entry of readdirSync(path)) {
+				if (entry.startsWith('OPTIONS-')) {
+					rmSync(join(path, entry));
+					removed++;
+				}
+			}
+			expect(removed).toBeGreaterThan(0);
+
+			expect(() => RocksDatabase.open(path, { name: 'plain', compression: 'none' })).toThrow(
+				/persisted column family options/
+			);
+		});
 	});
 
 	describe('normalizeCompression', () => {
@@ -377,6 +447,22 @@ describe('Compression', () => {
 				TypeError
 			);
 			expect(() => normalizeCompression({ algorithm: 'none', level: 1e10 })).toThrow(TypeError);
+		});
+
+		it('rejects loose non-number levels instead of silently coercing them', () => {
+			// `Number()` would turn all of these into a number (true→1, ''→0, []→0,
+			// [6]→6) and quietly mis-tune or drop compression. Only a number or a
+			// non-blank numeric string is accepted.
+			for (const bad of [true, false, '', '   ', [], [6], {}]) {
+				expect(() => normalizeCompression({ algorithm: 'none', level: bad as never })).toThrow(
+					TypeError
+				);
+			}
+			// A whitespace-padded numeric string is still coerced.
+			expect(normalizeCompression({ algorithm: 'none', level: '  6  ' as never })).toEqual({
+				compression: 'none',
+				compressionLevel: 6,
+			});
 		});
 	});
 

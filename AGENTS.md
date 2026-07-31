@@ -99,14 +99,23 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
      the caller's request **only** to the target CF (`options.name`) — and only when it was
      _explicitly_ requested. A cold open of one CF must never restamp the others (that was the bug
      Kris caught: first-open order used to dictate every CF's algorithm). New CFs
-     (`createRocksDBColumnFamily`) get the request/default.
+     (`createRocksDBColumnFamily`) get the request/default. Because the OPTIONS file is the _only_
+     authoritative source, a non-OK `LoadLatestOptions` for an **existing** DB (missing/corrupt
+     OPTIONS) **fails the open** rather than falling back to defaults — falling back would reopen the
+     non-target CFs with the base default and silently restamp them. Applying an explicit algorithm
+     **without** a level resets `compression_opts.level` to `kDefaultCompressionLevel` (it must not
+     inherit the target CF's persisted level, e.g. cold-reopening a zstd-level-19 CF as zlib).
    - The default is **LZ4** (overriding RocksDB's Snappy default), applied natively in
      `Database::Open` when unset; build-dependent, so it falls back to RocksDB's default when LZ4
      isn't linked. The default is marked **non-explicit** (`DBOptions::compressionExplicit`) so it
      never overrides an existing CF and a plain reopen inherits the live value.
    - A second in-process open of an already-open CF (the `DBDescriptor` is process-global, shared
-     across handles/`worker_threads`) with an **explicitly different** algorithm _or_ level is
-     **rejected** (throws in `DBRegistry::OpenDB`, comparing both against the live `GetOptions`).
+     across handles/`worker_threads`) with an **explicitly different** algorithm, blob algorithm, _or_
+     level is **rejected** (throws in `DBRegistry::OpenDB`, comparing all three against the live
+     `GetOptions`). The level compared is the _effective_ request — omitting a level means
+     `kDefaultCompressionLevel`, not "inherit" — and the blob check catches a legacy CF opened plainly
+     with `block=snappy`/`blob=none` that a later explicit `snappy` open would otherwise leave with
+     uncompressed blobs.
    - `supportedCompression` (module constant from `rocksdb::GetSupportedCompressions()`) is the
      source of truth; name↔enum mapping lives in the Node-free `core/compression.{h,cpp}`
      (GoogleTest-covered). The `db.compression` getter returns `{ algorithm, level? }` read live via

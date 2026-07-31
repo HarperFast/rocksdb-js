@@ -348,17 +348,29 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// setting and skips this check.
 			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
 			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+			// The effective request omitting a level is "the algorithm's default
+			// level" (see applyCompression in db_descriptor.cpp), so compare against
+			// the default sentinel rather than skipping the level check — otherwise
+			// reopening a zstd-level-19 CF as plain zstd would silently inherit 19.
+			int requestedLevel = options.compressionLevel
+				? *options.compressionLevel
+				: rocksdb::CompressionOptions::kDefaultCompressionLevel;
 			bool algorithmDiffers = current.compression != *options.compression;
-			bool levelDiffers = options.compressionLevel &&
-				current.compression_opts.level != *options.compressionLevel;
-			if (algorithmDiffers || levelDiffers) {
+			// The request applies the algorithm to blob files too, so a live CF whose
+			// blobs are at a different algorithm (e.g. a legacy CF opened plainly with
+			// block=snappy but blob=none) is also a conflict — otherwise values at the
+			// 2KB blob threshold would stay uncompressed while the open appears to succeed.
+			bool blobDiffers = current.blob_compression_type != *options.compression;
+			bool levelDiffers = current.compression_opts.level != requestedLevel;
+			if (algorithmDiffers || blobDiffers || levelDiffers) {
 				std::string requested = rocksdb_js::compressionNameFromType(*options.compression);
 				if (options.compressionLevel) {
 					requested += " (level " + std::to_string(*options.compressionLevel) + ")";
 				}
 				throw rocksdb_js::DBException(
 					"Column family \"" + name + "\" is already open with compression \"" +
-					rocksdb_js::compressionNameFromType(current.compression) + " (level " +
+					rocksdb_js::compressionNameFromType(current.compression) + " (blob " +
+					rocksdb_js::compressionNameFromType(current.blob_compression_type) + ", level " +
 					std::to_string(current.compression_opts.level) + ")\"; cannot reopen it with \"" +
 					requested + "\""
 				);
