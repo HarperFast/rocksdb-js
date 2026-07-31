@@ -132,9 +132,9 @@ export function normalizeCompression(option: CompressionOption | undefined): {
 		algorithm = option;
 	} else if (typeof option === 'object' && !Array.isArray(option)) {
 		if (option.algorithm === undefined || option.algorithm === null) {
-			// An object without an algorithm (e.g. `{}` from loose config) is
-			// treated the same as an unset option; any `level` is ignored since
-			// there is no explicit algorithm to tune.
+			if (option.level !== undefined && option.level !== null) {
+				throw new TypeError('Compression level cannot be specified without an algorithm');
+			}
 			return {};
 		}
 		algorithm = option.algorithm;
