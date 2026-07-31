@@ -17,6 +17,7 @@ import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
 import {
 	type ArrayBufferWithNotify,
 	CompactOptions,
+	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	Store,
@@ -266,6 +267,23 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get columns(): string[] {
 		return this.store.db.columns;
+	}
+
+	/**
+	 * The compression currently in effect for this database's column family, read
+	 * live from RocksDB, as `{ algorithm, level? }`. `algorithm` is a friendly
+	 * name (e.g. `'lz4'`, `'zstd'`, `'none'`); `level` is present only when a
+	 * non-default compression level is set. The database must be open. Defaults to
+	 * LZ4 when the native build supports it.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { compression: { algorithm: 'zstd', level: 3 } });
+	 * db.compression; // { algorithm: 'zstd', level: 3 }
+	 * ```
+	 */
+	get compression(): CompressionInfo {
+		return this.store.db.getCompression() as CompressionInfo;
 	}
 
 	/**

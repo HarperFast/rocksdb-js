@@ -27,6 +27,7 @@ export {
 	registryStatus,
 	stats,
 	shutdown,
+	supportedCompression,
 	TransactionLog,
 	type TransactionEntry,
 	type TransactionLogPosition,
@@ -40,6 +41,9 @@ export {
 	type ValidateTransactionLogStoreOptions,
 } from './validate-transaction-log.js';
 export {
+	type CompressionAlgorithm,
+	type CompressionInfo,
+	type CompressionOption,
 	Store,
 	type StoreContext,
 	type StoreGetOptions,
