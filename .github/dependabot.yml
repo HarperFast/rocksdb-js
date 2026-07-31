@@ -8,9 +8,19 @@ updates:
       day: 'monday'
       time: '05:15' # UTC
     open-pull-requests-limit: 10
-    # Wait 24h after a release before proposing an update, to match pnpm's minimumReleaseAge policy.
+    # Must stay ahead of pnpm's rolling 24h minimumReleaseAge (pnpm-workspace.yaml):
+    # with `default-days: 1`, Dependabot has proposed versions <24h old (see #736)
+    # that pnpm then rejects in CI. 2 days gives a full day of margin so proposed
+    # versions are always past pnpm's cutoff at install time.
+    # Excludes mirror pnpm's minimumReleaseAgeExclude — pnpm doesn't gate these,
+    # so Dependabot needn't wait on them either.
     cooldown:
-      default-days: 1
+      default-days: 2
+      exclude:
+        - '@harperfast/*'
+        - 'lmdb'
+        - 'msgpackr'
+        - 'ordered-binary'
     # Group updates to reduce PR noise. Major version updates will fall through to individual PRs.
     groups:
       # Group all other patch updates
