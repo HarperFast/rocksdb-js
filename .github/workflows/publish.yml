@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.dist-tag.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -56,6 +57,42 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Determine dist-tag
+        id: dist-tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -e
+          set -o pipefail
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            TAG=next
+          else
+            CURRENT_LATEST=$(npm view "$PACKAGE_NAME" dist-tags.latest 2>/dev/null || true)
+            echo "Current npm latest: ${CURRENT_LATEST:-<none>}"
+            if ! pnpm semver "$CURRENT_LATEST" > /dev/null 2>&1; then
+              # Could not read a valid current latest (transient registry error, or a
+              # genuine first publish). Refuse to guess -- silently defaulting to
+              # `latest` here is exactly the regression this step exists to prevent.
+              # For a true first publish, tag the initial release manually.
+              echo "ERROR: could not read a valid dist-tags.latest for $PACKAGE_NAME (got: '${CURRENT_LATEST}')" >&2
+              echo "Re-run once the registry is reachable, or tag a first publish manually." >&2
+              exit 1
+            fi
+            if pnpm semver "$VERSION" -r ">$CURRENT_LATEST" > /dev/null 2>&1; then
+              # This version is strictly newer -> it becomes latest.
+              TAG=latest
+            else
+              # Older-than-latest stable release (backport/patch to a prior line):
+              # publish it under a per-line tag so `latest` does not regress.
+              TAG="release-$(echo "$VERSION" | cut -d. -f1-2)"
+            fi
+          fi
+          echo "Dist-tag: $TAG"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Build
         env:
@@ -232,7 +269,7 @@ jobs:
       - name: Publish bindings to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
+          TAG: ${{ needs.preflight.outputs.tag }}
         shell: bash
         run: node scripts/publish-bindings.mjs
 
@@ -240,7 +277,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
-        run: pnpm publish --access public --no-git-checks --tag ${{ github.event.release.prerelease && 'next' || 'latest' }}
+        run: pnpm publish --access public --no-git-checks --tag ${{ needs.preflight.outputs.tag }}
 
       - name: Wait for npm to publish
         shell: bash

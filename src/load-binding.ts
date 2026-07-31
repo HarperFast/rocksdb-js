@@ -194,6 +194,18 @@ export declare class NativeIteratorCls {
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
+	/**
+	 * The friendly name of a compression algorithm compiled into this RocksDB
+	 * build (see `supportedCompression`), e.g. `'lz4'`, `'zstd'`, `'none'`. The
+	 * higher-level `StoreOptions.compression` (which also accepts an object with
+	 * a level) is normalized down to this string plus `compressionLevel`.
+	 */
+	compression?: string;
+	/**
+	 * Compression level forwarded to RocksDB's `compression_opts.level`. Meaning
+	 * is algorithm-specific; omit to use the algorithm's default.
+	 */
+	compressionLevel?: number;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;
@@ -285,6 +297,7 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): number;
+	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
@@ -498,6 +511,17 @@ export const constants: {
 	ITERATOR_RESULT_DONE: number;
 	ITERATOR_RESULT_FAST: number;
 } = binding.constants;
+/**
+ * The friendly names of every compression algorithm compiled into the loaded
+ * RocksDB native binding, e.g. `['none', 'snappy', 'lz4', 'zstd']`. The set is
+ * fixed for a given binary (it depends on which compression libraries RocksDB
+ * was linked against), so this is a static list. `'none'` (no compression) is
+ * always present. Use it to validate a `compression` option or to pick an
+ * algorithm that is actually available at runtime.
+ */
+export const supportedCompression: readonly string[] = Object.freeze(
+	binding.supportedCompression as string[]
+);
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;

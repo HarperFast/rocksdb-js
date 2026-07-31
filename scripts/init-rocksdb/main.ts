@@ -13,11 +13,11 @@ import { buildRocksDBFromSource } from './build-rocksdb-from-source';
 import { downloadRocksDB } from './download-rocksdb';
 import { getCurrentVersion } from './get-current-version';
 import { getPrebuild } from './get-prebuild';
+import { installedSatisfiesPin, prebuildIsRedundant } from './version-check';
 import { config } from 'dotenv';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import semver from 'semver';
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 
@@ -40,23 +40,21 @@ try {
 	const pkgJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
 	const desiredVersion = process.env.ROCKSDB_VERSION || pkgJson.rocksdb?.version || undefined;
 
-	if (
-		currentVersion &&
-		desiredVersion &&
-		semver.eq(currentVersion.version, desiredVersion) &&
-		(!currentVersion.runtime || currentVersion.runtime === runtime)
-	) {
-		console.log(`No update needed, RocksDB ${currentVersion.version} is already installed.`);
+	// Exact version pin already installed: nothing to do. This must match the
+	// full version including any downstream revision suffix (e.g. `11.1.2-1`),
+	// which semver treats as a prerelease of `11.1.2`.
+	if (installedSatisfiesPin(currentVersion, desiredVersion, runtime)) {
+		console.log(`No update needed, RocksDB ${currentVersion!.version} is already installed.`);
 		process.exit(0);
 	}
 
 	const prebuild = await getPrebuild(desiredVersion);
 
-	if (
-		currentVersion &&
-		semver.lte(prebuild.version, currentVersion.version) &&
-		(!currentVersion.runtime || currentVersion.runtime === runtime)
-	) {
+	// Downgrade guard, applied only when resolving `latest`: skip a redundant
+	// re-install or a downgrade. An explicit pin never reaches this — it must
+	// install exactly what was requested, even a revision suffix that semver
+	// ranks below the bare release.
+	if (prebuildIsRedundant(currentVersion, desiredVersion, prebuild.version, runtime)) {
 		console.log(`No update needed, latest version ${prebuild.version} is active.`);
 		process.exit(0);
 	}

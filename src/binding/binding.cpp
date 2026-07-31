@@ -16,6 +16,7 @@
 #include "transaction_log/transaction_log_validation_napi.h"
 #include "core/platform.h"
 #include "core/file_lock.h"
+#include "core/compression.h"
 #include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -160,6 +161,18 @@ NAPI_MODULE_INIT() {
 	napi_value version;
 	napi_create_string_utf8(env, rocksdb::GetRocksVersionAsString().c_str(), NAPI_AUTO_LENGTH, &version);
 	napi_set_named_property(env, exports, "version", version);
+
+	// supportedCompression: friendly names of the compression algorithms compiled
+	// into this RocksDB build. Static for the binary (see supportedCompressionNames).
+	const std::vector<std::string>& compressionNames = supportedCompressionNames();
+	napi_value supportedCompression;
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, compressionNames.size(), &supportedCompression));
+	for (size_t i = 0; i < compressionNames.size(); ++i) {
+		napi_value name;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, compressionNames[i].c_str(), NAPI_AUTO_LENGTH, &name));
+		NAPI_STATUS_THROWS(::napi_set_element(env, supportedCompression, static_cast<uint32_t>(i), name));
+	}
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportedCompression", supportedCompression));
 
 	[[maybe_unused]] int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
