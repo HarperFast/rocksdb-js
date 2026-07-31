@@ -1,6 +1,7 @@
 #include "database/db_registry.h"
 #include "napi/macros.h"
 #include "core/platform.h"
+#include "core/compression.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/table.h"
@@ -333,10 +334,47 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
 			}
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
-			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name);
+			auto column = rocksdb_js::createRocksDBColumnFamily(entry.descriptor->db, name, options.compression, options.compressionLevel);
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
+		} else if (options.compressionExplicit && options.compression) {
+			// The column family is already open in this process (the DBDescriptor
+			// is process-global and shared across handles/envs). Compression is
+			// fixed per column family at creation, so a second open explicitly
+			// asking for a different algorithm or level cannot take effect on the
+			// reused handle — reject it rather than silently ignore the request. A
+			// plain reopen (compression defaulted, not explicit) inherits the live
+			// setting and skips this check.
+			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
+			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+			// The effective request omitting a level is "the algorithm's default
+			// level" (see applyCompression in db_descriptor.cpp), so compare against
+			// the default sentinel rather than skipping the level check — otherwise
+			// reopening a zstd-level-19 CF as plain zstd would silently inherit 19.
+			int requestedLevel = options.compressionLevel
+				? *options.compressionLevel
+				: rocksdb::CompressionOptions::kDefaultCompressionLevel;
+			bool algorithmDiffers = current.compression != *options.compression;
+			// The request applies the algorithm to blob files too, so a live CF whose
+			// blobs are at a different algorithm (e.g. a legacy CF opened plainly with
+			// block=snappy but blob=none) is also a conflict — otherwise values at the
+			// 2KB blob threshold would stay uncompressed while the open appears to succeed.
+			bool blobDiffers = current.blob_compression_type != *options.compression;
+			bool levelDiffers = current.compression_opts.level != requestedLevel;
+			if (algorithmDiffers || blobDiffers || levelDiffers) {
+				std::string requested = rocksdb_js::compressionNameFromType(*options.compression);
+				if (options.compressionLevel) {
+					requested += " (level " + std::to_string(*options.compressionLevel) + ")";
+				}
+				throw rocksdb_js::DBException(
+					"Column family \"" + name + "\" is already open with compression \"" +
+					rocksdb_js::compressionNameFromType(current.compression) + " (blob " +
+					rocksdb_js::compressionNameFromType(current.blob_compression_type) + ", level " +
+					std::to_string(current.compression_opts.level) + ")\"; cannot reopen it with \"" +
+					requested + "\""
+				);
+			}
 		}
 	} else {
 		try {

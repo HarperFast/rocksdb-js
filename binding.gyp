@@ -4,7 +4,20 @@
 	# do not reliably override a target-scoped default under node-gyp's make
 	# generator, so an explicit env read is used instead. Enable with:
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
-	'variables': { "rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")" },
+	'variables': {
+		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
+		# RocksDB link libraries — the core `librocksdb` archive plus the compression
+		# libs the resolved prebuild actually ships — emitted as `-l` flags / `.lib`
+		# names (not absolute paths — see configure-rocksdb.mjs for why), resolved
+		# against the library search dir configured in each target's link settings.
+		# Older prebuilds ship only zlib; a compression-enabled prebuild adds
+		# snappy/lz4/zstd/bzip2. Linking exactly what is present lets both build (a
+		# missing lib errors "no such file"; an unlinked one the prebuild needs
+		# errors "undefined symbols"). The script also provisions the pinned prebuild
+		# first. The script path is quoted so a repo checkout under a path with
+		# spaces still launches it.
+		'rocksdb_link_libs': ['<!@(node "<(module_root_dir)/scripts/configure-rocksdb.mjs")'],
+	},
 	# Node 26's Windows headers (common.gypi) inject Clang ThinLTO options
 	# (-flto=thin and /opt:lldltojobs=N) into every Release target. The official
 	# Node Windows build is now compiled with ClangCL + ThinLTO, but this addon
@@ -33,13 +46,13 @@
 	'targets': [
 		{
 			'target_name': 'rocksdb-js',
-			'dependencies': ['prepare-rocksdb'],
 			'include_dirs': [
 				'deps/rocksdb/include',
 				'src/binding',
 			],
 			'sources': [
 				'src/binding/binding.cpp',
+				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
@@ -111,13 +124,19 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
+						# All link libraries (core librocksdb + the compression libs) come
+						# from configure-rocksdb.mjs as `-l` tokens, not absolute paths,
+						# resolved against this search dir. The search dir is module-relative
+						# (not <(module_root_dir)/...) so GYP rebases it to a ../-only path
+						# under the build dir: an absolute path carrying a spaced
+						# module_root_dir is emitted unquoted into LDFLAGS/LIBS and the link
+						# shell splits it, while a ../-relative path has no space to split
+						# (fixes a checkout under e.g. /tmp/rocks db).
+						'library_dirs': [
+							'deps/rocksdb/lib'
+						],
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
-							# bundle it; link the zlib static lib shipped alongside it in the
-							# RocksDB prebuild so the compressor object resolves when the linker
-							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
-							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+							'<@(rocksdb_link_libs)'
 						]
 					},
 					'xcode_settings': {
@@ -160,7 +179,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					}
@@ -184,8 +203,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								# 'rocksdbd.lib',
-								'rocksdb.lib'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					},
@@ -201,7 +219,7 @@
 		{
 			'target_name': 'rocksdb-js-native-tests',
 			'type': 'executable',
-			'dependencies': ['prepare-rocksdb', 'deps/gtest.gyp:gtest_main'],
+			'dependencies': ['deps/gtest.gyp:gtest_main'],
 			'include_dirs': [
 				'deps/rocksdb/include',
 				'src/binding',
@@ -209,6 +227,7 @@
 				'deps/googletest/googlemock/include',
 			],
 			'sources': [
+				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
@@ -220,6 +239,7 @@
 				'test/native/event_emitter_stub.cc',
 				'test/native/rocksdb_version_test.cc',
 				'test/native/backup_disk_space_test.cc',
+				'test/native/compression_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',
 				'test/native/json_test.cc',
@@ -261,7 +281,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					}
@@ -270,13 +290,19 @@
 					'cflags+': ['-fexceptions'],
 					'cflags_cc+': ['-fexceptions'],
 					'link_settings': {
+						# All link libraries (core librocksdb + the compression libs) come
+						# from configure-rocksdb.mjs as `-l` tokens, not absolute paths,
+						# resolved against this search dir. The search dir is module-relative
+						# (not <(module_root_dir)/...) so GYP rebases it to a ../-only path
+						# under the build dir: an absolute path carrying a spaced
+						# module_root_dir is emitted unquoted into LDFLAGS/LIBS and the link
+						# shell splits it, while a ../-relative path has no space to split
+						# (fixes a checkout under e.g. /tmp/rocks db).
+						'library_dirs': [
+							'deps/rocksdb/lib'
+						],
 						'libraries': [
-							'<(module_root_dir)/deps/rocksdb/lib/librocksdb.a',
-							# librocksdb.a references zlib (BuiltinZlibCompressor) but does not
-							# bundle it; link the zlib static lib shipped alongside it in the
-							# RocksDB prebuild so the compressor object resolves when the linker
-							# pulls it in. Must come after librocksdb.a (GNU ld is order-sensitive).
-							'<(module_root_dir)/deps/rocksdb/lib/libz.a'
+							'<@(rocksdb_link_libs)'
 						]
 					},
 					'xcode_settings': {
@@ -313,7 +339,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					}
@@ -332,7 +358,7 @@
 								'<(module_root_dir)/deps/rocksdb/lib'
 							],
 							'AdditionalDependencies': [
-								'rocksdb.lib'
+								'<@(rocksdb_link_libs)'
 							]
 						}
 					},
@@ -344,26 +370,6 @@
 					}
 				}
 			}
-		},
-		{
-			'target_name': 'prepare-rocksdb',
-			'type': 'none',
-			'actions': [
-				{
-					'action_name': 'prepare_rocksdb',
-					'message': 'Preparing RocksDB...',
-					'action': [
-						'<(module_root_dir)/node_modules/.bin/tsx',
-						'<(module_root_dir)/scripts/init-rocksdb/main.ts',
-					],
-					'inputs': [
-						'<(module_root_dir)/scripts/init-rocksdb/main.ts',
-					],
-					'outputs': [
-						'deps/rocksdb/include',
-					],
-				}
-			]
 		},
 	]
 }
