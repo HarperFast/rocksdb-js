@@ -340,6 +340,7 @@ struct AsyncCompactState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::string endKey;
 	bool hasStart = false;
 	bool hasEnd = false;
+	bool bottommost = false;
 
 	AsyncCompactState(napi_env env, std::shared_ptr<DBHandle> handle)
 		: BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}

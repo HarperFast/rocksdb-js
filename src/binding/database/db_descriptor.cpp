@@ -1714,12 +1714,21 @@ rocksdb::Status DBDescriptor::flush() {
 rocksdb::Status DBDescriptor::compactRange(
 	rocksdb::ColumnFamilyHandle* column,
 	const rocksdb::Slice* start,
-	const rocksdb::Slice* end
+	const rocksdb::Slice* end,
+	bool bottommost
 ) {
 	std::lock_guard<std::mutex> lock(this->compactMutex);
-	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range\n", this);
+	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
+	rocksdb::CompactRangeOptions options;
+	if (bottommost) {
+		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
+		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting
+		// it is the only way to re-encode existing files (a changed compression codec applies to
+		// newly written files only), so it has to be requested explicitly.
+		options.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForce;
+	}
 	return this->db->CompactRange(
-		rocksdb::CompactRangeOptions(),
+		options,
 		column,
 		start,
 		end
