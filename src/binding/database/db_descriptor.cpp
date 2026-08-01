@@ -269,6 +269,12 @@ DBDescriptor::DBDescriptor(
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
 	this->close();
+	// Belt-and-suspenders, matching commitWorker/logWorker's own destructor
+	// shutdown: close() no-ops if finishClose() already ran (beginClose()
+	// returned false because some other caller is/was closing), and
+	// shutdownParkTimeouts() is idempotent, so this is a no-op in the
+	// common case and a safety net otherwise.
+	this->shutdownParkTimeouts();
 }
 
 /**
@@ -485,7 +491,7 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 	}
 }
 
-DBDescriptor::ParkTimeout* DBDescriptor::scheduleParkTimeout(
+uint64_t DBDescriptor::scheduleParkTimeout(
 	napi_env env,
 	unsigned timeoutMs,
 	napi_threadsafe_function tsfn,
@@ -493,26 +499,24 @@ DBDescriptor::ParkTimeout* DBDescriptor::scheduleParkTimeout(
 ) {
 	std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
 	if (this->parkTimeoutStopped) {
-		// Descriptor already closing: cancelForDB() (finishClose(), before
-		// this point) already woke every real holder this descriptor owns,
-		// so a park reaching here has nothing left to wait for -- the caller
-		// resolves inline instead of registering with a thread we're not
-		// going to start again.
-		return nullptr;
+		// Descriptor already closing: the caller must resolve inline without
+		// registering with the LockTracker at all (see the header comment).
+		return 0;
 	}
 	auto entry = std::make_unique<ParkTimeout>();
+	entry->id = this->nextParkTimeoutId++;
 	entry->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 	entry->env = env;
 	entry->tsfn = tsfn;
 	entry->fired = std::move(fired);
-	ParkTimeout* raw = entry.get();
+	uint64_t id = entry->id;
 	this->parkTimeouts.push_back(std::move(entry));
 	if (!this->parkTimeoutThreadStarted) {
 		this->parkTimeoutThreadStarted = true;
 		this->parkTimeoutThread = std::thread([this]() { this->runParkTimeoutLoop(); });
 	}
 	this->parkTimeoutCv.notify_all();
-	return raw;
+	return id;
 }
 
 void DBDescriptor::runParkTimeoutLoop() {
@@ -560,15 +564,16 @@ void DBDescriptor::runParkTimeoutLoop() {
 	}
 }
 
-void DBDescriptor::fireParkTimeout(ParkTimeout* entry) {
+void DBDescriptor::fireParkTimeout(uint64_t id) {
 	std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
 	auto it = std::find_if(
 		this->parkTimeouts.begin(),
 		this->parkTimeouts.end(),
-		[entry](const std::unique_ptr<ParkTimeout>& p) { return p.get() == entry; }
+		[id](const std::unique_ptr<ParkTimeout>& p) { return p->id == id; }
 	);
 	if (it == this->parkTimeouts.end()) {
-		// Already claimed by the timeout thread or by releaseParkTimeoutsByEnv.
+		// Already claimed by the timeout thread, releaseParkTimeoutsByEnv, or
+		// shutdownParkTimeouts.
 		return;
 	}
 	std::unique_ptr<ParkTimeout> owned = std::move(*it);
@@ -600,17 +605,40 @@ void DBDescriptor::releaseParkTimeoutsByEnv(napi_env env) {
 }
 
 void DBDescriptor::shutdownParkTimeouts() {
+	std::vector<std::unique_ptr<ParkTimeout>> remaining;
 	std::thread toJoin;
 	{
 		std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
+		if (this->parkTimeoutStopped && !this->parkTimeoutThreadStarted) {
+			// Already fully shut down (e.g. finishClose() already ran; this is
+			// the destructor's belt-and-suspenders call) -- nothing left to do.
+			return;
+		}
 		this->parkTimeoutStopped = true;
 		if (this->parkTimeoutThreadStarted) {
 			toJoin = std::move(this->parkTimeoutThread);
+			this->parkTimeoutThreadStarted = false;
 		}
+		remaining = std::move(this->parkTimeouts);
+		this->parkTimeouts.clear();
 	}
 	this->parkTimeoutCv.notify_all();
 	if (toJoin.joinable()) {
 		toJoin.join();
+	}
+	// Resolve every park still pending now instead of leaving its promise
+	// unresolved forever. Anything still here belongs to an env that hasn't
+	// torn down (a dying env's entries were already released by
+	// releaseParkTimeoutsByEnv), so its tsfn is safe to call; RETRY_NOW is
+	// the correct outcome for a park whose descriptor is closing regardless
+	// of whether its real holder's wake ever reaches it (see the header
+	// comment on the cross-database VT-slot-collision case this closes).
+	for (auto& entry : remaining) {
+		bool expected = false;
+		if (entry->fired->compare_exchange_strong(expected, true)) {
+			::napi_call_threadsafe_function(entry->tsfn, nullptr, napi_tsfn_nonblocking);
+			::napi_release_threadsafe_function(entry->tsfn, napi_tsfn_release);
+		}
 	}
 }
 

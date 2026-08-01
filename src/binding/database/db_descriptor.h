@@ -276,17 +276,22 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * holder's VT lock (`completeCommitWork` in transaction.cpp), so a holder
 	 * that never releases (leaked/abandoned transaction) resolves RETRY_NOW
 	 * instead of parking forever (harper#2001). One entry per outstanding
-	 * park; `fired` is the exactly-once gate shared with the LockTracker wake
-	 * callback registered on the same park -- whichever side wins the CAS
-	 * calls+releases `tsfn`, the loser touches nothing. Owned by the
-	 * descriptor (not one-thread-per-park and not the per-park heap state)
-	 * so `parkTimeoutThread` -- lazily started, joined at close like
-	 * `commitWorker` -- is the only thread ever created for this, and so a
-	 * dying env's entries can be scrubbed by the same env-cleanup hook that
-	 * releases commit completions instead of firing into a tsfn Node is
-	 * about to free.
+	 * park, identified by a monotonic `id` rather than the entry's address --
+	 * `LockTracker::wakeCallbacks` has no removal API (a known, documented
+	 * gap; see the AGENTS.md note), so a stale closure can outlive its entry
+	 * and its `unique_ptr`'s heap address can be reused by a later park; an
+	 * address-keyed lookup would then resolve the wrong park. `fired` is the
+	 * exactly-once gate shared with the LockTracker wake callback registered
+	 * on the same park -- whichever side wins the CAS calls+releases `tsfn`,
+	 * the loser touches nothing. Owned by the descriptor (not one-thread-
+	 * per-park and not the per-park heap state) so `parkTimeoutThread` --
+	 * lazily started, joined at close like `commitWorker` -- is the only
+	 * thread ever created for this, and so a dying env's entries can be
+	 * scrubbed by the same env-cleanup hook that releases commit
+	 * completions instead of firing into a tsfn Node is about to free.
 	 */
 	struct ParkTimeout {
+		uint64_t id;
 		std::chrono::steady_clock::time_point deadline;
 		napi_env env;
 		napi_threadsafe_function tsfn;
@@ -298,6 +303,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// whichever of fireParkTimeout / releaseParkTimeoutsByEnv claims it
 	// first) -- not by total parks ever registered.
 	std::vector<std::unique_ptr<ParkTimeout>> parkTimeouts;
+	uint64_t nextParkTimeoutId = 1;
 	std::thread parkTimeoutThread;
 	bool parkTimeoutThreadStarted = false;
 	bool parkTimeoutStopped = false;
@@ -305,13 +311,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * JS thread (`completeCommitWork`). Registers a bounded wait, lazily
 	 * starting the descriptor's single park-timeout thread. Returns the
-	 * entry (owned by the descriptor) to capture in the LockTracker wake
-	 * callback so a genuine wake can also resolve through `fireParkTimeout`
-	 * -- or nullptr if the descriptor is already closing, in which case the
-	 * caller must resolve inline (`cancelForDB` already woke every real
-	 * holder by the time parking stops being accepted).
+	 * new entry's id to capture in the LockTracker wake callback so a
+	 * genuine wake can also resolve through `fireParkTimeout` -- or 0 if the
+	 * descriptor is already closing. The caller must then resolve inline
+	 * without registering with the LockTracker at all: by this point
+	 * `cancelForDB` has already run, so a lock that becomes parkable only
+	 * after that point (the `cancelForDB` / `shutdownParkTimeouts` window)
+	 * would otherwise park with no timeout backing it.
 	 */
-	ParkTimeout* scheduleParkTimeout(
+	uint64_t scheduleParkTimeout(
 		napi_env env,
 		unsigned timeoutMs,
 		napi_threadsafe_function tsfn,
@@ -320,15 +328,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * Fires a specific park's timeout early because its VT lock's holder
-	 * released (LockTracker wake callback, any thread). A no-op if the entry
-	 * is already gone -- claimed by the timeout thread or by
-	 * releaseParkTimeoutsByEnv -- so a raw, non-owning `ParkTimeout*` is safe
-	 * to capture: cancelForDB() (DBDescriptor::close(), before the
-	 * descriptor can be destroyed) synchronously wakes every lock this
-	 * descriptor owns, so a wake callback can only ever fire while the
-	 * descriptor it points at is still alive.
+	 * released (LockTracker wake callback, any thread). A no-op if the id is
+	 * already gone -- claimed by the timeout thread, by
+	 * releaseParkTimeoutsByEnv, or drained at shutdown.
 	 */
-	void fireParkTimeout(ParkTimeout* entry);
+	void fireParkTimeout(uint64_t id);
 
 	/**
 	 * Module env-cleanup hook. Cancels every pending park timeout registered
@@ -338,7 +342,21 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	void releaseParkTimeoutsByEnv(napi_env env);
 
-	/** Descriptor close: stop and join the park-timeout thread. */
+	/**
+	 * Descriptor close: stop and join the park-timeout thread, then resolve
+	 * (call+release) every park still pending. `cancelForDB` (called just
+	 * before this, in `finishClose()`) wakes every lock tagged with this
+	 * descriptor's own `vtEpoch`, but a park can be registered on a tracker
+	 * installed by a *different* database on a colliding VT slot
+	 * (`VerificationTable::lockSlotForWrite` joins an existing tracker
+	 * without retagging its `dbId`) -- that lock's eventual release wakes
+	 * the other database, not this one, so this descriptor's own park would
+	 * otherwise wait on a wake that may never come from its perspective.
+	 * Draining here guarantees every park this descriptor scheduled settles
+	 * by the time it closes, independent of which VT tracker it ended up on.
+	 * Idempotent (safe to call from both `finishClose()` and the destructor,
+	 * matching `commitWorker`'s own belt-and-suspenders shutdown call).
+	 */
 	void shutdownParkTimeouts();
 
 private:
