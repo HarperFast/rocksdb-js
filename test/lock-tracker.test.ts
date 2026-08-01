@@ -170,7 +170,7 @@ describe('Coordinated retry (Phase 3)', () => {
 
 // Regression coverage for #741: a park behind a leaked/abandoned holder must
 // resolve RETRY_NOW after a bounded wait instead of hanging forever
-// (harper#2001). Default ROCKSDB_JS_PARK_TIMEOUT_MS is 3000ms; the lower
+// (harper#2001). Default ROCKSDB_JS_PARK_TIMEOUT_MS is 5000ms; the lower
 // bound below is what tells this apart from the `!parked` fast path (which
 // also resolves RETRY_NOW, just near-instantly).
 describe('Coordinated retry — bounded park timeout (#741)', () => {
@@ -199,8 +199,8 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 			const elapsed = Date.now() - start;
 
 			expect(result).toBe(RETRY_NOW);
-			expect(elapsed).toBeGreaterThanOrEqual(2500);
-			expect(elapsed).toBeLessThan(8000);
+			expect(elapsed).toBeGreaterThanOrEqual(4500);
+			expect(elapsed).toBeLessThan(10000);
 		}));
 });
 
