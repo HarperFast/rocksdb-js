@@ -55,32 +55,10 @@ Creates a new database instance.
     when linked, else no compression). See [Compression](#compression). Throws if the algorithm is
     not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
     the available list.
-  - `compressionForAllColumnFamilies: boolean` When `true`, applies `compression` to every column
-    family opened for the database rather than only the column family specified by `name`. Requires an explicit
-    `compression`. Defaults to `false`. See [Compression](#compression).
-  - `dbWriteBufferSize: number` The total memtable memory budget in bytes shared across all of the
-    database's column families. When the combined size of all memtables reaches this value, RocksDB
-    flushes the largest one. `0` (the default) disables this global trigger, so per-column-family
-    `writeBufferSize` alone drives flushing. This is distinct from the process-wide
-    [`writeBufferManagerSize`](#dbconfigoptions) config option. Database-wide, so it binds when the
-    path is first opened in this process: a later open of the same path — including from another
-    worker thread — keeps the first opener's value rather than overriding or rejecting it.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
     Defaults to `false`.
-  - `infoLogLevel: number` The verbosity of RocksDB's informational logging (`LOG` /
-    `LOG.old.*`): `0` (debug), `1` (info), `2` (warn), `3` (error), `4` (fatal), or `5`
-    (header-only). Omit to leave RocksDB's own default (`INFO_LEVEL` in a release build of the
-    linked RocksDB library). See [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
-  - `maxLogFileSize: number` The per-file size cap, in bytes, for informational log files (`LOG` /
-    `LOG.old.*`). RocksDB retains up to 5 of these files, so the total informational-log footprint
-    is bounded at roughly `5 * maxLogFileSize`. Defaults to 16 MB (an 80 MB bound), which stops
-    purely informational logging from growing without bound. A value of `0` is RocksDB's special
-    "single unbounded log file" mode — it **disables size-based rotation entirely**, so the log
-    can grow without limit; only set `0` if you deliberately want that (it forgoes the bounded
-    footprint this option otherwise provides). See
-    [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
   - `maxOpenFiles: number` The maximum number of table files RocksDB keeps open. `0` (the default)
     derives a budget from the effective per-process open-file limit (an eighth of the limit —
     several databases can share one process — clamped to `[1024, 262144]`); `-1` holds every table
@@ -88,17 +66,6 @@ Creates a new database instance.
     compaction falls behind under sustained ingest); a positive `int32` is an explicit cap. Reads
     only pay a reopen cost when the number of live table files exceeds the budget, so raise the
     process fd limit (and with it the derived budget) for very large databases.
-  - `maxWriteBufferNumber: number` The maximum number of memtables that can be queued per column
-    family before writes stall. Higher values absorb write bursts while flushes catch up, at the
-    cost of memory (roughly `maxWriteBufferNumber * writeBufferSize` per column family). Defaults to
-    `16`.
-  - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
-    memory for transaction conflict checking. `-1` (the default) derives the value from
-    `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
-    transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
-    (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
-    `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
-    value is always honored as-is.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -132,9 +99,6 @@ Creates a new database instance.
     the verification slot for each written key. Enable this only for column families whose records
     are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
     `verificationTableEntries` to be configured before the first database is opened.
-  - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
-    sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
-    values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
 
 ### `db.close()`
 
@@ -166,9 +130,7 @@ when a non-default compression level is set. The database must be open. See
 [Compression](#compression).
 
 ```typescript
-const db = RocksDatabase.open('path/to/db', {
-	compression: { algorithm: 'zstd', level: 3 },
-});
+const db = RocksDatabase.open('path/to/db', { compression: { algorithm: 'zstd', level: 3 } });
 console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
@@ -181,18 +143,6 @@ semantics and caveats.
 ```typescript
 const db = RocksDatabase.open('path/to/db', { compression: 'none' });
 db.setCompression({ algorithm: 'zstd', level: 19 });
-```
-
-### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
-
-Returns the informational-log settings currently in effect for this database, read live from
-RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
-per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
-verbosity. The database must be open.
-
-```typescript
-const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
-console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
 ```
 
 ### `db.config(options)`
@@ -335,20 +285,11 @@ per database path can be performed at a time.
 - `options: object`
   - `start?: Key` The start key of the range to compact.
   - `end?: Key` The end key of the range to compact.
-  - `bottommost?: boolean` Also compact the bottommost level, rewriting every file in range.
-    RocksDB skips that level by default when no compaction filter is installed, and it holds most
-    of the data — so an ordinary compaction leaves it untouched. Because a changed
-    [`compression`](#compression) algorithm governs only newly written files, this is the way to
-    re-encode data that already exists. It rewrites the whole range regardless of whether RocksDB
-    considers it worthwhile, so it costs as much as the data is large. Defaults to `false`.
 
 ```typescript
 await db.compact();
 
 await db.compact({ start: 'a', end: 'z' });
-
-// Re-encode everything already on disk under the column family's current codec
-await db.compact({ bottommost: true });
 ```
 
 ### `db.compactSync(options?): void`
@@ -359,8 +300,6 @@ Synchronous version of `compact()`.
 db.compactSync();
 
 db.compactSync({ start: 'a', end: 'z' });
-
-db.compactSync({ bottommost: true });
 ```
 
 ### `db.destroy(): void`
@@ -808,9 +747,6 @@ an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column fami
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
 operations methods as the `RocksDatabase` instance plus:
 
-- `txn.abandonWrites(): void` Releases the staged writes' verification-table write intents without
-  closing the transaction, and bars any further writes or commit. Reads (including read-your-own-writes)
-  keep working until the transaction is aborted.
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
@@ -823,22 +759,6 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
   a timestamp, it will set the timestamp to the current time. The value must be in seconds with
   higher precision in the decimal.
-
-#### `txn.abandonWrites(): void`
-
-Releases the staged writes' verification-table (VT) write intents without closing the transaction,
-and bars any further writes or commit (`commit()`/`commitSync()`/`put()`/`remove()`, including
-database-context writes via `{ transaction: txn }`, all reject once called). Reads — including
-read-your-own-writes — keep working until the transaction is aborted. Idempotent, and a no-op after
-`abort()`.
-
-Scope is VT intents only: RocksDB's own transaction locks (pessimistic mode) are still held until
-the transaction is aborted.
-
-This is for a transaction kept open only for its outstanding read iterators after its writes were
-already committed elsewhere (e.g. replayed onto another transaction) — it lets the intents release
-early so other writers' coordinated-retry commits stop parking on them, instead of waiting for the
-handle's eventual `abort()`.
 
 #### `txn.abort(): void`
 
@@ -1245,9 +1165,7 @@ Set the algorithm per column family with the `compression` option when opening a
 const db = RocksDatabase.open('/path/to/db', { compression: 'zstd' });
 
 // Or an object with an explicit level
-const db2 = RocksDatabase.open('/path/to/db2', {
-	compression: { algorithm: 'zstd', level: 3 },
-});
+const db2 = RocksDatabase.open('/path/to/db2', { compression: { algorithm: 'zstd', level: 3 } });
 
 // Disable compression entirely
 const db3 = RocksDatabase.open('/path/to/db3', { compression: 'none' });
@@ -1263,16 +1181,6 @@ LZ4.) Read the algorithm actually in effect with the `db.compression` getter.
 was compiled against, so it varies by build. Always check
 [`supportedCompression`](#supportedcompression) at runtime — opening with an unavailable algorithm
 throws. `'none'` is always available.
-
-**Changing the codec of data already written.** Setting `compression` affects files written from
-that point on. Existing SST and blob files keep the codec they were written with until something
-rewrites them. An ordinary `compact()` can re-encode non-bottommost levels, but RocksDB leaves the
-bottommost level alone unless a compaction filter is installed — and that is where most of the data
-sits, so a plain compaction will not rewrite all existing data. Use
-[`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to force the rewrite, once per
-column family you want migrated. Note also that omitting `compression` on a column family that
-already exists **inherits** its current codec rather than applying the default — the default
-applies only when the family is created.
 
 **Adopting a codec across a whole database.** Compression is chosen per column family, and RocksDB
 opens every family of a database in one call — so by default the families you did not name keep
@@ -1303,10 +1211,90 @@ changeable, so an explicit change governs files written afterward while existing
 their original compression until rewritten by compaction. It also applies to blob files (large
 values), whose compression otherwise defaults to none.
 
-Because a column family's compression is fixed while it is open, if the same column family is opened
-a second time in the same process (another `RocksDatabase` on the same path/`name`, including from a
-`worker_thread`) with an **explicitly different** algorithm or level, the second open **throws** — a
-plain reopen (no `compression`) instead inherits the live setting.
+Because an open-time `compression` option applies only when a column family is first opened in a
+process, if the same column family is opened a second time in the same process (another
+`RocksDatabase` on the same path/`name`, including from a `worker_thread`) with an **explicitly
+different** algorithm or level, the second open **throws** — a plain reopen (no `compression`) instead
+inherits the live setting. This is a structural limit of the open-time API: `rocksdb::DB::Open()` opens
+every column family in the database transitively in one call, so by the time a caller can name a
+newly-discovered column family explicitly, RocksDB has already opened it. Use `db.setCompression()`
+below to change the algorithm of an already-open column family without a reopen.
+
+### `db.setCompression(compression: string | { algorithm: string, level?: number }): void`
+
+Dynamically changes the compression algorithm (and optional level) for an **already-open** column
+family, live, with no close/reopen and no conflict with other handles that already have this column
+family open elsewhere in the process. It accepts the same `compression` shape as the open-time option:
+
+```typescript
+const db = RocksDatabase.open('/path/to/db', { compression: 'none' });
+
+// ... database is upgraded/reconfigured to prefer zstd ...
+db.setCompression({ algorithm: 'zstd', level: 19 });
+// new writes are now compressed with zstd/level 19; db is still open and usable.
+```
+
+This is backed by RocksDB's `DB::SetOptions()`, which the RocksDB headers document as dynamically
+mutable for exactly the fields this binding needs: `ColumnFamilyOptions::compression` and
+`AdvancedColumnFamilyOptions::blob_compression_type` are both annotated `// Dynamically changeable
+through SetOptions() API` (`rocksdb/options.h`, `rocksdb/advanced_options.h`). `setCompression` sets
+both together (mirroring the open-time option) so blob-stored large values don't stay uncompressed
+after a live algorithm change. It was chosen over a per-CF options map on the root/default open call
+(the alternative design considered) because that alternative doesn't fit the motivating use case at
+all: a caller that doesn't yet know a column family's desired codec until _after_ reading its own
+catalog — itself a column family opened by that very same call — has no way to supply per-CF options
+up front. `SetOptions()` sidesteps the problem structurally: it operates on a column family that is
+already open, after the caller has had a chance to learn what codec it wants.
+
+**Verified semantics** (RocksDB's own `SetOptions()` doc explicitly limits the guarantee to what's
+listed as mutable — this was checked directly against the linked RocksDB build, not assumed):
+
+- **Governs new writes only, going forward.** The very next flush (memtable → SST) and any future
+  compaction output use the new algorithm; SST/blob files already on disk are untouched by the call
+  itself and keep their old compression until they are naturally rewritten by a later compaction.
+  This exactly matches the open-time `compression` option's existing "governs subsequently written
+  files" semantics — `setCompression` is the live-mutation path to the same effective behavior,
+  without the reopen restriction above. An ordinary `db.compact()`/`db.compactSync()` can leave
+  already-bottommost files untouched because RocksDB skips that level by default when no compaction
+  filter is configured. Use `db.compact({ bottommost: true })` or
+  `db.compactSync({ bottommost: true })` to force those files to be rewritten under the new codec.
+- **The level is a partial update.** The new level is applied via RocksDB's nested-option syntax
+  (`compression_opts={level=N;}`), which — per RocksDB's own documented example for this same API
+  (`db->SetOptions(cfh, {{"block_based_table_factory", "{prepopulate_block_cache=kDisable;}"}})`)
+  — only touches the field(s) named; every other `CompressionOptions` sub-field (window size,
+  strategy, dictionary training, ...) is left at its current live value. Omitting `level` resets it to
+  the algorithm's default (RocksDB's `kDefaultCompressionLevel` sentinel), matching the open-time
+  option's "an explicit algorithm without a level does not inherit a previously-set level" behavior —
+  it is never silently carried over from before the call.
+- **A persisted no-op request is free.** If the requested algorithm, blob algorithm, and effective
+  level already match the live options, `setCompression` skips the RocksDB call entirely rather than
+  paying for a no-op OPTIONS-file write. If a prior attempt applied the setting in memory but failed to
+  persist it, the same request retries the persistence step instead. This matters because RocksDB's
+  own `SetOptions()` doc calls it "a slow call because a new OPTIONS file is serialized and persisted
+  for each call. Use only infrequently" — a caller that reconciles many column families against a
+  catalog on every boot will find most of them already at the desired codec, and this keeps that sweep
+  cheap.
+- **A persistence failure can split live and durable state.** RocksDB applies the new options in
+  memory first, then persists an OPTIONS file reflecting them; the returned status covers the persist
+  step alone. On a failure (e.g. the volume is full or read-only), the column family may already be
+  running the new algorithm in memory while the on-disk OPTIONS file still holds the old one —
+  `setCompression` detects this case and says so explicitly in the thrown error's message, since a
+  later cold reopen (which trusts only the OPTIONS file) will silently revert to the old algorithm.
+- **Rejected on a read-only database.** `setCompression` persists a new OPTIONS file, which a
+  read-only handle (`{ readOnly: true }`) may not do — it throws `ERR_DATABASE_READONLY`, matching
+  every other mutating operation on this binding.
+- **Read your write.** `db.compression` reflects the change immediately (it reads live via
+  `DB::GetOptions()`), and so does the already-open-column-family conflict check described above: once
+  `setCompression` has changed the live algorithm, a second explicit `RocksDatabase.open()` on that
+  column family is compared against the **new** value, not the one it was originally opened with.
+- **Overrides another handle's explicit codec without notice.** The open-time conflict check exists
+  so two handles on the same column family can't disagree about compression — but `setCompression`
+  bypasses it by design: it changes the live setting for every handle on that column family, including
+  one that originally opened with an explicit, different algorithm. There is currently no event or
+  other signal to such a handle when this happens.
+- **Does not change `RocksDatabase.open`'s existing open-time behavior.** `compression` at open time
+  behaves exactly as before for a column family that is not already open in the process; `setCompression`
+  is purely additive for the already-open case.
 
 ### `supportedCompression`
 
@@ -1979,9 +1967,7 @@ live database directory would write backup files on top of RocksDB's own files. 
 before anything is written.
 
 ```typescript
-const id = await db.backup('/path/to/backups', {
-	metadata: 'nightly-2026-06-04',
-});
+const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' });
 ```
 
 `BackupOptions`:
@@ -2031,9 +2017,7 @@ await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar')));
 // Restore: `tar -xf backup.tar -C /restored`, then open '/restored'.
 
 // Or gzip it (`tar -xzf backup.tar.gz` to restore):
-await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), {
-	gzip: true,
-});
+await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), { gzip: true });
 ```
 
 `BackupStreamOptions`:

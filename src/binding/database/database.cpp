@@ -969,6 +969,14 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
  * `kDefaultCompressionLevel`, mirroring `applyCompression` in
  * `db_descriptor.cpp` (the open-time path).
  *
+ * RocksDB's own doc for `SetOptions()` (db.h) calls it "a slow call because a
+ * new OPTIONS file is serialized and persisted for each call. Use only
+ * infrequently." The motivating caller (Harper resolving each table's codec
+ * from its own catalog on every boot) calls this once per column family, and
+ * in the steady state almost every call requests the codec that is already
+ * live — so a no-op short-circuit against the live `GetOptions()` makes that
+ * sweep free instead of N blocking OPTIONS writes.
+ *
  * @example
  * ```typescript
  * const db = NativeDatabase.open('path/to/db');
@@ -978,6 +986,16 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	// Pins the descriptor for the duration of this call: without it, a concurrent
+	// close/shutdown on another env sharing this process-global DBDescriptor could
+	// tear down the column family/DB out from under the SetOptions() call below
+	// (the same cross-env teardown hazard AGENTS.md documents for other ops that
+	// touch descriptor->db or a CF handle).
+	ACQUIRE_OPERATIONS_LOCK();
+	// SetOptions() persists a new OPTIONS file for the database, which is durable
+	// mutation of on-disk metadata — not something a read-only handle may do,
+	// consistent with every other mutating native op.
+	THROW_IF_READONLY((*dbHandle)->descriptor, "Set compression failed: ");
 
 	NAPI_GET_STRING(argv[0], compressionName, "Compression algorithm is required");
 	std::optional<rocksdb::CompressionType> type = compressionTypeFromName(compressionName);
@@ -1006,6 +1024,17 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 		level = static_cast<int>(compressionLevel);
 	}
 
+	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
+	rocksdb::Options current = (*dbHandle)->descriptor->db->GetOptions(cf);
+	if (
+		current.compression == *type && current.blob_compression_type == *type &&
+		current.compression_opts.level == level
+	) {
+		// Already at the requested algorithm/level: skip the OPTIONS-file
+		// serialization entirely rather than paying for a no-op write.
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	std::string compressionTypeString;
 	rocksdb::Status serializeStatus = rocksdb::GetStringFromCompressionType(&compressionTypeString, *type);
 	if (!serializeStatus.ok()) {
@@ -1019,11 +1048,29 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 	newOptions["blob_compression_type"] = compressionTypeString;
 	newOptions["compression_opts"] = "level=" + std::to_string(level) + ";";
 
-	rocksdb::Status status =
-		(*dbHandle)->descriptor->db->SetOptions((*dbHandle)->getColumnFamilyHandle(), newOptions);
+	rocksdb::Status status = (*dbHandle)->descriptor->db->SetOptions(cf, newOptions);
 	if (!status.ok()) {
-		std::string errorMsg = "SetCompression failed: " + status.ToString();
-		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		// DBImpl::SetOptions() applies the change to the live in-memory options
+		// FIRST, then persists an OPTIONS file reflecting it — the returned status
+		// is the persist step's alone. A failure here can therefore leave the live
+		// column family already running the new algorithm while the durable OPTIONS
+		// file still reflects the old one (e.g. ENOSPC/EROFS/EIO on the persist
+		// write). Since this codebase treats the OPTIONS file as the ONLY
+		// authoritative source of a CF's compression on a cold reopen
+		// (db_descriptor.cpp), that split is exactly the divergence a caller must
+		// be told about explicitly rather than left to discover after a restart.
+		rocksdb::Options liveAfterFailure = (*dbHandle)->descriptor->db->GetOptions(cf);
+		bool appliedInMemoryOnly = liveAfterFailure.compression == *type &&
+			liveAfterFailure.blob_compression_type == *type &&
+			liveAfterFailure.compression_opts.level == level;
+		std::string msg = appliedInMemoryOnly
+			? "Set compression failed to persist (the new compression is already active "
+			  "in memory, but the on-disk OPTIONS file was not updated -- a cold reopen "
+			  "of this column family will revert to the prior compression)"
+			: "Set compression failed";
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, msg.c_str(), error);
+		::napi_throw(env, error);
 		return nullptr;
 	}
 
