@@ -299,22 +299,16 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * Bounded wait for a coordinated-retry commit parked on a conflicting
-	 * holder's VT lock (`completeCommitWork` in transaction.cpp), so a holder
-	 * that never releases (leaked/abandoned transaction) resolves RETRY_NOW
-	 * instead of parking forever (harper#2001). One entry per outstanding
-	 * park, identified by a monotonic `id` rather than the entry's address --
-	 * `LockTracker::wakeCallbacks` has no removal API (a known, documented
-	 * gap; see the AGENTS.md note), so a stale closure can outlive its entry
-	 * and its `unique_ptr`'s heap address can be reused by a later park; an
-	 * address-keyed lookup would then resolve the wrong park. `fired` is the
-	 * exactly-once gate shared with the LockTracker wake callback registered
-	 * on the same park -- whichever side wins the CAS calls+releases `tsfn`,
-	 * the loser touches nothing. Owned by the descriptor (not one-thread-
-	 * per-park and not the per-park heap state) so `parkTimeoutThread` --
-	 * lazily started, joined at close like `commitWorker` -- is the only
-	 * thread ever created for this, and so a dying env's entries can be
-	 * scrubbed by the same env-cleanup hook that releases commit
-	 * completions instead of firing into a tsfn Node is about to free.
+	 * holder's VT lock, so a holder that never releases resolves RETRY_NOW
+	 * instead of parking forever (harper#2001, see AGENTS.md). Keyed by a
+	 * monotonic `id`, not the entry's address: `LockTracker::wakeCallbacks`
+	 * has no removal API, so a stale closure can outlive its entry and an
+	 * address-keyed lookup could resolve a later, unrelated park reusing the
+	 * freed address. `fired` is the exactly-once gate shared with the
+	 * LockTracker wake callback for the same park -- whichever side wins the
+	 * CAS calls+releases `tsfn`. `LockTracker::wake()` runs `fireParkTimeout`
+	 * under the process-global VT `writerMutex_`, so the map (not a vector)
+	 * is what keeps that lookup O(1).
 	 */
 	struct ParkTimeout {
 		uint64_t id;
@@ -325,10 +319,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	};
 	std::mutex parkTimeoutMutex;
 	std::condition_variable parkTimeoutCv;
-	// Small and bounded by outstanding parks (each entry is removed by
-	// whichever of fireParkTimeout / releaseParkTimeoutsByEnv claims it
-	// first) -- not by total parks ever registered.
-	std::vector<std::unique_ptr<ParkTimeout>> parkTimeouts;
+	std::unordered_map<uint64_t, std::unique_ptr<ParkTimeout>> parkTimeouts;
 	uint64_t nextParkTimeoutId = 1;
 	std::thread parkTimeoutThread;
 	bool parkTimeoutThreadStarted = false;
@@ -336,14 +327,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * JS thread (`completeCommitWork`). Registers a bounded wait, lazily
-	 * starting the descriptor's single park-timeout thread. Returns the
-	 * new entry's id to capture in the LockTracker wake callback so a
-	 * genuine wake can also resolve through `fireParkTimeout` -- or 0 if the
-	 * descriptor is already closing. The caller must then resolve inline
-	 * without registering with the LockTracker at all: by this point
-	 * `cancelForDB` has already run, so a lock that becomes parkable only
-	 * after that point (the `cancelForDB` / `shutdownParkTimeouts` window)
-	 * would otherwise park with no timeout backing it.
+	 * starting the descriptor's single park-timeout thread. Returns the new
+	 * entry's id, or 0 if the descriptor is closing or thread creation
+	 * failed -- either way the caller resolves inline instead of parking
+	 * with no timeout thread behind it.
 	 */
 	uint64_t scheduleParkTimeout(
 		napi_env env,
@@ -370,18 +357,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * Descriptor close: stop and join the park-timeout thread, then resolve
-	 * (call+release) every park still pending. `cancelForDB` (called just
-	 * before this, in `finishClose()`) wakes every lock tagged with this
-	 * descriptor's own `vtEpoch`, but a park can be registered on a tracker
-	 * installed by a *different* database on a colliding VT slot
-	 * (`VerificationTable::lockSlotForWrite` joins an existing tracker
-	 * without retagging its `dbId`) -- that lock's eventual release wakes
-	 * the other database, not this one, so this descriptor's own park would
-	 * otherwise wait on a wake that may never come from its perspective.
-	 * Draining here guarantees every park this descriptor scheduled settles
-	 * by the time it closes, independent of which VT tracker it ended up on.
-	 * Idempotent (safe to call from both `finishClose()` and the destructor,
-	 * matching `commitWorker`'s own belt-and-suspenders shutdown call).
+	 * (call+release) every park still pending. `cancelForDB`, called just
+	 * before this, cannot be relied on to have woken everything -- a park
+	 * can be registered on a foreign-`dbId` tracker (colliding VT slot) that
+	 * only wakes a different database. Idempotent (called from both
+	 * `finishClose()` and the destructor, matching `commitWorker`).
 	 */
 	void shutdownParkTimeouts();
 
