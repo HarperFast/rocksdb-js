@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -203,6 +204,13 @@ struct RetryNowContext {
 };
 
 static void retryNowCallJs(napi_env env, napi_value /*func*/, void* context, void* /*data*/) {
+	// env is nullptr when the env is tearing down and this tsfn's queue is
+	// being drained as part of that (same as commitCompletionCallJs above) —
+	// nothing left to resolve into; retryNowFinalize still runs afterward to
+	// free ctx.
+	if (env == nullptr) {
+		return;
+	}
 	auto* ctx = reinterpret_cast<RetryNowContext*>(context);
 	napi_value global, resolveFn, retryVal;
 	::napi_get_global(env, &global);
@@ -224,7 +232,12 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
  * never releases (leaked/abandoned transaction, or a wake lost to #741's
  * double-release corruption), the park resolves RETRY_NOW anyway once this
  * elapses instead of hanging forever (harper#2001). A spurious early
- * RETRY_NOW is harmless -- the JS layer just retries and may conflict again.
+ * RETRY_NOW is harmless -- the JS layer just retries and may conflict again,
+ * consuming a coordinatedRetry attempt as it would for a genuine wake; the
+ * default is deliberately the top of the 2-5s range this was scoped to, to
+ * leave the most headroom for a holder that is merely slow (a large batch
+ * commit, backpressure under compaction) rather than abandoned, since a
+ * commit's transaction.commit() attempts are finite (maxRetries, default 3).
  * Malformed input (non-numeric, negative, out of range) falls back to the
  * default rather than `atoi`'s silent 0 (immediate-fire spin) or a negative
  * value wrapping through `unsigned` into a multi-day effective hang -- this
@@ -232,15 +245,26 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
  */
 static unsigned parkTimeoutMs() {
 	static const unsigned ms = []() -> unsigned {
-		constexpr unsigned kDefault = 3000;
+		constexpr unsigned kDefault = 5000;
 		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
-		if (v == nullptr || *v == '\0' || v[0] == '-') {
+		if (v == nullptr) {
+			return kDefault;
+		}
+		const char* firstNonSpace = v;
+		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+			++firstNonSpace;
+		}
+		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
 			return kDefault;
 		}
 		char* end = nullptr;
 		errno = 0;
 		unsigned long parsed = ::strtoul(v, &end, 10);
-		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX) {
+		// parsed == 0 covers both a literal "0" and `atoi`'s old silent
+		// non-numeric fallback; either way, firing every park immediately is
+		// exactly the unparked spin this bound exists to prevent, so treat it
+		// the same as malformed input rather than as a deliberate opt-out.
+		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
 			return kDefault;
 		}
 		return static_cast<unsigned>(parsed);
@@ -452,7 +476,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 		bool parked = false;
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-		DBDescriptor* descriptor = (state->handle->dbHandle) ? state->handle->dbHandle->descriptor.get() : nullptr;
+		std::shared_ptr<DBDescriptor> descriptor =
+			state->handle->dbHandle ? state->handle->dbHandle->descriptor : nullptr;
 		for (auto* slot : state->savedSlots) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
@@ -480,16 +505,39 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 			// #741 bound: descriptor-owned park timeout so a holder that never
 			// releases resolves RETRY_NOW after ROCKSDB_JS_PARK_TIMEOUT_MS
-			// instead of hanging forever (harper#2001). Null only while the
-			// descriptor is closing, in which case DBDescriptor::close() is
-			// already waking every real holder and the !registered branch
-			// below resolves this the same way.
-			DBDescriptor::ParkTimeout* parkEntry =
-				descriptor ? descriptor->scheduleParkTimeout(env, parkTimeoutMs(), tsfn, fired) : nullptr;
+			// instead of hanging forever (harper#2001). 0 only while the
+			// descriptor is closing.
+			uint64_t parkId = descriptor ? descriptor->scheduleParkTimeout(env, parkTimeoutMs(), tsfn, fired) : 0;
 
-			auto fireOnce = [tsfn, fired, descriptor, parkEntry]() {
-				if (descriptor && parkEntry) {
-					descriptor->fireParkTimeout(parkEntry);
+			if (descriptor && parkId == 0) {
+				// Descriptor closing: resolve now without registering with the
+				// LockTracker at all (see scheduleParkTimeout's header comment)
+				// -- a lock that only becomes parkable in the narrow
+				// cancelForDB/shutdownParkTimeouts window would otherwise have
+				// no timeout backing its park.
+				vt->unrefTracker(t);
+				bool expected = false;
+				if (fired->compare_exchange_strong(expected, true)) {
+					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				}
+				parked = true;
+				break;
+			}
+
+			// A weak reference: LockTracker::wakeCallbacks has no removal API
+			// (a known, documented gap), so this closure can outlive the park
+			// it was registered for -- including outliving `descriptor` itself
+			// (e.g. a foreign-dbId tracker from a colliding VT slot, woken by
+			// a DB this park was never registered against). `.lock()` failing
+			// means shutdownParkTimeouts already resolved this park as part of
+			// that descriptor's own close, so there is nothing left to do.
+			std::weak_ptr<DBDescriptor> weakDescriptor = descriptor;
+			auto fireOnce = [tsfn, fired, weakDescriptor, parkId]() {
+				if (parkId != 0) {
+					if (auto d = weakDescriptor.lock()) {
+						d->fireParkTimeout(parkId);
+					}
 					return;
 				}
 				bool expected = false;

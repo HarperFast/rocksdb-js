@@ -193,7 +193,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   each completion callback (widens teardown race windows)
 - `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
   it reads (exercises orphan cleanup past the async-work wait timeout)
-- `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `3000`) before a
+- `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
   coordinated-retry commit parked on a conflicting holder's VT lock resolves
   RETRY_NOW unconditionally, in case the holder never releases (see
   "Coordinated retry" note below)
