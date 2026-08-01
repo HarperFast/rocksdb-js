@@ -482,31 +482,37 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			napi_value resource_name;
 			::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
 			napi_threadsafe_function tsfn;
-			::napi_create_threadsafe_function(
+			napi_status tsfnStatus = ::napi_create_threadsafe_function(
 				env, nullptr, nullptr, resource_name,
 				0, 1,
 				ctx, retryNowFinalize,
 				ctx, retryNowCallJs,
 				&tsfn
 			);
+			if (tsfnStatus != napi_ok) {
+				// Creation failed (e.g. an already-pending exception): nothing to
+				// call+release, and ctx is not yet owned by any finalize -- fall
+				// through to the plain !parked resolve below instead of leaving
+				// a garbage tsfn handle in a park entry.
+				vt->unrefTracker(t);
+				break;
+			}
 			::napi_unref_threadsafe_function(env, tsfn);
 
 			// Exactly-once gate: independent of `ctx` so a loser arriving after
 			// the winner's ctx/tsfn are already gone just loses the CAS.
 			auto fired = std::make_shared<std::atomic<bool>>(false);
 
-			// #741 bound: descriptor-owned park timeout so a holder that never
-			// releases resolves RETRY_NOW after ROCKSDB_JS_PARK_TIMEOUT_MS
-			// instead of hanging forever (harper#2001). 0 only while the
-			// descriptor is closing.
+			// #741 bound (harper#2001): resolves RETRY_NOW after
+			// ROCKSDB_JS_PARK_TIMEOUT_MS if the holder never releases. 0 both
+			// when the descriptor is closing and when there is no descriptor
+			// at all (DBHandle::close() can reset it concurrently) -- either
+			// way there is no timeout thread behind this park.
 			uint64_t parkId = descriptor ? descriptor->scheduleParkTimeout(env, parkTimeoutMs(), tsfn, fired) : 0;
 
-			if (descriptor && parkId == 0) {
-				// Descriptor closing: resolve now without registering with the
-				// LockTracker at all (see scheduleParkTimeout's header comment)
-				// -- a lock that only becomes parkable in the narrow
-				// cancelForDB/shutdownParkTimeouts window would otherwise have
-				// no timeout backing its park.
+			if (parkId == 0) {
+				// No timeout thread behind this park -- resolve now rather
+				// than register with the LockTracker unbounded.
 				vt->unrefTracker(t);
 				bool expected = false;
 				if (fired->compare_exchange_strong(expected, true)) {
@@ -517,13 +523,10 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				break;
 			}
 
-			// A weak reference: LockTracker::wakeCallbacks has no removal API
-			// (a known, documented gap), so this closure can outlive the park
-			// it was registered for -- including outliving `descriptor` itself
-			// (e.g. a foreign-dbId tracker from a colliding VT slot, woken by
-			// a DB this park was never registered against). `.lock()` failing
-			// means shutdownParkTimeouts already resolved this park as part of
-			// that descriptor's own close, so there is nothing left to do.
+			// weak_ptr, not raw: LockTracker::wakeCallbacks has no removal API,
+			// so this closure can outlive `descriptor` (e.g. a foreign-dbId
+			// tracker from a colliding VT slot). `.lock()` failing means
+			// shutdownParkTimeouts already resolved this park at close.
 			std::weak_ptr<DBDescriptor> weakDescriptor = descriptor;
 			auto fireOnce = [tsfn, fired, weakDescriptor, parkId]() {
 				if (parkId != 0) {

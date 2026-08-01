@@ -269,11 +269,8 @@ DBDescriptor::DBDescriptor(
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
 	this->close();
-	// Belt-and-suspenders, matching commitWorker/logWorker's own destructor
-	// shutdown: close() no-ops if finishClose() already ran (beginClose()
-	// returned false because some other caller is/was closing), and
-	// shutdownParkTimeouts() is idempotent, so this is a no-op in the
-	// common case and a safety net otherwise.
+	// Idempotent safety net, matching commitWorker/logWorker's own
+	// destructor shutdown.
 	this->shutdownParkTimeouts();
 }
 
@@ -392,13 +389,10 @@ void DBDescriptor::finishClose() {
 		}
 	}
 
-	// Stop and join the park-timeout thread now that cancelForDB() has woken
-	// every real holder above -- any entries still pending at this point
-	// belong to envs that never got a chance to release their own park
-	// (already reachable via releaseParkTimeoutsByEnv, not this shutdown
-	// path), so nothing here needs to fire them, only stop the thread and
-	// let the destructor's guarantee (park entries erased == no live handle
-	// left) hold.
+	// A park can be registered on a foreign-dbId tracker (colliding VT slot;
+	// see the ParkTimeout header comment), so cancelForDB() above cannot be
+	// relied on to have woken everything this descriptor is waiting on.
+	// shutdownParkTimeouts() resolves whatever is left regardless.
 	this->shutdownParkTimeouts();
 
 	// Unregister from transaction log store registry - this will clean up stores
@@ -542,10 +536,7 @@ void DBDescriptor::runParkTimeoutLoop() {
 			this->parkTimeoutCv.wait_until(lock, (*earliest)->deadline);
 			continue;
 		}
-		// Pop and fire every entry due at this wakeup (a single wait can cover
-		// several parks with close deadlines) while still holding the mutex --
-		// the same discipline dispatchCommitCompletion uses: a concurrent
-		// releaseParkTimeoutsByEnv cannot free the tsfn mid-call.
+		// Fire while still holding the mutex, like dispatchCommitCompletion.
 		for (auto it = this->parkTimeouts.begin(); it != this->parkTimeouts.end();) {
 			if ((*it)->deadline > now) {
 				++it;
@@ -558,8 +549,6 @@ void DBDescriptor::runParkTimeoutLoop() {
 				::napi_call_threadsafe_function(due->tsfn, nullptr, napi_tsfn_nonblocking);
 				::napi_release_threadsafe_function(due->tsfn, napi_tsfn_release);
 			}
-			// else: the wake callback already won the CAS and will
-			// call+release tsfn itself; nothing left for us to do.
 		}
 	}
 }
@@ -605,7 +594,6 @@ void DBDescriptor::releaseParkTimeoutsByEnv(napi_env env) {
 }
 
 void DBDescriptor::shutdownParkTimeouts() {
-	std::vector<std::unique_ptr<ParkTimeout>> remaining;
 	std::thread toJoin;
 	{
 		std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
@@ -619,26 +607,31 @@ void DBDescriptor::shutdownParkTimeouts() {
 			toJoin = std::move(this->parkTimeoutThread);
 			this->parkTimeoutThreadStarted = false;
 		}
-		remaining = std::move(this->parkTimeouts);
+		// Resolve every park still pending, under the same mutex
+		// releaseParkTimeoutsByEnv/fireParkTimeout/runParkTimeoutLoop all
+		// serialize their tsfn calls on -- draining outside the lock would
+		// let a concurrent releaseParkTimeoutsByEnv for a dying env observe
+		// "nothing to cancel" (we already pulled its entry out) while we are
+		// mid-call on that exact env's tsfn, racing Node freeing it. RETRY_NOW
+		// is the correct outcome for a park whose descriptor is closing
+		// regardless of whether its real holder's wake ever reaches it (see
+		// the header comment on the cross-database VT-slot-collision case
+		// this closes).
+		for (auto& entry : this->parkTimeouts) {
+			bool expected = false;
+			if (entry->fired->compare_exchange_strong(expected, true)) {
+				::napi_call_threadsafe_function(entry->tsfn, nullptr, napi_tsfn_nonblocking);
+				::napi_release_threadsafe_function(entry->tsfn, napi_tsfn_release);
+			}
+		}
 		this->parkTimeouts.clear();
 	}
+	// Notify + join outside the lock: the loop's cv.wait_until needs to
+	// re-acquire parkTimeoutMutex to observe parkTimeoutStopped and return,
+	// so joining while still holding it would deadlock.
 	this->parkTimeoutCv.notify_all();
 	if (toJoin.joinable()) {
 		toJoin.join();
-	}
-	// Resolve every park still pending now instead of leaving its promise
-	// unresolved forever. Anything still here belongs to an env that hasn't
-	// torn down (a dying env's entries were already released by
-	// releaseParkTimeoutsByEnv), so its tsfn is safe to call; RETRY_NOW is
-	// the correct outcome for a park whose descriptor is closing regardless
-	// of whether its real holder's wake ever reaches it (see the header
-	// comment on the cross-database VT-slot-collision case this closes).
-	for (auto& entry : remaining) {
-		bool expected = false;
-		if (entry->fired->compare_exchange_strong(expected, true)) {
-			::napi_call_threadsafe_function(entry->tsfn, nullptr, napi_tsfn_nonblocking);
-			::napi_release_threadsafe_function(entry->tsfn, napi_tsfn_release);
-		}
 	}
 }
 
