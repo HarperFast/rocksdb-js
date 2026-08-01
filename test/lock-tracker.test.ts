@@ -119,6 +119,7 @@ describe('Coordinated retry (Phase 3)', () => {
 			// Force IsBusy by running concurrent transactions writing the same key
 			// under coordinatedRetry: true. database.ts handles RETRY_NOW internally
 			// via immediate retry; callers never see it as a return value.
+			const start = Date.now();
 			const results = await Promise.allSettled(
 				Array.from({ length: 4 }, async (_, i) => {
 					const v = Buffer.alloc(16);
@@ -131,6 +132,7 @@ describe('Coordinated retry (Phase 3)', () => {
 					);
 				})
 			);
+			const elapsed = Date.now() - start;
 
 			// All transactions should eventually succeed (coordinatedRetry retries
 			// without error) or fail gracefully; none should throw unexpectedly.
@@ -140,6 +142,12 @@ describe('Coordinated retry (Phase 3)', () => {
 					expect((r.reason as Error).message).toContain('commit');
 				}
 			}
+
+			// A conflict here resolves via LockTracker's real wake (the other
+			// commit finishing), not the #741 park timeout (default 5000ms) --
+			// bound the wall clock well under that so a broken wake path can't
+			// hide behind the timeout and still pass.
+			expect(elapsed).toBeLessThan(3000);
 
 			// Slot should be 0 (released) after all transactions settle.
 			const newV = 2.5e12;

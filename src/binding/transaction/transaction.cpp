@@ -10,6 +10,7 @@
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
+#include "database/db_registry.h"
 #include "iterator/db_iterator.h"
 #include "database/db_settings.h"
 #include "napi/macros.h"
@@ -225,20 +226,12 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
 
 /**
  * Bounded wait (ms) for a coordinated-retry commit parked on a conflicting
- * holder's VT lock, selected by ROCKSDB_JS_PARK_TIMEOUT_MS. If the holder
- * never releases (leaked/abandoned transaction, or a wake lost to #741's
- * double-release corruption), the park resolves RETRY_NOW anyway once this
- * elapses instead of hanging forever (harper#2001). A spurious early
- * RETRY_NOW is harmless -- the JS layer just retries and may conflict again,
- * consuming a coordinatedRetry attempt as it would for a genuine wake; the
- * default is deliberately the top of the 2-5s range this was scoped to, to
- * leave the most headroom for a holder that is merely slow (a large batch
- * commit, backpressure under compaction) rather than abandoned, since a
- * commit's transaction.commit() attempts are finite (maxRetries, default 3).
- * Malformed input (non-numeric, negative, out of range) falls back to the
- * default rather than `atoi`'s silent 0 (immediate-fire spin) or a negative
- * value wrapping through `unsigned` into a multi-day effective hang -- this
- * is an operational knob someone may reach for mid-incident, not a test seam.
+ * holder's VT lock, selected by ROCKSDB_JS_PARK_TIMEOUT_MS (harper#2001).
+ * Default is the top of the 2-5s range this was scoped to: a timeout
+ * consumes a coordinatedRetry attempt like a genuine wake would, so a
+ * higher default leaves more headroom for a merely-slow (not abandoned)
+ * holder before maxRetries exhausts. Malformed input falls back to the
+ * default rather than producing a degenerate effective timeout.
  */
 static unsigned parkTimeoutMs() {
 	static const unsigned ms = []() -> unsigned {
@@ -531,7 +524,17 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			auto fireOnce = [tsfn, fired, weakDescriptor, parkId]() {
 				if (parkId != 0) {
 					if (auto d = weakDescriptor.lock()) {
+						// This lock() is itself a transient extra ref, exactly
+						// the shape that can make a racing close()'s
+						// PurgeIfUnreferenced observe use_count() > 1 and skip
+						// (HarperFast/rocksdb-js#672) -- retry it after
+						// dropping our ref, like BackupState/checkpoint state
+						// do for the same reason.
 						d->fireParkTimeout(parkId);
+						std::string path = d->path;
+						bool readOnly = d->readOnly;
+						d.reset();
+						DBRegistry::PurgeIfUnreferenced(path, readOnly);
 					}
 					return;
 				}
