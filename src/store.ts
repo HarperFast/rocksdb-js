@@ -109,9 +109,10 @@ export type CompressionInfo = { algorithm: CompressionAlgorithm; level?: number 
 
 /**
  * Normalizes the public `compression` option into the primitive fields the
- * native layer expects. When `option` is omitted, returns an empty object and
- * lets the native layer apply the default (LZ4 when the build supports it, else
- * RocksDB's own default). Throws a `TypeError` for a malformed option and an
+ * native layer expects. When `option` is omitted, or is an object without an
+ * `algorithm`, returns an empty object and lets the native layer apply the
+ * default (LZ4 when the build supports it, else RocksDB's own default).
+ * Throws a `TypeError` for a malformed option and an
  * `Error` for an algorithm that isn't supported by this build.
  */
 export function normalizeCompression(option: CompressionOption | undefined): {
@@ -129,7 +130,13 @@ export function normalizeCompression(option: CompressionOption | undefined): {
 
 	if (typeof option === 'string') {
 		algorithm = option;
-	} else if (typeof option === 'object' && option.algorithm !== undefined) {
+	} else if (typeof option === 'object' && !Array.isArray(option)) {
+		if (option.algorithm === undefined || option.algorithm === null) {
+			if (option.level !== undefined && option.level !== null) {
+				throw new TypeError('Compression level cannot be specified without an algorithm');
+			}
+			return {};
+		}
 		algorithm = option.algorithm;
 		if (option.level !== undefined && option.level !== null) {
 			// TypeScript types `level` as a number. Accept a numeric string too (a
