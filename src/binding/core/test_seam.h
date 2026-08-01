@@ -41,4 +41,17 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
+// Counts how many times a coordinated-retry wake callback observed its
+// ParkedFlag already invalidated (envFlag->alive == false) and skipped
+// touching the tsfn -- see completeCommitWork's park loop in transaction.cpp
+// and Transaction::ReleaseParkedFlagsByEnv (HarperFast/rocksdb-js#741). Only
+// incremented, never gated on; a test can read it via the binding's
+// `parkSkippedByDeadEnvCount()` export to prove the skip branch was actually
+// exercised, not just that the process didn't crash. Process-global and
+// shared across worker threads that load this .node in the same process.
+inline std::atomic<uint32_t>& parkSkippedByDeadEnvCounter() {
+	static std::atomic<uint32_t> counter{0};
+	return counter;
+}
+
 #endif

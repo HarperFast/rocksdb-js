@@ -61,6 +61,19 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Test-only: how many times a coordinated-retry wake callback observed its
+ * ParkedFlag already invalidated by env teardown and skipped the tsfn
+ * (HarperFast/rocksdb-js#741). See core/test_seam.h.
+ */
+napi_value ParkSkippedByDeadEnvCount(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env, parkSkippedByDeadEnvCounter().load(std::memory_order_relaxed), &result
+	));
+	return result;
+}
+
+/**
  * Returns the current thread id.
  */
 napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
@@ -254,6 +267,11 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	// test-only parked-wake-vs-dead-env seam (see core/test_seam.h)
+	napi_value parkSkippedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "parkSkippedByDeadEnvCount", NAPI_AUTO_LENGTH, ParkSkippedByDeadEnvCount, nullptr, &parkSkippedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "parkSkippedByDeadEnvCount", parkSkippedFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

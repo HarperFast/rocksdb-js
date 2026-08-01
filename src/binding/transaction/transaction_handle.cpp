@@ -114,6 +114,14 @@ void TransactionHandle::resetTransaction(){
 	// must never observe mid-swap (see the stateMutex member doc).
 	std::lock_guard<std::mutex> lock(this->stateMutex);
 
+	if (this->closed.load(std::memory_order_relaxed)) {
+		// close() already ran (or is running) and will never see this reset --
+		// a fresh BeginTransaction here would never be deleted, and on the
+		// close()-timeout-then-retry path the descriptor's DB may itself be
+		// mid-teardown. Nothing to reset onto.
+		return;
+	}
+
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
@@ -584,6 +592,13 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	// NOTE: does not register via tryRegisterAsyncWork() -- see AGENTS.md item
+	// 10a (deliberately deferred, same tradeoff as putSync/getSync/removeSync).
+	// An earlier attempt to add that registration to a sibling synchronous
+	// path (CommitSync) reproduced a heap-corruption regression under worker
+	// churn testing that wasn't root-caused within the fix for #741; this
+	// path shares that same new-registration shape and was reverted out of
+	// caution rather than risk the same defect untested.
 	this->ensureSnapshot();
 	if (this->snapshotSet) {
 		itOptions.readOptions.snapshot = this->txn->GetSnapshot();

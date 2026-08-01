@@ -339,17 +339,24 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `waitForAsyncWorkCompletion()`, which would deadlock `close()` against the very work it is
     waiting to drain). `close()` flips `closed` under `stateMutex` _before_ calling
     `waitForAsyncWorkCompletion()`, so by the time it waits, no new work can have registered — the
-    wait only has to drain work that already committed to running. Two known gaps deliberately left
-    open (hot-path cost and shutdown-liveness tradeoffs, respectively, that need explicit sign-off
-    rather than a silent fix): **(a)** `getSync`/`putSync`/`removeSync` still read/write `txn` without
-    going through `tryRegisterAsyncWork()` — they're the hottest paths in the binding (every read and
-    write), and the fix's mutex-per-call cost wasn't accepted without a deliberate hot-path review;
-    the exposure window is narrow (synchronous, no I/O wait) compared to the async commit/park paths
-    this fix closes. **(b)** `waitForAsyncWorkCompletion()`'s 5-second timeout is pre-existing and
-    unchanged: on timeout `close()` proceeds anyway, so a commit that is genuinely still executing
-    past 5s (not parked — parking happens after `signalExecuteCompleted()`, so it doesn't interact
-    with this wait) can still race a `delete this->txn`. Removing the timeout trades this for a
-    shutdown-hang risk if a commit truly never completes.
+    wait only has to drain work that already committed to running. Known gaps deliberately left open
+    (each needs its own dedicated investigation, not a bolt-on to this fix): **(a)** `getSync`/
+    `putSync`/`removeSync`/`CommitSync`/`getCount` still read/write `txn` without going through
+    `tryRegisterAsyncWork()`. `getSync`/`putSync`/`removeSync` are the hottest paths in the binding
+    (every read and write) with a narrow, synchronous exposure window — the mutex-per-call cost
+    wasn't accepted without a dedicated hot-path review. `CommitSync` and `getCount` are not
+    hot-path-sensitive the same way, but an attempt to add `tryRegisterAsyncWork()` +
+    `AsyncWorkGuard`/an inline RAII guard to `CommitSync` reproduced a heap-corruption regression
+    under worker-churn testing (bisected: removing that registration made the same test suite pass
+    5/5 across two Node majors; adding it back reproduced glibc heap-corruption aborts in ~50% of
+    runs) that was not root-caused within the time available — the exact mechanism is still unknown,
+    so `getCount` (identical new-code shape, untested) was reverted alongside it out of caution
+    rather than ship an unverified instance of the same pattern. **(b)** `waitForAsyncWorkCompletion()`'s
+    5-second timeout is pre-existing and unchanged: on timeout `close()` proceeds anyway, so a commit
+    that is genuinely still executing past 5s (not parked — parking happens after
+    `signalExecuteCompleted()`, so it doesn't interact with this wait) can still race a
+    `delete this->txn`. Removing the timeout trades this for a shutdown-hang risk if a commit truly
+    never completes.
 11. **A coordinated-retry parked wake-callback's TSFN can outlive the env that created it**: an
     `IsBusy` commit under `coordinatedRetry` parks its `RETRY_NOW` resolution on the _winning_
     holder's `LockTracker` (`completeCommitWork`'s park loop in transaction.cpp) by registering a
@@ -368,6 +375,34 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     wake callback checks the flag under the _same_ per-flag mutex before touching the tsfn — so
     whichever of "env teardown" or "wake fires" happens first wins, and the other is a no-op instead of
     a race.
+12. **CRITICAL, UNRESOLVED as of the #741 fix: closing items 10+11's races appears to expose (or
+    possibly introduce) a separate, much more frequent heap-corruption crash in `DBRegistry::Shutdown()`
+    → `DBDescriptor::finishClose()`'s `closables` teardown loop, NOT root-caused.** Measured on
+    `HarperFast/rocksdb-js`'s own `repro-crossthread.mjs` (a `coordinatedRetry` + materialized-VT +
+    worker-churn stress script that pre-dates this fix), same settings (`GRACEFUL=1`, 4 workers, one
+    worker recycled every 2s, 15s run): the commit immediately before items 10/11's fix (`ea83ff46`) was
+    **15/15 clean**; every tested version of the fix (the first fix commit, the cross-model-review-refined
+    version, and a further attempted mitigation) crashed **14/15 to 93%** of runs with glibc heap
+    corruption (`corrupted size vs. prev_size`, `free(): invalid size`, `corrupted double-linked list` —
+    multiple distinct messages, i.e. multiple corruption _detection_ sites, not necessarily multiple root
+    causes). Two gdb backtraces both land inside `node::CleanupQueue::Drain()` → `DBRegistry::Shutdown()`
+    → `DBDescriptor::finishClose()` — a **pre-existing, unmodified-by-this-fix** loop (`db_descriptor.cpp`
+    around the `closables` iteration) that deliberately **unlocks `txnsMutex` around each
+    `closable->close()` call** "to avoid deadlocks." Leading hypothesis (unconfirmed): items 10/11 make
+    `TransactionHandle::close()` itself do meaningfully more work under lock (`stateMutex` critical
+    sections, `waitForAsyncWorkCompletion()`), which widens that pre-existing unlocked window enough to
+    turn a latent, near-unreachable race in the `closables` loop into a near-certain one — i.e. the
+    regression may not be a new bug in the #741 fix's own code so much as the #741 fix changing timing
+    enough to expose an older, separate bug in `finishClose()`'s teardown ordering. Ruled out: this is
+    **not** explained by the `writerMutex_`-held-during-N-API-calls pattern in
+    `VerificationTable::releaseWriteIntent`/`cancelForDB` (item 11's wake callbacks run there) — moving
+    `wake()` outside `writerMutex_` in both was tried and did not reduce the crash rate (7/20 vs. 3/14
+    without the change; both far above baseline's 0/18). Also notable: the crash is **ASan-clean** (9/9
+    runs) but reproduces readily at native speed, which points at a genuine data race that ASan's slower,
+    more serialized execution masks rather than a straightforward memory-safety bug ASan would always
+    catch — ThreadSanitizer (not currently wired into `binding.gyp`; only `ROCKSDB_ASAN` exists) is the
+    next tool to reach for, not further gdb bisection. **Do not merge a fix for #741 without resolving
+    this** — see the #741 dispatch's Findings for the full reproduction recipe and data.
 
 ## Debugging native heap corruption
 

@@ -585,6 +585,14 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
 /**
+ * Test-only: how many times a coordinated-retry wake callback observed its
+ * ParkedFlag already invalidated by env teardown and skipped touching the
+ * TSFN (HarperFast/rocksdb-js#741). Process-global, shared across worker
+ * threads that load this binding in the same process.
+ */
+export const parkSkippedByDeadEnvCount: () => number = binding.parkSkippedByDeadEnvCount;
+
+/**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
  * `LockFileEx` on Windows), creating the file and any missing parent
  * directories. Exclusive by default; pass `shared` for a shared (reader) lock

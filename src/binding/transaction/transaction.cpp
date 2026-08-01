@@ -557,7 +557,10 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			auto envFlag = ParkedFlagRegistry::instance().registerFlag(env);
 			bool registered = t->addWakeCallback([tsfn, envFlag]() {
 				std::lock_guard<std::mutex> flagLock(envFlag->mutex);
-				if (!envFlag->alive) return;
+				if (!envFlag->alive) {
+					parkSkippedByDeadEnvCounter().fetch_add(1, std::memory_order_relaxed);
+					return;
+				}
 				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
 				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
 			});
@@ -746,6 +749,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				napi_value error;
 				rocksdb_js::createJSError(env, "ERR_ALREADY_CLOSED", "Transaction has already been closed", error);
 				::napi_throw(env, error);
+				// No async work was registered (tryRegisterAsyncWork returned
+				// false) -- mark complete so ~BaseAsyncState doesn't underflow
+				// activeAsyncWorkCount for a registration that never happened.
+				state->completed.store(true);
 				delete state;
 				return nullptr;
 			}
@@ -836,6 +843,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		rocksdb_js::createJSError(env, "ERR_ALREADY_CLOSED", "Transaction has already been closed", error);
 		::napi_throw(env, error);
 		state->deleteAsyncWork();
+		// No async work was registered -- mark complete so ~BaseAsyncState
+		// doesn't underflow activeAsyncWorkCount for a registration that
+		// never happened.
+		state->completed.store(true);
 		delete state;
 		return nullptr;
 	}
@@ -850,6 +861,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		rocksdb_js::createJSError(env, "ERR_GENERIC", "Failed to queue commit work", error);
 		::napi_throw(env, error);
 		state->deleteAsyncWork();
+		// Already unregistered above -- mark complete so ~BaseAsyncState
+		// doesn't unregister a second time.
+		state->completed.store(true);
 		delete state;
 		return nullptr;
 	}
@@ -875,16 +889,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Register with the handle so a racing cross-env close() waits for this
-	// synchronous commit to finish instead of concurrently deleting `txn`/VT
-	// locks -- CommitSync runs entirely on this thread but never dispatches,
-	// so without this registration close()'s waitForAsyncWorkCompletion()
-	// would never know to wait.
-	if (!(*txnHandle)->tryRegisterAsyncWork()) {
-		NAPI_THROW_JS_ERROR("ERR_ALREADY_CLOSED", "Transaction has already been closed");
-	}
-	AsyncWorkGuard workGuard((*txnHandle).get());
-
+	// NOTE: CommitSync does not register via tryRegisterAsyncWork() -- see
+	// AGENTS.md item 10a (deliberately deferred, same tradeoff as
+	// putSync/getSync/removeSync). An earlier attempt to add that
+	// registration here reproduced a heap-corruption regression under worker
+	// churn testing that wasn't root-caused within the fix for #741; adding
+	// it back needs its own dedicated investigation, not a append here.
 	(*txnHandle)->state = TransactionState::Committing;
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;
@@ -932,11 +942,6 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
-		// Unregister before close(): close() waits for registered work to drain,
-		// and this call is that work -- still holding the registration here
-		// would make close() (called next, on this same thread) wait on itself.
-		workGuard.release();
-		(*txnHandle)->unregisterAsyncWork();
 		(*txnHandle)->close();
 	} else {
 		if (status.IsBusy() || status.IsTryAgain()) {
@@ -1394,4 +1399,3 @@ void Transaction::Init(napi_env env, napi_value exports) {
 }
 
 } // namespace rocksdb_js
-

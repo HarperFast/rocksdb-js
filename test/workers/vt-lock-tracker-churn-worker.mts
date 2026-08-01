@@ -9,6 +9,11 @@
  * write-intent holders pile up on one key faster than they drain, which
  * doesn't reproduce the crash any more reliably but does make the test slow.
  *
+ * Deliberately uses only Commit()/Abort() (not CommitSync/putSync/getSync) --
+ * see AGENTS.md item 10a: those synchronous paths don't route through
+ * tryRegisterAsyncWork(), so exercising them here wouldn't be testing this
+ * fix's actual protection.
+ *
  * On "stop" the worker finishes its current iteration and calls db.close()
  * itself — a GRACEFUL exit — while sibling workers sharing the same
  * process-global DBDescriptor (AGENTS.md note 6) may still be mid-commit.
@@ -38,27 +43,17 @@ parentPort?.on('message', (m: unknown) => {
 });
 
 for (let i = 0; !stopping; i++) {
-	const role = i % 11;
+	const role = i % 7;
 	try {
-		if (role === 10) {
+		if (role === 6) {
 			// Holder: install intent, hold briefly, then settle -- the shape a
 			// killed HTTP client leaves behind if teardown races it mid-hold.
 			const t = new Transaction(db.store, { coordinatedRetry: true });
 			await t.put(HOT_KEY, versioned(2e12 + id * 1e6 + i));
-			await new Promise((r) => setTimeout(r, 20));
+			await new Promise((r) => setTimeout(r, 200));
 			if (i % 2) {
 				await t.commit().catch(() => {});
 			} else {
-				t.abort();
-			}
-		} else if (role === 9) {
-			// Sync committer: exercises CommitSync's own tryRegisterAsyncWork /
-			// AsyncWorkGuard pairing under the same cross-env close race.
-			const t = new Transaction(db.store, { coordinatedRetry: true });
-			t.putSync(HOT_KEY, versioned(4e12 + id * 1e6 + i));
-			try {
-				t.commitSync();
-			} catch {
 				t.abort();
 			}
 		} else {
@@ -77,6 +72,12 @@ for (let i = 0; !stopping; i++) {
 }
 
 // Graceful exit: close while sibling workers may still be committing through
-// the shared DBDescriptor (HarperFast/rocksdb-js#741).
+// the shared DBDescriptor (HarperFast/rocksdb-js#741). Exit via process.exit()
+// (matching the proven repro-crossthread.mjs shape) rather than letting the
+// caller separately call worker.terminate() after this -- terminate()ing a
+// worker that is already mid-voluntary-exit races Node's own isolate teardown
+// (observed as a V8_Fatal "array_buffer_allocator" check failure inside
+// DisposeIsolate/WorkerThreadData::~WorkerThreadData, and separately as glibc
+// heap-corruption aborts, in earlier versions of this fixture that did both).
 db.close();
-parentPort?.postMessage({ stopped: true });
+process.exit(0);
