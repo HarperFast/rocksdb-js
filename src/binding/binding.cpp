@@ -200,6 +200,11 @@ NAPI_MODULE_INIT() {
 		// tsfns, so the shared commit thread stops marshalling into a torn-down
 		// env (mirrors the listener cleanup above).
 		rocksdb_js::DBRegistry::ReleaseCommitCompletionsByEnv(dyingEnv);
+		// Same reasoning for a coordinated-retry commit parked on a VT lock:
+		// cancel this env's pending park timeouts before Node frees their
+		// tsfns, so the descriptor's park-timeout thread never fires into a
+		// torn-down env.
+		rocksdb_js::DBRegistry::ReleaseParkTimeoutsByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {

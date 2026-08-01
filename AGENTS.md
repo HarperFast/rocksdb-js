@@ -191,6 +191,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `3000`) before a
+  coordinated-retry commit parked on a conflicting holder's VT lock resolves
+  RETRY_NOW unconditionally, in case the holder never releases (see
+  "Coordinated retry" note below)
 
 ## Test Structure
 
@@ -371,6 +375,50 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
+12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
+    commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
+    `completeCommitWork` (`src/binding/transaction/transaction.cpp`) registers a wake callback on the
+    conflicting VT slot's `LockTracker` (via `addWakeCallback`) and resolves `RETRY_NOW` only when
+    that lock's last holder releases (`VerificationTable::releaseWriteIntent` → `LockTracker::wake`).
+    A holder that never releases — a leaked/abandoned transaction, or a wake lost to a bug elsewhere —
+    would otherwise park forever (harper#2001: a worker's write path disabled for 5+ hours until
+    restart). `DBDescriptor::scheduleParkTimeout` (`db_descriptor.{h,cpp}`) bounds this with
+    `ROCKSDB_JS_PARK_TIMEOUT_MS` (default `5000` — the top of this fix's requested 2-5s range, to
+    leave maximum headroom for a holder that is merely slow rather than abandoned, since a timeout
+    consumes a `coordinatedRetry` attempt exactly like a real wake does and `maxRetries` is finite):
+    one park-timeout thread **per descriptor** — lazily started, joined at `finishClose()` (and again,
+    idempotently, from the destructor as a safety net, matching `commitWorker`) — tracks every
+    outstanding deadline instead of spawning a thread per park (the contention path is exactly where
+    an abandoned holder makes parks dense, so per-park threads would be a resource cliff, not a fix).
+    Each park is identified by a monotonic `uint64_t id`, not its entry's address: `LockTracker::wakeCallbacks`
+    has no removal API (see the gap noted below), so a stale closure can outlive its entry, and an
+    address-keyed lookup risks resolving a _different_, later park that reused the same freed heap
+    address. The timeout thread and the LockTracker wake callback race through one heap-allocated
+    `std::atomic<bool>` per park (independent of the per-park `RetryNowContext`, whose refs/TSFN the
+    winning side's release eventually frees) — whichever fires first calls+releases the TSFN under
+    `parkTimeoutMutex` and erases the entry; the loser finds it already gone and touches nothing. That
+    same mutex is what a dying env's `releaseParkTimeoutsByEnv` (wired into the module env-cleanup
+    hook next to `ReleaseCommitCompletionsByEnv`) takes to cancel — release without calling — that
+    env's pending parks before Node frees their tsfns; `retryNowCallJs` also guards `env == nullptr`
+    like `commitCompletionCallJs` does, for the same tsfn-queue-drained-during-teardown reason. The
+    LockTracker wake closure captures a **`std::weak_ptr<DBDescriptor>`**, not a raw pointer: a park
+    can end up registered on a tracker installed by a _different_ database on a colliding VT slot
+    (`VerificationTable::lockSlotForWrite` joins an existing tracker without retagging its `dbId`), so
+    that lock's eventual release wakes a park whose own descriptor may have already closed and been
+    destroyed — `cancelForDB()` only wakes trackers tagged with _its own_ `vtEpoch`, so it cannot be
+    relied on to have resolved a foreign-`dbId` park before the descriptor goes away. `.lock()` failing
+    is the expected outcome once that happens: `shutdownParkTimeouts()` (called from `finishClose()`
+    right after `cancelForDB`, before the descriptor can be destroyed) unconditionally resolves every
+    park still in its own `parkTimeouts` regardless of whether the real holder ever wakes it, so by the
+    time the weak reference can fail to lock, the park has already settled. Deliberately a plain
+    `std::thread`, not a `uv_timer_t`: this addon ships one prebuilt binary across Node ABI versions via
+    N-API, and libuv's struct layout is not part of that stable surface. Known gap: `LockTracker::wakeCallbacks`
+    itself has no removal API. Before this change an abandoned holder accrued one inert callback per
+    waiter and then everything hung; now each waiter re-parks (and re-registers) every
+    `ROCKSDB_JS_PARK_TIMEOUT_MS` up to `maxRetries`, so registrations accumulate per _retry_ rather than
+    per incident for as long as it lasts (each is inert once its own park resolves, so this is a
+    memory-growth concern, not a correctness one) — deferred rather than risking an unreviewed change to
+    `verification_table.cpp`'s concurrency invariants under this fix's scope.
 
 ## Debugging native heap corruption
 
