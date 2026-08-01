@@ -3,6 +3,7 @@ import { normalizeCompression } from '../src/store.ts';
 import { generateDBPath } from './lib/util.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
