@@ -823,33 +823,21 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 /**
  * Dynamically changes the compression algorithm (and optional level) in effect
  * for this database's column family, on an already-open database, without
- * closing/reopening anything.
- *
- * This is backed by `rocksdb::DB::SetOptions()`, which RocksDB documents
- * `ColumnFamilyOptions::compression` and `blob_compression_type` as "Dynamically
- * changeable" (deps/rocksdb/include/rocksdb/options.h,
- * deps/rocksdb/include/rocksdb/advanced_options.h) — empirically verified (see
- * PR description) that a live `SetOptions` call takes effect on the very next
- * flush/compaction output, while files already on disk keep their existing
- * compression until they are naturally rewritten by compaction (matching the
- * open-time `compression` option's documented semantics).
+ * closing/reopening anything. Backed by `rocksdb::DB::SetOptions()`; takes
+ * effect on the next flush/compaction output, existing files are untouched
+ * until compaction rewrites them.
  *
  * `compression_opts` is supplied via RocksDB's nested-option string syntax
- * (`"level=N;"`) rather than as a full struct, so — per the `SetOptions()` doc
- * example in db.h ("{prepopulate_block_cache=kDisable;}") — only `level` is
- * touched; every other `CompressionOptions` sub-field (window_bits, strategy,
- * dictionary settings, ...) is left at its current live value. Omitting the
- * level resets it to `kDefaultCompressionLevel`, mirroring `applyCompression`
- * in db_descriptor.cpp (the open-time path) so a live change never leaves a
- * stale level behind when only the algorithm was requested.
+ * (`"level=N;"`), which only touches `level` — every other `CompressionOptions`
+ * sub-field is left at its current live value. Omitting the level resets it to
+ * `kDefaultCompressionLevel`, mirroring `applyCompression` in db_descriptor.cpp
+ * (the open-time path) so a live change never leaves a stale level behind when
+ * only the algorithm was requested.
  *
- * RocksDB's own doc for `SetOptions()` (db.h) calls it "a slow call because a
- * new OPTIONS file is serialized and persisted for each call. Use only
- * infrequently." The motivating caller (Harper resolving each table's codec
- * from its own catalog on every boot) calls this once per column family, and
- * in the steady state almost every call requests the codec that is already
- * live — so a no-op short-circuit against the live `GetOptions()` makes that
- * sweep free instead of N blocking OPTIONS writes.
+ * `SetOptions()` persists a new OPTIONS file on every call, so a no-op
+ * short-circuit against the live `GetOptions()` avoids paying that cost when
+ * the requested codec is already in effect (see compressionPersistDirty for
+ * the one case that must still go through `SetOptions()`).
  *
  * @example
  * ```typescript
@@ -860,15 +848,9 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	// Pins the descriptor for the duration of this call: without it, a concurrent
-	// close/shutdown on another env sharing this process-global DBDescriptor could
-	// tear down the column family/DB out from under the SetOptions() call below
-	// (the same cross-env teardown hazard AGENTS.md documents for other ops that
-	// touch descriptor->db or a CF handle).
+	// Pins the descriptor so a concurrent close/shutdown on another env sharing
+	// this process-global DBDescriptor can't tear it down under SetOptions() below.
 	ACQUIRE_OPERATIONS_LOCK();
-	// SetOptions() persists a new OPTIONS file for the database, which is durable
-	// mutation of on-disk metadata — not something a read-only handle may do,
-	// consistent with every other mutating native op.
 	THROW_IF_READONLY((*dbHandle)->descriptor, "Set compression failed: ");
 
 	NAPI_GET_STRING(argv[0], compressionName, "Compression algorithm is required");
@@ -902,12 +884,13 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 
 	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
 	rocksdb::Options current = (*dbHandle)->descriptor->db->GetOptions(cf);
-	if (
-		current.compression == *type && current.blob_compression_type == *type &&
-		current.compression_opts.level == level
-	) {
-		// Already at the requested algorithm/level: skip the OPTIONS-file
-		// serialization entirely rather than paying for a no-op write.
+	bool alreadyLive = current.compression == *type && current.blob_compression_type == *type &&
+		current.compression_opts.level == level;
+	// A prior call may have applied this same algorithm/level in memory but failed
+	// to persist it (see compressionPersistDirty's doc): the live options already
+	// "match", but the OPTIONS file does not, so the no-op shortcut must not apply
+	// until a SetOptions() call actually succeeds again.
+	if (alreadyLive && !(*dbHandle)->columnDescriptor->compressionPersistDirty.load()) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -929,29 +912,33 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*dbHandle)->descriptor->db->SetOptions(cf, newOptions);
 	if (!status.ok()) {
-		// DBImpl::SetOptions() applies the change to the live in-memory options
-		// FIRST, then persists an OPTIONS file reflecting it — the returned status
-		// is the persist step's alone. A failure here can therefore leave the live
-		// column family already running the new algorithm while the durable OPTIONS
-		// file still reflects the old one (e.g. ENOSPC/EROFS/EIO on the persist
-		// write). Since this codebase treats the OPTIONS file as the ONLY
-		// authoritative source of a CF's compression on a cold reopen
-		// (db_descriptor.cpp), that split is exactly the divergence a caller must
-		// be told about explicitly rather than left to discover after a restart.
+		// DBImpl::SetOptions() applies the change in memory FIRST, then persists an
+		// OPTIONS file -- the returned status is the persist step's alone, so a
+		// failure (ENOSPC/EROFS/EIO) can leave the live CF already on the new
+		// algorithm while the durable OPTIONS file (the only source of truth on a
+		// cold reopen) still has the old one. Detect and report that split.
 		rocksdb::Options liveAfterFailure = (*dbHandle)->descriptor->db->GetOptions(cf);
 		bool appliedInMemoryOnly = liveAfterFailure.compression == *type &&
 			liveAfterFailure.blob_compression_type == *type &&
 			liveAfterFailure.compression_opts.level == level;
+		// Record the split so a retry at the same algorithm/level cannot take the
+		// no-op shortcut above and silently skip persisting it.
+		(*dbHandle)->columnDescriptor->compressionPersistDirty.store(appliedInMemoryOnly);
 		std::string msg = appliedInMemoryOnly
 			? "Set compression failed to persist (the new compression is already active "
 			  "in memory, but the on-disk OPTIONS file was not updated -- a cold reopen "
 			  "of this column family will revert to the prior compression)"
 			: "Set compression failed";
-		napi_value error;
+		// createRocksDBError() only assigns `error` on success; leave nothing to throw
+		// if constructing the error itself fails partway (e.g. under memory pressure).
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, msg.c_str(), error);
-		::napi_throw(env, error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
+	(*dbHandle)->columnDescriptor->compressionPersistDirty.store(false);
 
 	NAPI_RETURN_UNDEFINED();
 }
