@@ -206,6 +206,11 @@ export type NativeDatabaseOptions = {
 	 * is algorithm-specific; omit to use the algorithm's default.
 	 */
 	compressionLevel?: number;
+	/**
+	 * Apply `compression` to every column family the underlying `DB::Open` opens, rather than
+	 * only the one named by `name`. Requires an explicit `compression`.
+	 */
+	compressionForAllColumnFamilies?: boolean;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;

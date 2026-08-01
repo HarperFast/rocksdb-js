@@ -1474,6 +1474,21 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		dbHandleOptions.compression = rocksdb::kLZ4Compression;
 	}
 
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(
+		env,
+		options,
+		"compressionForAllColumnFamilies",
+		dbHandleOptions.compressionForAllColumnFamilies
+	));
+	if (dbHandleOptions.compressionForAllColumnFamilies && !dbHandleOptions.compressionExplicit) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			"compressionForAllColumnFamilies requires an explicit compression option"
+		);
+		return nullptr;
+	}
+
 	// statistics
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "enableStats", dbHandleOptions.enableStats));
 	if (dbHandleOptions.enableStats) {

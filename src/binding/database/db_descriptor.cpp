@@ -926,6 +926,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// and apply the caller's request ONLY to the target CF (options.name), and
 		// only when it was explicitly requested — the LZ4 default must never
 		// override an existing CF's stored algorithm (a plain reopen inherits it).
+		//
+		// `compressionForAllColumnFamilies` opts out of that per-CF preservation:
+		// the explicit request is applied to every family instead, which is how a
+		// caller expresses "this database uses one codec" for families it never
+		// names (see db_options.h).
 		std::unordered_map<std::string, PersistedCompression> persisted;
 		rocksdb::Status persistedStatus = loadPersistedCompression(path, persisted);
 		if (!persistedStatus.ok()) {
@@ -947,7 +952,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				cfo.blob_compression_type = it->second.blobCompression;
 				cfo.compression_opts = it->second.compressionOpts;
 			}
-			if (cfName == name && options.compression && options.compressionExplicit) {
+			const bool isTarget = cfName == name;
+			if ((isTarget || options.compressionForAllColumnFamilies) && options.compression &&
+				options.compressionExplicit) {
 				applyCompression(cfo, *options.compression, options.compressionLevel);
 			}
 			cfDescriptors.emplace_back(cfName, cfo);

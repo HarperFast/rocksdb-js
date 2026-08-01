@@ -977,6 +977,27 @@ was compiled against, so it varies by build. Always check
 [`supportedCompression`](#supportedcompression) at runtime — opening with an unavailable algorithm
 throws. `'none'` is always available.
 
+**Adopting a codec across a whole database.** Compression is chosen per column family, and RocksDB
+opens every family of a database in one call — so by default the families you did not name keep
+their persisted algorithm. If your first open targets some other family (a catalog, say), the rest
+are already open at their old algorithm before you can ask for a new one, and a family's compression
+cannot be changed while it is open. Pass `compressionForAllColumnFamilies: true` to apply the
+requested algorithm to all of them instead:
+
+```typescript
+// Every column family in this database adopts lz4, not just 'catalog'
+const db = RocksDatabase.open('/path/to/db', {
+	name: 'catalog',
+	compression: 'lz4',
+	compressionForAllColumnFamilies: true,
+});
+```
+
+It requires an explicit `compression`, and only takes effect on the open that creates the database
+handle — later opens of the same path reuse that handle. As always the algorithm governs newly
+written files; use [`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to rewrite what
+is already there.
+
 **Scope and mutability.** Compression is genuinely **per-column-family**. Each `RocksDatabase`
 targets one column family (`name`), and its `compression` applies only to that CF — opening one CF
 never changes another's algorithm, regardless of open order. A column family keeps its own
