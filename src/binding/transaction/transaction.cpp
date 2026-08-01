@@ -1,5 +1,7 @@
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -223,11 +225,25 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
  * double-release corruption), the park resolves RETRY_NOW anyway once this
  * elapses instead of hanging forever (harper#2001). A spurious early
  * RETRY_NOW is harmless -- the JS layer just retries and may conflict again.
+ * Malformed input (non-numeric, negative, out of range) falls back to the
+ * default rather than `atoi`'s silent 0 (immediate-fire spin) or a negative
+ * value wrapping through `unsigned` into a multi-day effective hang -- this
+ * is an operational knob someone may reach for mid-incident, not a test seam.
  */
 static unsigned parkTimeoutMs() {
 	static const unsigned ms = []() -> unsigned {
+		constexpr unsigned kDefault = 3000;
 		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
-		return v != nullptr ? static_cast<unsigned>(::atoi(v)) : 3000;
+		if (v == nullptr || *v == '\0' || v[0] == '-') {
+			return kDefault;
+		}
+		char* end = nullptr;
+		errno = 0;
+		unsigned long parsed = ::strtoul(v, &end, 10);
+		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX) {
+			return kDefault;
+		}
+		return static_cast<unsigned>(parsed);
 	}();
 	return ms;
 }
@@ -436,6 +452,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 		bool parked = false;
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		DBDescriptor* descriptor = (state->handle->dbHandle) ? state->handle->dbHandle->descriptor.get() : nullptr;
 		for (auto* slot : state->savedSlots) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
@@ -457,14 +474,24 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			);
 			::napi_unref_threadsafe_function(env, tsfn);
 
-			// Exactly-once gate shared between the wake path and the timeout path
-			// below. Lives in its own heap allocation independent of `ctx` (which
-			// the winning side's release eventually frees via retryNowFinalize) so
-			// the losing side -- which may run minutes later, from any thread, long
-			// after the winner's ctx/tsfn are gone -- never dereferences memory that
-			// may already be freed; it just loses the CAS and touches nothing.
+			// Exactly-once gate: independent of `ctx` so a loser arriving after
+			// the winner's ctx/tsfn are already gone just loses the CAS.
 			auto fired = std::make_shared<std::atomic<bool>>(false);
-			auto fireOnce = [tsfn, fired]() {
+
+			// #741 bound: descriptor-owned park timeout so a holder that never
+			// releases resolves RETRY_NOW after ROCKSDB_JS_PARK_TIMEOUT_MS
+			// instead of hanging forever (harper#2001). Null only while the
+			// descriptor is closing, in which case DBDescriptor::close() is
+			// already waking every real holder and the !registered branch
+			// below resolves this the same way.
+			DBDescriptor::ParkTimeout* parkEntry =
+				descriptor ? descriptor->scheduleParkTimeout(env, parkTimeoutMs(), tsfn, fired) : nullptr;
+
+			auto fireOnce = [tsfn, fired, descriptor, parkEntry]() {
+				if (descriptor && parkEntry) {
+					descriptor->fireParkTimeout(parkEntry);
+					return;
+				}
 				bool expected = false;
 				if (fired->compare_exchange_strong(expected, true)) {
 					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
@@ -478,21 +505,6 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			bool registered = t->addWakeCallback(fireOnce);
 			if (!registered) {
 				fireOnce();
-			} else {
-				// #741 bound: park behind a holder that never releases (leaked/
-				// abandoned transaction, or a wake lost to the double-release
-				// corruption tracked in #741) would otherwise never settle
-				// (harper#2001). This detached wait races fireOnce with the wake
-				// callback above; whichever runs first wins the CAS and the other
-				// is a safe no-op. Not tied to `env`'s loop: a plain sleep thread
-				// (not a uv_timer) keeps this addon's ABI stable across Node
-				// versions -- libuv's internal struct layout is not part of the
-				// N-API surface this addon otherwise sticks to.
-				unsigned timeoutMs = parkTimeoutMs();
-				std::thread([fireOnce, timeoutMs]() {
-					std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
-					fireOnce();
-				}).detach();
 			}
 
 			vt->unrefTracker(t);

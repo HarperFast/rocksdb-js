@@ -4,11 +4,15 @@
 #include <memory>
 #include <node_api.h>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <queue>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <functional>
+#include <vector>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -293,7 +297,79 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	void releaseCommitCompletionsByEnv(napi_env env);
 
+	/**
+	 * Bounded wait for a coordinated-retry commit parked on a conflicting
+	 * holder's VT lock (`completeCommitWork` in transaction.cpp), so a holder
+	 * that never releases (leaked/abandoned transaction) resolves RETRY_NOW
+	 * instead of parking forever (harper#2001). One entry per outstanding
+	 * park; `fired` is the exactly-once gate shared with the LockTracker wake
+	 * callback registered on the same park -- whichever side wins the CAS
+	 * calls+releases `tsfn`, the loser touches nothing. Owned by the
+	 * descriptor (not one-thread-per-park and not the per-park heap state)
+	 * so `parkTimeoutThread` -- lazily started, joined at close like
+	 * `commitWorker` -- is the only thread ever created for this, and so a
+	 * dying env's entries can be scrubbed by the same env-cleanup hook that
+	 * releases commit completions instead of firing into a tsfn Node is
+	 * about to free.
+	 */
+	struct ParkTimeout {
+		std::chrono::steady_clock::time_point deadline;
+		napi_env env;
+		napi_threadsafe_function tsfn;
+		std::shared_ptr<std::atomic<bool>> fired;
+	};
+	std::mutex parkTimeoutMutex;
+	std::condition_variable parkTimeoutCv;
+	// Small and bounded by outstanding parks (each entry is removed by
+	// whichever of fireParkTimeout / releaseParkTimeoutsByEnv claims it
+	// first) -- not by total parks ever registered.
+	std::vector<std::unique_ptr<ParkTimeout>> parkTimeouts;
+	std::thread parkTimeoutThread;
+	bool parkTimeoutThreadStarted = false;
+	bool parkTimeoutStopped = false;
+
+	/**
+	 * JS thread (`completeCommitWork`). Registers a bounded wait, lazily
+	 * starting the descriptor's single park-timeout thread. Returns the
+	 * entry (owned by the descriptor) to capture in the LockTracker wake
+	 * callback so a genuine wake can also resolve through `fireParkTimeout`
+	 * -- or nullptr if the descriptor is already closing, in which case the
+	 * caller must resolve inline (`cancelForDB` already woke every real
+	 * holder by the time parking stops being accepted).
+	 */
+	ParkTimeout* scheduleParkTimeout(
+		napi_env env,
+		unsigned timeoutMs,
+		napi_threadsafe_function tsfn,
+		std::shared_ptr<std::atomic<bool>> fired
+	);
+
+	/**
+	 * Fires a specific park's timeout early because its VT lock's holder
+	 * released (LockTracker wake callback, any thread). A no-op if the entry
+	 * is already gone -- claimed by the timeout thread or by
+	 * releaseParkTimeoutsByEnv -- so a raw, non-owning `ParkTimeout*` is safe
+	 * to capture: cancelForDB() (DBDescriptor::close(), before the
+	 * descriptor can be destroyed) synchronously wakes every lock this
+	 * descriptor owns, so a wake callback can only ever fire while the
+	 * descriptor it points at is still alive.
+	 */
+	void fireParkTimeout(ParkTimeout* entry);
+
+	/**
+	 * Module env-cleanup hook. Cancels every pending park timeout registered
+	 * for a dying env -- released, never called, so the background thread
+	 * (or a later real wake) can never fire into a tsfn Node is about to
+	 * free.
+	 */
+	void releaseParkTimeoutsByEnv(napi_env env);
+
+	/** Descriptor close: stop and join the park-timeout thread. */
+	void shutdownParkTimeouts();
+
 private:
+	/** Runs on parkTimeoutThread until shutdownParkTimeouts() stops it. */
+	void runParkTimeoutLoop();
 	DBDescriptor(
 		const std::string& path,
 		const DBOptions& options,
