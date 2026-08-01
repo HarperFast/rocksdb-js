@@ -1,6 +1,8 @@
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include "database/database.h"
 #include "database/db_descriptor.h"
@@ -212,6 +214,22 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
 	if (ctx->resolveRef) ::napi_delete_reference(env, ctx->resolveRef);
 	if (ctx->rejectRef) ::napi_delete_reference(env, ctx->rejectRef);
 	delete ctx;
+}
+
+/**
+ * Bounded wait (ms) for a coordinated-retry commit parked on a conflicting
+ * holder's VT lock, selected by ROCKSDB_JS_PARK_TIMEOUT_MS. If the holder
+ * never releases (leaked/abandoned transaction, or a wake lost to #741's
+ * double-release corruption), the park resolves RETRY_NOW anyway once this
+ * elapses instead of hanging forever (harper#2001). A spurious early
+ * RETRY_NOW is harmless -- the JS layer just retries and may conflict again.
+ */
+static unsigned parkTimeoutMs() {
+	static const unsigned ms = []() -> unsigned {
+		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
+		return v != nullptr ? static_cast<unsigned>(::atoi(v)) : 3000;
+	}();
+	return ms;
 }
 
 /**
@@ -439,16 +457,42 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			);
 			::napi_unref_threadsafe_function(env, tsfn);
 
+			// Exactly-once gate shared between the wake path and the timeout path
+			// below. Lives in its own heap allocation independent of `ctx` (which
+			// the winning side's release eventually frees via retryNowFinalize) so
+			// the losing side -- which may run minutes later, from any thread, long
+			// after the winner's ctx/tsfn are gone -- never dereferences memory that
+			// may already be freed; it just loses the CAS and touches nothing.
+			auto fired = std::make_shared<std::atomic<bool>>(false);
+			auto fireOnce = [tsfn, fired]() {
+				bool expected = false;
+				if (fired->compare_exchange_strong(expected, true)) {
+					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				}
+			};
+
 			// Register wake callback; if the tracker already fired wake()
 			// before we got here, addWakeCallback returns false and we
 			// call+release the TSFN immediately (async on the JS thread).
-			bool registered = t->addWakeCallback([tsfn]() {
-				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
-			});
+			bool registered = t->addWakeCallback(fireOnce);
 			if (!registered) {
-				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				fireOnce();
+			} else {
+				// #741 bound: park behind a holder that never releases (leaked/
+				// abandoned transaction, or a wake lost to the double-release
+				// corruption tracked in #741) would otherwise never settle
+				// (harper#2001). This detached wait races fireOnce with the wake
+				// callback above; whichever runs first wins the CAS and the other
+				// is a safe no-op. Not tied to `env`'s loop: a plain sleep thread
+				// (not a uv_timer) keeps this addon's ABI stable across Node
+				// versions -- libuv's internal struct layout is not part of the
+				// N-API surface this addon otherwise sticks to.
+				unsigned timeoutMs = parkTimeoutMs();
+				std::thread([fireOnce, timeoutMs]() {
+					std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+					fireOnce();
+				}).detach();
 			}
 
 			vt->unrefTracker(t);
