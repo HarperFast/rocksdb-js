@@ -3,6 +3,7 @@ import { normalizeCompression } from '../src/store.js';
 import { generateDBPath } from './lib/util.js';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,

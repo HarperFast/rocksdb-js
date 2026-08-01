@@ -1061,8 +1061,13 @@ listed as mutable — this was checked directly against the linked RocksDB build
   itself and keep their old compression until they are naturally rewritten by a later compaction.
   This exactly matches the open-time `compression` option's existing "governs subsequently written
   files" semantics — `setCompression` is the live-mutation path to the same effective behavior,
-  without the reopen restriction above. Use `db.compact()` to force existing data to pick up the new
-  codec sooner.
+  without the reopen restriction above. `db.compact()`/`db.compactSync()` do **not** reliably force
+  already-bottommost files to be rewritten: they call `CompactRange` with RocksDB's default
+  `bottommost_level_compaction` (`kIfHaveCompactionFilter`), which **skips** files already at the
+  bottommost level when no compaction filter is configured — the common case for a mature, mostly
+  compacted database. A `compact()` after `setCompression()` can therefore leave most of the data on
+  its old codec with no error and little visible size change; there is currently no option on this
+  binding's `compact()` to force a bottommost rewrite.
 - **The level is a partial update.** The new level is applied via RocksDB's nested-option syntax
   (`compression_opts={level=N;}`), which — per RocksDB's own documented example for this same API
   (`db->SetOptions(cfh, {{"block_based_table_factory", "{prepopulate_block_cache=kDisable;}"}})`)
@@ -1071,10 +1076,30 @@ listed as mutable — this was checked directly against the linked RocksDB build
   the algorithm's default (RocksDB's `kDefaultCompressionLevel` sentinel), matching the open-time
   option's "an explicit algorithm without a level does not inherit a previously-set level" behavior —
   it is never silently carried over from before the call.
+- **A no-op request is free.** If the requested algorithm, blob algorithm, and effective level already
+  match the live options, `setCompression` skips the RocksDB call entirely rather than paying for a
+  no-op OPTIONS-file write. This matters because RocksDB's own `SetOptions()` doc calls it "a slow
+  call because a new OPTIONS file is serialized and persisted for each call. Use only infrequently" —
+  a caller that reconciles many column families against a catalog on every boot (the motivating case
+  above) will find most of them already at the desired codec, and this keeps that sweep cheap.
+- **A persistence failure can split live and durable state.** RocksDB applies the new options in
+  memory first, then persists an OPTIONS file reflecting them; the returned status covers the persist
+  step alone. On a failure (e.g. the volume is full or read-only), the column family may already be
+  running the new algorithm in memory while the on-disk OPTIONS file still holds the old one —
+  `setCompression` detects this case and says so explicitly in the thrown error's message, since a
+  later cold reopen (which trusts only the OPTIONS file) will silently revert to the old algorithm.
+- **Rejected on a read-only database.** `setCompression` persists a new OPTIONS file, which a
+  read-only handle (`{ readOnly: true }`) may not do — it throws `ERR_DATABASE_READONLY`, matching
+  every other mutating operation on this binding.
 - **Read your write.** `db.compression` reflects the change immediately (it reads live via
   `DB::GetOptions()`), and so does the already-open-column-family conflict check described above: once
   `setCompression` has changed the live algorithm, a second explicit `RocksDatabase.open()` on that
   column family is compared against the **new** value, not the one it was originally opened with.
+- **Overrides another handle's explicit codec without notice.** The open-time conflict check exists
+  so two handles on the same column family can't disagree about compression — but `setCompression`
+  bypasses it by design: it changes the live setting for every handle on that column family, including
+  one that originally opened with an explicit, different algorithm. There is currently no event or
+  other signal to such a handle when this happens.
 - **Does not change `RocksDatabase.open`'s existing open-time behavior.** `compression` at open time
   behaves exactly as before for a column family that is not already open in the process; `setCompression`
   is purely additive for the already-open case.
