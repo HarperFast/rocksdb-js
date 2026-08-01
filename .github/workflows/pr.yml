@@ -214,5 +214,12 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
+        # macos-latest gets an extra retry for a known pre-existing native crash in
+        # commit-teardown.test.ts (HarperFast/rocksdb-js#746, mutex lock failed:
+        # Invalid argument during worker-env teardown vs. the shared commit thread)
+        # that has hit multiple unrelated PRs on this OS/runtime combo. Not a fix
+        # for #746 itself, just enough retry budget that a rare pre-existing race
+        # doesn't block unrelated PRs -- same pattern as the windows-latest retry
+        # below (HarperFast/rocksdb-js#695).
         shell: bash
-        run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:deno)
+        run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" -o "${{ matrix.os }}" = "macos-latest" ] && pnpm test:deno)
