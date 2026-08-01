@@ -168,6 +168,60 @@ describe('Coordinated retry (Phase 3)', () => {
 		}));
 });
 
+// Regression coverage for #741: a coordinated-retry commit that loses a
+// conflict parks on the conflicting holder's VT lock and, before this fix,
+// only resolved when that lock's LAST holder released -- if the holder is a
+// leaked/abandoned transaction (or the wake is lost), the commit's promise
+// never settled (harper#2001: a worker's write path disabled for 5+ hours).
+// A parked commit must now also resolve RETRY_NOW after a bounded wait.
+describe('Coordinated retry — bounded park timeout (#741)', () => {
+	it('a commit parked behind a never-releasing holder settles with RETRY_NOW within the deadline', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('park-timeout-abandoned-holder');
+			const v0 = 1.6e12;
+			await db.put(key, valueWithVersion(v0));
+			// Materialize the VT slot -- without an initial populateVersion the
+			// slot starts at 0 and lockSlotForWrite still installs a lock either
+			// way, but this matches the production shape (a live, cached key)
+			// and is what the local repro found necessary to actually exercise
+			// the park path instead of silently no-op'ing.
+			db.populateVersion(key, v0);
+			expect(db.verifyVersion(key, v0)).toBe(true);
+
+			// Abandoned holder: stages a write (installing the VT lock on the
+			// key's slot) and is deliberately never committed or aborted, with
+			// its reference retained for the lifetime of the test -- this is the
+			// "leaked/abandoned transaction" scenario from harper#2001. Its
+			// LockTracker holder count therefore never reaches zero and wake()
+			// is never called for anything parked on it.
+			const holder = new Transaction(db.store, { coordinatedRetry: true });
+			holder.putSync(key, valueWithVersion(2.1e12));
+
+			// Establish txn's snapshot with a plain (non-VT) read before the
+			// conflicting external commit below, so RocksDB's optimistic conflict
+			// check has something to validate against.
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			await txn.get(key);
+
+			// A write committed from outside txn bumps the key's sequence past
+			// txn's snapshot, so txn's own write below will conflict at commit.
+			await db.put(key, valueWithVersion(2.2e12));
+
+			// txn's write joins the VT lock the abandoned holder already
+			// installed on the same slot (same key -> same slot).
+			txn.putSync(key, valueWithVersion(2.3e12));
+
+			const start = Date.now();
+			const result = await txn.commit();
+			const elapsed = Date.now() - start;
+
+			expect(result).toBe(RETRY_NOW);
+			// Prior to the bounded park this hangs until env teardown (45s+ in
+			// the local repro); it must now settle well inside that.
+			expect(elapsed).toBeLessThan(8000);
+		}));
+});
+
 // Regression coverage for the VT-fast-path / optimistic-snapshot interaction.
 // A read satisfied entirely from the Verification Table (returning
 // FRESH_VERSION_FLAG, skipping the RocksDB read) must STILL establish the
