@@ -172,6 +172,29 @@ const db = RocksDatabase.open('path/to/db', {
 console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
+### `db.setCompression(compression)`
+
+Dynamically changes the compression algorithm (and optional level) for this database's column
+family on an already-open database — no close, no reopen. See [Compression](#compression) for full
+semantics and caveats.
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { compression: 'none' });
+db.setCompression({ algorithm: 'zstd', level: 19 });
+```
+
+### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
+
+Returns the informational-log settings currently in effect for this database, read live from
+RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
+per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
+verbosity. The database must be open.
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
+```
+
 ### `db.config(options)`
 
 Sets global database settings.

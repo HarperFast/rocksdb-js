@@ -959,6 +959,78 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Dynamically changes the compression algorithm (and optional level) in effect
+ * for this database's column family, on an already-open database, without
+ * closing/reopening anything.
+ *
+ * `compression_opts` is supplied via RocksDB's nested-option string syntax so
+ * only `level` is touched; every other `CompressionOptions` sub-field remains
+ * at its current live value. Omitting the level resets it to
+ * `kDefaultCompressionLevel`, mirroring `applyCompression` in
+ * `db_descriptor.cpp` (the open-time path).
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * db.setCompression('zstd', 19);
+ * ```
+ */
+napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	NAPI_GET_STRING(argv[0], compressionName, "Compression algorithm is required");
+	std::optional<rocksdb::CompressionType> type = compressionTypeFromName(compressionName);
+	if (!type || !isCompressionSupported(*type)) {
+		std::string errorMsg = "Unsupported compression algorithm: " + compressionName;
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
+	int level = rocksdb::CompressionOptions::kDefaultCompressionLevel;
+	napi_valuetype levelType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &levelType));
+	if (levelType != napi_undefined && levelType != napi_null) {
+		if (levelType != napi_number) {
+			::napi_throw_error(env, nullptr, "compressionLevel must be a number");
+			return nullptr;
+		}
+		double compressionLevel = 0;
+		NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &compressionLevel));
+		if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
+			compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
+		) {
+			::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
+			return nullptr;
+		}
+		level = static_cast<int>(compressionLevel);
+	}
+
+	std::string compressionTypeString;
+	rocksdb::Status serializeStatus = rocksdb::GetStringFromCompressionType(&compressionTypeString, *type);
+	if (!serializeStatus.ok()) {
+		std::string errorMsg = "Failed to serialize compression type: " + serializeStatus.ToString();
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
+	std::unordered_map<std::string, std::string> newOptions;
+	newOptions["compression"] = compressionTypeString;
+	newOptions["blob_compression_type"] = compressionTypeString;
+	newOptions["compression_opts"] = "level=" + std::to_string(level) + ";";
+
+	rocksdb::Status status =
+		(*dbHandle)->descriptor->db->SetOptions((*dbHandle)->getColumnFamilyHandle(), newOptions);
+	if (!status.ok()) {
+		std::string errorMsg = "SetCompression failed: " + status.ToString();
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Returns the informational log settings currently in effect for this
  * database, read live from RocksDB via `GetDBOptions`, as
  * `{ maxLogFileSize, infoLogLevel }`. These are database-wide (`DBOptions`)

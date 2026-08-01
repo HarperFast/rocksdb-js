@@ -338,6 +338,7 @@ struct Database final {
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 	static napi_value Resume(napi_env env, napi_callback_info info);
+	static napi_value SetCompression(napi_env env, napi_callback_info info);
 	static napi_value SetDefaultValueBuffer(napi_env env, napi_callback_info info);
 	static napi_value SetDefaultKeyBuffer(napi_env env, napi_callback_info info);
 	static napi_value SetIteratorState(napi_env env, napi_callback_info info);
