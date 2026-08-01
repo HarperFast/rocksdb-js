@@ -1,11 +1,26 @@
 #include "core/verification_table.h"
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "core/debug.h"
 
 namespace rocksdb_js {
 
 namespace {
+
+// Unlike assert(), this is never compiled out by NDEBUG -- holders/refcount
+// underflow means a LockTracker is already corrupted or freed-and-reused, so
+// silently continuing (as a wrapped-around unsigned counter would) is worse
+// than crashing: a production build must fail loudly here rather than mask
+// the invariant violation that used to surface as delayed heap corruption
+// (HarperFast/rocksdb-js#741).
+inline void vtInvariant(bool condition, const char* message) {
+	if (!condition) {
+		::fprintf(stderr, "rocksdb-js: VerificationTable invariant violated: %s\n", message);
+		::fflush(stderr);
+		::abort();
+	}
+}
 
 // Process-global counter for LockTracker generation tags.
 static std::atomic<uint16_t> vtGlobalGen{0};
@@ -225,15 +240,7 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	uint32_t prevHolders = t->holders.fetch_sub(1, std::memory_order_acq_rel);
-	// A caller must never release a write intent it did not register (or has
-	// already released) — the fetch_sub above wraps around silently on an
-	// unsigned underflow, which is exactly the "double lastHolder" corruption
-	// signature from HarperFast/rocksdb-js#741 (two racing releaseIntent()
-	// calls for the same holder, or a freed-and-reused tracker at the same
-	// address referenced by a stale holder). Callers are now serialized via
-	// TransactionHandle::stateMutex, so this should never fire; keep it as a
-	// hard invariant check rather than a silent corruption.
-	assert(prevHolders >= 1 && "LockTracker holders underflow in releaseWriteIntent");
+	vtInvariant(prevHolders >= 1, "LockTracker holders underflow in releaseWriteIntent");
 	bool lastHolder = (prevHolders == 1);
 	if (lastHolder) {
 		// Last writer out: settle the slot to a fresh settled-empty generation
@@ -248,7 +255,7 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 		t->wake();
 	}
 	uint32_t prevRefcount = t->refcount.fetch_sub(1, std::memory_order_acq_rel);
-	assert(prevRefcount >= 1 && "LockTracker refcount underflow in releaseWriteIntent");
+	vtInvariant(prevRefcount >= 1, "LockTracker refcount underflow in releaseWriteIntent");
 	if (prevRefcount == 1) delete t;
 }
 
@@ -266,7 +273,7 @@ void VerificationTable::unrefTracker(LockTracker* t) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	uint32_t prevRefcount = t->refcount.fetch_sub(1, std::memory_order_acq_rel);
-	assert(prevRefcount >= 1 && "LockTracker refcount underflow in unrefTracker");
+	vtInvariant(prevRefcount >= 1, "LockTracker refcount underflow in unrefTracker");
 	if (prevRefcount == 1) delete t;
 }
 

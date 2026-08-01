@@ -51,6 +51,16 @@ for (let i = 0; !stopping; i++) {
 			} else {
 				t.abort();
 			}
+		} else if (role === 9) {
+			// Sync committer: exercises CommitSync's own tryRegisterAsyncWork /
+			// AsyncWorkGuard pairing under the same cross-env close race.
+			const t = new Transaction(db.store, { coordinatedRetry: true });
+			t.putSync(HOT_KEY, versioned(4e12 + id * 1e6 + i));
+			try {
+				t.commitSync();
+			} catch {
+				t.abort();
+			}
 		} else {
 			// Racer: one commit attempt, abort on RETRY_NOW. No retry loop --
 			// a bounded retry storm on one key piles up holders faster than

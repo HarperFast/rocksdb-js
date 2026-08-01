@@ -29,6 +29,14 @@ struct ScopedAsyncWorkRegistration {
 		}
 	}
 
+	// Takes ownership of a registration the caller already made (e.g. via
+	// TransactionHandle::tryRegisterAsyncWork(), which checks `closed` and
+	// registers atomically -- a plain registerAsyncWork() call here would
+	// reopen that TOCTOU for this constructor's caller).
+	struct AlreadyRegistered {};
+	ScopedAsyncWorkRegistration(AsyncWorkHandle* handle, AlreadyRegistered)
+		: handle(handle) {}
+
 	~ScopedAsyncWorkRegistration() {
 		if (this->handle) {
 			this->handle->unregisterAsyncWork();
@@ -102,9 +110,8 @@ TransactionHandle::TransactionHandle(
 
 void TransactionHandle::resetTransaction(){
 	// clear/delete the previous transaction and create a new transaction so that it can be retried.
-	// Guarded by stateMutex: this deletes and reassigns `txn`, which a racing close() from another
-	// thread (cross-env teardown of a shared DBDescriptor, HarperFast/rocksdb-js#741) must never
-	// observe mid-swap.
+	// Guarded by stateMutex: this deletes and reassigns `txn`, which a racing cross-thread close()
+	// must never observe mid-swap (see the stateMutex member doc).
 	std::lock_guard<std::mutex> lock(this->stateMutex);
 
 	if (this->txn) {
@@ -219,10 +226,9 @@ void TransactionHandle::lockVTSlot(
 	if (!slot) return;
 
 	// stateMutex serializes this against a concurrent close() from another
-	// thread (cross-env teardown of a shared DBDescriptor,
-	// HarperFast/rocksdb-js#741): both touch lockedVTSlots/heldTrackers, and
-	// without this a racing close()/releaseIntent() could clear the vectors
-	// while this push_back is mid-flight (or vice versa).
+	// thread: both touch lockedVTSlots/heldTrackers, and without this a racing
+	// close()/releaseIntent() could clear the vectors while this push_back is
+	// mid-flight (or vice versa).
 	std::lock_guard<std::mutex> lock(this->stateMutex);
 	if (this->closed.load(std::memory_order_relaxed)) {
 		// Handle is closed/closing on another thread -- do not install a new
@@ -250,8 +256,8 @@ void TransactionHandle::releaseIntent() {
 	// stateMutex serializes this against a concurrent close() / lockVTSlot()
 	// from another thread and against another concurrent releaseIntent() call
 	// for the same handle (e.g. executeCommitWork()'s direct call racing
-	// close()'s) -- see HarperFast/rocksdb-js#741. Snapshot-and-clear under
-	// the lock, then release each tracker outside it: releaseWriteIntent()
+	// close()'s). Snapshot-and-clear under the lock, then release each tracker
+	// outside it: releaseWriteIntent()
 	// takes the VT's own writerMutex_, and holding two locks across that call
 	// is unnecessary (lock order is always stateMutex -> writerMutex_, so
 	// there is no deadlock risk either way, but there is no reason to hold
@@ -313,15 +319,10 @@ void TransactionHandle::close() {
 		this->dbHandle->descriptor->transactionRemove(shared_from_this());
 	}
 
-	{
-		// Guard the read: a concurrent resetTransaction() (from an
-		// already-registered commit's execute phase, still draining below)
-		// deletes and reassigns this pointer under the same mutex.
-		std::lock_guard<std::mutex> lock(this->stateMutex);
-		if (!this->txn) {
-			return;
-		}
-	}
+	// No `!this->txn` early return here: async work can still be registered
+	// (and about to start touching txn) even on a handle whose txn pointer
+	// happens to be transiently null, so every step below must run and
+	// self-guard instead of being skipped as a block.
 
 	// update state to aborted if not already committed
 	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
@@ -427,11 +428,16 @@ napi_value TransactionHandle::get(
 	uint64_t expectedVersion,
 	bool wantsPopulate
 ) {
-	// Register before inspecting txn/state. Descriptor-wide close can select the
-	// transaction before the target DBHandle, and close() must not reset txn in
-	// the middle of this setup. Async fallback transfers this registration to its
-	// state; synchronous and failed setup paths release it on return.
-	ScopedAsyncWorkRegistration transactionRegistration(this);
+	// Register before inspecting txn/state (tryRegisterAsyncWork() checks `closed`
+	// and registers atomically). Descriptor-wide close can select the transaction
+	// before the target DBHandle, and close() must not reset txn in the middle of
+	// this setup. Async fallback transfers this registration to its state;
+	// synchronous and failed setup paths release it on return.
+	if (!this->tryRegisterAsyncWork()) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+	ScopedAsyncWorkRegistration transactionRegistration(this, ScopedAsyncWorkRegistration::AlreadyRegistered{});
 	if (this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;

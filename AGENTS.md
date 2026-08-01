@@ -334,12 +334,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     same tracker — `holders`/`refcount` underflow, now asserted in
     `VerificationTable::releaseWriteIntent`/`unrefTracker`). Every path that touches `txn` or
     `lockedVTSlots`/`heldTrackers` — `lockVTSlot()`, `releaseIntent()`, `resetTransaction()`, `close()`,
-    and `Commit()`/`CommitSync`/`Abort()`'s entry via `tryRegisterAsyncWork()` — now takes
+    and `Commit()`/`CommitSync`/`Abort()`/`get()`'s entry via `tryRegisterAsyncWork()` — now takes
     `stateMutex` for a short critical section (never across `txn->Commit()` or
     `waitForAsyncWorkCompletion()`, which would deadlock `close()` against the very work it is
     waiting to drain). `close()` flips `closed` under `stateMutex` _before_ calling
     `waitForAsyncWorkCompletion()`, so by the time it waits, no new work can have registered — the
-    wait only has to drain work that already committed to running.
+    wait only has to drain work that already committed to running. Two known gaps deliberately left
+    open (hot-path cost and shutdown-liveness tradeoffs, respectively, that need explicit sign-off
+    rather than a silent fix): **(a)** `getSync`/`putSync`/`removeSync` still read/write `txn` without
+    going through `tryRegisterAsyncWork()` — they're the hottest paths in the binding (every read and
+    write), and the fix's mutex-per-call cost wasn't accepted without a deliberate hot-path review;
+    the exposure window is narrow (synchronous, no I/O wait) compared to the async commit/park paths
+    this fix closes. **(b)** `waitForAsyncWorkCompletion()`'s 5-second timeout is pre-existing and
+    unchanged: on timeout `close()` proceeds anyway, so a commit that is genuinely still executing
+    past 5s (not parked — parking happens after `signalExecuteCompleted()`, so it doesn't interact
+    with this wait) can still race a `delete this->txn`. Removing the timeout trades this for a
+    shutdown-hang risk if a commit truly never completes.
 11. **A coordinated-retry parked wake-callback's TSFN can outlive the env that created it**: an
     `IsBusy` commit under `coordinatedRetry` parks its `RETRY_NOW` resolution on the _winning_
     holder's `LockTracker` (`completeCommitWork`'s park loop in transaction.cpp) by registering a
