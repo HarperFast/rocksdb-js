@@ -16,6 +16,8 @@
 #include "napi/async.h"
 #include "core/verification_table.h"
 #include "core/compression.h"
+#include "rocksdb/convenience.h"
+#include <unordered_map>
 
 namespace rocksdb_js {
 
@@ -816,6 +818,95 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 	}
 
 	return result;
+}
+
+/**
+ * Dynamically changes the compression algorithm (and optional level) in effect
+ * for this database's column family, on an already-open database, without
+ * closing/reopening anything.
+ *
+ * This is backed by `rocksdb::DB::SetOptions()`, which RocksDB documents
+ * `ColumnFamilyOptions::compression` and `blob_compression_type` as "Dynamically
+ * changeable" (deps/rocksdb/include/rocksdb/options.h,
+ * deps/rocksdb/include/rocksdb/advanced_options.h) — empirically verified (see
+ * PR description) that a live `SetOptions` call takes effect on the very next
+ * flush/compaction output, while files already on disk keep their existing
+ * compression until they are naturally rewritten by compaction (matching the
+ * open-time `compression` option's documented semantics).
+ *
+ * `compression_opts` is supplied via RocksDB's nested-option string syntax
+ * (`"level=N;"`) rather than as a full struct, so — per the `SetOptions()` doc
+ * example in db.h ("{prepopulate_block_cache=kDisable;}") — only `level` is
+ * touched; every other `CompressionOptions` sub-field (window_bits, strategy,
+ * dictionary settings, ...) is left at its current live value. Omitting the
+ * level resets it to `kDefaultCompressionLevel`, mirroring `applyCompression`
+ * in db_descriptor.cpp (the open-time path) so a live change never leaves a
+ * stale level behind when only the algorithm was requested.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * db.setCompression('zstd', 19);
+ * ```
+ */
+napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	NAPI_GET_STRING(argv[0], compressionName, "Compression algorithm is required");
+	std::optional<rocksdb::CompressionType> type = compressionTypeFromName(compressionName);
+	if (!type || !isCompressionSupported(*type)) {
+		std::string errorMsg = "Unsupported compression algorithm: " + compressionName;
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
+	// level is optional; a present value must be a valid 32-bit integer. The TS
+	// layer validates too (see normalizeCompression) — this is the backstop.
+	int level = rocksdb::CompressionOptions::kDefaultCompressionLevel;
+	napi_valuetype levelType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &levelType));
+	if (levelType != napi_undefined && levelType != napi_null) {
+		if (levelType != napi_number) {
+			::napi_throw_error(env, nullptr, "compressionLevel must be a number");
+			return nullptr;
+		}
+		double compressionLevel = 0;
+		NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &compressionLevel));
+		if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
+			compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
+		) {
+			::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
+			return nullptr;
+		}
+		level = static_cast<int>(compressionLevel);
+	}
+
+	std::string compressionTypeString;
+	rocksdb::Status serializeStatus = rocksdb::GetStringFromCompressionType(&compressionTypeString, *type);
+	if (!serializeStatus.ok()) {
+		std::string errorMsg = "Failed to serialize compression type: " + serializeStatus.ToString();
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
+	std::unordered_map<std::string, std::string> newOptions;
+	newOptions["compression"] = compressionTypeString;
+	// Mirror applyCompression() (db_descriptor.cpp): the same algorithm governs
+	// both SST blocks and blob files (values >= 2KB), so blob writes don't stay
+	// uncompressed after a live compression change.
+	newOptions["blob_compression_type"] = compressionTypeString;
+	newOptions["compression_opts"] = "level=" + std::to_string(level) + ";";
+
+	rocksdb::Status status =
+		(*dbHandle)->descriptor->db->SetOptions((*dbHandle)->getColumnFamilyHandle(), newOptions);
+	if (!status.ok()) {
+		std::string errorMsg = "SetCompression failed: " + status.ToString();
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -1877,6 +1968,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setCompression", nullptr, SetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultValueBuffer", nullptr, SetDefaultValueBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultKeyBuffer", nullptr, SetDefaultKeyBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setIteratorState", nullptr, SetIteratorState, nullptr, nullptr, nullptr, napi_default, nullptr },
