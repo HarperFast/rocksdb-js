@@ -1,4 +1,5 @@
 #include "core/verification_table.h"
+#include <cassert>
 #include <cstring>
 #include "core/debug.h"
 
@@ -223,7 +224,17 @@ LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, ui
 void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* t) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
-	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);
+	uint32_t prevHolders = t->holders.fetch_sub(1, std::memory_order_acq_rel);
+	// A caller must never release a write intent it did not register (or has
+	// already released) — the fetch_sub above wraps around silently on an
+	// unsigned underflow, which is exactly the "double lastHolder" corruption
+	// signature from HarperFast/rocksdb-js#741 (two racing releaseIntent()
+	// calls for the same holder, or a freed-and-reused tracker at the same
+	// address referenced by a stale holder). Callers are now serialized via
+	// TransactionHandle::stateMutex, so this should never fire; keep it as a
+	// hard invariant check rather than a silent corruption.
+	assert(prevHolders >= 1 && "LockTracker holders underflow in releaseWriteIntent");
+	bool lastHolder = (prevHolders == 1);
 	if (lastHolder) {
 		// Last writer out: settle the slot to a fresh settled-empty generation
 		// (only if it still holds our lock — a concurrent cancelForDB / populate
@@ -236,7 +247,9 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 		    std::memory_order_release, std::memory_order_acquire);
 		t->wake();
 	}
-	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
+	uint32_t prevRefcount = t->refcount.fetch_sub(1, std::memory_order_acq_rel);
+	assert(prevRefcount >= 1 && "LockTracker refcount underflow in releaseWriteIntent");
+	if (prevRefcount == 1) delete t;
 }
 
 LockTracker* VerificationTable::refTrackerIfLocked(std::atomic<uint64_t>* slot) {
@@ -252,7 +265,9 @@ LockTracker* VerificationTable::refTrackerIfLocked(std::atomic<uint64_t>* slot) 
 void VerificationTable::unrefTracker(LockTracker* t) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
-	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
+	uint32_t prevRefcount = t->refcount.fetch_sub(1, std::memory_order_acq_rel);
+	assert(prevRefcount >= 1 && "LockTracker refcount underflow in unrefTracker");
+	if (prevRefcount == 1) delete t;
 }
 
 void VerificationTable::settleAllSlots() {

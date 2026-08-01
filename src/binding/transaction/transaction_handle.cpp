@@ -101,7 +101,12 @@ TransactionHandle::TransactionHandle(
 }
 
 void TransactionHandle::resetTransaction(){
-	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	// clear/delete the previous transaction and create a new transaction so that it can be retried.
+	// Guarded by stateMutex: this deletes and reassigns `txn`, which a racing close() from another
+	// thread (cross-env teardown of a shared DBDescriptor, HarperFast/rocksdb-js#741) must never
+	// observe mid-swap.
+	std::lock_guard<std::mutex> lock(this->stateMutex);
+
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
@@ -213,6 +218,20 @@ void TransactionHandle::lockVTSlot(
 	auto* slot = vt->slotFor(dbId, cfId, key);
 	if (!slot) return;
 
+	// stateMutex serializes this against a concurrent close() from another
+	// thread (cross-env teardown of a shared DBDescriptor,
+	// HarperFast/rocksdb-js#741): both touch lockedVTSlots/heldTrackers, and
+	// without this a racing close()/releaseIntent() could clear the vectors
+	// while this push_back is mid-flight (or vice versa).
+	std::lock_guard<std::mutex> lock(this->stateMutex);
+	if (this->closed.load(std::memory_order_relaxed)) {
+		// Handle is closed/closing on another thread -- do not install a new
+		// write intent that this transaction's own lifecycle would never
+		// release (close() has already released everything it found, or is
+		// about to).
+		return;
+	}
+
 	// Register a write intent on the slot. lockSlotForWrite installs a new
 	// LockTracker or joins an existing one as an additional holder (when another
 	// transaction — or this one, via an earlier write to a colliding key —
@@ -228,21 +247,43 @@ void TransactionHandle::lockVTSlot(
 }
 
 void TransactionHandle::releaseIntent() {
-	if (!lockedVTSlots.empty()) {
-		// The trackers were created via the VT, so it is materialized and
-		// getVerificationTableRaw() returns it. releaseWriteIntent drops this
-		// transaction's holder reference under the writer mutex; the slot is
-		// only cleared (and waiters woken) when the last holder releases.
-		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-		if (vt) {
-			for (size_t i = 0; i < lockedVTSlots.size(); i++) {
-				vt->releaseWriteIntent(lockedVTSlots[i], heldTrackers[i]);
-			}
-		}
+	// stateMutex serializes this against a concurrent close() / lockVTSlot()
+	// from another thread and against another concurrent releaseIntent() call
+	// for the same handle (e.g. executeCommitWork()'s direct call racing
+	// close()'s) -- see HarperFast/rocksdb-js#741. Snapshot-and-clear under
+	// the lock, then release each tracker outside it: releaseWriteIntent()
+	// takes the VT's own writerMutex_, and holding two locks across that call
+	// is unnecessary (lock order is always stateMutex -> writerMutex_, so
+	// there is no deadlock risk either way, but there is no reason to hold
+	// stateMutex across the VT's internal work).
+	std::vector<std::atomic<uint64_t>*> slots;
+	std::vector<LockTracker*> trackers;
+	{
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (lockedVTSlots.empty()) return;
+		slots.swap(lockedVTSlots);
+		trackers.swap(heldTrackers);
 	}
 
-	lockedVTSlots.clear();
-	heldTrackers.clear();
+	// The trackers were created via the VT, so it is materialized and
+	// getVerificationTableRaw() returns it. releaseWriteIntent drops this
+	// transaction's holder reference under the writer mutex; the slot is
+	// only cleared (and waiters woken) when the last holder releases.
+	auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+	if (vt) {
+		for (size_t i = 0; i < slots.size(); i++) {
+			vt->releaseWriteIntent(slots[i], trackers[i]);
+		}
+	}
+}
+
+bool TransactionHandle::tryRegisterAsyncWork() {
+	std::lock_guard<std::mutex> lock(this->stateMutex);
+	if (this->closed.load(std::memory_order_relaxed)) {
+		return false;
+	}
+	this->registerAsyncWork();
+	return true;
 }
 
 /**
@@ -252,18 +293,34 @@ void TransactionHandle::releaseIntent() {
  * The `closed` atomic gate ensures this runs at most once even when called
  * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
  * JS thread racing the async commit's complete callback on env W's JS thread).
+ *
+ * The exchange happens under stateMutex so it is atomic with
+ * tryRegisterAsyncWork()'s closed-check: once this returns, no new commit /
+ * commitSync / abort call can register async work against this handle (they
+ * will all observe closed=true and bail), so waitForAsyncWorkCompletion()
+ * below only has to wait for work that was already registered
+ * (HarperFast/rocksdb-js#741).
  */
 void TransactionHandle::close() {
-	if (this->closed.exchange(true)) {
-		return;
+	{
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (this->closed.exchange(true)) {
+			return;
+		}
 	}
 
 	if (this->dbHandle && this->dbHandle->descriptor) {
 		this->dbHandle->descriptor->transactionRemove(shared_from_this());
 	}
 
-	if (!this->txn) {
-		return;
+	{
+		// Guard the read: a concurrent resetTransaction() (from an
+		// already-registered commit's execute phase, still draining below)
+		// deletes and reassigns this pointer under the same mutex.
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (!this->txn) {
+			return;
+		}
 	}
 
 	// update state to aborted if not already committed
@@ -313,14 +370,22 @@ void TransactionHandle::close() {
 
 	// Release any VT locks that were installed at putSync/removeSync time
 	// but not yet released (e.g. transaction aborted or DB closed mid-commit).
-	if (!this->lockedVTSlots.empty()) {
-		this->releaseIntent();
-	}
+	// releaseIntent() self-locks (see above), so no separate guard is needed
+	// here -- and by this point waitForAsyncWorkCompletion() has already
+	// drained any commit that was registered before closed flipped, so there
+	// is nothing left to race this call.
+	this->releaseIntent();
 
-	// destroy the RocksDB transaction
-	this->txn->ClearSnapshot();
-	delete this->txn;
-	this->txn = nullptr;
+	// destroy the RocksDB transaction. Guarded for the same reason as the
+	// `!this->txn` check above -- see the class-level stateMutex comment.
+	{
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (this->txn) {
+			this->txn->ClearSnapshot();
+			delete this->txn;
+			this->txn = nullptr;
+		}
+	}
 
 	if (this->jsDatabaseRef != nullptr) {
 		if (std::this_thread::get_id() == this->envThreadId) {

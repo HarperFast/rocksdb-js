@@ -320,6 +320,44 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    inspect a concurrently closing `DBHandle` from the worker. Transactional count iterators must also
    pass the transaction snapshot through `ReadOptions`; `disableSnapshot` intentionally leaves it null
    so counts observe the latest committed state.
+10. **`TransactionHandle::stateMutex` serializes `txn`/VT-lock state against cross-env `close()`**: a
+    `TransactionHandle` is normally single-owner (bound to the JS thread that created it), but
+    `DBDescriptor::finishClose()` (worker-env teardown, e.g. via `DBRegistry::Shutdown()`) closes
+    **every** transaction registered on the shared descriptor — including ones owned by a different,
+    still-live env that may be mid-commit, mid-put, or mid-abort at that exact moment
+    (HarperFast/rocksdb-js#741). Before the fix, `close()`'s `waitForAsyncWorkCompletion()` only
+    waited for async work _already registered_ on `activeAsyncWorkCount` — a TOCTOU let a racing
+    `Transaction::Commit()`/`CommitSync`/`Abort` register (or start touching `txn`) _after_ `close()`
+    had already observed zero in-flight work and moved on to `delete this->txn` and
+    `releaseIntent()`'s vector mutation, corrupting the heap (`txn` UAF/double-free) and/or
+    double-releasing a shared `LockTracker` (`releaseWriteIntent` reaching "last holder" twice for the
+    same tracker — `holders`/`refcount` underflow, now asserted in
+    `VerificationTable::releaseWriteIntent`/`unrefTracker`). Every path that touches `txn` or
+    `lockedVTSlots`/`heldTrackers` — `lockVTSlot()`, `releaseIntent()`, `resetTransaction()`, `close()`,
+    and `Commit()`/`CommitSync`/`Abort()`'s entry via `tryRegisterAsyncWork()` — now takes
+    `stateMutex` for a short critical section (never across `txn->Commit()` or
+    `waitForAsyncWorkCompletion()`, which would deadlock `close()` against the very work it is
+    waiting to drain). `close()` flips `closed` under `stateMutex` _before_ calling
+    `waitForAsyncWorkCompletion()`, so by the time it waits, no new work can have registered — the
+    wait only has to drain work that already committed to running.
+11. **A coordinated-retry parked wake-callback's TSFN can outlive the env that created it**: an
+    `IsBusy` commit under `coordinatedRetry` parks its `RETRY_NOW` resolution on the _winning_
+    holder's `LockTracker` (`completeCommitWork`'s park loop in transaction.cpp) by registering a
+    wake callback that captures a `napi_threadsafe_function` by value. `LockTracker` is
+    process-global VT state (not owned by any env), so that callback can fire on **any** thread —
+    whichever thread eventually releases the winning holder — an arbitrary time later, including
+    after the _parking_ transaction's own env has already torn down. Node reclaims a tsfn as part of
+    destroying the env that created it, so calling `napi_call_threadsafe_function` /
+    `napi_release_threadsafe_function` on it past that point is a use-after-free — this was the
+    actual mechanism behind the `uv_mutex_lock` abort inside `napi_release_threadsafe_function` in
+    HarperFast/rocksdb-js#741's crash trace (confirmed via a gdb backtrace off the real repro; item 10
+    above closes a _different_, also-real race in the same issue, not this one). Fixed the same way as
+    `commitCompletions`: `ParkedFlagRegistry` (transaction.cpp) tracks a `ParkedFlag` per registered
+    wake callback, keyed by the owning env; `Transaction::ReleaseParkedFlagsByEnv`, wired into the
+    module's per-env cleanup hook, flips each of that env's flags before Node frees its tsfns, and the
+    wake callback checks the flag under the _same_ per-flag mutex before touching the tsfn — so
+    whichever of "env teardown" or "wake fires" happens first wins, and the other is a no-op instead of
+    a race.
 
 ## Debugging native heap corruption
 

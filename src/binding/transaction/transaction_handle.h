@@ -122,6 +122,22 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<bool> closed{false};
 
 	/**
+	 * Guards txn / lockedVTSlots / heldTrackers against concurrent mutation
+	 * from another thread, and makes the closed-check + async-work
+	 * registration in tryRegisterAsyncWork() atomic with close()'s closed
+	 * flip. TransactionHandle is normally single-owner (bound to the JS
+	 * thread that created it), but DBDescriptor is process-global and
+	 * finishClose() (worker-env teardown) closes every registered
+	 * transaction on it -- including ones owned by a different, still-live
+	 * env that may be mid-commit/mid-put/mid-abort at that exact moment
+	 * (HarperFast/rocksdb-js#741). Held only for short critical sections
+	 * (a flag check, a vector mutation, a pointer swap), never across I/O
+	 * (txn->Commit(), waitForAsyncWorkCompletion()) to avoid deadlocking
+	 * close() against the very work it is waiting to drain.
+	 */
+	std::mutex stateMutex;
+
+	/**
 	 * The thread ID of the JS thread that owns `env` (set at construction time).
 	 * Used in close() to guard napi_delete_reference: calling it from a thread
 	 * other than the owning JS thread is undefined behaviour and will crash.
@@ -140,7 +156,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * VT slots locked by this transaction. Parallel to heldTrackers.
 	 * Populated by lockVTSlot() at putSync/removeSync time (main JS thread);
-	 * cleared by releaseIntent() from the execute thread or close().
+	 * cleared by releaseIntent() from the execute thread or close(). Both
+	 * lockVTSlot() and releaseIntent() take stateMutex around their full body
+	 * so these vectors are never read or mutated by two threads at once (see
+	 * stateMutex).
 	 */
 	std::vector<std::atomic<uint64_t>*> lockedVTSlots;
 
@@ -195,6 +214,20 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void releaseIntent();
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
+
+	/**
+	 * Atomically checks that the handle is not closed/closing and, if so,
+	 * registers async work under stateMutex -- the same mutex close() flips
+	 * `closed` under. This closes the TOCTOU where close() observes zero
+	 * in-flight async work (nothing registered yet) and proceeds to tear
+	 * down txn/VT locks while a commit/abort dispatched from another thread
+	 * is about to start (HarperFast/rocksdb-js#741). Returns false (caller
+	 * must not touch txn/VT state) if the handle is already closed/closing.
+	 * Every path that touches txn or lockedVTSlots/heldTrackers outside of
+	 * lockVTSlot()/releaseIntent() (which self-lock) must call this first
+	 * and unregisterAsyncWork() when done.
+	 */
+	bool tryRegisterAsyncWork();
 
 	void close() override;
 
