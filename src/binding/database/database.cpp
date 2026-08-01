@@ -1026,12 +1026,9 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 
 	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
 	rocksdb::Options current = (*dbHandle)->descriptor->db->GetOptions(cf);
-	if (
-		current.compression == *type && current.blob_compression_type == *type &&
-		current.compression_opts.level == level
-	) {
-		// Already at the requested algorithm/level: skip the OPTIONS-file
-		// serialization entirely rather than paying for a no-op write.
+	bool alreadyLive = current.compression == *type && current.blob_compression_type == *type &&
+		current.compression_opts.level == level;
+	if (alreadyLive && !(*dbHandle)->columnDescriptor->compressionPersistDirty.load()) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -1063,16 +1060,20 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 		bool appliedInMemoryOnly = liveAfterFailure.compression == *type &&
 			liveAfterFailure.blob_compression_type == *type &&
 			liveAfterFailure.compression_opts.level == level;
+		(*dbHandle)->columnDescriptor->compressionPersistDirty.store(appliedInMemoryOnly);
 		std::string msg = appliedInMemoryOnly
 			? "Set compression failed to persist (the new compression is already active "
 			  "in memory, but the on-disk OPTIONS file was not updated -- a cold reopen "
 			  "of this column family will revert to the prior compression)"
 			: "Set compression failed";
-		napi_value error;
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, msg.c_str(), error);
-		::napi_throw(env, error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
+	(*dbHandle)->columnDescriptor->compressionPersistDirty.store(false);
 
 	NAPI_RETURN_UNDEFINED();
 }

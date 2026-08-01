@@ -25,6 +25,7 @@ import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
 	type CompactOptions,
+	type CompressionAlgorithm,
 	type CompressionInfo,
 	type CompressionOption,
 	ITERATOR_STATE_BUFFER,
@@ -315,10 +316,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * This governs only *newly written* files (the next flush and any future
 	 * compaction output) going forward; SST and blob files already on disk
 	 * keep their existing compression until they are rewritten by a later
-	 * compaction. Use {@link RocksDatabase.compact} to force existing data to
-	 * pick up the new codec sooner. This is the live-mutation counterpart to
-	 * the open-time `compression` option — see the README's Compression
-	 * section for when to use each.
+	 * compaction. `compact()`'s default options can skip already-bottommost
+	 * files; use `compact({ bottommost: true })` to rewrite them under the new
+	 * codec. This is the live-mutation counterpart to the open-time
+	 * `compression` option — see the README's Compression section for when to
+	 * use each.
 	 *
 	 * @example
 	 * ```typescript
@@ -334,6 +336,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			throw new TypeError('setCompression requires a compression algorithm');
 		}
 		this.store.db.setCompression(algorithm, compressionLevel);
+		const appliedAlgorithm = algorithm as CompressionAlgorithm;
+		this.store.compression =
+			compressionLevel === undefined
+				? appliedAlgorithm
+				: { algorithm: appliedAlgorithm, level: compressionLevel };
 	}
 
 	/**
