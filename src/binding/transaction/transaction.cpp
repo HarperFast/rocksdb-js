@@ -164,6 +164,34 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Releases the transaction's staged writes' verification-table write intents
+ * without closing the transaction, and bars any future commit. For a handle
+ * retained only so outstanding read iterators can finish after its writes were
+ * replayed and committed on another transaction (HarperFast/harper#2001): the
+ * retained intents can never be released by a commit, so without this call
+ * other writers' coordinated-retry commits park on them until the handle is
+ * finally aborted. Reads — including read-your-own-writes through the write
+ * batch, which match the replayed transaction's committed state — keep working.
+ */
+napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("AbandonWrites");
+
+	TransactionState txnState = (*txnHandle)->state;
+	if (txnState == TransactionState::Aborted) {
+		// close() already released the intents
+		return nullptr;
+	}
+	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
+	}
+
+	(*txnHandle)->writesAbandoned = true;
+	(*txnHandle)->releaseIntent();
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Context passed through the RETRY_NOW TSFN; owns the resolve/reject refs.
  * Freed by retryNowFinalize after the TSFN fires.
  */
@@ -563,6 +591,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		delete state;
 		return nullptr;
 	}
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
+	}
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;
 
@@ -683,6 +714,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
+	}
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_RETURN_UNDEFINED();
@@ -1019,6 +1053,9 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_TRANSACTION_HANDLE("Put");
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Put failed: ");
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
@@ -1042,6 +1079,9 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_TRANSACTION_HANDLE("Remove");
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Remove failed: ");
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
@@ -1148,6 +1188,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
  */
 void Transaction::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
+		{ "abandonWrites", nullptr, AbandonWrites, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commitSync", nullptr, CommitSync, nullptr, nullptr, nullptr, napi_default, nullptr },

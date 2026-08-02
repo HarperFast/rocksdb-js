@@ -78,6 +78,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool coordinatedRetry;
 
 	/**
+	 * Set by Transaction::AbandonWrites: the staged writes have been delegated
+	 * to (replayed and committed by) another transaction, so this handle's
+	 * write intents were released early and it must never commit — only reads
+	 * (including read-your-own-writes through the write batch) remain valid
+	 * until the handle is aborted/closed.
+	 */
+	bool writesAbandoned = false;
+
+	/**
 	 * The transaction id assigned by the database descriptor.
 	 */
 	uint32_t id;
