@@ -570,27 +570,28 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit");
 
-	// Checked before the state/reference allocations below so the throw cannot leak them.
-	if ((*txnHandle)->writesAbandoned) {
-		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
-	}
-
-	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
-	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
-	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
-
+	// Every terminal case is decided before the state/reference allocations below, so none of them
+	// can leak an allocation, and the rejection order matches CommitSync's (aborted before
+	// abandoned — a handle that is both reports the abort, which is the more specific state).
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
+	}
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		// already committed
 		napi_value global;
 		NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 0, nullptr, nullptr));
-		delete state;
 		return nullptr;
 	}
+
+	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;
 

@@ -171,10 +171,12 @@ struct DBHandle;
 	} while (0)
 
 #define NAPI_THROW_JS_ERROR(code, message) \
-	napi_value error; \
-	rocksdb_js::createJSError(env, code, message, error); \
-	::napi_throw(env, error); \
-	return nullptr
+	do { \
+		napi_value error; \
+		rocksdb_js::createJSError(env, code, message, error); \
+		::napi_throw(env, error); \
+		return nullptr; \
+	} while (0)
 
 #define THROW_IF_READONLY(handle, context) \
 	do { \
