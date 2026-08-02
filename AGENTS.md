@@ -375,60 +375,68 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     wake callback checks the flag under the _same_ per-flag mutex before touching the tsfn — so
     whichever of "env teardown" or "wake fires" happens first wins, and the other is a no-op instead of
     a race.
-12. **`repro-crossthread.mjs` still reproduces #741's crash at its originally-reported rate, both
-    with and without this fix — the fix closes two real races but does NOT resolve the headline
-    repro.** Measured properly (same worktree, same `deps/rocksdb` prebuild, same `node_modules`,
-    no competing CPU load, only `src/` differing), `GRACEFUL=1 RECYCLE_MS=2000 node
-repro-crossthread.mjs 15000 4`: **baseline `ea83ff46` 9/12 crashed, this fix 8/12 crashed** —
-    statistically indistinguishable, and consistent with the 7/12 rate issue #741 reports. Crash
-    signatures are glibc heap corruption (`double free or corruption (!prev)`, `free(): invalid
-size`, `corrupted size vs. prev_size`) with gdb backtraces landing in
-    `DBRegistry::Shutdown()` → `DBDescriptor::finishClose()`, sometimes deeper in
-    `~OptimisticTransaction`/`~WriteBatchWithIndex`/`~Arena`.
+12. **N-API calls are unsafe inside `napi_add_env_cleanup_hook`, even on the env's own thread —
+    this was #741's dominant crash.** Node's `Environment::RunCleanup()` runs
+    `principal_realm_->RunCleanup(); cleanup_queue_.Drain();` **in that order** (env.cc), so by the
+    time our module's env-cleanup hook (binding.cpp) runs, `Realm::RunCleanup()` has already
+    destroyed the env's `BaseObject`s and freed N-API per-env state. A "am I on the owning JS
+    thread?" check therefore does **not** establish that an N-API call is safe: teardown runs on
+    exactly that thread. `TransactionHandle::close()` reached
+    `napi_delete_reference(this->env, ...)` under that guard, and `napi_delete_reference` writes the
+    env's `last_error` via `napi_clear_last_error` — three 8-byte writes straight into freed memory.
+    That corrupts glibc's heap metadata, and the abort then surfaces much later and somewhere
+    unrelated (commonly inside RocksDB's allocators: `~Arena` / `~WriteBatchWithIndex` /
+    `~TransactionBaseImpl`), which is why it read as a RocksDB/VT bug for so long.
 
-    **Methodology warning that cost a lot of time here — read before doing baseline comparisons in
-    this repo.** An earlier round of this investigation concluded the fix _caused_ a severe
-    regression (baseline "15/15 clean" vs fix "14/15 crashing"). That was wrong. The baseline arm
-    ran in a separate `git worktree` where `pnpm install` had been run but **`pnpm build:bundle`
-    had not**, so `dist/index.mjs` did not exist; every worker died on `Cannot find module`, did
-    zero work, and the harness still printed `RESULT: no stuck commit` and exited 0. Every
-    "clean" baseline data point was a no-op run. This is a property of the **ad-hoc scratch repro
-    scripts** under `~/dev/tmp/harper-2001-repro/`, which only log worker startup failures
-    (`w.on('error', e => console.error(...))`) instead of failing the run; the repo's own
-    `test/fixtures/*.mts` do `worker.once('error', reject)` and are not affected. **A green result
-    from those scratch scripts is only meaningful if the run actually did work** — check the
-    per-worker `issued=` counts in the report (a real 15s run issues hundreds of thousands) and
-    grep the output for `Cannot find module` before believing any comparison. Prefer comparing revisions **in one worktree** via `git
-checkout <rev> -- src/ && pnpm rebuild && pnpm build:bundle`, which holds the prebuilt RocksDB,
-    node_modules, and build config constant. Also pause any competing build (`pkill -STOP cc1plus`)
-    — CPU contention alone moves the crash rate substantially (93% → ~60%).
+    Fixed by `napi/env_teardown.h`: a thread-local `EnvTeardownScope` set for the duration of the
+    cleanup hook, with close paths checking `isEnvTearingDown()` before making N-API calls. During
+    teardown the reference is reclaimed with the env anyway, so skipping is correct. **Any new close
+    path reachable from `DBRegistry::Shutdown()` must consult this too** — `db_handle.cpp` has
+    further `napi_delete_reference` sites that are reachable and were not exercised by this repro.
 
-    Hypotheses tested and **ruled out** as the cause of this crash: the VT `writerMutex_` being held
-    across the N-API calls that item 11's wake callbacks make (moving `wake()` outside it changed
-    nothing); un-closed/leaked `TransactionHandle`s inflating `finishClose()`'s `closables` backlog
-    (debug-log correlation shows ~155k transactions closing normally over a run and only ~124
-    outstanding at teardown — no leak, and forcing `abort()` on every rejection changed nothing);
-    and `close()` latency (a bisect of this fix's two halves — the `stateMutex`/TOCTOU work in item
-    10 and the `ParkedFlagRegistry` work in item 11 — shows _neither half individually nor both
-    together_ moves the rate off baseline). `waitForAsyncWorkCompletion()`'s 5s timeout never fires
-    in this repro (debug build: zero timeout log lines, and zero waits — the count is always 0 on
-    entry), so item 10b is not implicated either.
+    Effect: `repro-crossthread.mjs` (`GRACEFUL=1 RECYCLE_MS=2000`, 4 workers, 15s) went from
+    **9/12 crashing to 0/12**, ~1M transactions per run, and stays clean **8/8 at a harsher 800ms
+    recycle**. ThreadSanitizer reports zero races where it previously reported three.
 
-    **Why ASan says nothing**: `librocksdb.a` is linked as a **non-instrumented prebuilt static
-    library**, and the corruption surfaces inside RocksDB's own allocators (`~Arena`,
-    `~WriteBatchWithIndex`). ASan intercepts malloc/free but does not instrument stores inside
-    uninstrumented code, so a bad write originating in RocksDB internals is invisible to it while
-    still wrecking glibc's heap metadata in a normal build — which is exactly the observed
-    "ASan-clean 9/9 but crashes 75%+ at native speed" pattern. `rocksdb::Transaction` is explicitly
-    **not** thread-safe, so concurrent use of one `txn` from two threads is the leading remaining
-    hypothesis. ThreadSanitizer against **stock** Node is useless here (100-150+ races per run, all
-    resolving to V8 GC/JIT internals with zero `rocksdb_js::` frames) because vanilla Node is not
-    built with V8's TSan annotations; a from-source Node built with `-fsanitize=thread` **and
-    `-DTHREAD_SANITIZER`** (which enables V8's own `SynchronizePageAccess`/`DISABLE_TSAN`
-    annotations and suppresses that entire noise class) is the right vehicle. Note that V8's
-    `V8_IS_TSAN` define must be left **off** for such a build: it instruments JIT-generated code and
-    references `ExposedTrustedObject::kSelfIndirectPointerOffset`, which does not exist under Node's
-    `v8_enable_sandbox=0` configuration, so the build fails to compile with it on.
+    **Known remaining (NOT root-caused):** `test/vt-lock-tracker-churn.test.ts` still fails ~25%
+    (1/4 reps at 4000ms, 1/6 at 1500ms) with the same `corrupted size vs. prev_size`. It reproduces
+    only through that fixture's **tsx-transpiled worker** path, never through the plain-`.mjs`
+    repro, and TSan does not catch it (0 races over 3 aggressive runs — its ~15x slowdown likely
+    closes the window). The test stays `it.skip`. Also still open: `getSync`/`putSync`/`removeSync`/
+    `CommitSync`/`getCount` remain outside `tryRegisterAsyncWork()` (item 10a).
+
+    **How to hunt this class of bug here.** ASan is structurally blind to it: `librocksdb.a` is a
+    non-instrumented prebuilt static lib, so a bad write originating in (or landing in memory owned
+    by) uninstrumented code is invisible while still wrecking the heap — hence "ASan-clean 9/9 but
+    crashes 75%+ at native speed". TSan against **stock** Node is also useless (100–150+ races/run,
+    all V8 GC/JIT internals, zero `rocksdb_js::` frames). What worked was a **from-source Node built
+    with TSan**:
+    - `-fsanitize=thread` **and `-DTHREAD_SANITIZER`** (the latter enables V8's own
+      `SynchronizePageAccess`/`DISABLE_TSAN` annotations and removes that entire noise class —
+      without it the signal is buried);
+    - leave V8's **`V8_IS_TSAN` off** (Node sets it from `tsan==1` in `common.gypi` and
+      `tools/v8_gypfiles/features.gypi`): it instruments JIT-_generated_ code and references
+      `ExposedTrustedObject::kSelfIndirectPointerOffset`, which does not exist under Node's
+      `v8_enable_sandbox=0`, so the build fails to compile;
+    - build the addon with the matching `ROCKSDB_TSAN=1` toggle (binding.gyp) — Node links
+      libtsan **shared**, so both share one runtime;
+    - symbolize with `TSAN_OPTIONS=external_symbolizer_path=/usr/bin/addr2line`.
+      That configuration cut ~150 races/run down to 3, all with `rocksdb_js::` frames, and named the
+      bug outright.
+
+    **Methodology warning that cost a lot of time here.** An earlier round of this investigation
+    concluded the #741 fix _caused_ a regression (baseline "15/15 clean" vs fix "14/15 crashing").
+    That was wrong: the baseline arm ran in a separate worktree where `pnpm install` had run but
+    **`pnpm build:bundle` had not**, so `dist/index.mjs` did not exist, every worker died on
+    `Cannot find module`, did zero work — and the harness still printed `RESULT: no stuck commit`
+    and exited 0. Every "clean" baseline data point was a no-op run. This is a property of the
+    ad-hoc scratch scripts under `~/dev/tmp/harper-2001-repro/`, which only log worker startup
+    failures; the repo's own `test/fixtures/*.mts` do `worker.once('error', reject)` and are not
+    affected. **A green result from those scratch scripts is only meaningful if the run actually did
+    work** — check per-worker `issued=` counts (a real 15s run issues hundreds of thousands) and
+    grep for `Cannot find module`. Prefer comparing revisions **within one worktree** (`git checkout
+<rev> -- src/ && pnpm rebuild && pnpm build:bundle`), and pause competing builds
+    (`pkill -STOP cc1plus`) — CPU contention alone moves the crash rate a lot (93% → ~60%).
 
 ## Debugging native heap corruption
 

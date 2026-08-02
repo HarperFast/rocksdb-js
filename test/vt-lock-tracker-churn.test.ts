@@ -55,21 +55,20 @@ function spawnRepro(
 }
 
 describe('VT LockTracker holder/refcount vs. worker-env churn', () => {
-	// SKIPPED BY DEFAULT: this fixture, even at the cadence tuned below to
-	// minimize it, still intermittently hits a SEPARATE, unresolved crash
-	// signature -- glibc "corrupted double-linked list" inside Node's own
-	// node::BaseObjectList::Cleanup() during ordinary worker-env teardown,
-	// with no rocksdb-js frames in the corrupting stack. It reproduced in a
-	// final 6-run verification batch at this exact cadence (1/6, exit 139)
-	// after 5 consecutive clean runs, so it is NOT reliably clean even here --
-	// shipping it enabled would make CI intermittently red for a reason
-	// unrelated to this fix. See the dispatch findings for #741 for the full
-	// bisection data and a saved gdb backtrace; this needs its own dedicated
-	// investigation. The fix itself is verified via the original proven
-	// repro scripts (repro-vt-stress.mjs / repro-crossthread.mjs, run
-	// extensively both before and after the fix), ASan, and the full
-	// existing test suite -- this fixture is kept only as a manual
-	// reproduction aid for that follow-up investigation.
+	// STILL SKIPPED. The heap-use-after-free that dominated this fixture is
+	// fixed (napi_delete_reference called from the env's own cleanup hook after
+	// Node had already freed the env's N-API state -- see napi/env_teardown.h),
+	// and the library's own repro is now clean: repro-crossthread.mjs went 9/12
+	// crashing -> 0/12 over 12 runs of ~1M transactions each, and stays clean
+	// 8/8 at an even harsher 800ms recycle.
+	//
+	// But this fixture still fails ~25% of the time (1/4 reps at the cadence
+	// below, 1/6 at 1500ms) with the same `corrupted size vs. prev_size`. That
+	// residual crash only reproduces through this tsx-transpiled-worker path,
+	// not through the plain-.mjs repro, and ThreadSanitizer did not catch it
+	// (0 races over 3 aggressive runs -- TSan's ~15x slowdown likely closes the
+	// window). It is NOT root-caused, so enabling this would make CI flaky for
+	// a reason this PR does not address. See AGENTS.md item 12.
 	it.skip(
 		'should survive coordinatedRetry churn with the VT materialized while workers recycle (HarperFast/rocksdb-js#741)',
 		() => expectSurvives(),

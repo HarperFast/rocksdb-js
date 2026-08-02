@@ -2,6 +2,7 @@
 #include <sstream>
 #include <thread>
 #include "database/database.h"
+#include "napi/env_teardown.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "iterator/db_iterator_handle.h"
@@ -397,16 +398,23 @@ void TransactionHandle::close() {
 	}
 
 	if (this->jsDatabaseRef != nullptr) {
-		if (std::this_thread::get_id() == this->envThreadId) {
-			// On the owning JS thread — safe to call napi_delete_reference.
+		if (std::this_thread::get_id() == this->envThreadId && !isEnvTearingDown()) {
+			// On the owning JS thread AND not inside that env's cleanup hook --
+			// safe to call napi_delete_reference. The teardown check is not
+			// redundant with the thread check: the cleanup hook runs on this
+			// very thread, after Node has already freed the env's N-API state,
+			// so the thread check alone passes while the call is a UAF
+			// (napi_clear_last_error writes through the freed env). Confirmed
+			// under a from-source TSan Node -- see napi/env_teardown.h.
 			DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this);
 			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database");
 			DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this);
 		} else {
-			// Wrong thread (close() called from a different env's JS thread, e.g.
-			// DBDescriptor::close() PATH A). napi_delete_reference is not thread-safe
-			// across envs; skip and let Node clean up the weak ref on env teardown.
-			DEBUG_LOG("%p TransactionHandle::close Skipping napi_delete_reference (wrong thread)\n", this);
+			// Either the wrong thread (close() called from a different env's JS
+			// thread, e.g. DBDescriptor::close() PATH A) or this env is tearing
+			// down. Skip: napi_delete_reference is not thread-safe across envs,
+			// and during teardown Node reclaims the reference with the env anyway.
+			DEBUG_LOG("%p TransactionHandle::close Skipping napi_delete_reference (wrong thread or env teardown)\n", this);
 		}
 		this->jsDatabaseRef = nullptr;
 	} else {
