@@ -375,59 +375,57 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     wake callback checks the flag under the _same_ per-flag mutex before touching the tsfn — so
     whichever of "env teardown" or "wake fires" happens first wins, and the other is a no-op instead of
     a race.
-12. **CRITICAL, UNRESOLVED as of the #741 fix: closing items 10+11's races introduces or exposes a
-    separate, much more frequent heap-corruption crash, root cause NOT found despite extensive
-    bisection.** Measured on `HarperFast/rocksdb-js`'s own `repro-crossthread.mjs` (a `coordinatedRetry`
-    - materialized-VT + worker-churn stress script that pre-dates this fix), same settings
-      (`GRACEFUL=1`, 4 workers, one worker recycled every 2s): the commit immediately before items 10/11's
-      fix (`ea83ff46`) is consistently clean (15/15, plus 20/20 more with an artificial delay injected
-      into `close()` — see below); every tested version of the fix crashes 14/15 to 93% of runs with
-      glibc heap corruption (`corrupted size vs. prev_size`, `free(): invalid size`, `corrupted
-double-linked list`, `double free or corruption (!prev)` — multiple distinct messages, i.e.
-      multiple corruption _detection_ sites, not necessarily multiple root causes). gdb backtraces land
-      inside `node::CleanupQueue::Drain()` → `DBRegistry::Shutdown()` → `DBDescriptor::finishClose()`'s
-      pre-existing `closables` teardown loop (`db_descriptor.cpp` ~line 304, unmodified by this fix),
-      sometimes one level deeper inside `~OptimisticTransaction`/`~TransactionBaseImpl`/
-      `~WriteBatchWithIndex`/`~Arena`.
+12. **`repro-crossthread.mjs` still reproduces #741's crash at its originally-reported rate, both
+    with and without this fix — the fix closes two real races but does NOT resolve the headline
+    repro.** Measured properly (same worktree, same `deps/rocksdb` prebuild, same `node_modules`,
+    no competing CPU load, only `src/` differing), `GRACEFUL=1 RECYCLE_MS=2000 node
+repro-crossthread.mjs 15000 4`: **baseline `ea83ff46` 9/12 crashed, this fix 8/12 crashed** —
+    statistically indistinguishable, and consistent with the 7/12 rate issue #741 reports. Crash
+    signatures are glibc heap corruption (`double free or corruption (!prev)`, `free(): invalid
+size`, `corrupted size vs. prev_size`) with gdb backtraces landing in
+    `DBRegistry::Shutdown()` → `DBDescriptor::finishClose()`, sometimes deeper in
+    `~OptimisticTransaction`/`~WriteBatchWithIndex`/`~Arena`.
 
-    Hypotheses tested and **ruled out**:
-    - `writerMutex_` held across the N-API calls item 11's wake callbacks make (in
-      `VerificationTable::releaseWriteIntent`/`cancelForDB`) — moving `wake()` outside `writerMutex_`
-      in both did not reduce the crash rate (7/20 vs. 3/14 without the change; both far above
-      baseline's 0/18).
-    - Un-closed/leaked `TransactionHandle`s accumulating over a run's lifetime and inflating
-      `finishClose()`'s `closables` backlog. This accumulation is **real** and worth its own note (see
-      below) — debug-log correlation (`pnpm rebuild:debug`, `DEBUG_LOG`) showed thousands of distinct,
-      never-before-closed `TransactionHandle` addresses being closed for the first time inside one
-      `finishClose()` call, immediately before a crash, because `completeCommitWork`'s normal
-      error-rejection path (`transaction.cpp`, the final `else` branch, non-`IsBusy`) never calls
-      `close()` — only a caller-side `abort()` does, and `repro-crossthread.mjs`'s racer role doesn't
-      call it on a non-`RETRY_NOW` rejection. But patching the repro to `abort()` on every rejection
-      did **not** reduce the crash rate (17/20, same order as unpatched) — so this leak is a real,
-      separate finding, not (by itself) the corruption's cause.
-    - Raw `TransactionHandle::close()` latency, tested directly and decisively: baseline (`ea83ff46`,
-      zero code changes from this fix) with `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` set to 10ms and then 100ms
-      (an artificial sleep inside `close()`, via the pre-existing test seam used by
-      `txn-close-commit-uaf.test.ts`) stayed **20/20 clean** at both settings. This rules out "the fix
-      just makes `close()` slower, which widens some pre-existing timing window" as an explanation —
-      whatever the fix changes, it is not reducible to `close()` taking longer.
+    **Methodology warning that cost a lot of time here — read before doing baseline comparisons in
+    this repo.** An earlier round of this investigation concluded the fix _caused_ a severe
+    regression (baseline "15/15 clean" vs fix "14/15 crashing"). That was wrong. The baseline arm
+    ran in a separate `git worktree` where `pnpm install` had been run but **`pnpm build:bundle`
+    had not**, so `dist/index.mjs` did not exist; every worker died on `Cannot find module`, did
+    zero work, and the harness still printed `RESULT: no stuck commit` and exited 0. Every
+    "clean" baseline data point was a no-op run. **A green result from these repro scripts is only
+    meaningful if the run actually did work** — check the per-worker `issued=` counts in the report
+    (a real 15s run issues hundreds of thousands) and grep the output for `Cannot find module`
+    before believing any comparison. Prefer comparing revisions **in one worktree** via `git
+checkout <rev> -- src/ && pnpm rebuild && pnpm build:bundle`, which holds the prebuilt RocksDB,
+    node_modules, and build config constant. Also pause any competing build (`pkill -STOP cc1plus`)
+    — CPU contention alone moves the crash rate substantially (93% → ~60%).
 
-    Given the above, the cause is something specific to items 10/11's actual new logic (the `stateMutex`
-    critical sections spread across `resetTransaction`/`lockVTSlot`/`releaseIntent`/`close`/
-    `tryRegisterAsyncWork`, or the `ParkedFlagRegistry` mechanism itself), not simply added latency.
-    ThreadSanitizer was tried and is **not currently practical** here: running the full repro under it
-    (via a `ROCKSDB_TSAN=1` `binding.gyp` toggle added alongside the existing `ROCKSDB_ASAN` one) reports
-    100-150+ races per run, but across several runs and multiple suppression passes for known-noisy V8
-    subsystems (Scavenger, Maglev, baseline/concurrent compilation, concurrent marking, the sweeper,
-    tracing), **every single one** resolves (confirmed via `addr2line` against the built `.node`, using
-    `TSAN_OPTIONS=external_symbolizer_path=/usr/bin/addr2line`) to pure V8-internal GC/JIT machinery with
-    zero `rocksdb_js::` frames on either side. This is a known limitation of running vanilla Node under
-    TSan without Node's own build-time instrumentation (which Node does not ship) — V8's internal
-    lock-free/relaxed-atomics patterns are invisible to TSan without it, and the noise categories are
-    numerous enough (new ones appear run to run) that suppression-file whack-a-mole doesn't converge in a
-    reasonable time. A real attempt would need Node built from source with `-fsanitize=thread` (a 30-60+
-    minute compile), not attempted this round. **Do not merge a fix for #741 without resolving this** —
-    see the #741 dispatch's Findings for the full reproduction recipe, saved backtraces, and debug logs.
+    Hypotheses tested and **ruled out** as the cause of this crash: the VT `writerMutex_` being held
+    across the N-API calls that item 11's wake callbacks make (moving `wake()` outside it changed
+    nothing); un-closed/leaked `TransactionHandle`s inflating `finishClose()`'s `closables` backlog
+    (debug-log correlation shows ~155k transactions closing normally over a run and only ~124
+    outstanding at teardown — no leak, and forcing `abort()` on every rejection changed nothing);
+    and `close()` latency (a bisect of this fix's two halves — the `stateMutex`/TOCTOU work in item
+    10 and the `ParkedFlagRegistry` work in item 11 — shows _neither half individually nor both
+    together_ moves the rate off baseline). `waitForAsyncWorkCompletion()`'s 5s timeout never fires
+    in this repro (debug build: zero timeout log lines, and zero waits — the count is always 0 on
+    entry), so item 10b is not implicated either.
+
+    **Why ASan says nothing**: `librocksdb.a` is linked as a **non-instrumented prebuilt static
+    library**, and the corruption surfaces inside RocksDB's own allocators (`~Arena`,
+    `~WriteBatchWithIndex`). ASan intercepts malloc/free but does not instrument stores inside
+    uninstrumented code, so a bad write originating in RocksDB internals is invisible to it while
+    still wrecking glibc's heap metadata in a normal build — which is exactly the observed
+    "ASan-clean 9/9 but crashes 75%+ at native speed" pattern. `rocksdb::Transaction` is explicitly
+    **not** thread-safe, so concurrent use of one `txn` from two threads is the leading remaining
+    hypothesis. ThreadSanitizer against **stock** Node is useless here (100-150+ races per run, all
+    resolving to V8 GC/JIT internals with zero `rocksdb_js::` frames) because vanilla Node is not
+    built with V8's TSan annotations; a from-source Node built with `-fsanitize=thread` **and
+    `-DTHREAD_SANITIZER`** (which enables V8's own `SynchronizePageAccess`/`DISABLE_TSAN`
+    annotations and suppresses that entire noise class) is the right vehicle. Note that V8's
+    `V8_IS_TSAN` define must be left **off** for such a build: it instruments JIT-generated code and
+    references `ExposedTrustedObject::kSelfIndirectPointerOffset`, which does not exist under Node's
+    `v8_enable_sandbox=0` configuration, so the build fails to compile with it on.
 
 ## Debugging native heap corruption
 
