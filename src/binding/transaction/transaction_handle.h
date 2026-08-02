@@ -78,11 +78,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool coordinatedRetry;
 
 	/**
-	 * Set by Transaction::AbandonWrites: the staged writes have been delegated
-	 * to (replayed and committed by) another transaction, so this handle's
-	 * write intents were released early and it must never commit — only reads
-	 * (including read-your-own-writes through the write batch) remain valid
-	 * until the handle is aborted/closed.
+	 * Set by Transaction::AbandonWrites: the VT write intents were released
+	 * early, so this handle must never commit or write again — reads remain
+	 * valid until it is aborted.
 	 */
 	bool writesAbandoned = false;
 

@@ -26,12 +26,6 @@
 		} \
 	} while (0)
 
-#define NAPI_THROW_JS_ERROR(code, message) \
-	napi_value error; \
-	rocksdb_js::createJSError(env, code, message, error); \
-	::napi_throw(env, error); \
-	return nullptr
-
 namespace rocksdb_js {
 
 /**
@@ -164,14 +158,16 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Releases the transaction's staged writes' verification-table write intents
- * without closing the transaction, and bars any future commit. For a handle
- * retained only so outstanding read iterators can finish after its writes were
- * replayed and committed on another transaction (HarperFast/harper#2001): the
- * retained intents can never be released by a commit, so without this call
- * other writers' coordinated-retry commits park on them until the handle is
- * finally aborted. Reads — including read-your-own-writes through the write
- * batch, which match the replayed transaction's committed state — keep working.
+ * Releases the staged writes' verification-table write intents without closing
+ * the transaction, and bars any later commit or write: the intents are gone, so
+ * a commit would publish writes no longer protected against a concurrent
+ * reader's cached version. For a handle kept open only for its outstanding read
+ * iterators after the writes were replayed onto another transaction — nothing
+ * else will ever release those intents, and other writers' coordinated-retry
+ * commits park on them. Reads keep working, including read-your-own-writes.
+ *
+ * VT intents only: RocksDB's own transaction locks (pessimistic mode) are held
+ * until the transaction is aborted.
  */
 napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
@@ -179,7 +175,6 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
-		// close() already released the intents
 		return nullptr;
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
@@ -575,6 +570,11 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit");
 
+	// Checked before the state/reference allocations below so the throw cannot leak them.
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
+	}
+
 	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
@@ -590,9 +590,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 0, nullptr, nullptr));
 		delete state;
 		return nullptr;
-	}
-	if ((*txnHandle)->writesAbandoned) {
-		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;

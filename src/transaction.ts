@@ -92,13 +92,12 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Release this transaction's staged writes' verification-table write
-	 * intents without closing it, and bar any future commit or write. For a
-	 * transaction retained only so outstanding read iterators can finish after
-	 * its writes were replayed and committed on another transaction: without
-	 * this, other writers' coordinated-retry commits park on the retained
-	 * intents until the transaction is finally aborted. Reads — including
-	 * read-your-own-writes through the write batch — keep working.
+	 * Release the staged writes' verification-table write intents without
+	 * closing the transaction, barring any later commit or write. For a
+	 * transaction kept open only for its outstanding read iterators after the
+	 * writes were replayed onto another transaction: otherwise other writers'
+	 * coordinated-retry commits park on those intents until it is aborted.
+	 * Reads keep working, including read-your-own-writes.
 	 */
 	abandonWrites(): void {
 		this.#txn.abandonWrites();
