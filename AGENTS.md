@@ -392,10 +392,13 @@ size`, `corrupted size vs. prev_size`) with gdb backtraces landing in
     ran in a separate `git worktree` where `pnpm install` had been run but **`pnpm build:bundle`
     had not**, so `dist/index.mjs` did not exist; every worker died on `Cannot find module`, did
     zero work, and the harness still printed `RESULT: no stuck commit` and exited 0. Every
-    "clean" baseline data point was a no-op run. **A green result from these repro scripts is only
-    meaningful if the run actually did work** — check the per-worker `issued=` counts in the report
-    (a real 15s run issues hundreds of thousands) and grep the output for `Cannot find module`
-    before believing any comparison. Prefer comparing revisions **in one worktree** via `git
+    "clean" baseline data point was a no-op run. This is a property of the **ad-hoc scratch repro
+    scripts** under `~/dev/tmp/harper-2001-repro/`, which only log worker startup failures
+    (`w.on('error', e => console.error(...))`) instead of failing the run; the repo's own
+    `test/fixtures/*.mts` do `worker.once('error', reject)` and are not affected. **A green result
+    from those scratch scripts is only meaningful if the run actually did work** — check the
+    per-worker `issued=` counts in the report (a real 15s run issues hundreds of thousands) and
+    grep the output for `Cannot find module` before believing any comparison. Prefer comparing revisions **in one worktree** via `git
 checkout <rev> -- src/ && pnpm rebuild && pnpm build:bundle`, which holds the prebuilt RocksDB,
     node_modules, and build config constant. Also pause any competing build (`pkill -STOP cc1plus`)
     — CPU contention alone moves the crash rate substantially (93% → ~60%).
