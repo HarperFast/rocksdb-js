@@ -208,9 +208,8 @@ NAPI_MODULE_INIT() {
 	// when this was the last env.
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		napi_env dyingEnv = static_cast<napi_env>(data);
-		// Node already ran Realm::RunCleanup() (freeing N-API per-env state)
-		// before draining this queue, so nothing below may make an N-API call
-		// that touches the env -- see napi/env_teardown.h.
+		// Nothing below may make an N-API call touching this env: Node already
+		// freed its N-API state (napi/env_teardown.h).
 		rocksdb_js::EnvTeardownScope envTeardownScope;
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
 		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
