@@ -263,7 +263,13 @@ describe('Compaction', () => {
 				name: 'recodeBlob',
 				compression: 'zstd',
 			});
-			await forced.compact({ bottommost: true });
+			// Exercise both entry points independently: restrict the async call to the first
+			// generation's range, leaving the rest on the old codec for compactSync to re-encode.
+			await forced.compact({ bottommost: true, start: keyOf(0), end: keyOf(699) });
+			const sizeAfterAsync = blobBytes(dbPath);
+			expect(sizeAfterAsync).toBeLessThan(sizeUncompressed);
+
+			forced.compactSync({ bottommost: true });
 			expect(blobBytes(dbPath)).toBeLessThan(sizeUncompressed / 2);
 
 			// Re-encoding must not lose or corrupt any generation's values, including the oldest.
