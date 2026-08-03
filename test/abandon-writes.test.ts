@@ -94,4 +94,23 @@ describe('Transaction.abandonWrites()', () => {
 			txn.abort();
 			txn.abandonWrites();
 		}));
+
+	it('reports the abort, not the abandonment, when committed after abort — matching async and sync', () =>
+		dbRunner(async ({ db }) => {
+			const txn = new Transaction(db.store);
+			await txn.put('key', 'staged');
+			txn.abandonWrites();
+			txn.abort();
+			// Both must report ERR_ALREADY_ABORTED (the more specific state), not
+			// ERR_WRITES_ABANDONED — and must agree with each other, since the
+			// db.transaction()/transactionSync() wrappers only special-case
+			// TransactionAlreadyAbortedError as an expected user abort.
+			await expect(txn.commit()).rejects.toThrow(/already been aborted/);
+
+			const txnSync = new Transaction(db.store);
+			txnSync.putSync('key', 'staged');
+			txnSync.abandonWrites();
+			txnSync.abort();
+			expect(() => txnSync.commitSync()).toThrow(/already been aborted/);
+		}));
 });

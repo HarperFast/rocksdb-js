@@ -660,6 +660,9 @@ an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column fami
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
 operations methods as the `RocksDatabase` instance plus:
 
+- `txn.abandonWrites(): void` Releases the staged writes' verification-table write intents without
+  closing the transaction, and bars any further writes or commit. Reads (including read-your-own-writes)
+  keep working until the transaction is aborted.
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
@@ -672,6 +675,22 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
   a timestamp, it will set the timestamp to the current time. The value must be in seconds with
   higher precision in the decimal.
+
+#### `txn.abandonWrites(): void`
+
+Releases the staged writes' verification-table (VT) write intents without closing the transaction,
+and bars any further writes or commit (`commit()`/`commitSync()`/`put()`/`remove()`, including
+database-context writes via `{ transaction: txn }`, all reject once called). Reads — including
+read-your-own-writes — keep working until the transaction is aborted. Idempotent, and a no-op after
+`abort()`.
+
+Scope is VT intents only: RocksDB's own transaction locks (pessimistic mode) are still held until
+the transaction is aborted.
+
+This is for a transaction kept open only for its outstanding read iterators after its writes were
+already committed elsewhere (e.g. replayed onto another transaction) — it lets the intents release
+early so other writers' coordinated-retry commits stop parking on them, instead of waiting for the
+handle's eventual `abort()`.
 
 #### `txn.abort(): void`
 
