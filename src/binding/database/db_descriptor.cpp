@@ -1724,8 +1724,15 @@ rocksdb::Status DBDescriptor::compactRange(
 		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
 		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting
 		// it is the only way to re-encode existing files (a changed compression codec applies to
-		// newly written files only), so it has to be requested explicitly.
-		options.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForce;
+		// newly written files only), so it has to be requested explicitly. kForceOptimized (rather
+		// than kForce) still avoids double-compacting bottommost files this same manual compaction
+		// already produced.
+		options.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
+		// SST re-encoding alone leaves large values on the old codec: they live in blob files, and
+		// blob GC's default age cutoff only reclaims the oldest fraction of blob files. Force GC
+		// across the full age range so a bottommost compaction re-encodes blobs too.
+		options.blob_garbage_collection_policy = rocksdb::BlobGarbageCollectionPolicy::kForce;
+		options.blob_garbage_collection_age_cutoff = 1.0;
 	}
 	return this->db->CompactRange(
 		options,

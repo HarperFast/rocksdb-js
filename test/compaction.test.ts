@@ -4,19 +4,22 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-/** Total bytes of SST files under `dir` — what a codec change actually moves. */
-function sstBytes(dir: string): number {
+/** Total bytes of files with `extension` under `dir` — what a codec change actually moves. */
+function fileBytes(dir: string, extension: string): number {
 	let total = 0;
 	for (const entry of readdirSync(dir, {
 		withFileTypes: true,
 		recursive: true,
 	})) {
-		if (entry.isFile() && entry.name.endsWith('.sst')) {
+		if (entry.isFile() && entry.name.endsWith(extension)) {
 			total += statSync(join(entry.parentPath ?? dir, entry.name)).size;
 		}
 	}
 	return total;
 }
+
+const sstBytes = (dir: string) => fileBytes(dir, '.sst');
+const blobBytes = (dir: string) => fileBytes(dir, '.blob');
 
 describe('Compaction', () => {
 	afterEach(() => {
@@ -210,6 +213,53 @@ describe('Compaction', () => {
 			again.compactSync({ bottommost: true });
 			await again.close();
 			expect(sstBytes(dbPath)).toBeLessThan(sizeUncompressed / 2);
+		}));
+
+	// Values at or above the binding's 2048-byte blob threshold (`min_blob_size`) are stored in
+	// blob files, not SSTs. A bottommost SST compaction alone does not touch them: blob GC's
+	// default age cutoff only reclaims the oldest fraction of blob files, so `bottommost: true`
+	// forces blob GC across the full age range (see DBDescriptor::compactRange) to re-encode them
+	// too. Without that, this test's blob files would stay on the old codec.
+	it('should re-encode existing blob-backed data under a new codec when bottommost is requested', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			if (!supportedCompression.includes('zstd')) return;
+
+			// Compressible and above the 2048-byte blob threshold.
+			const words = 'the quick brown fox jumps over lazy dog durable premium standard'.split(' ');
+			const value = (i: number) =>
+				Array.from({ length: 400 }, (_unused, w) => words[(i * 7 + w * 13) % words.length]).join(
+					' '
+				);
+			expect(value(0).length).toBeGreaterThan(2048);
+
+			db.close();
+			const uncompressed = RocksDatabase.open(dbPath, {
+				name: 'recodeBlob',
+				compression: 'none',
+			});
+			for (let i = 0; i < 2000; ++i)
+				uncompressed.putSync(`k${String(i).padStart(8, '0')}`, value(i));
+			await uncompressed.flush();
+			await uncompressed.close();
+			const sizeUncompressed = blobBytes(dbPath);
+			expect(sizeUncompressed).toBeGreaterThan(0);
+
+			// Reopening under zstd governs new writes; it does not touch what is already there.
+			const plain = RocksDatabase.open(dbPath, {
+				name: 'recodeBlob',
+				compression: 'zstd',
+			});
+			await plain.compact();
+			await plain.close();
+			expect(blobBytes(dbPath)).toBe(sizeUncompressed);
+
+			const forced = RocksDatabase.open(dbPath, {
+				name: 'recodeBlob',
+				compression: 'zstd',
+			});
+			await forced.compact({ bottommost: true });
+			await forced.close();
+			expect(blobBytes(dbPath)).toBeLessThan(sizeUncompressed / 2);
 		}));
 
 	it('should not compact more than once at a time', () =>
