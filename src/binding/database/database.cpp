@@ -245,7 +245,7 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Compact(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(4);
+	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->descriptor->readOnly) {
@@ -273,6 +273,13 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		NAPI_GET_BUFFER(argv[3], endKey, "End key must be a buffer");
 		state->endKey = std::string(endKey, endKeyLength);
 		state->hasEnd = true;
+	}
+
+	// Check for optional bottommost flag (argv[4])
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &state->bottommost));
 	}
 
 	napi_value name;
@@ -303,7 +310,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 				state->status = state->handle->descriptor->compactRange(
 					state->handle->columnDescriptor->column.get(),
 					startPtr,
-					endPtr
+					endPtr,
+					state->bottommost
 				);
 			}
 			// signal that execute handler is complete
@@ -354,7 +362,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->descriptor->readOnly) {
@@ -381,11 +389,19 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 		endPtr = &endSlice;
 	}
 
+	bool bottommost = false;
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &bottommost));
+	}
+
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
 		(*dbHandle)->descriptor->compactRange(
 			(*dbHandle)->columnDescriptor->column.get(),
 			startPtr,
-			endPtr
+			endPtr,
+			bottommost
 		),
 		"Compact failed"
 	);

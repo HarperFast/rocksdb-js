@@ -392,7 +392,8 @@ public:
 	rocksdb::Status compactRange(
 		rocksdb::ColumnFamilyHandle* column,
 		const rocksdb::Slice* start,
-		const rocksdb::Slice* end
+		const rocksdb::Slice* end,
+		bool bottommost = false
 	);
 };
 

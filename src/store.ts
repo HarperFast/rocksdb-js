@@ -73,6 +73,18 @@ export type StoreRemoveOptions = DBITransactional | unknown;
 export type CompactOptions = {
 	start?: Key;
 	end?: Key;
+	/**
+	 * Compact the bottommost level as well, rewriting every file in range.
+	 *
+	 * RocksDB skips the bottommost level by default when no compaction filter is installed, and
+	 * that is where most of the data sits — so an ordinary `compact()` leaves it untouched. Since a
+	 * changed `compression` algorithm only governs newly written files, rewriting that level is the
+	 * only way to re-encode data that already exists.
+	 *
+	 * This rewrites the whole range regardless of whether RocksDB considers it worth doing, so it
+	 * is as expensive as the data is large. Defaults to `false`.
+	 */
+	bottommost?: boolean;
 };
 
 /**
@@ -105,7 +117,10 @@ export type CompressionOption =
  * `compression` getter. `level` is present only when a non-default compression
  * level is configured.
  */
-export type CompressionInfo = { algorithm: CompressionAlgorithm; level?: number };
+export type CompressionInfo = {
+	algorithm: CompressionAlgorithm;
+	level?: number;
+};
 
 /**
  * Normalizes the public `compression` option into the primitive fields the
@@ -268,7 +283,10 @@ export type UserSharedBufferOptions = { callback?: UserSharedBufferCallback };
 /**
  * The return type of `getUserSharedBuffer()`.
  */
-export type ArrayBufferWithNotify = ArrayBuffer & { cancel: () => void; notify: () => void };
+export type ArrayBufferWithNotify = ArrayBuffer & {
+	cancel: () => void;
+	notify: () => void;
+};
 
 /**
  * A store wraps the `NativeDatabase` binding and database settings so that a
@@ -594,7 +612,7 @@ export class Store {
 		}
 
 		return new Promise((resolve, reject) =>
-			this.db.compact(resolve, reject, startBuffer, endBuffer)
+			this.db.compact(resolve, reject, startBuffer, endBuffer, options?.bottommost === true)
 		);
 	}
 
@@ -654,7 +672,7 @@ export class Store {
 			endBuffer = Buffer.from(end.subarray(end.start, end.end));
 		}
 
-		this.db.compactSync(startBuffer, endBuffer);
+		this.db.compactSync(startBuffer, endBuffer, options?.bottommost === true);
 	}
 
 	/**
