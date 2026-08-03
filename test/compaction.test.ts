@@ -12,7 +12,10 @@ function fileBytes(dir: string, extension: string): number {
 		recursive: true,
 	})) {
 		if (entry.isFile() && entry.name.endsWith(extension)) {
-			total += statSync(join(entry.parentPath ?? dir, entry.name)).size;
+			// `parentPath` was added in Node 20.11/21.5; README documents Node 18+ support, where
+			// this is `undefined` and the property was still named `path`.
+			const parentPath = entry.parentPath ?? (entry as unknown as { path?: string }).path ?? dir;
+			total += statSync(join(parentPath, entry.name)).size;
 		}
 	}
 	return total;
