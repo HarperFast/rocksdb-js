@@ -994,11 +994,13 @@ throws. `'none'` is always available.
 
 **Changing the codec of data already written.** Setting `compression` affects files written from
 that point on. Existing SST and blob files keep the codec they were written with until something
-rewrites them, and an ordinary `compact()` will not: RocksDB leaves the bottommost level alone
-unless a compaction filter is installed, and that is where most of the data sits. Use
-[`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to force the rewrite. Note also
-that omitting `compression` on a column family that already exists **inherits** its current codec
-rather than applying the default — the default applies only when the family is created.
+rewrites them. An ordinary `compact()` can re-encode non-bottommost levels, but RocksDB leaves the
+bottommost level alone unless a compaction filter is installed — and that is where most of the data
+sits, so a plain compaction will not rewrite all existing data. Use
+[`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to force the rewrite, once per
+column family you want migrated. Note also that omitting `compression` on a column family that
+already exists **inherits** its current codec rather than applying the default — the default
+applies only when the family is created.
 
 **Adopting a codec across a whole database.** Compression is chosen per column family, and RocksDB
 opens every family of a database in one call — so by default the families you did not name keep

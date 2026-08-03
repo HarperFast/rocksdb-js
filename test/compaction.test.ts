@@ -205,7 +205,8 @@ describe('Compaction', () => {
 			const sizeRecoded = sstBytes(dbPath);
 			expect(sizeRecoded).toBeLessThan(sizeUncompressed / 2);
 
-			// compactSync takes the same option, and re-running is a no-op.
+			// compactSync takes the same option; data is already recoded, so this just confirms
+			// it doesn't undo anything.
 			const again = RocksDatabase.open(dbPath, {
 				name: 'recode',
 				compression: 'zstd',
@@ -231,15 +232,20 @@ describe('Compaction', () => {
 					' '
 				);
 			expect(value(0).length).toBeGreaterThan(2048);
+			const keyOf = (i: number) => `k${String(i).padStart(8, '0')}`;
 
 			db.close();
+			// Three separate flushes make three blob-file generations, so the regression also
+			// covers the age cutoff: a default cutoff would leave the older generations behind.
 			const uncompressed = RocksDatabase.open(dbPath, {
 				name: 'recodeBlob',
 				compression: 'none',
 			});
-			for (let i = 0; i < 2000; ++i)
-				uncompressed.putSync(`k${String(i).padStart(8, '0')}`, value(i));
-			await uncompressed.flush();
+			for (let batch = 0; batch < 3; ++batch) {
+				for (let i = batch * 700; i < batch * 700 + 700; ++i)
+					uncompressed.putSync(keyOf(i), value(i));
+				await uncompressed.flush();
+			}
 			await uncompressed.close();
 			const sizeUncompressed = blobBytes(dbPath);
 			expect(sizeUncompressed).toBeGreaterThan(0);
@@ -258,8 +264,12 @@ describe('Compaction', () => {
 				compression: 'zstd',
 			});
 			await forced.compact({ bottommost: true });
-			await forced.close();
 			expect(blobBytes(dbPath)).toBeLessThan(sizeUncompressed / 2);
+
+			// Re-encoding must not lose or corrupt any generation's values, including the oldest.
+			for (const i of [0, 699, 700, 1399, 1400, 2099])
+				expect(await forced.get(keyOf(i))).toBe(value(i));
+			await forced.close();
 		}));
 
 	it('should not compact more than once at a time', () =>
