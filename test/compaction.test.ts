@@ -269,7 +269,7 @@ describe('Compaction', () => {
 				});
 				// Exercise both entry points independently: restrict the async call to the first
 				// generation's range, leaving the rest on the old codec for compactSync to re-encode.
-				await forced.compact({ bottommost: true, start: keyOf(0), end: keyOf(699) });
+				await forced.compact({ bottommost: true, start: keyOf(0), end: keyOf(700) });
 				const sizeAfterAsync = blobBytes(dbPath);
 				expect(sizeAfterAsync).toBeLessThan(sizeUncompressed);
 
