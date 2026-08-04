@@ -170,6 +170,14 @@ struct DBHandle;
 		rocksdb_js::createRocksDBError(env, status, msg, error); \
 	} while (0)
 
+#define NAPI_THROW_JS_ERROR(code, message) \
+	do { \
+		napi_value error; \
+		rocksdb_js::createJSError(env, code, message, error); \
+		::napi_throw(env, error); \
+		return nullptr; \
+	} while (0)
+
 #define THROW_IF_READONLY(handle, context) \
 	do { \
 		if ((handle) && (handle)->readOnly) { \

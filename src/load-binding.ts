@@ -45,6 +45,7 @@ export type NativeTransactionOptions = {
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
+	abandonWrites(): void;
 	abort(): void;
 	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;

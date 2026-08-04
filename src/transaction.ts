@@ -81,7 +81,7 @@ export class Transaction extends DBI {
 		if (store.readOnly) {
 			super(store);
 			this.#txn = { id: 0 } as NativeTransaction;
-			this.abort = this.commitSync = this.setTimestamp = () => {};
+			this.abandonWrites = this.abort = this.commitSync = this.setTimestamp = () => {};
 			this.commit = async () => {};
 			this.getTimestamp = () => 0;
 		} else {
@@ -89,6 +89,18 @@ export class Transaction extends DBI {
 			super(store, txn);
 			this.#txn = txn;
 		}
+	}
+
+	/**
+	 * Release the staged writes' verification-table write intents without
+	 * closing the transaction, barring any later commit or write. For a
+	 * transaction kept open only for its outstanding read iterators after the
+	 * writes were replayed onto another transaction: otherwise other writers'
+	 * coordinated-retry commits park on those intents until it is aborted.
+	 * Reads keep working, including read-your-own-writes.
+	 */
+	abandonWrites(): void {
+		this.#txn.abandonWrites();
 	}
 
 	/**

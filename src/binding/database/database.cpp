@@ -1623,6 +1623,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
+		if (txnHandle->writesAbandoned) {
+			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+		}
 		status = txnHandle->putSync(
 			keySlice,
 			valueSlice,
@@ -1696,6 +1699,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
+		}
+		if (txnHandle->writesAbandoned) {
+			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {

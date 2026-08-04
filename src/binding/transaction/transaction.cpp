@@ -26,12 +26,6 @@
 		} \
 	} while (0)
 
-#define NAPI_THROW_JS_ERROR(code, message) \
-	napi_value error; \
-	rocksdb_js::createJSError(env, code, message, error); \
-	::napi_throw(env, error); \
-	return nullptr
-
 namespace rocksdb_js {
 
 /**
@@ -160,6 +154,35 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
 	}
 
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Releases the staged writes' verification-table write intents without closing
+ * the transaction, and bars any later commit or write: the intents are gone, so
+ * a commit would publish writes no longer protected against a concurrent
+ * reader's cached version. For a handle kept open only for its outstanding read
+ * iterators after the writes were replayed onto another transaction — nothing
+ * else will ever release those intents, and other writers' coordinated-retry
+ * commits park on them. Reads keep working, including read-your-own-writes.
+ *
+ * VT intents only: RocksDB's own transaction locks (pessimistic mode) are held
+ * until the transaction is aborted.
+ */
+napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("AbandonWrites");
+
+	TransactionState txnState = (*txnHandle)->state;
+	if (txnState == TransactionState::Aborted) {
+		return nullptr;
+	}
+	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
+	}
+
+	(*txnHandle)->writesAbandoned = true;
+	(*txnHandle)->releaseIntent();
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -547,22 +570,28 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit");
 
-	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
-	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
-	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
-
+	// Every terminal case is decided before the state/reference allocations below, so none of them
+	// can leak an allocation, and the rejection order matches CommitSync's (aborted before
+	// abandoned — a handle that is both reports the abort, which is the more specific state).
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
+	}
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		// already committed
 		napi_value global;
 		NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 0, nullptr, nullptr));
-		delete state;
 		return nullptr;
 	}
+
+	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;
 
@@ -683,6 +712,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
+	}
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_RETURN_UNDEFINED();
@@ -1019,6 +1051,9 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_TRANSACTION_HANDLE("Put");
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Put failed: ");
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
@@ -1042,6 +1077,9 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_TRANSACTION_HANDLE("Remove");
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Remove failed: ");
+	if ((*txnHandle)->writesAbandoned) {
+		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
@@ -1148,6 +1186,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
  */
 void Transaction::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
+		{ "abandonWrites", nullptr, AbandonWrites, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commitSync", nullptr, CommitSync, nullptr, nullptr, nullptr, napi_default, nullptr },
