@@ -74,29 +74,29 @@ importers:
         version: 4.1.10(@types/node@26.1.2)(@vitest/coverage-v8@4.1.10)(vite@8.1.4(@types/node@26.1.2)(esbuild@0.28.1)(tsx@4.23.1))
     optionalDependencies:
       '@harperfast/rocksdb-js-darwin-arm64':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-darwin-x64':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-linux-arm64-glibc':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-linux-arm64-musl':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-linux-x64-glibc':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-linux-x64-musl':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-win32-arm64':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
       '@harperfast/rocksdb-js-win32-x64':
-        specifier: 2.6.1
-        version: 2.6.1
+        specifier: 2.7.0
+        version: 2.7.0
 
 packages:
 
@@ -298,54 +298,54 @@ packages:
   '@harperfast/extended-iterable@1.0.3':
     resolution: {integrity: sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw==}
 
-  '@harperfast/rocksdb-js-darwin-arm64@2.6.1':
-    resolution: {integrity: sha512-iq5lCjFey4aYG9/W7ETiaZQ5r2A43fX75DCCnIG7s9aVuE39Ug2TVKz8MOD7NPrIzygLbw7SYjijB23ApCquiA==}
+  '@harperfast/rocksdb-js-darwin-arm64@2.7.0':
+    resolution: {integrity: sha512-dzzQ8XD1cDFHoVrRuETIJrY320ZlGBxDkxA4jLc0LyqN1kbKgUIGY1pDODniO+fGKpqF6/C1S9aPE4E5gRh4Lg==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [darwin]
 
-  '@harperfast/rocksdb-js-darwin-x64@2.6.1':
-    resolution: {integrity: sha512-F/m7eIriZVk1qTvt70ehNIEsvUTVPdF2g92ZQX8Pka/219E2b4T0S2e6VHB61EBN/W7ylrphbjo956wfHeqLsA==}
+  '@harperfast/rocksdb-js-darwin-x64@2.7.0':
+    resolution: {integrity: sha512-LBUM864TCPUYEF4Uto6EthUoUIwJspvhtWf92DgpJ0d2mQSi8lWF15QEKCMpBFumCzhZxTD+bYuT9tC5K4r5Fw==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [darwin]
 
-  '@harperfast/rocksdb-js-linux-arm64-glibc@2.6.1':
-    resolution: {integrity: sha512-Epiywik4lq3EkNAw13/JXZp08wZX+sKzeek/wsRP8L58WK8iiv+lL+1FeTQIaZ0y5x2bXfy1apyfvIPenTlpTg==}
+  '@harperfast/rocksdb-js-linux-arm64-glibc@2.7.0':
+    resolution: {integrity: sha512-o6m4+047qKC2ptiImU1n154OY4HBwfn7VMpsi8R7hh20BCWuBhwquYGObdqVqcGCW3usKfDP/mhNd9BbTxwdbA==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@harperfast/rocksdb-js-linux-arm64-musl@2.6.1':
-    resolution: {integrity: sha512-oytTCkkB1m6aOMq5+W8iQxrKB+U53/Anfb5hgsky0UXHaJTQ55GO2KAxwMOLxAFwrTwsDc5RwZul0AdXvLdHjQ==}
+  '@harperfast/rocksdb-js-linux-arm64-musl@2.7.0':
+    resolution: {integrity: sha512-ER52FDJGmC8XtkjGQS2GwehZHzA5lR14BWGIXu7vi5fckea+erPJNizIhR0gP9zxcET4ofgrgrryq15TbLKKCA==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  '@harperfast/rocksdb-js-linux-x64-glibc@2.6.1':
-    resolution: {integrity: sha512-A5tI89GD11eboM6l76nKqqcEM7UoB2ESbo/RPDoUaQxhhp0Q5o4CwVcgy/G+T4NBhhHSVASIvUgeR0L+xiG7Og==}
+  '@harperfast/rocksdb-js-linux-x64-glibc@2.7.0':
+    resolution: {integrity: sha512-vLch+6ZUTH1aG2lxRDRdErDbuMSJbGPQLu3gIw8RKcww3+bpDGQ13ImXk1svoQa3OXg0EYaYLQd24K5hQaXsDw==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@harperfast/rocksdb-js-linux-x64-musl@2.6.1':
-    resolution: {integrity: sha512-owicSZXl+CPKKong+NTBHGzzTZ8Vq633rsewu+B1u1qlXhpV0W5HiKtcvpyJ6PbIXukjt9STtBC1rImUiaPw3Q==}
+  '@harperfast/rocksdb-js-linux-x64-musl@2.7.0':
+    resolution: {integrity: sha512-7bSSQF584TBnkjZ1KKG/IUJY4YFhFt+G/D6eZZq5dsjTxetStRQVtMJSkGF4/40XO++uz2AbIONgGqf5QRSTww==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  '@harperfast/rocksdb-js-win32-arm64@2.6.1':
-    resolution: {integrity: sha512-GKVaaQnDmf8t1x5Ws6F2+WSevAeQRo85lFx/WEdtmkrqs/bE34lIYAUSQxzs2ALBs+R8kLj5gpoRc8KhBaUV+g==}
+  '@harperfast/rocksdb-js-win32-arm64@2.7.0':
+    resolution: {integrity: sha512-QBW2g5qp1RCFo2nscrNGhgBg7+22ZLls2xS54mtKpritesUfcr8W/+RqLlMtlj1BW531LENfqq1/U8rVX4Sq5g==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [win32]
 
-  '@harperfast/rocksdb-js-win32-x64@2.6.1':
-    resolution: {integrity: sha512-LF8sQVLAvqKc0waKMBQ5ADiHVUv9kwpj79RudY5xCIh3Qn3va6EYKLSxQezOPyZDX0yAOzpzacFnYNAno+7mnQ==}
+  '@harperfast/rocksdb-js-win32-x64@2.7.0':
+    resolution: {integrity: sha512-FlXCJ+S0ws018a9OosDyuzcuNMedYk84J9xZA6aFgz5CHN2XfI4w/VBSjVHQDatQ1bkoVuDvnkHnFu2l200ZEw==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [win32]
@@ -2059,28 +2059,28 @@ snapshots:
 
   '@harperfast/extended-iterable@1.0.3': {}
 
-  '@harperfast/rocksdb-js-darwin-arm64@2.6.1':
+  '@harperfast/rocksdb-js-darwin-arm64@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-darwin-x64@2.6.1':
+  '@harperfast/rocksdb-js-darwin-x64@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-arm64-glibc@2.6.1':
+  '@harperfast/rocksdb-js-linux-arm64-glibc@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-arm64-musl@2.6.1':
+  '@harperfast/rocksdb-js-linux-arm64-musl@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-x64-glibc@2.6.1':
+  '@harperfast/rocksdb-js-linux-x64-glibc@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-x64-musl@2.6.1':
+  '@harperfast/rocksdb-js-linux-x64-musl@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-win32-arm64@2.6.1':
+  '@harperfast/rocksdb-js-win32-arm64@2.7.0':
     optional: true
 
-  '@harperfast/rocksdb-js-win32-x64@2.6.1':
+  '@harperfast/rocksdb-js-win32-x64@2.7.0':
     optional: true
 
   '@isaacs/fs-minipass@4.0.1':
