@@ -284,6 +284,7 @@ struct Database final {
 	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
+	static napi_value GetCompression(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetDBIntProperty(napi_env env, napi_callback_info info);
 	static napi_value GetDBProperty(napi_env env, napi_callback_info info);
@@ -339,6 +340,7 @@ struct AsyncCompactState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::string endKey;
 	bool hasStart = false;
 	bool hasEnd = false;
+	bool bottommost = false;
 
 	AsyncCompactState(napi_env env, std::shared_ptr<DBHandle> handle)
 		: BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}

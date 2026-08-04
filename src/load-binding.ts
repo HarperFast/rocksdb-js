@@ -45,6 +45,7 @@ export type NativeTransactionOptions = {
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
+	abandonWrites(): void;
 	abort(): void;
 	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;
@@ -65,7 +66,11 @@ export type NativeTransaction = {
 	useLog(name: string | number): TransactionLog;
 };
 
-export type LogBuffer = Buffer & { dataView: DataView; logId: number; size: number };
+export type LogBuffer = Buffer & {
+	dataView: DataView;
+	logId: number;
+	size: number;
+};
 
 export type TransactionLogQueryOptions = {
 	start?: number;
@@ -76,7 +81,11 @@ export type TransactionLogQueryOptions = {
 	exclusiveStart?: boolean;
 };
 
-export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
+export type TransactionEntry = {
+	timestamp: number;
+	data: Buffer;
+	endTxn: boolean;
+};
 
 /**
  * A position within a transaction log, identifying a log file by its sequence
@@ -194,6 +203,23 @@ export declare class NativeIteratorCls {
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
+	/**
+	 * The friendly name of a compression algorithm compiled into this RocksDB
+	 * build (see `supportedCompression`), e.g. `'lz4'`, `'zstd'`, `'none'`. The
+	 * higher-level `StoreOptions.compression` (which also accepts an object with
+	 * a level) is normalized down to this string plus `compressionLevel`.
+	 */
+	compression?: string;
+	/**
+	 * Compression level forwarded to RocksDB's `compression_opts.level`. Meaning
+	 * is algorithm-specific; omit to use the algorithm's default.
+	 */
+	compressionLevel?: number;
+	/**
+	 * Apply `compression` to every column family the underlying `DB::Open` opens, rather than
+	 * only the one named by `name`. Requires an explicit `compression`.
+	 */
+	compressionForAllColumnFamilies?: boolean;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;
@@ -263,8 +289,14 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
-	compact(resolve: ResolveCallback<void>, reject: RejectCallback, start?: Key, end?: Key): void;
-	compactSync(start?: Key, end?: Key): void;
+	compact(
+		resolve: ResolveCallback<void>,
+		reject: RejectCallback,
+		start?: Key,
+		end?: Key,
+		bottommost?: boolean
+	): void;
+	compactSync(start?: Key, end?: Key, bottommost?: boolean): void;
 	columns: string[];
 	createCheckpoint(
 		resolve: ResolveCallback<void>,
@@ -285,6 +317,7 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): number;
+	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
@@ -430,7 +463,11 @@ function locateBinding(): string {
 			}
 			try {
 				isMusl =
-					isMusl || execSync('ldd --version', { encoding: 'utf8', stdio: 'pipe' }).includes('musl');
+					isMusl ||
+					execSync('ldd --version', {
+						encoding: 'utf8',
+						stdio: 'pipe',
+					}).includes('musl');
 			} catch {
 				// ldd may not exist on some systems such as Docker Hardened Images
 			}
@@ -498,6 +535,17 @@ export const constants: {
 	ITERATOR_RESULT_DONE: number;
 	ITERATOR_RESULT_FAST: number;
 } = binding.constants;
+/**
+ * The friendly names of every compression algorithm compiled into the loaded
+ * RocksDB native binding, e.g. `['none', 'snappy', 'lz4', 'zstd']`. The set is
+ * fixed for a given binary (it depends on which compression libraries RocksDB
+ * was linked against), so this is a static list. `'none'` (no compression) is
+ * always present. Use it to validate a `compression` option or to pick an
+ * algorithm that is actually available at runtime.
+ */
+export const supportedCompression: readonly string[] = Object.freeze(
+	binding.supportedCompression as string[]
+);
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
@@ -564,7 +612,11 @@ export const nativeBackupRestore: (
 	backupDir: string,
 	dbDir: string,
 	walDir: string,
-	options?: { backupId?: number; keepLogFiles?: boolean; mode?: RestoreOptions['mode'] }
+	options?: {
+		backupId?: number;
+		keepLogFiles?: boolean;
+		mode?: RestoreOptions['mode'];
+	}
 ) => void = binding.backupRestore;
 export const nativeBackupList: (
 	resolve: ResolveCallback<BackupInfo[]>,

@@ -2,8 +2,10 @@
 #define __DB_OPTIONS_H__
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <thread>
+#include "rocksdb/compression_type.h"
 
 namespace rocksdb_js {
 
@@ -59,6 +61,35 @@ struct DBOptions final {
 	// Opt-in per-CF flag enabling Verification Table slot locking/tracking for
 	// this column family's writes (see core/verification_table.h).
 	bool verificationTable = false;
+	// Block/blob compression algorithm for this column family. `Database::Open`
+	// fills this in: the caller's explicit choice, or the LZ4 default when the
+	// build supports it (else `std::nullopt` = RocksDB's own default, Snappy when
+	// linked else none). Applied to both `ColumnFamilyOptions::compression` (SST
+	// blocks) and `blob_compression_type` (large values stored as blobs), which
+	// otherwise defaults to no compression. Compression is a dynamically-
+	// changeable option: on reopen the new algorithm governs subsequently written
+	// SST/blob files; existing files keep their original compression until
+	// rewritten by compaction.
+	std::optional<rocksdb::CompressionType> compression;
+	// Whether `compression` came from an explicit caller request (vs the LZ4
+	// default). Used by `DBRegistry::OpenDB` to reject a second in-process open of
+	// an already-open column family that explicitly asks for a *different*
+	// algorithm, while letting a plain reopen inherit the live setting.
+	bool compressionExplicit = false;
+	// Compression level passed to `compression_opts.level`. `std::nullopt` keeps
+	// RocksDB's per-algorithm default level. Meaning is algorithm-specific (see
+	// CompressionOptions::level).
+	std::optional<int> compressionLevel;
+	// When true, apply `compression` to EVERY column family the underlying
+	// `DB::Open` opens, not just the one named by `name`. RocksDB opens all of a
+	// database's column families in that one call, and the default behavior gives
+	// each of the others its persisted algorithm — correct when codecs are chosen
+	// per table, but it leaves a caller that wants one codec for the whole
+	// database unable to express it: the families it did not name are already open
+	// at their old algorithm before it can ask. Only meaningful together with an
+	// explicit `compression`, and only on the open that actually creates the
+	// database handle (later opens reuse it).
+	bool compressionForAllColumnFamilies = false;
 };
 
 } // namespace rocksdb_js

@@ -85,6 +85,45 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
    (`src/binding/database/backup.cpp`). Creating a backup is the `Database::Backup` instance
    method (needs the open DB); restore/list/delete/purge/verify are module-level functions
    operating on a backup directory with no open DB.
+6. **Compression**: a **per-column-family** open option (`compression`), normalized in the TS Store
+   layer (`normalizeCompression` — string | `{algorithm, level}` → native string + validated int32
+   level) and applied to the target CF's options. Non-obvious points:
+   - The algorithm is applied to **both** `ColumnFamilyOptions::compression` (SST blocks) **and**
+     `blob_compression_type` — this codebase enables blob files for values ≥ 2KB, and blob
+     compression defaults to none, so setting only block compression leaves large values
+     uncompressed. `compression_opts.level` carries an optional level.
+   - **Per-CF preservation is load-bearing and easy to get wrong.** RocksDB requires opening _every_
+     CF at once with the options you pass, and does **not** restore persisted per-CF options on its
+     own. So `DBDescriptor::open` calls `LoadLatestOptions` (`rocksdb/utilities/options_util.h`) to
+     read each existing CF's persisted compression, opens each CF with _its own_ value, and applies
+     the caller's request **only** to the target CF (`options.name`) — and only when it was
+     _explicitly_ requested. A cold open of one CF must never restamp the others (that was the bug
+     Kris caught: first-open order used to dictate every CF's algorithm). New CFs
+     (`createRocksDBColumnFamily`) get the request/default. Because the OPTIONS file is the _only_
+     authoritative source, a non-OK `LoadLatestOptions` for an **existing** DB (missing/corrupt
+     OPTIONS) **fails the open** rather than falling back to defaults — falling back would reopen the
+     non-target CFs with the base default and silently restamp them. Applying an explicit algorithm
+     **without** a level resets `compression_opts.level` to `kDefaultCompressionLevel` (it must not
+     inherit the target CF's persisted level, e.g. cold-reopening a zstd-level-19 CF as zlib).
+   - The default is **LZ4** (overriding RocksDB's Snappy default), applied natively in
+     `Database::Open` when unset; build-dependent, so it falls back to RocksDB's default when LZ4
+     isn't linked. The default is marked **non-explicit** (`DBOptions::compressionExplicit`) so it
+     never overrides an existing CF and a plain reopen inherits the live value.
+   - A second in-process open of an already-open CF (the `DBDescriptor` is process-global, shared
+     across handles/`worker_threads`) with an **explicitly different** algorithm, blob algorithm, _or_
+     level is **rejected** (throws in `DBRegistry::OpenDB`, comparing all three against the live
+     `GetOptions`). The level compared is the _effective_ request — omitting a level means
+     `kDefaultCompressionLevel`, not "inherit" — and the blob check catches a legacy CF opened plainly
+     with `block=snappy`/`blob=none` that a later explicit `snappy` open would otherwise leave with
+     uncompressed blobs.
+   - `supportedCompression` (module constant from `rocksdb::GetSupportedCompressions()`) is the
+     source of truth; name↔enum mapping lives in the Node-free `core/compression.{h,cpp}`
+     (GoogleTest-covered). The `db.compression` getter returns `{ algorithm, level? }` read live via
+     `DB::GetOptions` (level omitted when it is the default sentinel).
+   - `scripts/configure-rocksdb.mjs` (run by `binding.gyp` at configure) provisions the pinned
+     prebuild then emits the compression libs to link as **whitespace-free** `-l` flags / `.lib`
+     names (never absolute paths), resolved via a single `library_dirs` entry — so a repo checked
+     out under a path with spaces still links (gyp `<!@()` splits output on whitespace).
 
 ### Transaction Architecture
 

@@ -15,6 +15,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
+#include "core/compression.h"
 
 namespace rocksdb_js {
 
@@ -244,7 +245,7 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Compact(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(4);
+	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->descriptor->readOnly) {
@@ -272,6 +273,13 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		NAPI_GET_BUFFER(argv[3], endKey, "End key must be a buffer");
 		state->endKey = std::string(endKey, endKeyLength);
 		state->hasEnd = true;
+	}
+
+	// Check for optional bottommost flag (argv[4])
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &state->bottommost));
 	}
 
 	napi_value name;
@@ -302,7 +310,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 				state->status = state->handle->descriptor->compactRange(
 					state->handle->columnDescriptor->column.get(),
 					startPtr,
-					endPtr
+					endPtr,
+					state->bottommost
 				);
 			}
 			// signal that execute handler is complete
@@ -353,7 +362,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->descriptor->readOnly) {
@@ -380,11 +389,19 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 		endPtr = &endSlice;
 	}
 
+	bool bottommost = false;
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &bottommost));
+	}
+
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
 		(*dbHandle)->descriptor->compactRange(
 			(*dbHandle)->columnDescriptor->column.get(),
 			startPtr,
-			endPtr
+			endPtr,
+			bottommost
 		),
 		"Compact failed"
 	);
@@ -777,6 +794,44 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
 	return returnStatus;
+}
+
+/**
+ * Returns the compression currently in effect for this database's column family,
+ * read live from the open RocksDB via `GetOptions`, as an object
+ * `{ algorithm, level? }`. `algorithm` is a friendly name (e.g. "lz4", "zstd",
+ * "none"); `level` is included only when a non-default compression level is set.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * db.getCompression(); // { algorithm: 'zstd', level: 3 }
+ * ```
+ */
+napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	rocksdb::Options opts = (*dbHandle)->descriptor->db->GetOptions((*dbHandle)->getColumnFamilyHandle());
+	std::string name = compressionNameFromType(opts.compression);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value algorithm;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), NAPI_AUTO_LENGTH, &algorithm));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "algorithm", algorithm));
+
+	// compression_opts.level defaults to kDefaultCompressionLevel (a sentinel
+	// meaning "use the algorithm's own default"); only surface a level that was
+	// explicitly configured.
+	if (opts.compression_opts.level != rocksdb::CompressionOptions::kDefaultCompressionLevel) {
+		napi_value level;
+		NAPI_STATUS_THROWS(::napi_create_int32(env, opts.compression_opts.level, &level));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "level", level));
+	}
+
+	return result;
 }
 
 /**
@@ -1384,6 +1439,72 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", dbHandleOptions.disableWAL));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "verificationTable", dbHandleOptions.verificationTable));
 
+	// compression: a friendly algorithm name (e.g. "lz4", "zstd", "none"). The
+	// TypeScript layer normalizes the string|object public option and validates
+	// against the supported list before we get here; this is the defensive
+	// backstop for a name that isn't recognized or isn't compiled in. When the
+	// caller does not specify one, default to LZ4 where the build supports it
+	// (otherwise leave RocksDB's own default). The default is not marked
+	// explicit, so a plain reopen of an already-open column family does not
+	// conflict with its live algorithm (see DBRegistry::OpenDB).
+	std::string compressionName;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "compression", compressionName));
+	if (!compressionName.empty()) {
+		std::optional<rocksdb::CompressionType> type = compressionTypeFromName(compressionName);
+		if (!type || !isCompressionSupported(*type)) {
+			std::string errorMsg = "Unsupported compression algorithm: " + compressionName;
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
+			return nullptr;
+		}
+		dbHandleOptions.compression = *type;
+		dbHandleOptions.compressionExplicit = true;
+
+		// compressionLevel is optional, but a present value must be a valid 32-bit
+		// integer. Distinguish "absent" (leave RocksDB's per-algorithm default)
+		// from "present but wrong type" (throw) so a malformed level is never
+		// silently ignored — the TS layer validates too; this is the backstop.
+		bool hasLevel = false;
+		NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "compressionLevel", &hasLevel));
+		if (hasLevel) {
+			napi_value levelValue;
+			NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "compressionLevel", &levelValue));
+			napi_valuetype levelType;
+			NAPI_STATUS_THROWS(::napi_typeof(env, levelValue, &levelType));
+			if (levelType != napi_undefined && levelType != napi_null) {
+				if (levelType != napi_number) {
+					::napi_throw_error(env, nullptr, "compressionLevel must be a number");
+					return nullptr;
+				}
+				double compressionLevel = 0;
+				NAPI_STATUS_THROWS(::napi_get_value_double(env, levelValue, &compressionLevel));
+				if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
+					compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
+				) {
+					::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
+					return nullptr;
+				}
+				dbHandleOptions.compressionLevel = static_cast<int>(compressionLevel);
+			}
+		}
+	} else if (isCompressionSupported(rocksdb::kLZ4Compression)) {
+		dbHandleOptions.compression = rocksdb::kLZ4Compression;
+	}
+
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(
+		env,
+		options,
+		"compressionForAllColumnFamilies",
+		dbHandleOptions.compressionForAllColumnFamilies
+	));
+	if (dbHandleOptions.compressionForAllColumnFamilies && !dbHandleOptions.compressionExplicit) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			"compressionForAllColumnFamilies requires an explicit compression option"
+		);
+		return nullptr;
+	}
+
 	// statistics
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "enableStats", dbHandleOptions.enableStats));
 	if (dbHandleOptions.enableStats) {
@@ -1502,6 +1623,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
+		if (txnHandle->writesAbandoned) {
+			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+		}
 		status = txnHandle->putSync(
 			keySlice,
 			valueSlice,
@@ -1575,6 +1699,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
+		}
+		if (txnHandle->writesAbandoned) {
+			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
@@ -1751,6 +1878,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },

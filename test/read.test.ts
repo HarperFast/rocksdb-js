@@ -39,6 +39,20 @@ describe('Read Operations', () => {
 					expect(results[i]).toBe(`value-${i}`);
 				}
 			}));
+		it('should read asynchronously inside a transaction when the value is not cached', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('foo', 'bar');
+				await db.flush();
+				// A transactional read goes through Transaction::GetSync, which must return the
+				// not-in-memory sentinel on a block-cache miss so the JS layer can fall back to an
+				// async read — not throw "Result incomplete".
+				await db.transaction(async (transaction) => {
+					const result = transaction.get('foo');
+					expect(result).toBeInstanceOf(Promise);
+					expect(await result).toBe('bar');
+				});
+			}));
+
 		it('should error if database is not open', () =>
 			dbRunner({ skipOpen: true }, async ({ db }) => {
 				await expect(db.get('foo')).rejects.toThrow('Database not open');

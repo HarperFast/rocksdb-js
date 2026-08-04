@@ -17,6 +17,7 @@ import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
 import {
 	type ArrayBufferWithNotify,
 	CompactOptions,
+	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	Store,
@@ -86,13 +87,19 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	#name: string;
 
 	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions) {
+		// A store is bound to a single RocksDatabase instance. Each database claims
+		// its store on construction; passing a store another database already owns
+		// throws (see Store#claim).
+		let store: Store;
 		if (typeof pathOrStore === 'string') {
-			super(new Store(pathOrStore, options));
+			store = new Store(pathOrStore, options);
 		} else if (pathOrStore instanceof Store) {
-			super(pathOrStore);
+			store = pathOrStore;
 		} else {
 			throw new TypeError('Invalid database path or store');
 		}
+		store.claim();
+		super(store);
 		this.#name = options?.name ?? 'default';
 	}
 
@@ -260,6 +267,23 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get columns(): string[] {
 		return this.store.db.columns;
+	}
+
+	/**
+	 * The compression currently in effect for this database's column family, read
+	 * live from RocksDB, as `{ algorithm, level? }`. `algorithm` is a friendly
+	 * name (e.g. `'lz4'`, `'zstd'`, `'none'`); `level` is present only when a
+	 * non-default compression level is set. The database must be open. Defaults to
+	 * LZ4 when the native build supports it.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { compression: { algorithm: 'zstd', level: 3 } });
+	 * db.compression; // { algorithm: 'zstd', level: 3 }
+	 * ```
+	 */
+	get compression(): CompressionInfo {
+		return this.store.db.getCompression() as CompressionInfo;
 	}
 
 	/**

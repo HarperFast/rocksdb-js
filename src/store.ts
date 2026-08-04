@@ -20,6 +20,7 @@ import {
 	NativeIterator,
 	NativeTransaction,
 	stats,
+	supportedCompression,
 	type TransactionLog,
 	type UserSharedBufferCallback,
 } from './load-binding.js';
@@ -72,15 +73,166 @@ export type StoreRemoveOptions = DBITransactional | unknown;
 export type CompactOptions = {
 	start?: Key;
 	end?: Key;
+	/**
+	 * Compact the bottommost level as well, rewriting every file in range.
+	 *
+	 * RocksDB skips the bottommost level by default when no compaction filter is installed, and
+	 * that is where most of the data sits — so an ordinary `compact()` leaves it untouched. Since a
+	 * changed `compression` algorithm only governs newly written files, rewriting that level is the
+	 * only way to re-encode data that already exists.
+	 *
+	 * This rewrites the whole range regardless of whether RocksDB considers it worth doing, so it
+	 * is as expensive as the data is large. Defaults to `false`.
+	 */
+	bottommost?: boolean;
 };
+
+/**
+ * A RocksDB block/blob compression algorithm. Which algorithms are actually
+ * available depends on the libraries the native binding was compiled with —
+ * check `supportedCompression` at runtime. `'none'` disables compression and
+ * is always available.
+ */
+export type CompressionAlgorithm =
+	| 'none'
+	| 'snappy'
+	| 'zlib'
+	| 'bzip2'
+	| 'lz4'
+	| 'lz4hc'
+	| 'xpress'
+	| 'zstd';
+
+/**
+ * The `compression` open option: either an algorithm name, or an object with
+ * an algorithm and an optional level (forwarded to RocksDB's
+ * `compression_opts.level`; meaning is algorithm-specific).
+ */
+export type CompressionOption =
+	| CompressionAlgorithm
+	| { algorithm: CompressionAlgorithm; level?: number };
+
+/**
+ * The compression currently in effect for a column family, as returned by the
+ * `compression` getter. `level` is present only when a non-default compression
+ * level is configured.
+ */
+export type CompressionInfo = {
+	algorithm: CompressionAlgorithm;
+	level?: number;
+};
+
+/**
+ * Normalizes the public `compression` option into the primitive fields the
+ * native layer expects. When `option` is omitted, or is an object without an
+ * `algorithm`, returns an empty object and lets the native layer apply the
+ * default (LZ4 when the build supports it, else RocksDB's own default).
+ * Throws a `TypeError` for a malformed option and an
+ * `Error` for an algorithm that isn't supported by this build.
+ */
+export function normalizeCompression(option: CompressionOption | undefined): {
+	compression?: string;
+	compressionLevel?: number;
+} {
+	// When unset, leave compression to the native layer, which defaults to LZ4
+	// when the build supports it (see Database::Open).
+	if (option === undefined || option === null) {
+		return {};
+	}
+
+	let algorithm: string;
+	let level: number | undefined;
+
+	if (typeof option === 'string') {
+		algorithm = option;
+	} else if (typeof option === 'object' && !Array.isArray(option)) {
+		if (option.algorithm === undefined || option.algorithm === null) {
+			if (option.level !== undefined && option.level !== null) {
+				throw new TypeError('Compression level cannot be specified without an algorithm');
+			}
+			return {};
+		}
+		algorithm = option.algorithm;
+		if (option.level !== undefined && option.level !== null) {
+			// TypeScript types `level` as a number. Accept a numeric string too (a
+			// common shape from loosely-typed config), but do NOT let bare `Number()`
+			// coerce other loose inputs — `true`, `[]`, `[6]`, and `''`/whitespace all
+			// become numbers and would silently mis-tune or drop compression. Anything
+			// that is not a number or a non-blank numeric string is rejected.
+			const raw = option.level as unknown;
+			const coerced =
+				typeof raw === 'number'
+					? raw
+					: typeof raw === 'string' && raw.trim() !== ''
+						? Number(raw)
+						: Number.NaN;
+			if (!Number.isInteger(coerced) || coerced < -2147483648 || coerced > 2147483647) {
+				throw new TypeError(
+					`compression level must be a 32-bit integer, got ${JSON.stringify(option.level)}`
+				);
+			}
+			level = coerced;
+		}
+	} else {
+		throw new TypeError('compression must be an algorithm name or an { algorithm, level } object');
+	}
+
+	if (!supportedCompression.includes(algorithm)) {
+		throw new Error(
+			`Unsupported compression algorithm "${algorithm}". This build supports: ${supportedCompression.join(', ')}`
+		);
+	}
+
+	return { compression: algorithm, compressionLevel: level };
+}
 
 /**
  * Options for the `Store` class.
  */
 export interface StoreOptions extends Omit<
 	NativeDatabaseOptions,
-	'mode' | 'transactionLogRetentionMs'
+	'compression' | 'compressionLevel' | 'mode' | 'transactionLogRetentionMs'
 > {
+	/**
+	 * The block/blob compression algorithm for this column family. Accepts an
+	 * algorithm name (`'lz4'`, `'zstd'`, `'none'`, ...) or an object with an
+	 * `algorithm` and optional `level`. Applies to both SST blocks and blob
+	 * files (large values). Which algorithms are available depends on the native
+	 * build — see `supportedCompression`.
+	 *
+	 * When omitted, defaults to `lz4` if the build supports it, otherwise
+	 * RocksDB's own default (Snappy when linked, else no compression).
+	 * Compression is a dynamically-changeable option: reopening with a
+	 * different algorithm governs subsequently written files; existing files
+	 * keep their compression until rewritten by compaction. Use the
+	 * `compression` getter to read the value currently in effect.
+	 *
+	 * @default 'lz4'
+	 */
+	compression?: CompressionOption;
+
+	/**
+	 * Apply `compression` to every column family in the database, not only the one being opened.
+	 *
+	 * RocksDB opens all of a database's column families in a single native call, and by default
+	 * each of the ones you did not name keeps its persisted algorithm. That is right when codecs
+	 * are chosen per table, but it leaves a caller that wants one codec for the whole database
+	 * unable to say so: those families are already open at their old algorithm before it gets a
+	 * chance to ask, and a column family's compression cannot be changed while it is open.
+	 *
+	 * Setting this applies the requested algorithm to all of them instead — including families
+	 * that were persisted with a different one, which is the point when adopting a codec on a
+	 * database that predates it.
+	 *
+	 * Only meaningful with an explicit `compression` (it throws otherwise), and only on the open
+	 * that actually creates the database handle; later opens of the same path reuse that handle
+	 * and cannot revisit the decision. As always, the algorithm governs newly written files —
+	 * existing SST/blob files keep theirs until rewritten (see `compact({ bottommost: true })`).
+	 *
+	 * @default false
+	 */
+	compressionForAllColumnFamilies?: boolean;
+
 	decoder?: Encoder | null;
 	encoder?: Encoder | null;
 	encoding?: Encoding;
@@ -131,16 +283,30 @@ export type UserSharedBufferOptions = { callback?: UserSharedBufferCallback };
 /**
  * The return type of `getUserSharedBuffer()`.
  */
-export type ArrayBufferWithNotify = ArrayBuffer & { cancel: () => void; notify: () => void };
+export type ArrayBufferWithNotify = ArrayBuffer & {
+	cancel: () => void;
+	notify: () => void;
+};
 
 /**
  * A store wraps the `NativeDatabase` binding and database settings so that a
  * single database instance can be shared between the main `RocksDatabase`
  * instance and the `Transaction` instance.
  *
- * This store should not be shared between `RocksDatabase` instances.
+ * A store is bound to a single `RocksDatabase` instance and must not be shared
+ * between `RocksDatabase` instances. Each `RocksDatabase` claims its store on
+ * construction (see `claim()`); passing a store that another `RocksDatabase`
+ * already owns throws. (Sharing with the owning database's `Transaction`
+ * instances is expected and allowed.)
  */
 export class Store {
+	/**
+	 * Whether a `RocksDatabase` has claimed this store. Durable across
+	 * close/reopen (unlike the handle's open state), so a store reused after its
+	 * owner temporarily closed is still recognized as in-use. See `claim()`.
+	 */
+	#claimed: boolean = false;
+
 	/**
 	 * The database instance.
 	 */
@@ -156,6 +322,18 @@ export class Store {
 	 * Whether the decoder copies the buffer when encoding values.
 	 */
 	decoderCopies: boolean = false;
+
+	/**
+	 * The compression algorithm (or `{ algorithm, level }`) requested for this
+	 * store's column family. Normalized and applied when the database opens.
+	 */
+	compression?: CompressionOption;
+
+	/**
+	 * Whether `compression` applies to every column family in the database rather than just this
+	 * store's. See `RocksDatabaseOptions.compressionForAllColumnFamilies`.
+	 */
+	compressionForAllColumnFamilies: boolean = false;
 
 	/**
 	 * Whether to disable the write ahead log.
@@ -355,6 +533,8 @@ export class Store {
 		);
 
 		this.db = new NativeDatabase();
+		this.compression = options?.compression;
+		this.compressionForAllColumnFamilies = options?.compressionForAllColumnFamilies === true;
 		this.dbWriteBufferSize = options?.dbWriteBufferSize;
 		this.decoder = options?.decoder ?? null;
 		this.disableWAL = options?.disableWAL ?? false;
@@ -396,6 +576,19 @@ export class Store {
 	}
 
 	/**
+	 * Claims this store for a `RocksDatabase`. A store is bound to a single
+	 * database instance, so claiming a store that another `RocksDatabase` has
+	 * already claimed throws. The claim is durable across close/reopen, so a
+	 * store reused after its owner temporarily closed still throws.
+	 */
+	claim(): void {
+		if (this.#claimed) {
+			throw new Error('Store is already in use by another RocksDatabase instance');
+		}
+		this.#claimed = true;
+	}
+
+	/**
 	 * Compacts the entire key range of the database asynchronously.
 	 * This triggers manual compaction which removes tombstones and reclaims space.
 	 *
@@ -419,7 +612,7 @@ export class Store {
 		}
 
 		return new Promise((resolve, reject) =>
-			this.db.compact(resolve, reject, startBuffer, endBuffer)
+			this.db.compact(resolve, reject, startBuffer, endBuffer, options?.bottommost === true)
 		);
 	}
 
@@ -479,7 +672,7 @@ export class Store {
 			endBuffer = Buffer.from(end.subarray(end.start, end.end));
 		}
 
-		this.db.compactSync(startBuffer, endBuffer);
+		this.db.compactSync(startBuffer, endBuffer, options?.bottommost === true);
 	}
 
 	/**
@@ -854,7 +1047,12 @@ export class Store {
 			return true;
 		}
 
+		const { compression, compressionLevel } = normalizeCompression(this.compression);
+
 		this.db.open(this.path, {
+			compression,
+			compressionLevel,
+			compressionForAllColumnFamilies: this.compressionForAllColumnFamilies,
 			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,

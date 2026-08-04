@@ -19,6 +19,7 @@ namespace rocksdb_js {
  */
 struct Transaction final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
+	static napi_value AbandonWrites(napi_env env, napi_callback_info info);
 	static napi_value Abort(napi_env env, napi_callback_info info);
 	static napi_value Commit(napi_env env, napi_callback_info info);
 	static napi_value CommitSync(napi_env env, napi_callback_info info);

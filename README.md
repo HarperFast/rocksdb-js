@@ -10,6 +10,7 @@ A Node.js binding for the RocksDB library.
 - Transaction log system for recording transaction related data
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
+- Configurable block/blob compression (LZ4, Zstd, Zlib, and more)
 - Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
@@ -43,6 +44,15 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not need to exist, but the
   parent directories do.
 - `options: object` [optional]
+  - `compression: string | { algorithm: string, level?: number }` The block/blob compression
+    algorithm for this column family. Pass an algorithm name — one of `'none'`, `'snappy'`,
+    `'zlib'`, `'bzip2'`, `'lz4'`, `'lz4hc'`, or `'zstd'` — or an object with an
+    `algorithm` and an optional `level` (forwarded to RocksDB's `compression_opts.level`; the
+    meaning is algorithm-specific). Applies to both SST data blocks and blob files (large values).
+    Defaults to `'lz4'` when the native build supports it, otherwise RocksDB's own default (Snappy
+    when linked, else no compression). See [Compression](#compression). Throws if the algorithm is
+    not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
+    the available list.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
@@ -67,7 +77,8 @@ Creates a new database instance.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
     overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
-    `Transaction` instances and the native database interface. See [Custom Store](#custom-store) for
+    `Transaction` instances and the native database interface. A store is bound to a single
+    `RocksDatabase` instance and cannot be shared between them. See [Custom Store](#custom-store) for
     more information.
   - `transactionLogMaxAgeThreshold: number` The threshold for the transaction log file's last
     modified time to be older than the retention period before it is rotated to the next sequence
@@ -107,6 +118,20 @@ console.log(db.columns); // ['default']
 
 const db2 = new RocksDatabase('path/to/db', { name: 'users' });
 console.log(db.columns); // ['default', 'users']
+```
+
+### `db.compression: { algorithm: string, level?: number }`
+
+Returns the compression currently in effect for this database's column family, read live from
+RocksDB. `algorithm` is a friendly name (e.g. `'lz4'`, `'zstd'`, `'none'`); `level` is present only
+when a non-default compression level is set. The database must be open. See
+[Compression](#compression).
+
+```typescript
+const db = RocksDatabase.open('path/to/db', {
+	compression: { algorithm: 'zstd', level: 3 },
+});
+console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
 ### `db.config(options)`
@@ -237,11 +262,20 @@ per database path can be performed at a time.
 - `options: object`
   - `start?: Key` The start key of the range to compact.
   - `end?: Key` The end key of the range to compact.
+  - `bottommost?: boolean` Also compact the bottommost level, rewriting every file in range.
+    RocksDB skips that level by default when no compaction filter is installed, and it holds most
+    of the data — so an ordinary compaction leaves it untouched. Because a changed
+    [`compression`](#compression) algorithm governs only newly written files, this is the way to
+    re-encode data that already exists. It rewrites the whole range regardless of whether RocksDB
+    considers it worthwhile, so it costs as much as the data is large. Defaults to `false`.
 
 ```typescript
 await db.compact();
 
 await db.compact({ start: 'a', end: 'z' });
+
+// Re-encode everything already on disk under the column family's current codec
+await db.compact({ bottommost: true });
 ```
 
 ### `db.compactSync(options?): void`
@@ -252,6 +286,8 @@ Synchronous version of `compact()`.
 db.compactSync();
 
 db.compactSync({ start: 'a', end: 'z' });
+
+db.compactSync({ bottommost: true });
 ```
 
 ### `db.destroy(): void`
@@ -637,6 +673,9 @@ an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column fami
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
 operations methods as the `RocksDatabase` instance plus:
 
+- `txn.abandonWrites(): void` Releases the staged writes' verification-table write intents without
+  closing the transaction, and bars any further writes or commit. Reads (including read-your-own-writes)
+  keep working until the transaction is aborted.
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
@@ -649,6 +688,22 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
   a timestamp, it will set the timestamp to the current time. The value must be in seconds with
   higher precision in the decimal.
+
+#### `txn.abandonWrites(): void`
+
+Releases the staged writes' verification-table (VT) write intents without closing the transaction,
+and bars any further writes or commit (`commit()`/`commitSync()`/`put()`/`remove()`, including
+database-context writes via `{ transaction: txn }`, all reject once called). Reads — including
+read-your-own-writes — keep working until the transaction is aborted. Idempotent, and a no-op after
+`abort()`.
+
+Scope is VT intents only: RocksDB's own transaction locks (pessimistic mode) are still held until
+the transaction is aborted.
+
+This is for a transaction kept open only for its outstanding read iterators after its writes were
+already committed elsewhere (e.g. replayed onto another transaction) — it lets the intents release
+early so other writers' coordinated-retry commits stop parking on them, instead of waiting for the
+handle's eventual `abort()`.
 
 #### `txn.abort(): void`
 
@@ -910,6 +965,110 @@ An object is a record with the following properties:
 - `percentile99: number` A double containing the 99th percentile value.
 - `standardDeviation: number` A double containing the standard deviation.
 - `sum: number` An unsigned 64-bit integer containing the sum of all values.
+
+## Compression
+
+RocksDB compresses data blocks in SST files (and, in `rocksdb-js`, blob files that hold large
+values) using a configurable algorithm. Compression trades CPU for disk space and, because it
+reduces bytes read from disk, often improves read throughput on I/O-bound workloads.
+
+The following algorithm names are recognized. Which ones are actually usable depends on the native
+build — see **Availability** below.
+
+| Name     | Notes                                                                         |
+| -------- | ----------------------------------------------------------------------------- |
+| `none`   | No compression. Always available.                                             |
+| `snappy` | Fast, modest ratio. RocksDB's own stock default when linked.                  |
+| `zlib`   | Higher ratio, slower. Supports `level` (see zlib's manual).                   |
+| `bzip2`  | High ratio, slow; rarely worth it over zstd.                                  |
+| `lz4`    | Very fast, modest ratio. `rocksdb-js` default when available.                 |
+| `lz4hc`  | LZ4 high-compression variant: better ratio, slower writes, same fast reads.   |
+| `zstd`   | Best ratio-for-speed of the set; supports `level` (higher = smaller, slower). |
+
+Set the algorithm per column family with the `compression` option when opening a database:
+
+```typescript
+// Algorithm name
+const db = RocksDatabase.open('/path/to/db', { compression: 'zstd' });
+
+// Or an object with an explicit level
+const db2 = RocksDatabase.open('/path/to/db2', {
+	compression: { algorithm: 'zstd', level: 3 },
+});
+
+// Disable compression entirely
+const db3 = RocksDatabase.open('/path/to/db3', { compression: 'none' });
+```
+
+**Default.** When `compression` is omitted, `rocksdb-js` defaults to **LZ4** if the native build
+supports it. LZ4 is fast with a modest compression ratio, making it a good general-purpose default.
+If LZ4 is not compiled in, the default falls back to RocksDB's own default — Snappy when it is
+linked, otherwise no compression. (RocksDB's stock default is Snappy; `rocksdb-js` overrides it to
+LZ4.) Read the algorithm actually in effect with the `db.compression` getter.
+
+**Availability.** The set of algorithms depends on which compression libraries the native binding
+was compiled against, so it varies by build. Always check
+[`supportedCompression`](#supportedcompression) at runtime — opening with an unavailable algorithm
+throws. `'none'` is always available.
+
+**Changing the codec of data already written.** Setting `compression` affects files written from
+that point on. Existing SST and blob files keep the codec they were written with until something
+rewrites them. An ordinary `compact()` can re-encode non-bottommost levels, but RocksDB leaves the
+bottommost level alone unless a compaction filter is installed — and that is where most of the data
+sits, so a plain compaction will not rewrite all existing data. Use
+[`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to force the rewrite, once per
+column family you want migrated. Note also that omitting `compression` on a column family that
+already exists **inherits** its current codec rather than applying the default — the default
+applies only when the family is created.
+
+**Adopting a codec across a whole database.** Compression is chosen per column family, and RocksDB
+opens every family of a database in one call — so by default the families you did not name keep
+their persisted algorithm. If your first open targets some other family (a catalog, say), the rest
+are already open at their old algorithm before you can ask for a new one, and a family's compression
+cannot be changed while it is open. Pass `compressionForAllColumnFamilies: true` to apply the
+requested algorithm to all of them instead:
+
+```typescript
+// Every column family in this database adopts lz4, not just 'catalog'
+const db = RocksDatabase.open('/path/to/db', {
+	name: 'catalog',
+	compression: 'lz4',
+	compressionForAllColumnFamilies: true,
+});
+```
+
+It requires an explicit `compression`, and only takes effect on the open that creates the database
+handle — later opens of the same path reuse that handle. As always the algorithm governs newly
+written files; use [`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to rewrite what
+is already there.
+
+**Scope and mutability.** Compression is genuinely **per-column-family**. Each `RocksDatabase`
+targets one column family (`name`), and its `compression` applies only to that CF — opening one CF
+never changes another's algorithm, regardless of open order. A column family keeps its own
+compression across a close/reopen (a plain reopen inherits it); the algorithm is dynamically
+changeable, so an explicit change governs files written afterward while existing SST/blob files keep
+their original compression until rewritten by compaction. It also applies to blob files (large
+values), whose compression otherwise defaults to none.
+
+Because a column family's compression is fixed while it is open, if the same column family is opened
+a second time in the same process (another `RocksDatabase` on the same path/`name`, including from a
+`worker_thread`) with an **explicitly different** algorithm or level, the second open **throws** — a
+plain reopen (no `compression`) instead inherits the live setting.
+
+### `supportedCompression`
+
+A module-level, frozen array of the compression algorithm names compiled into the loaded native
+binding. The set is fixed for a given binary. `'none'` is always present.
+
+```typescript
+import { supportedCompression } from '@harperfast/rocksdb-js';
+
+console.log(supportedCompression); // e.g. ['none', 'snappy', 'lz4', 'zstd']
+
+if (supportedCompression.includes('zstd')) {
+	// safe to open with { compression: 'zstd' }
+}
+```
 
 ## Exclusive Locking
 
@@ -1567,7 +1726,9 @@ live database directory would write backup files on top of RocksDB's own files. 
 before anything is written.
 
 ```typescript
-const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' });
+const id = await db.backup('/path/to/backups', {
+	metadata: 'nightly-2026-06-04',
+});
 ```
 
 `BackupOptions`:
@@ -1617,7 +1778,9 @@ await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar')));
 // Restore: `tar -xf backup.tar -C /restored`, then open '/restored'.
 
 // Or gzip it (`tar -xzf backup.tar.gz` to restore):
-await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), { gzip: true });
+await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), {
+	gzip: true,
+});
 ```
 
 `BackupStreamOptions`:
@@ -1766,6 +1929,13 @@ const db = RocksDatabase.open(myStore);
 await db.put('foo', 'bar');
 console.log(await db.get('foo'));
 ```
+
+> [!NOTE]
+> A `Store` is bound to a single `RocksDatabase` instance. Passing a store that another
+> `RocksDatabase` already owns throws `Store is already in use by another RocksDatabase instance`.
+> The claim is durable across `db.close()`, so reopening the original owner does not release it.
+> (Sharing a store with the owning database's `Transaction` instances is expected and handled
+> internally.)
 
 > [!IMPORTANT]
 > If your custom store overrides `putSync()` without calling `super.putSync()` and it performs its
