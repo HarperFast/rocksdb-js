@@ -28,6 +28,17 @@ describe('Block Cache', () => {
 			expect(db.get('foo')).toBe('bar');
 		}));
 
+	it('should apply noBlockCache to a late-created column family', () =>
+		dbRunner({ dbOptions: [{}, { name: 'late', noBlockCache: true }] }, async (_, { db }) => {
+			await db.put('foo', 'bar');
+			await db.flush();
+
+			const firstRead = db.get('foo');
+			expect(firstRead).toBeInstanceOf(Promise);
+			expect(await firstRead).toBe('bar');
+			expect(db.get('foo')).toBeInstanceOf(Promise);
+		}));
+
 	it('should change the block cache size', () =>
 		dbRunner({ dbOptions: [{ noBlockCache: true }], skipOpen: true }, async ({ db }) => {
 			RocksDatabase.config({ blockCacheSize: 1024 * 1024 });
