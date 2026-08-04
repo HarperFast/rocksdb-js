@@ -246,6 +246,10 @@ void TransactionHandle::lockVTSlot(
 		// about to).
 		return;
 	}
+	// Allocate both paired entries before installing the intent. Once the VT
+	// increments the tracker holder count, both push_backs are non-throwing.
+	lockedVTSlots.reserve(lockedVTSlots.size() + 1);
+	heldTrackers.reserve(heldTrackers.size() + 1);
 
 	// Register a write intent on the slot. lockSlotForWrite installs a new
 	// LockTracker or joins an existing one as an additional holder (when another
