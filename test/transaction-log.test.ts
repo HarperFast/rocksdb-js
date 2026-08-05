@@ -1366,6 +1366,25 @@ describe('Transaction Log', () => {
 			}));
 	});
 
+	// Drives the iterator by hand so a throw doesn't end the walk: a caller that wants the entries
+	// past a break has to be able to keep going. Bounded so a reader that re-throws at the same
+	// position (the pre-resync behavior) fails the test instead of hanging.
+	function drainPastCorruption(iterable: Iterable<any>, maxSteps = 100) {
+		const iterator = iterable[Symbol.iterator]();
+		const entries: any[] = [];
+		const errors: any[] = [];
+		for (let step = 0; step < maxSteps; step++) {
+			try {
+				const { value, done } = iterator.next();
+				if (done) return { entries, errors };
+				entries.push(value);
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		throw new Error(`iterator did not finish within ${maxSteps} steps`);
+	}
+
 	describe('corruption handling', () => {
 		// A torn/corrupt entry can declare a length far larger than the bytes
 		// actually present (e.g. a partial write that left a header pointing past
@@ -1513,30 +1532,9 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 			}));
 
-		// Drives the iterator by hand so a throw doesn't end the walk: a caller that wants the
-		// entries past a break has to be able to keep going. Bounded so a reader that re-throws
-		// at the same position (the pre-resync behavior) fails the test instead of hanging.
-		function drainPastCorruption(iterable: Iterable<{ data: Buffer }>, maxSteps = 100) {
-			const iterator = iterable[Symbol.iterator]();
-			const entries: { data: Buffer }[] = [];
-			const errors: CorruptFrameError[] = [];
-			for (let step = 0; step < maxSteps; step++) {
-				try {
-					const { value, done } = iterator.next();
-					if (done) return { entries, errors };
-					entries.push(value);
-				} catch (error) {
-					errors.push(error as CorruptFrameError);
-				}
-			}
-			throw new Error(`iterator did not finish within ${maxSteps} steps`);
-		}
-
-		// A mid-log break — a partial append (ENOSPC/EDQUOT) that the process survived, so valid
-		// entries were appended after it. Those entries are intact and must stay reachable: the
-		// break costs the one broken frame, not the remainder of the log. Regression for
-		// HarperFast/harper#2016 and #2063, where a reader that stopped at the break re-read from
-		// the same resume cursor on every drain, so nothing after it was ever delivered again.
+		// A mid-log break — a partial append the process survived, so valid entries were appended
+		// after it. Those stay reachable: the break costs one frame, not the rest of the log
+		// (HarperFast/harper#2016, #2063).
 		it('query() resyncs past a mid-log corrupt frame and still yields the entries after it', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
@@ -1589,9 +1587,8 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		// A torn tail has nothing valid behind it, so there is nothing to resync to. The reader
-		// must still not re-throw at the same position forever: it reports once and then reads as
-		// end-of-log, which is what open-time recovery would have truncated to anyway.
+		// Nothing valid follows a torn tail, so there is nothing to resync to — but the reader must
+		// still not re-throw at the same position forever.
 		it('query() reports a torn tail once and then reads as end-of-log', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
@@ -1629,6 +1626,126 @@ describe('Transaction Log', () => {
 					expect(errors[0].unreadableBytes).toBe(0);
 					expect(errors[0].message).not.toMatch(/valid framing resumes at/);
 					expect(entries.length).toBe(2);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+			}));
+	});
+
+	// The edges the synthetic mid-log case doesn't reach: a run shorter than RESYNC_MIN_FRAMES
+	// (recovered only by landing exactly on the written extent), and the readUncommitted bound —
+	// the boot-replay path, where the read limit is the pre-extended mmap and scanning against it
+	// would find no resume point at all.
+	describe('corrupt-frame resync bounds', () => {
+		async function logWithBrokenSecondEntry(db: RocksDatabase, entryCount: number) {
+			const log = db.useLog('foo');
+			const value = Buffer.alloc(10, 'a');
+			const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
+			for (let i = 0; i < entryCount; i++) {
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+			}
+			// prime the query path so _lastCommittedPosition / _logBuffers init
+			expect(Array.from(log.query({ start: 0 })).length).toBe(entryCount);
+
+			const real = log._getMemoryMapOfFile(1)!;
+			// mimic the mapped buffer: real data followed by pre-extended zero fill
+			const copyBuffer = Buffer.from(new ArrayBuffer(real.length + 4096));
+			real.copy(copyBuffer);
+			const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
+			copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
+
+			log._logBuffers.clear();
+			(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+			const realDescriptor = Object.getOwnPropertyDescriptor(
+				Object.getPrototypeOf(log),
+				'_getMemoryMapOfFile'
+			)!;
+			Object.defineProperty(log, '_getMemoryMapOfFile', {
+				value: () => copyBuffer,
+				configurable: true,
+				writable: true,
+			});
+			return {
+				log,
+				secondEntryStart,
+				entryStride,
+				restore: () => Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor),
+			};
+		}
+
+		it('resyncs a run shorter than the minimum frame count by landing on the written extent', () =>
+			dbRunner(async ({ db }) => {
+				// 4 entries: only 2 valid frames follow the break, far below RESYNC_MIN_FRAMES
+				const { log, secondEntryStart, entryStride, restore } = await logWithBrokenSecondEntry(
+					db,
+					4
+				);
+				try {
+					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
+					expect(errors.length).toBe(1);
+					expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
+					expect(entries.length).toBe(3);
+				} finally {
+					restore();
+				}
+			}));
+
+		it('resyncs on the readUncommitted path, whose read limit is the pre-extended map', () =>
+			dbRunner(async ({ db }) => {
+				const { log, secondEntryStart, entryStride, restore } = await logWithBrokenSecondEntry(
+					db,
+					4
+				);
+				try {
+					const { entries, errors } = drainPastCorruption(
+						log.query({ start: 0, readUncommitted: true })
+					);
+					expect(errors.length).toBe(1);
+					expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
+					expect(entries.length).toBe(3);
+				} finally {
+					restore();
+				}
+			}));
+
+		// A committed size that over-reports the mapped buffer must still terminate: leaving
+		// position < size would re-enter the read loop and throw off the end of the buffer forever.
+		it('terminates a torn tail even when committed size over-reports the buffer', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				const committedWord = new Uint32Array(
+					new Float64Array([log._lastCommittedPosition![0]]).buffer
+				);
+				const real = log._getMemoryMapOfFile(1)!;
+				const truncatedLength = committedWord[0] - 5;
+				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				real.copy(copyBuffer, 0, 0, truncatedLength);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					const { errors } = drainPastCorruption(log.query({ start: 0 }));
+					expect(errors.length).toBeGreaterThanOrEqual(1);
+					expect(errors[0].resyncPosition).toBeUndefined();
 				} finally {
 					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
 				}
