@@ -55,6 +55,38 @@ static void applyCompression(
 		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
+/**
+ * Resolves `max_write_buffer_size_to_maintain` for a column family.
+ *
+ * Retained memtable history is memory RocksDB has already flushed but deliberately keeps live for
+ * transaction conflict checking, and it is only trimmable back DOWN TO this target — never below.
+ * That memory is still charged to the process-wide WriteBufferManager, so a target the manager's
+ * budget cannot hold is not backpressure, it is a deadlock: the budget fills with history that will
+ * never be released, and a manager built with `allowStall` then stalls every write to that database
+ * forever. Observed as a receiver wedging partway through a Harper base copy — the writes neither
+ * land nor fail (HarperFast/harper-pro cluster shard 5, 2026-08-05).
+ *
+ * So the DERIVED default (`-1` → `maxWriteBufferNumber * writeBufferSize`, 256MB at our defaults)
+ * is dropped to 0 whenever a stalling manager is configured, since nothing guarantees a caller's
+ * budget is anywhere near that. This is exactly what every named column family ran with before
+ * these options reached late-created families, so it restores the long-shipping behavior rather
+ * than inventing one. Conflict checking then falls back to reporting "cannot determine" (RocksDB
+ * `kTryAgain`) more often, which callers already retry.
+ *
+ * An EXPLICIT caller value is honored untouched: a caller naming a number has taken on the job of
+ * sizing it against its own manager budget and column-family count.
+ */
+static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
+	if (options.maxWriteBufferSizeToMaintain >= 0) {
+		return options.maxWriteBufferSizeToMaintain;
+	}
+	DBSettings& settings = DBSettings::getInstance();
+	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
+		return 0;
+	}
+	return options.maxWriteBufferSizeToMaintain;
+}
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	rocksdb::ColumnFamilyOptions cfOptions
@@ -71,7 +103,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
