@@ -58,23 +58,20 @@ static void applyCompression(
 /**
  * Resolves `max_write_buffer_size_to_maintain` for a column family.
  *
- * Retained memtable history is memory RocksDB has already flushed but deliberately keeps live for
- * transaction conflict checking, and it is only trimmable back DOWN TO this target — never below.
- * That memory is still charged to the process-wide WriteBufferManager, so a target the manager's
- * budget cannot hold is not backpressure, it is a deadlock: the budget fills with history that will
- * never be released, and a manager built with `allowStall` then stalls every write to that database
- * forever. Observed as a receiver wedging partway through a Harper base copy — the writes neither
- * land nor fail (HarperFast/harper-pro cluster shard 5, 2026-08-05).
+ * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
+ * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
+ * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
+ * is never released, and a manager built with `allowStall` stalls every write to the database
+ * permanently.
  *
- * So the DERIVED default (`-1` → `maxWriteBufferNumber * writeBufferSize`, 256MB at our defaults)
- * is dropped to 0 whenever a stalling manager is configured, since nothing guarantees a caller's
- * budget is anywhere near that. This is exactly what every named column family ran with before
- * these options reached late-created families, so it restores the long-shipping behavior rather
- * than inventing one. Conflict checking then falls back to reporting "cannot determine" (RocksDB
- * `kTryAgain`) more often, which callers already retry.
+ * The derived default (`-1` → `maxWriteBufferNumber * writeBufferSize`) is dropped to 0 under any
+ * stalling manager. Deliberately coarse: the safe per-family bound is the budget divided by the
+ * live column-family count, which is not knowable here, so a comfortably-sized budget loses its
+ * history window too. The cost is that conflict checking reports "cannot determine"
+ * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
  *
- * An EXPLICIT caller value is honored untouched: a caller naming a number has taken on the job of
- * sizing it against its own manager budget and column-family count.
+ * An explicit caller value is honored untouched — sizing it against the budget and the
+ * column-family count is then the caller's job.
  */
 static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
 	if (options.maxWriteBufferSizeToMaintain >= 0) {
