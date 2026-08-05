@@ -40,6 +40,12 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY 1
+/**
+ * `bytesLanded` value meaning the platform could not tell us how much of a failed append reached
+ * the file. The caller must then retire the file rather than erase a range it cannot bound.
+ */
+#define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
+
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
@@ -417,6 +423,13 @@ struct TransactionLogFile final {
 	 * that each test starts from a known state. Test-only.
 	 */
 	static void resetAdviseColdSupportForTests();
+
+	/**
+	 * Overrides the `bytesLanded` a failed append reports, so the unknown-extent and
+	 * over-report branches — reachable only from the Windows backend in production —
+	 * can be exercised on POSIX. INT64_MIN disables the override. Test-only.
+	 */
+	static std::atomic<int64_t> forcedBytesLandedForTests;
 #endif
 
 private:
@@ -449,10 +462,12 @@ private:
 	 * local state and leaves the array untouched. Callers must treat it as
 	 * consumed in either case.
 	 *
-	 * @param bytesLanded Set to the number of bytes that reached the file. On a
+	 * @param bytesLanded Set to the number of bytes that reached the file, or to
+	 *   TRANSACTION_LOG_BYTES_LANDED_UNKNOWN when the platform cannot report it. On a
 	 *   hard error (return -1) those bytes are still on disk and the caller must
 	 *   erase them: an append that stops part-way through an entry leaves a
-	 *   framing break that hides everything written after it.
+	 *   framing break that hides everything written after it. An unknown extent
+	 *   cannot be erased safely, so the caller retires the file instead.
 	 */
 	int64_t writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded);
 

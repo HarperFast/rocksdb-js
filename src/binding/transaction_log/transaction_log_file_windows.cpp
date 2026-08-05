@@ -412,11 +412,12 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 				std::string errorMessage = getWindowsErrorMessage(error);
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
 					this, error, errorMessage.c_str(), i, iovcnt);
-				// Take the landed count from the file pointer rather than
-				// lpNumberOfBytesWritten, which WriteFile does not promise to set on
-				// failure: the caller erases exactly this range, so under-reporting
-				// would strand the bytes it missed. The batch started by seeking to
-				// `size`, so the distance from there is what reached the file.
+				// The batch seeks to `size` before writing, so the distance from there
+				// to the file pointer is what reached the file. WriteFile does not
+				// promise to set lpNumberOfBytesWritten on failure, and the caller
+				// erases exactly the range reported here — so if the pointer cannot be
+				// read either, report the extent as unknown rather than guess with a
+				// count that may be short.
 				LARGE_INTEGER zero, current;
 				zero.QuadPart = 0;
 				if (::SetFilePointerEx(this->fileHandle, zero, &current, FILE_CURRENT)) {
@@ -424,7 +425,7 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 						static_cast<int64_t>(this->size.load(std::memory_order_relaxed));
 					bytesLanded = landed > 0 ? landed : 0;
 				} else {
-					bytesLanded = totalBytesWritten + bytesWritten;
+					bytesLanded = TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
 				}
 				return -1;
 			}

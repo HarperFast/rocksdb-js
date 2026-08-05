@@ -23,6 +23,8 @@ std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
 std::atomic<int64_t> MemoryMap::liveCount{0};
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
+std::atomic<int64_t> TransactionLogFile::forcedBytesLandedForTests{INT64_MIN};
+
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
 }
@@ -479,6 +481,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	iovec* iovecs = heapIovecs ? heapIovecs.get() : stackIovecs;
 	size_t iovecsIndex = 0;
 	uint32_t startEntryIndex = batch.currentEntryIndex;
+	uint64_t attemptedBytes = 0;
 
 	// write the transaction headers and entry data to the iovecs
 	for (uint32_t i = 0; i < numEntriesToWrite; ++i) {
@@ -497,6 +500,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 
 		// add the entry data to the iovecs
 		iovecs[iovecsIndex++] = {data, entry->size};
+		attemptedBytes += entry->size;
 
 		++batch.currentEntryIndex;
 	}
@@ -504,6 +508,12 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	int64_t bytesLanded = 0;
 	int64_t bytesWritten = this->writeBatchToFile(iovecs, static_cast<int>(iovecsIndex), bytesLanded);
 	if (bytesWritten < 0) {
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+		int64_t forcedBytesLanded = forcedBytesLandedForTests.load(std::memory_order_relaxed);
+		if (forcedBytesLanded != INT64_MIN) {
+			bytesLanded = forcedBytesLanded;
+		}
+#endif
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s (%lld byte(s) landed)\n",
 			this, this->path.string().c_str(), static_cast<long long>(bytesLanded));
 
@@ -511,20 +521,36 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		// leave the batch claiming entries that never reached disk.
 		batch.currentEntryIndex = startEntryIndex;
 
+		// Nothing can have landed beyond what we handed the OS, so a larger figure
+		// means the platform mis-reported and the extent is as good as unknown.
+		bool extentUnknown = bytesLanded < 0 || bytesLanded > static_cast<int64_t>(attemptedBytes);
+
 		// The fd is O_APPEND, so a landed partial entry is not a torn tail the next
 		// append overwrites — that append lands after it, and recoverTail() then has
 		// to leave the break in place because valid entries follow it.
-		uint32_t committedSize = this->size.load(std::memory_order_relaxed);
-		if (bytesLanded > 0 && !this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {
-			// Retire the file rather than append past bytes we could not remove.
-			this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+		if (extentUnknown || bytesLanded > 0) {
+			uint32_t committedSize = this->size.load(std::memory_order_relaxed);
 
-			std::ostringstream msg;
-			msg << "Transaction log " << this->path.string() << " kept " << bytesLanded
-				<< " orphaned byte(s) from a failed append at offset " << committedSize
-				<< " and could not remove them; no further entries will be written to this file.";
-			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 WARNING: %s\n", this, msg.str().c_str());
-			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+			// Retire up front and lift it only once the erase has actually succeeded:
+			// the Windows erase allocates, so every way out of it short of success —
+			// including a throw — has to leave this file closed to further appends.
+			this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+			if (!extentUnknown &&
+				this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {
+				this->appendBoundaryLost.store(false, std::memory_order_relaxed);
+			} else {
+				std::ostringstream msg;
+				msg << "Transaction log " << this->path.string() << " kept ";
+				if (extentUnknown) {
+					msg << "an unknown number of";
+				} else {
+					msg << bytesLanded;
+				}
+				msg << " orphaned byte(s) from a failed append at offset " << committedSize
+					<< " and could not remove them; no further entries will be written to this file.";
+				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+			}
 		}
 
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());
