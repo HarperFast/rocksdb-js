@@ -432,8 +432,13 @@ private:
 	 * POSIX advances partially-written iovecs in place; Windows writes from
 	 * local state and leaves the array untouched. Callers must treat it as
 	 * consumed in either case.
+	 *
+	 * @param bytesLanded Set to the number of bytes that reached the file. On a
+	 *   hard error (return -1) those bytes are still on disk and the caller must
+	 *   erase them: an append that stops part-way through an entry leaves a
+	 *   framing break that hides everything written after it.
 	 */
-	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
+	int64_t writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded);
 
 	/**
 	 * Platform specific function that truncates the file to `newSize` bytes and

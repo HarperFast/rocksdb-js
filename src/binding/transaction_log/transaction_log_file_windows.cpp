@@ -374,7 +374,9 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded) {
+	bytesLanded = 0;
+
 	if (iovcnt <= 0) {
 		return 0;
 	}
@@ -412,6 +414,8 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 				std::string errorMessage = getWindowsErrorMessage(error);
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
 					this, error, errorMessage.c_str(), i, iovcnt);
+				// WriteFile reports its partial progress even when it fails.
+				bytesLanded = totalBytesWritten + bytesWritten;
 				return -1;
 			}
 
@@ -419,6 +423,7 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 				// shouldn't happen; bail to avoid an infinite loop
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile returned 0 bytes (iovec %d/%d, %zu remaining)\n",
 					this, i, iovcnt, remaining);
+				bytesLanded = totalBytesWritten;
 				return -1;
 			}
 

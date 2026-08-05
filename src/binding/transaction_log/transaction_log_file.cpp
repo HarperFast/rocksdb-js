@@ -100,12 +100,19 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		// file is empty, initialize it
 		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s (timestamp=%f)\n", this, this->path.string().c_str(), latestTimestamp);
 		writeUint32BE(buffer, TRANSACTION_LOG_TOKEN);
-		this->writeToFile(buffer, 4);
-		writeUint8(buffer, this->version);
-		this->writeToFile(buffer, 1);
+		writeUint8(buffer + 4, this->version);
 		this->timestamp = latestTimestamp;
-		writeDoubleBE(buffer, this->timestamp);
-		this->writeToFile(buffer, 8);
+		writeDoubleBE(buffer + TRANSACTION_LOG_FILE_TIMESTAMP_POSITION, this->timestamp);
+
+		// One checked write: a header that only partly lands (a full disk, a short
+		// write) would still leave `size` claiming a full header, so the first
+		// append would be framed from the wrong offset for the life of the file.
+		int64_t headerBytes = this->writeToFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE);
+		if (headerBytes != static_cast<int64_t>(TRANSACTION_LOG_FILE_HEADER_SIZE)) {
+			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to write file header: %s (wrote=%lld)\n",
+				this, this->path.string().c_str(), static_cast<long long>(headerBytes));
+			throw rocksdb_js::DBException("Failed to write transaction log file header: " + this->path.string());
+		}
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
@@ -457,6 +464,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	auto heapIovecs = numEntriesToWrite > 8 ? std::make_unique<iovec[]>(numEntriesToWrite) : nullptr;
 	iovec* iovecs = heapIovecs ? heapIovecs.get() : stackIovecs;
 	size_t iovecsIndex = 0;
+	uint32_t startEntryIndex = batch.currentEntryIndex;
 
 	// write the transaction headers and entry data to the iovecs
 	for (uint32_t i = 0; i < numEntriesToWrite; ++i) {
@@ -479,9 +487,33 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		++batch.currentEntryIndex;
 	}
 
-	int64_t bytesWritten = this->writeBatchToFile(iovecs, static_cast<int>(iovecsIndex));
+	int64_t bytesLanded = 0;
+	int64_t bytesWritten = this->writeBatchToFile(iovecs, static_cast<int>(iovecsIndex), bytesLanded);
 	if (bytesWritten < 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str());
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s (%lld byte(s) landed)\n",
+			this, this->path.string().c_str(), static_cast<long long>(bytesLanded));
+
+		// Whatever reached the file is a partial entry that nothing acknowledged
+		// (this throws), and `size` never advanced over it. Left in place it is a
+		// permanent framing break: the fd is O_APPEND, so the next successful
+		// append lands *after* these bytes, and every reader stops at the break —
+		// which recoverTail() then refuses to repair, because valid entries follow
+		// it. Erasing restores the invariant that the log ends on an entry boundary.
+		uint32_t committedSize = this->size.load(std::memory_order_relaxed);
+		if (bytesLanded > 0 && !this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {
+			std::ostringstream msg;
+			msg << "Transaction log " << this->path.string() << " kept " << bytesLanded
+				<< " orphaned byte(s) from a failed append at offset " << committedSize
+				<< "; the file now has a framing break and entries written after it will be unreachable "
+					"until it is repaired.";
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 WARNING: %s\n", this, msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		}
+
+		// No entry of this batch is on disk, so the batch is exactly as the caller
+		// handed it over.
+		batch.currentEntryIndex = startEntryIndex;
+
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
