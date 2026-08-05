@@ -109,11 +109,9 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		this->timestamp = latestTimestamp;
 		writeDoubleBE(buffer + TRANSACTION_LOG_FILE_TIMESTAMP_POSITION, this->timestamp);
 
-		// One write, checked: three unchecked writes could leave a header that only
-		// partly landed while `size` still claimed a full one, framing every later
-		// append from the wrong offset. Discard the file if it does land short —
-		// a size in (0, HEADER_SIZE) fails the "too small" check below on every
-		// future open, and freeing disk space would not heal it.
+		// A header that lands short leaves a size in (0, HEADER_SIZE), which fails
+		// the "too small" check below on every future open — freeing disk space
+		// would not heal it — so discard the file instead.
 		int64_t headerBytes = this->writeToFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE);
 		if (headerBytes != static_cast<int64_t>(TRANSACTION_LOG_FILE_HEADER_SIZE)) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to write file header: %s (wrote=%lld)\n",
@@ -431,10 +429,8 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	uint32_t totalSizeToWrite = 0;
 
 	if (this->appendBoundaryLost.load(std::memory_order_relaxed)) {
-		// Bytes we could not erase sit past `size`; appending here would put valid
-		// entries on the far side of them. Write nothing, which the store reads as
-		// "no progress" and answers by rotating to the next file — leaving these
-		// bytes as a trailing partial that recoverTail() can still truncate.
+		// Writing nothing is how this file defers to the next one: the store reads
+		// an unchanged size as "no progress" and rotates.
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Append boundary lost, deferring to next file: %s\n",
 			this, this->path.string().c_str());
 		return;
@@ -511,11 +507,13 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s (%lld byte(s) landed)\n",
 			this, this->path.string().c_str(), static_cast<long long>(bytesLanded));
 
-		// Anything that reached the file is a partial entry nothing acknowledged,
-		// and `size` never advanced over it. Left in place it is a permanent
-		// framing break: the fd is O_APPEND, so the next successful append lands
-		// *after* these bytes, and recoverTail() then refuses to repair the break
-		// because valid entries follow it.
+		// Restore first: the erase below allocates, and a throw from there must not
+		// leave the batch claiming entries that never reached disk.
+		batch.currentEntryIndex = startEntryIndex;
+
+		// The fd is O_APPEND, so a landed partial entry is not a torn tail the next
+		// append overwrites — that append lands after it, and recoverTail() then has
+		// to leave the break in place because valid entries follow it.
 		uint32_t committedSize = this->size.load(std::memory_order_relaxed);
 		if (bytesLanded > 0 && !this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {
 			// Retire the file rather than append past bytes we could not remove.
@@ -528,8 +526,6 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 WARNING: %s\n", this, msg.str().c_str());
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 		}
-
-		batch.currentEntryIndex = startEntryIndex;
 
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());
 	}
