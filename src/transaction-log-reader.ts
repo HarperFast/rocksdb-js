@@ -60,13 +60,6 @@ export class CorruptFrameError extends RangeError {
 }
 
 /**
- * How far past a break to look for a resume point. A partial append leaves one interrupted batch,
- * so a real resume point is close; bounding the search keeps the cost predictable and keeps the
- * number of candidate offsets — and so the odds of accepting a false one — small.
- */
-const MAX_RESYNC_SCAN_BYTES = 1 << 20;
-
-/**
  * Whether a complete, in-bounds frame begins at `pos`. The only sane bound on an entry's length is
  * the written extent: a single entry can legitimately exceed the rotation threshold (the first
  * entry written to a fresh file is always written in full). A zero timestamp is the
@@ -102,8 +95,7 @@ function frameFits(dataView: DataView, pos: number, dataEnd: number): boolean {
  * the same question at open time but keeps only the yes/no, discarding the offset.
  */
 function findResyncPosition(dataView: DataView, from: number, dataEnd: number): number | undefined {
-	const lastStart =
-		Math.min(dataEnd, from + MAX_RESYNC_SCAN_BYTES) - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+	const lastStart = dataEnd - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 	for (let start = from; start <= lastStart; start++) {
 		let pos = start;
 		let frames = 0;
@@ -116,15 +108,25 @@ function findResyncPosition(dataView: DataView, from: number, dataEnd: number): 
 	}
 }
 
-/** Builds the report for a broken frame, with the offset iteration should continue from. */
+/**
+ * Builds the report for a broken frame, with the offset iteration should continue from. Resolves
+ * the written extent here rather than per frame: `getLogFileSize` crosses into native and takes
+ * the store mutex, which a healthy read must never pay.
+ */
 function corruptFrame(
 	message: string,
+	transactionLog: TransactionLog,
 	dataView: DataView,
 	logBuffer: LogBuffer,
 	position: number,
-	dataEnd: number,
-	size: number
+	limit: number,
+	size: number,
+	readUncommitted: boolean
 ): { error: CorruptFrameError; nextPosition: number } {
+	// An uncommitted read's `limit` is the pre-extended map, so ask the file for its written extent;
+	// a committed read is already bounded at the watermark.
+	const writtenExtent = readUncommitted ? transactionLog.getLogFileSize(logBuffer.logId) : 0;
+	const dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : limit;
 	const resyncPosition = findResyncPosition(dataView, position + 1, dataEnd);
 	return {
 		error: new CorruptFrameError(message, logBuffer.logId, position, resyncPosition),
@@ -309,23 +311,18 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					// The throw leaves `position` at the resume point, so a broken frame ends the
 					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
 					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
-					// A resync scan must be bounded by written bytes. An uncommitted read is bounded
-					// by the mapped capacity, which runs far past the data, so ask the file for its
-					// extent instead; a committed read is already bounded at the watermark.
-					const writtenExtent = readUncommitted
-						? transactionLog.getLogFileSize(logBuffer!.logId)
-						: 0;
-					const dataEnd = writtenExtent > 0 ? Math.min(logBuffer!.length, writtenExtent) : limit;
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
 								logBuffer!.logId
 							} (available=${limit - position})`,
+							transactionLog,
 							dataView,
 							logBuffer!,
 							position,
-							dataEnd,
-							size
+							limit,
+							size,
+							!!readUncommitted
 						);
 						position = broken.nextPosition;
 						throw broken.error;
@@ -336,11 +333,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							`Corrupt transaction log entry at position ${position.toString(16)} of log ${
 								logBuffer!.logId
 							}: declared length ${length} overruns the log (limit=${limit})`,
+							transactionLog,
 							dataView,
 							logBuffer!,
 							position,
-							dataEnd,
-							size
+							limit,
+							size,
+							!!readUncommitted
 						);
 						position = broken.nextPosition;
 						throw broken.error;

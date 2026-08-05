@@ -345,6 +345,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
 
+    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
+    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
+    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
+    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
+    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
+    Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
+    a per-frame call would tax every healthy read.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
