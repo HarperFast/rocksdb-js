@@ -25,6 +25,15 @@ extern "C" ssize_t ROCKSDB_JS_WRITEV(int, const struct iovec*, int);
 #define ROCKSDB_JS_WRITEV ::writev
 #endif
 
+// Hook point for unit tests: compile with -DROCKSDB_JS_WRITE=my_mock_fn to
+// inject a short/failed write for the appending writeToFile() path (the file
+// header). Same signature as ::write. Production builds call ::write directly.
+#ifdef ROCKSDB_JS_WRITE
+extern "C" ssize_t ROCKSDB_JS_WRITE(int, const void*, size_t);
+#else
+#define ROCKSDB_JS_WRITE ::write
+#endif
+
 // Hook point for unit tests: compile with -DROCKSDB_JS_MADVISE=my_mock_fn to
 // capture/intercept the madvise() call made by adviseCold() (e.g. to assert it
 // is scoped to the file-backed range, or to simulate an old kernel returning
@@ -315,9 +324,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return static_cast<int64_t>(::read(this->fd, buffer, size));
 }
 
-bool TransactionLogFile::removeFile() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
+bool TransactionLogFile::removeFileLocked() {
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
@@ -404,7 +411,7 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	if (offset >= 0) {
 		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
 	}
-	return static_cast<int64_t>(::write(this->fd, buffer, size));
+	return static_cast<int64_t>(ROCKSDB_JS_WRITE(this->fd, buffer, size));
 }
 
 bool TransactionLogFile::truncateFile(uint32_t newSize) {

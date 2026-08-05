@@ -40,6 +40,17 @@ static size_t g_writev_max_bytes_per_call = 0;
 static constexpr size_t kUnlimitedWritevBudget = SIZE_MAX;
 static size_t g_writev_budget_bytes = kUnlimitedWritevBudget;
 
+// Caps the next ::write() (the appending writeToFile path, i.e. the file
+// header) at this many bytes. SIZE_MAX passes through.
+static size_t g_write_cap_bytes = SIZE_MAX;
+
+extern "C" ssize_t rocksdb_js_mock_write(int fd, const void* buffer, size_t count) {
+	if (g_write_cap_bytes != SIZE_MAX && count > g_write_cap_bytes) {
+		count = g_write_cap_bytes;
+	}
+	return ::write(fd, buffer, count);
+}
+
 extern "C" ssize_t rocksdb_js_mock_writev(int fd, const struct iovec* iov, int iovcnt) {
 	if (g_writev_budget_bytes != kUnlimitedWritevBudget) {
 		if (g_writev_budget_bytes == 0) {
@@ -316,10 +327,12 @@ protected:
 	void SetUp() override {
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
+		g_write_cap_bytes = SIZE_MAX;
 	}
 	void TearDown() override {
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
+		g_write_cap_bytes = SIZE_MAX;
 		if (file_) {
 			file_->close();
 			file_.reset();
@@ -368,6 +381,28 @@ TEST_F(AppendBoundary, FailedAppendLeavesTheLogOnAnEntryBoundary) {
 	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
 	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::Clean);
 	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 2u);
+}
+
+// A header write that lands short must take the file with it: a size in
+// (0, HEADER_SIZE) fails open()'s "too small" check on every future open, and
+// freeing disk space does not heal it.
+TEST_F(AppendBoundary, ShortHeaderWriteDiscardsTheFileInsteadOfBrickingIt) {
+	path_ = uniqueLogPath("short-header");
+
+	{
+		rocksdb_js::TransactionLogFile file(path_, 1);
+		g_write_cap_bytes = 5;
+		EXPECT_THROW(file.open(1000.0), rocksdb_js::DBException);
+		g_write_cap_bytes = SIZE_MAX;
+	}
+
+	EXPECT_FALSE(std::filesystem::exists(path_));
+
+	// The same path initializes cleanly once the write can complete.
+	file_ = std::make_unique<rocksdb_js::TransactionLogFile>(path_, 1);
+	file_->open(1000.0);
+	EXPECT_EQ(file_->size.load(), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
+	EXPECT_EQ(std::filesystem::file_size(path_), TRANSACTION_LOG_FILE_HEADER_SIZE);
 }
 
 TEST_F(AppendBoundary, AppendThatWritesNothingLeavesTheFileUntouched) {
