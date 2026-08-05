@@ -132,7 +132,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool opened() const;
 	void unrefLog(const std::string& name);
 	napi_value useLog(napi_env env, napi_value jsDatabase, std::string& name);
-
 };
 
 } // namespace rocksdb_js
