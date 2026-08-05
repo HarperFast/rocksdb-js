@@ -40,6 +40,43 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 );
 
 /**
+ * Thread-safe state shared between the RocksDB `EventListener` and the
+ * `DBDescriptor` (HarperFast/rocksdb-js#754). It is created BEFORE `DB::Open`
+ * and handed to the listener, then the descriptor is published into it once
+ * constructed. This replaces a late-bound `shared_ptr<weak_ptr<DBDescriptor>>`
+ * that had two defects: assigning it after `DB::Open` raced concurrent callback
+ * reads of the same `weak_ptr` object (a data race / UB), and its empty window
+ * during open silently dropped any background error latched mid-open.
+ *
+ * The descriptor pointer is published/read under `descriptorMutex`. The
+ * background-error mirror has its own mutex and does NOT depend on the
+ * descriptor, so `OnBackgroundError` can record an error even while `DB::Open`
+ * is still running and the descriptor does not yet exist.
+ */
+struct DBEventListenerState final {
+	std::mutex descriptorMutex;
+	std::weak_ptr<DBDescriptor> descriptor;
+
+	std::mutex backgroundErrorMutex;
+	BackgroundErrorInfo backgroundError;
+	// Bumped on every latch/clear transition so a recovery clears only the error
+	// it observed, never a newer one latched in between (the resume TOCTOU — see
+	// `clearBackgroundErrorIfUnchanged`).
+	uint64_t backgroundErrorGeneration = 0;
+
+	// Descriptor access (defined in the .cpp where DBDescriptor is complete).
+	std::shared_ptr<DBDescriptor> lockDescriptor();
+	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor);
+
+	// Background-error mirror. `reason` is a `rocksdb::BackgroundErrorReason` cast
+	// to int, or -1 when there is no associated reason. All thread-safe.
+	void latchBackgroundError(int reason, const rocksdb::Status& status);
+	void clearBackgroundError();
+	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
+	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
+};
+
+/**
  * Custom deleter for RocksDB that waits for any background compaction to
  * complete before destroying the database instance. Compaction is triggered
  * by DBDescriptor::close() before this deleter runs.
@@ -190,19 +227,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	EventEmitter events;
 
 	/**
-	 * Mirror of RocksDB's latched background-error state (HarperFast/rocksdb-js#730).
-	 * Written by the event listener's `OnBackgroundError`/`OnErrorRecoveryEnd`
-	 * callbacks — which run on flush/compaction/write background threads — and read
-	 * by the JS thread via `getBackgroundError()`, so all access is guarded by
-	 * `backgroundErrorMutex`. RocksDB exposes no public getter for the current
-	 * background error, so this mirror is the source of truth for the JS surface.
+	 * Listener/background-error state shared with the RocksDB `EventListener`
+	 * (HarperFast/rocksdb-js#730, #754). The listener and this descriptor hold the
+	 * same `DBEventListenerState`; the latched background-error mirror lives there
+	 * (not directly on the descriptor) so an error that latches during `DB::Open`,
+	 * before this descriptor exists, is still captured. Set at construction and
+	 * never reassigned, so it is safe to read without a lock.
 	 */
-	std::mutex backgroundErrorMutex;
-	BackgroundErrorInfo backgroundError;
-	// Bumped on every latch/clear transition, so a recovery can clear only the
-	// error it observed and not erase a newer one latched in between (the resume
-	// TOCTOU — see `clearBackgroundErrorIfUnchanged`).
-	uint64_t backgroundErrorGeneration = 0;
+	std::shared_ptr<DBEventListenerState> eventListenerState;
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv
@@ -284,32 +316,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	void releaseCommitCompletionsByEnv(napi_env env);
 
 	/**
-	 * Records a latched RocksDB background error (from `OnBackgroundError`, or a
-	 * failed `Resume()`). `reason` is a `rocksdb::BackgroundErrorReason` cast to
-	 * int, or -1 when there is no associated reason. Thread-safe.
-	 */
-	void latchBackgroundError(int reason, const rocksdb::Status& status);
-
-	/**
-	 * Clears the latched background-error mirror after a successful recovery.
-	 * Thread-safe.
+	 * Background-error mirror accessors. Thin delegates to `eventListenerState`
+	 * (the mirror is shared with the listener). `clearBackgroundErrorIfUnchanged`
+	 * clears only if the generation still matches — so `resume()` cannot erase a
+	 * different error latched during `DB::Resume()`. All thread-safe.
 	 */
 	void clearBackgroundError();
-
-	/**
-	 * Clears the mirror only if its generation still equals `expectedGeneration`
-	 * — i.e. no newer background error latched since the caller observed it.
-	 * Returns whether it cleared. Used by `resume()` so a recovery cannot erase a
-	 * different error that latched during `DB::Resume()`. Thread-safe.
-	 */
 	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
-
-	/**
-	 * Copies the current background-error mirror into `out` and returns whether a
-	 * background error is currently latched. When `generation` is non-null, also
-	 * returns the current generation for a later `clearBackgroundErrorIfUnchanged`.
-	 * Thread-safe.
-	 */
 	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
 
 private:
@@ -319,7 +332,8 @@ private:
 		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
-		std::shared_ptr<rocksdb::Statistics> statistics
+		std::shared_ptr<rocksdb::Statistics> statistics,
+		std::shared_ptr<DBEventListenerState> eventListenerState
 	);
 
 public:
