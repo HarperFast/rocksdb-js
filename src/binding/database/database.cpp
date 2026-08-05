@@ -1616,7 +1616,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			vtSlot = vt->slotFor(dbId, cfId, keySlice);
 			vtTracker = vt->lockSlotForWrite(vtSlot, dbId);
 		}
-		const rocksdb::WriteOptions& writeOptions = (*dbHandle)->writeOptions();
+		rocksdb::WriteOptions writeOptions;
+		writeOptions.disableWAL = (*dbHandle)->disableWAL;
+		writeOptions.ignore_missing_column_families = true;
 		status = (*dbHandle)->descriptor->db->Put(
 			writeOptions,
 			(*dbHandle)->getColumnFamilyHandle(),
@@ -1680,7 +1682,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			vtSlot = vt->slotFor(dbId, cfId, keySlice);
 			vtTracker = vt->lockSlotForWrite(vtSlot, dbId);
 		}
-		const rocksdb::WriteOptions& writeOptions = (*dbHandle)->writeOptions();
+		rocksdb::WriteOptions writeOptions;
+		writeOptions.disableWAL = (*dbHandle)->disableWAL;
+		writeOptions.ignore_missing_column_families = true;
 		status = (*dbHandle)->descriptor->db->Delete(
 			writeOptions,
 			(*dbHandle)->getColumnFamilyHandle(),

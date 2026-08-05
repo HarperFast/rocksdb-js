@@ -156,8 +156,8 @@ describe('Drop', () => {
 			}
 		));
 
-	// Transactions deliberately do NOT get `ignore_missing_column_families` (see
-	// DBHandle::transactionWriteOptions). In optimistic mode - the default -
+	// Transactions deliberately do NOT get `ignore_missing_column_families`. In
+	// optimistic mode - the default -
 	// conflict validation rejects a commit naming a dropped family early, with an
 	// error that names the family, so the transaction is lost whole rather than
 	// discarded in part.
