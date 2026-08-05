@@ -412,9 +412,20 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 				std::string errorMessage = getWindowsErrorMessage(error);
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
 					this, error, errorMessage.c_str(), i, iovcnt);
-				// Synchronous WriteFile (NULL lpOverlapped) always populates
-				// lpNumberOfBytesWritten, including on failure.
-				bytesLanded = totalBytesWritten + bytesWritten;
+				// Take the landed count from the file pointer rather than
+				// lpNumberOfBytesWritten, which WriteFile does not promise to set on
+				// failure: the caller erases exactly this range, so under-reporting
+				// would strand the bytes it missed. The batch started by seeking to
+				// `size`, so the distance from there is what reached the file.
+				LARGE_INTEGER zero, current;
+				zero.QuadPart = 0;
+				if (::SetFilePointerEx(this->fileHandle, zero, &current, FILE_CURRENT)) {
+					int64_t landed = current.QuadPart -
+						static_cast<int64_t>(this->size.load(std::memory_order_relaxed));
+					bytesLanded = landed > 0 ? landed : 0;
+				} else {
+					bytesLanded = totalBytesWritten + bytesWritten;
+				}
 				return -1;
 			}
 
