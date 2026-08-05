@@ -339,12 +339,14 @@ protected:
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
 		g_write_cap_bytes = SIZE_MAX;
 		g_ftruncate_fails = false;
+		rocksdb_js::TransactionLogFile::forcedBytesLandedForTests.store(INT64_MIN);
 	}
 	void TearDown() override {
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
 		g_write_cap_bytes = SIZE_MAX;
 		g_ftruncate_fails = false;
+		rocksdb_js::TransactionLogFile::forcedBytesLandedForTests.store(INT64_MIN);
 		if (file_) {
 			file_->close();
 			file_.reset();
@@ -426,6 +428,52 @@ TEST_F(AppendBoundary, UnerasableOrphanRetiresTheFile) {
 	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
 	EXPECT_EQ(scan.validEnd, committedSize);
 }
+
+// The Windows backend cannot always report how much of a failed append landed.
+// Erasing a guessed range could cut into committed entries, so an unreported or
+// impossible extent must retire the file untouched instead. Driven here through
+// the POSIX build because the branch lives in the shared caller.
+class UnerasableExtent : public AppendBoundary,
+	public ::testing::WithParamInterface<std::pair<const char*, int64_t>> {};
+
+TEST_P(UnerasableExtent, RetiresTheFileWithoutErasing) {
+	const auto [name, forcedBytesLanded] = GetParam();
+	auto& file = openLog(name);
+
+	auto first = makeBatch(1001.0, { "first-entry" });
+	file.writeEntries(first, 0);
+	const uint32_t committedSize = file.size.load();
+
+	g_writev_budget_bytes = 6;
+	rocksdb_js::TransactionLogFile::forcedBytesLandedForTests.store(forcedBytesLanded);
+	auto interrupted = makeBatch(1002.0, { "interrupted-entry" });
+	EXPECT_THROW(file.writeEntries(interrupted, 0), rocksdb_js::DBException);
+	g_writev_budget_bytes = kUnlimitedWritevBudget;
+	rocksdb_js::TransactionLogFile::forcedBytesLandedForTests.store(INT64_MIN);
+
+	// The six bytes that really landed are still there — untouched, not erased
+	// against a range we could not trust.
+	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
+
+	auto next = makeBatch(1003.0, { "next-entry" });
+	file.writeEntries(next, 0);
+	EXPECT_EQ(next.currentEntryIndex, 0u) << "the retired file accepted another append";
+	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
+
+	auto image = readWholeFile(path_);
+	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
+	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
+	EXPECT_EQ(scan.validEnd, committedSize);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+	AppendBoundary, UnerasableExtent,
+	::testing::Values(
+		std::make_pair("unknown-extent", static_cast<int64_t>(TRANSACTION_LOG_BYTES_LANDED_UNKNOWN)),
+		std::make_pair("over-reported-extent", static_cast<int64_t>(1 << 20))),
+	[](const ::testing::TestParamInfo<std::pair<const char*, int64_t>>& info) {
+		return std::string(info.param.first == std::string("unknown-extent") ? "Unknown" : "OverReported");
+	});
 
 // A header write that lands short must take the file with it: a size in
 // (0, HEADER_SIZE) fails open()'s "too small" check on every future open, and
