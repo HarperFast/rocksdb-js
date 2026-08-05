@@ -1,6 +1,6 @@
 import { RocksDatabase } from '../src/index.js';
 import { dbRunner } from './lib/util.js';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * `allowStall` is fixed when the WriteBufferManager singleton is created and cannot be changed
@@ -26,29 +26,34 @@ describe('WriteBufferManager stall', () => {
 		});
 	});
 
+	// Leave no manager attached to databases opened by later files (same reason
+	// write-buffer-manager.test.ts resets); `allowStall` itself is not resettable.
+	afterAll(() => {
+		RocksDatabase.config({
+			blockCacheSize: 32 * 1024 * 1024,
+			writeBufferManagerSize: 0,
+		});
+	});
+
 	it(
 		'should not stall writes forever on a late-created column family',
 		() =>
 			dbRunner({ dbOptions: [{}, { name: 'late' }] }, async (_, { db }) => {
 				const value = 'x'.repeat(8192);
 				// ~8MB written across several flushes: comfortably more than the 4MB budget, so if
-				// flushed memtables are pinned as history rather than released, the budget is exhausted
-				// and the stall never clears.
-				const writeAll = (async () => {
-					for (let cycle = 0; cycle < 4; cycle++) {
-						for (let i = 0; i < 250; i++) {
-							await db.put(`k-${cycle}-${i.toString().padStart(6, '0')}`, value);
-						}
-						await db.flush();
+				// flushed memtables are pinned as history rather than released, the budget is
+				// exhausted and the stall never clears.
+				//
+				// A regression shows up as a HANG, not as a failed assertion — the manager stalls
+				// inside RocksDB's write path, which blocks the calling thread, so no in-test timer
+				// can fire to turn it into a clean failure. The test timeout below is what surfaces
+				// it. (Measured: ~45ms when history is released, unbounded when it is not.)
+				for (let cycle = 0; cycle < 4; cycle++) {
+					for (let i = 0; i < 250; i++) {
+						await db.put(`k-${cycle}-${i.toString().padStart(6, '0')}`, value);
 					}
-				})();
-
-				const stalled = Symbol('stalled');
-				const outcome = await Promise.race([
-					writeAll.then(() => 'completed'),
-					new Promise((resolve) => setTimeout(() => resolve(stalled), 30_000).unref?.()),
-				]);
-				expect(outcome).toBe('completed');
+					await db.flush();
+				}
 				expect(await db.get('k-3-000249')).toBe(value);
 			}),
 		60_000
