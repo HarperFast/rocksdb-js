@@ -1,4 +1,4 @@
-import { RocksDatabase, Transaction } from '../src/index.js';
+import { CorruptFrameError, RocksDatabase, Transaction } from '../src/index.js';
 import {
 	constants,
 	coolTransactionLogs,
@@ -1511,6 +1511,127 @@ describe('Transaction Log', () => {
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+			}));
+
+		// Drives the iterator by hand so a throw doesn't end the walk: a caller that wants the
+		// entries past a break has to be able to keep going. Bounded so a reader that re-throws
+		// at the same position (the pre-resync behavior) fails the test instead of hanging.
+		function drainPastCorruption(iterable: Iterable<{ data: Buffer }>, maxSteps = 100) {
+			const iterator = iterable[Symbol.iterator]();
+			const entries: { data: Buffer }[] = [];
+			const errors: CorruptFrameError[] = [];
+			for (let step = 0; step < maxSteps; step++) {
+				try {
+					const { value, done } = iterator.next();
+					if (done) return { entries, errors };
+					entries.push(value);
+				} catch (error) {
+					errors.push(error as CorruptFrameError);
+				}
+			}
+			throw new Error(`iterator did not finish within ${maxSteps} steps`);
+		}
+
+		// A mid-log break — a partial append (ENOSPC/EDQUOT) that the process survived, so valid
+		// entries were appended after it. Those entries are intact and must stay reachable: the
+		// break costs the one broken frame, not the remainder of the log. Regression for
+		// HarperFast/harper#2016 and #2063, where a reader that stopped at the break re-read from
+		// the same resume cursor on every drain, so nothing after it was ever delivered again.
+		it('query() resyncs past a mid-log corrupt frame and still yields the entries after it', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
+				for (let i = 0; i < 12; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(12);
+
+				// break the 2nd entry's length field; entries 3-12 stay well-formed behind it
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
+				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
+
+					// one report for the break, carrying where reading resumed and what was lost
+					expect(errors.length).toBe(1);
+					expect(errors[0]).toBeInstanceOf(CorruptFrameError);
+					expect(errors[0].logId).toBe(1);
+					expect(errors[0].position).toBe(secondEntryStart);
+					expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
+					expect(errors[0].unreadableBytes).toBe(entryStride);
+					expect(errors[0].message).toMatch(/valid framing resumes at/);
+
+					// entry 1 before the break, entries 3-12 after it: only the broken frame is lost
+					expect(entries.length).toBe(11);
+					for (const entry of entries) {
+						expect(entry.data.length).toBe(10);
+					}
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+			}));
+
+		// A torn tail has nothing valid behind it, so there is nothing to resync to. The reader
+		// must still not re-throw at the same position forever: it reports once and then reads as
+		// end-of-log, which is what open-time recovery would have truncated to anyway.
+		it('query() reports a torn tail once and then reads as end-of-log', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				for (let i = 0; i < 3; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
+
+				// break the final entry's length; only zero padding follows it
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const thirdEntryStart =
+					TRANSACTION_LOG_FILE_HEADER_SIZE + 2 * (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
+				copyBuffer.writeUInt32BE(0x7fffffff, thirdEntryStart + 8);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
+					expect(errors.length).toBe(1);
+					expect(errors[0].resyncPosition).toBeUndefined();
+					expect(errors[0].unreadableBytes).toBe(0);
+					expect(errors[0].message).not.toMatch(/valid framing resumes at/);
+					expect(entries.length).toBe(2);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
 			}));
 	});
 

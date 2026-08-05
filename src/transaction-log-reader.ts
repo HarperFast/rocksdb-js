@@ -12,6 +12,101 @@ const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
 /**
+ * Number of consecutive well-formed frames that, on their own, signal that real log data has
+ * resumed after a framing break. Kept in step with `RESYNC_MIN_FRAMES` in
+ * `src/binding/transaction_log/transaction_log_recovery.cpp`, which uses the same heuristic to
+ * classify a break as mid-file corruption (valid entries follow) rather than a torn tail.
+ */
+const RESYNC_MIN_FRAMES = 8;
+
+/**
+ * Thrown when an entry's framing is broken. `resyncPosition` is the offset where valid framing
+ * resumes, when one was found: the frames after a mid-log break are intact and reachable, and
+ * only the broken span between `position` and `resyncPosition` is unreadable. It is `undefined`
+ * for a torn tail, where nothing follows the break.
+ *
+ * The iterator is left positioned at `resyncPosition` (or at end-of-log when there is none), so a
+ * caller that chooses to recover the entries past the break calls `next()` again — the throw is
+ * the one notification per break, not a wall. A caller that treats a broken frame as terminal
+ * simply stops, which is the behavior a plain `RangeError` already produced.
+ */
+export class CorruptFrameError extends RangeError {
+	/** Sequence number of the log file the break is in. */
+	logId: number;
+	/** Offset of the broken frame. */
+	position: number;
+	/** Offset where valid framing resumes, or `undefined` when nothing valid follows. */
+	resyncPosition?: number;
+	/** Bytes between the break and the resume point that cannot be read. */
+	unreadableBytes: number;
+
+	constructor(
+		message: string,
+		logId: number,
+		position: number,
+		resyncPosition: number | undefined
+	) {
+		super(
+			resyncPosition === undefined
+				? message
+				: `${message}; valid framing resumes at ${resyncPosition.toString(16)}, ${
+						resyncPosition - position
+					} byte(s) unreadable`
+		);
+		this.name = 'CorruptFrameError';
+		this.logId = logId;
+		this.position = position;
+		this.resyncPosition = resyncPosition;
+		this.unreadableBytes = resyncPosition === undefined ? 0 : resyncPosition - position;
+	}
+}
+
+/**
+ * Whether a complete, in-bounds frame begins at `pos`. The only sane bound on an entry's length is
+ * the readable extent: a single entry can legitimately exceed the rotation threshold (the first
+ * entry written to a fresh file is always written in full). A zero timestamp is the
+ * end-of-entries marker, not a frame.
+ */
+function frameFits(dataView: DataView, pos: number, limit: number): boolean {
+	if (pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
+		return false;
+	}
+	if (dataView.getFloat64(pos) === 0) {
+		return false;
+	}
+	const length = dataView.getUint32(pos + 8);
+	if (length === 0) {
+		return false;
+	}
+	return pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length <= limit;
+}
+
+/**
+ * Finds the offset in `[from, limit)` where valid log framing resumes: either a run of at least
+ * `RESYNC_MIN_FRAMES` well-formed frames, or any run that lands exactly on `limit`. Random bytes
+ * aligning a length-chain exactly to the end is ~1/2^32, so even a short run that hits the end is
+ * a reliable resume signal — and it is what lets fewer than `RESYNC_MIN_FRAMES` entries after a
+ * break still be recovered. Returns `undefined` when nothing resumes (a torn tail).
+ *
+ * Effectively linear: a non-resyncing offset fails after ~one frame check, and only a true resume
+ * point walks a chain. This is the JS counterpart of `validFramingResumes()` in
+ * `transaction_log_recovery.cpp`, which answers the same question at open time but keeps only the
+ * yes/no, discarding the offset; it runs here only on a broken frame, never on a healthy read.
+ */
+function findResyncPosition(dataView: DataView, from: number, limit: number): number | undefined {
+	for (let start = from; start + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= limit; start++) {
+		let pos = start;
+		let frames = 0;
+		while (frameFits(dataView, pos, limit)) {
+			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + dataView.getUint32(pos + 8);
+			if (++frames >= RESYNC_MIN_FRAMES || pos === limit) {
+				return start;
+			}
+		}
+	}
+}
+
+/**
  * Returns an iterable for transaction entries within the specified range of timestamps
  * This iterable can be iterated over multiple times, and subsequent iterations will continue
  * from where the last iteration left off, allowing for iteration through the log file
@@ -118,6 +213,17 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
+		// Builds the error for a broken frame at `position` and advances `position` past the break
+		// first, so the throw reports the break without also sealing off what follows it. When
+		// framing resumes, `position` lands there; when nothing does (a torn tail), it lands at
+		// the readable end so a caller that retries gets `done` rather than the same throw again.
+		const corruptFrame = (message: string, limit: number) => {
+			const resyncPosition = findResyncPosition(dataView, position + 1, limit);
+			const error = new CorruptFrameError(message, logBuffer!.logId, position, resyncPosition);
+			position = resyncPosition ?? limit;
+			return error;
+		};
+
 		return {
 			[Symbol.iterator](): IterableIterator<TransactionEntry> {
 				return this;
@@ -182,20 +288,29 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					// `position` runs past the buffer, `subarray` hands back a misframed
 					// (garbage) transaction, and the advance-to-next-log path can
 					// dereference an undefined buffer. Fail loudly with a bounded error.
+					//
+					// The throw also leaves `position` at the resume point (see corruptFrame), so
+					// the break stops this entry, not the rest of the log: a caller that wants the
+					// entries past a mid-log break calls next() again. Without that, a single
+					// broken frame amputates every later entry in the log permanently — the reader
+					// restarts from the same resume cursor on every drain and re-throws here
+					// (HarperFast/harper#2016, #2063).
 					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
-						throw new RangeError(
+						throw corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
 								logBuffer!.logId
-							} (available=${limit - position})`
+							} (available=${limit - position})`,
+							limit
 						);
 					}
 					const length = dataView.getUint32(position + 8);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
-						throw new RangeError(
+						throw corruptFrame(
 							`Corrupt transaction log entry at position ${position.toString(16)} of log ${
 								logBuffer!.logId
-							}: declared length ${length} overruns the log (limit=${limit})`
+							}: declared length ${length} overruns the log (limit=${limit})`,
+							limit
 						);
 					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
