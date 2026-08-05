@@ -18,6 +18,7 @@
 #include "database/commit_worker.h"
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/background_error.h"
 #include "core/platform.h"
 #include "napi/event_emitter.h"
 #include "napi/helpers.h"
@@ -189,6 +190,21 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	EventEmitter events;
 
 	/**
+	 * Mirror of RocksDB's latched background-error state (HarperFast/rocksdb-js#730).
+	 * Written by the event listener's `OnBackgroundError`/`OnErrorRecoveryEnd`
+	 * callbacks — which run on flush/compaction/write background threads — and read
+	 * by the JS thread via `getBackgroundError()`, so all access is guarded by
+	 * `backgroundErrorMutex`. RocksDB exposes no public getter for the current
+	 * background error, so this mirror is the source of truth for the JS surface.
+	 */
+	std::mutex backgroundErrorMutex;
+	BackgroundErrorInfo backgroundError;
+	// Bumped on every latch/clear transition, so a recovery can clear only the
+	// error it observed and not erase a newer one latched in between (the resume
+	// TOCTOU — see `clearBackgroundErrorIfUnchanged`).
+	uint64_t backgroundErrorGeneration = 0;
+
+	/**
 	 * Commit lanes executing async transaction commits off the libuv
 	 * threadpool, shared by all envs/handles on this database. In the default
 	 * single-lane mode only commitWorker runs: each commit executes its log
@@ -266,6 +282,35 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * tsfn so the commit thread stops marshalling into a torn-down env.
 	 */
 	void releaseCommitCompletionsByEnv(napi_env env);
+
+	/**
+	 * Records a latched RocksDB background error (from `OnBackgroundError`, or a
+	 * failed `Resume()`). `reason` is a `rocksdb::BackgroundErrorReason` cast to
+	 * int, or -1 when there is no associated reason. Thread-safe.
+	 */
+	void latchBackgroundError(int reason, const rocksdb::Status& status);
+
+	/**
+	 * Clears the latched background-error mirror after a successful recovery.
+	 * Thread-safe.
+	 */
+	void clearBackgroundError();
+
+	/**
+	 * Clears the mirror only if its generation still equals `expectedGeneration`
+	 * — i.e. no newer background error latched since the caller observed it.
+	 * Returns whether it cleared. Used by `resume()` so a recovery cannot erase a
+	 * different error that latched during `DB::Resume()`. Thread-safe.
+	 */
+	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
+
+	/**
+	 * Copies the current background-error mirror into `out` and returns whether a
+	 * background error is currently latched. When `generation` is non-null, also
+	 * returns the current generation for a later `clearBackgroundErrorIfUnchanged`.
+	 * Thread-safe.
+	 */
+	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
 
 private:
 	DBDescriptor(

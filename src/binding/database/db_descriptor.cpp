@@ -199,6 +199,47 @@ public:
 		}
 	}
 
+	// Mirrors RocksDB's latched background error onto the descriptor so a consumer
+	// can observe it and recover in-process (HarperFast/rocksdb-js#730). We do NOT
+	// suppress the error (leaving *bg_error untouched) — the point is to surface
+	// the read-only latch, not hide it. Runs on flush/compaction/write threads, so
+	// it must stay cheap: a mutex-guarded copy, nothing blocking.
+	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bg_error) override {
+		if (!descriptorPtr || bg_error == nullptr) {
+			return;
+		}
+		auto desc = descriptorPtr->lock();
+		if (!desc) {
+			return;
+		}
+		desc->latchBackgroundError(static_cast<int>(reason), *bg_error);
+	}
+
+	// Fires when a recovery attempt (auto-recovery or an explicit DB::Resume())
+	// completes. `info.new_bg_error.ok()` means the database is writable again, so
+	// clear the mirror. On a FAILED recovery, `new_bg_error` is the recovery-attempt
+	// status, not necessarily the error still blocking writes — RocksDB retains the
+	// original `old_bg_error` as the read-only latch. So keep whatever is already
+	// mirrored (the original error) and only seed from `old_bg_error` if nothing is
+	// latched yet; do NOT overwrite with the recovery-attempt status.
+	void OnErrorRecoveryEnd(const rocksdb::BackgroundErrorRecoveryInfo& info) override {
+		if (!descriptorPtr) {
+			return;
+		}
+		auto desc = descriptorPtr->lock();
+		if (!desc) {
+			return;
+		}
+		if (info.new_bg_error.ok()) {
+			desc->clearBackgroundError();
+		} else {
+			BackgroundErrorInfo current;
+			if (!desc->getBackgroundError(current)) {
+				desc->latchBackgroundError(-1, info.old_bg_error);
+			}
+		}
+	}
+
 private:
 	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
 	std::unordered_map<int, JobTracker> jobTrackers;
@@ -1690,6 +1731,51 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
 	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
+}
+
+void DBDescriptor::latchBackgroundError(int reason, const rocksdb::Status& status) {
+	// Format the message OUTSIDE the lock: this runs on a RocksDB flush/compaction/
+	// write thread, and Status::ToString() allocates. Holding backgroundErrorMutex
+	// only for the assignment keeps the background thread from stalling on a JS
+	// reader that happens to hold the lock.
+	BackgroundErrorInfo next;
+	next.latched = true;
+	next.message = status.ToString();
+	next.severity = static_cast<int>(status.severity());
+	next.reason = reason;
+
+	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
+	this->backgroundError = std::move(next);
+	++this->backgroundErrorGeneration;
+}
+
+void DBDescriptor::clearBackgroundError() {
+	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
+	if (this->backgroundError.latched) {
+		this->backgroundError = BackgroundErrorInfo{};
+		++this->backgroundErrorGeneration;
+	}
+}
+
+bool DBDescriptor::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {
+	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
+	if (this->backgroundErrorGeneration != expectedGeneration) {
+		return false; // a newer error latched since the caller observed it — keep it
+	}
+	if (this->backgroundError.latched) {
+		this->backgroundError = BackgroundErrorInfo{};
+		++this->backgroundErrorGeneration;
+	}
+	return true;
+}
+
+bool DBDescriptor::getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation) {
+	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
+	out = this->backgroundError;
+	if (generation != nullptr) {
+		*generation = this->backgroundErrorGeneration;
+	}
+	return this->backgroundError.latched;
 }
 
 rocksdb::Status DBDescriptor::flush() {

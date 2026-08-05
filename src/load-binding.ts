@@ -2,7 +2,7 @@ import type { BackupInfo, BackupOptions, RestoreOptions } from './backup.js';
 import type { RangeOptions } from './dbi.js';
 import type { BufferWithDataView, Key } from './encoding.js';
 import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.js';
-import type { StoreContext } from './store.js';
+import type { BackgroundErrorInfo, StoreContext } from './store.js';
 import type { TransactionLogStoreValidation } from './validate-transaction-log.js';
 export type {
 	GetStatsMethod,
@@ -317,6 +317,7 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): number;
+	getBackgroundError(): BackgroundErrorInfo | null;
 	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
@@ -349,6 +350,7 @@ export type NativeDatabase = {
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
+	resume(): void;
 	// Provide a buffer that is used as the default/shared buffer for keys, where functions that provide a key can do so by assigning the key to the shared buffer and providing the length.
 	// A null value will reset the buffer.
 	setDefaultKeyBuffer(buffer: Buffer | Uint8Array | null): void;

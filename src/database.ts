@@ -16,6 +16,7 @@ import {
 import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
 import {
 	type ArrayBufferWithNotify,
+	type BackgroundErrorInfo,
 	CompactOptions,
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
@@ -270,6 +271,30 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * The RocksDB background error currently latched on this database, or `null`
+	 * when the database is healthy. When a write fails at the filesystem level
+	 * (e.g. a full disk or exhausted quota), RocksDB latches a background error
+	 * and refuses all further writes until recovery, so a non-null value means the
+	 * database is effectively read-only. Call {@link RocksDatabase.resume} after
+	 * the underlying condition clears to recover in-process. The database must be
+	 * open.
+	 *
+	 * The value mirrors RocksDB's background-error notifications, so a transient
+	 * or auto-recoverable error may appear briefly and then clear once RocksDB
+	 * recovers; a persistent non-null value (especially `severity >= 2`) is the
+	 * read-only signal that warrants `resume()`.
+	 *
+	 * @example
+	 * ```typescript
+	 * const err = db.backgroundError;
+	 * if (err) console.error(`database is read-only (${err.severityName}): ${err.message}`);
+	 * ```
+	 */
+	get backgroundError(): BackgroundErrorInfo | null {
+		return this.store.db.getBackgroundError();
+	}
+
+	/**
 	 * The compression currently in effect for this database's column family, read
 	 * live from RocksDB, as `{ algorithm, level? }`. `algorithm` is a friendly
 	 * name (e.g. `'lz4'`, `'zstd'`, `'none'`); `level` is present only when a
@@ -396,6 +421,29 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	flushSync(): void {
 		return this.store.db.flushSync();
+	}
+
+	/**
+	 * Attempts to recover the database from a latched background error (see
+	 * {@link RocksDatabase.backgroundError}) by calling RocksDB's `DB::Resume()`.
+	 * Call this after the underlying condition has cleared — e.g. once disk space
+	 * has been freed. On success the read-only latch is cleared and writes are
+	 * accepted again; on failure (the condition has not actually cleared) it
+	 * throws and the latch remains. A no-op on a healthy database.
+	 *
+	 * Runs synchronously and may briefly block, since recovery can re-flush
+	 * memtables.
+	 *
+	 * @example
+	 * ```typescript
+	 * if (db.backgroundError) {
+	 *   // ...free disk space...
+	 *   db.resume();
+	 * }
+	 * ```
+	 */
+	resume(): void {
+		return this.store.db.resume();
 	}
 
 	// flushed

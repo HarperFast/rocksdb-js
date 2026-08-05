@@ -123,6 +123,30 @@ export type CompressionInfo = {
 };
 
 /**
+ * A latched RocksDB background error, as returned by the `backgroundError`
+ * getter. When present, RocksDB has stopped accepting writes (the database is
+ * effectively read-only) until recovery — see {@link RocksDatabase.resume}.
+ */
+export type BackgroundErrorInfo = {
+	/** The RocksDB error string captured when the error was latched. */
+	message: string;
+	/**
+	 * The RocksDB `Status::Severity` as a number: 1 soft, 2 hard, 3 fatal,
+	 * 4 unrecoverable. A value >= 2 (hard) means the database is read-only.
+	 */
+	severity: number;
+	/** Human-readable severity: `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`. */
+	severityName: string;
+	/**
+	 * The RocksDB `BackgroundErrorReason` as a number, present when the error
+	 * originated from a reason-bearing callback (flush, compaction, etc.).
+	 */
+	reason?: number;
+	/** Human-readable reason, e.g. `'flush'` or `'compaction'`. */
+	reasonName?: string;
+};
+
+/**
  * Normalizes the public `compression` option into the primitive fields the
  * native layer expects. When `option` is omitted, or is an object without an
  * `algorithm`, returns an empty object and lets the native layer apply the

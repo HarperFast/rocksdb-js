@@ -284,6 +284,7 @@ struct Database final {
 	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
+	static napi_value GetBackgroundError(napi_env env, napi_callback_info info);
 	static napi_value GetCompression(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetDBIntProperty(napi_env env, napi_callback_info info);
@@ -305,6 +306,7 @@ struct Database final {
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveListener(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
+	static napi_value Resume(napi_env env, napi_callback_info info);
 	static napi_value SetDefaultValueBuffer(napi_env env, napi_callback_info info);
 	static napi_value SetDefaultKeyBuffer(napi_env env, napi_callback_info info);
 	static napi_value SetIteratorState(napi_env env, napi_callback_info info);
