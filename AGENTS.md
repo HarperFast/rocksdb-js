@@ -320,6 +320,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    inspect a concurrently closing `DBHandle` from the worker. Transactional count iterators must also
    pass the transaction snapshot through `ReadOptions`; `disableSnapshot` intentionally leaves it null
    so counts observe the latest committed state.
+10. **Retained memtable history must fit the WriteBufferManager budget**: `max_write_buffer_size_to_maintain`
+   is a floor, not a cap — RocksDB trims history back down to it and never below — and that memory is
+   charged to the process-wide WriteBufferManager. A target above the manager's budget therefore fills
+   the budget with memory that is never released, and a manager built with `allowStall` stalls every
+   write to that database permanently rather than until a flush catches up. `buildColumnFamilyOptions`
+   resolves the derived (`-1`) default to 0 whenever a stalling manager is configured for exactly this
+   reason (`resolveMaxWriteBufferSizeToMaintain`); an explicit caller value is honored as given, and
+   sizing it against the budget and the column-family count is then the caller's job. The general trap:
+   `DBOptions` defaults that derive a large value were sized when they reached one column family, so
+   widening where an option applies means re-checking its default against every shared budget it
+   competes for.
 
 ## Debugging native heap corruption
 
