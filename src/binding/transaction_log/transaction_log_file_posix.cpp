@@ -347,7 +347,9 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded) {
+	bytesLanded = 0;
+
 	if (iovcnt <= 0) {
 		return 0;
 	}
@@ -369,11 +371,13 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 			if (errno == EINTR) {
 				continue;
 			}
+			bytesLanded = totalWritten;
 			return -1;
 		}
 
 		if (written == 0) {
 			// shouldn't happen for regular files; bail to avoid an infinite loop
+			bytesLanded = totalWritten;
 			return -1;
 		}
 
