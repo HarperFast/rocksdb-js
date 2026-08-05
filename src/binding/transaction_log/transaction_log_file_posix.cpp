@@ -34,6 +34,15 @@ extern "C" ssize_t ROCKSDB_JS_WRITE(int, const void*, size_t);
 #define ROCKSDB_JS_WRITE ::write
 #endif
 
+// Hook point for unit tests: compile with -DROCKSDB_JS_FTRUNCATE=my_mock_fn to
+// simulate a truncate that fails, which is how the erase of a failed append's
+// bytes can itself fail. Same signature as ::ftruncate.
+#ifdef ROCKSDB_JS_FTRUNCATE
+extern "C" int ROCKSDB_JS_FTRUNCATE(int, off_t);
+#else
+#define ROCKSDB_JS_FTRUNCATE ::ftruncate
+#endif
+
 // Hook point for unit tests: compile with -DROCKSDB_JS_MADVISE=my_mock_fn to
 // capture/intercept the madvise() call made by adviseCold() (e.g. to assert it
 // is scoped to the file-backed range, or to simulate an old kernel returning
@@ -418,7 +427,7 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	if (this->fd < 0) {
 		return false;
 	}
-	if (::ftruncate(this->fd, static_cast<off_t>(newSize)) != 0) {
+	if (ROCKSDB_JS_FTRUNCATE(this->fd, static_cast<off_t>(newSize)) != 0) {
 		DEBUG_LOG("%p TransactionLogFile::truncateFile ftruncate failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
 		return false;

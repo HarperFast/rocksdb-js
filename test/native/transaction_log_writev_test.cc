@@ -44,6 +44,18 @@ static size_t g_writev_budget_bytes = kUnlimitedWritevBudget;
 // header) at this many bytes. SIZE_MAX passes through.
 static size_t g_write_cap_bytes = SIZE_MAX;
 
+// When true, ftruncate() fails with EIO — the double fault where the erase of a
+// failed append's bytes cannot itself complete.
+static bool g_ftruncate_fails = false;
+
+extern "C" int rocksdb_js_mock_ftruncate(int fd, off_t length) {
+	if (g_ftruncate_fails) {
+		errno = EIO;
+		return -1;
+	}
+	return ::ftruncate(fd, length);
+}
+
 extern "C" ssize_t rocksdb_js_mock_write(int fd, const void* buffer, size_t count) {
 	if (g_write_cap_bytes != SIZE_MAX && count > g_write_cap_bytes) {
 		count = g_write_cap_bytes;
@@ -258,8 +270,6 @@ TEST_F(WriteBatchToFile, AboveIovMaxChunksCorrectly) {
 	}
 }
 
-// A hard error must report the bytes that already reached the file, otherwise
-// the caller cannot tell "nothing landed" from "half an entry landed".
 TEST_F(WriteBatchToFile, ReportsBytesLandedOnHardError) {
 	auto& f = makeFile();
 	std::vector<std::vector<char>> buffers;
@@ -303,7 +313,7 @@ namespace {
 
 std::filesystem::path uniqueLogPath(const char* name) {
 	auto path = std::filesystem::temp_directory_path() /
-		(std::string("rocksdb-js-append-boundary-") + name + ".log");
+		("rocksdb-js-append-boundary-" + std::to_string(::getpid()) + "-" + name + ".log");
 	std::filesystem::remove(path);
 	return path;
 }
@@ -328,11 +338,13 @@ protected:
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
 		g_write_cap_bytes = SIZE_MAX;
+		g_ftruncate_fails = false;
 	}
 	void TearDown() override {
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
 		g_write_cap_bytes = SIZE_MAX;
+		g_ftruncate_fails = false;
 		if (file_) {
 			file_->close();
 			file_.reset();
@@ -381,6 +393,38 @@ TEST_F(AppendBoundary, FailedAppendLeavesTheLogOnAnEntryBoundary) {
 	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
 	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::Clean);
 	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 2u);
+}
+
+// When the erase itself fails, the file must stop accepting appends. Writing on
+// would put valid entries past the orphaned bytes, which is the mid-file break
+// recoverTail() has to leave intact; refusing keeps them a repairable torn tail.
+TEST_F(AppendBoundary, UnerasableOrphanRetiresTheFile) {
+	auto& file = openLog("unerasable");
+
+	auto first = makeBatch(1001.0, { "first-entry" });
+	file.writeEntries(first, 0);
+	const uint32_t committedSize = file.size.load();
+
+	g_writev_budget_bytes = 6;
+	g_ftruncate_fails = true;
+	auto interrupted = makeBatch(1002.0, { "interrupted-entry" });
+	EXPECT_THROW(file.writeEntries(interrupted, 0), rocksdb_js::DBException);
+	g_writev_budget_bytes = kUnlimitedWritevBudget;
+	g_ftruncate_fails = false;
+
+	ASSERT_EQ(std::filesystem::file_size(path_), committedSize + 6);
+
+	auto next = makeBatch(1003.0, { "next-entry" });
+	file.writeEntries(next, 0);
+	EXPECT_EQ(next.currentEntryIndex, 0u) << "the retired file accepted another append";
+	EXPECT_EQ(file.size.load(), committedSize);
+	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
+
+	// Still the torn-tail shape, so open-time recovery can repair it.
+	auto image = readWholeFile(path_);
+	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
+	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
+	EXPECT_EQ(scan.validEnd, committedSize);
 }
 
 // A header write that lands short must take the file with it: a size in
