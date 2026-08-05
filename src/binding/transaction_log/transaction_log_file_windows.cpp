@@ -340,9 +340,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return success ? static_cast<int64_t>(bytesRead) : -1;
 }
 
-bool TransactionLogFile::removeFile() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
+bool TransactionLogFile::removeFileLocked() {
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
@@ -414,7 +412,8 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 				std::string errorMessage = getWindowsErrorMessage(error);
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
 					this, error, errorMessage.c_str(), i, iovcnt);
-				// WriteFile reports its partial progress even when it fails.
+				// Synchronous WriteFile (NULL lpOverlapped) always populates
+				// lpNumberOfBytesWritten, including on failure.
 				bytesLanded = totalBytesWritten + bytesWritten;
 				return -1;
 			}

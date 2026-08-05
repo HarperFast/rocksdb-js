@@ -32,6 +32,11 @@ TransactionLogFile::~TransactionLogFile() {
 	this->close();
 }
 
+bool TransactionLogFile::removeFile() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	return this->removeFileLocked();
+}
+
 void TransactionLogFile::downgradeMapToFrozen() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
 	if (this->memoryMap) {
@@ -104,13 +109,16 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		this->timestamp = latestTimestamp;
 		writeDoubleBE(buffer + TRANSACTION_LOG_FILE_TIMESTAMP_POSITION, this->timestamp);
 
-		// One checked write: a header that only partly lands (a full disk, a short
-		// write) would still leave `size` claiming a full header, so the first
-		// append would be framed from the wrong offset for the life of the file.
+		// One write, checked: three unchecked writes could leave a header that only
+		// partly landed while `size` still claimed a full one, framing every later
+		// append from the wrong offset. Discard the file if it does land short —
+		// a size in (0, HEADER_SIZE) fails the "too small" check below on every
+		// future open, and freeing disk space would not heal it.
 		int64_t headerBytes = this->writeToFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE);
 		if (headerBytes != static_cast<int64_t>(TRANSACTION_LOG_FILE_HEADER_SIZE)) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to write file header: %s (wrote=%lld)\n",
 				this, this->path.string().c_str(), static_cast<long long>(headerBytes));
+			this->removeFileLocked();
 			throw rocksdb_js::DBException("Failed to write transaction log file header: " + this->path.string());
 		}
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
@@ -493,12 +501,11 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s (%lld byte(s) landed)\n",
 			this, this->path.string().c_str(), static_cast<long long>(bytesLanded));
 
-		// Whatever reached the file is a partial entry that nothing acknowledged
-		// (this throws), and `size` never advanced over it. Left in place it is a
-		// permanent framing break: the fd is O_APPEND, so the next successful
-		// append lands *after* these bytes, and every reader stops at the break —
-		// which recoverTail() then refuses to repair, because valid entries follow
-		// it. Erasing restores the invariant that the log ends on an entry boundary.
+		// Anything that reached the file is a partial entry nothing acknowledged,
+		// and `size` never advanced over it. Left in place it is a permanent
+		// framing break: the fd is O_APPEND, so the next successful append lands
+		// *after* these bytes, and recoverTail() then refuses to repair the break
+		// because valid entries follow it.
 		uint32_t committedSize = this->size.load(std::memory_order_relaxed);
 		if (bytesLanded > 0 && !this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {
 			std::ostringstream msg;
@@ -510,8 +517,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 		}
 
-		// No entry of this batch is on disk, so the batch is exactly as the caller
-		// handed it over.
+		// currentEntryIndex tracks entries that are on disk; none of these are.
 		batch.currentEntryIndex = startEntryIndex;
 
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());

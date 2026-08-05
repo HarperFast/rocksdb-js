@@ -287,6 +287,13 @@ struct TransactionLogFile final {
 	bool removeFile();
 
 	/**
+	 * Platform specific body of removeFile(). Precondition: the caller already
+	 * holds fileMutex (open() does, and must discard a file whose header write
+	 * failed part-way).
+	 */
+	bool removeFileLocked();
+
+	/**
 	 * Counts the committed entry frames in this log file by reading its on-disk
 	 * image and walking the v1 framing. Used by purge to report how many entries
 	 * each removed file held; counting is extra work, so it runs only when the

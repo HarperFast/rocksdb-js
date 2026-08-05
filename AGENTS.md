@@ -233,13 +233,15 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    timestamp seen mid-index during concurrent appends is a not-yet-visible memory-map artifact, not
    EOF. Reads during writes are bounded by the committed position, not `size` (see
    `hasAppendedSinceOpen`; HarperFast/harper#1148). The other half of that contract is that
-   `size` is also the *physical* extent: an append that fails part-way (ENOSPC, a short write
+   `size` is also the _physical_ extent: an append that fails part-way (ENOSPC, a short write
    on a full volume) must erase the bytes it already wrote before throwing
    (`writeBatchToFile` reports them via `bytesLanded`; `writeEntriesV1` calls `eraseTail`).
    Leaving them makes every later append land after a partial entry — with the file opened
    `O_APPEND`, writes go to physical EOF, not to `size` — which is a mid-file framing break
    that `recoverTail()` deliberately will not repair, so every entry after it is unreachable
-   (HarperFast/rocksdb-js#748).
+   (HarperFast/rocksdb-js#748). Initialization owes the same discipline: a header write that
+   lands short removes the file, since a size in `(0, HEADER_SIZE)` fails `open()`'s validity
+   check on every future open and freeing disk space would not heal it.
 6. **Shared DBDescriptor teardown is cross-env**: a `DBDescriptor` is process-global and shared by
    every env that opens the same path (`worker_threads` workers included), so multiple threads can
    reach `DBRegistry::CloseDB` for one descriptor at the same time — e.g. several worker envs tearing
