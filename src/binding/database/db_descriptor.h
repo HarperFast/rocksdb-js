@@ -33,6 +33,11 @@ struct TransactionHandle;
 struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
+rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
+	const DBOptions& options,
+	rocksdb::ColumnFamilyOptions cfOptions = {}
+);
+
 /**
  * Custom deleter for RocksDB that waits for any background compaction to
  * complete before destroying the database instance. Compaction is triggered
@@ -91,6 +96,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * `DB::OpenForReadOnly`. When true, write operations are not supported.
 	 */
 	bool readOnly;
+
+	/**
+	 * Base column family options retained from `DB::Open`. Families created
+	 * later preserve these table/blob settings while applying the current
+	 * handle's per-CF memory options.
+	 */
+	rocksdb::ColumnFamilyOptions cfOptions;
 
 	/**
 	 * The RocksDB database instance.
@@ -259,6 +271,7 @@ private:
 	DBDescriptor(
 		const std::string& path,
 		const DBOptions& options,
+		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 		std::shared_ptr<rocksdb::Statistics> statistics
@@ -392,7 +405,8 @@ public:
 	rocksdb::Status compactRange(
 		rocksdb::ColumnFamilyHandle* column,
 		const rocksdb::Slice* start,
-		const rocksdb::Slice* end
+		const rocksdb::Slice* end,
+		bool bottommost = false
 	);
 };
 

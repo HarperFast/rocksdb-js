@@ -1,4 +1,4 @@
-import { dbRunner } from './lib/util.js';
+import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 describe('Database write buffer options', () => {
@@ -74,6 +74,71 @@ describe('Database write buffer options', () => {
 		dbRunner({ dbOptions: [{ maxOpenFiles: 2 ** 32 - 1 }], skipOpen: true }, async ({ db }) => {
 			expect(() => db.open()).toThrow('maxOpenFiles must be');
 		}));
+
+	// A named CF is created after DB::Open, so it misses the open options.
+	// Observed via flush behavior: RocksDB exposes no property for the size.
+	it('should apply writeBufferSize to a named column family', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{
+						path: generateDBPath(),
+						name: 'mycf',
+						writeBufferSize: 64 * 1024,
+						maxWriteBufferNumber: 2,
+					},
+					{
+						path: generateDBPath(),
+						name: 'mycf',
+						writeBufferSize: 64 * 1024 * 1024,
+						maxWriteBufferNumber: 2,
+					},
+				],
+			},
+			async ({ db: smallBuffer }, { db: largeBuffer }) => {
+				const value = 'x'.repeat(1024);
+				for (const db of [smallBuffer, largeBuffer]) {
+					for (let i = 0; i < 512; i++) {
+						await db.put(`key-${i.toString().padStart(6, '0')}`, value);
+					}
+				}
+
+				// With only two 64 KiB memtables, all writes cannot complete until
+				// RocksDB flushes at least one; write backpressure is the gate.
+				const smallBufferSize = smallBuffer.getDBIntProperty('rocksdb.total-sst-files-size') ?? 0;
+				expect(smallBufferSize).toBeGreaterThan(0);
+				expect(largeBuffer.getDBIntProperty('rocksdb.total-sst-files-size')).toBe(0);
+			}
+		));
+
+	it('should apply the current handle memory options to a late column family', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ writeBufferSize: 64 * 1024 * 1024, maxWriteBufferNumber: 2 },
+					{
+						name: 'late',
+						writeBufferSize: 64 * 1024,
+						maxWriteBufferNumber: 2,
+					},
+				],
+				skipOpen: true,
+			},
+			async ({ db: first }, { db: late }) => {
+				first.open();
+				late.open();
+
+				const value = 'x'.repeat(1024);
+				for (let i = 0; i < 512; i++) {
+					await late.put(`key-${i.toString().padStart(6, '0')}`, value);
+				}
+
+				// The two-buffer limit gates on automatic flush without forcing one;
+				// an incorrectly inherited 64 MiB buffer would still have no SST.
+				const lateBufferSize = late.getDBIntProperty('rocksdb.total-sst-files-size') ?? 0;
+				expect(lateBufferSize).toBeGreaterThan(0);
+			}
+		));
 
 	it('should flush memtables when writeBufferSize is exceeded', () =>
 		dbRunner({ dbOptions: [{ writeBufferSize: 64 * 1024 }] }, async ({ db }) => {

@@ -80,6 +80,16 @@ struct DBOptions final {
 	// RocksDB's per-algorithm default level. Meaning is algorithm-specific (see
 	// CompressionOptions::level).
 	std::optional<int> compressionLevel;
+	// When true, apply `compression` to EVERY column family the underlying
+	// `DB::Open` opens, not just the one named by `name`. RocksDB opens all of a
+	// database's column families in that one call, and the default behavior gives
+	// each of the others its persisted algorithm — correct when codecs are chosen
+	// per table, but it leaves a caller that wants one codec for the whole
+	// database unable to express it: the families it did not name are already open
+	// at their old algorithm before it can ask. Only meaningful together with an
+	// explicit `compression`, and only on the open that actually creates the
+	// database handle (later opens reuse it).
+	bool compressionForAllColumnFamilies = false;
 };
 
 } // namespace rocksdb_js

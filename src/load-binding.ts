@@ -45,6 +45,7 @@ export type NativeTransactionOptions = {
 export type NativeTransaction = {
 	id: number;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
+	abandonWrites(): void;
 	abort(): void;
 	commit(resolve: (retrySignal?: number) => void, reject: (err: Error) => void): void;
 	commitSync(): void;
@@ -65,7 +66,11 @@ export type NativeTransaction = {
 	useLog(name: string | number): TransactionLog;
 };
 
-export type LogBuffer = Buffer & { dataView: DataView; logId: number; size: number };
+export type LogBuffer = Buffer & {
+	dataView: DataView;
+	logId: number;
+	size: number;
+};
 
 export type TransactionLogQueryOptions = {
 	start?: number;
@@ -76,7 +81,11 @@ export type TransactionLogQueryOptions = {
 	exclusiveStart?: boolean;
 };
 
-export type TransactionEntry = { timestamp: number; data: Buffer; endTxn: boolean };
+export type TransactionEntry = {
+	timestamp: number;
+	data: Buffer;
+	endTxn: boolean;
+};
 
 /**
  * A position within a transaction log, identifying a log file by its sequence
@@ -206,6 +215,11 @@ export type NativeDatabaseOptions = {
 	 * is algorithm-specific; omit to use the algorithm's default.
 	 */
 	compressionLevel?: number;
+	/**
+	 * Apply `compression` to every column family the underlying `DB::Open` opens, rather than
+	 * only the one named by `name`. Requires an explicit `compression`.
+	 */
+	compressionForAllColumnFamilies?: boolean;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;
@@ -275,8 +289,14 @@ export type NativeDatabase = {
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;
-	compact(resolve: ResolveCallback<void>, reject: RejectCallback, start?: Key, end?: Key): void;
-	compactSync(start?: Key, end?: Key): void;
+	compact(
+		resolve: ResolveCallback<void>,
+		reject: RejectCallback,
+		start?: Key,
+		end?: Key,
+		bottommost?: boolean
+	): void;
+	compactSync(start?: Key, end?: Key, bottommost?: boolean): void;
 	columns: string[];
 	createCheckpoint(
 		resolve: ResolveCallback<void>,
@@ -443,7 +463,11 @@ function locateBinding(): string {
 			}
 			try {
 				isMusl =
-					isMusl || execSync('ldd --version', { encoding: 'utf8', stdio: 'pipe' }).includes('musl');
+					isMusl ||
+					execSync('ldd --version', {
+						encoding: 'utf8',
+						stdio: 'pipe',
+					}).includes('musl');
 			} catch {
 				// ldd may not exist on some systems such as Docker Hardened Images
 			}
@@ -588,7 +612,11 @@ export const nativeBackupRestore: (
 	backupDir: string,
 	dbDir: string,
 	walDir: string,
-	options?: { backupId?: number; keepLogFiles?: boolean; mode?: RestoreOptions['mode'] }
+	options?: {
+		backupId?: number;
+		keepLogFiles?: boolean;
+		mode?: RestoreOptions['mode'];
+	}
 ) => void = binding.backupRestore;
 export const nativeBackupList: (
 	resolve: ResolveCallback<BackupInfo[]>,

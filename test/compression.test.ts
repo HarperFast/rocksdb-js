@@ -405,10 +405,20 @@ describe('Compression', () => {
 			expect(normalizeCompression(null as never)).toEqual({});
 		});
 
-		it('throws for an object without an algorithm', () => {
+		it('treats an object without an algorithm as unset', () => {
+			expect(normalizeCompression({} as never)).toEqual({});
+			expect(normalizeCompression({ algorithm: undefined } as never)).toEqual({});
+			expect(normalizeCompression({ algorithm: null } as never)).toEqual({});
+		});
+
+		it('throws for an object with a level but no algorithm', () => {
 			expect(() => normalizeCompression({ level: 3 } as never)).toThrow(TypeError);
-			expect(() => normalizeCompression({} as never)).toThrow(TypeError);
+		});
+
+		it('throws for a non-object, non-string option', () => {
 			expect(() => normalizeCompression([] as never)).toThrow(TypeError);
+			expect(() => normalizeCompression(6 as never)).toThrow(TypeError);
+			expect(() => normalizeCompression(true as never)).toThrow(TypeError);
 		});
 
 		it('throws for an unsupported algorithm as string or object', () => {
@@ -556,6 +566,75 @@ describe('Compression', () => {
 			},
 			120_000
 		);
+	});
+
+	describe('compressionForAllColumnFamilies', () => {
+		// RocksDB opens every column family of a database in one native call, and by default each
+		// family the caller did not name keeps its persisted algorithm. A caller whose first open
+		// targets some other family — a catalog, say — therefore cannot adopt a codec for the
+		// families it did not name: they are already open at the old one, and a family's
+		// compression cannot change while it is open.
+		const seed = (algorithm: CompressionAlgorithm, names: string[]) => {
+			const dbPath = tempPath();
+			for (const name of names) {
+				const db = RocksDatabase.open(dbPath, { name, compression: algorithm });
+				db.putSync('k', 'v');
+				db.close();
+			}
+			return dbPath;
+		};
+
+		it.skipIf(!supportedCompression.includes('lz4'))(
+			'leaves families the caller did not name at their persisted algorithm by default',
+			() => {
+				const dbPath = seed('none', ['__catalog__', 'records']);
+
+				const catalog = RocksDatabase.open(dbPath, { name: '__catalog__', compression: 'lz4' });
+				try {
+					expect(catalog.compression.algorithm).toBe('lz4');
+					// `records` was opened transitively alongside it, still at 'none'.
+					expect(() => RocksDatabase.open(dbPath, { name: 'records', compression: 'lz4' })).toThrow(
+						/already open with compression/
+					);
+				} finally {
+					catalog.close();
+				}
+			}
+		);
+
+		it.skipIf(!supportedCompression.includes('lz4'))(
+			'applies the requested algorithm to every family when set',
+			() => {
+				const dbPath = seed('none', ['__catalog__', 'records', 'orders']);
+
+				const catalog = RocksDatabase.open(dbPath, {
+					name: '__catalog__',
+					compression: 'lz4',
+					compressionForAllColumnFamilies: true,
+				});
+				try {
+					expect(catalog.compression.algorithm).toBe('lz4');
+					// Both siblings now reconcile to the same codec instead of conflicting.
+					for (const name of ['records', 'orders']) {
+						const sibling = RocksDatabase.open(dbPath, { name, compression: 'lz4' });
+						try {
+							expect(sibling.compression.algorithm).toBe('lz4');
+						} finally {
+							sibling.close();
+						}
+					}
+				} finally {
+					catalog.close();
+				}
+			}
+		);
+
+		it('requires an explicit algorithm', () => {
+			const dbPath = seed('none', ['__catalog__']);
+			expect(() =>
+				RocksDatabase.open(dbPath, { name: '__catalog__', compressionForAllColumnFamilies: true })
+			).toThrow(/requires an explicit compression option/);
+		});
 	});
 
 	describe('compression getter shape', () => {

@@ -55,6 +55,27 @@ static void applyCompression(
 		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
+rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
+	const DBOptions& options,
+	rocksdb::ColumnFamilyOptions cfOptions
+) {
+	rocksdb::BlockBasedTableOptions tableOptions;
+	if (options.noBlockCache) {
+		tableOptions.no_block_cache = true;
+	} else {
+		tableOptions.block_cache = DBSettings::getInstance().getBlockCache();
+	}
+
+	cfOptions.enable_blob_files = true;
+	cfOptions.min_blob_size = 2048;
+	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
+	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
+	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+	return cfOptions;
+}
+
 // Reads each existing column family's persisted compression from the database's
 // latest OPTIONS file into `result`, returning the RocksDB status. The OPTIONS
 // file is the ONLY authoritative source for a CF's stored compression (RocksDB
@@ -190,6 +211,7 @@ private:
 DBDescriptor::DBDescriptor(
 	const std::string& path,
 	const DBOptions& options,
+	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 	std::shared_ptr<rocksdb::Statistics> statistics
@@ -198,6 +220,7 @@ DBDescriptor::DBDescriptor(
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
+	cfOptions(cfOptions),
 	db(db),
 	columns(std::move(columns)),
 	statistics(statistics)
@@ -854,14 +877,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
-	// set or disable the block cache
 	DBSettings& settings = DBSettings::getInstance();
-	rocksdb::BlockBasedTableOptions tableOptions;
-	if (options.noBlockCache) {
-		tableOptions.no_block_cache = true;
-	} else {
-		tableOptions.block_cache = settings.getBlockCache();
-	}
 
 	// set the database options
 	rocksdb::Options dbOptions;
@@ -894,17 +910,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		dbOptions.statistics = nullptr;
 	}
 
-	// Base ColumnFamilyOptions (blob + write-buffer + table settings) shared by
-	// every column family. Compression is intentionally NOT set here: it is
-	// per-CF, so it is applied per descriptor below.
-	rocksdb::ColumnFamilyOptions cfOptions;
-	cfOptions.enable_blob_files = true;
-	cfOptions.min_blob_size = 2048;
-	cfOptions.enable_blob_garbage_collection = true;
-	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
-	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
-	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+	// Base options shared by every column family. Compression is applied per CF
+	// below so opening one family cannot restamp another's algorithm.
+	auto cfOptions = buildColumnFamilyOptions(options);
 
 	// create a shared pointer to hold the weak descriptor reference for the event listener
 	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
@@ -926,6 +934,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// and apply the caller's request ONLY to the target CF (options.name), and
 		// only when it was explicitly requested — the LZ4 default must never
 		// override an existing CF's stored algorithm (a plain reopen inherits it).
+		//
+		// `compressionForAllColumnFamilies` opts out of that per-CF preservation:
+		// the explicit request is applied to every family instead, which is how a
+		// caller expresses "this database uses one codec" for families it never
+		// names (see db_options.h).
 		std::unordered_map<std::string, PersistedCompression> persisted;
 		rocksdb::Status persistedStatus = loadPersistedCompression(path, persisted);
 		if (!persistedStatus.ok()) {
@@ -947,7 +960,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				cfo.blob_compression_type = it->second.blobCompression;
 				cfo.compression_opts = it->second.compressionOpts;
 			}
-			if (cfName == name && options.compression && options.compressionExplicit) {
+			const bool isTarget = cfName == name;
+			if ((isTarget || options.compressionForAllColumnFamilies) && options.compression &&
+				options.compressionExplicit) {
 				applyCompression(cfo, *options.compression, options.compressionLevel);
 			}
 			cfDescriptors.emplace_back(cfName, cfo);
@@ -1019,13 +1034,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		}
 	}
 	if (!columnExists) {
-		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, options.compression, options.compressionLevel);
+		auto cfo = cfOptions;
+		if (options.compression) {
+			applyCompression(cfo, *options.compression, options.compressionLevel);
+		}
+		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 
 	// set the weak pointer for the event listener
 	*descriptorWeakPtr = descriptor;
@@ -1707,12 +1726,28 @@ rocksdb::Status DBDescriptor::flush() {
 rocksdb::Status DBDescriptor::compactRange(
 	rocksdb::ColumnFamilyHandle* column,
 	const rocksdb::Slice* start,
-	const rocksdb::Slice* end
+	const rocksdb::Slice* end,
+	bool bottommost
 ) {
 	std::lock_guard<std::mutex> lock(this->compactMutex);
-	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range\n", this);
+	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
+	rocksdb::CompactRangeOptions options;
+	if (bottommost) {
+		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
+		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting
+		// it is the only way to re-encode existing files (a changed compression codec applies to
+		// newly written files only), so it has to be requested explicitly. kForceOptimized (rather
+		// than kForce) still avoids double-compacting bottommost files this same manual compaction
+		// already produced.
+		options.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
+		// SST re-encoding alone leaves large values on the old codec: they live in blob files, and
+		// blob GC's default age cutoff only reclaims the oldest fraction of blob files. Force GC
+		// across the full age range so a bottommost compaction re-encodes blobs too.
+		options.blob_garbage_collection_policy = rocksdb::BlobGarbageCollectionPolicy::kForce;
+		options.blob_garbage_collection_age_cutoff = 1.0;
+	}
 	return this->db->CompactRange(
-		rocksdb::CompactRangeOptions(),
+		options,
 		column,
 		start,
 		end

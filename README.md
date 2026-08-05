@@ -128,7 +128,9 @@ when a non-default compression level is set. The database must be open. See
 [Compression](#compression).
 
 ```typescript
-const db = RocksDatabase.open('path/to/db', { compression: { algorithm: 'zstd', level: 3 } });
+const db = RocksDatabase.open('path/to/db', {
+	compression: { algorithm: 'zstd', level: 3 },
+});
 console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
@@ -260,11 +262,20 @@ per database path can be performed at a time.
 - `options: object`
   - `start?: Key` The start key of the range to compact.
   - `end?: Key` The end key of the range to compact.
+  - `bottommost?: boolean` Also compact the bottommost level, rewriting every file in range.
+    RocksDB skips that level by default when no compaction filter is installed, and it holds most
+    of the data — so an ordinary compaction leaves it untouched. Because a changed
+    [`compression`](#compression) algorithm governs only newly written files, this is the way to
+    re-encode data that already exists. It rewrites the whole range regardless of whether RocksDB
+    considers it worthwhile, so it costs as much as the data is large. Defaults to `false`.
 
 ```typescript
 await db.compact();
 
 await db.compact({ start: 'a', end: 'z' });
+
+// Re-encode everything already on disk under the column family's current codec
+await db.compact({ bottommost: true });
 ```
 
 ### `db.compactSync(options?): void`
@@ -275,6 +286,8 @@ Synchronous version of `compact()`.
 db.compactSync();
 
 db.compactSync({ start: 'a', end: 'z' });
+
+db.compactSync({ bottommost: true });
 ```
 
 ### `db.destroy(): void`
@@ -660,6 +673,9 @@ an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column fami
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
 operations methods as the `RocksDatabase` instance plus:
 
+- `txn.abandonWrites(): void` Releases the staged writes' verification-table write intents without
+  closing the transaction, and bars any further writes or commit. Reads (including read-your-own-writes)
+  keep working until the transaction is aborted.
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
@@ -672,6 +688,22 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
   a timestamp, it will set the timestamp to the current time. The value must be in seconds with
   higher precision in the decimal.
+
+#### `txn.abandonWrites(): void`
+
+Releases the staged writes' verification-table (VT) write intents without closing the transaction,
+and bars any further writes or commit (`commit()`/`commitSync()`/`put()`/`remove()`, including
+database-context writes via `{ transaction: txn }`, all reject once called). Reads — including
+read-your-own-writes — keep working until the transaction is aborted. Idempotent, and a no-op after
+`abort()`.
+
+Scope is VT intents only: RocksDB's own transaction locks (pessimistic mode) are still held until
+the transaction is aborted.
+
+This is for a transaction kept open only for its outstanding read iterators after its writes were
+already committed elsewhere (e.g. replayed onto another transaction) — it lets the intents release
+early so other writers' coordinated-retry commits stop parking on them, instead of waiting for the
+handle's eventual `abort()`.
 
 #### `txn.abort(): void`
 
@@ -960,7 +992,9 @@ Set the algorithm per column family with the `compression` option when opening a
 const db = RocksDatabase.open('/path/to/db', { compression: 'zstd' });
 
 // Or an object with an explicit level
-const db2 = RocksDatabase.open('/path/to/db2', { compression: { algorithm: 'zstd', level: 3 } });
+const db2 = RocksDatabase.open('/path/to/db2', {
+	compression: { algorithm: 'zstd', level: 3 },
+});
 
 // Disable compression entirely
 const db3 = RocksDatabase.open('/path/to/db3', { compression: 'none' });
@@ -976,6 +1010,37 @@ LZ4.) Read the algorithm actually in effect with the `db.compression` getter.
 was compiled against, so it varies by build. Always check
 [`supportedCompression`](#supportedcompression) at runtime — opening with an unavailable algorithm
 throws. `'none'` is always available.
+
+**Changing the codec of data already written.** Setting `compression` affects files written from
+that point on. Existing SST and blob files keep the codec they were written with until something
+rewrites them. An ordinary `compact()` can re-encode non-bottommost levels, but RocksDB leaves the
+bottommost level alone unless a compaction filter is installed — and that is where most of the data
+sits, so a plain compaction will not rewrite all existing data. Use
+[`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to force the rewrite, once per
+column family you want migrated. Note also that omitting `compression` on a column family that
+already exists **inherits** its current codec rather than applying the default — the default
+applies only when the family is created.
+
+**Adopting a codec across a whole database.** Compression is chosen per column family, and RocksDB
+opens every family of a database in one call — so by default the families you did not name keep
+their persisted algorithm. If your first open targets some other family (a catalog, say), the rest
+are already open at their old algorithm before you can ask for a new one, and a family's compression
+cannot be changed while it is open. Pass `compressionForAllColumnFamilies: true` to apply the
+requested algorithm to all of them instead:
+
+```typescript
+// Every column family in this database adopts lz4, not just 'catalog'
+const db = RocksDatabase.open('/path/to/db', {
+	name: 'catalog',
+	compression: 'lz4',
+	compressionForAllColumnFamilies: true,
+});
+```
+
+It requires an explicit `compression`, and only takes effect on the open that creates the database
+handle — later opens of the same path reuse that handle. As always the algorithm governs newly
+written files; use [`compact({ bottommost: true })`](#dbcompactoptions-promisevoid) to rewrite what
+is already there.
 
 **Scope and mutability.** Compression is genuinely **per-column-family**. Each `RocksDatabase`
 targets one column family (`name`), and its `compression` applies only to that CF — opening one CF
@@ -1661,7 +1726,9 @@ live database directory would write backup files on top of RocksDB's own files. 
 before anything is written.
 
 ```typescript
-const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' });
+const id = await db.backup('/path/to/backups', {
+	metadata: 'nightly-2026-06-04',
+});
 ```
 
 `BackupOptions`:
@@ -1711,7 +1778,9 @@ await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar')));
 // Restore: `tar -xf backup.tar -C /restored`, then open '/restored'.
 
 // Or gzip it (`tar -xzf backup.tar.gz` to restore):
-await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), { gzip: true });
+await db.backup(Writable.toWeb(createWriteStream('/path/to/backup.tar.gz')), {
+	gzip: true,
+});
 ```
 
 `BackupStreamOptions`:

@@ -245,7 +245,7 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Compact(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(4);
+	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->descriptor->readOnly) {
@@ -273,6 +273,13 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		NAPI_GET_BUFFER(argv[3], endKey, "End key must be a buffer");
 		state->endKey = std::string(endKey, endKeyLength);
 		state->hasEnd = true;
+	}
+
+	// Check for optional bottommost flag (argv[4])
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &state->bottommost));
 	}
 
 	napi_value name;
@@ -303,7 +310,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 				state->status = state->handle->descriptor->compactRange(
 					state->handle->columnDescriptor->column.get(),
 					startPtr,
-					endPtr
+					endPtr,
+					state->bottommost
 				);
 			}
 			// signal that execute handler is complete
@@ -354,7 +362,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
 	if ((*dbHandle)->descriptor->readOnly) {
@@ -381,11 +389,19 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 		endPtr = &endSlice;
 	}
 
+	bool bottommost = false;
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &bottommost));
+	}
+
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
 		(*dbHandle)->descriptor->compactRange(
 			(*dbHandle)->columnDescriptor->column.get(),
 			startPtr,
-			endPtr
+			endPtr,
+			bottommost
 		),
 		"Compact failed"
 	);
@@ -1474,6 +1490,21 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		dbHandleOptions.compression = rocksdb::kLZ4Compression;
 	}
 
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(
+		env,
+		options,
+		"compressionForAllColumnFamilies",
+		dbHandleOptions.compressionForAllColumnFamilies
+	));
+	if (dbHandleOptions.compressionForAllColumnFamilies && !dbHandleOptions.compressionExplicit) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			"compressionForAllColumnFamilies requires an explicit compression option"
+		);
+		return nullptr;
+	}
+
 	// statistics
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "enableStats", dbHandleOptions.enableStats));
 	if (dbHandleOptions.enableStats) {
@@ -1592,6 +1623,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
+		if (txnHandle->writesAbandoned) {
+			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+		}
 		status = txnHandle->putSync(
 			keySlice,
 			valueSlice,
@@ -1666,6 +1700,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
+		}
+		if (txnHandle->writesAbandoned) {
+			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
