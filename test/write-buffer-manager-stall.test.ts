@@ -47,25 +47,28 @@ describe('WriteBufferManager stall', () => {
 		60_000
 	);
 
-	// Zeroing history is only safe because RocksDB's fallback is conservative: with no history to
-	// check against it reports "cannot determine" rather than passing the commit. A change that
+	// Zeroing history is only safe because RocksDB's fallback is conservative: asked to validate a
+	// sequence it no longer holds, it refuses the commit rather than passing it. A change that
 	// turned that into a silent accept would be a lost update, and the stall test above would
-	// still pass, so assert the conflict is refused here.
-	it('should still refuse a conflicting commit with no retained history', () =>
+	// still pass. The flush is what makes this the zero-history path rather than an ordinary
+	// active-memtable conflict — it discards the sequence the check would otherwise have found.
+	it('should still refuse a conflicting commit whose sequence was flushed out of history', () =>
 		dbRunner({ dbOptions: [{}, { name: 'late' }] }, async (_, { db }) => {
 			await db.put('conflict', 'initial');
-			setTimeout(() => db?.put('conflict', 'concurrent'));
 
 			let committed = false;
 			try {
 				await db.transaction(async (txn) => {
 					await txn.get('conflict');
-					await new Promise((resolve) => setTimeout(resolve, 100));
+					await db.put('conflict', 'concurrent');
+					await db.flush();
 					await txn.put('conflict', 'transactional');
 				});
 				committed = true;
 			} catch (error) {
-				expect((error as { code?: string }).code).toMatch(/ERR_BUSY|ERR_TRY_AGAIN/);
+				// ERR_TRY_AGAIN, not ERR_BUSY: the flush is what puts this on the zero-history
+				// path, so the code also confirms the scenario is the intended one.
+				expect((error as { code?: string }).code).toBe('ERR_TRY_AGAIN');
 			}
 			expect(committed).toBe(false);
 			expect(await db.get('conflict')).toBe('concurrent');
