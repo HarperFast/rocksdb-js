@@ -328,11 +328,15 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
-					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
+					if (length === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
 						const broken = corruptFrame(
-							`Corrupt transaction log entry at position ${position.toString(16)} of log ${
-								logBuffer!.logId
-							}: declared length ${length} overruns the log (limit=${limit})`,
+							length === 0
+								? `Corrupt transaction log entry at position ${position.toString(16)} of log ${
+										logBuffer!.logId
+									}: zero-length entry`
+								: `Corrupt transaction log entry at position ${position.toString(16)} of log ${
+										logBuffer!.logId
+									}: declared length ${length} overruns the log (limit=${limit})`,
 							transactionLog,
 							dataView,
 							logBuffer!,

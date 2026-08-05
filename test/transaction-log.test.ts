@@ -1587,6 +1587,48 @@ describe('Transaction Log', () => {
 				}
 			}));
 
+		it('query() resyncs past a zero-length frame and still yields the entries after it', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
+				for (let i = 0; i < 12; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(12);
+
+				// A zero-length frame is invalid, not an empty transaction. Entries after it remain
+				// readable once the caller resumes the iterator after the corruption report.
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
+				copyBuffer.writeUInt32BE(0, secondEntryStart + 8);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				const realDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getMemoryMapOfFile'
+				)!;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
+					expect(errors).toHaveLength(1);
+					expect(errors[0]).toBeInstanceOf(CorruptFrameError);
+					expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
+					expect(entries).toHaveLength(11);
+				} finally {
+					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+				}
+			}));
+
 		// Nothing valid follows a torn tail, so there is nothing to resync to — but the reader must
 		// still not re-throw at the same position forever.
 		it('query() reports a torn tail once and then reads as end-of-log', () =>
