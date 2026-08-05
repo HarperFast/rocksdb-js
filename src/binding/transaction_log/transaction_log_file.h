@@ -192,6 +192,15 @@ struct TransactionLogFile final {
 	 */
 	std::atomic<bool> hasAppendedSinceOpen = false;
 
+	/**
+	 * True once a failed append left bytes past `size` that could not be erased. The file is then
+	 * refused for further appends (writeEntriesV1 defers to the next file, exactly as it does for a
+	 * file at its max size) so the orphaned bytes stay the trailing partial that recoverTail() can
+	 * repair, instead of becoming a mid-file break with valid entries on both sides — the shape it
+	 * must leave intact (HarperFast/rocksdb-js#748).
+	 */
+	std::atomic<bool> appendBoundaryLost = false;
+
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
 	// prevent copying

@@ -430,6 +430,16 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	uint32_t numEntriesToWrite = 0;
 	uint32_t totalSizeToWrite = 0;
 
+	if (this->appendBoundaryLost.load(std::memory_order_relaxed)) {
+		// Bytes we could not erase sit past `size`; appending here would put valid
+		// entries on the far side of them. Write nothing, which the store reads as
+		// "no progress" and answers by rotating to the next file — leaving these
+		// bytes as a trailing partial that recoverTail() can still truncate.
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Append boundary lost, deferring to next file: %s\n",
+			this, this->path.string().c_str());
+		return;
+	}
+
 	// check if the file is at or over the max size
 	if (maxFileSize > 0) {
 		if (this->size >= maxFileSize) {
@@ -508,16 +518,17 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		// because valid entries follow it.
 		uint32_t committedSize = this->size.load(std::memory_order_relaxed);
 		if (bytesLanded > 0 && !this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {
+			// Retire the file rather than append past bytes we could not remove.
+			this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+
 			std::ostringstream msg;
 			msg << "Transaction log " << this->path.string() << " kept " << bytesLanded
 				<< " orphaned byte(s) from a failed append at offset " << committedSize
-				<< "; the file now has a framing break and entries written after it will be unreachable "
-					"until it is repaired.";
+				<< " and could not remove them; no further entries will be written to this file.";
 			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 WARNING: %s\n", this, msg.str().c_str());
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 		}
 
-		// currentEntryIndex tracks entries that are on disk; none of these are.
 		batch.currentEntryIndex = startEntryIndex;
 
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());
