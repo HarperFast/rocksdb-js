@@ -409,8 +409,9 @@ export class Store {
 
 	/**
 	 * The total memtable budget in bytes across all column families. When the
-	 * sum of memtables reaches this size, RocksDB flushes the largest one. `0`
-	 * disables the global trigger so per-CF `writeBufferSize` drives flushing.
+	 * sum of memtables reaches this size, RocksDB flushes the largest one.
+	 * Defaults to 32 MiB when omitted. `0` disables the global trigger so per-CF
+	 * `writeBufferSize` drives flushing.
 	 */
 	dbWriteBufferSize?: number;
 

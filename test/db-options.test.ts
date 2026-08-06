@@ -24,11 +24,38 @@ describe('Database write buffer options', () => {
 			}
 		));
 
-	it('should open with dbWriteBufferSize set', () =>
-		dbRunner({ dbOptions: [{ dbWriteBufferSize: 64 * 1024 * 1024 }] }, async ({ db }) => {
-			await db.put('foo', 'bar');
-			expect(await db.get('foo')).toBe('bar');
+	it('should retain the default 32 MiB global write buffer trigger', () =>
+		dbRunner({ dbOptions: [{ writeBufferSize: 64 * 1024 * 1024 }] }, async ({ db }) => {
+			const value = 'x'.repeat(1024);
+			for (let i = 0; i < 40 * 1024; i++) {
+				await db.put(`key-${i}`, value);
+			}
+			expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
 		}));
+
+	it('should disable the global write buffer trigger when dbWriteBufferSize is zero', () =>
+		dbRunner(
+			{ dbOptions: [{ dbWriteBufferSize: 0, writeBufferSize: 64 * 1024 * 1024 }] },
+			async ({ db }) => {
+				const value = 'x'.repeat(1024);
+				for (let i = 0; i < 40 * 1024; i++) {
+					await db.put(`key-${i}`, value);
+				}
+				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBe(0);
+			}
+		));
+
+	it('should apply an explicit dbWriteBufferSize', () =>
+		dbRunner(
+			{ dbOptions: [{ dbWriteBufferSize: 64 * 1024, writeBufferSize: 64 * 1024 * 1024 }] },
+			async ({ db }) => {
+				const value = 'x'.repeat(1024);
+				for (let i = 0; i < 1024; i++) {
+					await db.put(`key-${i}`, value);
+				}
+				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
+			}
+		));
 
 	it('should open with maxWriteBufferSizeToMaintain set', () =>
 		dbRunner(
