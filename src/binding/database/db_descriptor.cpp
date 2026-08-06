@@ -902,7 +902,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
-	dbOptions.max_log_file_size = options.maxLogFileSize; // bounds each retained log file's size (see db_options.h)
+	// Explicit narrowing: RocksDB's field is size_t; the value is validated
+	// <= MAX_SAFE_INTEGER at parse time, and a >4GB info-log cap (only reachable
+	// on a 32-bit build) is nonsensical, so the cast is safe and silences
+	// -Wshorten-64-to-32. Bounds each retained log file's size (see db_options.h).
+	dbOptions.max_log_file_size = static_cast<size_t>(options.maxLogFileSize);
 	if (options.infoLogLevel.has_value()) {
 		dbOptions.info_log_level = static_cast<rocksdb::InfoLogLevel>(*options.infoLogLevel);
 	}

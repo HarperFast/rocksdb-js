@@ -1,4 +1,3 @@
-import { RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
@@ -229,70 +228,52 @@ describe('Database informational log options', () => {
 // mirrors the compression conflict discipline (and the bug Kris caught: a plain
 // reopen carrying a default must NOT falsely reject after a custom first open).
 describe('Database informational log options — already-open path', () => {
-	it('throws when a second open explicitly requests a different maxLogFileSize', () => {
-		const path = generateDBPath();
-		const dbA = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
-		try {
-			expect(() => RocksDatabase.open(path, { maxLogFileSize: 8 * 1024 * 1024 })).toThrow(
-				/already open with maxLogFileSize/
-			);
-		} finally {
-			dbA.close();
-		}
-	});
+	const MB = 1024 * 1024;
+
+	// Two handles on the SAME path (dbRunner creates N same-path databases for an
+	// N-arg callback and cleans up every generated dir, respecting KEEP_FILES). The
+	// throw cases use skipOpen so the second open can be asserted; the inherit/same
+	// cases let dbRunner open both.
+
+	it('throws when a second open explicitly requests a different maxLogFileSize', () =>
+		dbRunner(
+			{ dbOptions: [{ maxLogFileSize: 4 * MB }, { maxLogFileSize: 8 * MB }], skipOpen: true },
+			({ db: dbA }, { db: dbB }) => {
+				dbA.open();
+				expect(() => dbB.open()).toThrow(/already open with maxLogFileSize/);
+			}
+		));
 
 	// Critical regression guard: a plain reopen carries the 16MB default
 	// (non-explicit) — it must inherit the first opener's custom value, NOT
 	// falsely reject.
-	it('allows a plain reopen (no maxLogFileSize) and inherits the first value', () => {
-		const path = generateDBPath();
-		const dbA = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
-		let dbB: RocksDatabase | undefined;
-		try {
-			dbB = RocksDatabase.open(path);
-			expect(dbB.logOptions.maxLogFileSize).toBe(4 * 1024 * 1024);
-		} finally {
-			dbA.close();
-			dbB?.close();
-		}
-	});
+	it('allows a plain reopen (no maxLogFileSize) and inherits the first value', () =>
+		dbRunner({ dbOptions: [{ maxLogFileSize: 4 * MB }, {}] }, ({ db: dbA }, { db: dbB }) => {
+			expect(dbA.logOptions.maxLogFileSize).toBe(4 * MB);
+			expect(dbB.logOptions.maxLogFileSize).toBe(4 * MB);
+		}));
 
-	it('allows a second open requesting the same maxLogFileSize', () => {
-		const path = generateDBPath();
-		const dbA = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
-		let dbB: RocksDatabase | undefined;
-		try {
-			dbB = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
-			expect(dbB.logOptions.maxLogFileSize).toBe(4 * 1024 * 1024);
-		} finally {
-			dbA.close();
-			dbB?.close();
-		}
-	});
+	it('allows a second open requesting the same maxLogFileSize', () =>
+		dbRunner(
+			{ dbOptions: [{ maxLogFileSize: 4 * MB }, { maxLogFileSize: 4 * MB }] },
+			(_dbA, { db: dbB }) => {
+				expect(dbB.logOptions.maxLogFileSize).toBe(4 * MB);
+			}
+		));
 
-	it('throws when a second open explicitly requests a different infoLogLevel', () => {
-		const path = generateDBPath();
-		const dbA = RocksDatabase.open(path, { infoLogLevel: 2 });
-		try {
-			expect(() => RocksDatabase.open(path, { infoLogLevel: 3 })).toThrow(
-				/already open with infoLogLevel/
-			);
-		} finally {
-			dbA.close();
-		}
-	});
+	it('throws when a second open explicitly requests a different infoLogLevel', () =>
+		dbRunner(
+			{ dbOptions: [{ infoLogLevel: 2 }, { infoLogLevel: 3 }], skipOpen: true },
+			({ db: dbA }, { db: dbB }) => {
+				dbA.open();
+				expect(() => dbB.open()).toThrow(/already open with infoLogLevel/);
+			}
+		));
 
 	// A plain reopen omitting infoLogLevel must inherit the live level, not reject.
-	it('allows a plain reopen (no infoLogLevel) after a custom first open', () => {
-		const path = generateDBPath();
-		const dbA = RocksDatabase.open(path, { infoLogLevel: 2 });
-		let dbB: RocksDatabase | undefined;
-		try {
-			dbB = RocksDatabase.open(path);
+	it('allows a plain reopen (no infoLogLevel) after a custom first open', () =>
+		dbRunner({ dbOptions: [{ infoLogLevel: 2 }, {}] }, ({ db: dbA }, { db: dbB }) => {
+			expect(dbA.logOptions.infoLogLevel).toBe(2);
 			expect(dbB.logOptions.infoLogLevel).toBe(2);
-		} finally {
-			dbA.close();
-			dbB?.close();
-		}
-	});
+		}));
 });

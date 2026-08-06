@@ -322,8 +322,11 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		// reject (mirrors the compression discipline below).
 		{
 			rocksdb::DBOptions current = entry.descriptor->db->GetDBOptions();
+			// Widen the live size_t to uint64_t rather than narrowing the request to
+			// size_t: on a 32-bit build narrowing would truncate a >4GB request and
+			// could falsely compare equal (skipping a real conflict).
 			if (options.maxLogFileSizeExplicit &&
-				current.max_log_file_size != static_cast<size_t>(options.maxLogFileSize)
+				static_cast<uint64_t>(current.max_log_file_size) != options.maxLogFileSize
 			) {
 				throw rocksdb_js::DBException(
 					"Database \"" + path + "\" is already open with maxLogFileSize " +
