@@ -61,6 +61,27 @@ struct DBOptions final {
 	// (see `deriveMaxOpenFiles`); -1 = unlimited (every SST held open — can
 	// exhaust the process fd limit under compaction lag); >0 = explicit cap.
 	int32_t maxOpenFiles = 0;
+	// Per-file size cap for informational log files (`LOG` / `LOG.old.*`,
+	// `max_log_file_size`). RocksDB's own default is 0 (unbounded — a file only
+	// rotates on reopen), which combined with `keep_log_file_num` retaining
+	// several files let purely informational logging grow without bound in
+	// production (HarperFast/rocksdb-js#729). 16MB matches this codebase's other
+	// 16MB size defaults (`writeBufferSize`, `transactionLogMaxSize`); with
+	// `keep_log_file_num = 5` (set alongside this in `DBDescriptor::open`), the
+	// total informational-log footprint is bounded at `5 * maxLogFileSize` = 80MB.
+	uint64_t maxLogFileSize = 16ULL * 1024 * 1024; // 16MB
+	// Whether `maxLogFileSize` came from an explicit caller request (vs the 16MB
+	// default). `max_log_file_size` is a DB-wide `DBOptions` value fixed at first
+	// open, so `DBRegistry::OpenDB` rejects a second in-process open of an
+	// already-open path that explicitly asks for a *different* size, while
+	// letting a plain reopen (non-explicit default) inherit the live value —
+	// same discipline as `compressionExplicit` (see db_registry.cpp).
+	bool maxLogFileSizeExplicit = false;
+	// Verbosity of informational logging (`info_log_level`). `std::nullopt`
+	// leaves RocksDB's own default (`Logger::kDefaultLogLevel`: `INFO_LEVEL` in
+	// release builds, `DEBUG_LEVEL` in debug builds of the linked RocksDB
+	// library) untouched.
+	std::optional<uint8_t> infoLogLevel;
 	DBMode mode = DBMode::Optimistic;
 	std::string name;
 	bool noBlockCache = false;
