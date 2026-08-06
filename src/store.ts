@@ -438,7 +438,11 @@ export class Store {
 	/**
 	 * The bytes of recent memtable history to retain in memory for transaction
 	 * conflict checking. `-1` derives the value from
-	 * `maxWriteBufferNumber * writeBufferSize`.
+	 * `maxWriteBufferNumber * writeBufferSize`, except under a stalling
+	 * `writeBufferManager`, where it derives `0`: retained history is charged to
+	 * that manager and is only trimmable down to this target, so a target the
+	 * budget cannot hold stalls writes permanently. Set a number to size it
+	 * yourself against the budget and the column-family count.
 	 */
 	maxWriteBufferSizeToMaintain?: number;
 
