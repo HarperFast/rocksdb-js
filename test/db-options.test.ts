@@ -24,7 +24,7 @@ describe('Database write buffer options', () => {
 			}
 		));
 
-	it('should retain the default 32 MiB global write buffer trigger', () =>
+	it('should leave the global write buffer trigger disabled by default', () =>
 		dbRunner(
 			{ dbOptions: [{ maxWriteBufferNumber: 2, writeBufferSize: 256 * 1024 * 1024 }] },
 			async ({ db }) => {
@@ -32,7 +32,9 @@ describe('Database write buffer options', () => {
 				for (let i = 0; i < 96 * 1024; i++) {
 					await db.put(`key-${i}`, value);
 				}
-				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
+				// 96 MiB written under a 256 MiB per-CF buffer: nothing reaches disk unless a
+				// global trigger forces it, so an SST here means the default stopped being off.
+				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBe(0);
 			}
 		));
 

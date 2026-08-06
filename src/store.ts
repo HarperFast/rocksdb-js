@@ -410,8 +410,12 @@ export class Store {
 	/**
 	 * The total memtable budget in bytes across all column families. When the
 	 * sum of memtables reaches this size, RocksDB flushes the largest one.
-	 * Defaults to 32 MiB when omitted. `0` disables the global trigger so per-CF
+	 * Defaults to `0`, which disables the global trigger so per-CF
 	 * `writeBufferSize` drives flushing.
+	 *
+	 * Set this only if you know your column-family count: it is one budget split
+	 * across all of them, so a value that suits a few families starves many. To
+	 * bound total memtable memory instead, configure a WriteBufferManager.
 	 */
 	dbWriteBufferSize?: number;
 

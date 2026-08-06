@@ -24,10 +24,20 @@ enum class DBMode {
 struct DBOptions final {
 	// Global memtable size trigger across all column families. When the sum of
 	// all memtables reaches this size, the largest memtable is flushed. With
-	// `atomic_flush = true`, this triggers flushes across every CF. Defaults to
-	// 32 MiB when omitted; 0 disables the global trigger so per-CF
-	// `writeBufferSize` drives flushing.
-	uint64_t dbWriteBufferSize = 32ULL * 1024 * 1024;
+	// `atomic_flush = true`, this triggers flushes across every CF. 0 (the
+	// default) disables the global trigger so per-CF `writeBufferSize` drives
+	// flushing.
+	//
+	// Off by default because this is ONE budget divided among every column
+	// family, so its safe value depends on a column-family count that is not
+	// knowable here. Measured on a round-robin ingest, a fixed 32 MiB collapsed
+	// throughput from ~220 MiB/s to ~1 MiB/s once 16 families each configured
+	// with a 16 MiB `writeBufferSize` shared it — RocksDB thrashes on "flush the
+	// largest memtable", ~2 KB per flush. Any fixed value has that cliff at some
+	// family count; 0 has none. Callers that need a bound on total memtable
+	// memory should set a WriteBufferManager, which bounds it across databases
+	// rather than dividing a fixed budget among families.
+	uint64_t dbWriteBufferSize = 0;
 	bool disableWAL = false;
 	bool enableStats = false;
 	// Maximum number of memtables that can be queued per column family before
