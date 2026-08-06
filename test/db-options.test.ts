@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 /** Polls until a flush lands, so a test asserting one happened does not race it. */
 async function waitForSstFiles(
 	db: { getDBIntProperty(name: string): number | undefined },
-	timeoutMs = 30000
+	timeoutMs = 45000
 ) {
 	const deadline = Date.now() + timeoutMs;
 	let size = 0;
@@ -69,28 +69,34 @@ describe('Database write buffer options', () => {
 			}
 		));
 
-	it('should apply an explicit dbWriteBufferSize', () =>
-		dbRunner(
-			{
-				dbOptions: [
-					{
-						dbWriteBufferSize: 1024 * 1024,
-						maxWriteBufferNumber: 2,
-						writeBufferSize: 256 * 1024 * 1024,
-					},
-				],
-			},
-			async ({ db }) => {
-				const value = 'x'.repeat(1024);
-				for (let i = 0; i < 2 * 1024; i++) {
-					await db.put(`key-${i}`, value);
+	it(
+		'should apply an explicit dbWriteBufferSize',
+		() =>
+			dbRunner(
+				{
+					dbOptions: [
+						{
+							dbWriteBufferSize: 1024 * 1024,
+							maxWriteBufferNumber: 2,
+							writeBufferSize: 256 * 1024 * 1024,
+						},
+					],
+				},
+				async ({ db }) => {
+					const value = 'x'.repeat(1024);
+					for (let i = 0; i < 2 * 1024; i++) {
+						await db.put(`key-${i}`, value);
+					}
+					// The global trigger SCHEDULES a flush; it does not complete one before the last
+					// put resolves. Asserting immediately races the background flush — it wins on a
+					// fast Linux runner and loses intermittently on Windows.
+					expect(await waitForSstFiles(db)).toBeGreaterThan(0);
 				}
-				// The global trigger SCHEDULES a flush; it does not complete one before the last
-				// put resolves. Asserting immediately races the background flush — it wins on a
-				// fast Linux runner and loses intermittently on Windows.
-				expect(await waitForSstFiles(db)).toBeGreaterThan(0);
-			}
-		));
+			),
+		// Well past the 30s global testTimeout: on Windows the 2048-put loop alone has been
+		// measured at ~14s, and the flush this waits for lands after that.
+		120000
+	);
 
 	it.each([NaN, Infinity, -1, 1.5, 2 ** 53])(
 		'should reject invalid dbWriteBufferSize values',
