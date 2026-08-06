@@ -1,6 +1,7 @@
 #include <node_api.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include "database/database.h"
 #include "database/db_handle.h"
@@ -1542,8 +1543,12 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferNumber", dbHandleOptions.maxWriteBufferNumber));
 	double dbWriteBufferSizeValue = static_cast<double>(dbHandleOptions.dbWriteBufferSize);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbWriteBufferSizeValue));
+	const double maxDbWriteBufferSize = std::min(
+		9007199254740991.0,
+		static_cast<double>(std::numeric_limits<size_t>::max())
+	);
 	if (!std::isfinite(dbWriteBufferSizeValue) || dbWriteBufferSizeValue != std::trunc(dbWriteBufferSizeValue) ||
-		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > 9007199254740991.0
+		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > maxDbWriteBufferSize
 	) {
 		::napi_throw_error(env, nullptr, "dbWriteBufferSize must be a non-negative safe integer");
 		return nullptr;
