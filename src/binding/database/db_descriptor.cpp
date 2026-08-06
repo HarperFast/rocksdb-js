@@ -55,6 +55,42 @@ static void applyCompression(
 		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
+/**
+ * Resolves `max_write_buffer_size_to_maintain` for a column family.
+ *
+ * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
+ * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
+ * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
+ * is never released, and a manager built with `allowStall` stalls every write to the database
+ * permanently.
+ *
+ * The derived default (`-1` → `maxWriteBufferNumber * writeBufferSize`) is dropped to 0 under any
+ * stalling manager. Deliberately coarse: the safe per-family bound is the budget divided by the
+ * live column-family count, which is not knowable here, so a comfortably-sized budget loses its
+ * history window too. The cost is that conflict checking reports "cannot determine"
+ * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
+ *
+ * That cost was measured rather than assumed, which is why the coarse form is kept instead of a
+ * budget-aware clamp: it is ~zero whenever flushing is organic (driven by memtables filling), and
+ * only appears once flushes are frequent relative to transaction lifetime — at a forced 20ms
+ * cadence against 20ms+ transactions it roughly doubles attempts per commit, as history is what
+ * would otherwise resolve a non-conflicting transaction whose snapshot has already been flushed
+ * away. A clamp would only recover that regime.
+ *
+ * An explicit caller value is honored untouched — sizing it against the budget and the
+ * column-family count is then the caller's job.
+ */
+static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
+	if (options.maxWriteBufferSizeToMaintain >= 0) {
+		return options.maxWriteBufferSizeToMaintain;
+	}
+	DBSettings& settings = DBSettings::getInstance();
+	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
+		return 0;
+	}
+	return options.maxWriteBufferSizeToMaintain;
+}
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	rocksdb::ColumnFamilyOptions cfOptions
@@ -71,7 +107,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
