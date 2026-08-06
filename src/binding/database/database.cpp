@@ -835,6 +835,42 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns the informational log settings currently in effect for this
+ * database, read live from RocksDB via `GetOptions`, as
+ * `{ maxLogFileSize, infoLogLevel }`. These are database-wide (`DBOptions`)
+ * settings, not per-column-family, so the value is the same regardless of
+ * which column family's handle this is called on.
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * db.getLogOptions(); // { maxLogFileSize: 16777216, infoLogLevel: 1 }
+ * ```
+ */
+napi_value Database::GetLogOptions(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	// Guard against a concurrent destroy()/close on another handle for the same
+	// (process-global) descriptor resetting descriptor->db mid-read.
+	ACQUIRE_OPERATIONS_LOCK();
+
+	rocksdb::Options opts = (*dbHandle)->descriptor->db->GetOptions((*dbHandle)->getColumnFamilyHandle());
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+
+	napi_value maxLogFileSize;
+	NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(opts.max_log_file_size), &maxLogFileSize));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "maxLogFileSize", maxLogFileSize));
+
+	napi_value infoLogLevel;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(opts.info_log_level), &infoLogLevel));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "infoLogLevel", infoLogLevel));
+
+	return result;
+}
+
+/**
  * Gets the number of keys within a range or in the entire RocksDB database.
  *
  * @example
@@ -1539,6 +1575,65 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	dbHandleOptions.maxOpenFiles = static_cast<int32_t>(maxOpenFilesValue);
+
+	// Parse maxLogFileSize as a double and validate BEFORE narrowing to
+	// uint64_t: getValue(uint64_t&) casts a negative int64 to a huge unsigned
+	// value (-1 -> UINT64_MAX = effectively unbounded, defeating the bound) and
+	// silently truncates fractionals. Absent leaves the struct's 16MB default
+	// (non-explicit, so a plain reopen inherits the live value); 0 is allowed
+	// (RocksDB's "single unbounded file" mode, explicitly opted in).
+	bool hasMaxLogFileSize = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "maxLogFileSize", &hasMaxLogFileSize));
+	double maxLogFileSizeValue = static_cast<double>(dbHandleOptions.maxLogFileSize);
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxLogFileSize", maxLogFileSizeValue));
+	if (std::isnan(maxLogFileSizeValue) || maxLogFileSizeValue != std::trunc(maxLogFileSizeValue) ||
+		maxLogFileSizeValue < 0.0 || maxLogFileSizeValue > 9007199254740991.0
+	) {
+		::napi_throw_error(env, nullptr, "maxLogFileSize must be a non-negative integer no greater than Number.MAX_SAFE_INTEGER");
+		return nullptr;
+	}
+	dbHandleOptions.maxLogFileSize = static_cast<uint64_t>(maxLogFileSizeValue);
+	// A present null/undefined is not an explicit request (getProperty leaves the
+	// default in that case), so only mark explicit when the value actually parsed
+	// as a number.
+	if (hasMaxLogFileSize) {
+		napi_value maxLogFileSizeProp;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "maxLogFileSize", &maxLogFileSizeProp));
+		napi_valuetype maxLogFileSizeType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, maxLogFileSizeProp, &maxLogFileSizeType));
+		dbHandleOptions.maxLogFileSizeExplicit = maxLogFileSizeType == napi_number;
+	}
+
+	// infoLogLevel is optional; leaving it unset (std::nullopt) keeps RocksDB's
+	// own info_log_level (see DBOptions::infoLogLevel). Parse a present value
+	// wide and validate BEFORE narrowing to uint8_t: a raw narrow would wrap an
+	// out-of-range value into a valid-looking level (e.g. 256 -> 0 = DEBUG) and
+	// truncate fractionals. Must be an integer within the InfoLogLevel enum
+	// range [DEBUG_LEVEL(0), HEADER_LEVEL(5)].
+	bool hasInfoLogLevel = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "infoLogLevel", &hasInfoLogLevel));
+	if (hasInfoLogLevel) {
+		napi_value infoLogLevelValue;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "infoLogLevel", &infoLogLevelValue));
+		napi_valuetype infoLogLevelType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, infoLogLevelValue, &infoLogLevelType));
+		if (infoLogLevelType != napi_undefined && infoLogLevelType != napi_null) {
+			if (infoLogLevelType != napi_number) {
+				::napi_throw_error(env, nullptr, "infoLogLevel must be a number");
+				return nullptr;
+			}
+			double infoLogLevel = 0;
+			NAPI_STATUS_THROWS(::napi_get_value_double(env, infoLogLevelValue, &infoLogLevel));
+			if (std::isnan(infoLogLevel) || infoLogLevel != std::trunc(infoLogLevel) ||
+				infoLogLevel < static_cast<double>(rocksdb::InfoLogLevel::DEBUG_LEVEL) ||
+				infoLogLevel > static_cast<double>(rocksdb::InfoLogLevel::HEADER_LEVEL)
+			) {
+				::napi_throw_error(env, nullptr, "infoLogLevel must be an integer between 0 (debug) and 5 (header)");
+				return nullptr;
+			}
+			dbHandleOptions.infoLogLevel = static_cast<uint8_t>(infoLogLevel);
+		}
+	}
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferNumber", dbHandleOptions.maxWriteBufferNumber));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbHandleOptions.dbWriteBufferSize));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferSizeToMaintain", dbHandleOptions.maxWriteBufferSizeToMaintain));
@@ -1882,6 +1977,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLogOptions", nullptr, GetLogOptions, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getStat", nullptr, GetStat, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -1,3 +1,4 @@
+import { RocksDatabase } from '../src/index.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
@@ -155,4 +156,143 @@ describe('Database write buffer options', () => {
 			expect(sstSize).toBeDefined();
 			expect(sstSize!).toBeGreaterThan(0);
 		}));
+});
+
+describe('Database informational log options', () => {
+	// Regression test for HarperFast/rocksdb-js#729: informational log files
+	// (LOG / LOG.old.*) were bounded by count (`keep_log_file_num`) but not
+	// size (`max_log_file_size` stayed at RocksDB's unbounded default of 0),
+	// so a production instance accumulated ~310MB of purely informational
+	// logs. `db.logOptions` reads the live values back via `DB::GetOptions` so
+	// the applied default/override can be asserted directly, without having
+	// to force RocksDB to emit enough log volume to observe a rotation.
+	it('should apply the bounded maxLogFileSize default when unset', () =>
+		dbRunner(async ({ db }) => {
+			const { maxLogFileSize, infoLogLevel } = db.logOptions;
+			expect(maxLogFileSize).toBe(16 * 1024 * 1024);
+			// infoLogLevel's own RocksDB default depends on how the linked
+			// library was compiled (release vs debug); just assert it is a
+			// valid InfoLogLevel value (DEBUG_LEVEL..HEADER_LEVEL).
+			expect(infoLogLevel).toBeGreaterThanOrEqual(0);
+			expect(infoLogLevel).toBeLessThanOrEqual(5);
+		}));
+
+	it('should round-trip a custom maxLogFileSize and infoLogLevel', () =>
+		dbRunner(
+			{ dbOptions: [{ maxLogFileSize: 4 * 1024 * 1024, infoLogLevel: 2 }] },
+			async ({ db }) => {
+				expect(db.logOptions).toEqual({
+					maxLogFileSize: 4 * 1024 * 1024,
+					infoLogLevel: 2,
+				});
+			}
+		));
+
+	it('should round-trip maxLogFileSize alone, leaving infoLogLevel at its own default', () =>
+		dbRunner({ dbOptions: [{ maxLogFileSize: 1024 * 1024 }] }, async ({ db }) => {
+			expect(db.logOptions.maxLogFileSize).toBe(1024 * 1024);
+		}));
+
+	it('should reject an infoLogLevel outside the InfoLogLevel enum range', () =>
+		dbRunner({ dbOptions: [{ infoLogLevel: 6 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow(
+				'infoLogLevel must be an integer between 0 (debug) and 5 (header)'
+			);
+		}));
+
+	// A raw narrow to uint8 would wrap 256 -> 0 (DEBUG_LEVEL) and silently
+	// enable debug logging; validation must run on the wide value first.
+	it('should reject an infoLogLevel that would wrap when narrowed to uint8', () =>
+		dbRunner({ dbOptions: [{ infoLogLevel: 256 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow(
+				'infoLogLevel must be an integer between 0 (debug) and 5 (header)'
+			);
+		}));
+
+	// A negative value cast straight to uint64 becomes ~UINT64_MAX (unbounded),
+	// defeating the whole point of the fix; it must be rejected instead.
+	it('should reject a negative maxLogFileSize instead of casting it to a huge unsigned limit', () =>
+		dbRunner({ dbOptions: [{ maxLogFileSize: -1 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow('maxLogFileSize must be a non-negative integer');
+		}));
+
+	it('should reject a fractional maxLogFileSize instead of truncating it', () =>
+		dbRunner({ dbOptions: [{ maxLogFileSize: 1024.5 }], skipOpen: true }, async ({ db }) => {
+			expect(() => db.open()).toThrow('maxLogFileSize must be a non-negative integer');
+		}));
+});
+
+// max_log_file_size / info_log_level are DB-wide DBOptions fixed at first open,
+// and the DBDescriptor is process-global (shared across handles/worker_threads),
+// so a second in-process open of the same path cannot change them. An explicitly
+// different request is rejected; a plain reopen inherits the live value. This
+// mirrors the compression conflict discipline (and the bug Kris caught: a plain
+// reopen carrying a default must NOT falsely reject after a custom first open).
+describe('Database informational log options — already-open path', () => {
+	it('throws when a second open explicitly requests a different maxLogFileSize', () => {
+		const path = generateDBPath();
+		const dbA = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
+		try {
+			expect(() => RocksDatabase.open(path, { maxLogFileSize: 8 * 1024 * 1024 })).toThrow(
+				/already open with maxLogFileSize/
+			);
+		} finally {
+			dbA.close();
+		}
+	});
+
+	// Critical regression guard: a plain reopen carries the 16MB default
+	// (non-explicit) — it must inherit the first opener's custom value, NOT
+	// falsely reject.
+	it('allows a plain reopen (no maxLogFileSize) and inherits the first value', () => {
+		const path = generateDBPath();
+		const dbA = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
+		let dbB: RocksDatabase | undefined;
+		try {
+			dbB = RocksDatabase.open(path);
+			expect(dbB.logOptions.maxLogFileSize).toBe(4 * 1024 * 1024);
+		} finally {
+			dbA.close();
+			dbB?.close();
+		}
+	});
+
+	it('allows a second open requesting the same maxLogFileSize', () => {
+		const path = generateDBPath();
+		const dbA = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
+		let dbB: RocksDatabase | undefined;
+		try {
+			dbB = RocksDatabase.open(path, { maxLogFileSize: 4 * 1024 * 1024 });
+			expect(dbB.logOptions.maxLogFileSize).toBe(4 * 1024 * 1024);
+		} finally {
+			dbA.close();
+			dbB?.close();
+		}
+	});
+
+	it('throws when a second open explicitly requests a different infoLogLevel', () => {
+		const path = generateDBPath();
+		const dbA = RocksDatabase.open(path, { infoLogLevel: 2 });
+		try {
+			expect(() => RocksDatabase.open(path, { infoLogLevel: 3 })).toThrow(
+				/already open with infoLogLevel/
+			);
+		} finally {
+			dbA.close();
+		}
+	});
+
+	// A plain reopen omitting infoLogLevel must inherit the live level, not reject.
+	it('allows a plain reopen (no infoLogLevel) after a custom first open', () => {
+		const path = generateDBPath();
+		const dbA = RocksDatabase.open(path, { infoLogLevel: 2 });
+		let dbB: RocksDatabase | undefined;
+		try {
+			dbB = RocksDatabase.open(path);
+			expect(dbB.logOptions.infoLogLevel).toBe(2);
+		} finally {
+			dbA.close();
+			dbB?.close();
+		}
+	});
 });

@@ -123,6 +123,24 @@ export type CompressionInfo = {
 };
 
 /**
+ * The informational-log settings currently in effect for a database, as
+ * returned by the `logOptions` getter. These are database-wide (`DBOptions`)
+ * settings, not per-column-family.
+ */
+export type LogOptions = {
+	/**
+	 * Per-file size cap (bytes) for informational log files (`LOG` /
+	 * `LOG.old.*`).
+	 */
+	maxLogFileSize: number;
+	/**
+	 * Verbosity of informational logging: `0` (debug), `1` (info), `2` (warn),
+	 * `3` (error), `4` (fatal), or `5` (header-only).
+	 */
+	infoLogLevel: number;
+};
+
+/**
  * Normalizes the public `compression` option into the primitive fields the
  * native layer expects. When `option` is omitted, or is an object without an
  * `algorithm`, returns an empty object and lets the native layer apply the
@@ -368,6 +386,12 @@ export class Store {
 	freezeData: boolean;
 
 	/**
+	 * Verbosity of RocksDB's informational logging (`info_log_level`). Omit to
+	 * leave RocksDB's own default.
+	 */
+	infoLogLevel?: number;
+
+	/**
 	 * Reusable buffer for encoding keys.
 	 */
 	keyBuffer: BufferWithDataView;
@@ -381,6 +405,15 @@ export class Store {
 	 * The maximum key size.
 	 */
 	maxKeySize: number;
+
+	/**
+	 * Per-file size cap (bytes) for informational log files (`LOG` /
+	 * `LOG.old.*`). Bounds total informational-log footprint to roughly `5 *
+	 * maxLogFileSize` (RocksDB retains up to 5 of these files).
+	 *
+	 * @default 16777216 (16MB)
+	 */
+	maxLogFileSize?: number;
 
 	/**
 	 * The maximum number of table files RocksDB keeps open. `0` (the default)
@@ -543,9 +576,11 @@ export class Store {
 		this.encoder = options?.encoder ?? null;
 		this.encoding = options?.encoding ?? null;
 		this.freezeData = options?.freezeData ?? false;
+		this.infoLogLevel = options?.infoLogLevel;
 		this.keyBuffer = KEY_BUFFER;
 		this.keyEncoding = keyEncoding;
 		this.maxKeySize = options?.maxKeySize ?? MAX_KEY_SIZE;
+		this.maxLogFileSize = options?.maxLogFileSize;
 		this.maxOpenFiles = options?.maxOpenFiles;
 		this.maxWriteBufferNumber = options?.maxWriteBufferNumber;
 		this.maxWriteBufferSizeToMaintain = options?.maxWriteBufferSizeToMaintain;
@@ -1056,6 +1091,8 @@ export class Store {
 			dbWriteBufferSize: this.dbWriteBufferSize,
 			disableWAL: this.disableWAL,
 			enableStats: this.enableStats,
+			infoLogLevel: this.infoLogLevel,
+			maxLogFileSize: this.maxLogFileSize,
 			maxOpenFiles: this.maxOpenFiles,
 			maxWriteBufferNumber: this.maxWriteBufferNumber,
 			maxWriteBufferSizeToMaintain: this.maxWriteBufferSizeToMaintain,

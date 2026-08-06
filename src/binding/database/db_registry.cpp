@@ -313,6 +313,35 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			);
 		}
 
+		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
+		// fixed at first open; the process-global descriptor is reused across
+		// handles/envs, so a second open can't change them. Reject an explicitly
+		// different request rather than silently ignore it — but let a plain
+		// reopen (non-explicit default / unset) inherit the live value, so a
+		// default-carrying reopen after a custom first open does NOT falsely
+		// reject (mirrors the compression discipline below).
+		{
+			rocksdb::DBOptions current = entry.descriptor->db->GetDBOptions();
+			if (options.maxLogFileSizeExplicit &&
+				current.max_log_file_size != static_cast<size_t>(options.maxLogFileSize)
+			) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open with maxLogFileSize " +
+					std::to_string(current.max_log_file_size) + " bytes; cannot reopen it with " +
+					std::to_string(options.maxLogFileSize) + " bytes"
+				);
+			}
+			if (options.infoLogLevel.has_value() &&
+				static_cast<int>(current.info_log_level) != static_cast<int>(*options.infoLogLevel)
+			) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open with infoLogLevel " +
+					std::to_string(static_cast<int>(current.info_log_level)) + "; cannot reopen it with " +
+					std::to_string(static_cast<int>(*options.infoLogLevel))
+				);
+			}
+		}
+
 		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
 		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
 
