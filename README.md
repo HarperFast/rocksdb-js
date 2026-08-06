@@ -54,7 +54,7 @@ Creates a new database instance.
     not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
     the available list.
   - `compressionForAllColumnFamilies: boolean` When `true`, applies `compression` to every column
-    family opened for the database rather than only the one named by `name`. Requires an explicit
+    family opened for the database rather than only the column family specified by `name`. Requires an explicit
     `compression`. Defaults to `false`. See [Compression](#compression).
   - `dbWriteBufferSize: number` The total memtable memory budget in bytes shared across all of the
     database's column families. When the combined size of all memtables reaches this value, RocksDB
