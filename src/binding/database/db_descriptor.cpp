@@ -55,6 +55,42 @@ static void applyCompression(
 		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
+/**
+ * Resolves `max_write_buffer_size_to_maintain` for a column family.
+ *
+ * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
+ * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
+ * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
+ * is never released, and a manager built with `allowStall` stalls every write to the database
+ * permanently.
+ *
+ * The derived default (`-1` → `maxWriteBufferNumber * writeBufferSize`) is dropped to 0 under any
+ * stalling manager. Deliberately coarse: the safe per-family bound is the budget divided by the
+ * live column-family count, which is not knowable here, so a comfortably-sized budget loses its
+ * history window too. The cost is that conflict checking reports "cannot determine"
+ * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
+ *
+ * That cost was measured rather than assumed, which is why the coarse form is kept instead of a
+ * budget-aware clamp: it is ~zero whenever flushing is organic (driven by memtables filling), and
+ * only appears once flushes are frequent relative to transaction lifetime — at a forced 20ms
+ * cadence against 20ms+ transactions it roughly doubles attempts per commit, as history is what
+ * would otherwise resolve a non-conflicting transaction whose snapshot has already been flushed
+ * away. A clamp would only recover that regime.
+ *
+ * An explicit caller value is honored untouched — sizing it against the budget and the
+ * column-family count is then the caller's job.
+ */
+static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
+	if (options.maxWriteBufferSizeToMaintain >= 0) {
+		return options.maxWriteBufferSizeToMaintain;
+	}
+	DBSettings& settings = DBSettings::getInstance();
+	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
+		return 0;
+	}
+	return options.maxWriteBufferSizeToMaintain;
+}
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	rocksdb::ColumnFamilyOptions cfOptions
@@ -71,7 +107,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
@@ -927,7 +963,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = !options.readOnly;
 	dbOptions.create_missing_column_families = !options.readOnly;
-	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
+	dbOptions.db_write_buffer_size = options.dbWriteBufferSize;
 	// Attach the process-wide WriteBufferManager (if configured) so memtable
 	// memory is bounded across all DBs in this process. With cost_to_cache,
 	// active memtables share the block cache pool — the cache shrinks during
@@ -943,6 +979,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
+	// Explicit narrowing: RocksDB's field is size_t; the value is validated
+	// <= MAX_SAFE_INTEGER at parse time, and a >4GB info-log cap (only reachable
+	// on a 32-bit build) is nonsensical, so the cast is safe and silences
+	// -Wshorten-64-to-32. Bounds each retained log file's size (see db_options.h).
+	dbOptions.max_log_file_size = static_cast<size_t>(options.maxLogFileSize);
+	if (options.infoLogLevel.has_value()) {
+		dbOptions.info_log_level = static_cast<rocksdb::InfoLogLevel>(*options.infoLogLevel);
+	}
 	dbOptions.persist_user_defined_timestamps = true;
 	if (options.enableStats) {
 		dbOptions.statistics = rocksdb::CreateDBStatistics();

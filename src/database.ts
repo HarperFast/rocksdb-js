@@ -21,6 +21,7 @@ import {
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
+	type LogOptions,
 	Store,
 	type StoreOptions,
 	type UserSharedBufferOptions,
@@ -309,6 +310,25 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get compression(): CompressionInfo {
 		return this.store.db.getCompression() as CompressionInfo;
+	}
+
+	/**
+	 * The informational-log settings currently in effect for this database,
+	 * read live from RocksDB, as `{ maxLogFileSize, infoLogLevel }`. These are
+	 * database-wide settings (not per-column-family): `maxLogFileSize` bounds
+	 * each retained `LOG` / `LOG.old.*` file's size (defaults to 16MB, so with
+	 * RocksDB's `keep_log_file_num = 5` the total footprint is bounded at
+	 * roughly 80MB); `infoLogLevel` is the logging verbosity. The database must
+	 * be open.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+	 * db.logOptions; // { maxLogFileSize: 4194304, infoLogLevel: 1 }
+	 * ```
+	 */
+	get logOptions(): LogOptions {
+		return this.store.db.getLogOptions() as LogOptions;
 	}
 
 	/**

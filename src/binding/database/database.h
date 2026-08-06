@@ -289,6 +289,7 @@ struct Database final {
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetDBIntProperty(napi_env env, napi_callback_info info);
 	static napi_value GetDBProperty(napi_env env, napi_callback_info info);
+	static napi_value GetLogOptions(napi_env env, napi_callback_info info);
 	static napi_value GetMonotonicTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info);
 	static napi_value GetStat(napi_env env, napi_callback_info info);
