@@ -1,6 +1,21 @@
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
+/** Polls until a flush lands, so a test asserting one happened does not race it. */
+async function waitForSstFiles(
+	db: { getDBIntProperty(name: string): number | undefined },
+	timeoutMs = 30000
+) {
+	const deadline = Date.now() + timeoutMs;
+	let size = 0;
+	do {
+		size = db.getDBIntProperty('rocksdb.total-sst-files-size') ?? 0;
+		if (size > 0) return size;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	} while (Date.now() < deadline);
+	return size;
+}
+
 describe('Database write buffer options', () => {
 	it('should open with default write buffer settings', () =>
 		dbRunner(async ({ db }) => {
@@ -70,7 +85,10 @@ describe('Database write buffer options', () => {
 				for (let i = 0; i < 2 * 1024; i++) {
 					await db.put(`key-${i}`, value);
 				}
-				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
+				// The global trigger SCHEDULES a flush; it does not complete one before the last
+				// put resolves. Asserting immediately races the background flush — it wins on a
+				// fast Linux runner and loses intermittently on Windows.
+				expect(await waitForSstFiles(db)).toBeGreaterThan(0);
 			}
 		));
 
