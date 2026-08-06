@@ -53,6 +53,14 @@ Creates a new database instance.
     when linked, else no compression). See [Compression](#compression). Throws if the algorithm is
     not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
     the available list.
+  - `compressionForAllColumnFamilies: boolean` When `true`, applies `compression` to every column
+    family opened for the database rather than only the one named by `name`. Requires an explicit
+    `compression`. Defaults to `false`. See [Compression](#compression).
+  - `dbWriteBufferSize: number` The total memtable memory budget in bytes shared across all of the
+    database's column families. When the combined size of all memtables reaches this value, RocksDB
+    flushes the largest one. `0` (the default) disables this global trigger, so per-column-family
+    `writeBufferSize` alone drives flushing. This is distinct from the process-wide
+    [`writeBufferManagerSize`](#dbconfigoptions) config option.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
@@ -64,6 +72,14 @@ Creates a new database instance.
     compaction falls behind under sustained ingest); a positive `int32` is an explicit cap. Reads
     only pay a reopen cost when the number of live table files exceeds the budget, so raise the
     process fd limit (and with it the derived budget) for very large databases.
+  - `maxWriteBufferNumber: number` The maximum number of memtables that can be queued per column
+    family before writes stall. Higher values absorb write bursts while flushes catch up, at the
+    cost of memory (roughly `maxWriteBufferNumber * writeBufferSize` per column family). Defaults to
+    `16`.
+  - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
+    memory for transaction conflict checking. `-1` (the default) derives the value from
+    `maxWriteBufferNumber * writeBufferSize`, the RocksDB-recommended default for optimistic
+    transactions.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -97,6 +113,9 @@ Creates a new database instance.
     the verification slot for each written key. Enable this only for column families whose records
     are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
     `verificationTableEntries` to be configured before the first database is opened.
+  - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
+    sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
+    values batch more writes per SST file at the cost of memory. Defaults to 16 MB.
 
 ### `db.close()`
 
