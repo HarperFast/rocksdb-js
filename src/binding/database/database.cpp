@@ -1540,7 +1540,15 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	}
 	dbHandleOptions.maxOpenFiles = static_cast<int32_t>(maxOpenFilesValue);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferNumber", dbHandleOptions.maxWriteBufferNumber));
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbHandleOptions.dbWriteBufferSize));
+	double dbWriteBufferSizeValue = static_cast<double>(dbHandleOptions.dbWriteBufferSize);
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbWriteBufferSizeValue));
+	if (!std::isfinite(dbWriteBufferSizeValue) || dbWriteBufferSizeValue != std::trunc(dbWriteBufferSizeValue) ||
+		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > 9007199254740991.0
+	) {
+		::napi_throw_error(env, nullptr, "dbWriteBufferSize must be a non-negative safe integer");
+		return nullptr;
+	}
+	dbHandleOptions.dbWriteBufferSize = static_cast<uint64_t>(dbWriteBufferSizeValue);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferSizeToMaintain", dbHandleOptions.maxWriteBufferSizeToMaintain));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", dbHandleOptions.transactionLogMaxAgeThreshold));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", dbHandleOptions.transactionLogMaxSize));
