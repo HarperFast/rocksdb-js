@@ -24,9 +24,10 @@ enum class DBMode {
 struct DBOptions final {
 	// Global memtable size trigger across all column families. When the sum of
 	// all memtables reaches this size, the largest memtable is flushed. With
-	// `atomic_flush = true`, this triggers flushes across every CF. 0 disables
-	// the global trigger so per-CF `writeBufferSize` drives flushing.
-	uint64_t dbWriteBufferSize = 0;
+	// `atomic_flush = true`, this triggers flushes across every CF. Defaults to
+	// 32 MiB when omitted; 0 disables the global trigger so per-CF
+	// `writeBufferSize` drives flushing.
+	uint64_t dbWriteBufferSize = 32ULL * 1024 * 1024;
 	bool disableWAL = false;
 	bool enableStats = false;
 	// Maximum number of memtables that can be queued per column family before
