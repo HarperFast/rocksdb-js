@@ -836,10 +836,9 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 
 /**
  * Returns the informational log settings currently in effect for this
- * database, read live from RocksDB via `GetOptions`, as
+ * database, read live from RocksDB via `GetDBOptions`, as
  * `{ maxLogFileSize, infoLogLevel }`. These are database-wide (`DBOptions`)
- * settings, not per-column-family, so the value is the same regardless of
- * which column family's handle this is called on.
+ * settings, not per-column-family, so no column-family handle is involved.
  *
  * @example
  * ```typescript
@@ -854,7 +853,10 @@ napi_value Database::GetLogOptions(napi_env env, napi_callback_info info) {
 	// (process-global) descriptor resetting descriptor->db mid-read.
 	ACQUIRE_OPERATIONS_LOCK();
 
-	rocksdb::Options opts = (*dbHandle)->descriptor->db->GetOptions((*dbHandle)->getColumnFamilyHandle());
+	// GetDBOptions() returns only the DB-wide options; GetOptions(cf) would copy
+	// the full combined Options (CF table/blob settings, block-cache + comparator
+	// shared_ptrs, etc.) just to read two DB-wide fields.
+	rocksdb::DBOptions opts = (*dbHandle)->descriptor->db->GetDBOptions();
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
