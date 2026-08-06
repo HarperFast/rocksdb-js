@@ -115,7 +115,7 @@ Creates a new database instance.
     `verificationTableEntries` to be configured before the first database is opened.
   - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
     sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
-    values batch more writes per SST file at the cost of memory. Defaults to 16 MB.
+    values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
 
 ### `db.close()`
 
