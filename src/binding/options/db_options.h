@@ -29,14 +29,16 @@ struct DBOptions final {
 	// flushing.
 	//
 	// Off by default because this is ONE budget divided among every column
-	// family, so its safe value depends on a column-family count that is not
-	// knowable here. Measured on a round-robin ingest, a fixed 32 MiB collapsed
-	// throughput from ~220 MiB/s to ~1 MiB/s once 16 families each configured
-	// with a 16 MiB `writeBufferSize` shared it — RocksDB thrashes on "flush the
-	// largest memtable", ~2 KB per flush. Any fixed value has that cliff at some
-	// family count; 0 has none. Callers that need a bound on total memtable
-	// memory should set a WriteBufferManager, which bounds it across databases
-	// rather than dividing a fixed budget among families.
+	// family, so its safe value depends on a family count not knowable here.
+	// Oversubscribe it and RocksDB thrashes on "flush the largest memtable",
+	// costing two orders of magnitude of write throughput; any fixed value has
+	// that cliff at some family count, and 0 has none. A WriteBufferManager is
+	// the way to bound total memtable memory: it bounds across databases instead
+	// of dividing a fixed budget among families.
+	//
+	// Applied by the FIRST open of a path — the descriptor is process-global, so
+	// a later open with a different value is silently ignored (as with every
+	// other database-wide option here).
 	uint64_t dbWriteBufferSize = 0;
 	bool disableWAL = false;
 	bool enableStats = false;

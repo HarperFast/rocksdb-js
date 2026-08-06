@@ -420,6 +420,10 @@ export class Store {
 	 * Set this only if you know your column-family count: it is one budget split
 	 * across all of them, so a value that suits a few families starves many. To
 	 * bound total memtable memory instead, configure a WriteBufferManager.
+	 *
+	 * Database-wide, so it binds when the path is first opened in this process:
+	 * a later open of the same path — including from another worker thread —
+	 * keeps the first opener's value rather than overriding or rejecting it.
 	 */
 	dbWriteBufferSize?: number;
 
