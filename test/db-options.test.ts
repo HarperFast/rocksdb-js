@@ -25,20 +25,27 @@ describe('Database write buffer options', () => {
 		));
 
 	it('should retain the default 32 MiB global write buffer trigger', () =>
-		dbRunner({ dbOptions: [{ writeBufferSize: 64 * 1024 * 1024 }] }, async ({ db }) => {
-			const value = 'x'.repeat(1024);
-			for (let i = 0; i < 40 * 1024; i++) {
-				await db.put(`key-${i}`, value);
+		dbRunner(
+			{ dbOptions: [{ maxWriteBufferNumber: 2, writeBufferSize: 256 * 1024 * 1024 }] },
+			async ({ db }) => {
+				const value = 'x'.repeat(1024);
+				for (let i = 0; i < 96 * 1024; i++) {
+					await db.put(`key-${i}`, value);
+				}
+				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
 			}
-			expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
-		}));
+		));
 
 	it('should disable the global write buffer trigger when dbWriteBufferSize is zero', () =>
 		dbRunner(
-			{ dbOptions: [{ dbWriteBufferSize: 0, writeBufferSize: 64 * 1024 * 1024 }] },
+			{
+				dbOptions: [
+					{ dbWriteBufferSize: 0, maxWriteBufferNumber: 2, writeBufferSize: 256 * 1024 * 1024 },
+				],
+			},
 			async ({ db }) => {
 				const value = 'x'.repeat(1024);
-				for (let i = 0; i < 40 * 1024; i++) {
+				for (let i = 0; i < 96 * 1024; i++) {
 					await db.put(`key-${i}`, value);
 				}
 				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBe(0);
@@ -47,7 +54,15 @@ describe('Database write buffer options', () => {
 
 	it('should apply an explicit dbWriteBufferSize', () =>
 		dbRunner(
-			{ dbOptions: [{ dbWriteBufferSize: 64 * 1024, writeBufferSize: 64 * 1024 * 1024 }] },
+			{
+				dbOptions: [
+					{
+						dbWriteBufferSize: 64 * 1024,
+						maxWriteBufferNumber: 2,
+						writeBufferSize: 256 * 1024 * 1024,
+					},
+				],
+			},
 			async ({ db }) => {
 				const value = 'x'.repeat(1024);
 				for (let i = 0; i < 1024; i++) {
@@ -56,6 +71,14 @@ describe('Database write buffer options', () => {
 				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
 			}
 		));
+
+	it.each([NaN, Infinity, -1, 1.5, 2 ** 53])(
+		'should reject invalid dbWriteBufferSize values',
+		(dbWriteBufferSize) =>
+			dbRunner({ dbOptions: [{ dbWriteBufferSize }], skipOpen: true }, async ({ db }) => {
+				expect(() => db.open()).toThrow('dbWriteBufferSize must be a non-negative safe integer');
+			})
+	);
 
 	it('should open with maxWriteBufferSizeToMaintain set', () =>
 		dbRunner(
