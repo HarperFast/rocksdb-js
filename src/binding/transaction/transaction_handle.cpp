@@ -2,6 +2,7 @@
 #include <sstream>
 #include <thread>
 #include "database/database.h"
+#include "napi/env_teardown.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "iterator/db_iterator_handle.h"
@@ -28,6 +29,14 @@ struct ScopedAsyncWorkRegistration {
 			this->handle->registerAsyncWork();
 		}
 	}
+
+	// Takes ownership of a registration the caller already made (e.g. via
+	// TransactionHandle::tryRegisterAsyncWork(), which checks `closed` and
+	// registers atomically -- a plain registerAsyncWork() call here would
+	// reopen that TOCTOU for this constructor's caller).
+	struct AlreadyRegistered {};
+	ScopedAsyncWorkRegistration(AsyncWorkHandle* handle, AlreadyRegistered)
+		: handle(handle) {}
 
 	~ScopedAsyncWorkRegistration() {
 		if (this->handle) {
@@ -101,7 +110,19 @@ TransactionHandle::TransactionHandle(
 }
 
 void TransactionHandle::resetTransaction(){
-	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	// clear/delete the previous transaction and create a new transaction so that it can be retried.
+	// Guarded by stateMutex: this deletes and reassigns `txn`, which a racing cross-thread close()
+	// must never observe mid-swap (see the stateMutex member doc).
+	std::lock_guard<std::mutex> lock(this->stateMutex);
+
+	if (this->closed.load(std::memory_order_relaxed)) {
+		// close() already ran (or is running) and will never see this reset --
+		// a fresh BeginTransaction here would never be deleted, and on the
+		// close()-timeout-then-retry path the descriptor's DB may itself be
+		// mid-teardown. Nothing to reset onto.
+		return;
+	}
+
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
@@ -213,6 +234,23 @@ void TransactionHandle::lockVTSlot(
 	auto* slot = vt->slotFor(dbId, cfId, key);
 	if (!slot) return;
 
+	// stateMutex serializes this against a concurrent close() from another
+	// thread: both touch lockedVTSlots/heldTrackers, and without this a racing
+	// close()/releaseIntent() could clear the vectors while this push_back is
+	// mid-flight (or vice versa).
+	std::lock_guard<std::mutex> lock(this->stateMutex);
+	if (this->closed.load(std::memory_order_relaxed)) {
+		// Handle is closed/closing on another thread -- do not install a new
+		// write intent that this transaction's own lifecycle would never
+		// release (close() has already released everything it found, or is
+		// about to).
+		return;
+	}
+	// Allocate both paired entries before installing the intent. Once the VT
+	// increments the tracker holder count, both push_backs are non-throwing.
+	lockedVTSlots.reserve(lockedVTSlots.size() + 1);
+	heldTrackers.reserve(heldTrackers.size() + 1);
+
 	// Register a write intent on the slot. lockSlotForWrite installs a new
 	// LockTracker or joins an existing one as an additional holder (when another
 	// transaction — or this one, via an earlier write to a colliding key —
@@ -228,21 +266,43 @@ void TransactionHandle::lockVTSlot(
 }
 
 void TransactionHandle::releaseIntent() {
-	if (!lockedVTSlots.empty()) {
-		// The trackers were created via the VT, so it is materialized and
-		// getVerificationTableRaw() returns it. releaseWriteIntent drops this
-		// transaction's holder reference under the writer mutex; the slot is
-		// only cleared (and waiters woken) when the last holder releases.
-		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-		if (vt) {
-			for (size_t i = 0; i < lockedVTSlots.size(); i++) {
-				vt->releaseWriteIntent(lockedVTSlots[i], heldTrackers[i]);
-			}
-		}
+	// stateMutex serializes this against a concurrent close() / lockVTSlot()
+	// from another thread and against another concurrent releaseIntent() call
+	// for the same handle (e.g. executeCommitWork()'s direct call racing
+	// close()'s). Snapshot-and-clear under the lock, then release each tracker
+	// outside it: releaseWriteIntent()
+	// takes the VT's own writerMutex_, and holding two locks across that call
+	// is unnecessary (lock order is always stateMutex -> writerMutex_, so
+	// there is no deadlock risk either way, but there is no reason to hold
+	// stateMutex across the VT's internal work).
+	std::vector<std::atomic<uint64_t>*> slots;
+	std::vector<LockTracker*> trackers;
+	{
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (lockedVTSlots.empty()) return;
+		slots.swap(lockedVTSlots);
+		trackers.swap(heldTrackers);
 	}
 
-	lockedVTSlots.clear();
-	heldTrackers.clear();
+	// The trackers were created via the VT, so it is materialized and
+	// getVerificationTableRaw() returns it. releaseWriteIntent drops this
+	// transaction's holder reference under the writer mutex; the slot is
+	// only cleared (and waiters woken) when the last holder releases.
+	auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+	if (vt) {
+		for (size_t i = 0; i < slots.size(); i++) {
+			vt->releaseWriteIntent(slots[i], trackers[i]);
+		}
+	}
+}
+
+bool TransactionHandle::tryRegisterAsyncWork() {
+	std::lock_guard<std::mutex> lock(this->stateMutex);
+	if (this->closed.load(std::memory_order_relaxed)) {
+		return false;
+	}
+	this->registerAsyncWork();
+	return true;
 }
 
 /**
@@ -252,19 +312,30 @@ void TransactionHandle::releaseIntent() {
  * The `closed` atomic gate ensures this runs at most once even when called
  * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
  * JS thread racing the async commit's complete callback on env W's JS thread).
+ *
+ * The exchange happens under stateMutex so it is atomic with
+ * tryRegisterAsyncWork()'s closed-check: once this returns, no new commit /
+ * commitSync / abort call can register async work against this handle (they
+ * will all observe closed=true and bail), so waitForAsyncWorkCompletion()
+ * below only has to wait for work that was already registered
+ * (HarperFast/rocksdb-js#741).
  */
 void TransactionHandle::close() {
-	if (this->closed.exchange(true)) {
-		return;
+	{
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (this->closed.exchange(true)) {
+			return;
+		}
 	}
 
 	if (this->dbHandle && this->dbHandle->descriptor) {
 		this->dbHandle->descriptor->transactionRemove(shared_from_this());
 	}
 
-	if (!this->txn) {
-		return;
-	}
+	// No `!this->txn` early return here: async work can still be registered
+	// (and about to start touching txn) even on a handle whose txn pointer
+	// happens to be transiently null, so every step below must run and
+	// self-guard instead of being skipped as a block.
 
 	// update state to aborted if not already committed
 	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
@@ -313,26 +384,35 @@ void TransactionHandle::close() {
 
 	// Release any VT locks that were installed at putSync/removeSync time
 	// but not yet released (e.g. transaction aborted or DB closed mid-commit).
-	if (!this->lockedVTSlots.empty()) {
-		this->releaseIntent();
+	// releaseIntent() self-locks (see above), so no separate guard is needed
+	// here -- and by this point waitForAsyncWorkCompletion() has already
+	// drained any commit that was registered before closed flipped, so there
+	// is nothing left to race this call.
+	this->releaseIntent();
+
+	// destroy the RocksDB transaction. Guarded for the same reason as the
+	// `!this->txn` check above -- see the class-level stateMutex comment.
+	{
+		std::lock_guard<std::mutex> lock(this->stateMutex);
+		if (this->txn) {
+			this->txn->ClearSnapshot();
+			delete this->txn;
+			this->txn = nullptr;
+		}
 	}
 
-	// destroy the RocksDB transaction
-	this->txn->ClearSnapshot();
-	delete this->txn;
-	this->txn = nullptr;
-
 	if (this->jsDatabaseRef != nullptr) {
-		if (std::this_thread::get_id() == this->envThreadId) {
-			// On the owning JS thread — safe to call napi_delete_reference.
+		if (std::this_thread::get_id() == this->envThreadId && !isEnvTearingDown()) {
+			// The teardown check is not redundant with the thread check: the
+			// cleanup hook runs on this very thread, after Node freed the env's
+			// N-API state (see napi/env_teardown.h).
 			DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this);
 			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database");
 			DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this);
 		} else {
-			// Wrong thread (close() called from a different env's JS thread, e.g.
-			// DBDescriptor::close() PATH A). napi_delete_reference is not thread-safe
-			// across envs; skip and let Node clean up the weak ref on env teardown.
-			DEBUG_LOG("%p TransactionHandle::close Skipping napi_delete_reference (wrong thread)\n", this);
+			// Wrong thread (napi_delete_reference is not thread-safe across envs)
+			// or env teardown (Node reclaims the reference with the env).
+			DEBUG_LOG("%p TransactionHandle::close Skipping napi_delete_reference (wrong thread or env teardown)\n", this);
 		}
 		this->jsDatabaseRef = nullptr;
 	} else {
@@ -362,11 +442,16 @@ napi_value TransactionHandle::get(
 	uint64_t expectedVersion,
 	bool wantsPopulate
 ) {
-	// Register before inspecting txn/state. Descriptor-wide close can select the
-	// transaction before the target DBHandle, and close() must not reset txn in
-	// the middle of this setup. Async fallback transfers this registration to its
-	// state; synchronous and failed setup paths release it on return.
-	ScopedAsyncWorkRegistration transactionRegistration(this);
+	// Register before inspecting txn/state (tryRegisterAsyncWork() checks `closed`
+	// and registers atomically). Descriptor-wide close can select the transaction
+	// before the target DBHandle, and close() must not reset txn in the middle of
+	// this setup. Async fallback transfers this registration to its state;
+	// synchronous and failed setup paths release it on return.
+	if (!this->tryRegisterAsyncWork()) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+	ScopedAsyncWorkRegistration transactionRegistration(this, ScopedAsyncWorkRegistration::AlreadyRegistered{});
 	if (this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
@@ -513,6 +598,13 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	// NOTE: does not register via tryRegisterAsyncWork() -- see AGENTS.md item
+	// 10a (deliberately deferred, same tradeoff as putSync/getSync/removeSync).
+	// An earlier attempt to add that registration to a sibling synchronous
+	// path (CommitSync) reproduced a heap-corruption regression under worker
+	// churn testing that wasn't root-caused within the fix for #741; this
+	// path shares that same new-registration shape and was reverted out of
+	// caution rather than risk the same defect untested.
 	this->ensureSnapshot();
 	if (this->snapshotSet) {
 		itOptions.readOptions.snapshot = this->txn->GetSnapshot();

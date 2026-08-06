@@ -1,4 +1,5 @@
 #include "transaction_log/transaction_log_store.h"
+#include "napi/env_teardown.h"
 #include "database/db_handle.h"
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
@@ -148,10 +149,14 @@ void DBHandle::close() {
 		this->descriptor.reset();
 	}
 
-	// clean up transaction log references
-	for (auto& [name, ref] : this->logRefs) {
-		DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
-		::napi_delete_reference(this->env, ref);
+	// Skip during env teardown: this is reachable from DBRegistry::Shutdown()
+	// inside the env cleanup hook, by which point Node has already freed the
+	// env's N-API state and the refs go with it (napi/env_teardown.h).
+	if (!isEnvTearingDown()) {
+		for (auto& [name, ref] : this->logRefs) {
+			DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
+			::napi_delete_reference(this->env, ref);
+		}
 	}
 	this->logRefs.clear();
 

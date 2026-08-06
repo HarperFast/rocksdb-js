@@ -6,6 +6,10 @@
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
 	'variables': {
 		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
+		# ThreadSanitizer toggle, same rationale/mechanics as rocksdb_asan above.
+		# Mutually exclusive with ROCKSDB_ASAN (can't link both sanitizer
+		# runtimes together). Enable with: ROCKSDB_TSAN=1 node-gyp rebuild
+		"rocksdb_tsan%": "<!(node -p \"process.env.ROCKSDB_TSAN==='1'?1:0\")",
 		# RocksDB link libraries — the core `librocksdb` archive plus the compression
 		# libs the resolved prebuild actually ships — emitted as `-l` flags / `.lib`
 		# names (not absolute paths — see configure-rocksdb.mjs for why), resolved
@@ -161,6 +165,22 @@
 						'OTHER_CFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
 						'OTHER_CPLUSPLUSFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
 						'OTHER_LDFLAGS+': ['-fsanitize=address'],
+					}
+				}],
+				# ThreadSanitizer instrumentation -- see rocksdb_tsan above. RocksDB is
+				# still linked as a non-instrumented prebuilt static lib: races entirely
+				# inside rocksdb's own internals may be invisible, but this still catches
+				# races on the binding's own locking (stateMutex, ParkedFlagRegistry,
+				# etc.) and at any instrumented call boundary. Run with TSAN_OPTIONS
+				# set (e.g. halt_on_error=1) and libtsan preloaded, same as ASan.
+				['rocksdb_tsan==1 and (OS=="mac" or OS=="linux")', {
+					'cflags+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'cflags_cc+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'ldflags+': ['-fsanitize=thread'],
+					'xcode_settings': {
+						'OTHER_CFLAGS+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_CPLUSPLUSFLAGS+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_LDFLAGS+': ['-fsanitize=thread'],
 					}
 				}]
 			],
@@ -323,6 +343,22 @@
 						'OTHER_CFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
 						'OTHER_CPLUSPLUSFLAGS+': ['-fsanitize=address', '-fno-omit-frame-pointer', '-g', '-O1'],
 						'OTHER_LDFLAGS+': ['-fsanitize=address'],
+					}
+				}],
+				# ThreadSanitizer instrumentation -- see rocksdb_tsan above. RocksDB is
+				# still linked as a non-instrumented prebuilt static lib: races entirely
+				# inside rocksdb's own internals may be invisible, but this still catches
+				# races on the binding's own locking (stateMutex, ParkedFlagRegistry,
+				# etc.) and at any instrumented call boundary. Run with TSAN_OPTIONS
+				# set (e.g. halt_on_error=1) and libtsan preloaded, same as ASan.
+				['rocksdb_tsan==1 and (OS=="mac" or OS=="linux")', {
+					'cflags+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'cflags_cc+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+					'ldflags+': ['-fsanitize=thread'],
+					'xcode_settings': {
+						'OTHER_CFLAGS+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_CPLUSPLUSFLAGS+': ['-fsanitize=thread', '-fno-omit-frame-pointer', '-g', '-O1'],
+						'OTHER_LDFLAGS+': ['-fsanitize=thread'],
 					}
 				}]
 			],

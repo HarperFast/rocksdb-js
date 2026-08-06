@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "napi/env_teardown.h"
 #include "database/backup.h"
 #include "database/database.h"
 #include "iterator/db_iterator.h"
@@ -57,6 +58,19 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	forceTryAgainCounter().store(count, std::memory_order_relaxed);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+/**
+ * Test-only: how many times a coordinated-retry wake callback observed its
+ * ParkedFlag already invalidated by env teardown and skipped the tsfn
+ * (HarperFast/rocksdb-js#741). See core/test_seam.h.
+ */
+napi_value ParkSkippedByDeadEnvCount(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env, parkSkippedByDeadEnvCounter().load(std::memory_order_relaxed), &result
+	));
 	return result;
 }
 
@@ -194,12 +208,21 @@ NAPI_MODULE_INIT() {
 	// when this was the last env.
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		napi_env dyingEnv = static_cast<napi_env>(data);
+		// Nothing below may make an N-API call touching this env: Node already
+		// freed its N-API state (napi/env_teardown.h).
+		rocksdb_js::EnvTeardownScope envTeardownScope;
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
 		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
 		// Release this env's commit-completion tsfns before Node frees the env's
 		// tsfns, so the shared commit thread stops marshalling into a torn-down
 		// env (mirrors the listener cleanup above).
 		rocksdb_js::DBRegistry::ReleaseCommitCompletionsByEnv(dyingEnv);
+		// Invalidate this env's outstanding coordinated-retry parked
+		// wake-callback TSFNs (see Transaction::ReleaseParkedFlagsByEnv) before
+		// Node frees them -- a parked callback lives on a process-global
+		// LockTracker and can otherwise fire on another thread after this env
+		// (and its tsfns) are gone.
+		rocksdb_js::Transaction::ReleaseParkedFlagsByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
@@ -248,6 +271,11 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	// test-only parked-wake-vs-dead-env seam (see core/test_seam.h)
+	napi_value parkSkippedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "parkSkippedByDeadEnvCount", NAPI_AUTO_LENGTH, ParkSkippedByDeadEnvCount, nullptr, &parkSkippedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "parkSkippedByDeadEnvCount", parkSkippedFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

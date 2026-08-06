@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <unordered_map>
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
@@ -128,6 +130,24 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * RAII: unregisters async work registered via TransactionHandle::tryRegisterAsyncWork()
+ * on scope exit, unless released early. Used by synchronous entry points (Abort,
+ * CommitSync) that touch `txn` directly without dispatching to another thread --
+ * they still need to be visible to a racing close()'s waitForAsyncWorkCompletion()
+ * (see HarperFast/rocksdb-js#741).
+ */
+struct AsyncWorkGuard {
+	TransactionHandle* handle;
+	explicit AsyncWorkGuard(TransactionHandle* handle) : handle(handle) {}
+	~AsyncWorkGuard() {
+		if (this->handle) this->handle->unregisterAsyncWork();
+	}
+	AsyncWorkGuard(const AsyncWorkGuard&) = delete;
+	AsyncWorkGuard& operator=(const AsyncWorkGuard&) = delete;
+	void release() { this->handle = nullptr; }
+};
+
+/**
  * Aborts the transaction.
  */
 napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
@@ -142,12 +162,26 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
+
+	// Register with the handle so a racing cross-env close() waits for this
+	// Rollback()/close() to finish instead of concurrently deleting `txn`.
+	if (!(*txnHandle)->tryRegisterAsyncWork()) {
+		// Already closed/closing on another thread -- nothing left to roll back.
+		return nullptr;
+	}
+	AsyncWorkGuard workGuard((*txnHandle).get());
+
 	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
 
 	(*txnHandle)->state = TransactionState::Aborted;
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
 	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id);
+	// Unregister before close(): close() waits for registered work to drain, and
+	// this call is that work -- still holding the registration here would make
+	// close() (called next, on this same thread) wait on itself.
+	workGuard.release();
+	(*txnHandle)->unregisterAsyncWork();
 	(*txnHandle)->close();
 
 	if (hadLogWrites) {
@@ -209,6 +243,87 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
 	if (ctx->resolveRef) ::napi_delete_reference(env, ctx->resolveRef);
 	if (ctx->rejectRef) ::napi_delete_reference(env, ctx->rejectRef);
 	delete ctx;
+}
+
+/**
+ * Guards a single parked wake-callback's TSFN against being touched after its
+ * owning env has torn down. `alive` and any access to the TSFN it guards must
+ * be read/mutated under `mutex` together -- see ParkedFlagRegistry below.
+ */
+struct ParkedFlag {
+	std::mutex mutex;
+	bool alive = true;
+};
+
+/**
+ * Process-global registry of ParkedFlags, keyed by the env that created them.
+ *
+ * A coordinated-retry commit that loses (IsBusy) parks its RETRY_NOW
+ * resolution on the *winning* holder's LockTracker (completeCommitWork,
+ * below): it registers a wake callback that captures a raw
+ * napi_threadsafe_function by value. LockTracker is process-global VT state,
+ * not owned by any env, so that callback can fire on an arbitrary thread
+ * (whichever thread releases the winning holder) an arbitrary time later --
+ * including after the parking transaction's *own* env has torn down. Node
+ * reclaims a tsfn as part of destroying the env that created it, so calling
+ * napi_call_threadsafe_function/napi_release_threadsafe_function on it after
+ * that point is a use-after-free (observed as `uv_mutex_lock` aborting inside
+ * napi_release_threadsafe_function -- the exact crash in
+ * HarperFast/rocksdb-js#741). Mirrors DBDescriptor's per-env commitCompletions
+ * / ReleaseCommitCompletionsByEnv pattern (AGENTS.md "Commit execution"), but
+ * lives here (not on a DBDescriptor) because LockTrackers are VT-wide, not
+ * per-database.
+ */
+struct ParkedFlagRegistry {
+	std::mutex mutex;
+	std::unordered_map<napi_env, std::vector<std::weak_ptr<ParkedFlag>>> byEnv;
+
+	static ParkedFlagRegistry& instance() {
+		static ParkedFlagRegistry registry;
+		return registry;
+	}
+
+	std::shared_ptr<ParkedFlag> registerFlag(napi_env env) {
+		auto flag = std::make_shared<ParkedFlag>();
+		std::lock_guard<std::mutex> lock(this->mutex);
+		auto& flags = this->byEnv[env];
+		// Prune entries whose flag already went out of scope (a normal wake()
+		// firing, not env teardown) so a long-lived env accumulating many
+		// parks over its lifetime doesn't grow this vector unboundedly. Only
+		// sweep when the vector is about to reallocate anyway (size ==
+		// capacity): this bounds sweeps to O(log n) over n registrations --
+		// the same amortized cost as the vector's own growth -- instead of
+		// an O(n) scan under this process-global lock on every single park.
+		if (flags.size() == flags.capacity()) {
+			flags.erase(
+				std::remove_if(flags.begin(), flags.end(), [](const std::weak_ptr<ParkedFlag>& w) { return w.expired(); }),
+				flags.end()
+			);
+		}
+		flags.push_back(flag);
+		return flag;
+	}
+
+	void releaseByEnv(napi_env env) {
+		std::vector<std::weak_ptr<ParkedFlag>> flags;
+		{
+			std::lock_guard<std::mutex> lock(this->mutex);
+			auto it = this->byEnv.find(env);
+			if (it == this->byEnv.end()) return;
+			flags = std::move(it->second);
+			this->byEnv.erase(it);
+		}
+		for (auto& weak : flags) {
+			if (auto flag = weak.lock()) {
+				std::lock_guard<std::mutex> flagLock(flag->mutex);
+				flag->alive = false;
+			}
+		}
+	}
+};
+
+void Transaction::ReleaseParkedFlagsByEnv(napi_env env) {
+	ParkedFlagRegistry::instance().releaseByEnv(env);
 }
 
 /**
@@ -318,9 +433,9 @@ static void executeCommitWork(TransactionCommitState* state) {
 
 			// Release VT locks that were installed at putSync/removeSync
 			// time, regardless of commit outcome (success or IsBusy).
-			if (!txnHandle->lockedVTSlots.empty()) {
-				txnHandle->releaseIntent();
-			}
+			// releaseIntent() self-checks emptiness under its own lock (see
+			// TransactionHandle::releaseIntent).
+			txnHandle->releaseIntent();
 		}
 
 		// Publish the log entries (advance the committed-read watermark) only when the data
@@ -434,7 +549,18 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			// Register wake callback; if the tracker already fired wake()
 			// before we got here, addWakeCallback returns false and we
 			// call+release the TSFN immediately (async on the JS thread).
-			bool registered = t->addWakeCallback([tsfn]() {
+			// The registered callback can fire on any thread, arbitrarily
+			// later, after `env` itself has torn down and Node has already
+			// reclaimed this tsfn -- envFlag (flipped by
+			// Transaction::ReleaseParkedFlagsByEnv on env cleanup) guards
+			// against touching it past that point (see ParkedFlagRegistry doc).
+			auto envFlag = ParkedFlagRegistry::instance().registerFlag(env);
+			bool registered = t->addWakeCallback([tsfn, envFlag]() {
+				std::lock_guard<std::mutex> flagLock(envFlag->mutex);
+				if (!envFlag->alive) {
+					parkSkippedByDeadEnvCounter().fetch_add(1, std::memory_order_relaxed);
+					return;
+				}
 				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
 				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
 			});
@@ -613,8 +739,23 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		// below rather than re-creating a tsfn the close will never release.
 		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed));
 		if (!completionsClosed) {
-			// register the commit with the transaction handle so close() can wait
-			(*txnHandle)->registerAsyncWork();
+			// Register the commit with the transaction handle so close() can wait.
+			// Atomic with close()'s closed-check: without this, a racing close()
+			// could observe zero in-flight work (nothing registered yet) and
+			// proceed to tear down txn/VT locks moments before this dispatch
+			// starts touching them.
+			if (!(*txnHandle)->tryRegisterAsyncWork()) {
+				descriptor->finishCommitCompletion(env);
+				napi_value error;
+				rocksdb_js::createJSError(env, "ERR_ALREADY_CLOSED", "Transaction has already been closed", error);
+				::napi_throw(env, error);
+				// No async work was registered (tryRegisterAsyncWork returned
+				// false) -- mark complete so ~BaseAsyncState doesn't underflow
+				// activeAsyncWorkCount for a registration that never happened.
+				state->completed.store(true);
+				delete state;
+				return nullptr;
+			}
 
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
@@ -694,10 +835,38 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		&state->asyncWork // -> result
 	));
 
-	// register the async work with the transaction handle
-	(*txnHandle)->registerAsyncWork();
+	// Register the async work with the transaction handle, atomically with
+	// close()'s closed-check (see the commit-thread path above for why this
+	// can't be a plain registerAsyncWork() call).
+	if (!(*txnHandle)->tryRegisterAsyncWork()) {
+		napi_value error;
+		rocksdb_js::createJSError(env, "ERR_ALREADY_CLOSED", "Transaction has already been closed", error);
+		::napi_throw(env, error);
+		state->deleteAsyncWork();
+		// No async work was registered -- mark complete so ~BaseAsyncState
+		// doesn't underflow activeAsyncWorkCount for a registration that
+		// never happened.
+		state->completed.store(true);
+		delete state;
+		return nullptr;
+	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	napi_status queueStatus = ::napi_queue_async_work(env, state->asyncWork);
+	if (queueStatus != napi_ok) {
+		// Undo the registration above -- otherwise close()'s
+		// waitForAsyncWorkCompletion() would wait forever for work that was
+		// never actually queued.
+		(*txnHandle)->unregisterAsyncWork();
+		napi_value error;
+		rocksdb_js::createJSError(env, "ERR_GENERIC", "Failed to queue commit work", error);
+		::napi_throw(env, error);
+		state->deleteAsyncWork();
+		// Already unregistered above -- mark complete so ~BaseAsyncState
+		// doesn't unregister a second time.
+		state->completed.store(true);
+		delete state;
+		return nullptr;
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -719,6 +888,13 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_RETURN_UNDEFINED();
 	}
+
+	// NOTE: CommitSync does not register via tryRegisterAsyncWork() -- see
+	// AGENTS.md item 10a (deliberately deferred, same tradeoff as
+	// putSync/getSync/removeSync). An earlier attempt to add that
+	// registration here reproduced a heap-corruption regression under worker
+	// churn testing that wasn't root-caused within the fix for #741; adding
+	// it back needs its own dedicated investigation, not a append here.
 	(*txnHandle)->state = TransactionState::Committing;
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;
@@ -741,9 +917,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
 
-	if (!(*txnHandle)->lockedVTSlots.empty()) {
-		(*txnHandle)->releaseIntent();
-	}
+	// releaseIntent() self-checks emptiness under its own lock (see
+	// TransactionHandle::releaseIntent).
+	(*txnHandle)->releaseIntent();
 
 	// Publish only on a real commit; IsBusy/TryAgain defer to the retry's eventual success, and on
 	// a hard error close()'s commitAborted stops the position pinning the watermark. See the async
@@ -1223,4 +1399,3 @@ void Transaction::Init(napi_env env, napi_value exports) {
 }
 
 } // namespace rocksdb_js
-

@@ -34,6 +34,18 @@ struct Transaction final {
 	static napi_value UseLog(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
+
+	/**
+	 * Invalidates any coordinated-retry parked wake-callback TSFNs still
+	 * outstanding for `env` (see completeCommitWork's IsBusy+coordinatedRetry
+	 * park loop in transaction.cpp). Call from the module's per-env cleanup
+	 * hook, mirroring DBRegistry::ReleaseCommitCompletionsByEnv -- a parked
+	 * callback is stored on the process-global LockTracker it's waiting on,
+	 * so it can fire long after (and on a different thread than) the env
+	 * that created it, once that env has already torn down and Node has
+	 * reclaimed the tsfn (HarperFast/rocksdb-js#741).
+	 */
+	static void ReleaseParkedFlagsByEnv(napi_env env);
 };
 
 } // namespace rocksdb_js

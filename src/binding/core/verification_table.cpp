@@ -1,10 +1,26 @@
 #include "core/verification_table.h"
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "core/debug.h"
 
 namespace rocksdb_js {
 
 namespace {
+
+// Unlike assert(), this is never compiled out by NDEBUG -- holders/refcount
+// underflow means a LockTracker is already corrupted or freed-and-reused, so
+// silently continuing (as a wrapped-around unsigned counter would) is worse
+// than crashing: a production build must fail loudly here rather than mask
+// the invariant violation that used to surface as delayed heap corruption
+// (HarperFast/rocksdb-js#741).
+inline void vtInvariant(bool condition, const char* message) {
+	if (!condition) {
+		::fprintf(stderr, "rocksdb-js: VerificationTable invariant violated: %s\n", message);
+		::fflush(stderr);
+		::abort();
+	}
+}
 
 // Process-global counter for LockTracker generation tags.
 static std::atomic<uint16_t> vtGlobalGen{0};
@@ -223,7 +239,9 @@ LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, ui
 void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* t) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
-	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);
+	uint32_t prevHolders = t->holders.fetch_sub(1, std::memory_order_acq_rel);
+	vtInvariant(prevHolders >= 1, "LockTracker holders underflow in releaseWriteIntent");
+	bool lastHolder = (prevHolders == 1);
 	if (lastHolder) {
 		// Last writer out: settle the slot to a fresh settled-empty generation
 		// (only if it still holds our lock — a concurrent cancelForDB / populate
@@ -236,7 +254,9 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 		    std::memory_order_release, std::memory_order_acquire);
 		t->wake();
 	}
-	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
+	uint32_t prevRefcount = t->refcount.fetch_sub(1, std::memory_order_acq_rel);
+	vtInvariant(prevRefcount >= 1, "LockTracker refcount underflow in releaseWriteIntent");
+	if (prevRefcount == 1) delete t;
 }
 
 LockTracker* VerificationTable::refTrackerIfLocked(std::atomic<uint64_t>* slot) {
@@ -252,7 +272,9 @@ LockTracker* VerificationTable::refTrackerIfLocked(std::atomic<uint64_t>* slot) 
 void VerificationTable::unrefTracker(LockTracker* t) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
-	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
+	uint32_t prevRefcount = t->refcount.fetch_sub(1, std::memory_order_acq_rel);
+	vtInvariant(prevRefcount >= 1, "LockTracker refcount underflow in unrefTracker");
+	if (prevRefcount == 1) delete t;
 }
 
 void VerificationTable::settleAllSlots() {

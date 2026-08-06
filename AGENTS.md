@@ -320,6 +320,123 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    inspect a concurrently closing `DBHandle` from the worker. Transactional count iterators must also
    pass the transaction snapshot through `ReadOptions`; `disableSnapshot` intentionally leaves it null
    so counts observe the latest committed state.
+10. **`TransactionHandle::stateMutex` serializes `txn`/VT-lock state against cross-env `close()`**: a
+    `TransactionHandle` is normally single-owner (bound to the JS thread that created it), but
+    `DBDescriptor::finishClose()` (worker-env teardown, e.g. via `DBRegistry::Shutdown()`) closes
+    **every** transaction registered on the shared descriptor — including ones owned by a different,
+    still-live env that may be mid-commit, mid-put, or mid-abort at that exact moment
+    (HarperFast/rocksdb-js#741). Before the fix, `close()`'s `waitForAsyncWorkCompletion()` only
+    waited for async work _already registered_ on `activeAsyncWorkCount` — a TOCTOU let a racing
+    `Transaction::Commit()`/`CommitSync`/`Abort` register (or start touching `txn`) _after_ `close()`
+    had already observed zero in-flight work and moved on to `delete this->txn` and
+    `releaseIntent()`'s vector mutation, corrupting the heap (`txn` UAF/double-free) and/or
+    double-releasing a shared `LockTracker` (`releaseWriteIntent` reaching "last holder" twice for the
+    same tracker — `holders`/`refcount` underflow, now asserted in
+    `VerificationTable::releaseWriteIntent`/`unrefTracker`). Every path that touches `txn` or
+    `lockedVTSlots`/`heldTrackers` — `lockVTSlot()`, `releaseIntent()`, `resetTransaction()`, `close()`,
+    and `Commit()`/`CommitSync`/`Abort()`/`get()`'s entry via `tryRegisterAsyncWork()` — now takes
+    `stateMutex` for a short critical section (never across `txn->Commit()` or
+    `waitForAsyncWorkCompletion()`, which would deadlock `close()` against the very work it is
+    waiting to drain). `close()` flips `closed` under `stateMutex` _before_ calling
+    `waitForAsyncWorkCompletion()`, so by the time it waits, no new work can have registered — the
+    wait only has to drain work that already committed to running. Known gaps deliberately left open
+    (each needs its own dedicated investigation, not a bolt-on to this fix): **(a)** `getSync`/
+    `putSync`/`removeSync`/`CommitSync`/`getCount` still read/write `txn` without going through
+    `tryRegisterAsyncWork()`. `getSync`/`putSync`/`removeSync` are the hottest paths in the binding
+    (every read and write) with a narrow, synchronous exposure window — the mutex-per-call cost
+    wasn't accepted without a dedicated hot-path review. `CommitSync` and `getCount` are not
+    hot-path-sensitive the same way, but an attempt to add `tryRegisterAsyncWork()` +
+    `AsyncWorkGuard`/an inline RAII guard to `CommitSync` reproduced a heap-corruption regression
+    under worker-churn testing (bisected: removing that registration made the same test suite pass
+    5/5 across two Node majors; adding it back reproduced glibc heap-corruption aborts in ~50% of
+    runs) that was not root-caused within the time available — the exact mechanism is still unknown,
+    so `getCount` (identical new-code shape, untested) was reverted alongside it out of caution
+    rather than ship an unverified instance of the same pattern. **(b)** `waitForAsyncWorkCompletion()`'s
+    5-second timeout is pre-existing and unchanged: on timeout `close()` proceeds anyway, so a commit
+    that is genuinely still executing past 5s (not parked — parking happens after
+    `signalExecuteCompleted()`, so it doesn't interact with this wait) can still race a
+    `delete this->txn`. Removing the timeout trades this for a shutdown-hang risk if a commit truly
+    never completes.
+11. **A coordinated-retry parked wake-callback's TSFN can outlive the env that created it**: an
+    `IsBusy` commit under `coordinatedRetry` parks its `RETRY_NOW` resolution on the _winning_
+    holder's `LockTracker` (`completeCommitWork`'s park loop in transaction.cpp) by registering a
+    wake callback that captures a `napi_threadsafe_function` by value. `LockTracker` is
+    process-global VT state (not owned by any env), so that callback can fire on **any** thread —
+    whichever thread eventually releases the winning holder — an arbitrary time later, including
+    after the _parking_ transaction's own env has already torn down. Node reclaims a tsfn as part of
+    destroying the env that created it, so calling `napi_call_threadsafe_function` /
+    `napi_release_threadsafe_function` on it past that point is a use-after-free — this was the
+    actual mechanism behind the `uv_mutex_lock` abort inside `napi_release_threadsafe_function` in
+    HarperFast/rocksdb-js#741's crash trace (confirmed via a gdb backtrace off the real repro; item 10
+    above closes a _different_, also-real race in the same issue, not this one). Fixed the same way as
+    `commitCompletions`: `ParkedFlagRegistry` (transaction.cpp) tracks a `ParkedFlag` per registered
+    wake callback, keyed by the owning env; `Transaction::ReleaseParkedFlagsByEnv`, wired into the
+    module's per-env cleanup hook, flips each of that env's flags before Node frees its tsfns, and the
+    wake callback checks the flag under the _same_ per-flag mutex before touching the tsfn — so
+    whichever of "env teardown" or "wake fires" happens first wins, and the other is a no-op instead of
+    a race.
+12. **N-API calls are unsafe inside `napi_add_env_cleanup_hook`, even on the env's own thread —
+    this was #741's dominant crash.** Node's `Environment::RunCleanup()` runs
+    `principal_realm_->RunCleanup(); cleanup_queue_.Drain();` **in that order** (env.cc), so by the
+    time our module's env-cleanup hook (binding.cpp) runs, `Realm::RunCleanup()` has already
+    destroyed the env's `BaseObject`s and freed N-API per-env state. A "am I on the owning JS
+    thread?" check therefore does **not** establish that an N-API call is safe: teardown runs on
+    exactly that thread. `TransactionHandle::close()` reached
+    `napi_delete_reference(this->env, ...)` under that guard, and `napi_delete_reference` writes the
+    env's `last_error` via `napi_clear_last_error` — three 8-byte writes straight into freed memory.
+    That corrupts glibc's heap metadata, and the abort then surfaces much later and somewhere
+    unrelated (commonly inside RocksDB's allocators: `~Arena` / `~WriteBatchWithIndex` /
+    `~TransactionBaseImpl`), which is why it read as a RocksDB/VT bug for so long.
+
+    Fixed by `napi/env_teardown.h`: a thread-local `EnvTeardownScope` set for the duration of the
+    cleanup hook, with close paths checking `isEnvTearingDown()` before making N-API calls. During
+    teardown the reference is reclaimed with the env anyway, so skipping is correct. **Any new close
+    path reachable from `DBRegistry::Shutdown()` must consult this too** — `db_handle.cpp` has
+    further `napi_delete_reference` sites that are reachable and were not exercised by this repro.
+
+    Effect: `repro-crossthread.mjs` (`GRACEFUL=1 RECYCLE_MS=2000`, 4 workers, 15s) went from
+    **9/12 crashing to 0/12**, ~1M transactions per run, and stays clean **8/8 at a harsher 800ms
+    recycle**. ThreadSanitizer reports zero races where it previously reported three.
+
+    **Known remaining (NOT root-caused):** `test/vt-lock-tracker-churn.test.ts` still fails ~25%
+    (1/4 reps at 4000ms, 1/6 at 1500ms) with the same `corrupted size vs. prev_size`. It reproduces
+    only through that fixture's **tsx-transpiled worker** path, never through the plain-`.mjs`
+    repro, and TSan does not catch it (0 races over 3 aggressive runs — its ~15x slowdown likely
+    closes the window). The test stays `it.skip`. Also still open: `getSync`/`putSync`/`removeSync`/
+    `CommitSync`/`getCount` remain outside `tryRegisterAsyncWork()` (item 10a).
+
+    **How to hunt this class of bug here.** ASan is structurally blind to it: `librocksdb.a` is a
+    non-instrumented prebuilt static lib, so a bad write originating in (or landing in memory owned
+    by) uninstrumented code is invisible while still wrecking the heap — hence "ASan-clean 9/9 but
+    crashes 75%+ at native speed". TSan against **stock** Node is also useless (100–150+ races/run,
+    all V8 GC/JIT internals, zero `rocksdb_js::` frames). What worked was a **from-source Node built
+    with TSan**:
+    - `-fsanitize=thread` **and `-DTHREAD_SANITIZER`** (the latter enables V8's own
+      `SynchronizePageAccess`/`DISABLE_TSAN` annotations and removes that entire noise class —
+      without it the signal is buried);
+    - leave V8's **`V8_IS_TSAN` off** (Node sets it from `tsan==1` in `common.gypi` and
+      `tools/v8_gypfiles/features.gypi`): it instruments JIT-_generated_ code and references
+      `ExposedTrustedObject::kSelfIndirectPointerOffset`, which does not exist under Node's
+      `v8_enable_sandbox=0`, so the build fails to compile;
+    - build the addon with the matching `ROCKSDB_TSAN=1` toggle (binding.gyp) — Node links
+      libtsan **shared**, so both share one runtime;
+    - symbolize with `TSAN_OPTIONS=external_symbolizer_path=/usr/bin/addr2line`.
+      That configuration cut ~150 races/run down to 3, all with `rocksdb_js::` frames, and named the
+      bug outright.
+
+    **Methodology warning that cost a lot of time here.** An earlier round of this investigation
+    concluded the #741 fix _caused_ a regression (baseline "15/15 clean" vs fix "14/15 crashing").
+    That was wrong: the baseline arm ran in a separate worktree where `pnpm install` had run but
+    **`pnpm build:bundle` had not**, so `dist/index.mjs` did not exist, every worker died on
+    `Cannot find module`, did zero work — and the harness still printed `RESULT: no stuck commit`
+    and exited 0. Every "clean" baseline data point was a no-op run. This is a property of the
+    ad-hoc scratch scripts under `~/dev/tmp/harper-2001-repro/`, which only log worker startup
+    failures; the repo's own `test/fixtures/*.mts` do `worker.once('error', reject)` and are not
+    affected. **A green result from those scratch scripts is only meaningful if the run actually did
+    work** — check per-worker `issued=` counts (a real 15s run issues hundreds of thousands) and
+    grep for `Cannot find module`. Prefer comparing revisions **within one worktree** (`git checkout
+<rev> -- src/ && pnpm rebuild && pnpm build:bundle`), and pause competing builds
+    (`pkill -STOP cc1plus`) — CPU contention alone moves the crash rate a lot (93% → ~60%).
 
 ## Debugging native heap corruption
 
