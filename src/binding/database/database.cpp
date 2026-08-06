@@ -1861,6 +1861,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		}
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
+		writeOptions.ignore_missing_column_families = true;
 		status = (*dbHandle)->descriptor->db->Put(
 			writeOptions,
 			(*dbHandle)->getColumnFamilyHandle(),
@@ -1929,6 +1930,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		}
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
+		writeOptions.ignore_missing_column_families = true;
 		status = (*dbHandle)->descriptor->db->Delete(
 			writeOptions,
 			(*dbHandle)->getColumnFamilyHandle(),
