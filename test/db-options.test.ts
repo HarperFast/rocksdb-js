@@ -57,7 +57,7 @@ describe('Database write buffer options', () => {
 			{
 				dbOptions: [
 					{
-						dbWriteBufferSize: 64 * 1024,
+						dbWriteBufferSize: 1024 * 1024,
 						maxWriteBufferNumber: 2,
 						writeBufferSize: 256 * 1024 * 1024,
 					},
@@ -65,7 +65,7 @@ describe('Database write buffer options', () => {
 			},
 			async ({ db }) => {
 				const value = 'x'.repeat(1024);
-				for (let i = 0; i < 1024; i++) {
+				for (let i = 0; i < 2 * 1024; i++) {
 					await db.put(`key-${i}`, value);
 				}
 				expect(db.getDBIntProperty('rocksdb.total-sst-files-size')).toBeGreaterThan(0);
