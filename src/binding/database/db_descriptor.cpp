@@ -70,6 +70,13 @@ static void applyCompression(
  * history window too. The cost is that conflict checking reports "cannot determine"
  * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
  *
+ * That cost was measured rather than assumed, which is why the coarse form is kept instead of a
+ * budget-aware clamp: it is ~zero whenever flushing is organic (driven by memtables filling), and
+ * only appears once flushes are frequent relative to transaction lifetime — at a forced 20ms
+ * cadence against 20ms+ transactions it roughly doubles attempts per commit, as history is what
+ * would otherwise resolve a non-conflicting transaction whose snapshot has already been flushed
+ * away. A clamp would only recover that regime.
+ *
  * An explicit caller value is honored untouched — sizing it against the budget and the
  * column-family count is then the caller's job.
  */
