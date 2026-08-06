@@ -64,8 +64,11 @@ Creates a new database instance.
   - `maxLogFileSize: number` The per-file size cap, in bytes, for informational log files (`LOG` /
     `LOG.old.*`). RocksDB retains up to 5 of these files, so the total informational-log footprint
     is bounded at roughly `5 * maxLogFileSize`. Defaults to 16 MB (an 80 MB bound), which stops
-    purely informational logging from growing without bound (see
-    [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number)).
+    purely informational logging from growing without bound. A value of `0` is RocksDB's special
+    "single unbounded log file" mode — it **disables size-based rotation entirely**, so the log
+    can grow without limit; only set `0` if you deliberately want that (it forgoes the bounded
+    footprint this option otherwise provides). See
+    [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
   - `maxOpenFiles: number` The maximum number of table files RocksDB keeps open. `0` (the default)
     derives a budget from the effective per-process open-file limit (an eighth of the limit —
     several databases can share one process — clamped to `[1024, 262144]`); `-1` holds every table

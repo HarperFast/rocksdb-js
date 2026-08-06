@@ -409,7 +409,9 @@ export class Store {
 	/**
 	 * Per-file size cap (bytes) for informational log files (`LOG` /
 	 * `LOG.old.*`). Bounds total informational-log footprint to roughly `5 *
-	 * maxLogFileSize` (RocksDB retains up to 5 of these files).
+	 * maxLogFileSize` (RocksDB retains up to 5 of these files). A value of `0`
+	 * is RocksDB's "single unbounded log file" mode: it disables size-based
+	 * rotation, so the log can grow without limit — set it only if you want that.
 	 *
 	 * @default 16777216 (16MB)
 	 */
