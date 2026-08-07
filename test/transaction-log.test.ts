@@ -1458,10 +1458,6 @@ describe('Transaction Log', () => {
 
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-				const realDescriptor = Object.getOwnPropertyDescriptor(
-					Object.getPrototypeOf(log),
-					'_getMemoryMapOfFile'
-				)!;
 				Object.defineProperty(log, '_getMemoryMapOfFile', {
 					value: () => copyBuffer,
 					configurable: true,
@@ -1472,7 +1468,7 @@ describe('Transaction Log', () => {
 						/Corrupt transaction log entry/
 					);
 				} finally {
-					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 				// once the real mmap is restored, the valid data must still be readable
 				log._logBuffers.clear();
@@ -1512,10 +1508,6 @@ describe('Transaction Log', () => {
 
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-				const realDescriptor = Object.getOwnPropertyDescriptor(
-					Object.getPrototypeOf(log),
-					'_getMemoryMapOfFile'
-				)!;
 				Object.defineProperty(log, '_getMemoryMapOfFile', {
 					value: () => copyBuffer,
 					configurable: true,
@@ -1524,7 +1516,7 @@ describe('Transaction Log', () => {
 				try {
 					expect(() => Array.from(log.query({ start: 0 }))).toThrow(/overruns the log/);
 				} finally {
-					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 				// once the real mmap is restored, the valid data must still be readable
 				log._logBuffers.clear();
@@ -1556,10 +1548,6 @@ describe('Transaction Log', () => {
 
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-				const realDescriptor = Object.getOwnPropertyDescriptor(
-					Object.getPrototypeOf(log),
-					'_getMemoryMapOfFile'
-				)!;
 				Object.defineProperty(log, '_getMemoryMapOfFile', {
 					value: () => copyBuffer,
 					configurable: true,
@@ -1583,7 +1571,7 @@ describe('Transaction Log', () => {
 						expect(entry.data.length).toBe(10);
 					}
 				} finally {
-					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 			}));
 
@@ -1609,10 +1597,6 @@ describe('Transaction Log', () => {
 
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-				const realDescriptor = Object.getOwnPropertyDescriptor(
-					Object.getPrototypeOf(log),
-					'_getMemoryMapOfFile'
-				)!;
 				Object.defineProperty(log, '_getMemoryMapOfFile', {
 					value: () => copyBuffer,
 					configurable: true,
@@ -1625,7 +1609,90 @@ describe('Transaction Log', () => {
 					expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
 					expect(entries).toHaveLength(11);
 				} finally {
-					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+				}
+			}));
+
+		it('query() reports each separated corrupt region and resumes after both', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
+				for (let i = 0; i < 22; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(22);
+
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const firstBrokenEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
+				const secondBrokenEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + 11 * entryStride;
+				copyBuffer.writeUInt32BE(0x7fffffff, firstBrokenEntryStart + 8);
+				copyBuffer.writeUInt32BE(0x7fffffff, secondBrokenEntryStart + 8);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
+					expect(errors).toHaveLength(2);
+					expect(errors[0].position).toBe(firstBrokenEntryStart);
+					expect(errors[0].resyncPosition).toBe(firstBrokenEntryStart + entryStride);
+					expect(errors[1].position).toBe(secondBrokenEntryStart);
+					expect(errors[1].resyncPosition).toBe(secondBrokenEntryStart + entryStride);
+					expect(entries).toHaveLength(20);
+				} finally {
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+				}
+			}));
+
+		it('query() ignores a single deceptive frame in the corrupt span', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
+				for (let i = 0; i < 12; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(12);
+
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
+				const deceptiveFrameStart = secondEntryStart + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
+				copyBuffer.writeDoubleBE(1, deceptiveFrameStart);
+				copyBuffer.writeUInt32BE(1, deceptiveFrameStart + 8);
+				copyBuffer.fill(
+					0,
+					deceptiveFrameStart + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 1,
+					deceptiveFrameStart + 2 * TRANSACTION_LOG_ENTRY_HEADER_SIZE + 1
+				);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
+					expect(errors).toHaveLength(1);
+					expect(errors[0].resyncPosition).toBe(secondEntryStart + 2 * entryStride);
+					expect(entries).toHaveLength(10);
+				} finally {
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 			}));
 
@@ -1652,10 +1719,6 @@ describe('Transaction Log', () => {
 
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-				const realDescriptor = Object.getOwnPropertyDescriptor(
-					Object.getPrototypeOf(log),
-					'_getMemoryMapOfFile'
-				)!;
 				Object.defineProperty(log, '_getMemoryMapOfFile', {
 					value: () => copyBuffer,
 					configurable: true,
@@ -1669,7 +1732,7 @@ describe('Transaction Log', () => {
 					expect(errors[0].message).not.toMatch(/valid framing resumes at/);
 					expect(entries.length).toBe(2);
 				} finally {
-					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 			}));
 	});
@@ -1700,10 +1763,6 @@ describe('Transaction Log', () => {
 
 			log._logBuffers.clear();
 			(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-			const realDescriptor = Object.getOwnPropertyDescriptor(
-				Object.getPrototypeOf(log),
-				'_getMemoryMapOfFile'
-			)!;
 			Object.defineProperty(log, '_getMemoryMapOfFile', {
 				value: () => copyBuffer,
 				configurable: true,
@@ -1713,7 +1772,7 @@ describe('Transaction Log', () => {
 				log,
 				secondEntryStart,
 				entryStride,
-				restore: () => Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor),
+				restore: () => delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile,
 			};
 		}
 
@@ -1775,10 +1834,6 @@ describe('Transaction Log', () => {
 
 				log._logBuffers.clear();
 				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
-				const realDescriptor = Object.getOwnPropertyDescriptor(
-					Object.getPrototypeOf(log),
-					'_getMemoryMapOfFile'
-				)!;
 				Object.defineProperty(log, '_getMemoryMapOfFile', {
 					value: () => copyBuffer,
 					configurable: true,
@@ -1789,7 +1844,7 @@ describe('Transaction Log', () => {
 					expect(errors.length).toBeGreaterThanOrEqual(1);
 					expect(errors[0].resyncPosition).toBeUndefined();
 				} finally {
-					Object.defineProperty(log, '_getMemoryMapOfFile', realDescriptor);
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 			}));
 	});

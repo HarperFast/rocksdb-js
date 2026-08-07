@@ -99,7 +99,7 @@ function findResyncPosition(dataView: DataView, from: number, dataEnd: number): 
 	for (let start = from; start <= lastStart; start++) {
 		let pos = start;
 		let frames = 0;
-		while (frameFits(dataView, pos, dataEnd)) {
+		while (frames < RESYNC_MIN_FRAMES && frameFits(dataView, pos, dataEnd)) {
 			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + dataView.getUint32(pos + 8);
 			if (++frames >= RESYNC_MIN_FRAMES || pos === dataEnd) {
 				return start;

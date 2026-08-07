@@ -601,7 +601,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	if (mode != CommitThreadMode::Legacy && dbHandle && dbHandle->descriptor) {
 		// Keep the descriptor alive until every queued stage has completed. Worker
 		// teardown can close the transaction handle between the log and commit
-		// stages, releasing its DBHandle and its descriptor reference.
+		// stages, releasing its DBHandle and its descriptor reference. The registry
+		// retains its reference until it drains and joins these lanes, so this task
+		// capture cannot be the last descriptor reference on a worker thread.
 		auto descriptor = dbHandle->descriptor;
 
 		// Ensure this env has a completion tsfn and account the dispatch (refs
