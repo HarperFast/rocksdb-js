@@ -223,6 +223,22 @@ export type NativeDatabaseOptions = {
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
 	enableStats?: boolean;
+	/**
+	 * Verbosity of RocksDB's informational logging (`info_log_level`): `0`
+	 * (debug), `1` (info), `2` (warn), `3` (error), `4` (fatal), or `5`
+	 * (header-only). Omit to leave RocksDB's own default (`INFO_LEVEL` in a
+	 * release build of the linked RocksDB library).
+	 */
+	infoLogLevel?: number;
+	/**
+	 * Per-file size cap (bytes) for informational log files (`LOG` /
+	 * `LOG.old.*`, `max_log_file_size`). RocksDB retains up to 5 of these files
+	 * (`keep_log_file_num`, not currently exposed as an option), so total
+	 * informational-log footprint is bounded at roughly `5 * maxLogFileSize`.
+	 *
+	 * @default 16777216 (16MB)
+	 */
+	maxLogFileSize?: number;
 	maxOpenFiles?: number;
 	maxWriteBufferNumber?: number;
 	maxWriteBufferSizeToMaintain?: number;
@@ -321,6 +337,7 @@ export type NativeDatabase = {
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
+	getLogOptions(): { maxLogFileSize: number; infoLogLevel: number };
 	getMonotonicTimestamp(): number;
 	getOldestSnapshotTimestamp(): number;
 	getStat(statName: string): number | StatsHistogramData;
