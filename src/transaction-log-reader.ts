@@ -125,15 +125,22 @@ function corruptFrame(
 ): { error: CorruptFrameError; nextPosition: number } {
 	// An uncommitted read's `limit` is the pre-extended map, so ask the file for its written extent;
 	// a committed read is already bounded at the watermark.
-	const writtenExtent = readUncommitted ? transactionLog.getLogFileSize(logBuffer.logId) : 0;
-	const dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : limit;
+	let dataEnd = limit;
+	if (readUncommitted) {
+		try {
+			const writtenExtent = transactionLog.getLogFileSize(logBuffer.logId);
+			dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : 0;
+		} catch {
+			dataEnd = 0;
+		}
+	}
 	const resyncPosition = findResyncPosition(dataView, position + 1, dataEnd);
 	return {
 		error: new CorruptFrameError(message, logBuffer.logId, position, resyncPosition),
 		// With no resume point iteration is over, so land past `size` as well as the readable end:
 		// a committed `size` that over-reports the mapped buffer would otherwise leave
 		// `position < size`, and the next call would re-enter the loop and read off the end.
-		nextPosition: resyncPosition ?? Math.max(dataEnd, size, position + 1),
+		nextPosition: resyncPosition ?? Math.max(dataEnd || limit, size, position + 1),
 	};
 }
 

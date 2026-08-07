@@ -1656,8 +1656,8 @@ describe('Transaction Log', () => {
 		it('query() ignores a single deceptive frame in the corrupt span', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
-				const value = Buffer.alloc(10, 'a');
-				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
+				const value = Buffer.alloc(64, 'a');
+				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length;
 				for (let i = 0; i < 12; i++) {
 					await db.transaction(async (txn) => {
 						log.addEntry(value, txn.id);
@@ -1689,10 +1689,61 @@ describe('Transaction Log', () => {
 				try {
 					const { entries, errors } = drainPastCorruption(log.query({ start: 0 }));
 					expect(errors).toHaveLength(1);
-					expect(errors[0].resyncPosition).toBe(secondEntryStart + 2 * entryStride);
-					expect(entries).toHaveLength(10);
+					expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
+					expect(entries).toHaveLength(11);
 				} finally {
 					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+				}
+			}));
+
+		it('query() reports corruption without scanning when the written extent cannot be read', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length;
+				for (let i = 0; i < 4; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 })).length).toBe(4);
+
+				const real = log._getMemoryMapOfFile(1)!;
+				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				real.copy(copyBuffer);
+				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
+				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
+
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				const iterator = log.query({ start: 0, readUncommitted: true });
+				expect(iterator.next().done).toBe(false);
+				Object.defineProperty(log, 'getLogFileSize', {
+					value: () => {
+						throw new Error('unavailable');
+					},
+					configurable: true,
+					writable: true,
+				});
+				try {
+					let error: unknown;
+					try {
+						iterator.next();
+					} catch (caught) {
+						error = caught;
+					}
+					expect(error).toBeInstanceOf(CorruptFrameError);
+					expect((error as CorruptFrameError).resyncPosition).toBeUndefined();
+					delete (log as { getLogFileSize?: unknown }).getLogFileSize;
+					expect(iterator.next().done).toBe(true);
+				} finally {
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+					delete (log as { getLogFileSize?: unknown }).getLogFileSize;
 				}
 			}));
 
