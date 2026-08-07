@@ -80,6 +80,7 @@ describe('background error', () => {
 			// Hard (2) or worse: the database is read-only.
 			expect(err.severity).toBeGreaterThanOrEqual(2);
 			expect(['hard', 'fatal', 'unrecoverable']).toContain(err.severityName);
+			expect(err.isReadOnly).toBe(true);
 			if (err.reason !== undefined) {
 				expect(typeof err.reasonName).toBe('string');
 			}

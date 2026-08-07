@@ -58,6 +58,18 @@ Creates a new database instance.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
     Defaults to `false`.
+  - `infoLogLevel: number` The verbosity of RocksDB's informational logging (`LOG` /
+    `LOG.old.*`): `0` (debug), `1` (info), `2` (warn), `3` (error), `4` (fatal), or `5`
+    (header-only). Omit to leave RocksDB's own default (`INFO_LEVEL` in a release build of the
+    linked RocksDB library). See [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
+  - `maxLogFileSize: number` The per-file size cap, in bytes, for informational log files (`LOG` /
+    `LOG.old.*`). RocksDB retains up to 5 of these files, so the total informational-log footprint
+    is bounded at roughly `5 * maxLogFileSize`. Defaults to 16 MB (an 80 MB bound), which stops
+    purely informational logging from growing without bound. A value of `0` is RocksDB's special
+    "single unbounded log file" mode — it **disables size-based rotation entirely**, so the log
+    can grow without limit; only set `0` if you deliberately want that (it forgoes the bounded
+    footprint this option otherwise provides). See
+    [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
   - `maxOpenFiles: number` The maximum number of table files RocksDB keeps open. `0` (the default)
     derives a budget from the effective per-process open-file limit (an eighth of the limit —
     several databases can share one process — clamped to `[1024, 262144]`); `-1` holds every table
@@ -137,25 +149,28 @@ console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 
 ### `db.backgroundError: BackgroundErrorInfo | null`
 
-Returns the RocksDB background error currently latched on this database, or `null` when the
-database is healthy. When a write fails at the filesystem level — a full disk, an exhausted
-quota — RocksDB latches a background error and stops accepting writes until the condition is
-cleared, so a non-null value means the database is effectively **read-only**. Call
+Returns the RocksDB background error currently observed on this database, or `null` when none
+is. When a write fails at the filesystem level — a full disk, an exhausted quota — RocksDB
+records a background error. A non-null value means an error was **observed**, but only a
+hard-or-worse one (`isReadOnly`) has actually stopped writes; a soft error is auto-recoverable and
+does **not** make the database read-only. When `isReadOnly` is `true`, call
 [`db.resume()`](#dbresume-void) after the underlying condition clears to recover in-process
 instead of restarting. The database must be open.
 
 The returned object has:
 
-- `message: string` — the RocksDB error string captured when the error latched.
+- `message: string` — the RocksDB error string captured when the error was recorded.
 - `severity: number` — the RocksDB `Status::Severity`: `1` soft, `2` hard, `3` fatal,
-  `4` unrecoverable. A value `>= 2` (hard) means the database is read-only.
+  `4` unrecoverable.
 - `severityName: string` — `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`.
+- `isReadOnly: boolean` — whether writes are stopped (`severity >= 2`). Only then is the database
+  read-only and `resume()` warranted.
 - `reason?: number` / `reasonName?: string` — the originating `BackgroundErrorReason`
   (e.g. `'flush'`, `'compaction'`), present when the error came from a reason-bearing callback.
 
 ```typescript
 const err = db.backgroundError;
-if (err) {
+if (err?.isReadOnly) {
 	console.error(`database is read-only (${err.severityName}): ${err.message}`);
 }
 ```
@@ -176,6 +191,18 @@ if (db.backgroundError) {
 	// ...free disk space, then...
 	db.resume();
 }
+```
+
+### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
+
+Returns the informational-log settings currently in effect for this database, read live from
+RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
+per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
+verbosity. The database must be open.
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
 ```
 
 ### `db.config(options)`

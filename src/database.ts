@@ -21,6 +21,7 @@ import {
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
+	type LogOptions,
 	Store,
 	type StoreOptions,
 	type UserSharedBufferOptions,
@@ -271,23 +272,25 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * The RocksDB background error currently latched on this database, or `null`
-	 * when the database is healthy. When a write fails at the filesystem level
-	 * (e.g. a full disk or exhausted quota), RocksDB latches a background error
-	 * and refuses all further writes until recovery, so a non-null value means the
-	 * database is effectively read-only. Call {@link RocksDatabase.resume} after
-	 * the underlying condition clears to recover in-process. The database must be
-	 * open.
+	 * The RocksDB background error currently observed on this database, or `null`
+	 * when none is. A non-null value means an error was observed — but only a
+	 * hard-or-worse one (`isReadOnly === true`, i.e. `severity >= 2`) has stopped
+	 * writes. A soft error (`severity === 1`) is auto-recoverable and does NOT make
+	 * the database read-only, so it should not trigger recovery. The database must
+	 * be open.
 	 *
-	 * The value mirrors RocksDB's background-error notifications, so a transient
-	 * or auto-recoverable error may appear briefly and then clear once RocksDB
-	 * recovers; a persistent non-null value (especially `severity >= 2`) is the
-	 * read-only signal that warrants `resume()`.
+	 * The value mirrors RocksDB's background-error notifications, so a transient or
+	 * auto-recoverable error may appear briefly and then clear once RocksDB
+	 * recovers. When `isReadOnly` is `true` and the underlying condition has
+	 * cleared (e.g. disk space freed), call {@link RocksDatabase.resume} to recover
+	 * in-process.
 	 *
 	 * @example
 	 * ```typescript
 	 * const err = db.backgroundError;
-	 * if (err) console.error(`database is read-only (${err.severityName}): ${err.message}`);
+	 * if (err?.isReadOnly) {
+	 *   console.error(`database is read-only (${err.severityName}): ${err.message}`);
+	 * }
 	 * ```
 	 */
 	get backgroundError(): BackgroundErrorInfo | null {
@@ -309,6 +312,25 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get compression(): CompressionInfo {
 		return this.store.db.getCompression() as CompressionInfo;
+	}
+
+	/**
+	 * The informational-log settings currently in effect for this database,
+	 * read live from RocksDB, as `{ maxLogFileSize, infoLogLevel }`. These are
+	 * database-wide settings (not per-column-family): `maxLogFileSize` bounds
+	 * each retained `LOG` / `LOG.old.*` file's size (defaults to 16MB, so with
+	 * RocksDB's `keep_log_file_num = 5` the total footprint is bounded at
+	 * roughly 80MB); `infoLogLevel` is the logging verbosity. The database must
+	 * be open.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+	 * db.logOptions; // { maxLogFileSize: 4194304, infoLogLevel: 1 }
+	 * ```
+	 */
+	get logOptions(): LogOptions {
+		return this.store.db.getLogOptions() as LogOptions;
 	}
 
 	/**

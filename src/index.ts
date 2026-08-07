@@ -45,6 +45,7 @@ export {
 	type CompressionAlgorithm,
 	type CompressionInfo,
 	type CompressionOption,
+	type LogOptions,
 	Store,
 	type StoreContext,
 	type StoreGetOptions,

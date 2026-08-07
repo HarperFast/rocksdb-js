@@ -55,6 +55,42 @@ static void applyCompression(
 		level ? *level : rocksdb::CompressionOptions::kDefaultCompressionLevel;
 }
 
+/**
+ * Resolves `max_write_buffer_size_to_maintain` for a column family.
+ *
+ * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
+ * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
+ * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
+ * is never released, and a manager built with `allowStall` stalls every write to the database
+ * permanently.
+ *
+ * The derived default (`-1` → `maxWriteBufferNumber * writeBufferSize`) is dropped to 0 under any
+ * stalling manager. Deliberately coarse: the safe per-family bound is the budget divided by the
+ * live column-family count, which is not knowable here, so a comfortably-sized budget loses its
+ * history window too. The cost is that conflict checking reports "cannot determine"
+ * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
+ *
+ * That cost was measured rather than assumed, which is why the coarse form is kept instead of a
+ * budget-aware clamp: it is ~zero whenever flushing is organic (driven by memtables filling), and
+ * only appears once flushes are frequent relative to transaction lifetime — at a forced 20ms
+ * cadence against 20ms+ transactions it roughly doubles attempts per commit, as history is what
+ * would otherwise resolve a non-conflicting transaction whose snapshot has already been flushed
+ * away. A clamp would only recover that regime.
+ *
+ * An explicit caller value is honored untouched — sizing it against the budget and the
+ * column-family count is then the caller's job.
+ */
+static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
+	if (options.maxWriteBufferSizeToMaintain >= 0) {
+		return options.maxWriteBufferSizeToMaintain;
+	}
+	DBSettings& settings = DBSettings::getInstance();
+	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
+		return 0;
+	}
+	return options.maxWriteBufferSizeToMaintain;
+}
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	rocksdb::ColumnFamilyOptions cfOptions
@@ -71,7 +107,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = options.maxWriteBufferSizeToMaintain;
+	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
@@ -127,6 +163,10 @@ public:
 		if (!desc) {
 			return;
 		}
+		// RocksDB may run flushes concurrently across background threads, so guard
+		// the shared jobTrackers map (unsynchronized std::unordered_map access from
+		// multiple threads is a data race).
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id, so we can determine when all the flushes have completed for
 		// With atomic flushes, there will be multiple flush events for each column family in the database
 		// We we want to flush at the beginning of the flush job (for first time job_id appears)
@@ -164,6 +204,8 @@ public:
 		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted cf name=%s job id=%u flushedSequence=%llu\n",
 			desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
 
+		// Guard the shared jobTrackers map — see OnFlushBegin.
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
@@ -206,25 +248,28 @@ public:
 	}
 
 	// Fires when a recovery attempt (auto-recovery or an explicit DB::Resume())
-	// completes. `info.new_bg_error.ok()` means the database is writable again, so
-	// clear the mirror. On a FAILED recovery, `new_bg_error` is the recovery-attempt
-	// status, not necessarily the error still blocking writes — RocksDB retains the
-	// original `old_bg_error` as the read-only latch. So keep whatever is already
-	// mirrored (the original error) and only seed from `old_bg_error` if nothing is
-	// latched yet; do NOT overwrite with the recovery-attempt status.
+	// completes. These callbacks run on RocksDB background threads and race each
+	// other and OnBackgroundError, so reconciliation must be a single atomic step
+	// conditioned on the error actually being recovered — never a blind clear.
+	// `reconcileRecoveryEnd` (in BackgroundErrorMirror) does that: on success it
+	// clears only if the currently-latched error IS `old_bg_error` (so a newer
+	// error latched in between survives); on failure it seeds `old_bg_error` only
+	// when nothing is latched (RocksDB retains it as the read-only latch). Format
+	// the message outside the mirror lock (ToString allocates on a bg thread).
 	void OnErrorRecoveryEnd(const rocksdb::BackgroundErrorRecoveryInfo& info) override {
-		if (info.new_bg_error.ok()) {
-			this->state->clearBackgroundError();
-		} else {
-			BackgroundErrorInfo current;
-			if (!this->state->getBackgroundError(current)) {
-				this->state->latchBackgroundError(-1, info.old_bg_error);
-			}
-		}
+		// Writes to the shared listener state (not via the descriptor), so an
+		// error latched during DB::Open is still reconciled. Format the message
+		// outside the mirror lock (ToString allocates on a bg thread).
+		this->state->reconcileRecoveryEnd(
+			info.old_bg_error.ToString(),
+			static_cast<int>(info.old_bg_error.severity()),
+			info.new_bg_error.ok()
+		);
 	}
 
 private:
 	std::shared_ptr<DBEventListenerState> state;
+	std::mutex jobTrackersMutex;
 	std::unordered_map<int, JobTracker> jobTrackers;
 };
 
@@ -912,7 +957,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = !options.readOnly;
 	dbOptions.create_missing_column_families = !options.readOnly;
-	dbOptions.db_write_buffer_size = 32 << 20; // 32MB total database write buffer size (may want to make this configurable)
+	dbOptions.db_write_buffer_size = options.dbWriteBufferSize;
 	// Attach the process-wide WriteBufferManager (if configured) so memtable
 	// memory is bounded across all DBs in this process. With cost_to_cache,
 	// active memtables share the block cache pool — the cache shrinks during
@@ -928,6 +973,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
+	// Explicit narrowing: RocksDB's field is size_t; the value is validated
+	// <= MAX_SAFE_INTEGER at parse time, and a >4GB info-log cap (only reachable
+	// on a 32-bit build) is nonsensical, so the cast is safe and silences
+	// -Wshorten-64-to-32. Bounds each retained log file's size (see db_options.h).
+	dbOptions.max_log_file_size = static_cast<size_t>(options.maxLogFileSize);
+	if (options.infoLogLevel.has_value()) {
+		dbOptions.info_log_level = static_cast<rocksdb::InfoLogLevel>(*options.infoLogLevel);
+	}
 	dbOptions.persist_user_defined_timestamps = true;
 	if (options.enableStats) {
 		dbOptions.statistics = rocksdb::CreateDBStatistics();
@@ -1725,64 +1778,47 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 // --- DBEventListenerState: shared listener/background-error state (#754) ---
 
 std::shared_ptr<DBDescriptor> DBEventListenerState::lockDescriptor() {
-	std::lock_guard<std::mutex> lock(this->descriptorMutex);
-	return this->descriptor.lock();
+	std::lock_guard<std::mutex> lock(this->descriptorMutex_);
+	return this->descriptor_.lock();
 }
 
 void DBEventListenerState::publishDescriptor(std::shared_ptr<DBDescriptor> descriptor) {
-	std::lock_guard<std::mutex> lock(this->descriptorMutex);
-	this->descriptor = std::move(descriptor);
+	std::lock_guard<std::mutex> lock(this->descriptorMutex_);
+	this->descriptor_ = std::move(descriptor);
 }
 
 void DBEventListenerState::latchBackgroundError(int reason, const rocksdb::Status& status) {
-	// Format the message OUTSIDE the lock: this runs on a RocksDB flush/compaction/
-	// write thread, and Status::ToString() allocates. Holding backgroundErrorMutex
-	// only for the assignment keeps the background thread from stalling on a JS
-	// reader that happens to hold the lock.
-	BackgroundErrorInfo next;
-	next.latched = true;
-	next.message = status.ToString();
-	next.severity = static_cast<int>(status.severity());
-	next.reason = reason;
-
-	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
-	this->backgroundError = std::move(next);
-	++this->backgroundErrorGeneration;
+	this->backgroundError_.latch(reason, status);
 }
 
-void DBEventListenerState::clearBackgroundError() {
-	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
-	if (this->backgroundError.latched) {
-		this->backgroundError = BackgroundErrorInfo{};
-		++this->backgroundErrorGeneration;
-	}
+void DBEventListenerState::reconcileRecoveryEnd(
+	const std::string& recoveredMessage,
+	int recoveredSeverity,
+	bool recovered
+) {
+	this->backgroundError_.reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
 }
 
 bool DBEventListenerState::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {
-	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
-	if (this->backgroundErrorGeneration != expectedGeneration) {
-		return false; // a newer error latched since the caller observed it — keep it
-	}
-	if (this->backgroundError.latched) {
-		this->backgroundError = BackgroundErrorInfo{};
-		++this->backgroundErrorGeneration;
-	}
-	return true;
+	return this->backgroundError_.clearIfUnchanged(expectedGeneration);
 }
 
 bool DBEventListenerState::getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation) {
-	std::lock_guard<std::mutex> lock(this->backgroundErrorMutex);
-	out = this->backgroundError;
-	if (generation != nullptr) {
-		*generation = this->backgroundErrorGeneration;
-	}
-	return this->backgroundError.latched;
+	return this->backgroundError_.get(out, generation);
 }
 
 // --- DBDescriptor delegators to the shared listener state ---
 
-void DBDescriptor::clearBackgroundError() {
-	this->eventListenerState->clearBackgroundError();
+void DBDescriptor::latchBackgroundError(int reason, const rocksdb::Status& status) {
+	this->eventListenerState->latchBackgroundError(reason, status);
+}
+
+void DBDescriptor::reconcileRecoveryEnd(
+	const std::string& recoveredMessage,
+	int recoveredSeverity,
+	bool recovered
+) {
+	this->eventListenerState->reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
 }
 
 bool DBDescriptor::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {

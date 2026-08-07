@@ -54,26 +54,26 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
  * is still running and the descriptor does not yet exist.
  */
 struct DBEventListenerState final {
-	std::mutex descriptorMutex;
-	std::weak_ptr<DBDescriptor> descriptor;
-
-	std::mutex backgroundErrorMutex;
-	BackgroundErrorInfo backgroundError;
-	// Bumped on every latch/clear transition so a recovery clears only the error
-	// it observed, never a newer one latched in between (the resume TOCTOU — see
-	// `clearBackgroundErrorIfUnchanged`).
-	uint64_t backgroundErrorGeneration = 0;
-
+public:
 	// Descriptor access (defined in the .cpp where DBDescriptor is complete).
 	std::shared_ptr<DBDescriptor> lockDescriptor();
 	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor);
 
 	// Background-error mirror. `reason` is a `rocksdb::BackgroundErrorReason` cast
-	// to int, or -1 when there is no associated reason. All thread-safe.
+	// to int, or -1 when there is no associated reason. `reconcileRecoveryEnd`
+	// atomically applies an `OnErrorRecoveryEnd`. All thread-safe.
 	void latchBackgroundError(int reason, const rocksdb::Status& status);
-	void clearBackgroundError();
+	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
 	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
 	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
+
+private:
+	// Members are private so nothing can touch them without going through the
+	// thread-safe methods above. The descriptor pointer is guarded by its own
+	// mutex; the background-error mirror is internally synchronized.
+	std::mutex descriptorMutex_;
+	std::weak_ptr<DBDescriptor> descriptor_;
+	BackgroundErrorMirror backgroundError_;
 };
 
 /**
@@ -316,12 +316,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	void releaseCommitCompletionsByEnv(napi_env env);
 
 	/**
-	 * Background-error mirror accessors. Thin delegates to `eventListenerState`
-	 * (the mirror is shared with the listener). `clearBackgroundErrorIfUnchanged`
-	 * clears only if the generation still matches — so `resume()` cannot erase a
-	 * different error latched during `DB::Resume()`. All thread-safe.
+	 * Background-error mirror accessors — thin delegates to `eventListenerState`
+	 * (the mirror is shared with the listener). `latchBackgroundError` records an
+	 * error; `reconcileRecoveryEnd` atomically applies an `OnErrorRecoveryEnd`;
+	 * `clearBackgroundErrorIfUnchanged` lets `resume()` clear only the error it
+	 * observed; `getBackgroundError` reads the mirror. All thread-safe.
 	 */
-	void clearBackgroundError();
+	void latchBackgroundError(int reason, const rocksdb::Status& status);
+	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
 	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
 	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
 
