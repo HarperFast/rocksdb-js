@@ -8,6 +8,7 @@
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
 #include <memory>
+#include <system_error>
 #include <unordered_map>
 
 namespace rocksdb_js {
@@ -269,6 +270,9 @@ DBDescriptor::DBDescriptor(
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
 	this->close();
+	// Idempotent safety net, matching commitWorker/logWorker's own
+	// destructor shutdown.
+	this->shutdownParkTimeouts();
 }
 
 /**
@@ -386,6 +390,12 @@ void DBDescriptor::finishClose() {
 		}
 	}
 
+	// A park can be registered on a foreign-dbId tracker (colliding VT slot;
+	// see the ParkTimeout header comment), so cancelForDB() above cannot be
+	// relied on to have woken everything this descriptor is waiting on.
+	// shutdownParkTimeouts() resolves whatever is left regardless.
+	this->shutdownParkTimeouts();
+
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
 	TransactionLogStoreRegistry::Unregister(this->path);
@@ -473,6 +483,158 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 			::napi_release_threadsafe_function(it->second.tsfn, napi_tsfn_release);
 		}
 		this->commitCompletions.erase(it);
+	}
+}
+
+uint64_t DBDescriptor::scheduleParkTimeout(
+	napi_env env,
+	unsigned timeoutMs,
+	napi_threadsafe_function tsfn,
+	std::shared_ptr<std::atomic<bool>> fired
+) {
+	std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
+	if (this->parkTimeoutStopped) {
+		// Descriptor already closing: the caller must resolve inline without
+		// registering with the LockTracker at all (see the header comment).
+		return 0;
+	}
+	if (!this->parkTimeoutThreadStarted) {
+		try {
+			this->parkTimeoutThread = std::thread([this]() { this->runParkTimeoutLoop(); });
+		} catch (const std::system_error&) {
+			// Thread creation failed (e.g. thread/resource exhaustion): leave
+			// the flag false so the next park retries, and tell the caller to
+			// resolve inline now rather than register a park nothing will
+			// ever time out.
+			return 0;
+		}
+		this->parkTimeoutThreadStarted = true;
+	}
+	auto entry = std::make_unique<ParkTimeout>();
+	entry->id = this->nextParkTimeoutId++;
+	entry->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+	entry->env = env;
+	entry->tsfn = tsfn;
+	entry->fired = std::move(fired);
+	uint64_t id = entry->id;
+	this->parkTimeouts.emplace(id, std::move(entry));
+	this->parkTimeoutCv.notify_all();
+	return id;
+}
+
+void DBDescriptor::runParkTimeoutLoop() {
+	setThreadName("rocksdb-park-timeout");
+	std::unique_lock<std::mutex> lock(this->parkTimeoutMutex);
+	for (;;) {
+		if (this->parkTimeoutStopped) {
+			return;
+		}
+		if (this->parkTimeouts.empty()) {
+			this->parkTimeoutCv.wait(lock);
+			continue;
+		}
+		auto earliest = std::min_element(
+			this->parkTimeouts.begin(),
+			this->parkTimeouts.end(),
+			[](const auto& a, const auto& b) { return a.second->deadline < b.second->deadline; }
+		);
+		auto now = std::chrono::steady_clock::now();
+		if (earliest->second->deadline > now) {
+			// Copy the deadline: wait_until releases the lock while parked,
+			// during which this entry can be erased (a real wake racing the
+			// timeout) and the map node freed -- a bound reference into it
+			// would be a read of freed memory once the wait re-checks time.
+			std::chrono::steady_clock::time_point deadline = earliest->second->deadline;
+			this->parkTimeoutCv.wait_until(lock, deadline);
+			continue;
+		}
+		// Fire while still holding the mutex, like dispatchCommitCompletion.
+		for (auto it = this->parkTimeouts.begin(); it != this->parkTimeouts.end();) {
+			if (it->second->deadline > now) {
+				++it;
+				continue;
+			}
+			std::unique_ptr<ParkTimeout> due = std::move(it->second);
+			it = this->parkTimeouts.erase(it);
+			bool expected = false;
+			if (due->fired->compare_exchange_strong(expected, true)) {
+				::napi_call_threadsafe_function(due->tsfn, nullptr, napi_tsfn_nonblocking);
+				::napi_release_threadsafe_function(due->tsfn, napi_tsfn_release);
+			}
+		}
+	}
+}
+
+void DBDescriptor::fireParkTimeout(uint64_t id) {
+	std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
+	auto it = this->parkTimeouts.find(id);
+	if (it == this->parkTimeouts.end()) {
+		// Already claimed by the timeout thread, releaseParkTimeoutsByEnv, or
+		// shutdownParkTimeouts.
+		return;
+	}
+	std::unique_ptr<ParkTimeout> owned = std::move(it->second);
+	this->parkTimeouts.erase(it);
+	bool expected = false;
+	if (owned->fired->compare_exchange_strong(expected, true)) {
+		::napi_call_threadsafe_function(owned->tsfn, nullptr, napi_tsfn_nonblocking);
+		::napi_release_threadsafe_function(owned->tsfn, napi_tsfn_release);
+	}
+}
+
+void DBDescriptor::releaseParkTimeoutsByEnv(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
+	for (auto it = this->parkTimeouts.begin(); it != this->parkTimeouts.end();) {
+		if (it->second->env != env) {
+			++it;
+			continue;
+		}
+		// Mark fired first so neither the timeout thread nor a later real
+		// wake ever calls into the tsfn we're about to release -- the
+		// promise's env is gone, nothing is listening for the resolve.
+		bool expected = false;
+		it->second->fired->compare_exchange_strong(expected, true);
+		if (!expected) {
+			::napi_release_threadsafe_function(it->second->tsfn, napi_tsfn_release);
+		}
+		it = this->parkTimeouts.erase(it);
+	}
+}
+
+void DBDescriptor::shutdownParkTimeouts() {
+	std::thread toJoin;
+	{
+		std::lock_guard<std::mutex> lock(this->parkTimeoutMutex);
+		if (this->parkTimeoutStopped && !this->parkTimeoutThreadStarted) {
+			// Already fully shut down (e.g. finishClose() already ran; this is
+			// the destructor's belt-and-suspenders call) -- nothing left to do.
+			return;
+		}
+		this->parkTimeoutStopped = true;
+		if (this->parkTimeoutThreadStarted) {
+			toJoin = std::move(this->parkTimeoutThread);
+			this->parkTimeoutThreadStarted = false;
+		}
+		// Resolve every park still pending, under the same mutex the other
+		// three methods serialize their tsfn calls on -- draining outside the
+		// lock would let a concurrent releaseParkTimeoutsByEnv for a dying
+		// env observe "nothing to cancel" while this is mid-call on that
+		// same env's tsfn, racing Node freeing it.
+		for (auto& entry : this->parkTimeouts) {
+			bool expected = false;
+			if (entry.second->fired->compare_exchange_strong(expected, true)) {
+				::napi_call_threadsafe_function(entry.second->tsfn, nullptr, napi_tsfn_nonblocking);
+				::napi_release_threadsafe_function(entry.second->tsfn, napi_tsfn_release);
+			}
+		}
+		this->parkTimeouts.clear();
+	}
+	// Notify + join outside the lock: the loop's cv.wait_until needs to
+	// re-acquire parkTimeoutMutex to observe parkTimeoutStopped and return,
+	// so joining while still holding it would deadlock.
+	this->parkTimeoutCv.notify_all();
+	if (toJoin.joinable()) {
+		toJoin.join();
 	}
 }
 

@@ -1,10 +1,16 @@
+#include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
+#include "database/db_registry.h"
 #include "iterator/db_iterator.h"
 #include "database/db_settings.h"
 #include "napi/macros.h"
@@ -196,6 +202,13 @@ struct RetryNowContext {
 };
 
 static void retryNowCallJs(napi_env env, napi_value /*func*/, void* context, void* /*data*/) {
+	// env is nullptr when the env is tearing down and this tsfn's queue is
+	// being drained as part of that (same as commitCompletionCallJs above) —
+	// nothing left to resolve into; retryNowFinalize still runs afterward to
+	// free ctx.
+	if (env == nullptr) {
+		return;
+	}
 	auto* ctx = reinterpret_cast<RetryNowContext*>(context);
 	napi_value global, resolveFn, retryVal;
 	::napi_get_global(env, &global);
@@ -209,6 +222,44 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
 	if (ctx->resolveRef) ::napi_delete_reference(env, ctx->resolveRef);
 	if (ctx->rejectRef) ::napi_delete_reference(env, ctx->rejectRef);
 	delete ctx;
+}
+
+/**
+ * Bounded wait (ms) for a coordinated-retry commit parked on a conflicting
+ * holder's VT lock, selected by ROCKSDB_JS_PARK_TIMEOUT_MS (harper#2001).
+ * Default is the top of the 2-5s range this was scoped to: a timeout
+ * consumes a coordinatedRetry attempt like a genuine wake would, so a
+ * higher default leaves more headroom for a merely-slow (not abandoned)
+ * holder before maxRetries exhausts. Malformed input falls back to the
+ * default rather than producing a degenerate effective timeout.
+ */
+static unsigned parkTimeoutMs() {
+	static const unsigned ms = []() -> unsigned {
+		constexpr unsigned kDefault = 5000;
+		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
+		if (v == nullptr) {
+			return kDefault;
+		}
+		const char* firstNonSpace = v;
+		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+			++firstNonSpace;
+		}
+		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
+			return kDefault;
+		}
+		char* end = nullptr;
+		errno = 0;
+		unsigned long parsed = ::strtoul(v, &end, 10);
+		// parsed == 0 covers both a literal "0" and `atoi`'s old silent
+		// non-numeric fallback; either way, firing every park immediately is
+		// exactly the unparked spin this bound exists to prevent, so treat it
+		// the same as malformed input rather than as a deliberate opt-out.
+		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
+			return kDefault;
+		}
+		return static_cast<unsigned>(parsed);
+	}();
+	return ms;
 }
 
 /**
@@ -410,6 +461,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 		bool parked = false;
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		std::shared_ptr<DBDescriptor> descriptor =
+			state->handle->dbHandle ? state->handle->dbHandle->descriptor : nullptr;
 		for (auto* slot : state->savedSlots) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
@@ -422,25 +475,82 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			napi_value resource_name;
 			::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
 			napi_threadsafe_function tsfn;
-			::napi_create_threadsafe_function(
+			napi_status tsfnStatus = ::napi_create_threadsafe_function(
 				env, nullptr, nullptr, resource_name,
 				0, 1,
 				ctx, retryNowFinalize,
 				ctx, retryNowCallJs,
 				&tsfn
 			);
+			if (tsfnStatus != napi_ok) {
+				// Creation failed (e.g. an already-pending exception): nothing to
+				// call+release, and ctx is not yet owned by any finalize -- fall
+				// through to the plain !parked resolve below instead of leaving
+				// a garbage tsfn handle in a park entry.
+				vt->unrefTracker(t);
+				break;
+			}
 			::napi_unref_threadsafe_function(env, tsfn);
+
+			// Exactly-once gate: independent of `ctx` so a loser arriving after
+			// the winner's ctx/tsfn are already gone just loses the CAS.
+			auto fired = std::make_shared<std::atomic<bool>>(false);
+
+			// #741 bound (harper#2001): resolves RETRY_NOW after
+			// ROCKSDB_JS_PARK_TIMEOUT_MS if the holder never releases. 0 both
+			// when the descriptor is closing and when there is no descriptor
+			// at all (DBHandle::close() can reset it concurrently) -- either
+			// way there is no timeout thread behind this park.
+			uint64_t parkId = descriptor ? descriptor->scheduleParkTimeout(env, parkTimeoutMs(), tsfn, fired) : 0;
+
+			if (parkId == 0) {
+				// No timeout thread behind this park -- resolve now rather
+				// than register with the LockTracker unbounded.
+				vt->unrefTracker(t);
+				bool expected = false;
+				if (fired->compare_exchange_strong(expected, true)) {
+					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				}
+				parked = true;
+				break;
+			}
+
+			// weak_ptr, not raw: LockTracker::wakeCallbacks has no removal API,
+			// so this closure can outlive `descriptor` (e.g. a foreign-dbId
+			// tracker from a colliding VT slot). `.lock()` failing means
+			// shutdownParkTimeouts already resolved this park at close.
+			std::weak_ptr<DBDescriptor> weakDescriptor = descriptor;
+			auto fireOnce = [tsfn, fired, weakDescriptor, parkId]() {
+				if (parkId != 0) {
+					if (auto d = weakDescriptor.lock()) {
+						// This lock() is itself a transient extra ref, exactly
+						// the shape that can make a racing close()'s
+						// PurgeIfUnreferenced observe use_count() > 1 and skip
+						// (HarperFast/rocksdb-js#672) -- retry it after
+						// dropping our ref, like BackupState/checkpoint state
+						// do for the same reason.
+						d->fireParkTimeout(parkId);
+						std::string path = d->path;
+						bool readOnly = d->readOnly;
+						d.reset();
+						DBRegistry::PurgeIfUnreferenced(path, readOnly);
+					}
+					return;
+				}
+				bool expected = false;
+				if (fired->compare_exchange_strong(expected, true)) {
+					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				}
+			};
 
 			// Register wake callback; if the tracker already fired wake()
 			// before we got here, addWakeCallback returns false and we
 			// call+release the TSFN immediately (async on the JS thread).
-			bool registered = t->addWakeCallback([tsfn]() {
-				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
-			});
+			bool registered = t->addWakeCallback(fireOnce);
 			if (!registered) {
-				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				fireOnce();
 			}
 
 			vt->unrefTracker(t);

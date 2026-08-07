@@ -119,6 +119,7 @@ describe('Coordinated retry (Phase 3)', () => {
 			// Force IsBusy by running concurrent transactions writing the same key
 			// under coordinatedRetry: true. database.ts handles RETRY_NOW internally
 			// via immediate retry; callers never see it as a return value.
+			const start = Date.now();
 			const results = await Promise.allSettled(
 				Array.from({ length: 4 }, async (_, i) => {
 					const v = Buffer.alloc(16);
@@ -131,6 +132,7 @@ describe('Coordinated retry (Phase 3)', () => {
 					);
 				})
 			);
+			const elapsed = Date.now() - start;
 
 			// All transactions should eventually succeed (coordinatedRetry retries
 			// without error) or fail gracefully; none should throw unexpectedly.
@@ -140,6 +142,12 @@ describe('Coordinated retry (Phase 3)', () => {
 					expect((r.reason as Error).message).toContain('commit');
 				}
 			}
+
+			// A conflict here resolves via LockTracker's real wake (the other
+			// commit finishing), not the #741 park timeout (default 5000ms) --
+			// bound the wall clock well under that so a broken wake path can't
+			// hide behind the timeout and still pass.
+			expect(elapsed).toBeLessThan(3000);
 
 			// Slot should be 0 (released) after all transactions settle.
 			const newV = 2.5e12;
@@ -165,6 +173,42 @@ describe('Coordinated retry (Phase 3)', () => {
 			);
 
 			expect(attempts).toBeGreaterThanOrEqual(1);
+		}));
+});
+
+// Regression coverage for #741: a park behind a leaked/abandoned holder must
+// resolve RETRY_NOW after a bounded wait instead of hanging forever
+// (harper#2001). Default ROCKSDB_JS_PARK_TIMEOUT_MS is 5000ms; the lower
+// bound below is what tells this apart from the `!parked` fast path (which
+// also resolves RETRY_NOW, just near-instantly).
+describe('Coordinated retry — bounded park timeout (#741)', () => {
+	it('a commit parked behind a never-releasing holder settles with RETRY_NOW within the deadline', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('park-timeout-abandoned-holder');
+			const v0 = 1.6e12;
+			await db.put(key, valueWithVersion(v0));
+			db.populateVersion(key, v0);
+			expect(db.verifyVersion(key, v0)).toBe(true);
+
+			// Abandoned holder: staged write, never committed or aborted.
+			const holder = new Transaction(db.store, { coordinatedRetry: true });
+			holder.putSync(key, valueWithVersion(2.1e12));
+
+			// Establish txn's snapshot before the conflicting external commit
+			// below, so RocksDB's optimistic conflict check has something to
+			// validate against.
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			await txn.get(key);
+			await db.put(key, valueWithVersion(2.2e12));
+			txn.putSync(key, valueWithVersion(2.3e12));
+
+			const start = Date.now();
+			const result = await txn.commit();
+			const elapsed = Date.now() - start;
+
+			expect(result).toBe(RETRY_NOW);
+			expect(elapsed).toBeGreaterThanOrEqual(4500);
+			expect(elapsed).toBeLessThan(10000);
 		}));
 });
 
