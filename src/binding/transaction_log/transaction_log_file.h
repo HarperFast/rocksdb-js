@@ -40,6 +40,12 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY 1
+/**
+ * `bytesLanded` value meaning the platform could not tell us how much of a failed append reached
+ * the file. The caller must then retire the file rather than erase a range it cannot bound.
+ */
+#define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
+
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
@@ -191,6 +197,15 @@ struct TransactionLogFile final {
 	 */
 	std::atomic<bool> hasAppendedSinceOpen = false;
 
+	/**
+	 * True once a failed append left bytes past `size` that could not be erased. The file is then
+	 * refused for further appends (writeEntriesV1 defers to the next file, exactly as it does for a
+	 * file at its max size) so the orphaned bytes stay the trailing partial that recoverTail() can
+	 * repair, instead of becoming a mid-file break with valid entries on both sides — the shape it
+	 * must leave intact (HarperFast/rocksdb-js#748).
+	 */
+	std::atomic<bool> appendBoundaryLost = false;
+
 	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
 
 	// prevent copying
@@ -277,6 +292,13 @@ struct TransactionLogFile final {
 	 * @returns `true` if the file was removed, `false` if it did not exist.
 	 */
 	bool removeFile();
+
+	/**
+	 * Platform specific body of removeFile(). Precondition: the caller already
+	 * holds fileMutex (open() does, and must discard a file whose header write
+	 * failed part-way).
+	 */
+	bool removeFileLocked();
 
 	/**
 	 * Counts the committed entry frames in this log file by reading its on-disk
@@ -392,6 +414,13 @@ struct TransactionLogFile final {
 	 * that each test starts from a known state. Test-only.
 	 */
 	static void resetAdviseColdSupportForTests();
+
+	/**
+	 * Overrides the `bytesLanded` a failed append reports, so the unknown-extent and
+	 * over-report branches — reachable only from the Windows backend in production —
+	 * can be exercised on POSIX. INT64_MIN disables the override. Test-only.
+	 */
+	static std::atomic<int64_t> forcedBytesLandedForTests;
 #endif
 
 private:
@@ -423,8 +452,15 @@ private:
 	 * POSIX advances partially-written iovecs in place; Windows writes from
 	 * local state and leaves the array untouched. Callers must treat it as
 	 * consumed in either case.
+	 *
+	 * @param bytesLanded Set to the number of bytes that reached the file, or to
+	 *   TRANSACTION_LOG_BYTES_LANDED_UNKNOWN when the platform cannot report it. On a
+	 *   hard error (return -1) those bytes are still on disk and the caller must
+	 *   erase them: an append that stops part-way through an entry leaves a
+	 *   framing break that hides everything written after it. An unknown extent
+	 *   cannot be erased safely, so the caller retires the file instead.
 	 */
-	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
+	int64_t writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded);
 
 	/**
 	 * Platform specific function that truncates the file to `newSize` bytes and

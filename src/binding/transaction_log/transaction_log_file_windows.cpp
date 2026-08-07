@@ -342,9 +342,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return success ? static_cast<int64_t>(bytesRead) : -1;
 }
 
-bool TransactionLogFile::removeFile() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
+bool TransactionLogFile::removeFileLocked() {
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
@@ -376,7 +374,9 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded) {
+	bytesLanded = 0;
+
 	if (iovcnt <= 0) {
 		return 0;
 	}
@@ -414,6 +414,21 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 				std::string errorMessage = getWindowsErrorMessage(error);
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
 					this, error, errorMessage.c_str(), i, iovcnt);
+				// The batch seeks to `size` before writing, so the distance from there
+				// to the file pointer is what reached the file. WriteFile does not
+				// promise to set lpNumberOfBytesWritten on failure, and the caller
+				// erases exactly the range reported here — so if the pointer cannot be
+				// read either, report the extent as unknown rather than guess with a
+				// count that may be short.
+				LARGE_INTEGER zero, current;
+				zero.QuadPart = 0;
+				if (::SetFilePointerEx(this->fileHandle, zero, &current, FILE_CURRENT)) {
+					int64_t landed = current.QuadPart -
+						static_cast<int64_t>(this->size.load(std::memory_order_relaxed));
+					bytesLanded = landed > 0 ? landed : 0;
+				} else {
+					bytesLanded = TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
+				}
 				return -1;
 			}
 
@@ -421,6 +436,7 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 				// shouldn't happen; bail to avoid an infinite loop
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile returned 0 bytes (iovec %d/%d, %zu remaining)\n",
 					this, i, iovcnt, remaining);
+				bytesLanded = totalBytesWritten;
 				return -1;
 			}
 

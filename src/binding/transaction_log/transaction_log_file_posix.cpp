@@ -25,6 +25,24 @@ extern "C" ssize_t ROCKSDB_JS_WRITEV(int, const struct iovec*, int);
 #define ROCKSDB_JS_WRITEV ::writev
 #endif
 
+// Hook point for unit tests: compile with -DROCKSDB_JS_WRITE=my_mock_fn to
+// inject a short/failed write for the appending writeToFile() path (the file
+// header). Same signature as ::write. Production builds call ::write directly.
+#ifdef ROCKSDB_JS_WRITE
+extern "C" ssize_t ROCKSDB_JS_WRITE(int, const void*, size_t);
+#else
+#define ROCKSDB_JS_WRITE ::write
+#endif
+
+// Hook point for unit tests: compile with -DROCKSDB_JS_FTRUNCATE=my_mock_fn to
+// simulate a truncate that fails, which is how the erase of a failed append's
+// bytes can itself fail. Same signature as ::ftruncate.
+#ifdef ROCKSDB_JS_FTRUNCATE
+extern "C" int ROCKSDB_JS_FTRUNCATE(int, off_t);
+#else
+#define ROCKSDB_JS_FTRUNCATE ::ftruncate
+#endif
+
 // Hook point for unit tests: compile with -DROCKSDB_JS_MADVISE=my_mock_fn to
 // capture/intercept the madvise() call made by adviseCold() (e.g. to assert it
 // is scoped to the file-backed range, or to simulate an old kernel returning
@@ -315,9 +333,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return static_cast<int64_t>(::read(this->fd, buffer, size));
 }
 
-bool TransactionLogFile::removeFile() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
+bool TransactionLogFile::removeFileLocked() {
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
@@ -347,7 +363,9 @@ bool TransactionLogFile::removeFile() {
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded) {
+	bytesLanded = 0;
+
 	if (iovcnt <= 0) {
 		return 0;
 	}
@@ -369,11 +387,13 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 			if (errno == EINTR) {
 				continue;
 			}
+			bytesLanded = totalWritten;
 			return -1;
 		}
 
 		if (written == 0) {
 			// shouldn't happen for regular files; bail to avoid an infinite loop
+			bytesLanded = totalWritten;
 			return -1;
 		}
 
@@ -400,14 +420,14 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	if (offset >= 0) {
 		return static_cast<int64_t>(::pwrite(this->fd, buffer, size, offset));
 	}
-	return static_cast<int64_t>(::write(this->fd, buffer, size));
+	return static_cast<int64_t>(ROCKSDB_JS_WRITE(this->fd, buffer, size));
 }
 
 bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	if (this->fd < 0) {
 		return false;
 	}
-	if (::ftruncate(this->fd, static_cast<off_t>(newSize)) != 0) {
+	if (ROCKSDB_JS_FTRUNCATE(this->fd, static_cast<off_t>(newSize)) != 0) {
 		DEBUG_LOG("%p TransactionLogFile::truncateFile ftruncate failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
 		return false;
