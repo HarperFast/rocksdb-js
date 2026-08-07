@@ -1094,6 +1094,58 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	store->positionInsert(store->nextLogPosition);
 
+	// Seed the committed watermark at the end of the last COMPLETE transaction in the log.
+	// lastCommittedPosition is in-memory only; without this, getLastCommittedPosition() lazily
+	// seeds it from txn.state — the *flushed* position, i.e. how far RocksDB has already absorbed
+	// the log — which after an unclean exit sits behind the recovered tail. Every committed read is
+	// bounded by this watermark, so that stale seed leaves entries that are durable on disk (and
+	// that the consumer's boot replay re-applies via readUncommitted) invisible to committed
+	// readers until some later unrelated commit advances the watermark past the whole tail at once
+	// (HarperFast/harper#1949).
+	//
+	// The boundary is the last entry flagged TRANSACTION_LOG_ENTRY_LAST_FLAG, not the write head:
+	// only a batch's final entry carries that flag, so a crash mid-batch leaves whole, well-framed
+	// entries that are merely a *prefix* of a transaction. recoverTail() normally discards those
+	// entries outright (discardUnclosedTransaction), in which case this walk finds the boundary at
+	// the active file's new write head. It keeps them in the two cases it cannot prove are an
+	// interrupted batch of a flag-setting writer: a batch that writeBatch() split "across multiple
+	// log files" at a rotation (no flagged entry in the active file at all), and a file written
+	// before the flag existed. There the bytes stay and this walk falls back through older
+	// sequences until one ends on a real boundary — so committed readers still never see a
+	// transaction that never closed, even where the file could not be repaired.
+	//
+	// Otherwise this is not a new recovery rule: commitFinished() already defines the watermark as
+	// the front of uncommittedTransactionPositions, which — after the sentinel insert above, with
+	// no transaction in flight in a freshly loaded store — is nextLogPosition, and a complete
+	// transaction boundary is where that lands in a cleanly closed log. A store with no complete
+	// transaction anywhere leaves the position at {0, 0} for the lazy path to resolve.
+	//
+	// Tested on logSequenceNumber, not fullPosition: that union member aliases the two uint32s as
+	// a double, so a high sequence number (>= 0x7ff00000) reads back as NaN or negative and `> 0`
+	// would silently skip the seed.
+	//
+	// A complete transaction whose RocksDB commit never landed does become visible — the same
+	// exposure commitAborted() already produces at runtime for a written-but-uncommitted batch,
+	// and the consumer reconciles it by replaying the tail into the database.
+	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
+		if (it->first > storeCurrentSeq) {
+			continue;
+		}
+		auto& logFile = it->second;
+		if (!logFile->isOpen()) {
+			logFile->open(store->latestTimestamp);
+		}
+		// The active file's scan already ran in recoverTail() above; older files are read here,
+		// which only happens when the active file ends mid-transaction.
+		uint32_t completeEnd = it->first == storeCurrentSeq
+			? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
+			: logFile->scanForLastCompleteTransactionEnd();
+		if (completeEnd > 0) {
+			*store->lastCommittedPosition = { completeEnd, it->first };
+			break;
+		}
+	}
+
 	return store;
 }
 

@@ -10,6 +10,7 @@
 #include "transaction_log/transaction_log_recovery.h"
 
 using rocksdb_js::countTransactionLogEntries;
+using rocksdb_js::findLastCompleteTransactionEnd;
 using rocksdb_js::RecoveryScan;
 using rocksdb_js::scanTransactionLogForRecovery;
 
@@ -25,15 +26,18 @@ public:
 		appendF64(1.0);
 	}
 
-	// Append a well-formed entry whose declared length matches its data.
-	LogImage& entry(uint32_t dataLen, uint8_t flags = 1) {
-		return entryRaw(/*declaredLength=*/dataLen, /*actualDataLen=*/dataLen, flags);
+	// Append a well-formed entry whose declared length matches its data. Every
+	// entry of a batch is stamped with the batch timestamp, so `timestamp` is what
+	// distinguishes one interrupted transaction from several unflagged ones.
+	LogImage& entry(uint32_t dataLen, uint8_t flags = 1, double timestamp = 2.0) {
+		return entryRaw(/*declaredLength=*/dataLen, /*actualDataLen=*/dataLen, flags, timestamp);
 	}
 
 	// Append an entry header that declares `declaredLength` but only writes
 	// `actualDataLen` data bytes (used to simulate a torn/partial entry).
-	LogImage& entryRaw(uint32_t declaredLength, uint32_t actualDataLen, uint8_t flags = 1) {
-		appendF64(2.0); // any non-zero timestamp
+	LogImage& entryRaw(uint32_t declaredLength, uint32_t actualDataLen, uint8_t flags = 1,
+		double timestamp = 2.0) {
+		appendF64(timestamp); // any non-zero timestamp
 		appendU32(declaredLength);
 		appendU8(flags);
 		for (uint32_t i = 0; i < actualDataLen; ++i) {
@@ -213,4 +217,134 @@ TEST(TransactionLogCount, CountsLargeEntryExceedingRotationSize) {
 	LogImage img;
 	img.entry(10).entry(64 * 1024).entry(20);
 	EXPECT_EQ(countTransactionLogEntries(img.data(), img.size()), 3u);
+}
+
+// findLastCompleteTransactionEnd — the stricter bound the committed watermark uses.
+// Only a batch's final entry carries TRANSACTION_LOG_ENTRY_LAST_FLAG, so a crash
+// mid-batch leaves well-framed entries that are only a prefix of a transaction:
+// structurally valid (validEnd accepts them) but not yet a closed transaction.
+
+TEST(TransactionLogLastComplete, HeaderOnlyHasNoCompleteTransaction) {
+	LogImage img;
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), 0u);
+}
+
+TEST(TransactionLogLastComplete, SingleEntryTransactionEndsAtEof) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), img.size());
+}
+
+TEST(TransactionLogLastComplete, StopsBeforeAnUnflaggedTail) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	const uint32_t afterFirst = img.size();
+	// a second transaction's entries, none of which closed it
+	img.entry(20, /*flags=*/0).entry(30, /*flags=*/0);
+	// the frames are all valid...
+	EXPECT_EQ(scanTransactionLogForRecovery(img.data(), img.size()).validEnd, img.size());
+	// ...but the watermark must stop at the last transaction that actually closed
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), afterFirst);
+}
+
+TEST(TransactionLogLastComplete, MultiEntryTransactionEndsOnItsFlaggedEntry) {
+	LogImage img;
+	img.entry(10, /*flags=*/0).entry(20, /*flags=*/0).entry(30, /*flags=*/1);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), img.size());
+}
+
+TEST(TransactionLogLastComplete, NoneWhenNoTransactionEverClosed) {
+	LogImage img;
+	img.entry(10, /*flags=*/0).entry(20, /*flags=*/0);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), 0u);
+}
+
+TEST(TransactionLogLastComplete, IgnoresATornTailAfterAClosedTransaction) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	const uint32_t afterFirst = img.size();
+	img.entry(20, /*flags=*/0); // prefix of the next transaction
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12, /*flags=*/1); // torn
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), afterFirst);
+}
+
+TEST(TransactionLogLastComplete, StopsAtZeroPaddedTail) {
+	LogImage img;
+	img.entry(10, /*flags=*/1);
+	const uint32_t afterFirst = img.size();
+	img.zeros(64);
+	EXPECT_EQ(findLastCompleteTransactionEnd(img.data(), img.size()), afterFirst);
+}
+
+// The unclosed-tail description — the evidence recoverTail() requires before it
+// discards trailing entries. Only a run that is provably ONE interrupted batch of a
+// flag-setting writer may be dropped; anything else is kept.
+
+TEST(TransactionLogUnclosedTail, NoneWhenFileEndsOnATransactionBoundary) {
+	LogImage img;
+	img.entry(10, /*flags=*/1).entry(20, /*flags=*/1);
+	RecoveryScan scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.unclosedTailEntries, 0u);
+	EXPECT_FALSE(scan.unclosedTailIsOneTransaction);
+}
+
+TEST(TransactionLogUnclosedTail, OneTransactionWhenTheTailSharesATimestamp) {
+	LogImage img;
+	img.entry(10, /*flags=*/1, /*timestamp=*/2.0);
+	const uint32_t afterFirst = img.size();
+	// a three-entry batch whose closing entry never reached disk
+	img.entry(20, /*flags=*/0, /*timestamp=*/9.0).entry(30, /*flags=*/0, /*timestamp=*/9.0);
+	RecoveryScan scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, afterFirst);
+	EXPECT_EQ(scan.unclosedTailEntries, 2u);
+	EXPECT_TRUE(scan.unclosedTailIsOneTransaction);
+}
+
+TEST(TransactionLogUnclosedTail, NotOneTransactionWhenTheTailSpansTimestamps) {
+	LogImage img;
+	img.entry(10, /*flags=*/1, /*timestamp=*/2.0);
+	// two unflagged entries from different batches: a flag-setting writer cannot
+	// produce this, so the file is not ours to repair
+	img.entry(20, /*flags=*/0, /*timestamp=*/9.0).entry(30, /*flags=*/0, /*timestamp=*/10.0);
+	RecoveryScan scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.unclosedTailEntries, 2u);
+	EXPECT_FALSE(scan.unclosedTailIsOneTransaction);
+}
+
+TEST(TransactionLogUnclosedTail, ResetsAtEveryClosedTransaction) {
+	LogImage img;
+	// distinct timestamps, but each batch closes — so there is no tail at all
+	img.entry(10, /*flags=*/0, /*timestamp=*/2.0).entry(10, /*flags=*/1, /*timestamp=*/2.0);
+	img.entry(10, /*flags=*/1, /*timestamp=*/3.0);
+	const uint32_t afterSecond = img.size();
+	img.entry(10, /*flags=*/0, /*timestamp=*/4.0);
+	RecoveryScan scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, afterSecond);
+	EXPECT_EQ(scan.unclosedTailEntries, 1u);
+	EXPECT_TRUE(scan.unclosedTailIsOneTransaction);
+}
+
+TEST(TransactionLogUnclosedTail, CountsWholeEntriesBeforeATornFrame) {
+	LogImage img;
+	img.entry(10, /*flags=*/1, /*timestamp=*/2.0);
+	const uint32_t afterFirst = img.size();
+	img.entry(20, /*flags=*/0, /*timestamp=*/9.0); // whole entry of the interrupted batch
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12, /*flags=*/1, /*timestamp=*/9.0);
+	RecoveryScan scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
+	// the torn bytes go first, then the whole entry left over from the same batch
+	EXPECT_EQ(scan.validEnd, afterFirst + 13u + 20u);
+	EXPECT_EQ(scan.unclosedTailEntries, 1u);
+	EXPECT_TRUE(scan.unclosedTailIsOneTransaction);
+}
+
+TEST(TransactionLogUnclosedTail, NoBoundaryWhenNothingEverClosed) {
+	LogImage img;
+	// the whole file is the continuation of a batch that began in an earlier file
+	img.entry(10, /*flags=*/0, /*timestamp=*/9.0).entry(20, /*flags=*/0, /*timestamp=*/9.0);
+	RecoveryScan scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, 0u);
+	EXPECT_EQ(scan.unclosedTailEntries, 2u);
+	// uniform, but with no boundary to fall back to there is nothing to truncate to
+	EXPECT_TRUE(scan.unclosedTailIsOneTransaction);
 }

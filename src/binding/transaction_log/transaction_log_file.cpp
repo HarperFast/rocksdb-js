@@ -151,6 +151,31 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	}
 }
 
+uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+
+	if (this->version != 1) {
+		return 0;
+	}
+
+	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return 0; // header-only or empty: no transactions at all
+	}
+
+	std::vector<char> buffer(fileSize);
+	int64_t bytesRead = this->readFromFile(buffer.data(), fileSize, 0);
+	if (bytesRead < 0 || static_cast<uint32_t>(bytesRead) != fileSize) {
+		DEBUG_LOG("%p TransactionLogFile::scanForLastCompleteTransactionEnd Failed to read file: %s (read=%lld, size=%u)\n",
+			this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
+		return 0;
+	}
+
+	uint32_t end = findLastCompleteTransactionEnd(buffer.data(), fileSize);
+	this->lastCompleteTransactionEnd.store(end, std::memory_order_relaxed);
+	return end;
+}
+
 void TransactionLogFile::recoverTail() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
@@ -174,8 +199,12 @@ void TransactionLogFile::recoverTail() {
 	}
 
 	RecoveryScan scan = scanTransactionLogForRecovery(buffer.data(), fileSize);
+	// Publish the complete-transaction boundary from this same scan so the store can
+	// seed its committed watermark without re-reading the file.
+	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
+			this->discardUnclosedTransaction(scan, scan.validEnd);
 			return;
 
 		case RecoveryScan::Kind::MidFileCorruption: {
@@ -216,12 +245,79 @@ void TransactionLogFile::recoverTail() {
 					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ").";
 				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
 				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+
+				// The partial bytes are gone; whole entries of the same interrupted
+				// batch can still precede them.
+				this->discardUnclosedTransaction(scan, scan.validEnd);
 			} else {
 				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
 					this, this->path.string().c_str());
 			}
 			return;
 	}
+}
+
+void TransactionLogFile::discardUnclosedTransaction(const RecoveryScan& scan, uint32_t entriesEnd) {
+	uint32_t boundary = scan.lastCompleteTransactionEnd;
+	if (entriesEnd <= boundary) {
+		return; // the file ends on a transaction boundary
+	}
+
+	// A zero boundary means no entry in this file closed a transaction. Either the
+	// whole file is the tail of a batch that began in an earlier one, or it predates
+	// the last-entry flag entirely — neither is safe to discard from here, so leave
+	// the bytes and let the store fall back to seeding its watermark from an older
+	// file. A non-zero boundary is the proof that this writer sets the flag.
+	if (boundary == 0) {
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction No closed transaction in %s; leaving %u trailing entries intact\n",
+			this, this->path.string().c_str(), scan.unclosedTailEntries);
+		return;
+	}
+
+	if (!scan.unclosedTailIsOneTransaction) {
+		std::ostringstream msg;
+		msg << "Transaction log " << this->path.string() << " ends with " << scan.unclosedTailEntries
+			<< " unflagged entries spanning more than one timestamp after offset " << boundary
+			<< "; leaving them intact rather than discarding what may be complete transactions "
+			   "written before the last-entry flag existed.";
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		return;
+	}
+
+	// The trailing run is one transaction whose final entry never reached disk, so
+	// its RocksDB commit never ran either: writeBatch() completes before
+	// Transaction::Commit() in every commit path, and both lanes of the commit
+	// thread preserve dispatch order, so an interrupted log write is always the
+	// newest thing in the log and nothing durable depends on it. Dropping it is what
+	// keeps the "a log never holds an unclosed transaction" invariant enforceable
+	// rather than merely observed by the watermark: the bytes cannot later be
+	// swallowed into the next batch's group by that batch's flag.
+	if (!this->eraseTail(boundary, entriesEnd)) {
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction Erase failed (or unsupported on this platform) for %s\n",
+			this, this->path.string().c_str());
+		return;
+	}
+
+	this->size.store(boundary, std::memory_order_relaxed);
+	if (this->lastFlushedSize > boundary) {
+		this->lastFlushedSize = boundary;
+	}
+	{
+		// Windows indexes the file during open(), before this runs, so entries that
+		// no longer exist can already be in the index.
+		std::lock_guard<std::mutex> indexLock(this->indexMutex);
+		this->positionByTimestampIndex.clear();
+		this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+	}
+
+	std::ostringstream msg;
+	msg << "Transaction log " << this->path.string() << " ended mid-transaction; dropped "
+		<< scan.unclosedTailEntries << " entry(s) (" << (entriesEnd - boundary)
+		<< " bytes) of a transaction that never closed, back to the last complete transaction (new size="
+		<< boundary << ").";
+	DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
+	emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 }
 
 uint32_t TransactionLogFile::countEntries() const {
@@ -434,6 +530,18 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	bool stoppedAtUnindexedTail = false;
 	while (this->lastIndexedPosition < this->size) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
+		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
+		// zero there (e.g. an unset/epoch file timestamp) must not be mistaken for the
+		// zero-padding end-of-data marker below — that heuristic only applies once we're
+		// scanning actual entries past the header. Record it and advance to the first entry
+		// unconditionally, before the end-of-data check gets a chance to truncate this->size
+		// back into the header itself.
+		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
+			// specifically record the log file timestamp as the first entry with a position of zero
+			positionByTimestampIndex.insert({entryTimestamp, 0});
+			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
+			continue;
+		}
 		if (entryTimestamp == 0) {
 			// A zero timestamp marks the end of the written data. Only correct this->size down to the
 			// true written extent when no entries have been appended since (re)open — i.e. during
@@ -452,16 +560,10 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			}
 			break;
 		}
-		// for the first iteration, we insert the log file timestamp at the beginning of the index
-		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
-			// specifically record the log file timestamp as the first entry with a position of zero
-			positionByTimestampIndex.insert({entryTimestamp, 0});
-			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
-			continue;
-			// else check that the timestamp is greater than any previously indexed timestamp,
-			// otherwise we don't record it, because we want to start at the first position with a timestamp that
-			// is greater than the requested timestamp:
-		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+		// check that the timestamp is greater than any previously indexed timestamp,
+		// otherwise we don't record it, because we want to start at the first position with a timestamp that
+		// is greater than the requested timestamp:
+		if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
 			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
 		}
