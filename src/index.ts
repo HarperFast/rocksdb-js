@@ -41,6 +41,7 @@ export {
 	type ValidateTransactionLogStoreOptions,
 } from './validate-transaction-log.js';
 export {
+	type BackgroundErrorInfo,
 	type CompressionAlgorithm,
 	type CompressionInfo,
 	type CompressionOption,

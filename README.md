@@ -11,6 +11,7 @@ A Node.js binding for the RocksDB library.
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
 - Configurable block/blob compression (LZ4, Zstd, Zlib, and more)
+- Observable background-error state with in-process recovery (`db.backgroundError` / `db.resume()`)
 - Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
@@ -144,6 +145,52 @@ const db = RocksDatabase.open('path/to/db', {
 	compression: { algorithm: 'zstd', level: 3 },
 });
 console.log(db.compression); // { algorithm: 'zstd', level: 3 }
+```
+
+### `db.backgroundError: BackgroundErrorInfo | null`
+
+Returns the RocksDB background error currently observed on this database, or `null` when none
+is. When a write fails at the filesystem level — a full disk, an exhausted quota — RocksDB
+records a background error. A non-null value means an error was **observed**, but only a
+hard-or-worse one (`isReadOnly`) has actually stopped writes; a soft error is auto-recoverable and
+does **not** make the database read-only. When `isReadOnly` is `true`, call
+[`db.resume()`](#dbresume-void) after the underlying condition clears to recover in-process
+instead of restarting. The database must be open.
+
+The returned object has:
+
+- `message: string` — the RocksDB error string captured when the error was recorded.
+- `severity: number` — the RocksDB `Status::Severity`: `1` soft, `2` hard, `3` fatal,
+  `4` unrecoverable.
+- `severityName: string` — `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`.
+- `isReadOnly: boolean` — whether writes are stopped (`severity >= 2`). Only then is the database
+  read-only and `resume()` warranted.
+- `reason?: number` / `reasonName?: string` — the originating `BackgroundErrorReason`
+  (e.g. `'flush'`, `'compaction'`), present when the error came from a reason-bearing callback.
+
+```typescript
+const err = db.backgroundError;
+if (err?.isReadOnly) {
+	console.error(`database is read-only (${err.severityName}): ${err.message}`);
+}
+```
+
+### `db.resume(): void`
+
+Attempts to recover the database from a latched background error (see
+[`db.backgroundError`](#dbbackgrounderror-backgrounderrorinfo--null)) by calling RocksDB's
+`DB::Resume()`. Call this after the underlying condition has cleared — e.g. once disk space has
+been freed. On success the read-only latch is cleared and writes are accepted again (and RocksDB
+can resume the obsolete-file cleanup it was blocking); on failure — the condition has not actually
+cleared — it throws with the RocksDB error and the latch remains. A no-op on a healthy database.
+
+Runs synchronously and may briefly block, since recovery can re-flush memtables.
+
+```typescript
+if (db.backgroundError) {
+	// ...free disk space, then...
+	db.resume();
+}
 ```
 
 ### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`

@@ -235,6 +235,46 @@ public:
 		}
 	}
 
+	// Mirrors RocksDB's latched background error onto the descriptor so a consumer
+	// can observe it and recover in-process (HarperFast/rocksdb-js#730). We do NOT
+	// suppress the error (leaving *bg_error untouched) — the point is to surface
+	// the read-only latch, not hide it. Runs on flush/compaction/write threads, so
+	// it must stay cheap: a mutex-guarded copy, nothing blocking.
+	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bg_error) override {
+		if (!descriptorPtr || bg_error == nullptr) {
+			return;
+		}
+		auto desc = descriptorPtr->lock();
+		if (!desc) {
+			return;
+		}
+		desc->latchBackgroundError(static_cast<int>(reason), *bg_error);
+	}
+
+	// Fires when a recovery attempt (auto-recovery or an explicit DB::Resume())
+	// completes. These callbacks run on RocksDB background threads and race each
+	// other and OnBackgroundError, so reconciliation must be a single atomic step
+	// conditioned on the error actually being recovered — never a blind clear.
+	// `reconcileRecoveryEnd` (in BackgroundErrorMirror) does that: on success it
+	// clears only if the currently-latched error IS `old_bg_error` (so a newer
+	// error latched in between survives); on failure it seeds `old_bg_error` only
+	// when nothing is latched (RocksDB retains it as the read-only latch). Format
+	// the message outside the mirror lock (ToString allocates on a bg thread).
+	void OnErrorRecoveryEnd(const rocksdb::BackgroundErrorRecoveryInfo& info) override {
+		if (!descriptorPtr) {
+			return;
+		}
+		auto desc = descriptorPtr->lock();
+		if (!desc) {
+			return;
+		}
+		desc->reconcileRecoveryEnd(
+			info.old_bg_error.ToString(),
+			static_cast<int>(info.old_bg_error.severity()),
+			info.new_bg_error.ok()
+		);
+	}
+
 private:
 	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
 	std::unordered_map<int, JobTracker> jobTrackers;
@@ -1734,6 +1774,26 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
 	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
+}
+
+void DBDescriptor::latchBackgroundError(int reason, const rocksdb::Status& status) {
+	this->backgroundError.latch(reason, status);
+}
+
+void DBDescriptor::reconcileRecoveryEnd(
+	const std::string& recoveredMessage,
+	int recoveredSeverity,
+	bool recovered
+) {
+	this->backgroundError.reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
+}
+
+bool DBDescriptor::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {
+	return this->backgroundError.clearIfUnchanged(expectedGeneration);
+}
+
+bool DBDescriptor::getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation) {
+	return this->backgroundError.get(out, generation);
 }
 
 rocksdb::Status DBDescriptor::flush() {

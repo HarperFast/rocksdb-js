@@ -18,6 +18,7 @@
 #include "database/commit_worker.h"
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/background_error.h"
 #include "core/platform.h"
 #include "napi/event_emitter.h"
 #include "napi/helpers.h"
@@ -189,6 +190,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	EventEmitter events;
 
 	/**
+	 * Mirror of RocksDB's latched background-error state (HarperFast/rocksdb-js#730).
+	 * Written by the event listener's `OnBackgroundError`/`OnErrorRecoveryEnd`
+	 * callbacks (RocksDB background threads) and read by the JS thread; the mirror
+	 * is internally synchronized. RocksDB exposes no public getter for the current
+	 * background error, so this is the source of truth for the JS surface.
+	 */
+	BackgroundErrorMirror backgroundError;
+
+	/**
 	 * Commit lanes executing async transaction commits off the libuv
 	 * threadpool, shared by all envs/handles on this database. In the default
 	 * single-lane mode only commitWorker runs: each commit executes its log
@@ -266,6 +276,18 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * tsfn so the commit thread stops marshalling into a torn-down env.
 	 */
 	void releaseCommitCompletionsByEnv(napi_env env);
+
+	/**
+	 * Background-error mirror accessors — thin delegates to `backgroundError`
+	 * (see `BackgroundErrorMirror`). All thread-safe. `latchBackgroundError`
+	 * records an error; `reconcileRecoveryEnd` atomically applies an
+	 * `OnErrorRecoveryEnd`; `clearBackgroundErrorIfUnchanged` lets `resume()`
+	 * clear only the error it observed; `getBackgroundError` reads the mirror.
+	 */
+	void latchBackgroundError(int reason, const rocksdb::Status& status);
+	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
+	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
+	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
 
 private:
 	DBDescriptor(

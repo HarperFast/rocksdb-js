@@ -123,6 +123,37 @@ export type CompressionInfo = {
 };
 
 /**
+ * An observed RocksDB background error, as returned by the `backgroundError`
+ * getter. A non-null value means an error was observed — but only a hard-or-worse
+ * error (`isReadOnly`) actually stops writes. A soft error is auto-recoverable and
+ * does not make the database read-only. See {@link RocksDatabase.resume}.
+ */
+export type BackgroundErrorInfo = {
+	/** The RocksDB error string captured when the error was latched. */
+	message: string;
+	/**
+	 * The RocksDB `Status::Severity` as a number: 1 soft, 2 hard, 3 fatal,
+	 * 4 unrecoverable.
+	 */
+	severity: number;
+	/** Human-readable severity: `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`. */
+	severityName: string;
+	/**
+	 * Whether this error has stopped writes (severity hard or worse, i.e.
+	 * `severity >= 2`). Only when `true` is the database read-only and
+	 * {@link RocksDatabase.resume} warranted; a soft error auto-recovers.
+	 */
+	isReadOnly: boolean;
+	/**
+	 * The RocksDB `BackgroundErrorReason` as a number, present when the error
+	 * originated from a reason-bearing callback (flush, compaction, etc.).
+	 */
+	reason?: number;
+	/** Human-readable reason, e.g. `'flush'` or `'compaction'`. */
+	reasonName?: string;
+};
+
+/**
  * The informational-log settings currently in effect for a database, as
  * returned by the `logOptions` getter. These are database-wide (`DBOptions`)
  * settings, not per-column-family.
