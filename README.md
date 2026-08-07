@@ -149,25 +149,28 @@ console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 
 ### `db.backgroundError: BackgroundErrorInfo | null`
 
-Returns the RocksDB background error currently latched on this database, or `null` when the
-database is healthy. When a write fails at the filesystem level — a full disk, an exhausted
-quota — RocksDB latches a background error and stops accepting writes until the condition is
-cleared, so a non-null value means the database is effectively **read-only**. Call
+Returns the RocksDB background error currently observed on this database, or `null` when none
+is. When a write fails at the filesystem level — a full disk, an exhausted quota — RocksDB
+records a background error. A non-null value means an error was **observed**, but only a
+hard-or-worse one (`isReadOnly`) has actually stopped writes; a soft error is auto-recoverable and
+does **not** make the database read-only. When `isReadOnly` is `true`, call
 [`db.resume()`](#dbresume-void) after the underlying condition clears to recover in-process
 instead of restarting. The database must be open.
 
 The returned object has:
 
-- `message: string` — the RocksDB error string captured when the error latched.
+- `message: string` — the RocksDB error string captured when the error was recorded.
 - `severity: number` — the RocksDB `Status::Severity`: `1` soft, `2` hard, `3` fatal,
-  `4` unrecoverable. A value `>= 2` (hard) means the database is read-only.
+  `4` unrecoverable.
 - `severityName: string` — `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`.
+- `isReadOnly: boolean` — whether writes are stopped (`severity >= 2`). Only then is the database
+  read-only and `resume()` warranted.
 - `reason?: number` / `reasonName?: string` — the originating `BackgroundErrorReason`
   (e.g. `'flush'`, `'compaction'`), present when the error came from a reason-bearing callback.
 
 ```typescript
 const err = db.backgroundError;
-if (err) {
+if (err?.isReadOnly) {
 	console.error(`database is read-only (${err.severityName}): ${err.message}`);
 }
 ```

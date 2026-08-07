@@ -838,6 +838,13 @@ napi_value Database::GetBackgroundError(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, backgroundErrorSeverityName(err.severity), NAPI_AUTO_LENGTH, &severityName));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "severityName", severityName));
 
+	// The read-only signal: only a hard-or-worse severity stops writes. A soft
+	// error is observed here but auto-recovers, so `resume()` guidance keys off
+	// `isReadOnly`, not merely a non-null value.
+	napi_value isReadOnly;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, backgroundErrorIsReadOnly(err.severity), &isReadOnly));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "isReadOnly", isReadOnly));
+
 	// reason is absent when the error was recorded outside a reason-bearing
 	// callback (e.g. a failed resume), so only surface it when known.
 	if (err.reason >= 0) {
