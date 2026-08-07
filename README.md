@@ -90,8 +90,11 @@ Creates a new database instance.
     `16`.
   - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
     memory for transaction conflict checking. `-1` (the default) derives the value from
-    `maxWriteBufferNumber * writeBufferSize`, the RocksDB-recommended default for optimistic
-    transactions.
+    `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
+    transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
+    (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
+    `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
+    value is always honored as-is.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
