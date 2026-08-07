@@ -40,6 +40,43 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 );
 
 /**
+ * Thread-safe state shared between the RocksDB `EventListener` and the
+ * `DBDescriptor` (HarperFast/rocksdb-js#754). It is created BEFORE `DB::Open`
+ * and handed to the listener, then the descriptor is published into it once
+ * constructed. This replaces a late-bound `shared_ptr<weak_ptr<DBDescriptor>>`
+ * that had two defects: assigning it after `DB::Open` raced concurrent callback
+ * reads of the same `weak_ptr` object (a data race / UB), and its empty window
+ * during open silently dropped any background error latched mid-open.
+ *
+ * The descriptor pointer is published/read under `descriptorMutex`. The
+ * background-error mirror has its own mutex and does NOT depend on the
+ * descriptor, so `OnBackgroundError` can record an error even while `DB::Open`
+ * is still running and the descriptor does not yet exist.
+ */
+struct DBEventListenerState final {
+public:
+	// Descriptor access (defined in the .cpp where DBDescriptor is complete).
+	std::shared_ptr<DBDescriptor> lockDescriptor();
+	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor);
+
+	// Background-error mirror. `reason` is a `rocksdb::BackgroundErrorReason` cast
+	// to int, or -1 when there is no associated reason. `reconcileRecoveryEnd`
+	// atomically applies an `OnErrorRecoveryEnd`. All thread-safe.
+	void latchBackgroundError(int reason, const rocksdb::Status& status);
+	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
+	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
+	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
+
+private:
+	// Members are private so nothing can touch them without going through the
+	// thread-safe methods above. The descriptor pointer is guarded by its own
+	// mutex; the background-error mirror is internally synchronized.
+	std::mutex descriptorMutex_;
+	std::weak_ptr<DBDescriptor> descriptor_;
+	BackgroundErrorMirror backgroundError_;
+};
+
+/**
  * Custom deleter for RocksDB that waits for any background compaction to
  * complete before destroying the database instance. Compaction is triggered
  * by DBDescriptor::close() before this deleter runs.
@@ -190,13 +227,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	EventEmitter events;
 
 	/**
-	 * Mirror of RocksDB's latched background-error state (HarperFast/rocksdb-js#730).
-	 * Written by the event listener's `OnBackgroundError`/`OnErrorRecoveryEnd`
-	 * callbacks (RocksDB background threads) and read by the JS thread; the mirror
-	 * is internally synchronized. RocksDB exposes no public getter for the current
-	 * background error, so this is the source of truth for the JS surface.
+	 * Listener/background-error state shared with the RocksDB `EventListener`
+	 * (HarperFast/rocksdb-js#730, #754). The listener and this descriptor hold the
+	 * same `DBEventListenerState`; the latched background-error mirror lives there
+	 * (not directly on the descriptor) so an error that latches during `DB::Open`,
+	 * before this descriptor exists, is still captured. Set at construction and
+	 * never reassigned, so it is safe to read without a lock.
 	 */
-	BackgroundErrorMirror backgroundError;
+	std::shared_ptr<DBEventListenerState> eventListenerState;
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv
@@ -278,11 +316,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	void releaseCommitCompletionsByEnv(napi_env env);
 
 	/**
-	 * Background-error mirror accessors — thin delegates to `backgroundError`
-	 * (see `BackgroundErrorMirror`). All thread-safe. `latchBackgroundError`
-	 * records an error; `reconcileRecoveryEnd` atomically applies an
-	 * `OnErrorRecoveryEnd`; `clearBackgroundErrorIfUnchanged` lets `resume()`
-	 * clear only the error it observed; `getBackgroundError` reads the mirror.
+	 * Background-error mirror accessors — thin delegates to `eventListenerState`
+	 * (the mirror is shared with the listener). `latchBackgroundError` records an
+	 * error; `reconcileRecoveryEnd` atomically applies an `OnErrorRecoveryEnd`;
+	 * `clearBackgroundErrorIfUnchanged` lets `resume()` clear only the error it
+	 * observed; `getBackgroundError` reads the mirror. All thread-safe.
 	 */
 	void latchBackgroundError(int reason, const rocksdb::Status& status);
 	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
@@ -296,7 +334,8 @@ private:
 		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
-		std::shared_ptr<rocksdb::Statistics> statistics
+		std::shared_ptr<rocksdb::Statistics> statistics,
+		std::shared_ptr<DBEventListenerState> eventListenerState
 	);
 
 public:

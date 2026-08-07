@@ -155,18 +155,18 @@ struct JobTracker final {
  */
 class TransactionLogEventListener : public rocksdb::EventListener {
 public:
-	TransactionLogEventListener(std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr)
-		: descriptorPtr(descriptorPtr) {}
+	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state)
+		: state(std::move(state)) {}
 
 	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-
-		auto desc = descriptorPtr->lock();
+		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
 		}
+		// RocksDB may run flushes concurrently across background threads, so guard
+		// the shared jobTrackers map (unsynchronized std::unordered_map access from
+		// multiple threads is a data race).
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id, so we can determine when all the flushes have completed for
 		// With atomic flushes, there will be multiple flush events for each column family in the database
 		// We we want to flush at the beginning of the flush job (for first time job_id appears)
@@ -195,11 +195,7 @@ public:
 	}
 
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-
-		auto desc = descriptorPtr->lock();
+		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
 		}
@@ -208,6 +204,8 @@ public:
 		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted cf name=%s job id=%u flushedSequence=%llu\n",
 			desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
 
+		// Guard the shared jobTrackers map — see OnFlushBegin.
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
@@ -235,20 +233,18 @@ public:
 		}
 	}
 
-	// Mirrors RocksDB's latched background error onto the descriptor so a consumer
-	// can observe it and recover in-process (HarperFast/rocksdb-js#730). We do NOT
-	// suppress the error (leaving *bg_error untouched) — the point is to surface
-	// the read-only latch, not hide it. Runs on flush/compaction/write threads, so
-	// it must stay cheap: a mutex-guarded copy, nothing blocking.
+	// Mirrors RocksDB's latched background error so a consumer can observe it and
+	// recover in-process (HarperFast/rocksdb-js#730). We do NOT suppress the error
+	// (leaving *bg_error untouched) — the point is to surface the read-only latch,
+	// not hide it. Writes go to the shared listener state, NOT via the descriptor,
+	// so an error latched during DB::Open (before the descriptor exists) is still
+	// captured (#754). Runs on flush/compaction/write threads, so it must stay
+	// cheap: the state formats the message outside its lock.
 	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bg_error) override {
-		if (!descriptorPtr || bg_error == nullptr) {
+		if (bg_error == nullptr) {
 			return;
 		}
-		auto desc = descriptorPtr->lock();
-		if (!desc) {
-			return;
-		}
-		desc->latchBackgroundError(static_cast<int>(reason), *bg_error);
+		this->state->latchBackgroundError(static_cast<int>(reason), *bg_error);
 	}
 
 	// Fires when a recovery attempt (auto-recovery or an explicit DB::Resume())
@@ -261,14 +257,10 @@ public:
 	// when nothing is latched (RocksDB retains it as the read-only latch). Format
 	// the message outside the mirror lock (ToString allocates on a bg thread).
 	void OnErrorRecoveryEnd(const rocksdb::BackgroundErrorRecoveryInfo& info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-		auto desc = descriptorPtr->lock();
-		if (!desc) {
-			return;
-		}
-		desc->reconcileRecoveryEnd(
+		// Writes to the shared listener state (not via the descriptor), so an
+		// error latched during DB::Open is still reconciled. Format the message
+		// outside the mirror lock (ToString allocates on a bg thread).
+		this->state->reconcileRecoveryEnd(
 			info.old_bg_error.ToString(),
 			static_cast<int>(info.old_bg_error.severity()),
 			info.new_bg_error.ok()
@@ -276,7 +268,8 @@ public:
 	}
 
 private:
-	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
+	std::shared_ptr<DBEventListenerState> state;
+	std::mutex jobTrackersMutex;
 	std::unordered_map<int, JobTracker> jobTrackers;
 };
 
@@ -290,7 +283,8 @@ DBDescriptor::DBDescriptor(
 	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
-	std::shared_ptr<rocksdb::Statistics> statistics
+	std::shared_ptr<rocksdb::Statistics> statistics,
+	std::shared_ptr<DBEventListenerState> eventListenerState
 ):
 	path(path),
 	vtEpoch(nextVtEpoch()),
@@ -299,7 +293,8 @@ DBDescriptor::DBDescriptor(
 	cfOptions(cfOptions),
 	db(db),
 	columns(std::move(columns)),
-	statistics(statistics)
+	statistics(statistics),
+	eventListenerState(std::move(eventListenerState))
 {}
 
 /**
@@ -998,9 +993,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// below so opening one family cannot restamp another's algorithm.
 	auto cfOptions = buildColumnFamilyOptions(options);
 
-	// create a shared pointer to hold the weak descriptor reference for the event listener
-	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
-	auto eventListener = std::make_shared<TransactionLogEventListener>(descriptorWeakPtr);
+	// Shared listener state, created BEFORE DB::Open so background callbacks fired
+	// during open have a valid, race-free target (the descriptor does not exist
+	// yet). The descriptor is published into it once constructed (#754).
+	auto listenerState = std::make_shared<DBEventListenerState>();
+	auto eventListener = std::make_shared<TransactionLogEventListener>(listenerState);
 	dbOptions.listeners.push_back(eventListener);
 
 	// prepare the column family stuff - first check if database exists
@@ -1128,10 +1125,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics, listenerState));
 
-	// set the weak pointer for the event listener
-	*descriptorWeakPtr = descriptor;
+	// Publish the descriptor into the shared listener state (guarded), so flush
+	// callbacks can reach it. Any background error latched before now was already
+	// captured in listenerState and is shared through the descriptor.
+	listenerState->publishDescriptor(descriptor);
 
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;
@@ -1776,8 +1775,42 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
 }
 
+// --- DBEventListenerState: shared listener/background-error state (#754) ---
+
+std::shared_ptr<DBDescriptor> DBEventListenerState::lockDescriptor() {
+	std::lock_guard<std::mutex> lock(this->descriptorMutex_);
+	return this->descriptor_.lock();
+}
+
+void DBEventListenerState::publishDescriptor(std::shared_ptr<DBDescriptor> descriptor) {
+	std::lock_guard<std::mutex> lock(this->descriptorMutex_);
+	this->descriptor_ = std::move(descriptor);
+}
+
+void DBEventListenerState::latchBackgroundError(int reason, const rocksdb::Status& status) {
+	this->backgroundError_.latch(reason, status);
+}
+
+void DBEventListenerState::reconcileRecoveryEnd(
+	const std::string& recoveredMessage,
+	int recoveredSeverity,
+	bool recovered
+) {
+	this->backgroundError_.reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
+}
+
+bool DBEventListenerState::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {
+	return this->backgroundError_.clearIfUnchanged(expectedGeneration);
+}
+
+bool DBEventListenerState::getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation) {
+	return this->backgroundError_.get(out, generation);
+}
+
+// --- DBDescriptor delegators to the shared listener state ---
+
 void DBDescriptor::latchBackgroundError(int reason, const rocksdb::Status& status) {
-	this->backgroundError.latch(reason, status);
+	this->eventListenerState->latchBackgroundError(reason, status);
 }
 
 void DBDescriptor::reconcileRecoveryEnd(
@@ -1785,15 +1818,15 @@ void DBDescriptor::reconcileRecoveryEnd(
 	int recoveredSeverity,
 	bool recovered
 ) {
-	this->backgroundError.reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
+	this->eventListenerState->reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
 }
 
 bool DBDescriptor::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {
-	return this->backgroundError.clearIfUnchanged(expectedGeneration);
+	return this->eventListenerState->clearBackgroundErrorIfUnchanged(expectedGeneration);
 }
 
 bool DBDescriptor::getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation) {
-	return this->backgroundError.get(out, generation);
+	return this->eventListenerState->getBackgroundError(out, generation);
 }
 
 rocksdb::Status DBDescriptor::flush() {
