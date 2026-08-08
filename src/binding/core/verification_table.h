@@ -59,8 +59,13 @@ constexpr uint64_t VT_SETTLED_GEN_MASK = (1ULL << 62) - 1;  // bits 61..0:  62-b
 // VerificationTable's premise: version equality then proves nothing about a cached copy, so such a
 // value is neither answered FRESH nor published to a slot. Exported to JS as
 // `constants.VERSION_NOT_UNIQUE_FLAG` so a producer sets the same bit this reads.
+//
+// Only read for a column family that opted into the verification table, i.e. one whose producer is
+// already writing versions into these bytes — so a value that carries no header is only ever
+// misread on a store that declared it writes one, and the misread direction is "not unique", which
+// costs caching rather than correctness.
 constexpr uint8_t VERSION_HEADER_TAG = 0x0E;
-#define VERSION_NOT_UNIQUE_FLAG 0x10000
+constexpr uint32_t VERSION_NOT_UNIQUE_FLAG = 0x10000;
 
 // A real version: bit 63 clear and nonzero.
 inline bool vtIsVersion(uint64_t v) { return v != 0 && (v & VT_TAG_BIT) == 0; }

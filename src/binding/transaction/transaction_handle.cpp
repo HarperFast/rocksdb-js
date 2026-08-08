@@ -415,15 +415,12 @@ napi_value TransactionHandle::get(
 		// transaction's snapshot value) and gates on the single-version invariant,
 		// so a transactional read seeds the cache only when settled and can never
 		// publish a stale snapshot value.
-		// The VT block is skipped for a value whose version the producer has marked non-unique:
-		// neither the FRESH answer nor a slot publication is sound when two distinct values share
-		// the version.
-		if (vtSlot && status.ok()
-				&& !VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(value.data(), value.size()))) {
-			rocksdb::Slice valueSlice(value.data(), value.size());
+		rocksdb::Slice valueSlice(value.data(), value.size());
+		if (vtSlot && status.ok() && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
-			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion
+					&& !vtLatestValueIsNotUnique(dbHandle, rocksdb::Slice(key.data(), key.size()), readSnapshot)) {
 				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
 				napi_value global, freshResult;
 				::napi_get_global(env, &global);
@@ -448,7 +445,7 @@ napi_value TransactionHandle::get(
 	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key), this->dbHandle);
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
 	state->completed.store(true);

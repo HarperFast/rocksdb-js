@@ -82,6 +82,32 @@ inline std::atomic<uint64_t>* vtSlotFor(
  * Reads stay lock-free: this runs only on the cold populate path (after a cache
  * miss), never on the verifyVersion fast path.
  */
+/**
+ * Whether the key's LATEST committed value declares its version non-unique, for a read that may
+ * have seen an older one. A snapshot read can return a value that is unique while the value that
+ * made the version ambiguous was committed after the snapshot — so the value in hand is not
+ * evidence, and a FRESH answer (which speaks about the consumer's cached copy, not about the
+ * snapshot) would confirm a copy the consumer may have taken from the newer value.
+ *
+ * Returns false without a read when the caller's value is provably the latest.
+ */
+inline bool vtLatestValueIsNotUnique(
+	const std::shared_ptr<DBHandle>& dbHandle,
+	const rocksdb::Slice& key,
+	const rocksdb::Snapshot* readSnapshot
+) {
+	if (!dbHandle) return false;
+	rocksdb::DB* db = dbHandle->descriptor->db.get();
+	if (!db) return false;
+	if (readSnapshot == nullptr || readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
+		return false;
+	}
+	rocksdb::PinnableSlice latest;
+	rocksdb::ReadOptions readOptions;
+	if (!db->Get(readOptions, dbHandle->getColumnFamilyHandle(), key, &latest).ok()) return false;
+	return VerificationTable::valueVersionIsNotUnique(latest);
+}
+
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
 	std::atomic<uint64_t>* slot,
@@ -373,11 +399,13 @@ struct AsyncGetState final : BaseAsyncState<T> {
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
-		std::string key
+		std::string key,
+		std::shared_ptr<DBHandle> vtDbHandle
 	) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
-		key(std::move(key)) {}
+		key(std::move(key)),
+		vtDbHandle(std::move(vtDbHandle)) {}
 
 	rocksdb::ReadOptions readOptions;
 	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
@@ -398,6 +426,11 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// Slot value observed before the async read was queued; the post-read CAS
 	// publishes only if the slot is still this (no write cycle intervened).
 	uint64_t vtObserved = 0;
+	// The database the read is against, for the latest-value check on the FRESH branch. A
+	// constructor parameter rather than a settable field so a new async read path cannot forget it
+	// and silently lose that check. Held for both handle types, since `handle` is a
+	// TransactionHandle* on the transactional path.
+	std::shared_ptr<DBHandle> vtDbHandle;
 };
 
 napi_value resolveGetSyncResult(
@@ -419,13 +452,12 @@ void resolveGetResult(
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
-		if (state->status.ok() && state->vtSlot
-				&& !VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(state->value.data(), state->value.size()))) {
-			// VT check and populate for the async read result. Skipped for a value whose version the
-			// producer has marked non-unique: version equality proves nothing about it.
-			rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+		rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+		if (state->status.ok() && state->vtSlot && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
+			// VT check and populate for the async read result.
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
-			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion) {
+			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion
+					&& !vtLatestValueIsNotUnique(state->vtDbHandle, rocksdb::Slice(state->key), state->readOptions.snapshot)) {
 				// Soft miss: value still carries the expected version — signal FRESH.
 				// Conditional CAS from the value observed before the read (no-op if
 				// a write cycle intervened) so we never publish a superseded version.

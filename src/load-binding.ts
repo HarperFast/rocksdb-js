@@ -543,6 +543,10 @@ export const constants: {
 	 * a read never answers `FRESH_VERSION_FLAG` for it and never publishes its version to a slot,
 	 * so a consumer holding a differing cached copy at that version cannot have it confirmed.
 	 * Clear it again on the next write that gives the value a version of its own.
+	 *
+	 * Read only from values in a column family that opted into the verification table, and not
+	 * consulted by the explicit `populateVersion()` call, which never sees a value and trusts its
+	 * caller.
 	 */
 	VERSION_NOT_UNIQUE_FLAG: number;
 	/**

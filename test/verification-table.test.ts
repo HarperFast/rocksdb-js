@@ -656,6 +656,27 @@ describe('Verification Table', () => {
 				}
 			}));
 
+		it('does not answer FRESH from a snapshot value when the latest is marked', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				// The value in hand is not the evidence — the consumer's cached copy may have come from
+				// the newer value that made the version ambiguous, which the snapshot cannot see.
+				const key = Buffer.from('not-unique-behind-snapshot');
+				await db.put(key, valueWithHeader(version));
+
+				const txn = new Transaction(db.store, { coordinatedRetry: true });
+				try {
+					// Pin the snapshot on the pre-marked value, then mark it under the same version.
+					expect(txn.getBinarySync(key, {} as any)).toBeDefined();
+					await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+
+					const result = txn.getBinarySync(key, { expectedVersion: version } as any);
+					expect(result).not.toBe(FRESH_VERSION_FLAG);
+					expect(db.verifyVersion(key, version)).toBe(false);
+				} finally {
+					txn.abort();
+				}
+			}));
+
 		it('does not answer FRESH on the async path either', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = 'not-unique-async';
