@@ -741,7 +741,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
+	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key), *dbHandle);
 	state->vtSlot = vtSlot;
 	state->vtObserved = vtObserved;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -1202,12 +1202,12 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// version is the single accessible value (see vtPopulateIfSettled). Passing
 	// the value just read plus the read's snapshot lets the gate skip a redundant
 	// latest-read when that value is provably the latest committed version.
-	// Skipped entirely for a value whose version the producer has marked non-unique: neither the
-	// FRESH answer below (which rests on version equality alone) nor a slot publication is sound
-	// when two distinct values share the version. The caller gets the value it read instead.
+	// A value whose version the producer marked non-unique is neither answered FRESH nor published
+	// (VERSION_NOT_UNIQUE_FLAG); the caller gets the value it read instead.
 	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
-		if (hasExpectedVersion && extracted == expectedVersion) {
+		if (hasExpectedVersion && extracted == expectedVersion
+				&& !vtLatestValueIsNotUnique(*dbHandle, keySlice, readSnapshot)) {
 			// Soft VT miss confirmed fresh: the value still carries the caller's
 			// expected version, so the cached value is valid for this read.
 			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
