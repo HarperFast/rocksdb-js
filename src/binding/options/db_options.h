@@ -5,7 +5,9 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 #include "rocksdb/compression_type.h"
+#include "rocksdb/statistics.h"
 
 namespace rocksdb_js {
 
@@ -15,6 +17,57 @@ namespace rocksdb_js {
 enum class DBMode {
 	Optimistic,
 	Pessimistic,
+};
+
+/**
+ * One volume RocksDB may place SST files on, with the number of bytes it should
+ * try to hold. Maps to `rocksdb::DbPath`.
+ */
+struct StoragePath final {
+	std::string path;
+	uint64_t targetSize = 0;
+};
+
+/**
+ * Blob-file (large value) settings. Values at or above `minSize` are stored in
+ * separate blob files rather than inline in SST files, which keeps compaction
+ * from rewriting them at every level.
+ */
+struct BlobOptions final {
+	// enable_blob_files. When false, values are stored inline in SST files
+	// regardless of size. Existing blob files stay readable either way; with
+	// `garbageCollection` on, compaction gradually pulls their values back
+	// inline (see CompactionIterator::GarbageCollectBlobIfNeeded).
+	bool enabled = true;
+	// min_blob_size: smallest value stored in a blob file instead of inline.
+	uint64_t minSize = 2048;
+	// blob_dir: the directory blob files live in. Empty = alongside the SST
+	// files (`cf_paths.front()`), which is RocksDB's stock behavior. Requires a
+	// RocksDB built with the downstream blob_dir patch — see
+	// ROCKSDB_HAS_CF_BLOB_DIR. Changing it on an existing database orphans the
+	// blob files already written, so a mismatch on reopen is rejected unless
+	// `allowDirChange` says the files have been moved.
+	std::string dir;
+	// Acknowledges that the existing blob files have been relocated to `dir`,
+	// permitting an open that would otherwise be rejected as a mismatch against
+	// the directory recorded in the database's OPTIONS file. Nothing is moved on
+	// the caller's behalf; this only suppresses the check.
+	bool allowDirChange = false;
+	// enable_blob_garbage_collection: relocate live values out of the oldest
+	// blob files during compaction so those files can be deleted.
+	bool garbageCollection = true;
+	// blob_garbage_collection_age_cutoff: fraction of the oldest blob files
+	// eligible for relocation (0..1). The RocksDB default of 0.25 means three
+	// quarters of the blob files are never revisited by a given compaction.
+	double garbageCollectionAgeCutoff = 0.25;
+	// blob_garbage_collection_force_threshold: garbage ratio (0..1) above which
+	// RocksDB schedules targeted compactions to reclaim the oldest blob files.
+	// The RocksDB default of 1.0 never forces one.
+	double garbageCollectionForceThreshold = 1.0;
+	// prepopulate_blob_cache: when true, values written by a flush are inserted
+	// into the blob cache instead of waiting to be read back. Only meaningful
+	// when a blob cache is configured (`RocksDatabase.config({ blobCacheSize })`).
+	bool prepopulateCache = false;
 };
 
 /**
@@ -128,6 +181,25 @@ struct DBOptions final {
 	// explicit `compression`, and only on the open that actually creates the
 	// database handle (later opens reuse it).
 	bool compressionForAllColumnFamilies = false;
+	// Volumes SST files may be placed on, mapped to `DBOptions::db_paths`. When
+	// empty (the default) everything lives under the database directory.
+	//
+	// RocksDB fills these in order — newer/smaller levels go to earlier entries,
+	// and a level spills to the next entry once the running total of estimated
+	// level sizes exceeds an entry's `targetSize`. Placement is a static function
+	// of the target sizes and the level-size options; it does not react to actual
+	// disk usage. Two caveats worth knowing:
+	//
+	//  - A path's index is what gets recorded per SST file in the MANIFEST, so
+	//    paths may only be APPENDED across reopens. Reordering or removing an
+	//    entry makes RocksDB look for existing files in the wrong directory.
+	//  - More than one entry disables `level_compaction_dynamic_level_bytes`
+	//    (RocksDB's SanitizeCfOptions logs a warning and turns it off), so level
+	//    sizing becomes static.
+	//
+	// Blob files do NOT follow these paths — see `blobs.dir`.
+	std::vector<StoragePath> paths;
+	BlobOptions blobs;
 };
 
 } // namespace rocksdb_js

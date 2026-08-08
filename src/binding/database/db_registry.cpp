@@ -348,6 +348,24 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			}
 		}
 
+		// db_paths is fixed for the life of the open database, so a second open
+		// asking for different volumes cannot take effect on the reused handle.
+		// Reject rather than let the caller believe SST files are being tiered.
+		if (!options.paths.empty()) {
+			const auto& currentPaths = entry.descriptor->db->GetDBOptions().db_paths;
+			bool differs = currentPaths.size() != options.paths.size();
+			for (size_t i = 0; !differs && i < currentPaths.size(); i++) {
+				differs = currentPaths[i].path != options.paths[i].path ||
+					currentPaths[i].target_size != options.paths[i].targetSize;
+			}
+			if (differs) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open with a different set of storage paths; "
+					"cannot reopen it with the requested paths"
+				);
+			}
+		}
+
 		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
 		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
 
@@ -423,6 +441,23 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				);
 			}
 		}
+
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		// Same reasoning as the compression check above, for blob placement: the
+		// live column family already has a blob_dir and this open cannot change
+		// it, so silently accepting a different one would leave the caller
+		// believing large values are on another volume until the next restart.
+		if (columns.count(name)) {
+			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
+			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+			if (current.blob_dir != options.blobs.dir) {
+				throw rocksdb_js::DBException(
+					"Column family \"" + name + "\" is already open with blobs.dir \"" +
+					current.blob_dir + "\"; cannot reopen it with \"" + options.blobs.dir + "\""
+				);
+			}
+		}
+#endif
 	} else {
 		try {
 			entry.descriptor = DBDescriptor::open(path, options);

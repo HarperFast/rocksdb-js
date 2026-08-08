@@ -604,6 +604,29 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
+17. **File placement is recorded two different ways, and only one survives a config change**: `paths`
+    (RocksDB `db_paths`) records a _path index_ per SST file in the MANIFEST, so entries may only be
+    appended — reordering or removing one points existing files at the wrong directory. `blobs.dir`
+    records nothing: a blob file's directory is re-derived from the option on every open, delete, and
+    report, so changing it strands the existing blob files and makes every value >= `min_blob_size`
+    unreadable. `DBDescriptor::open` enforces the blob half by comparing the request against the
+    `blob_dir` persisted in the OPTIONS file (`loadPersistedCFOptions`), which is why that struct
+    carries more than compression; `blobs.allowDirChange` is the acknowledgement for a completed
+    offline relocation. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
+    sit in RocksDB's "not yet supported" serialization block, so there is nothing persisted to
+    compare against without inventing a rocksdb-js-owned marker file. Two RocksDB behaviours
+    routinely surprise people here: flush output is hardcoded to `path_id` 0 (`FlushJob`), and manual
+    `CompactRange` defaults to `target_path_id` 0, so only _automatic_ compaction distributes across
+    paths. `blobs.dir` needs a RocksDB carrying the downstream `blob_dir` patch
+    (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); everything behind that macro must
+    stay compilable without it. See [docs/tiered-storage.md](docs/tiered-storage.md).
+18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
+    are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,
+    reached from both the cold path and `DBRegistry::OpenDB`'s warm reuse. Both must pass options
+    built by that one function — an option set only on the open path silently keeps its default on
+    every named family, and Harper maps every table to a named family, so that is the normal path
+    rather than an edge. A test for a per-CF option must therefore cover a named family, not just
+    `default`.
 
 17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global

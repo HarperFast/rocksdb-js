@@ -1,4 +1,5 @@
 #include "database/db_settings.h"
+#include <cmath>
 #include <random>
 #include "napi/macros.h"
 #include "core/platform.h"
@@ -25,6 +26,8 @@ uint64_t generateSeed() {
 DBSettings::DBSettings():
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
+	blobCacheSize(0), // disabled by default (RocksDB default)
+	blobCache(nullptr),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -54,6 +57,29 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
 		blockCache = rocksdb::NewLRUCache(blockCacheSize);
 	}
 	return blockCache;
+}
+
+/**
+ * Kept separate from the block cache so blob contents cannot evict
+ * index/filter/data blocks — the two have very different access patterns.
+ *
+ * @returns The blob cache, or null when disabled.
+ */
+std::shared_ptr<rocksdb::Cache> DBSettings::getBlobCache() {
+	const size_t size = blobCacheSize.load(std::memory_order_relaxed);
+	if (size == 0) {
+		return nullptr;
+	}
+	std::lock_guard<std::mutex> lock(blobCacheMutex);
+	// Re-check under the lock: Config() may have disabled the cache between the
+	// atomic load and acquiring the lock.
+	if (blobCacheSize.load(std::memory_order_relaxed) == 0) {
+		return nullptr;
+	}
+	if (!blobCache) {
+		blobCache = rocksdb::NewLRUCache(blobCacheSize.load(std::memory_order_relaxed));
+	}
+	return blobCache;
 }
 
 /**
@@ -148,6 +174,42 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 		if (settings.blockCache) {
 			settings.blockCache->SetCapacity(blockCacheSize);
+		}
+	}
+
+	bool hasBlobCacheSize = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "blobCacheSize", &hasBlobCacheSize));
+	if (hasBlobCacheSize) {
+		// Distinguish absent from present-but-wrong-type: reading through
+		// getProperty's status alone would silently drop `blobCacheSize: '512MB'`
+		// and leave the cache disabled with no error.
+		// Parse as a double and validate BEFORE narrowing: the int64 overload
+		// truncates fractional values and wraps anything past its range.
+		double requested = 0;
+		if (rocksdb_js::getProperty(env, params, "blobCacheSize", requested, true) != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "Blob cache size must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(requested) || requested != std::trunc(requested) || requested < 0 ||
+			requested > 9007199254740991.0
+		) {
+			::napi_throw_range_error(
+				env,
+				nullptr,
+				"Blob cache size must be a non-negative integer no larger than Number.MAX_SAFE_INTEGER"
+			);
+			return nullptr;
+		}
+		const size_t blobCacheSize = static_cast<size_t>(requested);
+
+		std::lock_guard<std::mutex> lock(settings.blobCacheMutex);
+		settings.blobCacheSize.store(static_cast<size_t>(blobCacheSize), std::memory_order_relaxed);
+
+		// Resizes databases that already have the cache attached. A database
+		// opened while the size was 0 has no blob_cache and is unaffected — see
+		// the note on RocksDatabaseConfig.blobCacheSize.
+		if (settings.blobCache) {
+			settings.blobCache->SetCapacity(blobCacheSize);
 		}
 	}
 
