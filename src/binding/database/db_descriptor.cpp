@@ -27,10 +27,14 @@ static uint64_t nextVtEpoch() {
 // A column family's persisted compression, recovered from the on-disk OPTIONS
 // file so a cold open of one CF does not clobber the others (compression is
 // per-CF).
-struct PersistedCompression {
+struct PersistedCFOptions {
 	rocksdb::CompressionType compression;
 	rocksdb::CompressionType blobCompression;
 	rocksdb::CompressionOptions compressionOpts;
+	// Where this column family's blob files were last written. Compared against
+	// the requested `blobs.dir` so a reopen cannot strand them. Always empty when
+	// built against a RocksDB without the blob_dir patch.
+	std::string blobDir;
 };
 
 // Applies a compression algorithm (and optional level) to both the SST block
@@ -102,9 +106,23 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 		tableOptions.block_cache = DBSettings::getInstance().getBlockCache();
 	}
 
-	cfOptions.enable_blob_files = true;
-	cfOptions.min_blob_size = 2048;
-	cfOptions.enable_blob_garbage_collection = true;
+	cfOptions.enable_blob_files = options.blobs.enabled;
+	cfOptions.min_blob_size = options.blobs.minSize;
+	cfOptions.enable_blob_garbage_collection = options.blobs.garbageCollection;
+	cfOptions.blob_garbage_collection_age_cutoff = options.blobs.garbageCollectionAgeCutoff;
+	cfOptions.blob_garbage_collection_force_threshold = options.blobs.garbageCollectionForceThreshold;
+	// RocksDB does not put blob values in the block cache, so without this every
+	// blob read is real I/O — which dominates once blob files are on slower
+	// storage than the SSTs.
+	if (auto blobCache = DBSettings::getInstance().getBlobCache()) {
+		cfOptions.blob_cache = blobCache;
+		if (options.blobs.prepopulateCache) {
+			cfOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kFlushOnly;
+		}
+	}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	cfOptions.blob_dir = options.blobs.dir;
+#endif
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
@@ -119,9 +137,9 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 // status as fatal for an existing DB rather than falling back to defaults —
 // doing so would open the non-target CFs with the base default and silently
 // restamp their compression on the next OPTIONS write.
-static rocksdb::Status loadPersistedCompression(
+static rocksdb::Status loadPersistedCFOptions(
 	const std::string& path,
-	std::unordered_map<std::string, PersistedCompression>& result
+	std::unordered_map<std::string, PersistedCFOptions>& result
 ) {
 	rocksdb::ConfigOptions configOptions;
 	// Be permissive: we only read compression fields, so unknown/unsupported
@@ -134,10 +152,15 @@ static rocksdb::Status loadPersistedCompression(
 		rocksdb::LoadLatestOptions(configOptions, path, &loadedDbOptions, &loadedCfDescriptors);
 	if (status.ok()) {
 		for (const auto& descriptor : loadedCfDescriptors) {
-			result[descriptor.name] = PersistedCompression{
+			result[descriptor.name] = PersistedCFOptions{
 				descriptor.options.compression,
 				descriptor.options.blob_compression_type,
 				descriptor.options.compression_opts,
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+				descriptor.options.blob_dir,
+#else
+				std::string(),
+#endif
 			};
 		}
 	}
@@ -938,6 +961,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
+	// Spread SST files across volumes. Left on `db_paths` rather than `cf_paths`
+	// so one tiering policy covers every column family in the database (RocksDB
+	// falls back to db_paths when cf_paths is empty). A file's path index is
+	// recorded in the MANIFEST, so entries may only ever be appended — see the
+	// note on DBOptions::paths.
+	for (const auto& storagePath : options.paths) {
+		dbOptions.db_paths.emplace_back(storagePath.path, storagePath.targetSize);
+	}
 	// Explicit narrowing: RocksDB's field is size_t; the value is validated
 	// <= MAX_SAFE_INTEGER at parse time, and a >4GB info-log cap (only reachable
 	// on a 32-bit build) is nonsensical, so the cast is safe and silences
@@ -983,8 +1014,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// the explicit request is applied to every family instead, which is how a
 		// caller expresses "this database uses one codec" for families it never
 		// names (see db_options.h).
-		std::unordered_map<std::string, PersistedCompression> persisted;
-		rocksdb::Status persistedStatus = loadPersistedCompression(path, persisted);
+		std::unordered_map<std::string, PersistedCFOptions> persisted;
+		rocksdb::Status persistedStatus = loadPersistedCFOptions(path, persisted);
 		if (!persistedStatus.ok()) {
 			// The DB exists (we just listed its column families), so a missing or
 			// unparseable OPTIONS file is NOT the fresh-DB case — we cannot recover
@@ -1009,6 +1040,26 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				options.compressionExplicit) {
 				applyCompression(cfo, *options.compression, options.compressionLevel);
 			}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			// A blob file's directory is derived from blob_dir every time it is
+			// opened — unlike an SST's path index, it is not recorded per file.
+			// Reopening with a different directory therefore does not move the
+			// existing blob files, it strands them: reads of every value >=
+			// min_blob_size fail with "No such file or directory". Refuse rather
+			// than open a database whose large values have silently gone missing,
+			// unless the caller says they have already moved the files.
+			if (!options.blobs.allowDirChange && it != persisted.end() &&
+				it->second.blobDir != cfo.blob_dir
+			) {
+				throw rocksdb_js::DBException(
+					"Cannot reopen \"" + path + "\" column family \"" + cfName +
+					"\" with blobs.dir \"" + cfo.blob_dir + "\": its blob files were written to \"" +
+					it->second.blobDir + "\". Move the blob files to the new directory while the "
+					"database is closed and reopen with blobs.allowDirChange, or reopen with the "
+					"original blobs.dir."
+				);
+			}
+#endif
 			cfDescriptors.emplace_back(cfName, cfo);
 		}
 	} else {
