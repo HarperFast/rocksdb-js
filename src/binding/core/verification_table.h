@@ -50,6 +50,18 @@ constexpr uint64_t VT_GEN_MASK    = 0x3FFFULL << 48;        // bits 61..48: 14-b
 constexpr uint64_t VT_PTR_MASK    = (1ULL << 48) - 1;       // bits 47..0:  48-bit pointer
 constexpr uint64_t VT_SETTLED_GEN_MASK = (1ULL << 62) - 1;  // bits 61..0:  62-bit settle generation
 
+// Value-header contract, extending the 8-byte big-endian version at offset 0 that
+// extractVersionFromValue() reads. A producer that also writes a metadata word puts it at offset 8
+// as a 4-byte big-endian value: top byte VERSION_HEADER_TAG, low 24 bits producer flags.
+//
+// VERSION_NOT_UNIQUE_FLAG is the one flag this library interprets. It means the producer has stored
+// more than one distinct value under this version, which is the one thing that invalidates the
+// VerificationTable's premise: version equality then proves nothing about a cached copy, so such a
+// value is neither answered FRESH nor published to a slot. Exported to JS as
+// `constants.VERSION_NOT_UNIQUE_FLAG` so a producer sets the same bit this reads.
+constexpr uint8_t VERSION_HEADER_TAG = 0x0E;
+#define VERSION_NOT_UNIQUE_FLAG 0x10000
+
 // A real version: bit 63 clear and nonzero.
 inline bool vtIsVersion(uint64_t v) { return v != 0 && (v & VT_TAG_BIT) == 0; }
 // A lock: tagged with the settled bit clear.
@@ -188,6 +200,24 @@ public:
 	 * Returns 0 when `value.size() < 8`.
 	 */
 	static uint64_t extractVersionFromValue(const rocksdb::Slice& value);
+
+	/**
+	 * Whether `value`'s version is known NOT to identify it uniquely — i.e. the
+	 * producer has stored more than one distinct value under this version, so
+	 * version equality is not evidence that a cached copy is current.
+	 *
+	 * Extends the same value-header contract extractVersionFromValue() reads: the
+	 * 8-byte big-endian version at offset 0 is followed, when the producer writes
+	 * one, by a 4-byte big-endian metadata word whose top byte is
+	 * VERSION_HEADER_TAG and whose low 24 bits are producer flags. The flag read
+	 * here is VERSION_NOT_UNIQUE_FLAG.
+	 *
+	 * Returns false — the permissive answer, meaning "treat the version as an
+	 * identity" — for a value too short to carry the word or whose tag byte does
+	 * not match, which is how values written without the header keep their
+	 * existing behaviour. A false positive only costs caching, never correctness.
+	 */
+	static bool valueVersionIsNotUnique(const rocksdb::Slice& value);
 
 	size_t size() const { return slots_ ? mask_ + 1 : 0; }
 	uint64_t seed() const { return seed_; }

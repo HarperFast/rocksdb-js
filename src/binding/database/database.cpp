@@ -1202,7 +1202,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// version is the single accessible value (see vtPopulateIfSettled). Passing
 	// the value just read plus the read's snapshot lets the gate skip a redundant
 	// latest-read when that value is provably the latest committed version.
-	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion)) {
+	// Skipped entirely for a value whose version the producer has marked non-unique: neither the
+	// FRESH answer below (which rests on version equality alone) nor a slot publication is sound
+	// when two distinct values share the version. The caller gets the value it read instead.
+	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		if (hasExpectedVersion && extracted == expectedVersion) {
 			// Soft VT miss confirmed fresh: the value still carries the caller's

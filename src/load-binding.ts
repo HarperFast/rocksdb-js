@@ -535,6 +535,17 @@ export const constants: {
 	POPULATE_VERSION_FLAG: number;
 	FRESH_VERSION_FLAG: number;
 	/**
+	 * Producer flag in a value's metadata word (4 big-endian bytes at offset 8, top byte `0x0E`,
+	 * low 24 bits flags), declaring that this version does NOT uniquely identify the value —
+	 * the producer has stored more than one distinct value under it.
+	 *
+	 * Set it and the VerificationTable stops treating version equality as evidence for this value:
+	 * a read never answers `FRESH_VERSION_FLAG` for it and never publishes its version to a slot,
+	 * so a consumer holding a differing cached copy at that version cannot have it confirmed.
+	 * Clear it again on the next write that gives the value a version of its own.
+	 */
+	VERSION_NOT_UNIQUE_FLAG: number;
+	/**
 	 * Sentinel value resolved (not rejected) by `commit()` when
 	 * `coordinatedRetry: true` and the transaction encountered an IsBusy
 	 * conflict. JS should retry the transaction body immediately.
