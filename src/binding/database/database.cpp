@@ -741,7 +741,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key), *dbHandle);
+	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
 	state->vtSlot = vtSlot;
 	state->vtObserved = vtObserved;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -765,6 +765,14 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 					state->key,
 					&state->value
 				);
+				if (state->status.ok() && state->vtSlot) {
+					state->vtLatest = vtCheckLatest(
+						state->handle->descriptor->db.get(),
+						state->handle->getColumnFamilyHandle(),
+						state->key,
+						state->readOptions.snapshot
+					);
+				}
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -1206,16 +1214,27 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// (VERSION_NOT_UNIQUE_FLAG); the caller gets the value it read instead.
 	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
-		if (hasExpectedVersion && extracted == expectedVersion
-				&& !vtLatestValueIsNotUnique(*dbHandle, keySlice, readSnapshot)) {
-			// Soft VT miss confirmed fresh: the value still carries the caller's
-			// expected version, so the cached value is valid for this read.
-			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
-			napi_value freshResult;
-			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
-			return freshResult;
+		const VtLatestCheck latest = vtCheckLatest(
+			(*dbHandle)->descriptor->db.get(),
+			(*dbHandle)->getColumnFamilyHandle(),
+			keySlice,
+			readSnapshot
+		);
+		if (!latest.notUnique) {
+			// A latest read already resolved the version, so hand vtPopulateIfSettled that version as
+			// the provably-latest one rather than have it repeat the Get.
+			const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
+			const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
+			if (hasExpectedVersion && extracted == expectedVersion) {
+				// Soft VT miss confirmed fresh: the value still carries the caller's
+				// expected version, so the cached value is valid for this read.
+				vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+				napi_value freshResult;
+				NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
+				return freshResult;
+			}
+			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 		}
-		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)

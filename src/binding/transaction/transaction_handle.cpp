@@ -419,18 +419,29 @@ napi_value TransactionHandle::get(
 		if (vtSlot && status.ok() && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
-			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion
-					&& !vtLatestValueIsNotUnique(dbHandle, rocksdb::Slice(key.data(), key.size()), readSnapshot)) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
-				napi_value global, freshResult;
-				::napi_get_global(env, &global);
-				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
-				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-				return returnStatus;
-			}
-			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
+			const rocksdb::Slice keySlice(key.data(), key.size());
+			// The caller's column family, not the handle's: this read may be routed to another one.
+			const VtLatestCheck latest = vtCheckLatest(
+				dbHandle->descriptor->db.get(),
+				readColumnDescriptor->column.get(),
+				keySlice,
+				readSnapshot
+			);
+			if (!latest.notUnique) {
+				const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
+				const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
+				if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
+					napi_value global, freshResult;
+					::napi_get_global(env, &global);
+					::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+					::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
+					NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
+					return returnStatus;
+				}
+				if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
+					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
+				}
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
@@ -445,7 +456,7 @@ napi_value TransactionHandle::get(
 	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key), this->dbHandle);
+	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
 	state->completed.store(true);
@@ -477,6 +488,16 @@ napi_value TransactionHandle::get(
 					state->key,
 					&state->value
 				);
+				// While the database and the caller's column family are still pinned — the completion
+				// runs after teardown may have released both.
+				if (state->status.ok() && state->vtSlot) {
+					state->vtLatest = vtCheckLatest(
+						state->handle->dbHandle->descriptor->db.get(),
+						state->readColumnDescriptor->column.get(),
+						state->key,
+						state->readOptions.snapshot
+					);
+				}
 			}
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
