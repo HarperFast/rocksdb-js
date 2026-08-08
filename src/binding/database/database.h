@@ -83,29 +83,51 @@ inline std::atomic<uint64_t>* vtSlotFor(
  * miss), never on the verifyVersion fast path.
  */
 /**
- * Whether the key's LATEST committed value declares its version non-unique, for a read that may
- * have seen an older one. A snapshot read can return a value that is unique while the value that
- * made the version ambiguous was committed after the snapshot — so the value in hand is not
- * evidence, and a FRESH answer (which speaks about the consumer's cached copy, not about the
- * snapshot) would confirm a copy the consumer may have taken from the newer value.
- *
- * Returns false without a read when the caller's value is provably the latest.
+ * Result of consulting the key's LATEST committed value about whether its version is unique. A read
+ * that may be behind the latest cannot answer that from the value in hand: the value that made the
+ * version ambiguous can have been committed after the snapshot, and FRESH speaks about the
+ * consumer's cached copy — which may have come from that newer value — not about the snapshot.
  */
-inline bool vtLatestValueIsNotUnique(
-	const std::shared_ptr<DBHandle>& dbHandle,
+struct VtLatestCheck {
+	// Whether a latest read was needed and succeeded. False means the caller's value is provably the
+	// latest (nothing to check) or the read failed; `notUnique` carries the answer in that case.
+	bool read = false;
+	// True when FRESH must not be answered and nothing may be published for this key.
+	bool notUnique = false;
+	// The latest value's version, valid only when `read`; lets the caller skip the second Get
+	// vtPopulateIfSettled would otherwise make.
+	uint64_t latestVersion = 0;
+};
+
+/**
+ * Consults the latest committed value when `readSnapshot` may be behind it. Free (no Get) when the
+ * caller's value is provably the latest. A failed Get answers `notUnique` — the conservative
+ * direction, since a key that cannot be read is not one whose cached copy should be confirmed.
+ */
+inline VtLatestCheck vtCheckLatest(
+	rocksdb::DB* db,
+	rocksdb::ColumnFamilyHandle* cf,
 	const rocksdb::Slice& key,
 	const rocksdb::Snapshot* readSnapshot
 ) {
-	if (!dbHandle) return false;
-	rocksdb::DB* db = dbHandle->descriptor->db.get();
-	if (!db) return false;
+	VtLatestCheck result;
+	if (!db || !cf) {
+		result.notUnique = true;
+		return result;
+	}
 	if (readSnapshot == nullptr || readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
-		return false;
+		return result;
 	}
 	rocksdb::PinnableSlice latest;
 	rocksdb::ReadOptions readOptions;
-	if (!db->Get(readOptions, dbHandle->getColumnFamilyHandle(), key, &latest).ok()) return false;
-	return VerificationTable::valueVersionIsNotUnique(latest);
+	if (!db->Get(readOptions, cf, key, &latest).ok()) {
+		result.notUnique = true;
+		return result;
+	}
+	result.read = true;
+	result.notUnique = VerificationTable::valueVersionIsNotUnique(latest);
+	result.latestVersion = VerificationTable::extractVersionFromValue(latest);
+	return result;
 }
 
 inline void vtPopulateIfSettled(
@@ -399,13 +421,11 @@ struct AsyncGetState final : BaseAsyncState<T> {
 		napi_env env,
 		T handle,
 		rocksdb::ReadOptions& readOptions,
-		std::string key,
-		std::shared_ptr<DBHandle> vtDbHandle
+		std::string key
 	) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions),
-		key(std::move(key)),
-		vtDbHandle(std::move(vtDbHandle)) {}
+		key(std::move(key)) {}
 
 	rocksdb::ReadOptions readOptions;
 	// the data for key and value both need to be owned by AsyncGetState, so we need to use std::string (RocksDB Slice doesn't preserve ownership)
@@ -426,11 +446,9 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// Slot value observed before the async read was queued; the post-read CAS
 	// publishes only if the slot is still this (no write cycle intervened).
 	uint64_t vtObserved = 0;
-	// The database the read is against, for the latest-value check on the FRESH branch. A
-	// constructor parameter rather than a settable field so a new async read path cannot forget it
-	// and silently lose that check. Held for both handle types, since `handle` is a
-	// TransactionHandle* on the transactional path.
-	std::shared_ptr<DBHandle> vtDbHandle;
+	// Filled by the worker, which is where the database and column family are known to be alive:
+	// the completion runs after teardown may have released both, so it must not read from them.
+	VtLatestCheck vtLatest;
 };
 
 napi_value resolveGetSyncResult(
@@ -454,10 +472,9 @@ void resolveGetResult(
 	if (state->status.IsNotFound() || state->status.ok()) {
 		rocksdb::Slice valueSlice(state->value.data(), state->value.size());
 		if (state->status.ok() && state->vtSlot && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
-			// VT check and populate for the async read result.
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion
-					&& !vtLatestValueIsNotUnique(state->vtDbHandle, rocksdb::Slice(state->key), state->readOptions.snapshot)) {
+					&& !state->vtLatest.notUnique) {
 				// Soft miss: value still carries the expected version — signal FRESH.
 				// Conditional CAS from the value observed before the read (no-op if
 				// a write cycle intervened) so we never publish a superseded version.
@@ -467,7 +484,8 @@ void resolveGetResult(
 				state->callResolve(freshResult);
 				return;
 			}
-			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0) {
+			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0
+					&& !state->vtLatest.notUnique) {
 				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, extracted);
 			}
 		}

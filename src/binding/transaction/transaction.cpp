@@ -985,14 +985,23 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	if (vtSlot && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		const rocksdb::Snapshot* readSnapshot = (*txnHandle)->readSnapshot();
-		if (hasExpectedVersion && extracted == expectedVersion
-				&& !vtLatestValueIsNotUnique((*txnHandle)->dbHandle, keySlice, readSnapshot)) {
-			// Soft VT miss confirmed fresh: value carries the caller's expected version.
-			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
-			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
-			return result;
+		const VtLatestCheck latest = vtCheckLatest(
+			(*txnHandle)->dbHandle->descriptor->db.get(),
+			(*txnHandle)->dbHandle->getColumnFamilyHandle(),
+			keySlice,
+			readSnapshot
+		);
+		if (!latest.notUnique) {
+			const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
+			const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
+			if (hasExpectedVersion && extracted == expectedVersion) {
+				// Soft VT miss confirmed fresh: value carries the caller's expected version.
+				vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+				NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
+				return result;
+			}
+			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 		}
-		vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&
