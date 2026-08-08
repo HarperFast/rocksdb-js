@@ -415,7 +415,11 @@ napi_value TransactionHandle::get(
 		// transaction's snapshot value) and gates on the single-version invariant,
 		// so a transactional read seeds the cache only when settled and can never
 		// publish a stale snapshot value.
-		if (vtSlot && status.ok()) {
+		// The VT block is skipped for a value whose version the producer has marked non-unique:
+		// neither the FRESH answer nor a slot publication is sound when two distinct values share
+		// the version.
+		if (vtSlot && status.ok()
+				&& !VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(value.data(), value.size()))) {
 			rocksdb::Slice valueSlice(value.data(), value.size());
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();

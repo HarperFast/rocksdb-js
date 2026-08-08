@@ -115,6 +115,10 @@ inline void vtPopulateIfSettled(
 		rocksdb::ReadOptions readOptions;
 		rocksdb::Status status = db->Get(readOptions, cf, key, &latest);
 		if (!status.ok()) return; // not found or error — nothing settled to cache
+		// The caller's value passed its own non-unique check, but it was read at an older snapshot;
+		// the latest is what a slot would vouch for, and it may be the value that made the version
+		// ambiguous in the first place.
+		if (VerificationTable::valueVersionIsNotUnique(latest)) return;
 		version = VerificationTable::extractVersionFromValue(latest);
 		if (version == 0 || vtIsLock(version)) return;
 	}
@@ -415,8 +419,10 @@ void resolveGetResult(
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
-		if (state->status.ok() && state->vtSlot) {
-			// VT check and populate for the async read result.
+		if (state->status.ok() && state->vtSlot
+				&& !VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(state->value.data(), state->value.size()))) {
+			// VT check and populate for the async read result. Skipped for a value whose version the
+			// producer has marked non-unique: version equality proves nothing about it.
 			rocksdb::Slice valueSlice(state->value.data(), state->value.size());
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion) {

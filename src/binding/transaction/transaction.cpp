@@ -982,7 +982,10 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	// transaction's read snapshot lets vtPopulateIfSettled skip a redundant
 	// latest-read when the snapshot is current (the common no-concurrent-write
 	// case) and re-read only when the snapshot is behind a newer write.
-	if (vtSlot && (wantsPopulate || hasExpectedVersion)) {
+	// Skipped for a value whose version the producer has marked non-unique: neither the FRESH answer
+	// (which rests on version equality alone) nor a slot publication is sound when two distinct values
+	// share the version.
+	if (vtSlot && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		const rocksdb::Snapshot* readSnapshot = (*txnHandle)->readSnapshot();
 		if (hasExpectedVersion && extracted == expectedVersion) {

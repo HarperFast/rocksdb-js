@@ -157,3 +157,41 @@ TEST(VerificationTable, EncodingClassesAreDisjoint) {
 	EXPECT_FALSE(vtIsLock(0));
 	EXPECT_FALSE(vtIsSettled(0));
 }
+
+// The value-header predicate: the flag is only read from a word tagged as one, and every shape
+// that is not one answers "unique", which is the permissive direction (caching keeps working for
+// producers that write no header).
+TEST(VerificationTable, ValueVersionIsNotUniqueReadsTaggedFlagOnly) {
+	auto value = [](uint8_t tag, uint32_t flags, size_t size = 16) {
+		std::string v(size, '\0');
+		if (size >= 8) {
+			for (int i = 0; i < 8; i++) v[i] = static_cast<char>((kV1 >> (56 - 8 * i)) & 0xFF);
+		}
+		if (size >= 12) {
+			v[8] = static_cast<char>(tag);
+			v[9] = static_cast<char>((flags >> 16) & 0xFF);
+			v[10] = static_cast<char>((flags >> 8) & 0xFF);
+			v[11] = static_cast<char>(flags & 0xFF);
+		}
+		return v;
+	};
+
+	const std::string marked = value(VERSION_HEADER_TAG, VERSION_NOT_UNIQUE_FLAG);
+	EXPECT_TRUE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(marked)));
+
+	const std::string tagged = value(VERSION_HEADER_TAG, 0);
+	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(tagged)));
+
+	// Other producer flags in the same word do not imply this one.
+	const std::string otherFlags = value(VERSION_HEADER_TAG, 0x00FEFFFF & ~VERSION_NOT_UNIQUE_FLAG);
+	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(otherFlags)));
+
+	// Same bit, untagged word: payload, not a header.
+	const std::string untagged = value(0xAB, VERSION_NOT_UNIQUE_FLAG);
+	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(untagged)));
+
+	// Too short to carry the word, and too short to carry a version at all.
+	const std::string shortValue = value(VERSION_HEADER_TAG, VERSION_NOT_UNIQUE_FLAG, 11);
+	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(shortValue)));
+	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(std::string())));
+}
