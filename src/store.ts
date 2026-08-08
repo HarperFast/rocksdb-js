@@ -22,8 +22,10 @@ import {
 import {
 	constants,
 	NativeDatabase,
+	type NativeBlobOptions,
 	type NativeDatabaseOptions,
 	NativeIterator,
+	type NativeStoragePath,
 	NativeTransaction,
 	stats,
 	supportedCompression,
@@ -564,6 +566,16 @@ export class Store {
 	path: string;
 
 	/**
+	 * Volumes SST files may be placed on. See {@link NativeStoragePath}.
+	 */
+	paths?: NativeStoragePath[];
+
+	/**
+	 * Blob-file (large value) settings. See {@link NativeBlobOptions}.
+	 */
+	blobs?: NativeBlobOptions;
+
+	/**
 	 * Whether to use pessimistic locking for transactions. When `true`,
 	 * transactions will fail as soon as a conflict is detected. When `false`,
 	 * transactions will only fail when `commit()` is called.
@@ -692,6 +704,8 @@ export class Store {
 		this.noBlockCache = options?.noBlockCache;
 		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
+		this.paths = options?.paths;
+		this.blobs = options?.blobs;
 		this.pessimistic = options?.pessimistic ?? false;
 		// null (the natural absent value from JSON/env-derived config) must mean
 		// absent exactly like the native layer treats napi_null — a null that
@@ -1286,6 +1300,8 @@ export class Store {
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			paths: this.paths,
+			blobs: this.blobs,
 			readOnly: this.readOnly,
 			secondaryPath: this.secondaryPath,
 			statsLevel: this.statsLevel,
