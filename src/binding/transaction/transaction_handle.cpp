@@ -98,6 +98,7 @@ TransactionHandle::TransactionHandle(
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+	this->createdAt = std::chrono::steady_clock::now();
 }
 
 void TransactionHandle::resetTransaction(){
@@ -253,6 +254,34 @@ void TransactionHandle::releaseIntent() {
  * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
  * JS thread racing the async commit's complete callback on env W's JS thread).
  */
+/**
+ * The JS wrapper was garbage collected. Release the handle, unless a commit is
+ * in flight — TransactionCommitState holds its own shared_ptr, so that commit
+ * still owns the handle and closing here would cancel it mid-flight (and, for a
+ * commit that succeeds, discard a durable write's cleanup). completeCommitWork
+ * closes it instead once the commit settles: success closes unconditionally,
+ * and the failure paths check wrapperCollected, because a failure is normally
+ * left open for the caller to retry or abort and there is no longer a caller.
+ *
+ * Everything else is unreachable from JS the moment the wrapper is collected —
+ * no further commit, abort, or read can be issued — so it is released now.
+ * close() is safe here: it cancels and waits for in-flight async work (an async
+ * get holds a raw TransactionHandle*, see get()) before destroying the RocksDB
+ * transaction, exactly as DBDescriptor::close() relies on.
+ */
+void TransactionHandle::onWrapperCollected() {
+	this->wrapperCollected.store(true);
+
+	if (this->state == TransactionState::Committing) {
+		DEBUG_LOG("%p TransactionHandle::onWrapperCollected Commit in flight, deferring close (txnId=%u)\n", this, this->id);
+		return;
+	}
+
+	DEBUG_LOG("%p TransactionHandle::onWrapperCollected Closing orphaned transaction (txnId=%u, state=%d)\n",
+		this, this->id, static_cast<int>(this->state));
+	this->close();
+}
+
 void TransactionHandle::close() {
 	if (this->closed.exchange(true)) {
 		return;
