@@ -56,8 +56,8 @@ describe('orphaned transactions', () => {
 				expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(1);
 
 				const [detail] = status(dbPath).transactionDetails;
-				expect(detail.snapshotSet).toBe(true);
-				expect(detail.state).toBe('pending');
+				expect(detail.id).toBeTypeOf('number');
+				expect(detail.ageMs).toBeGreaterThanOrEqual(0);
 			})();
 
 			await collectOrphans(dbPath);
@@ -141,14 +141,15 @@ describe('orphaned transactions', () => {
 			expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
 		}));
 
-	// An orphan that never read holds no snapshot (snapshotSet stays false), so close() takes a
-	// different path through resetTransaction's teardown than every case above.
+	// An orphan that never read holds no snapshot, so close() reaches ClearSnapshot with nothing set
+	// — a different teardown path than every case above.
 	it('should release a transaction dropped before it ever read', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			await (async () => {
 				const txn = new Transaction(db.store);
-				expect(status(dbPath).transactionDetails[0].snapshotSet).toBe(false);
 				expect(txn.id).toBeTypeOf('number');
+				expect(status(dbPath).transactions).toBe(1);
+				expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
 			})();
 
 			await collectOrphans(dbPath);

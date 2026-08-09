@@ -1,7 +1,6 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -92,11 +91,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	uint32_t id;
 
 	/**
-	 * Whether a snapshot has been set. Atomic because registryStatus() reports it from any
-	 * environment's thread while the owning thread's read paths set it; txnsMutex covers the
-	 * registry map's membership, not a handle's fields.
+	 * Whether a snapshot has been set.
 	 */
-	std::atomic<bool> snapshotSet;
+	bool snapshotSet;
 
 	/**
 	 * The start timestamp of the transaction.
@@ -110,10 +107,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::chrono::steady_clock::time_point createdAt;
 
 	/**
-	 * The state of the transaction. Atomic for the same reason as snapshotSet, and because the
-	 * commit-completion callback can run on a different environment's thread than the owner.
+	 * The state of the transaction.
 	 */
-	std::atomic<TransactionState> state;
+	TransactionState state;
 
 	/**
 	 * The RocksDB transaction.
