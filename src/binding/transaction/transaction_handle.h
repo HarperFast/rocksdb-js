@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -91,9 +92,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	uint32_t id;
 
 	/**
-	 * Whether a snapshot has been set.
+	 * Whether a snapshot has been set. Atomic because registryStatus() reports it from any
+	 * environment's thread while the owning thread's read paths set it; txnsMutex covers the
+	 * registry map's membership, not a handle's fields.
 	 */
-	bool snapshotSet;
+	std::atomic<bool> snapshotSet;
 
 	/**
 	 * The start timestamp of the transaction.
@@ -101,17 +104,16 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	double startTimestamp;
 
 	/**
-	 * When this handle was constructed. Separate from startTimestamp, which JS
-	 * can overwrite via setTimestamp(); this is the clock registryStatus()
-	 * reports an age against, so a transaction holding a snapshot far longer
-	 * than any request should is identifiable.
+	 * Construction time. Separate from startTimestamp, which JS can overwrite via setTimestamp();
+	 * this is the clock registryStatus() ages a handle against.
 	 */
 	std::chrono::steady_clock::time_point createdAt;
 
 	/**
-	 * The state of the transaction.
+	 * The state of the transaction. Atomic for the same reason as snapshotSet, and because the
+	 * commit-completion callback can run on a different environment's thread than the owner.
 	 */
-	TransactionState state;
+	std::atomic<TransactionState> state;
 
 	/**
 	 * The RocksDB transaction.
@@ -131,10 +133,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<bool> closed{false};
 
 	/**
-	 * Set by onWrapperCollected() when the JS `NativeTransaction` wrapper is
-	 * garbage collected. Once set, no JS code can ever commit, abort, retry, or
-	 * read through this handle again — the only remaining owner is an in-flight
-	 * commit, which closes it when it settles (see completeCommitWork).
+	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
+	 * handle again, so the only possible remaining owner is an in-flight commit.
 	 */
 	std::atomic<bool> wrapperCollected{false};
 
@@ -216,12 +216,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void close() override;
 
 	/**
-	 * Called from the `NativeTransaction` napi finalizer when V8 collects the
-	 * JS wrapper. The descriptor's transaction registry holds a strong
-	 * reference (transactionAdd), so without this a handle whose wrapper was
-	 * dropped without commit()/abort() lives — and pins its read snapshot,
-	 * blocking RocksDB from discarding obsolete versions — until the process
-	 * exits (HarperFast/harper#2107).
+	 * Called from the `NativeTransaction` napi finalizer. The registry holds a strong reference
+	 * (transactionAdd), so without this a dropped handle pins its read snapshot — and every
+	 * obsolete version behind it — until the process exits.
 	 */
 	void onWrapperCollected();
 

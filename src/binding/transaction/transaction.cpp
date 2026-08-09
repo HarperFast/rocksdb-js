@@ -111,10 +111,8 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 					data, txnHandle->use_count());
 				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
-					// Before dropping the JS-side reference: the descriptor's registry holds a
-					// strong reference of its own, so resetting alone cannot destroy the handle
-					// and a transaction dropped without commit()/abort() would pin its read
-					// snapshot for the life of the process (HarperFast/harper#2107).
+					// Must run before the reset: the registry's own strong reference means
+					// resetting alone cannot destroy the handle.
 					(*txnHandle)->onWrapperCollected();
 					(*txnHandle).reset();
 				}
@@ -407,9 +405,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			state->handle->state = TransactionState::Pending;
 		}
 
-		// The wrapper was collected while this commit was in flight, so nobody is left to act on
-		// RETRY_NOW — the resolve callback below fires into a dropped promise chain. Release the
-		// handle rather than leaving it registered forever (see onWrapperCollected).
+		// Nobody is left to act on RETRY_NOW — the resolve below fires into a dropped promise chain.
 		if (state->handle->wrapperCollected.load()) {
 			state->handle->close();
 		}
@@ -481,10 +477,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		if (state->handle && state->handle->state == TransactionState::Committing) {
 			state->handle->state = TransactionState::Pending;
 		}
-		// A failed commit is deliberately left open so the caller can retry or abort it. If the
-		// wrapper was collected while the commit was in flight there is no caller left to do
-		// either, so release it here instead of leaving it registered forever — the reject below
-		// fires into a dropped promise chain (see onWrapperCollected).
+		// A failed commit is deliberately left open for the caller to retry or abort; there is no
+		// caller left, so release it here rather than leaving it registered forever.
 		if (state->handle && state->handle->wrapperCollected.load()) {
 			state->handle->close();
 		}

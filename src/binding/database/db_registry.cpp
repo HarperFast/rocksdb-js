@@ -534,10 +534,10 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, name.c_str(), columnDescriptorValue));
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
-			// transactionDetails makes an orphaned handle identifiable: a bare count only says
-			// "nonzero", and a database that can never reclaim obsolete versions again looks the
-			// same as one with a request in flight (HarperFast/harper#2107). Snapshot the fields
-			// under txnsMutex — reading the map unlocked raced transactionAdd/transactionRemove.
+			// A bare count cannot tell a request in flight from a database that can never reclaim
+			// again. Snapshot under txnsMutex — reading the map unlocked raced
+			// transactionAdd/transactionRemove; the per-handle fields are atomic because their
+			// writers hold no lock at all.
 			struct TxnSummary {
 				uint32_t id;
 				bool snapshotSet;
@@ -556,8 +556,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 					}
 					txnSummaries.push_back({
 						txnId,
-						txnHandle->snapshotSet,
-						static_cast<int>(txnHandle->state),
+						txnHandle->snapshotSet.load(std::memory_order_relaxed),
+						static_cast<int>(txnHandle->state.load(std::memory_order_relaxed)),
 						std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count()
 					});
 				}

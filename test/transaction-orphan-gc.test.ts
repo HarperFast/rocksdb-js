@@ -20,6 +20,17 @@ function status(path: string) {
 	return entry;
 }
 
+// Node and Deno run with --expose-gc; Bun exposes Bun.gc instead and leaves globalThis.gc undefined,
+// so `pnpm test:bun` would collect nothing and every case below would time out.
+const forceGC: () => void =
+	typeof globalThis.gc === 'function'
+		? globalThis.gc
+		: typeof (globalThis as { Bun?: { gc?: (sync: boolean) => void } }).Bun?.gc === 'function'
+			? () => (globalThis as unknown as { Bun: { gc: (sync: boolean) => void } }).Bun.gc(true)
+			: () => {
+					throw new Error('these tests need an exposed GC (node/deno --expose-gc, or Bun.gc)');
+				};
+
 /**
  * V8 collects the dropped wrapper on its own schedule, and the finalizer runs after the GC pass, so
  * poll rather than assuming one gc() is enough. Fails the test by timing out on the assertion below.
@@ -27,7 +38,7 @@ function status(path: string) {
 async function collectOrphans(path: string, timeoutMs = 5000) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		global.gc?.();
+		forceGC();
 		await delay(20);
 		if (status(path).transactions === 0) return;
 	}
@@ -105,23 +116,43 @@ describe('orphaned transactions', () => {
 			expect(status(dbPath).transactions).toBe(0);
 		}));
 
-	it('should let an in-flight commit finish when the wrapper is collected mid-commit', () =>
+	// The caller drops its own reference before the commit settles — what harper's
+	// DatabaseTransaction does when it nulls `this.transaction` before awaiting. Note this does NOT
+	// exercise finalization *during* Committing: the pending commit promise's executor still holds
+	// the wrapper, so V8 cannot collect it until the commit settles. That deferral branch is
+	// therefore unreachable from JS by construction, and this asserts the property that matters —
+	// dropping the reference neither loses the write nor leaks the handle.
+	it('should commit and release when the caller drops its reference before the commit settles', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			let commit: Promise<unknown> | undefined;
 			await (async () => {
 				const txn = new Transaction(db.store);
 				await txn.get('foo');
 				txn.putSync('foo', 'committed');
-				// Drop the wrapper (only the commit promise is retained) the way harper's
-				// DatabaseTransaction does: it nulls `this.transaction` before awaiting the commit.
 				commit = txn.commit();
 			})();
 
-			global.gc?.();
+			forceGC();
 			await commit;
+			await collectOrphans(dbPath);
 
 			expect(await db.get('foo')).toBe('committed');
 			expect(status(dbPath).transactions).toBe(0);
 			expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
+		}));
+
+	// An orphan that never read holds no snapshot (snapshotSet stays false), so close() takes a
+	// different path through resetTransaction's teardown than every case above.
+	it('should release a transaction dropped before it ever read', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			await (async () => {
+				const txn = new Transaction(db.store);
+				expect(status(dbPath).transactionDetails[0].snapshotSet).toBe(false);
+				expect(txn.id).toBeTypeOf('number');
+			})();
+
+			await collectOrphans(dbPath);
+
+			expect(status(dbPath).transactions).toBe(0);
 		}));
 });
