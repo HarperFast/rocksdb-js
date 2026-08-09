@@ -371,6 +371,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
+12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+    `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
+    `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
+    path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
+    `onWrapperCollected()` before dropping its reference: once V8 has collected the wrapper, no JS
+    code can ever commit, abort, retry, or read through that handle again, so it is closed. The one
+    exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
+    closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
+    always closes, and the failure paths (which deliberately leave the handle open for a caller that
+    may retry) check `wrapperCollected`, because there is no caller left. Without this a transaction
+    dropped without `commit()`/`abort()` pinned `rocksdb.oldest-snapshot-time` for the life of the
+    process, so RocksDB could never discard obsolete versions for that database — restart was the
+    only recovery (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Note the registry
+    ref cannot simply be made weak: an async `get` holds a raw `TransactionHandle*`
+    (`AsyncGetState<TransactionHandle*>`) and relies on `close()`'s
+    `cancelAllAsyncWork()`/`waitForAsyncWorkCompletion()`, which a plain destructor race would skip.
 
 ## Debugging native heap corruption
 

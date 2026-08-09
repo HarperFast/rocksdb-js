@@ -1,4 +1,7 @@
+#include <chrono>
+#include <vector>
 #include "database/db_registry.h"
+#include "transaction/transaction_handle.h"
 #include "napi/macros.h"
 #include "core/platform.h"
 #include "core/compression.h"
@@ -531,11 +534,63 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, name.c_str(), columnDescriptorValue));
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
+			// transactionDetails makes an orphaned handle identifiable: a bare count only says
+			// "nonzero", and a database that can never reclaim obsolete versions again looks the
+			// same as one with a request in flight (HarperFast/harper#2107). Snapshot the fields
+			// under txnsMutex — reading the map unlocked raced transactionAdd/transactionRemove.
+			struct TxnSummary {
+				uint32_t id;
+				bool snapshotSet;
+				int state;
+				double ageMs;
+			};
+			std::vector<TxnSummary> txnSummaries;
+			size_t closablesCount;
+			{
+				auto now = std::chrono::steady_clock::now();
+				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
+				txnSummaries.reserve(entry.descriptor->transactions.size());
+				for (auto& [txnId, txnHandle] : entry.descriptor->transactions) {
+					if (!txnHandle) {
+						continue;
+					}
+					txnSummaries.push_back({
+						txnId,
+						txnHandle->snapshotSet,
+						static_cast<int>(txnHandle->state),
+						std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count()
+					});
+				}
+				closablesCount = entry.descriptor->closables.size();
+			}
+
 			napi_value transactions;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->transactions.size()), &transactions));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(txnSummaries.size()), &transactions));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactions", transactions));
+			napi_value transactionDetails;
+			NAPI_STATUS_THROWS(::napi_create_array(env, &transactionDetails));
+			for (size_t t = 0; t < txnSummaries.size(); t++) {
+				const auto& summary = txnSummaries[t];
+				napi_value detail;
+				NAPI_STATUS_THROWS(::napi_create_object(env, &detail));
+				napi_value value;
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, summary.id, &value));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "id", value));
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, summary.snapshotSet, &value));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "snapshotSet", value));
+				const char* stateName =
+					summary.state == static_cast<int>(TransactionState::Pending) ? "pending" :
+					summary.state == static_cast<int>(TransactionState::Committing) ? "committing" :
+					summary.state == static_cast<int>(TransactionState::Committed) ? "committed" : "aborted";
+				NAPI_STATUS_THROWS(::napi_create_string_utf8(env, stateName, NAPI_AUTO_LENGTH, &value));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "state", value));
+				NAPI_STATUS_THROWS(::napi_create_double(env, summary.ageMs, &value));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "ageMs", value));
+				NAPI_STATUS_THROWS(::napi_set_element(env, transactionDetails, static_cast<uint32_t>(t), detail));
+			}
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactionDetails", transactionDetails));
 			napi_value closables;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->closables.size()), &closables));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(closablesCount), &closables));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closables", closables));
 			napi_value locks;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
