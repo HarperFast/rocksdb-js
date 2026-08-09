@@ -255,19 +255,11 @@ void TransactionHandle::releaseIntent() {
  * JS thread racing the async commit's complete callback on env W's JS thread).
  */
 /**
- * The JS wrapper was garbage collected. Release the handle, unless a commit is
- * in flight — TransactionCommitState holds its own shared_ptr, so that commit
- * still owns the handle and closing here would cancel it mid-flight (and, for a
- * commit that succeeds, discard a durable write's cleanup). completeCommitWork
- * closes it instead once the commit settles: success closes unconditionally,
- * and the failure paths check wrapperCollected, because a failure is normally
- * left open for the caller to retry or abort and there is no longer a caller.
- *
- * Everything else is unreachable from JS the moment the wrapper is collected —
- * no further commit, abort, or read can be issued — so it is released now.
- * close() is safe here: it cancels and waits for in-flight async work (an async
- * get holds a raw TransactionHandle*, see get()) before destroying the RocksDB
- * transaction, exactly as DBDescriptor::close() relies on.
+ * The JS wrapper was garbage collected, so nothing can commit, abort, or read through this handle
+ * again — release it. A commit in flight is the exception: TransactionCommitState holds its own
+ * shared_ptr and closing here would cancel it mid-flight, so completeCommitWork closes it instead
+ * when it settles. close() is safe from a finalizer because it cancels and waits for in-flight
+ * async work (an async get holds a raw TransactionHandle*) before destroying the transaction.
  */
 void TransactionHandle::onWrapperCollected() {
 	this->wrapperCollected.store(true);

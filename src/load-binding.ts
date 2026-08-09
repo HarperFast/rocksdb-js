@@ -588,9 +588,8 @@ export type RegistryStatusDB = {
 	columnFamilies: string[];
 	transactions: number;
 	/**
-	 * One entry per live transaction handle. A `snapshotSet` transaction with an
-	 * `ageMs` far beyond any request lifetime is holding back reclamation of
-	 * obsolete versions for its whole database.
+	 * One entry per live transaction handle. A `snapshotSet` handle whose `ageMs` exceeds any
+	 * plausible request lifetime is holding back reclamation for its whole database.
 	 */
 	transactionDetails: RegistryStatusTransaction[];
 	closables: number;
