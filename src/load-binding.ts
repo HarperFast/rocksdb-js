@@ -572,11 +572,27 @@ function locateBinding(): string {
 	throw new Error('Unable to locate rocksdb-js native binding');
 }
 
+export type RegistryStatusTransaction = {
+	/** The transaction id assigned by the database descriptor. */
+	id: number;
+	/** Whether this transaction is holding a read snapshot. */
+	snapshotSet: boolean;
+	state: 'pending' | 'committing' | 'committed' | 'aborted';
+	/** Milliseconds since the transaction handle was created. */
+	ageMs: number;
+};
+
 export type RegistryStatusDB = {
 	path: string;
 	refCount: number;
 	columnFamilies: string[];
 	transactions: number;
+	/**
+	 * One entry per live transaction handle. A `snapshotSet` transaction with an
+	 * `ageMs` far beyond any request lifetime is holding back reclamation of
+	 * obsolete versions for its whole database.
+	 */
+	transactionDetails: RegistryStatusTransaction[];
 	closables: number;
 	locks: number;
 	userSharedBuffers: number;

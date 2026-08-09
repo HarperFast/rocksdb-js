@@ -111,6 +111,11 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 					data, txnHandle->use_count());
 				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
+					// Before dropping the JS-side reference: the descriptor's registry holds a
+					// strong reference of its own, so resetting alone cannot destroy the handle
+					// and a transaction dropped without commit()/abort() would pin its read
+					// snapshot for the life of the process (HarperFast/harper#2107).
+					(*txnHandle)->onWrapperCollected();
 					(*txnHandle).reset();
 				}
 				delete txnHandle;
@@ -402,6 +407,13 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			state->handle->state = TransactionState::Pending;
 		}
 
+		// The wrapper was collected while this commit was in flight, so nobody is left to act on
+		// RETRY_NOW — the resolve callback below fires into a dropped promise chain. Release the
+		// handle rather than leaving it registered forever (see onWrapperCollected).
+		if (state->handle->wrapperCollected.load()) {
+			state->handle->close();
+		}
+
 		// Transfer resolve/reject refs from state to a RetryNowContext
 		// so the TSFN finalize can clean them up.
 		auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
@@ -468,6 +480,13 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		// on a null txn.
 		if (state->handle && state->handle->state == TransactionState::Committing) {
 			state->handle->state = TransactionState::Pending;
+		}
+		// A failed commit is deliberately left open so the caller can retry or abort it. If the
+		// wrapper was collected while the commit was in flight there is no caller left to do
+		// either, so release it here instead of leaving it registered forever — the reject below
+		// fires into a dropped promise chain (see onWrapperCollected).
+		if (state->handle && state->handle->wrapperCollected.load()) {
+			state->handle->close();
 		}
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
