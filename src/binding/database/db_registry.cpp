@@ -535,13 +535,13 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
 			// A bare count cannot tell a request in flight from a database that can never reclaim
-			// again. Snapshot under txnsMutex — reading the map unlocked raced
-			// transactionAdd/transactionRemove; the per-handle fields are atomic because their
-			// writers hold no lock at all.
+			// again, so report each handle's id and age. Deliberately NOT its snapshotSet/state:
+			// those are written by the owning thread and by the commit-completion callback without
+			// any lock, so reading them from another environment here would be a data race —
+			// txnsMutex covers the map's membership, not a handle's mutable fields. id and age are
+			// fixed before the handle is published to the registry.
 			struct TxnSummary {
 				uint32_t id;
-				bool snapshotSet;
-				int state;
 				double ageMs;
 			};
 			std::vector<TxnSummary> txnSummaries;
@@ -556,8 +556,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 					}
 					txnSummaries.push_back({
 						txnId,
-						txnHandle->snapshotSet.load(std::memory_order_relaxed),
-						static_cast<int>(txnHandle->state.load(std::memory_order_relaxed)),
 						std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count()
 					});
 				}
@@ -576,14 +574,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				napi_value value;
 				NAPI_STATUS_THROWS(::napi_create_uint32(env, summary.id, &value));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "id", value));
-				NAPI_STATUS_THROWS(::napi_get_boolean(env, summary.snapshotSet, &value));
-				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "snapshotSet", value));
-				const char* stateName =
-					summary.state == static_cast<int>(TransactionState::Pending) ? "pending" :
-					summary.state == static_cast<int>(TransactionState::Committing) ? "committing" :
-					summary.state == static_cast<int>(TransactionState::Committed) ? "committed" : "aborted";
-				NAPI_STATUS_THROWS(::napi_create_string_utf8(env, stateName, NAPI_AUTO_LENGTH, &value));
-				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "state", value));
 				NAPI_STATUS_THROWS(::napi_create_double(env, summary.ageMs, &value));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "ageMs", value));
 				NAPI_STATUS_THROWS(::napi_set_element(env, transactionDetails, static_cast<uint32_t>(t), detail));

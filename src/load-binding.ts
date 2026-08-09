@@ -506,9 +506,6 @@ function locateBinding(): string {
 export type RegistryStatusTransaction = {
 	/** The transaction id assigned by the database descriptor. */
 	id: number;
-	/** Whether this transaction is holding a read snapshot. */
-	snapshotSet: boolean;
-	state: 'pending' | 'committing' | 'committed' | 'aborted';
 	/** Milliseconds since the transaction handle was created. */
 	ageMs: number;
 };
@@ -519,8 +516,9 @@ export type RegistryStatusDB = {
 	columnFamilies: string[];
 	transactions: number;
 	/**
-	 * One entry per live transaction handle. A `snapshotSet` handle whose `ageMs` exceeds any
-	 * plausible request lifetime is holding back reclamation for its whole database.
+	 * One entry per live transaction handle. An `ageMs` beyond any plausible request lifetime,
+	 * against a nonzero `rocksdb.num-snapshots`, identifies a handle holding back reclamation for
+	 * its whole database.
 	 */
 	transactionDetails: RegistryStatusTransaction[];
 	closables: number;

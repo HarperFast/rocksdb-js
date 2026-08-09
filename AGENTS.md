@@ -387,8 +387,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     any redesign here: the registry reference cannot simply be made weak, because an async `get`
     holds a raw `TransactionHandle*` (`AsyncGetState<TransactionHandle*>`) and relies on `close()`'s
     `cancelAllAsyncWork()`/`waitForAsyncWorkCompletion()`, which a plain destructor race would skip;
-    and any handle field `registryStatus()` reports must be atomic, since `txnsMutex` covers only the
-    registry map's membership and the fields' writers hold no lock at all.
+    and `registryStatus()` may only report handle fields that are fixed before the handle is
+    published to the registry (`id`, `createdAt`), because `txnsMutex` covers the map's membership
+    while the mutable fields' writers — the owning thread's read paths, the commit-completion
+    callback — hold no lock at all.
 
 ## Debugging native heap corruption
 
