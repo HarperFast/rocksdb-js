@@ -145,13 +145,14 @@ describe('Statistics', () => {
 			const nonTxnlogKeys = Object.keys(stats).filter(
 				(key) => !key.startsWith('txnlog.') && !key.startsWith('commitPipeline.')
 			);
-			expect(nonTxnlogKeys.length).toBeLessThanOrEqual(25);
+			expect(nonTxnlogKeys.length).toBeLessThanOrEqual(26);
 
 			// internal stats
 			expect(stats['rocksdb.number.keys.written']).toBeUndefined();
 
 			// column family stats
 			expect(stats['rocksdb.estimate-num-keys']).toBe(2);
+			expect(stats['rocksdb.num-snapshots']).toBe(0);
 		}));
 
 	it('should get all stats', () =>

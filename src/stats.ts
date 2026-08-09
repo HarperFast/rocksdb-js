@@ -35,6 +35,7 @@ export type StatsBasics = {
 	'rocksdb.num-live-versions': number;
 	'rocksdb.current-super-version-number': number;
 	'rocksdb.oldest-snapshot-time': number;
+	'rocksdb.num-snapshots': number;
 	'rocksdb.num-blob-files': number;
 	'rocksdb.total-blob-file-size': number;
 	'rocksdb.live-blob-file-size': number;
