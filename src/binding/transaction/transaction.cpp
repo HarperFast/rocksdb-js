@@ -599,12 +599,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	CommitThreadMode mode = commitThreadMode();
 	bool completionsClosed = false;
 	if (mode != CommitThreadMode::Legacy && dbHandle && dbHandle->descriptor) {
-		// The commit lanes are owned by the descriptor and drained/joined before
-		// the descriptor is destroyed; and an in-flight commit's state pins the
-		// descriptor alive (state -> txnHandle -> dbHandle -> descriptor). So a
-		// raw pointer captured into the worker task is valid for the task's
-		// lifetime and cannot form a reference cycle with the worker thread.
-		DBDescriptor* descriptor = dbHandle->descriptor.get();
+		// Keep the descriptor alive until every queued stage has completed. Worker
+		// teardown can close the transaction handle between the log and commit
+		// stages, releasing its DBHandle and its descriptor reference. The registry
+		// retains its reference until it drains and joins these lanes, so this task
+		// capture cannot be the last descriptor reference on a worker thread.
+		auto descriptor = dbHandle->descriptor;
 
 		// Ensure this env has a completion tsfn and account the dispatch (refs
 		// the tsfn as the env goes idle->busy so the event loop stays alive).
@@ -1223,4 +1223,3 @@ void Transaction::Init(napi_env env, napi_value exports) {
 }
 
 } // namespace rocksdb_js
-

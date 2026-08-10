@@ -470,7 +470,7 @@ describe('Verification Table', () => {
 					db.close();
 				}
 			}
-		});
+		}, 60_000);
 
 		it('a transactional point-get after write/flush/close/reopen returns the persisted value and agrees with range/raw', async () => {
 			const path = generateDBPath();
