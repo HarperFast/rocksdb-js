@@ -331,6 +331,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `DBOptions` defaults that derive a large value were sized when they reached one column family, so
     widening where an option applies means re-checking its default against every shared budget it
     competes for.
+11. **A corrupt transaction-log frame ends an entry, not the log**: framing breaks come in two
+    shapes and the reader must not conflate them. A **torn tail** has nothing valid behind it, so
+    the break is genuinely end-of-log — that is what `recoverTail()` truncates at open. A **mid-log
+    break** (a partial `ENOSPC`/`EDQUOT` append the process survived) has intact, already-committed
+    entries appended _after_ it; `recoverTail()` deliberately leaves such a file alone rather than
+    discard them, and rotated files are never rescanned at all. `query()` therefore reports the
+    break as a `CorruptFrameError` carrying `resyncPosition` (where framing resumes, per the same
+    heuristic as `validFramingResumes()`) and **leaves iteration positioned there**, so a caller
+    that calls `next()` again recovers the entries past it. Treating the throw as terminal amputates
+    every later entry in the file permanently — each drain restarts from the same resume cursor and
+    re-throws at the same offset, which is how HarperFast/harper#2016 lost 2.2 days of acknowledged
+    writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
+    `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
+
+    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
+    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
+    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
+    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
+    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
+    Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
+    a per-frame call would tax every healthy read.
 
 ## Debugging native heap corruption
 

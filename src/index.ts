@@ -56,7 +56,8 @@ export {
 } from './store.js';
 export { Transaction } from './transaction.js';
 
-import './transaction-log-reader.js';
+import './transaction-log-reader.js'; // installs TransactionLog.prototype.query
+export { CorruptFrameError } from './transaction-log-reader.js';
 
 export const versions: { rocksdb: string; 'rocksdb-js': string } = {
 	rocksdb: version,
