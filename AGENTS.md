@@ -218,12 +218,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
     `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
       from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
-- **Exposing GC to the test workers**: tests that force collection (`globalThis.gc`) run in Vitest's
-  worker, not the process you launched. Node inherits `--expose-gc` because its worker threads
-  inherit `execArgv`, but Bun and Deno use the `forks` pool: Deno's `--v8-flags=--expose-gc` applies
-  only to the CLI process it was passed to, so forked workers get no `gc` and every `skipIf(!gc)`
-  test silently skips. `test:deno` therefore sets `DENO_V8_FLAGS=--expose-gc`, which children
-  inherit through the environment. Bun has no equivalent flag and exposes `Bun.gc()` instead.
+- **GC is not exposed to Deno's test workers** (#770): tests that force collection run in Vitest's
+  worker, not the process you launched. Node's `threads` pool inherits `--expose-gc` through
+  `execArgv`, and Bun exposes `Bun.gc()`, but Deno uses the `forks` pool and
+  `--v8-flags=--expose-gc` applies only to the CLI process it was passed to — so `globalThis.gc` is
+  undefined in every Deno worker and each `skipIf(!globalThis.gc)` test silently skips there. Guard
+  GC-dependent tests with `skipIf`, never with a throw. `DENO_V8_FLAGS=--expose-gc` is the fix (the
+  environment is inherited by children) but cannot land until #771 is fixed: the restored coverage
+  makes `test/lock.test.ts` and one macOS `verification-table.test.ts` case fail.
 
 ## Important Implementation Notes
 
