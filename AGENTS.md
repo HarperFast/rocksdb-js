@@ -352,7 +352,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
-11. **A recovered transaction log ends on a transaction boundary**: only a batch's final entry
+
+12. **A recovered transaction log ends on a transaction boundary**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them
     (`discardUnclosedTransaction`) rather than leaving them for the committed watermark to step
