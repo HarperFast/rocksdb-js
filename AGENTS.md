@@ -409,6 +409,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
+
 12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
     `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
     `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
