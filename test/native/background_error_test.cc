@@ -86,6 +86,7 @@ TEST(BackgroundErrorMirror, RecoverySuccessClearsTheRecoveredError) {
 	m.latch(0, rocksdb::Status::IOError("A"));
 	BackgroundErrorInfo info;
 	ASSERT_TRUE(m.get(info));
+	m.onRecoveryBegin();
 	m.reconcileRecoveryEnd(info.message, info.severity, /*recovered=*/true);
 	EXPECT_FALSE(m.get(info));
 }
@@ -97,8 +98,62 @@ TEST(BackgroundErrorMirror, RecoverySuccessDoesNotClearANewerError) {
 	m.latch(0, rocksdb::Status::IOError("A"));
 	BackgroundErrorInfo a;
 	ASSERT_TRUE(m.get(a));
+	m.onRecoveryBegin();
 	m.latch(0, rocksdb::Status::IOError("B"));
 	m.reconcileRecoveryEnd(a.message, a.severity, /*recovered=*/true);
+	BackgroundErrorInfo info;
+	ASSERT_TRUE(m.get(info));
+	EXPECT_NE(info.message.find("B"), std::string::npos);
+}
+
+// The interleaving Codex flagged (PR #760): B carries the SAME message as the
+// recovered error A. Message equality would clear B here; generation identity
+// must keep it — RocksDB may still be write-stopped on B.
+TEST(BackgroundErrorMirror, RecoverySuccessDoesNotClearANewerIdenticalError) {
+	BackgroundErrorMirror m;
+	m.latch(static_cast<int>(rocksdb::BackgroundErrorReason::kFlush), rocksdb::Status::NoSpace("No space left on device"));
+	BackgroundErrorInfo a;
+	uint64_t genA = 0;
+	ASSERT_TRUE(m.get(a, &genA));
+	m.onRecoveryBegin();
+	// Identical-message error B latches during recovery A (e.g. two consecutive
+	// disk-full flush failures against the same file).
+	m.latch(static_cast<int>(rocksdb::BackgroundErrorReason::kFlush), rocksdb::Status::NoSpace("No space left on device"));
+	uint64_t genB = 0;
+	BackgroundErrorInfo b;
+	ASSERT_TRUE(m.get(b, &genB));
+	EXPECT_NE(genB, genA); // distinct errors → distinct generations
+	m.reconcileRecoveryEnd(a.message, a.severity, /*recovered=*/true);
+	BackgroundErrorInfo info;
+	uint64_t genAfter = 0;
+	ASSERT_TRUE(m.get(info, &genAfter)) << "identical-message B must survive A's recovery";
+	EXPECT_EQ(genAfter, genB); // still B, untouched
+}
+
+// An OnErrorRecoveryEnd with no paired OnErrorRecoveryBegin (the manual-resume
+// end-only path, which our JS resume() reconciles separately via clearIfUnchanged)
+// must not clear on a stale recovery generation.
+TEST(BackgroundErrorMirror, RecoverySuccessWithoutBeginDoesNotClear) {
+	BackgroundErrorMirror m;
+	m.latch(0, rocksdb::Status::IOError("A"));
+	BackgroundErrorInfo info;
+	ASSERT_TRUE(m.get(info));
+	m.reconcileRecoveryEnd(info.message, info.severity, /*recovered=*/true);
+	EXPECT_TRUE(m.get(info)) << "end without a paired begin must not clear the mirror";
+}
+
+// A recovery window is consumed by its end: a second end (or an end for a later,
+// begin-less recovery) must not clear a freshly latched error on the old generation.
+TEST(BackgroundErrorMirror, RecoveryWindowIsConsumedByEnd) {
+	BackgroundErrorMirror m;
+	m.latch(0, rocksdb::Status::IOError("A"));
+	BackgroundErrorInfo a;
+	ASSERT_TRUE(m.get(a));
+	m.onRecoveryBegin();
+	m.reconcileRecoveryEnd(a.message, a.severity, /*recovered=*/true); // clears A, consumes window
+	ASSERT_FALSE(m.get(a));
+	m.latch(0, rocksdb::Status::IOError("B"));
+	m.reconcileRecoveryEnd(a.message, a.severity, /*recovered=*/true); // no begin → must not clear B
 	BackgroundErrorInfo info;
 	ASSERT_TRUE(m.get(info));
 	EXPECT_NE(info.message.find("B"), std::string::npos);

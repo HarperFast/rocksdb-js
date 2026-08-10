@@ -74,13 +74,23 @@ public:
 	bool clearIfUnchanged(uint64_t expectedGeneration);
 
 	/**
+	 * Records the generation at which a recovery attempt started (from
+	 * `OnErrorRecoveryBegin`). `reconcileRecoveryEnd` uses it to tell whether the
+	 * still-latched error is the exact one the recovery worked on, or a newer one
+	 * latched in between. RocksDB serializes recovery, so begin/end are paired.
+	 */
+	void onRecoveryBegin();
+
+	/**
 	 * Reconciles an `OnErrorRecoveryEnd` in a single atomic step.
 	 * `recoveredMessage`/`recoveredSeverity` describe `old_bg_error` (the error
 	 * RocksDB attempted to recover); `recovered` is whether `new_bg_error` is OK.
 	 *
-	 *  - recovered: clears the mirror ONLY if the currently-latched error IS the
-	 *    recovered one (message match), so a newer error latched on another
-	 *    thread between recovery start and this callback is preserved.
+	 *  - recovered: clears the mirror ONLY if its generation is unchanged since the
+	 *    matching `onRecoveryBegin()` — i.e. no newer error latched in between. This
+	 *    is error *identity*, not message equality: two distinct errors can share a
+	 *    `Status::ToString()` (e.g. two disk-full flush failures on the same file),
+	 *    and clearing on message match would erase a newer, still-active error.
 	 *  - failed: RocksDB keeps `old_bg_error` as the read-only latch, so seed it
 	 *    ONLY when nothing is currently latched — never clobber a newer error.
 	 */
@@ -98,6 +108,12 @@ private:
 	BackgroundErrorInfo info_;
 	// Bumped on every latch/clear transition (see `clearIfUnchanged`).
 	uint64_t generation_ = 0;
+	// `generation_` snapshotted at the last `onRecoveryBegin()`; `reconcileRecoveryEnd`
+	// clears only when the current generation still equals it. `recoveryActive_`
+	// guards against an `OnErrorRecoveryEnd` with no paired begin (a manual-resume
+	// end path fires end-only) clearing on a stale generation.
+	uint64_t recoveryGeneration_ = 0;
+	bool recoveryActive_ = false;
 };
 
 } // namespace rocksdb_js

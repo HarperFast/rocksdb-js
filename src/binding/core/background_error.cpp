@@ -50,17 +50,31 @@ bool BackgroundErrorMirror::clearIfUnchanged(uint64_t expectedGeneration) {
 	return true;
 }
 
+void BackgroundErrorMirror::onRecoveryBegin() {
+	std::lock_guard<std::mutex> lock(this->mutex_);
+	this->recoveryGeneration_ = this->generation_;
+	this->recoveryActive_ = true;
+}
+
 void BackgroundErrorMirror::reconcileRecoveryEnd(
 	const std::string& recoveredMessage,
 	int recoveredSeverity,
 	bool recovered
 ) {
 	std::lock_guard<std::mutex> lock(this->mutex_);
+	// One begin per end: consume the recovery window so a later end with no begin
+	// (or a duplicate end) cannot clear on this stale generation.
+	const bool active = this->recoveryActive_;
+	const uint64_t recoveryGeneration = this->recoveryGeneration_;
+	this->recoveryActive_ = false;
 	if (recovered) {
-		// Clear only if the currently-latched error IS the one that was
-		// recovered. A newer error latched on another thread between recovery
-		// start and this callback has a different message and must survive.
-		if (this->info_.latched && this->info_.message == recoveredMessage) {
+		// Clear only if the latched error IS the exact one recovery worked on:
+		// its generation is unchanged since onRecoveryBegin(). A newer error
+		// latched in between bumped `generation_`, so it survives here — even
+		// when it carries the same message as the recovered one (message
+		// equality is not identity; see the header). Require a paired begin so
+		// an end-only path never clears on a stale generation.
+		if (active && this->info_.latched && this->generation_ == recoveryGeneration) {
 			this->info_ = BackgroundErrorInfo{};
 			++this->generation_;
 		}

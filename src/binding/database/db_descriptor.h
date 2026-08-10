@@ -60,9 +60,11 @@ public:
 	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor);
 
 	// Background-error mirror. `reason` is a `rocksdb::BackgroundErrorReason` cast
-	// to int, or -1 when there is no associated reason. `reconcileRecoveryEnd`
-	// atomically applies an `OnErrorRecoveryEnd`. All thread-safe.
+	// to int, or -1 when there is no associated reason. `onRecoveryBegin` marks the
+	// generation a recovery started at; `reconcileRecoveryEnd` atomically applies an
+	// `OnErrorRecoveryEnd` against it. All thread-safe.
 	void latchBackgroundError(int reason, const rocksdb::Status& status);
+	void onRecoveryBegin();
 	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
 	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
 	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);

@@ -247,15 +247,25 @@ public:
 		this->state->latchBackgroundError(static_cast<int>(reason), *bg_error);
 	}
 
+	// Fires just before RocksDB begins auto-recovering a retryable background
+	// error. Snapshot the mirror generation so the paired OnErrorRecoveryEnd can
+	// tell whether the still-latched error is the one it worked on or a newer one
+	// latched in between. Writes to the shared state (not via the descriptor) so a
+	// recovery for an error latched during DB::Open is still tracked.
+	void OnErrorRecoveryBegin(rocksdb::BackgroundErrorReason /*reason*/, rocksdb::Status /*bg_error*/, bool* /*auto_recovery*/) override {
+		this->state->onRecoveryBegin();
+	}
+
 	// Fires when a recovery attempt (auto-recovery or an explicit DB::Resume())
 	// completes. These callbacks run on RocksDB background threads and race each
 	// other and OnBackgroundError, so reconciliation must be a single atomic step
 	// conditioned on the error actually being recovered — never a blind clear.
 	// `reconcileRecoveryEnd` (in BackgroundErrorMirror) does that: on success it
-	// clears only if the currently-latched error IS `old_bg_error` (so a newer
-	// error latched in between survives); on failure it seeds `old_bg_error` only
-	// when nothing is latched (RocksDB retains it as the read-only latch). Format
-	// the message outside the mirror lock (ToString allocates on a bg thread).
+	// clears only if the latched error's generation is unchanged since the paired
+	// OnErrorRecoveryBegin (so a newer error latched in between survives — by
+	// identity, not message equality); on failure it seeds `old_bg_error` only when
+	// nothing is latched (RocksDB retains it as the read-only latch). Format the
+	// message outside the mirror lock (ToString allocates on a bg thread).
 	void OnErrorRecoveryEnd(const rocksdb::BackgroundErrorRecoveryInfo& info) override {
 		// Writes to the shared listener state (not via the descriptor), so an
 		// error latched during DB::Open is still reconciled. Format the message
@@ -1789,6 +1799,10 @@ void DBEventListenerState::publishDescriptor(std::shared_ptr<DBDescriptor> descr
 
 void DBEventListenerState::latchBackgroundError(int reason, const rocksdb::Status& status) {
 	this->backgroundError_.latch(reason, status);
+}
+
+void DBEventListenerState::onRecoveryBegin() {
+	this->backgroundError_.onRecoveryBegin();
 }
 
 void DBEventListenerState::reconcileRecoveryEnd(
