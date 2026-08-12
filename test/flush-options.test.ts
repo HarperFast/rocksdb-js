@@ -62,9 +62,6 @@ describe('flush options', () => {
 						await expect(readOnlyDb.flush()).resolves.toBeUndefined();
 						await expect(readOnlyDb.flush({ allowWriteStall: true })).resolves.toBeUndefined();
 						expect(() => readOnlyDb.flushSync()).not.toThrow();
-
-						// Validation runs ahead of the read-only no-op, so the same argument gets
-						// the same verdict in either mode.
 						expect(() => readOnlyDb.flushSync('yes' as any)).toThrow(
 							/Flush options must be an object/
 						);
