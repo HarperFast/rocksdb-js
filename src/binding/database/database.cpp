@@ -253,6 +253,39 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 
+	// Argument validation precedes both the read-only no-op (same verdict in either mode) and the
+	// state allocation (a rejected buffer used to throw past the `new` and leak it).
+	std::string startKey;
+	std::string endKey;
+	bool hasStart = false;
+	bool hasEnd = false;
+	bool bottommost = false;
+
+	// Check for optional start key (argv[2])
+	napi_valuetype startType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &startType));
+	if (startType != napi_undefined && startType != napi_null) {
+		NAPI_GET_BUFFER(argv[2], startKeyBuf, "Start key must be a buffer");
+		startKey = std::string(startKeyBuf, startKeyBufLength);
+		hasStart = true;
+	}
+
+	// Check for optional end key (argv[3])
+	napi_valuetype endType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &endType));
+	if (endType != napi_undefined && endType != napi_null) {
+		NAPI_GET_BUFFER(argv[3], endKeyBuf, "End key must be a buffer");
+		endKey = std::string(endKeyBuf, endKeyBufLength);
+		hasEnd = true;
+	}
+
+	// Check for optional bottommost flag (argv[4])
+	napi_valuetype bottommostType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &bottommostType));
+	if (bottommostType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &bottommost));
+	}
+
 	if ((*dbHandle)->descriptor->readOnly) {
 		// Settle-on-every-path, as in Database::Flush below (#774). AGENTS invariant 12.
 		napi_value recv;
@@ -263,31 +296,11 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncCompactState(env, *dbHandle);
-
-	// Check for optional start key (argv[2])
-	napi_valuetype startType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &startType));
-	if (startType != napi_undefined && startType != napi_null) {
-		NAPI_GET_BUFFER(argv[2], startKey, "Start key must be a buffer");
-		state->startKey = std::string(startKey, startKeyLength);
-		state->hasStart = true;
-	}
-
-	// Check for optional end key (argv[3])
-	napi_valuetype endType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &endType));
-	if (endType != napi_undefined && endType != napi_null) {
-		NAPI_GET_BUFFER(argv[3], endKey, "End key must be a buffer");
-		state->endKey = std::string(endKey, endKeyLength);
-		state->hasEnd = true;
-	}
-
-	// Check for optional bottommost flag (argv[4])
-	napi_valuetype bottommostType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &bottommostType));
-	if (bottommostType == napi_boolean) {
-		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &state->bottommost));
-	}
+	state->startKey = std::move(startKey);
+	state->endKey = std::move(endKey);
+	state->hasStart = hasStart;
+	state->hasEnd = hasEnd;
+	state->bottommost = bottommost;
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -586,8 +599,6 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	// Validate before the read-only short-circuit, so the same argument is accepted or rejected
-	// regardless of which mode the handle happens to be in.
 	bool allowWriteStall = false;
 	if (getFlushOptions(env, argv[0], allowWriteStall) != napi_ok) {
 		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
@@ -620,7 +631,6 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 
-	// Before the read-only short-circuit: same argument, same verdict, either mode.
 	bool allowWriteStall = false;
 	if (getFlushOptions(env, argv[2], allowWriteStall) != napi_ok) {
 		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
