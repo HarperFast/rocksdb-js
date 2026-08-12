@@ -254,8 +254,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 
 	if ((*dbHandle)->descriptor->readOnly) {
-		// Same contract as Database::Flush above: a read-only compaction is a no-op, but the
-		// caller is owed a settled promise. See HarperFast/rocksdb-js#774.
+		// Settle-on-every-path, as in Database::Flush below (#774). AGENTS invariant 12.
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;
@@ -568,10 +567,6 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
-/**
- * Reads the optional flush options bag. Currently just `allowWriteStall`; absent, null and
- * undefined all leave the RocksDB default (false) in place.
- */
 static napi_status getFlushOptions(napi_env env, napi_value options, bool& allowWriteStall) {
 	return rocksdb_js::getProperty(env, options, "allowWriteStall", allowWriteStall);
 }
@@ -591,14 +586,16 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
-
+	// Validate before the read-only short-circuit, so the same argument is accepted or rejected
+	// regardless of which mode the handle happens to be in.
 	bool allowWriteStall = false;
 	if (getFlushOptions(env, argv[0], allowWriteStall) != napi_ok) {
 		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
 		return nullptr;
+	}
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		NAPI_RETURN_UNDEFINED();
 	}
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(allowWriteStall), "Flush failed");
@@ -623,22 +620,21 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 
+	// Before the read-only short-circuit: same argument, same verdict, either mode.
+	bool allowWriteStall = false;
+	if (getFlushOptions(env, argv[2], allowWriteStall) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
+		return nullptr;
+	}
+
 	if ((*dbHandle)->descriptor->readOnly) {
-		// A read-only database has nothing to flush, but this method still OWES its caller a
-		// settled promise: returning here without calling either callback (as it used to) left
-		// `db.flush()` pending forever. Resolve, matching the no-op `flushSync` already performs.
-		// See HarperFast/rocksdb-js#774.
+		// Nothing to flush, but a method taking resolve/reject owes its caller one of them on
+		// every path; a bare return leaves the promise pending forever (#774). AGENTS invariant 12.
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;
 		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
 		NAPI_RETURN_UNDEFINED();
-	}
-
-	bool allowWriteStall = false;
-	if (getFlushOptions(env, argv[2], allowWriteStall) != napi_ok) {
-		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
-		return nullptr;
 	}
 
 	napi_value name;

@@ -409,7 +409,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     calls `napi_cancel_async_work`.
 14. **`FlushOptions::allow_write_stall` defaults to the waiting behavior, and the name reads
     backwards**: false (the RocksDB default, and what `flush()`/`flushSync()` still use unless a
-    caller opts out) means the flush *waits* until it can run without causing a write stall. The
+    caller opts out) means the flush _waits_ until it can run without causing a write stall. The
     wait is unbounded and is taken on the calling thread — a libuv worker for the async `flush()` —
     so a database in a stall condition (immutable-memtable backlog, L0 stop trigger,
     pending-compaction-bytes limit, an exhausted WriteBufferManager budget, see invariant 10) yields
@@ -417,7 +417,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `writeBufferManagerAllowStall` config: that decides whether the WriteBufferManager may stall
     writers at all, this decides whether one manual flush is willing to cause a stall rather than
     wait one out. The general trap is the same as invariant 10's — a default that encodes "wait for
-    a good moment" is a hang whenever the good moment never arrives.
+    a good moment" is a hang whenever the good moment never arrives. `DBDescriptor::close()` passes
+    `true` deliberately: it has already stopped accepting work, so stalling writers costs nothing
+    there while waiting a stall out would wedge shutdown on whichever thread is closing.
 
 ## Debugging native heap corruption
 

@@ -415,8 +415,10 @@ void DBDescriptor::finishClose() {
 		this->commitCompletionsClosed = true;
 	}
 
-	// We want to ensure that all in-memory data is written to disk
-	this->flush();
+	// We want to ensure that all in-memory data is written to disk. Stalling writers is free here
+	// — this database is closing and has stopped accepting work — whereas waiting out a stall
+	// would wedge shutdown on whichever thread is closing, with nothing logged.
+	this->flush(true);
 
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing

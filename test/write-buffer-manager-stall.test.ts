@@ -47,15 +47,14 @@ describe('WriteBufferManager stall', () => {
 		60_000
 	);
 
-	// `FlushOptions::allow_write_stall` is the other half of the same hazard, and the one the
-	// caller controls: its default (false) makes Flush WAIT until it can run without causing a
-	// stall, unbounded, on the calling thread — the libuv worker for `flush()`, so it presents as
-	// a promise that never settles while the event loop stays alive. This exercises the opt-out on
-	// the one configuration in the suite that has a stalling manager attached at all. Both arms
-	// must complete: post-#755 the default arm is not expected to wedge here either, so a hang in
-	// EITHER is a regression worth failing on.
+	// Plumbing only, and deliberately labelled as such: this asserts the option survives a real
+	// stalling-WBM configuration, NOT that it changes RocksDB's behavior. Proving the behavior
+	// needs a reliably-reachable stall condition to time the two arms against, and #755 removed
+	// the one this fixture could produce on demand (history no longer pins the budget), so a
+	// behavioral assertion here would be timing-dependent — and its failure mode is a wedged
+	// libuv thread, not a red assertion. Both arms are expected to complete.
 	it(
-		'should flush with allowWriteStall against a stalling WriteBufferManager',
+		'should accept allowWriteStall against a stalling WriteBufferManager (plumbing, not behavior)',
 		() =>
 			dbRunner({ dbOptions: [{}, { name: 'late' }] }, async (_, { db }) => {
 				const value = 'y'.repeat(8192);

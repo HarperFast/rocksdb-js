@@ -419,16 +419,9 @@ public:
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 	/**
-	 * Flushes every column family's memtable.
-	 *
-	 * `allowWriteStall` maps to `rocksdb::FlushOptions::allow_write_stall`, which defaults to
-	 * false — meaning RocksDB waits until a flush is possible *without* causing a write stall.
-	 * That wait is unbounded and is entered on whatever thread called this, so a database sitting
-	 * in a stall condition (immutable-memtable backlog, L0 stop trigger, pending-compaction-bytes
-	 * limit, an exhausted WriteBufferManager budget) blocks that thread for as long as the
-	 * condition lasts. Pass true when the caller needs the flush to happen now and is prepared for
-	 * writes to stall while it runs — a durability gate that has already stopped accepting new
-	 * work, for example. See HarperFast/harper-pro#678.
+	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
+	 * makes this WAIT, unbounded, on the calling thread — see the `FlushOptions` JSDoc in
+	 * `src/load-binding.ts` and AGENTS invariant 13.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
 
