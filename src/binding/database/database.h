@@ -473,12 +473,13 @@ void resolveGetResult(
 		rocksdb::Slice valueSlice(state->value.data(), state->value.size());
 		if (state->status.ok() && state->vtSlot && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+			const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
 			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion
 					&& !state->vtLatest.notUnique) {
 				// Soft miss: value still carries the expected version — signal FRESH.
 				// Conditional CAS from the value observed before the read (no-op if
 				// a write cycle intervened) so we never publish a superseded version.
-				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, state->expectedVersion);
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, populateVersion);
 				napi_value freshResult;
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
 				state->callResolve(freshResult);
@@ -486,7 +487,7 @@ void resolveGetResult(
 			}
 			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0
 					&& !state->vtLatest.notUnique) {
-				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, extracted);
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, populateVersion);
 			}
 		}
 		napi_value result;

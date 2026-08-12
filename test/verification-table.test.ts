@@ -677,6 +677,33 @@ describe('Verification Table', () => {
 				}
 			}));
 
+		it('publishes the latest version from an async transactional snapshot read', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('async-behind-snapshot');
+					const latestVersion = version + 1;
+					await db.put(key, valueWithHeader(version));
+
+					const txn = new Transaction(db.store, { coordinatedRetry: true });
+					try {
+						// Pin a snapshot on the first value before advancing it. Flushing then forces
+						// the second read through TransactionHandle's async kReadAllTier fallback.
+						expect(txn.getBinarySync(key, {} as any)).toBeDefined();
+						await db.put(key, valueWithHeader(latestVersion));
+						await db.flush();
+
+						const result = txn.getBinary(key, { expectedVersion: version } as any);
+						expect(result).toBeInstanceOf(Promise);
+						expect(await result).toBe(FRESH_VERSION_FLAG);
+						expect(db.verifyVersion(key, version)).toBe(false);
+						expect(db.verifyVersion(key, latestVersion)).toBe(true);
+					} finally {
+						txn.abort();
+					}
+				}
+			));
+
 		it('does not answer FRESH on the async path either', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = 'not-unique-async';
