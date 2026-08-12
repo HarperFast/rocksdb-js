@@ -372,6 +372,26 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
+12. **A callback-style native method owes its caller exactly one settled callback on every path**:
+    `Flush` and `Compact` take `resolve`/`reject` and used to `return` on a read-only database
+    without invoking either, so `await db.flush()` there never resumed (#774). The sync siblings can
+    early-return — for a promise, "return" is not a no-op, it is a permanent hang with no error, no
+    log line and a fully live event loop. Any new early return (guard, unsupported mode, cancelled
+    work) added ahead of the `napi_create_async_work` call must settle first. The `napi_cancelled`
+    branch in each `complete` callback is the same shape and is only unreachable because nothing
+    calls `napi_cancel_async_work`.
+13. **`FlushOptions::allow_write_stall` defaults to the waiting behavior, and the name reads
+    backwards**: false (the RocksDB default, and what `flush()`/`flushSync()` still use unless a
+    caller opts out) means the flush *waits* until it can run without causing a write stall. The
+    wait is unbounded and is taken on the calling thread — a libuv worker for the async `flush()` —
+    so a database in a stall condition (immutable-memtable backlog, L0 stop trigger,
+    pending-compaction-bytes limit, an exhausted WriteBufferManager budget, see invariant 10) yields
+    a promise that never settles while the event loop stays alive. Do not confuse it with the
+    `writeBufferManagerAllowStall` config: that decides whether the WriteBufferManager may stall
+    writers at all, this decides whether one manual flush is willing to cause a stall rather than
+    wait one out. The general trap is the same as invariant 10's — a default that encodes "wait for
+    a good moment" is a hang whenever the good moment never arrives.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
