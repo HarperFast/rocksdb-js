@@ -1856,7 +1856,7 @@ std::string DBDescriptor::getLastError() {
 	return this->lastError;
 }
 
-rocksdb::Status DBDescriptor::flush() {
+rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 	if (this->readOnly) {
 		DEBUG_LOG("%p DBDescriptor::flush Skipping flush for readonly database\n", this);
 		return rocksdb::Status::OK();
@@ -1881,6 +1881,7 @@ rocksdb::Status DBDescriptor::flush() {
 	}
 	// Perform flush
 	rocksdb::FlushOptions flushOptions;
+	flushOptions.allow_write_stall = allowWriteStall;
 	return this->db->Flush(
 		flushOptions,
 		columnHandles
