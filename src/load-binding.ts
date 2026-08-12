@@ -362,10 +362,15 @@ export type FlushOptions = {
 	 * never settles while the event loop stays alive.
 	 *
 	 * Pass `true` when the flush is a durability gate the caller is blocked on and stalling
-	 * writers is the acceptable cost of it completing. Note this is a *different* knob from the
-	 * `writeBufferManagerAllowStall` config, and their polarity is nearly opposite: that one
-	 * decides whether the WriteBufferManager may stall writers at all, this one decides whether a
-	 * manual flush is willing to cause a stall rather than wait one out.
+	 * writers is the acceptable cost of it completing. Weigh that cost database-wide, not
+	 * per-caller: a flush covers **every column family** on the database, and the descriptor is
+	 * process-global and shared across `worker_threads`, so the stall lands on every other column
+	 * family and every other handle that opened the same path — not just the one you called.
+	 *
+	 * Note this is a *different* knob from the `writeBufferManagerAllowStall` config, and their
+	 * polarity is nearly opposite: that one decides whether the WriteBufferManager may stall
+	 * writers at all, this one decides whether a manual flush is willing to cause a stall rather
+	 * than wait one out.
 	 *
 	 * @default false
 	 */

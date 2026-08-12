@@ -253,8 +253,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 
-	// Argument validation precedes both the read-only no-op (same verdict in either mode) and the
-	// state allocation (a rejected buffer used to throw past the `new` and leak it).
+	// Validation precedes both the read-only no-op and the state allocation: same verdict in
+	// either mode, and a rejected buffer cannot throw past the `new`.
 	std::string startKey;
 	std::string endKey;
 	bool hasStart = false;
@@ -287,7 +287,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
-		// Settle-on-every-path, as in Database::Flush below (#774). AGENTS invariant 12.
+		// #774; AGENTS invariant 12.
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;
@@ -638,8 +638,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
-		// Nothing to flush, but a method taking resolve/reject owes its caller one of them on
-		// every path; a bare return leaves the promise pending forever (#774). AGENTS invariant 12.
+		// #774; AGENTS invariant 12.
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;

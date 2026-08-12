@@ -419,7 +419,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     wait one out. The general trap is the same as invariant 10's — a default that encodes "wait for
     a good moment" is a hang whenever the good moment never arrives. `DBDescriptor::close()` passes
     `true` deliberately: it has already stopped accepting work, so stalling writers costs nothing
-    there while waiting a stall out would wedge shutdown on whichever thread is closing.
+    there while waiting a stall out would wedge shutdown on whichever thread is closing. Still
+    uncovered: `flushBeforeBackup` (`src/binding/database/backup.cpp`) flushes inside RocksDB's
+    `BackupEngine`, which builds its own default `FlushOptions` we cannot reach — and that wait is
+    taken _after_ the exclusive `.backup.lock` is acquired, so a stalled database turns a backup
+    into an indefinite hang that also blocks every other backup/delete/purge on that directory
+    until the process dies. Opting a flush in is also database-wide: it covers every column family
+    on a process-global descriptor shared across `worker_threads`, so the stall reaches every
+    handle on that path, not just the caller's.
 
 ## Debugging native heap corruption
 
