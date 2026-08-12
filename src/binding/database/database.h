@@ -386,9 +386,13 @@ struct AsyncCompactState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 struct AsyncFlushState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	AsyncFlushState(
 		napi_env env,
-		std::shared_ptr<DBHandle> handle
+		std::shared_ptr<DBHandle> handle,
+		bool allowWriteStall
 	) :
-		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
+		allowWriteStall(allowWriteStall) {}
+
+	bool allowWriteStall = false;
 };
 
 /**

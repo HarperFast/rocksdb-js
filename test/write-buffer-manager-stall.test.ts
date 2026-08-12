@@ -47,6 +47,31 @@ describe('WriteBufferManager stall', () => {
 		60_000
 	);
 
+	// `FlushOptions::allow_write_stall` is the other half of the same hazard, and the one the
+	// caller controls: its default (false) makes Flush WAIT until it can run without causing a
+	// stall, unbounded, on the calling thread — the libuv worker for `flush()`, so it presents as
+	// a promise that never settles while the event loop stays alive. This exercises the opt-out on
+	// the one configuration in the suite that has a stalling manager attached at all. Both arms
+	// must complete: post-#755 the default arm is not expected to wedge here either, so a hang in
+	// EITHER is a regression worth failing on.
+	it(
+		'should flush with allowWriteStall against a stalling WriteBufferManager',
+		() =>
+			dbRunner({ dbOptions: [{}, { name: 'late' }] }, async (_, { db }) => {
+				const value = 'y'.repeat(8192);
+				for (let i = 0; i < 250; i++) {
+					await db.put(`stall-${i.toString().padStart(6, '0')}`, value);
+				}
+				await db.flush({ allowWriteStall: true });
+				expect(await db.get('stall-000249')).toBe(value);
+
+				await db.put('stall-after', value);
+				await db.flush();
+				expect(await db.get('stall-after')).toBe(value);
+			}),
+		60_000
+	);
+
 	// Zeroing history is only safe because RocksDB's fallback is conservative: asked to validate a
 	// sequence it no longer holds, it refuses the commit rather than passing it. A change that
 	// turned that into a silent accept would be a lost update, and the stall test above would

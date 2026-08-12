@@ -16,6 +16,7 @@ import {
 	removeGlobalListener,
 	type BackgroundError,
 	type BackgroundErrorOptions,
+	type FlushOptions,
 	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
@@ -418,19 +419,22 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * Flushes the underlying database by performing a commit or clearing any buffered operations.
 	 *
+	 * @param options - Flush options; see {@link FlushOptions.allowWriteStall} before relying on
+	 * this resolving promptly under write pressure.
 	 * @return {void} Does not return a value.
 	 */
-	flush(): Promise<void> {
-		return new Promise((resolve, reject) => this.store.db.flush(resolve, reject));
+	flush(options?: FlushOptions): Promise<void> {
+		return new Promise((resolve, reject) => this.store.db.flush(resolve, reject, options));
 	}
 
 	/**
 	 * Synchronously flushes the underlying database by performing a commit or clearing any buffered operations.
 	 *
+	 * @param options - Flush options; see {@link FlushOptions.allowWriteStall}.
 	 * @return {void} Does not return a value.
 	 */
-	flushSync(): void {
-		return this.store.db.flushSync();
+	flushSync(options?: FlushOptions): void {
+		return this.store.db.flushSync(options);
 	}
 
 	/**

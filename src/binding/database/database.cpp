@@ -250,12 +250,18 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
-
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		// Same contract as Database::Flush above: a read-only compaction is a no-op, but the
+		// caller is owed a settled promise. See HarperFast/rocksdb-js#774.
+		napi_value recv;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
+		napi_value ignored;
+		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	auto state = new AsyncCompactState(env, *dbHandle);
 
@@ -563,16 +569,25 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Reads the optional flush options bag. Currently just `allowWriteStall`; absent, null and
+ * undefined all leave the RocksDB default (false) in place.
+ */
+static napi_status getFlushOptions(napi_env env, napi_value options, bool& allowWriteStall) {
+	return rocksdb_js::getProperty(env, options, "allowWriteStall", allowWriteStall);
+}
+
+/**
  * Flushes the RocksDB database memtable to disk synchronously.
  *
  * @example
  * ```typescript
  * const db = new NativeDatabase();
  * db.flushSync();
+ * db.flushSync({ allowWriteStall: true });
  * ```
  */
 napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD();
+	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
@@ -580,7 +595,13 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(), "Flush failed");
+	bool allowWriteStall = false;
+	if (getFlushOptions(env, argv[0], allowWriteStall) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
+		return nullptr;
+	}
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(allowWriteStall), "Flush failed");
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -592,18 +613,33 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
  * ```typescript
  * const db = new NativeDatabase();
  * await db.flush();
+ * await db.flush({ allowWriteStall: true });
  * ```
  */
 napi_value Database::Flush(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		// A read-only database has nothing to flush, but this method still OWES its caller a
+		// settled promise: returning here without calling either callback (as it used to) left
+		// `db.flush()` pending forever. Resolve, matching the no-op `flushSync` already performs.
+		// See HarperFast/rocksdb-js#774.
+		napi_value recv;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
+		napi_value ignored;
+		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	bool allowWriteStall = false;
+	if (getFlushOptions(env, argv[2], allowWriteStall) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
+		return nullptr;
+	}
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -613,7 +649,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new AsyncFlushState(env, *dbHandle);
+	auto state = new AsyncFlushState(env, *dbHandle, allowWriteStall);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -627,7 +663,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
 			} else {
-				state->status = state->handle->descriptor->flush();
+				state->status = state->handle->descriptor->flush(state->allowWriteStall);
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
