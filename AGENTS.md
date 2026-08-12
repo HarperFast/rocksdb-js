@@ -417,9 +417,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `writeBufferManagerAllowStall` config: that decides whether the WriteBufferManager may stall
     writers at all, this decides whether one manual flush is willing to cause a stall rather than
     wait one out. The general trap is the same as invariant 10's — a default that encodes "wait for
-    a good moment" is a hang whenever the good moment never arrives. `DBDescriptor::close()` passes
-    `true` deliberately: it has already stopped accepting work, so stalling writers costs nothing
-    there while waiting a stall out would wedge shutdown on whichever thread is closing. Still
+    a good moment" is a hang whenever the good moment never arrives. `DBDescriptor::close()` is the
+    obvious candidate to opt in — it has stopped accepting work, so a stall costs it nothing — and
+    it is **not** opted in, on purpose: opting in makes the flush switch memtables immediately
+    rather than waiting, which fires `OnFlushBegin`/`OnFlushCompleted` into transaction log stores
+    that a concurrent `purgeLogs({destroy:true})` may be destroying, and that crashed a vitest
+    worker on Bun/Windows (`transaction-log.test.ts`, "should write to same log from multiple
+    workers"). So close can still wedge on a stall; fixing that has to happen without flushing into
+    the teardown race. Still
     uncovered: `flushBeforeBackup` (`src/binding/database/backup.cpp`) flushes inside RocksDB's
     `BackupEngine`, which builds its own default `FlushOptions` we cannot reach — and that wait is
     taken _after_ the exclusive `.backup.lock` is acquired, so a stalled database turns a backup
