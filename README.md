@@ -60,7 +60,9 @@ Creates a new database instance.
     database's column families. When the combined size of all memtables reaches this value, RocksDB
     flushes the largest one. `0` (the default) disables this global trigger, so per-column-family
     `writeBufferSize` alone drives flushing. This is distinct from the process-wide
-    [`writeBufferManagerSize`](#dbconfigoptions) config option.
+    [`writeBufferManagerSize`](#dbconfigoptions) config option. Database-wide, so it binds when the
+    path is first opened in this process: a later open of the same path — including from another
+    worker thread — keeps the first opener's value rather than overriding or rejecting it.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
