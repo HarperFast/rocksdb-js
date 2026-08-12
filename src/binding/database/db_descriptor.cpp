@@ -415,9 +415,13 @@ void DBDescriptor::finishClose() {
 		this->commitCompletionsClosed = true;
 	}
 
-	// We want to ensure that all in-memory data is written to disk. Stalls are allowed because
-	// this database has stopped accepting work; waiting one out would wedge shutdown.
-	this->flush(true);
+	// We want to ensure that all in-memory data is written to disk. This deliberately keeps the
+	// waiting default despite AGENTS invariant 13: opting in makes the flush switch memtables
+	// immediately instead of waiting, which fires OnFlushBegin/OnFlushCompleted into transaction
+	// log stores a concurrent purgeLogs({destroy}) may be tearing down. That crashed a vitest
+	// worker on Bun/Windows in transaction-log's multi-worker test. Closing without wedging still
+	// needs solving; it needs to be solved without flushing into a teardown race.
+	this->flush();
 
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing
