@@ -598,6 +598,9 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
+	if (!this->txn) {
+		throw rocksdb_js::DBException("Transaction is closed");
+	}
 	// NOTE: does not register via tryRegisterAsyncWork() -- see AGENTS.md item
 	// 10a (deliberately deferred, same tradeoff as putSync/getSync/removeSync).
 	// An earlier attempt to add that registration to a sibling synchronous
@@ -608,6 +611,7 @@ void TransactionHandle::getCount(
 	this->ensureSnapshot();
 	if (this->snapshotSet) {
 		itOptions.readOptions.snapshot = this->txn->GetSnapshot();
+	}
 	}
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
