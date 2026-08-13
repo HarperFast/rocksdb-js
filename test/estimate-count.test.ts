@@ -246,7 +246,10 @@ describe('CountEstimator', () => {
 				pageStart = page[page.length - 1] as string;
 				exclusiveStart = true;
 				estimator.advance(pageStart, page.length);
-				expect(estimator.estimate().count).toBeGreaterThanOrEqual(estimator.traversed);
+				const checkpoint = estimator.estimate();
+				expect(checkpoint.count).toBeGreaterThanOrEqual(estimator.traversed);
+				// only finish() may claim exactness
+				expect(checkpoint.confidence).toBeLessThan(1);
 			}
 			expect(estimator.traversed).toBe(N);
 			estimator.finish();
