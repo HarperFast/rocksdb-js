@@ -929,6 +929,124 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Estimates the number of live keys in `[start, end)` from RocksDB statistics
+ * alone — no iteration:
+ *
+ * - memtable portion: `GetApproximateMemTableStats` returns an entry count
+ *   directly (it counts all memtable entries, including tombstones and
+ *   overwrites, so it can over-report a recently-deleted range).
+ * - SST portion: the approximate file bytes covered by the range
+ *   (`GetApproximateSizes`) converted to entries using the live-entry density
+ *   of only the SSTs overlapping the range (`GetPropertiesOfTablesInRange`:
+ *   `(num_entries - num_deletions) / file bytes`). Using range-local table
+ *   properties keeps the density honest when entry sizes vary across the
+ *   keyspace, and needs no cache/invalidation.
+ *
+ * Overlapping versions of a key in multiple levels are counted once per
+ * level, so the estimate skews high on heavily-overwritten ranges until
+ * compaction; resolution is bounded by SST data-block granularity, so tiny
+ * ranges over-report.
+ */
+static double estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
+	rocksdb::Range range(start, end);
+
+	uint64_t memtableCount = 0;
+	uint64_t memtableSize = 0;
+	db->GetApproximateMemTableStats(cf, range, &memtableCount, &memtableSize);
+
+	rocksdb::SizeApproximationOptions sizeOptions;
+	sizeOptions.include_memtables = false;
+	sizeOptions.files_size_error_margin = 0.1;
+	uint64_t sstBytes = 0;
+	rocksdb::Status status = db->GetApproximateSizes(sizeOptions, cf, &range, 1, &sstBytes);
+	if (!status.ok() || sstBytes == 0) {
+		return static_cast<double>(memtableCount);
+	}
+
+	rocksdb::TablePropertiesCollection props;
+	status = db->GetPropertiesOfTablesInRange(cf, &range, 1, &props);
+	uint64_t entries = 0;
+	uint64_t deletions = 0;
+	uint64_t fileBytes = 0;
+	if (status.ok()) {
+		for (const auto& prop : props) {
+			const rocksdb::TableProperties& p = *prop.second;
+			entries += p.num_entries;
+			deletions += p.num_deletions;
+			// Approximate the on-disk file size covered by table properties;
+			// GetApproximateSizes offsets span data + index + filter blocks,
+			// so the density denominator must too.
+			fileBytes += p.data_size + p.index_size + p.filter_size;
+		}
+	}
+	if (entries <= deletions || fileBytes == 0) {
+		return static_cast<double>(memtableCount);
+	}
+
+	double density = static_cast<double>(entries - deletions) / static_cast<double>(fileBytes);
+	return static_cast<double>(memtableCount) + static_cast<double>(sstBytes) * density;
+}
+
+/**
+ * Estimates the number of keys within a range without iterating. Both keys
+ * are optional buffers; an open-ended side is handled by subtracting the
+ * complementary range from the whole-column-family `estimate-num-keys`
+ * (an empty slice is the *smallest* key, so it must never be passed as an
+ * upper bound).
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const estimate = db.estimateCount(startBuffer, endBuffer);
+ * ```
+ */
+napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	rocksdb::DB* db = (*dbHandle)->descriptor->db.get();
+	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
+
+	void* startData = nullptr;
+	size_t startLength = 0;
+	napi_valuetype startType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &startType));
+	if (startType != napi_undefined && startType != napi_null) {
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &startData, &startLength));
+	}
+
+	void* endData = nullptr;
+	size_t endLength = 0;
+	napi_valuetype endType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &endType));
+	if (endType != napi_undefined && endType != napi_null) {
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], &endData, &endLength));
+	}
+
+	rocksdb::Slice startSlice(static_cast<const char*>(startData), startLength);
+	rocksdb::Slice endSlice(static_cast<const char*>(endData), endLength);
+
+	double estimate = 0;
+	if (endData == nullptr) {
+		uint64_t totalKeys = 0;
+		db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
+		if (startData == nullptr) {
+			estimate = static_cast<double>(totalKeys);
+		} else {
+			// No upper bound: estimate [start, ∞) as total minus [min, start).
+			estimate = std::max(0.0, static_cast<double>(totalKeys) - estimateRangeCount(db, cf, rocksdb::Slice(), startSlice));
+		}
+	} else {
+		estimate = estimateRangeCount(db, cf, startSlice, endSlice);
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, std::round(estimate), &result));
+	return result;
+}
+
 napi_value Database::GetMonotonicTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
@@ -2008,6 +2126,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "estimateCount", nullptr, EstimateCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },

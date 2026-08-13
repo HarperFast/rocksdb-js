@@ -429,14 +429,44 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
-### `db.getEstimatedKeyCount(): number`
+### `db.getEstimatedKeyCount(options?: RangeOptions): number`
 
-Retrieves the estimated number of keys in the database. This is an alias for
-`db.getDBIntProperty('rocksdb.estimate-num-keys')`.
+Retrieves the estimated number of keys in the database, or within a key range when one is given.
+Unlike `getKeysCount()`, this never iterates: the estimate is derived from RocksDB statistics
+(memtable stats plus approximate SST sizes converted through the entry density of the SSTs
+overlapping the range), so it stays fast regardless of range size — typically microseconds where an
+exact count takes milliseconds. Accuracy improves with range size (resolution is bounded by SST
+data-block granularity, so tiny ranges over-report), and recently deleted or overwritten entries
+may be counted until compaction. Estimates always reflect committed state; writes pending in a
+transaction are not included.
 
 ```typescript
 const estimated = db.getEstimatedKeyCount();
-console.log(estimated);
+const rangeEstimate = db.getEstimatedKeyCount({ start: 'a', end: 'z' });
+```
+
+### `db.createCountEstimator(options?: CountEstimatorOptions): CountEstimator`
+
+Creates an estimator that progressively refines a range count estimate while the range is being
+iterated — useful for reporting a total alongside a page of results without scanning the full
+range. Before any traversal, `estimate()` returns the pure statistical estimate (same as
+`getEstimatedKeyCount(range)`). As the caller reports progress with `advance(lastKey, count)`
+(e.g. once per page), `estimate()` returns the exact traversed count plus a statistical estimate
+of the remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
+already traversed — so the estimate converges toward the exact total as iteration proceeds. Set
+`reverse: true` when iterating from `end` toward `start`.
+
+```typescript
+const range = { start: 'a', end: 'z' };
+const estimator = db.createCountEstimator(range);
+let lastKey;
+let pageSize = 0;
+for (const { key } of db.getRange({ ...range, limit: 25 })) {
+	lastKey = key;
+	pageSize++;
+}
+estimator.advance(lastKey, pageSize);
+const total = estimator.estimate(); // ~total keys in the range
 ```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
