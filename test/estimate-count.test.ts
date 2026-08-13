@@ -76,10 +76,11 @@ describe('estimateCount', () => {
 	it('should return a confident 0 for an empty database', () =>
 		dbRunner(async ({ db }) => {
 			expect(db.getEstimatedKeyCount()).toBe(0);
-			expect(db.estimateCount()).toEqual({ count: 0, confidence: 1 });
+			// even a zero from estimate-num-keys is an estimate, not exact
+			expect(db.estimateCount()).toEqual({ count: 0, confidence: 0.95 });
 			const range = db.estimateCount({ start: 'a', end: 'z' });
 			expect(range.count).toBe(0);
-			expectConfidence(range.confidence, 0.9, 1);
+			expectConfidence(range.confidence, 0.9, 0.99);
 		}));
 
 	it('should return an exact 0 for an inverted range', () =>

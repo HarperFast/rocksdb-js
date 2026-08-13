@@ -992,6 +992,9 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	if (status.ok()) {
 		for (const auto& prop : props) {
 			if (!prop.second) {
+				// A missing entry means the density is computed from an
+				// incomplete sample.
+				result.degraded = true;
 				continue;
 			}
 			const rocksdb::TableProperties& p = *prop.second;
@@ -1105,8 +1108,10 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 		} else if (!hasStart || startLength == 0 || totalKeys == 0) {
 			estimate = total;
 			// estimate-num-keys is RocksDB's own memtable+SST estimate; it
-			// skews high on overwrite/delete-heavy data until compaction.
-			confidence = totalKeys == 0 ? 1.0 : 0.9;
+			// skews high on overwrite/delete-heavy data until compaction, and
+			// even a zero is an estimate (deletion entries offset puts), so
+			// nothing on this path claims exactness.
+			confidence = totalKeys == 0 ? 0.95 : 0.9;
 		} else {
 			// No upper bound: estimate [start, ∞) as total minus [min, start).
 			RangeEstimate complement = estimateRangeCount(db, cf, rocksdb::Slice(), startSlice);
