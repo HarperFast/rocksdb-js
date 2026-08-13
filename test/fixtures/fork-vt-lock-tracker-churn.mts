@@ -62,7 +62,7 @@
  * race reproduces within the bounded duration used here instead of needing
  * the full 1-2 minutes the original investigation ran.
  */
-import { createWorkerBootstrapScript } from '../lib/util.js';
+import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { mkdirSync, rmSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 
