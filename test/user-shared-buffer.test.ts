@@ -212,10 +212,7 @@ function spawnRepro(
 	mode: ReproMode
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
 	return new Promise((resolve, reject) => {
-		const args =
-			process.versions.bun || process.versions.deno
-				? [fixturePath, dbPath, mode]
-				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath, mode];
+		const args = [fixturePath, dbPath, mode];
 
 		const child = spawn(process.execPath, args, {
 			env: { ...process.env },

@@ -5,11 +5,11 @@
 		# resolves implicit pattern rules at startup, so the source .cc files
 		# must already exist when the makefile is loaded - an order-only dep
 		# on a download action is too late.
-		# Paths are quoted (and tsx is launched via `node <cli.mjs>` rather than the
-		# `.bin/tsx` shim) so a repo checkout under a path with spaces still runs:
+		# The .ts script runs directly under Node's native type stripping (no tsx).
+		# The path is quoted so a repo checkout under a path with spaces still runs:
 		# GYP passes this through a shell, which would otherwise split an unquoted
 		# `<(module_root_dir)` at the space (`/bin/sh: /path/to/rocksdb: not found`).
-		'_init_gtest': '<!(node "<(module_root_dir)/node_modules/tsx/dist/cli.mjs" "<(module_root_dir)/scripts/init-gtest/main.ts")',
+		'_init_gtest': '<!(node "<(module_root_dir)/scripts/init-gtest/main.ts")',
 	},
 	# See binding.gyp: Node 26's Windows headers inject Clang ThinLTO options
 	# (-flto=thin / /opt:lldltojobs=N) into every Release target, which MSVC's

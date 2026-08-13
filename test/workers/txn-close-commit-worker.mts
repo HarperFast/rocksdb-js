@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../dist/index.mjs';
 import { parentPort, workerData } from 'node:worker_threads';
 
 // W opens a FRESH handle each round (signaled by M via "nextRound") so the

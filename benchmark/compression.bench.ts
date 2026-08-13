@@ -1,5 +1,5 @@
 import { type CompressionAlgorithm, supportedCompression } from '../dist/index.mjs';
-import { benchmark } from './setup.js';
+import { benchmark } from './setup.ts';
 import { describe } from 'vitest';
 
 /**

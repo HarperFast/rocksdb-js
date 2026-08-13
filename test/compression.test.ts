@@ -478,8 +478,8 @@ describe('Compression', () => {
 
 	describe('configure-rocksdb.mjs (build script)', () => {
 		// node-gyp always runs this script with `node`; under Bun/Deno the test's
-		// `process.execPath` would be the wrong runtime (and tsx's CLI isn't
-		// Bun-compatible), so only exercise it on the runtime the build uses.
+		// `process.execPath` would be the wrong runtime for the .ts it spawns, so
+		// only exercise it on the runtime the build uses.
 		const nonNodeRuntime = !!process.versions.bun || !!process.versions.deno;
 		it.skipIf(nonNodeRuntime)(
 			'emits only whitespace-free link tokens (safe for gyp <!@() under spaced paths)',

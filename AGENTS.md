@@ -199,6 +199,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
+- **No `tsx`**: `.ts`/`.mts` scripts and worker files run under Node's native type stripping (the
+  `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Two consequences when adding code
+  that Node loads directly (i.e. outside Vitest/tsdown, which do their own resolution): (1) import
+  specifiers must carry the real file extension — `./foo.ts`, not extensionless or a `.js` that maps
+  to a `.ts` (native strip does **not** remap; `allowImportingTsExtensions`+`noEmit` in
+  `tsconfig.json` let `tsc` accept the `.ts` specifiers). (2) Node-loaded test code — the worker
+  `.mts` under `test/workers/` and the spawned-child `.mts` under `test/fixtures/` — imports the built
+  `../../dist/index.mjs`, **not** `../../src`: loading `src` natively would cascade into its
+  bundler-style `.js`-extension import graph that Node can't resolve — so build `dist` before running
+  those tests (Vitest already requires `dist` to exist regardless). Helpers a fixture needs must
+  likewise be `src`-free — `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no
+  `src` import) and is re-exported from `test/lib/util.ts` for the Vitest-resolved test files.
 
 ## Important Implementation Notes
 

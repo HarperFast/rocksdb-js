@@ -29,10 +29,7 @@ function spawnRepro(
 	dbPath: string
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
 	return new Promise((resolve, reject) => {
-		const args =
-			process.versions.bun || process.versions.deno
-				? [fixturePath, dbPath]
-				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath];
+		const args = [fixturePath, dbPath];
 
 		// Widen the notify acquire->call window via the test seam so the
 		// worker-teardown-vs-notify race (harper#1370) reproduces deterministically;

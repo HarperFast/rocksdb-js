@@ -135,29 +135,4 @@ export async function terminateWorker(worker: Worker): Promise<void> {
 	});
 }
 
-/**
- * Creates a bootstrap script to run in a worker thread.
- *
- * @returns The script to run in a worker thread.
- */
-export function createWorkerBootstrapScript(path: string): string {
-	if (process.versions.deno || process.versions.bun) {
-		// Deno runs scripts as non-module, so we need to use dynamic import()
-		return `import('node:url').then(({ pathToFileURL }) => import(pathToFileURL('${path.replace(/'/g, "\\'")}')));`;
-	}
-
-	const majorVersion = parseInt(process.versions.node.split('.')[0]);
-	if (majorVersion < 20) {
-		// Node.js 18 and older doesn't properly eval ESM code
-		return `
-			const tsx = require('tsx/cjs/api');
-			tsx.require('${path}', __dirname);
-			`;
-	}
-
-	return `
-		import { register } from 'tsx/esm/api';
-		register();
-		import('${path}');
-		`;
-}
+export { createWorkerBootstrapScript } from './worker-bootstrap.ts';
