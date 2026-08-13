@@ -353,7 +353,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
-11. **File placement is recorded two different ways, and only one survives a config change**: `paths`
+12. **File placement is recorded two different ways, and only one survives a config change**: `paths`
     (RocksDB `db_paths`) records a _path index_ per SST file in the MANIFEST, so entries may only be
     appended — reordering or removing one points existing files at the wrong directory. `blobs.dir`
     records nothing: a blob file's directory is re-derived from the option on every open, delete, and
@@ -369,7 +369,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     paths. `blobs.dir` needs a RocksDB carrying the downstream `blob_dir` patch
     (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); everything behind that macro must
     stay compilable without it. See [docs/tiered-storage.md](docs/tiered-storage.md).
-12. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
+13. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
     are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,
     reached from both the cold path and `DBRegistry::OpenDB`'s warm reuse. Both must pass options
     built by that one function — an option set only on the open path silently keeps its default on
