@@ -4,7 +4,7 @@ import {
 	type TransactionEntry,
 	TransactionLog,
 	type TransactionLogQueryOptions,
-} from './load-binding.js';
+} from './load-binding.ts';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);

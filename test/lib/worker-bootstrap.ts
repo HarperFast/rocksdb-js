@@ -18,6 +18,7 @@ export function createWorkerBootstrapScript(path: string): string {
 		return `import('node:url').then(({ pathToFileURL }) => import(pathToFileURL('${normalizedPath}')));`;
 	}
 
-	// Node natively strips the .mts worker's types; it imports the built dist bundle.
+	// Node natively strips the .mts worker's types and its src imports (which carry
+	// real .ts extensions), so no build step is needed to run worker/fixture tests.
 	return `import('${normalizedPath}');`;
 }

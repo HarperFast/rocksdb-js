@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../dist/index.mjs';
+import { RocksDatabase } from '../../src/index.ts';
 
 let db: RocksDatabase | undefined;
 

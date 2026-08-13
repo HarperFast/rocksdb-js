@@ -199,18 +199,24 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
-- **No `tsx`**: `.ts`/`.mts` scripts and worker files run under Node's native type stripping (the
-  `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Two consequences when adding code
-  that Node loads directly (i.e. outside Vitest/tsdown, which do their own resolution): (1) import
-  specifiers must carry the real file extension — `./foo.ts`, not extensionless or a `.js` that maps
-  to a `.ts` (native strip does **not** remap; `allowImportingTsExtensions`+`noEmit` in
-  `tsconfig.json` let `tsc` accept the `.ts` specifiers). (2) Node-loaded test code — the worker
-  `.mts` under `test/workers/` and the spawned-child `.mts` under `test/fixtures/` — imports the built
-  `../../dist/index.mjs`, **not** `../../src`: loading `src` natively would cascade into its
-  bundler-style `.js`-extension import graph that Node can't resolve — so build `dist` before running
-  those tests (Vitest already requires `dist` to exist regardless). Helpers a fixture needs must
-  likewise be `src`-free — `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no
-  `src` import) and is re-exported from `test/lib/util.ts` for the Vitest-resolved test files.
+- **No `tsx`**: `.ts`/`.mts` scripts, worker files, and `src` itself run under Node's native type
+  stripping (the `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Rules for code Node
+  loads directly (i.e. outside Vitest/tsdown, which do their own resolution):
+  - **Real file extensions in every relative import.** `src` imports siblings as `./foo.ts`, not
+    extensionless or `.js` — native strip does **not** remap `.js`→`.ts`. `allowImportingTsExtensions`
+    - `noEmit` in `tsconfig.json` let `tsc` accept the `.ts` specifiers (tsdown ignores `noEmit` and
+      still emits `dist`). This is why the worker `.mts` (`test/workers/`), spawned-child `.mts`
+      (`test/fixtures/`), and stress workers (`stress-test/workers/`) import `../../src/index.ts`
+      directly — so those tests need **no build step** (Vitest resolves its own `.js` specifiers; only
+      the native-loaded files must use `.ts`). Benchmarks are the exception: `benchmark/setup.ts`
+      imports the built `dist` on purpose (they measure the shipped artifact), so `pnpm bench` builds first.
+  - **Mark type-only imports with `type`.** `verbatimModuleSyntax` is enabled: native strip can only
+    erase `import type` / `import { type X }`, not a value-style `import { X }` that happens to be a
+    type — that would survive to runtime and fail against a module (e.g. `dist`) that never exported
+    the type. `tsc` enforces this.
+  - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
+    `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` and is re-exported from
+    `test/lib/util.ts` for the Vitest-resolved test files.
 
 ## Important Implementation Notes
 

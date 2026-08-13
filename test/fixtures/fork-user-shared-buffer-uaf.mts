@@ -11,7 +11,7 @@
  *
  * Exit 0 = survived (expected once the binding pins buffer lifetime correctly).
  */
-import { RocksDatabase } from '../../dist/index.mjs';
+import { RocksDatabase } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { mkdirSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';

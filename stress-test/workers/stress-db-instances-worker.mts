@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../dist/index.mjs';
+import { RocksDatabase } from '../../src/index.ts';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 
 const dbs: RocksDatabase[] = [];

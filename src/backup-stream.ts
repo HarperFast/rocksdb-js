@@ -1,5 +1,5 @@
-import type { NativeDatabase } from './load-binding.js';
-import { TarEncoder } from './tar.js';
+import type { NativeDatabase } from './load-binding.ts';
+import { TarEncoder } from './tar.ts';
 
 /**
  * Options for streaming a backup via `db.backup(stream)`.

@@ -1,9 +1,9 @@
-import type { BufferWithDataView, Key } from './encoding.js';
-import { FRESH_VERSION_FLAG } from './load-binding.js';
-import type { NativeTransaction, TransactionLog } from './load-binding.js';
-import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.js';
-import type { Transaction } from './transaction.js';
-import { type MaybePromise, when } from './util.js';
+import type { BufferWithDataView, Key } from './encoding.ts';
+import { FRESH_VERSION_FLAG } from './load-binding.ts';
+import type { NativeTransaction, TransactionLog } from './load-binding.ts';
+import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.ts';
+import type { Transaction } from './transaction.ts';
+import { type MaybePromise, when } from './util.ts';
 
 export interface RocksDBOptions {
 	/**

@@ -1,4 +1,4 @@
-import { fileLockRelease, tryFileLock } from '../../dist/index.mjs';
+import { fileLockRelease, tryFileLock } from '../../src/index.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 
 const { file } = workerData;
