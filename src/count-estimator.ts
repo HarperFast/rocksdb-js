@@ -49,6 +49,8 @@ export class CountEstimator {
 	#store: Store;
 	#start: Key | Uint8Array | undefined;
 	#end: Key | Uint8Array | undefined;
+	#exclusiveStart: boolean;
+	#inclusiveEnd: boolean;
 	#reverse: boolean;
 	#cursor: Key | Uint8Array | undefined;
 	#traversed = 0;
@@ -59,6 +61,8 @@ export class CountEstimator {
 		this.#store = store;
 		this.#start = options?.start;
 		this.#end = options?.end;
+		this.#exclusiveStart = options?.exclusiveStart ?? false;
+		this.#inclusiveEnd = options?.inclusiveEnd ?? false;
 		this.#reverse = options?.reverse ?? false;
 	}
 
@@ -99,7 +103,12 @@ export class CountEstimator {
 			return { count: this.#traversed, confidence: 1 };
 		}
 		if (this.#cursor === undefined) {
-			return this.#store.estimateCount({ start: this.#start, end: this.#end });
+			return this.#store.estimateCount({
+				start: this.#start,
+				end: this.#end,
+				exclusiveStart: this.#exclusiveStart,
+				inclusiveEnd: this.#inclusiveEnd,
+			});
 		}
 		if (this.#memoized !== undefined) {
 			return this.#memoized;
@@ -107,13 +116,24 @@ export class CountEstimator {
 
 		// The cursor entry itself belongs to the traversed side, so the
 		// remainder excludes it in both directions (an inclusive lower bound
-		// forward would count it twice and block convergence).
+		// forward would count it twice and block convergence). The range's own
+		// bound flags stay with their original edge of the full range.
 		const traversedRange = this.#reverse
-			? { start: this.#cursor, end: this.#end }
-			: { start: this.#start, end: this.#cursor, inclusiveEnd: true };
+			? { start: this.#cursor, end: this.#end, inclusiveEnd: this.#inclusiveEnd }
+			: {
+					start: this.#start,
+					exclusiveStart: this.#exclusiveStart,
+					end: this.#cursor,
+					inclusiveEnd: true,
+				};
 		const remainingRange = this.#reverse
-			? { start: this.#start, end: this.#cursor }
-			: { start: this.#cursor, end: this.#end, exclusiveStart: true };
+			? { start: this.#start, exclusiveStart: this.#exclusiveStart, end: this.#cursor }
+			: {
+					start: this.#cursor,
+					exclusiveStart: true,
+					end: this.#end,
+					inclusiveEnd: this.#inclusiveEnd,
+				};
 
 		const remainingEstimate = this.#store.estimateCount(remainingRange);
 		let remaining = remainingEstimate.count;
@@ -127,10 +147,12 @@ export class CountEstimator {
 		}
 
 		const count = Math.round(this.#traversed + remaining);
+		// Cap below 1: only finish() (or an exact-by-construction range) may
+		// claim exactness, even when rounding makes the remainder vanish.
 		const confidence =
 			count > 0
-				? Math.min(1, (this.#traversed + remainingEstimate.confidence * remaining) / count)
-				: remainingEstimate.confidence;
+				? Math.min(0.999, (this.#traversed + remainingEstimate.confidence * remaining) / count)
+				: Math.min(0.999, remainingEstimate.confidence);
 		this.#memoized = { count, confidence };
 		return this.#memoized;
 	}

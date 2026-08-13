@@ -958,6 +958,10 @@ struct RangeEstimate {
 	// Live fraction of SST entries ((entries - deletions) / entries); 1 when
 	// no table properties were available.
 	double liveFraction = 1;
+	// Set when a statistics call failed, so the count is missing a portion it
+	// should have had — the confidence must reflect that, or a failed estimate
+	// masquerades as a trustworthy small count.
+	bool degraded = false;
 };
 
 static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
@@ -976,6 +980,7 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	uint64_t sstBytes = 0;
 	rocksdb::Status status = db->GetApproximateSizes(sizeOptions, cf, &range, 1, &sstBytes);
 	if (!status.ok() || sstBytes == 0) {
+		result.degraded = !status.ok();
 		return result;
 	}
 
@@ -986,6 +991,9 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	uint64_t fileBytes = 0;
 	if (status.ok()) {
 		for (const auto& prop : props) {
+			if (!prop.second) {
+				continue;
+			}
 			const rocksdb::TableProperties& p = *prop.second;
 			entries += p.num_entries;
 			deletions += p.num_deletions;
@@ -994,8 +1002,13 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 			// so the density denominator must too.
 			fileBytes += p.data_size + p.index_size + p.filter_size;
 		}
+	} else {
+		result.degraded = true;
 	}
 	if (entries <= deletions || fileBytes == 0) {
+		// SST bytes overlap the range but no usable density: the SST portion
+		// is missing from the count.
+		result.degraded = true;
 		return result;
 	}
 
@@ -1015,6 +1028,12 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
  * skew the estimate cannot see).
  */
 static double estimateConfidence(const RangeEstimate& est) {
+	if (est.degraded) {
+		// A statistics call failed, so a portion of the count is simply
+		// missing; without the cap a failed estimate would report a small
+		// count with high confidence.
+		return 0.1;
+	}
 	if (est.count <= 0) {
 		// Nothing overlaps the range per both memtable stats and SST sizes;
 		// nearly certain but not provably exact (in-flight flush/compaction).
@@ -1076,9 +1095,14 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 	double confidence = 0;
 	if (!hasEnd) {
 		uint64_t totalKeys = 0;
-		db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
+		bool totalOk = db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
 		double total = static_cast<double>(totalKeys);
-		if (!hasStart || startLength == 0 || totalKeys == 0) {
+		if (!totalOk) {
+			// A failed property read leaves totalKeys at 0 — that is a
+			// missing answer, not an empty database.
+			estimate = 0;
+			confidence = 0;
+		} else if (!hasStart || startLength == 0 || totalKeys == 0) {
 			estimate = total;
 			// estimate-num-keys is RocksDB's own memtable+SST estimate; it
 			// skews high on overwrite/delete-heavy data until compaction.
