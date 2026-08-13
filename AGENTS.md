@@ -205,11 +205,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   - **Real file extensions in every relative import.** `src` imports siblings as `./foo.ts`, not
     extensionless or `.js` — native strip does **not** remap `.js`→`.ts`. `allowImportingTsExtensions`
     - `noEmit` in `tsconfig.json` let `tsc` accept the `.ts` specifiers (tsdown ignores `noEmit` and
-      still emits `dist`). This is why the worker `.mts` (`test/workers/`), spawned-child `.mts`
-      (`test/fixtures/`), and stress workers (`stress-test/workers/`) import `../../src/index.ts`
-      directly — so those tests need **no build step** (Vitest resolves its own `.js` specifiers; only
-      the native-loaded files must use `.ts`). Benchmarks are the exception: `benchmark/setup.ts`
-      imports the built `dist` on purpose (they measure the shipped artifact), so `pnpm bench` builds first.
+      still emits `dist`). This is why the unit-test worker `.mts` (`test/workers/`) and spawned-child
+      `.mts` (`test/fixtures/`) import `../../src/index.ts` directly — so those tests need **no build
+      step** (Vitest resolves its own `.js` specifiers; only the native-loaded files must use `.ts`).
+      **Stress tests and benchmarks are the deliberate exception**: their workers import the built
+      `dist` (`stress-test/workers/`, `benchmark/setup.ts`) because they exercise the shipped artifact,
+      not source — so `pnpm test:stress` / `pnpm bench` build first (both CI workflows do).
   - **Mark type-only imports with `type`.** `verbatimModuleSyntax` is enabled: native strip can only
     erase `import type` / `import { type X }`, not a value-style `import { X }` that happens to be a
     type — that would survive to runtime and fail against a module (e.g. `dist`) that never exported
