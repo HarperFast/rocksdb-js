@@ -1,6 +1,7 @@
 import type { BackupStreamOptions } from './backup-stream.ts';
 import type { BackupOptions } from './backup.ts';
-import { DBI, type DBITransactional } from './dbi.ts';
+import { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
+import { DBI, type DBITransactional, type RangeOptions } from './dbi.ts';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
@@ -455,17 +456,51 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Retrieves the estimated number of keys in the database.
+	 * Retrieves the estimated number of keys in the database, or within a key
+	 * range when one is given. Unlike `getKeysCount()`, this never iterates:
+	 * the estimate is derived from RocksDB statistics (memtable stats plus
+	 * approximate SST sizes converted through the entry density of the SSTs
+	 * overlapping the range), so it stays fast no matter how large the range
+	 * is. Accuracy improves with range size — resolution is bounded by SST
+	 * data-block granularity, so tiny ranges over-report — and recently
+	 * deleted or overwritten entries may be counted until compaction.
+	 *
+	 * Estimates always reflect committed state; writes pending in a
+	 * transaction are not included.
 	 *
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const estimated = db.getEstimatedKeyCount();
-	 * console.log(estimated);
+	 * const rangeEstimate = db.getEstimatedKeyCount({ start: 'a', end: 'z' });
 	 * ```
 	 */
-	getEstimatedKeyCount(): number {
-		return this.getDBIntProperty('rocksdb.estimate-num-keys') ?? 0;
+	getEstimatedKeyCount(options?: RangeOptions): number {
+		return this.store.estimateCount(options);
+	}
+
+	/**
+	 * Creates a `CountEstimator` for progressively refining a range count
+	 * estimate while iterating the range: report progress with
+	 * `advance(lastKey, count)` (e.g. once per page of results) and
+	 * `estimate()` returns the exact traversed count plus a calibrated
+	 * estimate of the remainder, converging toward the exact total.
+	 *
+	 * @example
+	 * ```typescript
+	 * const estimator = db.createCountEstimator({ start: 'a', end: 'z' });
+	 * let lastKey;
+	 * let pageSize = 0;
+	 * for (const { key } of db.getRange({ start: 'a', end: 'z', limit: 25 })) {
+	 *   lastKey = key;
+	 *   pageSize++;
+	 * }
+	 * estimator.advance(lastKey, pageSize);
+	 * const total = estimator.estimate(); // ~total matches in the range
+	 * ```
+	 */
+	createCountEstimator(options?: CountEstimatorOptions): CountEstimator {
+		return new CountEstimator(this.store, options);
 	}
 
 	/**

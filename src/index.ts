@@ -14,6 +14,7 @@ export {
 	type RocksDBStat,
 	type RocksDBStats,
 } from './database.ts';
+export { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
 export { DBIterator } from './dbi-iterator.ts';
 export { DBI, type IteratorOptions } from './dbi.ts';
 export type { Key } from './encoding.ts';
