@@ -858,12 +858,14 @@ export class Store {
 
 		if (options?.start !== undefined) {
 			const start = this.encodeKey(options.start);
-			startBuffer = Buffer.from(start.subarray(start.start, start.end));
+			// A zero byte appended to a key is its bytewise successor, turning an
+			// inclusive bound into an exclusive one (and vice versa for the end).
+			startBuffer = copyEncodedKey(start, options.exclusiveStart === true);
 		}
 
 		if (options?.end !== undefined) {
 			const end = this.encodeKey(options.end);
-			endBuffer = Buffer.from(end.subarray(end.start, end.end));
+			endBuffer = copyEncodedKey(end, options.inclusiveEnd === true);
 		}
 
 		return this.db.estimateCount(startBuffer, endBuffer);
@@ -1256,6 +1258,21 @@ export class Store {
 
 		return this.db.withLock(this.encodeKey(key), callback);
 	}
+}
+
+/**
+ * Copies an encoded key out of the shared key buffer (which the next
+ * `encodeKey` call would clobber), optionally appending a zero byte to
+ * produce the key's bytewise successor.
+ */
+function copyEncodedKey(encoded: BufferWithDataView, appendSuccessorByte: boolean): Buffer {
+	const length = encoded.end - encoded.start;
+	const copy = Buffer.allocUnsafe(length + (appendSuccessorByte ? 1 : 0));
+	copy.set(encoded.subarray(encoded.start, encoded.end));
+	if (appendSuccessorByte) {
+		copy[length] = 0;
+	}
+	return copy;
 }
 
 /**

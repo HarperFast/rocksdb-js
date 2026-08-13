@@ -34,7 +34,16 @@ const CALIBRATION_MAX = 8;
  *
  * The estimator never touches the iterator itself — the caller reports
  * progress with `advance(lastKey, count)` whenever it wants a checkpoint
- * (e.g. once per page), then reads `estimate()`.
+ * (e.g. once per page), then reads `estimate()`. The caller owns the
+ * progress contract: cursors must move monotonically through the range and
+ * each entry must be reported once (a re-reported page inflates the count
+ * undetectably). When traversal completes, call `finish()` so `estimate()`
+ * returns the exact total instead of adding a block-granular remainder.
+ *
+ * Each `estimate()` checkpoint queries RocksDB statistics for the two range
+ * segments (cost scales with the SSTs overlapping them, not with key count);
+ * results are memoized per checkpoint, so repeated reads between `advance()`
+ * calls are free.
  */
 export class CountEstimator {
 	#store: Store;
@@ -43,6 +52,8 @@ export class CountEstimator {
 	#reverse: boolean;
 	#cursor: Key | Uint8Array | undefined;
 	#traversed = 0;
+	#finished = false;
+	#memoized: number | undefined;
 
 	constructor(store: Store, options?: CountEstimatorOptions) {
 		this.#store = store;
@@ -65,6 +76,15 @@ export class CountEstimator {
 	advance(lastKey: Key | Uint8Array, count = 1): void {
 		this.#cursor = lastKey;
 		this.#traversed += count;
+		this.#memoized = undefined;
+	}
+
+	/**
+	 * Marks traversal of the range as complete: `estimate()` becomes the exact
+	 * traversed count.
+	 */
+	finish(): void {
+		this.#finished = true;
 	}
 
 	/**
@@ -72,16 +92,25 @@ export class CountEstimator {
 	 * traversed count plus a calibrated statistical estimate of the remainder.
 	 */
 	estimate(): number {
+		if (this.#finished) {
+			return this.#traversed;
+		}
 		if (this.#cursor === undefined) {
 			return this.#store.estimateCount({ start: this.#start, end: this.#end });
 		}
+		if (this.#memoized !== undefined) {
+			return this.#memoized;
+		}
 
+		// The cursor entry itself belongs to the traversed side, so the
+		// remainder excludes it in both directions (an inclusive lower bound
+		// forward would count it twice and block convergence).
 		const traversedRange = this.#reverse
 			? { start: this.#cursor, end: this.#end }
-			: { start: this.#start, end: this.#cursor };
+			: { start: this.#start, end: this.#cursor, inclusiveEnd: true };
 		const remainingRange = this.#reverse
 			? { start: this.#start, end: this.#cursor }
-			: { start: this.#cursor, end: this.#end };
+			: { start: this.#cursor, end: this.#end, exclusiveStart: true };
 
 		let remaining = this.#store.estimateCount(remainingRange);
 		if (this.#traversed >= CALIBRATION_MIN_TRAVERSED) {
@@ -93,6 +122,7 @@ export class CountEstimator {
 			remaining *= calibration;
 		}
 
-		return Math.round(this.#traversed + remaining);
+		this.#memoized = Math.round(this.#traversed + remaining);
+		return this.#memoized;
 	}
 }

@@ -460,10 +460,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * range when one is given. Unlike `getKeysCount()`, this never iterates:
 	 * the estimate is derived from RocksDB statistics (memtable stats plus
 	 * approximate SST sizes converted through the entry density of the SSTs
-	 * overlapping the range), so it stays fast no matter how large the range
-	 * is. Accuracy improves with range size — resolution is bounded by SST
+	 * overlapping the range), so its cost scales with the number of SSTs
+	 * overlapping the range rather than the number of keys — though reading
+	 * table properties for cold files can do I/O through the table cache, and
+	 * a start-only range does the work of its complement below `start`.
+	 * Accuracy improves with range size — resolution is bounded by SST
 	 * data-block granularity, so tiny ranges over-report — and recently
-	 * deleted or overwritten entries may be counted until compaction.
+	 * deleted or overwritten entries may be counted until compaction. An
+	 * inverted range (`start` >= `end`) returns 0.
 	 *
 	 * Estimates always reflect committed state; writes pending in a
 	 * transaction are not included.
@@ -484,7 +488,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * estimate while iterating the range: report progress with
 	 * `advance(lastKey, count)` (e.g. once per page of results) and
 	 * `estimate()` returns the exact traversed count plus a calibrated
-	 * estimate of the remainder, converging toward the exact total.
+	 * estimate of the remainder, converging toward the exact total. Call
+	 * `finish()` when traversal completes to make `estimate()` exact.
 	 *
 	 * @example
 	 * ```typescript
