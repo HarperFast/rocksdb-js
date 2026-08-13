@@ -24,8 +24,21 @@ enum class DBMode {
 struct DBOptions final {
 	// Global memtable size trigger across all column families. When the sum of
 	// all memtables reaches this size, the largest memtable is flushed. With
-	// `atomic_flush = true`, this triggers flushes across every CF. 0 disables
-	// the global trigger so per-CF `writeBufferSize` drives flushing.
+	// `atomic_flush = true`, this triggers flushes across every CF. 0 (the
+	// default) disables the global trigger so per-CF `writeBufferSize` drives
+	// flushing.
+	//
+	// Off by default because this is ONE budget divided among every column
+	// family, so its safe value depends on a family count not knowable here.
+	// Oversubscribe it and RocksDB thrashes on "flush the largest memtable",
+	// costing two orders of magnitude of write throughput; any fixed value has
+	// that cliff at some family count, and 0 has none. A WriteBufferManager is
+	// the way to bound total memtable memory: it bounds across databases instead
+	// of dividing a fixed budget among families.
+	//
+	// Applied by the FIRST open of a path — the descriptor is process-global, so
+	// a later open with a different value is silently ignored (as with every
+	// other database-wide option here).
 	uint64_t dbWriteBufferSize = 0;
 	bool disableWAL = false;
 	bool enableStats = false;
@@ -37,13 +50,38 @@ struct DBOptions final {
 	// Bytes of recent memtable history to retain in memory for transaction
 	// conflict checking. -1 derives the value from
 	// `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default
-	// for OptimisticTransactionDB).
+	// for OptimisticTransactionDB) — EXCEPT when a stalling WriteBufferManager
+	// is configured, where the derived value becomes 0 because retained history
+	// the manager's budget cannot hold stalls writes permanently (see
+	// resolveMaxWriteBufferSizeToMaintain in db_descriptor.cpp). An explicit
+	// value is always honored as given.
 	int64_t maxWriteBufferSizeToMaintain = -1;
 	// Maximum number of table files RocksDB keeps open (`max_open_files`).
 	// 0 = auto: derive a budget from the effective per-process open-file limit
 	// (see `deriveMaxOpenFiles`); -1 = unlimited (every SST held open — can
 	// exhaust the process fd limit under compaction lag); >0 = explicit cap.
 	int32_t maxOpenFiles = 0;
+	// Per-file size cap for informational log files (`LOG` / `LOG.old.*`,
+	// `max_log_file_size`). RocksDB's own default is 0 (unbounded — a file only
+	// rotates on reopen), which combined with `keep_log_file_num` retaining
+	// several files let purely informational logging grow without bound in
+	// production (HarperFast/rocksdb-js#729). 16MB matches this codebase's other
+	// 16MB size defaults (`writeBufferSize`, `transactionLogMaxSize`); with
+	// `keep_log_file_num = 5` (set alongside this in `DBDescriptor::open`), the
+	// total informational-log footprint is bounded at `5 * maxLogFileSize` = 80MB.
+	uint64_t maxLogFileSize = 16ULL * 1024 * 1024; // 16MB
+	// Whether `maxLogFileSize` came from an explicit caller request (vs the 16MB
+	// default). `max_log_file_size` is a DB-wide `DBOptions` value fixed at first
+	// open, so `DBRegistry::OpenDB` rejects a second in-process open of an
+	// already-open path that explicitly asks for a *different* size, while
+	// letting a plain reopen (non-explicit default) inherit the live value —
+	// same discipline as `compressionExplicit` (see db_registry.cpp).
+	bool maxLogFileSizeExplicit = false;
+	// Verbosity of informational logging (`info_log_level`). `std::nullopt`
+	// leaves RocksDB's own default (`Logger::kDefaultLogLevel`: `INFO_LEVEL` in
+	// release builds, `DEBUG_LEVEL` in debug builds of the linked RocksDB
+	// library) untouched.
+	std::optional<uint8_t> infoLogLevel;
 	DBMode mode = DBMode::Optimistic;
 	std::string name;
 	bool noBlockCache = false;

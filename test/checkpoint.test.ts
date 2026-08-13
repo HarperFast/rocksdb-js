@@ -1,5 +1,5 @@
-import { RocksDatabase, shutdown } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { RocksDatabase, shutdown } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';

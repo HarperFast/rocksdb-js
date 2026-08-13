@@ -1,6 +1,6 @@
-import type { BufferWithDataView, Key } from './encoding.js';
-import { constants, type NativeIteratorCls, type NativeIteratorResult } from './load-binding.js';
-import { ITERATOR_STATE, KEY_BUFFER, type Store, VALUE_BUFFER } from './store.js';
+import type { BufferWithDataView, Key } from './encoding.ts';
+import { constants, type NativeIteratorCls, type NativeIteratorResult } from './load-binding.ts';
+import { ITERATOR_STATE, KEY_BUFFER, type Store, VALUE_BUFFER } from './store.ts';
 
 const { ITERATOR_RESULT_DONE, ITERATOR_RESULT_FAST } = constants;
 

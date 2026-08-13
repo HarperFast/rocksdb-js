@@ -1,7 +1,7 @@
-import type { BackupStreamOptions } from './backup-stream.js';
-import type { BackupOptions } from './backup.js';
-import { DBI, type DBITransactional } from './dbi.js';
-import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
+import type { BackupStreamOptions } from './backup-stream.ts';
+import type { BackupOptions } from './backup.ts';
+import { DBI, type DBITransactional } from './dbi.ts';
+import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
 	config,
@@ -12,26 +12,27 @@ import {
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type NativeTransactionOptions,
-} from './load-binding.js';
-import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
+} from './load-binding.ts';
+import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
-	CompactOptions,
+	type CompactOptions,
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
+	type LogOptions,
 	Store,
 	type StoreOptions,
 	type UserSharedBufferOptions,
 	VALUE_BUFFER,
-} from './store.js';
+} from './store.ts';
 import {
 	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
 	TransactionRetryableError,
-} from './transaction.js';
+} from './transaction.ts';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -284,6 +285,25 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get compression(): CompressionInfo {
 		return this.store.db.getCompression() as CompressionInfo;
+	}
+
+	/**
+	 * The informational-log settings currently in effect for this database,
+	 * read live from RocksDB, as `{ maxLogFileSize, infoLogLevel }`. These are
+	 * database-wide settings (not per-column-family): `maxLogFileSize` bounds
+	 * each retained `LOG` / `LOG.old.*` file's size (defaults to 16MB, so with
+	 * RocksDB's `keep_log_file_num = 5` the total footprint is bounded at
+	 * roughly 80MB); `infoLogLevel` is the logging verbosity. The database must
+	 * be open.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+	 * db.logOptions; // { maxLogFileSize: 4194304, infoLogLevel: 1 }
+	 * ```
+	 */
+	get logOptions(): LogOptions {
+		return this.store.db.getLogOptions() as LogOptions;
 	}
 
 	/**

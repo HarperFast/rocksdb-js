@@ -1,5 +1,5 @@
-import { backups, RocksDatabase, validateTransactionLogStore } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { backups, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';

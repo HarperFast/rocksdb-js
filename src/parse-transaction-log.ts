@@ -1,4 +1,4 @@
-import { constants } from './load-binding.js';
+import { constants } from './load-binding.ts';
 import { closeSync, openSync, readSync, type Stats, statSync } from 'node:fs';
 
 const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;

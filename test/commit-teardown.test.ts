@@ -1,4 +1,4 @@
-import { generateDBPath } from './lib/util.js';
+import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -39,10 +39,7 @@ function spawnRepro(
 	commitThreadMode: string | undefined
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
 	return new Promise((resolve, reject) => {
-		const args =
-			process.versions.bun || process.versions.deno
-				? [fixturePath, dbPath]
-				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath];
+		const args = [fixturePath, dbPath];
 
 		// Widen the commit-thread completion window via the test seam so the
 		// completion-vs-teardown race reproduces deterministically; natural

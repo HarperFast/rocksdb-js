@@ -1,6 +1,6 @@
-import { DBI } from '../src/dbi.js';
-import { RocksDatabase, Store } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { DBI } from '../src/dbi.ts';
+import { RocksDatabase, Store } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Error Handling', () => {

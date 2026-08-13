@@ -1,5 +1,6 @@
-import { fileLockRelease, tryFileLock } from '../src/index.js';
-import { createWorkerBootstrapScript, generateDBPath, terminateWorker } from './lib/util.js';
+import { fileLockRelease, tryFileLock } from '../src/index.ts';
+import { generateDBPath, terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { chmodSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

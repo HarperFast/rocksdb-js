@@ -1,5 +1,5 @@
-import { stats } from '../src/index.js';
-import { dbRunner } from './lib/util.js';
+import { stats } from '../src/index.ts';
+import { dbRunner } from './lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 

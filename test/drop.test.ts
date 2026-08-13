@@ -1,5 +1,6 @@
-import { RocksDatabase } from '../src/index.js';
-import { dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import type { Transaction } from '../src/transaction.ts';
+import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Drop', () => {
@@ -82,8 +83,17 @@ describe('Drop', () => {
 				expect(db2.getSync('key')).toBe('value');
 				expect(db2.getSync('key2')).toBe('value2');
 
+				// a write through the dropped handle is discarded rather than
+				// applied, and does not throw. This used to be the LAST assertion in
+				// the test, because the failed write contaminated the env's shared
+				// write path and every other handle's writes failed afterward too;
+				// see 'should not poison the database' below.
+				db2.putSync('key4', 'value4');
+				expect(db2.getSync('key4')).toBeUndefined();
+
 				// reopening by the same name creates a fresh, WRITABLE column
-				// family instead of reusing the dropped handle
+				// family instead of reusing the dropped handle - and it stays
+				// writable even after the discarded write above
 				const db3 = RocksDatabase.open(dbPath, { name: 'test' });
 				try {
 					db3.putSync('key3', 'value3');
@@ -94,13 +104,137 @@ describe('Drop', () => {
 				} finally {
 					db3.close();
 				}
+			}
+		));
 
-				// writes through the dropped handle fail. NOTE: this must stay the
-				// LAST assertion - the failed write contaminates the env's shared
-				// write path, so writes through OTHER handles in this database fail
-				// afterward too (the same poison the eviction fix prevents callers
-				// from triggering accidentally via reopen-by-name)
-				expect(() => db2.putSync('key4', 'value4')).toThrow();
+	// Regression test for the environment-wide poison. RocksDB applies a write
+	// batch to the WAL first and to the memtables second; a batch naming a
+	// dropped column family fails in between, which RocksDB treats as
+	// unrecoverable inconsistency and records as a background error on the whole
+	// environment. Every subsequent write to EVERY column family on that path
+	// then failed with the same, unattributable 'Invalid column family specified
+	// in write batch' until the environment was closed and reopened - one racing
+	// writer took the whole database down. Harper hit this by dropping a table
+	// while background cache writes to it were still in flight, and lost 44
+	// unrelated tests in one shard to the cascade.
+	it('should not poison the database when a stale handle writes to a dropped column family', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
+			async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
+				victim.putSync('k0', 'v0');
+				doomed.dropSync();
+
+				// the poisoning write: `stale` still holds the dropped family
+				stale.putSync('k1', 'v1');
+
+				// an unrelated column family is unaffected, synchronously...
+				victim.putSync('k2', 'v2');
+				expect(victim.getSync('k2')).toBe('v2');
+
+				// ...and transactionally, which is the path Harper's writes take
+				await victim.transaction(async (txn: Transaction) => {
+					await victim.put('k3', 'v3', { transaction: txn });
+				});
+				expect(victim.getSync('k3')).toBe('v3');
+
+				// removeSync is a separate write path with its own write options, so
+				// poison it independently: a remove through the dropped handle must
+				// also be discarded rather than fatal, and must leave the unrelated
+				// family's own removes working
+				stale.removeSync('k1');
+				victim.removeSync('k0');
+				expect(victim.getSync('k0')).toBeUndefined();
+
+				// a column family created AFTER the poisoning write is writable too
+				const fresh = RocksDatabase.open(dbPath, { name: 'fresh' });
+				try {
+					fresh.putSync('k4', 'v4');
+					expect(fresh.getSync('k4')).toBe('v4');
+				} finally {
+					fresh.close();
+				}
+			}
+		));
+
+	// Transactions deliberately do NOT get `ignore_missing_column_families`. In
+	// optimistic mode - the default -
+	// conflict validation rejects a commit naming a dropped family early, with an
+	// error that names the family, so the transaction is lost whole rather than
+	// discarded in part.
+	it('should reject only the dropped-family commit when transactions race a drop', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
+			async ({ db: victim }, { db: doomed }, { db: stale }) => {
+				doomed.dropSync();
+
+				const results = await Promise.allSettled([
+					stale.transaction(async (txn: Transaction) => {
+						await stale.put('a', '1', { transaction: txn });
+					}),
+					victim.transaction(async (txn: Transaction) => {
+						await victim.put('b', '2', { transaction: txn });
+					}),
+					victim.transaction(async (txn: Transaction) => {
+						await victim.put('c', '3', { transaction: txn });
+					}),
+				]);
+				expect(results.map((result) => result.status)).toEqual([
+					'rejected',
+					'fulfilled',
+					'fulfilled',
+				]);
+
+				// the rejection identifies the column family it could not reach,
+				// instead of the unattributable environment-wide message
+				const [staleResult] = results;
+				expect(staleResult.status === 'rejected' && staleResult.reason.message).toMatch(
+					/Could not access column family \d+/
+				);
+
+				expect(victim.getSync('b')).toBe('2');
+				expect(victim.getSync('c')).toBe('3');
+
+				// and the environment is still writable afterwards
+				victim.putSync('d', '4');
+				expect(victim.getSync('d')).toBe('4');
+			}
+		));
+
+	// The atomicity guard that keeps `ignore_missing_column_families` off the
+	// transactional path. A pessimistic transaction sends its batch straight
+	// through RocksDB's write path under the transaction's own write options, so
+	// setting the flag there would make a commit spanning a live family and a
+	// dropped one apply the live half, discard the dropped half, and return OK -
+	// a silent partial commit reported as success, which the transaction log
+	// would then mark committed.
+	//
+	// Losing the whole transaction is the correct outcome. (In this mode the
+	// commit also poisons the environment on its way out; that is a separate,
+	// pre-existing bug tracked as
+	// https://github.com/HarperFast/rocksdb-js/issues/726 (needs the drop
+	// interlocked against in-flight transactions), so this test asserts only
+	// atomicity and leaves the handles to dbRunner's per-test database.)
+	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ name: 'victim', pessimistic: true },
+					{ name: 'doomed', pessimistic: true },
+					{ name: 'doomed', pessimistic: true },
+				],
+			},
+			async ({ db: victim }, { db: doomed }, { db: stale }) => {
+				await expect(
+					stale.transaction(async (txn: Transaction) => {
+						await victim.put('live', 'A', { transaction: txn });
+						await stale.put('dead', 'B', { transaction: txn });
+						// the drop lands after both writes are staged
+						doomed.dropSync();
+					})
+				).rejects.toThrow();
+
+				// the live half must NOT have been applied
+				expect(victim.getSync('live')).toBeUndefined();
 			}
 		));
 

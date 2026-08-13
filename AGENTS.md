@@ -199,6 +199,25 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
+- **No `tsx`**: `.ts`/`.mts` scripts, worker files, and `src` itself run under Node's native type
+  stripping (the `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Rules for code Node
+  loads directly (i.e. outside Vitest/tsdown, which do their own resolution):
+  - **Real file extensions in every relative import.** `src` imports siblings as `./foo.ts`, not
+    extensionless or `.js` — native strip does **not** remap `.js`→`.ts`. `allowImportingTsExtensions`
+    - `noEmit` in `tsconfig.json` let `tsc` accept the `.ts` specifiers (tsdown ignores `noEmit` and
+      still emits `dist`). This is why the unit-test worker `.mts` (`test/workers/`) and spawned-child
+      `.mts` (`test/fixtures/`) import `../../src/index.ts` directly — so those tests need **no build
+      step** (Vitest resolves its own `.js` specifiers; only the native-loaded files must use `.ts`).
+      **Stress tests and benchmarks are the deliberate exception**: their workers import the built
+      `dist` (`stress-test/workers/`, `benchmark/setup.ts`) because they exercise the shipped artifact,
+      not source — so `pnpm test:stress` / `pnpm bench` build first (both CI workflows do).
+  - **Mark type-only imports with `type`.** `verbatimModuleSyntax` is enabled: native strip can only
+    erase `import type` / `import { type X }`, not a value-style `import { X }` that happens to be a
+    type — that would survive to runtime and fail against a module (e.g. `dist`) that never exported
+    the type. `tsc` enforces this.
+  - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
+    `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
+    from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
 
 ## Important Implementation Notes
 
@@ -320,7 +339,39 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    inspect a concurrently closing `DBHandle` from the worker. Transactional count iterators must also
    pass the transaction snapshot through `ReadOptions`; `disableSnapshot` intentionally leaves it null
    so counts observe the latest committed state.
-10. **`TransactionHandle::stateMutex` serializes `txn`/VT-lock state against cross-env `close()`**: a
+10. **Retained memtable history must fit the WriteBufferManager budget**: `max_write_buffer_size_to_maintain`
+    is a floor, not a cap — RocksDB trims history back down to it and never below — and that memory is
+    charged to the process-wide WriteBufferManager. A target above the manager's budget therefore fills
+    the budget with memory that is never released, and a manager built with `allowStall` stalls every
+    write to that database permanently rather than until a flush catches up. `buildColumnFamilyOptions`
+    resolves the derived (`-1`) default to 0 whenever a stalling manager is configured for exactly this
+    reason (`resolveMaxWriteBufferSizeToMaintain`); an explicit caller value is honored as given, and
+    sizing it against the budget and the column-family count is then the caller's job. The general trap:
+    `DBOptions` defaults that derive a large value were sized when they reached one column family, so
+    widening where an option applies means re-checking its default against every shared budget it
+    competes for.
+11. **A corrupt transaction-log frame ends an entry, not the log**: framing breaks come in two
+    shapes and the reader must not conflate them. A **torn tail** has nothing valid behind it, so
+    the break is genuinely end-of-log — that is what `recoverTail()` truncates at open. A **mid-log
+    break** (a partial `ENOSPC`/`EDQUOT` append the process survived) has intact, already-committed
+    entries appended _after_ it; `recoverTail()` deliberately leaves such a file alone rather than
+    discard them, and rotated files are never rescanned at all. `query()` therefore reports the
+    break as a `CorruptFrameError` carrying `resyncPosition` (where framing resumes, per the same
+    heuristic as `validFramingResumes()`) and **leaves iteration positioned there**, so a caller
+    that calls `next()` again recovers the entries past it. Treating the throw as terminal amputates
+    every later entry in the file permanently — each drain restarts from the same resume cursor and
+    re-throws at the same offset, which is how HarperFast/harper#2016 lost 2.2 days of acknowledged
+    writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
+    `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
+
+    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
+    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
+    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
+    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
+    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
+    Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
+    a per-frame call would tax every healthy read.
+12. **`TransactionHandle::stateMutex` serializes `txn`/VT-lock state against cross-env `close()`**: a
     `TransactionHandle` is normally single-owner (bound to the JS thread that created it), but
     `DBDescriptor::finishClose()` (worker-env teardown, e.g. via `DBRegistry::Shutdown()`) closes
     **every** transaction registered on the shared descriptor — including ones owned by a different,
@@ -357,7 +408,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `signalExecuteCompleted()`, so it doesn't interact with this wait) can still race a
     `delete this->txn`. Removing the timeout trades this for a shutdown-hang risk if a commit truly
     never completes.
-11. **A coordinated-retry parked wake-callback's TSFN can outlive the env that created it**: an
+13. **A coordinated-retry parked wake-callback's TSFN can outlive the env that created it**: an
     `IsBusy` commit under `coordinatedRetry` parks its `RETRY_NOW` resolution on the _winning_
     holder's `LockTracker` (`completeCommitWork`'s park loop in transaction.cpp) by registering a
     wake callback that captures a `napi_threadsafe_function` by value. `LockTracker` is
@@ -375,7 +426,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     wake callback checks the flag under the _same_ per-flag mutex before touching the tsfn — so
     whichever of "env teardown" or "wake fires" happens first wins, and the other is a no-op instead of
     a race.
-12. **N-API calls are unsafe inside `napi_add_env_cleanup_hook`, even on the env's own thread —
+14. **N-API calls are unsafe inside `napi_add_env_cleanup_hook`, even on the env's own thread —
     this was #741's dominant crash.** Node's `Environment::RunCleanup()` runs
     `principal_realm_->RunCleanup(); cleanup_queue_.Drain();` **in that order** (env.cc), so by the
     time our module's env-cleanup hook (binding.cpp) runs, `Realm::RunCleanup()` has already

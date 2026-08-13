@@ -1,4 +1,4 @@
-import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
+import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -133,31 +133,4 @@ export async function terminateWorker(worker: Worker): Promise<void> {
 	await new Promise<void>((resolve) => {
 		worker.on('exit', () => resolve());
 	});
-}
-
-/**
- * Creates a bootstrap script to run in a worker thread.
- *
- * @returns The script to run in a worker thread.
- */
-export function createWorkerBootstrapScript(path: string): string {
-	if (process.versions.deno || process.versions.bun) {
-		// Deno runs scripts as non-module, so we need to use dynamic import()
-		return `import('node:url').then(({ pathToFileURL }) => import(pathToFileURL('${path.replace(/'/g, "\\'")}')));`;
-	}
-
-	const majorVersion = parseInt(process.versions.node.split('.')[0]);
-	if (majorVersion < 20) {
-		// Node.js 18 and older doesn't properly eval ESM code
-		return `
-			const tsx = require('tsx/cjs/api');
-			tsx.require('${path}', __dirname);
-			`;
-	}
-
-	return `
-		import { register } from 'tsx/esm/api';
-		register();
-		import('${path}');
-		`;
 }

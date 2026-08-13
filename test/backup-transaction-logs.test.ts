@@ -1,5 +1,5 @@
-import { backups, RocksDatabase } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { backups, RocksDatabase } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import {
 	existsSync,
 	mkdirSync,

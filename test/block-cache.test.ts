@@ -1,5 +1,5 @@
-import { RocksDatabase } from '../src/index.js';
-import { dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import { dbRunner } from './lib/util.ts';
 import { assert, describe, expect, it } from 'vitest';
 
 describe('Block Cache', () => {
@@ -36,7 +36,9 @@ describe('Block Cache', () => {
 			const firstRead = db.get('foo');
 			expect(firstRead).toBeInstanceOf(Promise);
 			expect(await firstRead).toBe('bar');
-			expect(db.get('foo')).toBeInstanceOf(Promise);
+			const secondRead = db.get('foo');
+			expect(secondRead).toBeInstanceOf(Promise);
+			expect(await secondRead).toBe('bar');
 		}));
 
 	it('should change the block cache size', () =>

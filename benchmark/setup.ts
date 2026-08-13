@@ -1,4 +1,4 @@
-import { RocksDatabase, RocksDatabaseOptions, shutdown } from '../dist/index.mjs';
+import { RocksDatabase, type RocksDatabaseOptions, shutdown } from '../dist/index.mjs';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -579,23 +579,12 @@ function workerFindBenchmark(): WorkerBenchmark {
  * Runs on the main thread and launches a worker thread.
  */
 export function workerLaunch(workerData: Record<string, any> = {}): Worker {
-	// Node.js 18 and older doesn't properly eval ESM code
-	const majorVersion = parseInt(process.versions.node.split('.')[0]);
-	const script =
-		majorVersion < 20
-			? `
-			const tsx = require('tsx/cjs/api');
-			tsx.require(${JSON.stringify(workerData.benchmarkFile)}, __dirname);
-			const { workerInit } = tsx.require('./benchmark/setup.ts', __dirname);
-			workerInit();
-			`
-			: `
-			import { register } from 'tsx/esm/api';
-			register();
-			import(${JSON.stringify(workerData.benchmarkFile)})
-				.then(() => import('./benchmark/setup.ts'))
-				.then(module => module.workerInit());
-			`;
+	// Node natively strips the .ts benchmark's types; setup.ts imports the built dist bundle.
+	const script = `
+		import(${JSON.stringify(workerData.benchmarkFile)})
+			.then(() => import('./benchmark/setup.ts'))
+			.then(module => module.workerInit());
+		`;
 
 	return new Worker(script, { eval: true, workerData });
 }

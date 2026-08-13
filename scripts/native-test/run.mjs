@@ -25,7 +25,7 @@ function run(command, args, options = {}) {
 }
 
 if (!existsSync(gtestMarker)) {
-	run('pnpm', ['exec', 'tsx', 'scripts/init-gtest/main.ts']);
+	run(process.execPath, ['scripts/init-gtest/main.ts']);
 }
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));

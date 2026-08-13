@@ -88,6 +88,10 @@ public:
 		return writeBufferManagerCostToCache.load(std::memory_order_relaxed);
 	}
 
+	bool getWriteBufferManagerAllowStall() const {
+		return writeBufferManagerAllowStall.load(std::memory_order_relaxed);
+	}
+
 	std::shared_ptr<rocksdb::WriteBufferManager> getWriteBufferManager();
 
 	inline bool getCompactOnClose() const {

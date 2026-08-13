@@ -95,8 +95,8 @@ rocksdb::Status DBHandle::clear() {
 	);
 	if (!status.ok()) {
 		// A dropped column family is effectively already empty — clear is a no-op.
-		// Callers that subsequently write to the same handle will receive
-		// kColumnFamilyDropped at write time and can handle recovery there.
+		// Writes a caller subsequently issues on the same handle are discarded by
+		// RocksDB rather than applied.
 		if (status.IsColumnFamilyDropped()) {
 			return rocksdb::Status::OK();
 		}

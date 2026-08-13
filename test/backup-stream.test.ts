@@ -1,5 +1,5 @@
-import { RocksDatabase } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import * as tar from 'tar';
