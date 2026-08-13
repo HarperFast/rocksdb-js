@@ -80,6 +80,35 @@ describe('estimateCount', () => {
 			expect(db.getEstimatedKeyCount({ start: KEY(1000), end: KEY(1000) })).toBe(0);
 		}));
 
+	it('should treat zero-length native bounds safely', () =>
+		dbRunner(async ({ db }) => {
+			for (let i = 0; i < 5000; i++) {
+				await db.put(KEY(i), `value-${i}`);
+			}
+			await db.flush();
+			// encodeKey rejects zero-length keys, so exercise the native surface
+			// directly: an empty end bound sorts below every key (empty range),
+			// an empty start bound is the minimum key (no-op lower bound)
+			const native = (db as any).store.db;
+			expect(native.estimateCount(undefined, Buffer.alloc(0))).toBe(0);
+			expect(native.estimateCount(Buffer.alloc(0), undefined)).toBe(db.getEstimatedKeyCount());
+		}));
+
+	it('should not count uncommitted transaction writes', () =>
+		dbRunner(async ({ db }) => {
+			const N = 10000;
+			for (let i = 0; i < N; i++) {
+				await db.put(KEY(i), `value-${i}`);
+			}
+			await db.transaction(async (txn) => {
+				for (let i = N; i < 2 * N; i++) {
+					txn.putSync(KEY(i), `value-${i}`);
+				}
+				const estimate = db.getEstimatedKeyCount({ start: KEY(0), end: KEY(2 * N) });
+				expect(estimate).toBeLessThan(N * 1.5);
+			});
+		}));
+
 	it('should scale estimates with range width', () =>
 		dbRunner(async ({ db }) => {
 			const N = 20000;

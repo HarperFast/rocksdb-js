@@ -1009,11 +1009,15 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 	rocksdb::DB* db = (*dbHandle)->descriptor->db.get();
 	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
 
+	// Presence is tracked separately from the data pointer: napi may return a
+	// null pointer for a zero-length buffer, and an empty bound (the smallest
+	// key) must not be confused with an omitted one.
 	void* startData = nullptr;
 	size_t startLength = 0;
 	napi_valuetype startType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &startType));
-	if (startType != napi_undefined && startType != napi_null) {
+	bool hasStart = startType != napi_undefined && startType != napi_null;
+	if (hasStart) {
 		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &startData, &startLength));
 	}
 
@@ -1021,27 +1025,29 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 	size_t endLength = 0;
 	napi_valuetype endType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &endType));
-	if (endType != napi_undefined && endType != napi_null) {
+	bool hasEnd = endType != napi_undefined && endType != napi_null;
+	if (hasEnd) {
 		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], &endData, &endLength));
 	}
 
-	rocksdb::Slice startSlice(static_cast<const char*>(startData), startLength);
-	rocksdb::Slice endSlice(static_cast<const char*>(endData), endLength);
+	rocksdb::Slice startSlice(startLength ? static_cast<const char*>(startData) : "", startLength);
+	rocksdb::Slice endSlice(endLength ? static_cast<const char*>(endData) : "", endLength);
 
 	double estimate = 0;
-	if (endData == nullptr) {
+	if (!hasEnd) {
 		uint64_t totalKeys = 0;
 		db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
-		if (startData == nullptr) {
+		if (!hasStart || startLength == 0) {
 			estimate = static_cast<double>(totalKeys);
 		} else {
 			// No upper bound: estimate [start, ∞) as total minus [min, start).
 			estimate = std::max(0.0, static_cast<double>(totalKeys) - estimateRangeCount(db, cf, rocksdb::Slice(), startSlice));
 		}
-	} else if (startData != nullptr && startSlice.compare(endSlice) >= 0) {
-		// Inverted or empty range: GetApproximateSizes would underflow
-		// (end offset minus start offset in uint64). Comparator is always
-		// bytewise (db_descriptor.cpp), so Slice::compare matches key order.
+	} else if (endLength == 0 || startSlice.compare(endSlice) >= 0) {
+		// Empty end bound (below every key) or inverted/empty range:
+		// GetApproximateSizes would underflow (end offset minus start offset
+		// in uint64). Comparator is always bytewise (db_descriptor.cpp), so
+		// Slice::compare matches key order.
 		estimate = 0;
 	} else {
 		estimate = estimateRangeCount(db, cf, startSlice, endSlice);
