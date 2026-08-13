@@ -371,6 +371,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
+
 12. **`TransactionHandle::stateMutex` serializes `txn`/VT-lock state against cross-env `close()`**: a
     `TransactionHandle` is normally single-owner (bound to the JS thread that created it), but
     `DBDescriptor::finishClose()` (worker-env teardown, e.g. via `DBRegistry::Shutdown()`) closes
