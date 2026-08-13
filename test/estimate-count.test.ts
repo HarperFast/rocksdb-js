@@ -70,6 +70,16 @@ describe('estimateCount', () => {
 			expect(db.getEstimatedKeyCount({ start: 'a', end: 'z' })).toBe(0);
 		}));
 
+	it('should return 0 for an inverted range', () =>
+		dbRunner(async ({ db }) => {
+			for (let i = 0; i < 5000; i++) {
+				await db.put(KEY(i), `value-${i}`);
+			}
+			await db.flush();
+			expect(db.getEstimatedKeyCount({ start: KEY(4000), end: KEY(1000) })).toBe(0);
+			expect(db.getEstimatedKeyCount({ start: KEY(1000), end: KEY(1000) })).toBe(0);
+		}));
+
 	it('should scale estimates with range width', () =>
 		dbRunner(async ({ db }) => {
 			const N = 20000;
@@ -153,5 +163,38 @@ describe('CountEstimator', () => {
 			const final = estimator.estimate();
 			expect(final).toBeGreaterThanOrEqual(N);
 			expect(final).toBeLessThan(N * 1.25);
+
+			estimator.finish();
+			expect(estimator.estimate()).toBe(N);
+		}));
+
+	it('should report the exact total for a paginated loop driven to completion', () =>
+		dbRunner(async ({ db }) => {
+			const N = 5000;
+			const PAGE = 250;
+			for (let i = 0; i < N; i++) {
+				await db.put(KEY(i), `value-${i}`);
+			}
+			await db.flush();
+
+			const range = { start: KEY(0), end: KEY(N) };
+			const estimator = db.createCountEstimator(range);
+			let pageStart: string | undefined;
+			let exclusiveStart = false;
+			for (;;) {
+				const page = Array.from(
+					db.getKeys({ ...range, start: pageStart ?? range.start, exclusiveStart, limit: PAGE })
+				);
+				if (page.length === 0) {
+					break;
+				}
+				pageStart = page[page.length - 1] as string;
+				exclusiveStart = true;
+				estimator.advance(pageStart, page.length);
+				expect(estimator.estimate()).toBeGreaterThanOrEqual(estimator.traversed);
+			}
+			expect(estimator.traversed).toBe(N);
+			estimator.finish();
+			expect(estimator.estimate()).toBe(N);
 		}));
 });

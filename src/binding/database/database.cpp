@@ -1038,6 +1038,11 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 			// No upper bound: estimate [start, ∞) as total minus [min, start).
 			estimate = std::max(0.0, static_cast<double>(totalKeys) - estimateRangeCount(db, cf, rocksdb::Slice(), startSlice));
 		}
+	} else if (startData != nullptr && startSlice.compare(endSlice) >= 0) {
+		// Inverted or empty range: GetApproximateSizes would underflow
+		// (end offset minus start offset in uint64). Comparator is always
+		// bytewise (db_descriptor.cpp), so Slice::compare matches key order.
+		estimate = 0;
 	} else {
 		estimate = estimateRangeCount(db, cf, startSlice, endSlice);
 	}

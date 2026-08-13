@@ -434,11 +434,14 @@ the `expectedVersion` option is used.
 Retrieves the estimated number of keys in the database, or within a key range when one is given.
 Unlike `getKeysCount()`, this never iterates: the estimate is derived from RocksDB statistics
 (memtable stats plus approximate SST sizes converted through the entry density of the SSTs
-overlapping the range), so it stays fast regardless of range size — typically microseconds where an
-exact count takes milliseconds. Accuracy improves with range size (resolution is bounded by SST
-data-block granularity, so tiny ranges over-report), and recently deleted or overwritten entries
-may be counted until compaction. Estimates always reflect committed state; writes pending in a
-transaction are not included.
+overlapping the range), so its cost scales with the number of SSTs overlapping the range rather
+than the number of keys — typically microseconds where an exact count takes milliseconds, though
+reading table properties for cold files can do I/O through the table cache. A start-only range is
+computed as the whole-database estimate minus the complement, so it does the work of the range
+_below_ `start`. Accuracy improves with range size (resolution is bounded by SST data-block
+granularity, so tiny ranges over-report), and recently deleted or overwritten entries may be
+counted until compaction. Estimates always reflect committed state; writes pending in a
+transaction are not included. An inverted range (`start` ≥ `end`) returns 0.
 
 ```typescript
 const estimated = db.getEstimatedKeyCount();
@@ -453,8 +456,10 @@ range. Before any traversal, `estimate()` returns the pure statistical estimate 
 `getEstimatedKeyCount(range)`). As the caller reports progress with `advance(lastKey, count)`
 (e.g. once per page), `estimate()` returns the exact traversed count plus a statistical estimate
 of the remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
-already traversed — so the estimate converges toward the exact total as iteration proceeds. Set
-`reverse: true` when iterating from `end` toward `start`.
+already traversed — so the estimate converges toward the exact total as iteration proceeds. When
+traversal completes, call `finish()` and `estimate()` returns the exact count. Set
+`reverse: true` when iterating from `end` toward `start`. The caller owns the progress contract:
+cursors must move monotonically through the range and each entry must be reported exactly once.
 
 ```typescript
 const range = { start: 'a', end: 'z' };
