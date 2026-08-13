@@ -948,12 +948,27 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
  * compaction; resolution is bounded by SST data-block granularity, so tiny
  * ranges over-report.
  */
-static double estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
+struct RangeEstimate {
+	double count = 0;
+	double memtableCount = 0;
+	double sstCount = 0;
+	// Live-entry resolution of one SST data block — the granularity the SST
+	// portion of the estimate is quantized to (0 when unknown/no SST data).
+	double entriesPerBlock = 0;
+	// Live fraction of SST entries ((entries - deletions) / entries); 1 when
+	// no table properties were available.
+	double liveFraction = 1;
+};
+
+static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
 	rocksdb::Range range(start, end);
+	RangeEstimate result;
 
 	uint64_t memtableCount = 0;
 	uint64_t memtableSize = 0;
 	db->GetApproximateMemTableStats(cf, range, &memtableCount, &memtableSize);
+	result.memtableCount = static_cast<double>(memtableCount);
+	result.count = result.memtableCount;
 
 	rocksdb::SizeApproximationOptions sizeOptions;
 	sizeOptions.include_memtables = false;
@@ -961,7 +976,7 @@ static double estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* c
 	uint64_t sstBytes = 0;
 	rocksdb::Status status = db->GetApproximateSizes(sizeOptions, cf, &range, 1, &sstBytes);
 	if (!status.ok() || sstBytes == 0) {
-		return static_cast<double>(memtableCount);
+		return result;
 	}
 
 	rocksdb::TablePropertiesCollection props;
@@ -981,24 +996,48 @@ static double estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* c
 		}
 	}
 	if (entries <= deletions || fileBytes == 0) {
-		return static_cast<double>(memtableCount);
+		return result;
 	}
 
 	double density = static_cast<double>(entries - deletions) / static_cast<double>(fileBytes);
-	return static_cast<double>(memtableCount) + static_cast<double>(sstBytes) * density;
+	result.sstCount = static_cast<double>(sstBytes) * density;
+	result.count += result.sstCount;
+	result.entriesPerBlock = density * 4096;
+	result.liveFraction = static_cast<double>(entries - deletions) / static_cast<double>(entries);
+	return result;
 }
 
 /**
- * Estimates the number of keys within a range without iterating. Both keys
- * are optional buffers; an open-ended side is handled by subtracting the
- * complementary range from the whole-column-family `estimate-num-keys`
- * (an empty slice is the *smallest* key, so it must never be passed as an
- * upper bound).
+ * Heuristic [0, 1] trust indicator for a range estimate — 1 only when exact.
+ * Combines the estimate's resolution (SST portion is quantized to data-block
+ * granularity, memtable counts to skip-list sampling granularity) with the
+ * tombstone fraction of the overlapping SSTs (a proxy for overwrite/delete
+ * skew the estimate cannot see).
+ */
+static double estimateConfidence(const RangeEstimate& est) {
+	if (est.count <= 0) {
+		// Nothing overlaps the range per both memtable stats and SST sizes;
+		// nearly certain but not provably exact (in-flight flush/compaction).
+		return 0.95;
+	}
+	double sstResolution = std::max(est.entriesPerBlock, 1.0);
+	double memtableResolution = 8;
+	double resolution = (est.sstCount * sstResolution + est.memtableCount * memtableResolution) / est.count;
+	double granularity = est.count / (est.count + resolution);
+	return granularity * (0.5 + 0.5 * est.liveFraction);
+}
+
+/**
+ * Estimates the number of keys within a range without iterating, returning
+ * `{ count, confidence }`. Both keys are optional buffers; an open-ended side
+ * is handled by subtracting the complementary range from the
+ * whole-column-family `estimate-num-keys` (an empty slice is the *smallest*
+ * key, so it must never be passed as an upper bound).
  *
  * @example
  * ```typescript
  * const db = NativeDatabase.open('path/to/db');
- * const estimate = db.estimateCount(startBuffer, endBuffer);
+ * const { count, confidence } = db.estimateCount(startBuffer, endBuffer);
  * ```
  */
 napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
@@ -1034,27 +1073,48 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 	rocksdb::Slice endSlice(endLength ? static_cast<const char*>(endData) : "", endLength);
 
 	double estimate = 0;
+	double confidence = 0;
 	if (!hasEnd) {
 		uint64_t totalKeys = 0;
 		db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
-		if (!hasStart || startLength == 0) {
-			estimate = static_cast<double>(totalKeys);
+		double total = static_cast<double>(totalKeys);
+		if (!hasStart || startLength == 0 || totalKeys == 0) {
+			estimate = total;
+			// estimate-num-keys is RocksDB's own memtable+SST estimate; it
+			// skews high on overwrite/delete-heavy data until compaction.
+			confidence = totalKeys == 0 ? 1.0 : 0.9;
 		} else {
 			// No upper bound: estimate [start, ∞) as total minus [min, start).
-			estimate = std::max(0.0, static_cast<double>(totalKeys) - estimateRangeCount(db, cf, rocksdb::Slice(), startSlice));
+			RangeEstimate complement = estimateRangeCount(db, cf, rocksdb::Slice(), startSlice);
+			estimate = std::max(0.0, total - complement.count);
+			// Subtracting two independent estimates compounds their absolute
+			// errors, so trust shrinks with the complement's share of the
+			// total (a narrow tail range after a large complement is mostly
+			// error).
+			double share = estimate / std::max(estimate + complement.count, 1.0);
+			confidence = std::min(0.9, estimateConfidence(complement)) * share;
 		}
 	} else if (endLength == 0 || startSlice.compare(endSlice) >= 0) {
 		// Empty end bound (below every key) or inverted/empty range:
 		// GetApproximateSizes would underflow (end offset minus start offset
 		// in uint64). Comparator is always bytewise (db_descriptor.cpp), so
-		// Slice::compare matches key order.
+		// Slice::compare matches key order. Empty by construction, so exact.
 		estimate = 0;
+		confidence = 1.0;
 	} else {
-		estimate = estimateRangeCount(db, cf, startSlice, endSlice);
+		RangeEstimate rangeEstimate = estimateRangeCount(db, cf, startSlice, endSlice);
+		estimate = rangeEstimate.count;
+		confidence = estimateConfidence(rangeEstimate);
 	}
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_double(env, std::round(estimate), &result));
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	napi_value countValue;
+	NAPI_STATUS_THROWS(::napi_create_double(env, std::round(estimate), &countValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "count", countValue));
+	napi_value confidenceValue;
+	NAPI_STATUS_THROWS(::napi_create_double(env, confidence, &confidenceValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "confidence", confidenceValue));
 	return result;
 }
 
