@@ -1,7 +1,7 @@
-import type { BackupStreamOptions } from './backup-stream.js';
-import type { BackupOptions } from './backup.js';
-import { DBI, type DBITransactional } from './dbi.js';
-import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
+import type { BackupStreamOptions } from './backup-stream.ts';
+import type { BackupOptions } from './backup.ts';
+import { DBI, type DBITransactional } from './dbi.ts';
+import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
 	config,
@@ -12,11 +12,11 @@ import {
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type NativeTransactionOptions,
-} from './load-binding.js';
-import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
+} from './load-binding.ts';
+import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
-	CompactOptions,
+	type CompactOptions,
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
@@ -25,14 +25,14 @@ import {
 	type StoreOptions,
 	type UserSharedBufferOptions,
 	VALUE_BUFFER,
-} from './store.js';
+} from './store.ts';
 import {
 	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
 	TransactionRetryableError,
-} from './transaction.js';
+} from './transaction.ts';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';

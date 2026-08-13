@@ -2,7 +2,7 @@ import {
 	generateRandomKeys,
 	workerBenchmark as benchmark,
 	workerDescribe as describe,
-} from './setup.js';
+} from './setup.ts';
 
 describe('Worker', () => {
 	const SMALL_DATASET = 100;

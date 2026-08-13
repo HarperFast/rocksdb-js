@@ -1,4 +1,4 @@
-import { parseDuration, when, withResolvers } from '../src/util.js';
+import { parseDuration, when, withResolvers } from '../src/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Util', () => {

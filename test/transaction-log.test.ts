@@ -1,18 +1,14 @@
-import { CorruptFrameError, RocksDatabase, Transaction } from '../src/index.js';
+import { CorruptFrameError, RocksDatabase, Transaction } from '../src/index.ts';
 import {
 	constants,
 	coolTransactionLogs,
 	type TransactionLog,
 	transactionLogMapCount,
-} from '../src/load-binding.js';
-import { parseTransactionLog } from '../src/parse-transaction-log.js';
-import { withResolvers } from '../src/util.js';
-import {
-	createWorkerBootstrapScript,
-	dbRunner,
-	generateDBPath,
-	terminateWorker,
-} from './lib/util.js';
+} from '../src/load-binding.ts';
+import { parseTransactionLog } from '../src/parse-transaction-log.ts';
+import { withResolvers } from '../src/util.ts';
+import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';

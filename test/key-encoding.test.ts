@@ -1,6 +1,6 @@
-import type { Key } from '../src/encoding.js';
-import { RocksDatabase } from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import type { Key } from '../src/encoding.ts';
+import { RocksDatabase } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Key Encoding', () => {

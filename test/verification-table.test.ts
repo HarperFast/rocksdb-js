@@ -1,7 +1,7 @@
-import { RocksDatabase } from '../src/index.js';
-import { constants } from '../src/load-binding.js';
-import { Transaction } from '../src/transaction.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import { constants } from '../src/load-binding.ts';
+import { Transaction } from '../src/transaction.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 const { POPULATE_VERSION_FLAG, FRESH_VERSION_FLAG } = constants;

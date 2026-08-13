@@ -1,6 +1,6 @@
-import type { IteratorOptions } from '../src/dbi.js';
-import type { Key } from '../src/encoding.js';
-import { dbRunner } from './lib/util.js';
+import type { IteratorOptions } from '../src/dbi.ts';
+import type { Key } from '../src/encoding.ts';
+import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Ranges', () => {

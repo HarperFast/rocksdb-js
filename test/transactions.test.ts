@@ -1,6 +1,6 @@
-import type { Transaction } from '../src/transaction.js';
-import { withResolvers } from '../src/util.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import type { Transaction } from '../src/transaction.ts';
+import { withResolvers } from '../src/util.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 const testOptions = [
