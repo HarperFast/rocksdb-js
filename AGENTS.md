@@ -216,8 +216,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     type — that would survive to runtime and fail against a module (e.g. `dist`) that never exported
     the type. `tsc` enforces this.
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
-    `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` and is re-exported from
-    `test/lib/util.ts` for the Vitest-resolved test files.
+    `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
+    from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
 
 ## Important Implementation Notes
 
