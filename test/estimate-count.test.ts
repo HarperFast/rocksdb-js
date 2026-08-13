@@ -12,6 +12,11 @@ function expectWithin(estimate: number, exact: number, factor: number) {
 	expect(estimate).toBeLessThanOrEqual(exact * factor);
 }
 
+function expectConfidence(confidence: number, min = 0, max = 1) {
+	expect(confidence).toBeGreaterThanOrEqual(min);
+	expect(confidence).toBeLessThanOrEqual(max);
+}
+
 const KEY = (i: number) => `key-${String(i).padStart(6, '0')}`;
 
 describe('estimateCount', () => {
@@ -25,19 +30,23 @@ describe('estimateCount', () => {
 
 			// full range, both open-ended and bounded
 			expectWithin(db.getEstimatedKeyCount(), N, 2);
-			expectWithin(db.getEstimatedKeyCount({ start: KEY(0), end: KEY(N) }), N, 2);
+			const full = db.estimateCount({ start: KEY(0), end: KEY(N) });
+			expectWithin(full.count, N, 2);
+			// a large uniform range should be high-confidence
+			expectConfidence(full.confidence, 0.5, 1);
 
 			// half range [25%, 75%)
-			const half = db.getEstimatedKeyCount({ start: KEY(N / 4), end: KEY((3 * N) / 4) });
-			expectWithin(half, N / 2, 2);
+			const half = db.estimateCount({ start: KEY(N / 4), end: KEY((3 * N) / 4) });
+			expectWithin(half.count, N / 2, 2);
 
 			// open-ended: start only and end only
-			expectWithin(db.getEstimatedKeyCount({ start: KEY(N / 2) }), N / 2, 2);
-			expectWithin(db.getEstimatedKeyCount({ end: KEY(N / 2) }), N / 2, 2);
+			expectWithin(db.estimateCount({ start: KEY(N / 2) }).count, N / 2, 2);
+			expectWithin(db.estimateCount({ end: KEY(N / 2) }).count, N / 2, 2);
 
 			// a range past all data should estimate near zero relative to N
-			const empty = db.getEstimatedKeyCount({ start: 'z', end: 'zz' });
-			expect(empty).toBeLessThan(N / 20);
+			const empty = db.estimateCount({ start: 'z', end: 'zz' });
+			expect(empty.count).toBeLessThan(N / 20);
+			expectConfidence(empty.confidence);
 		}));
 
 	it('should estimate counts for data still in the memtable', () =>
@@ -47,8 +56,8 @@ describe('estimateCount', () => {
 				await db.put(KEY(i), `value-${i}`);
 			}
 			// no flush: everything is in the memtable
-			expectWithin(db.getEstimatedKeyCount({ start: KEY(0), end: KEY(N) }), N, 2);
-			expectWithin(db.getEstimatedKeyCount({ start: KEY(N / 4), end: KEY((3 * N) / 4) }), N / 2, 2);
+			expectWithin(db.estimateCount({ start: KEY(0), end: KEY(N) }).count, N, 2);
+			expectWithin(db.estimateCount({ start: KEY(N / 4), end: KEY((3 * N) / 4) }).count, N / 2, 2);
 		}));
 
 	it('should estimate counts spanning memtable and SST data', () =>
@@ -61,23 +70,33 @@ describe('estimateCount', () => {
 			for (let i = N; i < 2 * N; i++) {
 				await db.put(KEY(i), `value-${i}`);
 			}
-			expectWithin(db.getEstimatedKeyCount({ start: KEY(0), end: KEY(2 * N) }), 2 * N, 2);
+			expectWithin(db.estimateCount({ start: KEY(0), end: KEY(2 * N) }).count, 2 * N, 2);
 		}));
 
-	it('should return 0 for an empty database', () =>
+	it('should return a confident 0 for an empty database', () =>
 		dbRunner(async ({ db }) => {
 			expect(db.getEstimatedKeyCount()).toBe(0);
-			expect(db.getEstimatedKeyCount({ start: 'a', end: 'z' })).toBe(0);
+			expect(db.estimateCount()).toEqual({ count: 0, confidence: 1 });
+			const range = db.estimateCount({ start: 'a', end: 'z' });
+			expect(range.count).toBe(0);
+			expectConfidence(range.confidence, 0.9, 1);
 		}));
 
-	it('should return 0 for an inverted range', () =>
+	it('should return an exact 0 for an inverted range', () =>
 		dbRunner(async ({ db }) => {
 			for (let i = 0; i < 5000; i++) {
 				await db.put(KEY(i), `value-${i}`);
 			}
 			await db.flush();
-			expect(db.getEstimatedKeyCount({ start: KEY(4000), end: KEY(1000) })).toBe(0);
-			expect(db.getEstimatedKeyCount({ start: KEY(1000), end: KEY(1000) })).toBe(0);
+			// inverted/empty by construction: exact, so confidence is 1
+			expect(db.estimateCount({ start: KEY(4000), end: KEY(1000) })).toEqual({
+				count: 0,
+				confidence: 1,
+			});
+			expect(db.estimateCount({ start: KEY(1000), end: KEY(1000) })).toEqual({
+				count: 0,
+				confidence: 1,
+			});
 		}));
 
 	it('should treat zero-length native bounds safely', () =>
@@ -90,8 +109,10 @@ describe('estimateCount', () => {
 			// directly: an empty end bound sorts below every key (empty range),
 			// an empty start bound is the minimum key (no-op lower bound)
 			const native = (db as any).store.db;
-			expect(native.estimateCount(undefined, Buffer.alloc(0))).toBe(0);
-			expect(native.estimateCount(Buffer.alloc(0), undefined)).toBe(db.getEstimatedKeyCount());
+			expect(native.estimateCount(undefined, Buffer.alloc(0)).count).toBe(0);
+			expect(native.estimateCount(Buffer.alloc(0), undefined).count).toBe(
+				db.getEstimatedKeyCount()
+			);
 		}));
 
 	it('should not count uncommitted transaction writes', () =>
@@ -104,8 +125,8 @@ describe('estimateCount', () => {
 				for (let i = N; i < 2 * N; i++) {
 					txn.putSync(KEY(i), `value-${i}`);
 				}
-				const estimate = db.getEstimatedKeyCount({ start: KEY(0), end: KEY(2 * N) });
-				expect(estimate).toBeLessThan(N * 1.5);
+				const estimate = db.estimateCount({ start: KEY(0), end: KEY(2 * N) });
+				expect(estimate.count).toBeLessThan(N * 1.5);
 			});
 		}));
 
@@ -117,9 +138,9 @@ describe('estimateCount', () => {
 			}
 			await db.flush();
 
-			const tenth = db.getEstimatedKeyCount({ start: KEY(0), end: KEY(N / 10) });
-			const half = db.getEstimatedKeyCount({ start: KEY(0), end: KEY(N / 2) });
-			const full = db.getEstimatedKeyCount({ start: KEY(0), end: KEY(N) });
+			const tenth = db.estimateCount({ start: KEY(0), end: KEY(N / 10) }).count;
+			const half = db.estimateCount({ start: KEY(0), end: KEY(N / 2) }).count;
+			const full = db.estimateCount({ start: KEY(0), end: KEY(N) }).count;
 			expect(tenth).toBeLessThan(half);
 			expect(half).toBeLessThan(full);
 		}));
@@ -138,7 +159,9 @@ describe('CountEstimator', () => {
 			const estimator = db.createCountEstimator(range);
 
 			// before any traversal: the pure statistical estimate
-			expectWithin(estimator.estimate(), N, 2);
+			const initial = estimator.estimate();
+			expectWithin(initial.count, N, 2);
+			expectConfidence(initial.confidence);
 
 			// walk the first half, checkpointing once per "page"
 			let traversed = 0;
@@ -155,10 +178,12 @@ describe('CountEstimator', () => {
 			expect(estimator.traversed).toBe(N / 2);
 
 			// with half the range traversed exactly, the estimate must be at
-			// least the traversed count and within a tighter overall bound
+			// least the traversed count, within a tighter overall bound, and
+			// more trusted than the untraversed estimate
 			const refined = estimator.estimate();
-			expect(refined).toBeGreaterThanOrEqual(N / 2);
-			expectWithin(refined, N, 1.6);
+			expect(refined.count).toBeGreaterThanOrEqual(N / 2);
+			expectWithin(refined.count, N, 1.6);
+			expect(refined.confidence).toBeGreaterThan(initial.confidence);
 		}));
 
 	it('should support reverse iteration', () =>
@@ -173,8 +198,8 @@ describe('CountEstimator', () => {
 			// walk the last quarter in reverse
 			estimator.advance(KEY((3 * N) / 4), N / 4);
 			const refined = estimator.estimate();
-			expect(refined).toBeGreaterThanOrEqual(N / 4);
-			expectWithin(refined, N, 2);
+			expect(refined.count).toBeGreaterThanOrEqual(N / 4);
+			expectWithin(refined.count, N, 2);
 		}));
 
 	it('should converge to near-exact as traversal completes', () =>
@@ -190,11 +215,12 @@ describe('CountEstimator', () => {
 			// remainder is (KEY(N-1), KEY(N)) — essentially empty, though the
 			// estimate of it is block-granular, so allow a small overshoot
 			const final = estimator.estimate();
-			expect(final).toBeGreaterThanOrEqual(N);
-			expect(final).toBeLessThan(N * 1.25);
+			expect(final.count).toBeGreaterThanOrEqual(N);
+			expect(final.count).toBeLessThan(N * 1.25);
+			expectConfidence(final.confidence, 0.7, 1);
 
 			estimator.finish();
-			expect(estimator.estimate()).toBe(N);
+			expect(estimator.estimate()).toEqual({ count: N, confidence: 1 });
 		}));
 
 	it('should report the exact total for a paginated loop driven to completion', () =>
@@ -220,10 +246,10 @@ describe('CountEstimator', () => {
 				pageStart = page[page.length - 1] as string;
 				exclusiveStart = true;
 				estimator.advance(pageStart, page.length);
-				expect(estimator.estimate()).toBeGreaterThanOrEqual(estimator.traversed);
+				expect(estimator.estimate().count).toBeGreaterThanOrEqual(estimator.traversed);
 			}
 			expect(estimator.traversed).toBe(N);
 			estimator.finish();
-			expect(estimator.estimate()).toBe(N);
+			expect(estimator.estimate()).toEqual({ count: N, confidence: 1 });
 		}));
 });

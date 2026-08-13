@@ -1,4 +1,4 @@
-import type { RangeOptions } from './dbi.ts';
+import type { CountEstimate, RangeOptions } from './dbi.ts';
 import type { Key } from './encoding.ts';
 import type { Store } from './store.ts';
 
@@ -53,7 +53,7 @@ export class CountEstimator {
 	#cursor: Key | Uint8Array | undefined;
 	#traversed = 0;
 	#finished = false;
-	#memoized: number | undefined;
+	#memoized: CountEstimate | undefined;
 
 	constructor(store: Store, options?: CountEstimatorOptions) {
 		this.#store = store;
@@ -90,10 +90,13 @@ export class CountEstimator {
 	/**
 	 * Estimates the total number of entries in the full range: the exact
 	 * traversed count plus a calibrated statistical estimate of the remainder.
+	 * `confidence` is the exactness-weighted blend of the traversed portion
+	 * (exact) and the remainder's statistical confidence, so it converges to 1
+	 * as traversal proceeds (and is exactly 1 after `finish()`).
 	 */
-	estimate(): number {
+	estimate(): CountEstimate {
 		if (this.#finished) {
-			return this.#traversed;
+			return { count: this.#traversed, confidence: 1 };
 		}
 		if (this.#cursor === undefined) {
 			return this.#store.estimateCount({ start: this.#start, end: this.#end });
@@ -112,17 +115,23 @@ export class CountEstimator {
 			? { start: this.#start, end: this.#cursor }
 			: { start: this.#cursor, end: this.#end, exclusiveStart: true };
 
-		let remaining = this.#store.estimateCount(remainingRange);
+		const remainingEstimate = this.#store.estimateCount(remainingRange);
+		let remaining = remainingEstimate.count;
 		if (this.#traversed >= CALIBRATION_MIN_TRAVERSED) {
 			const traversedEstimate = this.#store.estimateCount(traversedRange);
 			const calibration = Math.min(
 				CALIBRATION_MAX,
-				Math.max(1 / CALIBRATION_MAX, this.#traversed / Math.max(traversedEstimate, 1))
+				Math.max(1 / CALIBRATION_MAX, this.#traversed / Math.max(traversedEstimate.count, 1))
 			);
 			remaining *= calibration;
 		}
 
-		this.#memoized = Math.round(this.#traversed + remaining);
+		const count = Math.round(this.#traversed + remaining);
+		const confidence =
+			count > 0
+				? Math.min(1, (this.#traversed + remainingEstimate.confidence * remaining) / count)
+				: remainingEstimate.confidence;
+		this.#memoized = { count, confidence };
 		return this.#memoized;
 	}
 }

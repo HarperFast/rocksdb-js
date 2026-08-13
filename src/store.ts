@@ -1,7 +1,7 @@
 import { type BackupStreamOptions, backupToStream } from './backup-stream.ts';
 import { assertBackupDirOutsideDatabase, type BackupOptions } from './backup.ts';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.ts';
-import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.ts';
+import type { CountEstimate, DBITransactional, IteratorOptions, RangeOptions } from './dbi.ts';
 import {
 	type BufferWithDataView,
 	createFixedBuffer,
@@ -852,7 +852,7 @@ export class Store {
 	 * without iterating. Estimates always reflect committed state, so there is
 	 * no transactional variant.
 	 */
-	estimateCount(options?: RangeOptions): number {
+	estimateCount(options?: RangeOptions): CountEstimate {
 		let startBuffer: Buffer | undefined;
 		let endBuffer: Buffer | undefined;
 

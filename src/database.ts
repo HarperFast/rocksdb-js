@@ -1,7 +1,7 @@
 import type { BackupStreamOptions } from './backup-stream.ts';
 import type { BackupOptions } from './backup.ts';
 import { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
-import { DBI, type DBITransactional, type RangeOptions } from './dbi.ts';
+import { DBI, type CountEstimate, type DBITransactional, type RangeOptions } from './dbi.ts';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
@@ -456,30 +456,46 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Retrieves the estimated number of keys in the database, or within a key
-	 * range when one is given. Unlike `getKeysCount()`, this never iterates:
-	 * the estimate is derived from RocksDB statistics (memtable stats plus
-	 * approximate SST sizes converted through the entry density of the SSTs
-	 * overlapping the range), so its cost scales with the number of SSTs
-	 * overlapping the range rather than the number of keys — though reading
-	 * table properties for cold files can do I/O through the table cache, and
-	 * a start-only range does the work of its complement below `start`.
-	 * Accuracy improves with range size — resolution is bounded by SST
-	 * data-block granularity, so tiny ranges over-report — and recently
-	 * deleted or overwritten entries may be counted until compaction. An
-	 * inverted range (`start` >= `end`) returns 0.
-	 *
-	 * Estimates always reflect committed state; writes pending in a
-	 * transaction are not included.
+	 * Retrieves the estimated number of keys in the database. This is an alias
+	 * for `db.estimateCount().count`; use `estimateCount()` for range support
+	 * and a confidence indicator.
 	 *
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
 	 * const estimated = db.getEstimatedKeyCount();
-	 * const rangeEstimate = db.getEstimatedKeyCount({ start: 'a', end: 'z' });
+	 * console.log(estimated);
 	 * ```
 	 */
-	getEstimatedKeyCount(options?: RangeOptions): number {
+	getEstimatedKeyCount(): number {
+		return this.getDBIntProperty('rocksdb.estimate-num-keys') ?? 0;
+	}
+
+	/**
+	 * Estimates the number of keys in the database, or within a key range,
+	 * returning `{ count, confidence }`. Unlike `getKeysCount()`, this never
+	 * iterates: the estimate is derived from RocksDB statistics (memtable
+	 * stats plus approximate SST sizes converted through the entry density of
+	 * the SSTs overlapping the range), so its cost scales with the number of
+	 * SSTs overlapping the range rather than the number of keys — though
+	 * reading table properties for cold files can do I/O through the table
+	 * cache, and a start-only range does the work of its complement below
+	 * `start`. Accuracy improves with range size — resolution is bounded by
+	 * SST data-block granularity, so tiny ranges over-report — and recently
+	 * deleted or overwritten entries may be counted until compaction. An
+	 * inverted range (`start` >= `end`) returns `{ count: 0, confidence: 1 }`.
+	 *
+	 * `confidence` is a heuristic 0–1 trust indicator (1 only when exact) —
+	 * see `CountEstimate`. Estimates always reflect committed state; writes
+	 * pending in a transaction are not included.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
+	 * ```
+	 */
+	estimateCount(options?: RangeOptions): CountEstimate {
 		return this.store.estimateCount(options);
 	}
 
@@ -501,7 +517,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *   pageSize++;
 	 * }
 	 * estimator.advance(lastKey, pageSize);
-	 * const total = estimator.estimate(); // ~total matches in the range
+	 * const { count, confidence } = estimator.estimate();
 	 * ```
 	 */
 	createCountEstimator(options?: CountEstimatorOptions): CountEstimator {

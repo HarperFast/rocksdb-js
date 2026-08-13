@@ -429,23 +429,41 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
-### `db.getEstimatedKeyCount(options?: RangeOptions): number`
+### `db.getEstimatedKeyCount(): number`
 
-Retrieves the estimated number of keys in the database, or within a key range when one is given.
-Unlike `getKeysCount()`, this never iterates: the estimate is derived from RocksDB statistics
-(memtable stats plus approximate SST sizes converted through the entry density of the SSTs
-overlapping the range), so its cost scales with the number of SSTs overlapping the range rather
-than the number of keys — typically microseconds where an exact count takes milliseconds, though
-reading table properties for cold files can do I/O through the table cache. A start-only range is
-computed as the whole-database estimate minus the complement, so it does the work of the range
-_below_ `start`. Accuracy improves with range size (resolution is bounded by SST data-block
-granularity, so tiny ranges over-report), and recently deleted or overwritten entries may be
-counted until compaction. Estimates always reflect committed state; writes pending in a
-transaction are not included. An inverted range (`start` ≥ `end`) returns 0.
+Retrieves the estimated number of keys in the database. This is an alias for
+`db.getDBIntProperty('rocksdb.estimate-num-keys')`; use `estimateCount()` for range support and a
+confidence indicator.
 
 ```typescript
 const estimated = db.getEstimatedKeyCount();
-const rangeEstimate = db.getEstimatedKeyCount({ start: 'a', end: 'z' });
+console.log(estimated);
+```
+
+### `db.estimateCount(options?: RangeOptions): CountEstimate`
+
+Estimates the number of keys in the database, or within a key range, returning
+`{ count, confidence }`. Unlike `getKeysCount()`, this never iterates: the estimate is derived
+from RocksDB statistics (memtable stats plus approximate SST sizes converted through the entry
+density of the SSTs overlapping the range), so its cost scales with the number of SSTs overlapping
+the range rather than the number of keys — typically microseconds where an exact count takes
+milliseconds, though reading table properties for cold files can do I/O through the table cache. A
+start-only range is computed as the whole-database estimate minus the complement, so it does the
+work of the range _below_ `start`. Accuracy improves with range size (resolution is bounded by SST
+data-block granularity, so tiny ranges over-report), and recently deleted or overwritten entries
+may be counted until compaction. Estimates always reflect committed state; writes pending in a
+transaction are not included. An inverted range (`start` ≥ `end`) returns
+`{ count: 0, confidence: 1 }`.
+
+`confidence` is a heuristic 0–1 indicator of how trustworthy `count` is — exactly 1 only when the
+count is exact. It is derived from the estimate's resolution (data-block/memtable-sampling
+granularity relative to the count), the tombstone fraction of the overlapping SSTs, and — for
+start-only ranges — the error compounded by complement subtraction. Treat it as an ordering
+signal (e.g. when to trust an estimate for query planning vs fall back to a heuristic), not a
+statistical bound.
+
+```typescript
+const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
 ```
 
 ### `db.createCountEstimator(options?: CountEstimatorOptions): CountEstimator`
@@ -453,13 +471,15 @@ const rangeEstimate = db.getEstimatedKeyCount({ start: 'a', end: 'z' });
 Creates an estimator that progressively refines a range count estimate while the range is being
 iterated — useful for reporting a total alongside a page of results without scanning the full
 range. Before any traversal, `estimate()` returns the pure statistical estimate (same as
-`getEstimatedKeyCount(range)`). As the caller reports progress with `advance(lastKey, count)`
-(e.g. once per page), `estimate()` returns the exact traversed count plus a statistical estimate
-of the remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
-already traversed — so the estimate converges toward the exact total as iteration proceeds. When
-traversal completes, call `finish()` and `estimate()` returns the exact count. Set
-`reverse: true` when iterating from `end` toward `start`. The caller owns the progress contract:
-cursors must move monotonically through the range and each entry must be reported exactly once.
+`estimateCount(range)`). As the caller reports progress with `advance(lastKey, count)` (e.g. once
+per page), `estimate()` returns the exact traversed count plus a statistical estimate of the
+remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
+already traversed — so the count converges toward the exact total, and `confidence` (the
+exactness-weighted blend of the traversed portion and the remainder's confidence) converges to 1.
+When traversal completes, call `finish()` and `estimate()` returns the exact count with
+confidence 1. Set `reverse: true` when iterating from `end` toward `start`. The caller owns the
+progress contract: cursors must move monotonically through the range and each entry must be
+reported exactly once.
 
 ```typescript
 const range = { start: 'a', end: 'z' };
@@ -471,7 +491,7 @@ for (const { key } of db.getRange({ ...range, limit: 25 })) {
 	pageSize++;
 }
 estimator.advance(lastKey, pageSize);
-const total = estimator.estimate(); // ~total keys in the range
+const { count, confidence } = estimator.estimate();
 ```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`

@@ -62,6 +62,23 @@ export interface RocksDBOptions {
 	tailing?: boolean;
 }
 
+export interface CountEstimate {
+	/**
+	 * The estimated number of keys.
+	 */
+	count: number;
+
+	/**
+	 * Heuristic 0–1 indicator of how trustworthy `count` is; exactly 1 only
+	 * when the count is exact. Derived from the estimate's resolution
+	 * (SST data-block / memtable sampling granularity relative to the count),
+	 * the tombstone fraction of the overlapping SSTs, and — for open-ended
+	 * starts — the error compounded by complement subtraction. A heuristic
+	 * ordering signal, not a statistical bound.
+	 */
+	confidence: number;
+}
+
 export interface RangeOptions extends RocksDBOptions {
 	/**
 	 * The range end key, otherwise known as the "upper bound". Defaults to
