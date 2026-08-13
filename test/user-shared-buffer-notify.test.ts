@@ -1,5 +1,5 @@
-import type { BufferWithDataView } from '../src/encoding.js';
-import { dbRunner } from './lib/util.js';
+import type { BufferWithDataView } from '../src/encoding.ts';
+import { dbRunner } from './lib/util.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assert, describe, expect, it } from 'vitest';
 

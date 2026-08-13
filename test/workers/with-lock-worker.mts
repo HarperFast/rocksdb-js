@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../src/index.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parentPort, workerData } from 'node:worker_threads';
 

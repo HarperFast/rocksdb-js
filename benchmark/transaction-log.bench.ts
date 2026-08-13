@@ -1,5 +1,5 @@
 import type { RocksDatabase } from '../dist/index.mjs';
-import { benchmark, type BenchmarkContext, concurrent, type LMDBDatabase } from './setup.js';
+import { benchmark, type BenchmarkContext, concurrent, type LMDBDatabase } from './setup.ts';
 import { setImmediate as rest } from 'node:timers/promises';
 import { describe } from 'vitest';
 

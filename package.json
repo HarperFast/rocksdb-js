@@ -1,6 +1,6 @@
 {
   "name": "@harperfast/rocksdb-js",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "description": "RocksDB binding for Node.js",
   "homepage": "https://github.com/HarperFast/rocksdb-js",
   "bugs": [
@@ -42,8 +42,8 @@
     "build:bundle:minify": "cross-env MINIFY=1 pnpm build:bundle",
     "check": "pnpm type-check && pnpm lint && pnpm fmt:check",
     "clean": "node-gyp clean",
-    "coverage": "tsx scripts/coverage/main.ts",
-    "coverage:native": "tsx scripts/native-test/coverage.mjs",
+    "coverage": "node scripts/coverage/main.ts",
+    "coverage:native": "node scripts/native-test/coverage.mjs",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "lint": "oxlint",
@@ -54,7 +54,7 @@
     "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports --v8-flags=--expose-gc ./node_modules/vitest/vitest.mjs",
     "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
-    "test:native": "tsx scripts/native-test/run.mjs",
+    "test:native": "node scripts/native-test/run.mjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
@@ -64,7 +64,7 @@
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "26.1.2",
+    "@types/node": "26.2.0",
     "@vitest/coverage-v8": "4.1.10",
     "cross-env": "10.1.0",
     "dotenv": "17.4.2",
@@ -78,25 +78,24 @@
     "tar": "7.5.22",
     "tsdown": "0.22.14",
     "tslib": "2.8.1",
-    "tsx": "4.23.5",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   },
   "optionalDependencies": {
-    "@harperfast/rocksdb-js-darwin-arm64": "2.7.0",
-    "@harperfast/rocksdb-js-darwin-x64": "2.7.0",
-    "@harperfast/rocksdb-js-linux-arm64-glibc": "2.7.0",
-    "@harperfast/rocksdb-js-linux-arm64-musl": "2.7.0",
-    "@harperfast/rocksdb-js-linux-x64-glibc": "2.7.0",
-    "@harperfast/rocksdb-js-linux-x64-musl": "2.7.0",
-    "@harperfast/rocksdb-js-win32-arm64": "2.7.0",
-    "@harperfast/rocksdb-js-win32-x64": "2.7.0"
+    "@harperfast/rocksdb-js-darwin-arm64": "2.7.1",
+    "@harperfast/rocksdb-js-darwin-x64": "2.7.1",
+    "@harperfast/rocksdb-js-linux-arm64-glibc": "2.7.1",
+    "@harperfast/rocksdb-js-linux-arm64-musl": "2.7.1",
+    "@harperfast/rocksdb-js-linux-x64-glibc": "2.7.1",
+    "@harperfast/rocksdb-js-linux-x64-musl": "2.7.1",
+    "@harperfast/rocksdb-js-win32-arm64": "2.7.1",
+    "@harperfast/rocksdb-js-win32-x64": "2.7.1"
   },
   "engines": {
     "node": "^22.18.0 || >=24.0.0"
   },
   "gypfile": true,
   "rocksdb": {
-    "version": "11.1.2"
+    "version": "11.8.1"
   }
 }

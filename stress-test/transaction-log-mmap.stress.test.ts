@@ -1,6 +1,7 @@
-import { transactionLogMapCount } from '../src/load-binding.js';
-import { dbRunner, createWorkerBootstrapScript } from '../test/lib/util.js';
-import { stressTest } from './setup.js';
+import { transactionLogMapCount } from '../src/load-binding.ts';
+import { dbRunner } from '../test/lib/util.ts';
+import { createWorkerBootstrapScript } from '../test/lib/worker-bootstrap.ts';
+import { stressTest } from './setup.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect } from 'vitest';

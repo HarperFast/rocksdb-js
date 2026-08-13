@@ -19,9 +19,9 @@
 // native reset makes that unnecessary), writing the log entry once and keeping committed reads
 // intact.
 
-import { forceTryAgainForTesting } from '../src/load-binding.js';
-import { Transaction } from '../src/transaction.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { forceTryAgainForTesting } from '../src/load-binding.ts';
+import { Transaction } from '../src/transaction.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 // Record the commit-error code of every failed commit attempt so the test can assert the

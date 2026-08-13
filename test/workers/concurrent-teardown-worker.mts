@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../src/index.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 
 // Opens the SAME database path as its sibling workers (passed via workerData),

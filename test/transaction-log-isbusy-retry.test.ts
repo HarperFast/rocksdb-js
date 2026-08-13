@@ -12,8 +12,8 @@
 // db.transaction() retry loop and asserts the log holds a single copy of the
 // record (not one per attempt) and that the committed read still sees it.
 
-import { constants } from '../src/load-binding.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { constants } from '../src/load-binding.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';

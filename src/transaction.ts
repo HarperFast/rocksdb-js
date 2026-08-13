@@ -1,6 +1,6 @@
-import { DBI } from './dbi';
-import { constants, NativeTransaction, type NativeTransactionOptions } from './load-binding.js';
-import { Store } from './store.js';
+import { DBI } from './dbi.ts';
+import { constants, NativeTransaction, type NativeTransactionOptions } from './load-binding.ts';
+import { Store } from './store.ts';
 
 /**
  * Sentinel value returned by `commit()` when `coordinatedRetry: true` and the

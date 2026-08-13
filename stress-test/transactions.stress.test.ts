@@ -1,6 +1,6 @@
-import { dbRunner } from '../test/lib/util.js';
-import { createWorkerBootstrapScript } from '../test/lib/util.js';
-import { stressTest } from './setup.js';
+import { dbRunner } from '../test/lib/util.ts';
+import { createWorkerBootstrapScript } from '../test/lib/worker-bootstrap.ts';
+import { stressTest } from './setup.ts';
 import { Worker } from 'node:worker_threads';
 import { describe } from 'vitest';
 

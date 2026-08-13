@@ -1,4 +1,4 @@
-import type { Prebuild } from './get-prebuild';
+import type { Prebuild } from './get-prebuild.ts';
 import { execFileSync, execSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';

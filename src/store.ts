@@ -1,18 +1,18 @@
-import { type BackupStreamOptions, backupToStream } from './backup-stream.js';
-import { assertBackupDirOutsideDatabase, type BackupOptions } from './backup.js';
-import { DBIterator, type DBIteratorValue } from './dbi-iterator.js';
-import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.js';
+import { type BackupStreamOptions, backupToStream } from './backup-stream.ts';
+import { assertBackupDirOutsideDatabase, type BackupOptions } from './backup.ts';
+import { DBIterator, type DBIteratorValue } from './dbi-iterator.ts';
+import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.ts';
 import {
 	type BufferWithDataView,
 	createFixedBuffer,
 	type Encoder,
-	Encoding,
+	type Encoding,
 	initKeyEncoder,
 	type Key,
 	type KeyEncoding,
 	type ReadKeyFunction,
 	type WriteKeyFunction,
-} from './encoding.js';
+} from './encoding.ts';
 import {
 	constants,
 	NativeDatabase,
@@ -23,8 +23,8 @@ import {
 	supportedCompression,
 	type TransactionLog,
 	type UserSharedBufferCallback,
-} from './load-binding.js';
-import { parseDuration } from './util.js';
+} from './load-binding.ts';
+import { parseDuration } from './util.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 
 const {

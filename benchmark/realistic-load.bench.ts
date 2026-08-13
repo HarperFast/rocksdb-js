@@ -5,7 +5,7 @@ import {
 	type LMDBDatabase,
 	workerBenchmark as benchmark,
 	workerDescribe as describe,
-} from './setup.js';
+} from './setup.ts';
 
 const DELETE_RATIO = 0.2;
 const NUM_KEYS = 5_000;

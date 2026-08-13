@@ -199,6 +199,25 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
+- **No `tsx`**: `.ts`/`.mts` scripts, worker files, and `src` itself run under Node's native type
+  stripping (the `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Rules for code Node
+  loads directly (i.e. outside Vitest/tsdown, which do their own resolution):
+  - **Real file extensions in every relative import.** `src` imports siblings as `./foo.ts`, not
+    extensionless or `.js` — native strip does **not** remap `.js`→`.ts`. `allowImportingTsExtensions`
+    - `noEmit` in `tsconfig.json` let `tsc` accept the `.ts` specifiers (tsdown ignores `noEmit` and
+      still emits `dist`). This is why the unit-test worker `.mts` (`test/workers/`) and spawned-child
+      `.mts` (`test/fixtures/`) import `../../src/index.ts` directly — so those tests need **no build
+      step** (Vitest resolves its own `.js` specifiers; only the native-loaded files must use `.ts`).
+      **Stress tests and benchmarks are the deliberate exception**: their workers import the built
+      `dist` (`stress-test/workers/`, `benchmark/setup.ts`) because they exercise the shipped artifact,
+      not source — so `pnpm test:stress` / `pnpm bench` build first (both CI workflows do).
+  - **Mark type-only imports with `type`.** `verbatimModuleSyntax` is enabled: native strip can only
+    erase `import type` / `import { type X }`, not a value-style `import { X }` that happens to be a
+    type — that would survive to runtime and fail against a module (e.g. `dist`) that never exported
+    the type. `tsc` enforces this.
+  - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
+    `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
+    from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
 
 ## Important Implementation Notes
 
@@ -331,6 +350,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `DBOptions` defaults that derive a large value were sized when they reached one column family, so
     widening where an option applies means re-checking its default against every shared budget it
     competes for.
+11. **A corrupt transaction-log frame ends an entry, not the log**: framing breaks come in two
+    shapes and the reader must not conflate them. A **torn tail** has nothing valid behind it, so
+    the break is genuinely end-of-log — that is what `recoverTail()` truncates at open. A **mid-log
+    break** (a partial `ENOSPC`/`EDQUOT` append the process survived) has intact, already-committed
+    entries appended _after_ it; `recoverTail()` deliberately leaves such a file alone rather than
+    discard them, and rotated files are never rescanned at all. `query()` therefore reports the
+    break as a `CorruptFrameError` carrying `resyncPosition` (where framing resumes, per the same
+    heuristic as `validFramingResumes()`) and **leaves iteration positioned there**, so a caller
+    that calls `next()` again recovers the entries past it. Treating the throw as terminal amputates
+    every later entry in the file permanently — each drain restarts from the same resume cursor and
+    re-throws at the same offset, which is how HarperFast/harper#2016 lost 2.2 days of acknowledged
+    writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
+    `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
+
+    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
+    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
+    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
+    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
+    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
+    Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
+    a per-frame call would tax every healthy read.
 
 ## Debugging native heap corruption
 

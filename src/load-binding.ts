@@ -1,9 +1,9 @@
-import type { BackupInfo, BackupOptions, RestoreOptions } from './backup.js';
-import type { RangeOptions } from './dbi.js';
-import type { BufferWithDataView, Key } from './encoding.js';
-import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.js';
-import type { BackgroundErrorInfo, StoreContext } from './store.js';
-import type { TransactionLogStoreValidation } from './validate-transaction-log.js';
+import type { BackupInfo, BackupOptions, RestoreOptions } from './backup.ts';
+import type { RangeOptions } from './dbi.ts';
+import type { BufferWithDataView, Key } from './encoding.ts';
+import type { StatsAll, StatsDefault, StatsHistogramData } from './stats.ts';
+import type { BackgroundErrorInfo, StoreContext } from './store.ts';
+import type { TransactionLogStoreValidation } from './validate-transaction-log.ts';
 export type {
 	GetStatsMethod,
 	StatsAll,
@@ -14,7 +14,7 @@ export type {
 	StatsDefault,
 	StatsHistogramData,
 	StatsValue,
-} from './stats.js';
+} from './stats.ts';
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

@@ -1,4 +1,4 @@
-import { versions } from '../src/index.js';
+import { versions } from '../src/index.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('versions', () => {
