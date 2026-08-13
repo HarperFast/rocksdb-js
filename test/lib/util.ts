@@ -1,4 +1,4 @@
-import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.js';
+import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -134,5 +134,3 @@ export async function terminateWorker(worker: Worker): Promise<void> {
 		worker.on('exit', () => resolve());
 	});
 }
-
-export { createWorkerBootstrapScript } from './worker-bootstrap.ts';

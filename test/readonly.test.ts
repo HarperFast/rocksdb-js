@@ -1,5 +1,5 @@
-import { TransactionLog } from '../src/load-binding.js';
-import { dbRunner } from './lib/util.js';
+import { TransactionLog } from '../src/load-binding.ts';
+import { dbRunner } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';

@@ -1,4 +1,4 @@
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 /** Polls until a flush lands, so a test asserting one happened does not race it. */

@@ -1,4 +1,4 @@
-import { generateDBPath } from './lib/util.js';
+import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';

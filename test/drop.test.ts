@@ -1,6 +1,6 @@
-import { RocksDatabase } from '../src/index.js';
-import type { Transaction } from '../src/transaction.js';
-import { dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import type { Transaction } from '../src/transaction.ts';
+import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Drop', () => {

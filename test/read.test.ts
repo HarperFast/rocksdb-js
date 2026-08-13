@@ -1,5 +1,5 @@
-import type { BufferWithDataView } from '../src/encoding.js';
-import { dbRunner } from './lib/util.js';
+import type { BufferWithDataView } from '../src/encoding.ts';
+import { dbRunner } from './lib/util.ts';
 import { Encoder } from 'msgpackr';
 import { RESET_BUFFER_MODE, REUSE_BUFFER_MODE } from 'msgpackr/pack';
 import { describe, expect, it } from 'vitest';

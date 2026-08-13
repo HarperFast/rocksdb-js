@@ -2,7 +2,7 @@ import {
 	installedSatisfiesPin,
 	isExactVersionPin,
 	prebuildIsRedundant,
-} from '../scripts/init-rocksdb/version-check.js';
+} from '../scripts/init-rocksdb/version-check.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('init-rocksdb version-check', () => {

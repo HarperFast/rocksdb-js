@@ -1,5 +1,6 @@
-import { RocksDatabase, registryStatus, shutdown } from '../src/index.js';
-import { createWorkerBootstrapScript, dbRunner, generateDBPath } from './lib/util.js';
+import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { spawn } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';

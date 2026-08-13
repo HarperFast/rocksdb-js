@@ -1,6 +1,6 @@
-import { type CompressionAlgorithm, RocksDatabase, supportedCompression } from '../src/index.js';
-import { normalizeCompression } from '../src/store.js';
-import { generateDBPath } from './lib/util.js';
+import { type CompressionAlgorithm, RocksDatabase, supportedCompression } from '../src/index.ts';
+import { normalizeCompression } from '../src/store.ts';
+import { generateDBPath } from './lib/util.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
 	cpSync,
