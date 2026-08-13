@@ -1,9 +1,9 @@
-import { generateDBPath } from './lib/util.js';
+import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const fixturePath = join(__dirname, 'fixtures', 'fork-vt-lock-tracker-churn.mts');
+const fixturePath = join(import.meta.dirname, 'fixtures', 'fork-vt-lock-tracker-churn.mts');
 
 /**
  * Runs the VT LockTracker churn repro in a child process so a native abort
@@ -30,10 +30,7 @@ function spawnRepro(
 		// Recycle interval (4th arg) intentionally matches the proven-safe
 		// repro-crossthread.mjs cadence rather than something more aggressive --
 		// see the fixture's module doc for why.
-		const args =
-			process.versions.bun || process.versions.deno
-				? [fixturePath, dbPath, '12000', '4', '4000']
-				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath, '12000', '4', '4000'];
+		const args = [fixturePath, dbPath, '12000', '4', '4000'];
 
 		const child = spawn(process.execPath, args, {
 			env: { ...process.env, ROCKSDB_JS_TXN_CLOSE_DELAY_MS: '15' },
