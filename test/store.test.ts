@@ -1,5 +1,5 @@
 import { RocksDatabase } from '../src/index.js';
-import { Store, StoreContext, type StorePutOptions } from '../src/store.js';
+import { Store, type StoreContext, type StorePutOptions } from '../src/store.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { rm } from 'node:fs/promises';
 import type { Key } from 'ordered-binary';

@@ -1,9 +1,9 @@
 import {
 	constants,
 	type LogBuffer,
-	TransactionEntry,
+	type TransactionEntry,
 	TransactionLog,
-	TransactionLogQueryOptions,
+	type TransactionLogQueryOptions,
 } from './load-binding.js';
 
 const FLOAT_TO_UINT32 = new Float64Array(1);

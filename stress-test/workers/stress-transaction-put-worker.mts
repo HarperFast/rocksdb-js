@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../dist/index.mjs';
 import { randomBytes } from 'node:crypto';
 import { parentPort, workerData } from 'node:worker_threads';
 

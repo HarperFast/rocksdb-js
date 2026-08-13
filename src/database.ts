@@ -16,7 +16,7 @@ import {
 import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
 import {
 	type ArrayBufferWithNotify,
-	CompactOptions,
+	type CompactOptions,
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,

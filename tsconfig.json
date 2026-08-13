@@ -24,6 +24,7 @@
     "strict": true,
     "sourceMap": false,
     "target": "esnext",
+    "verbatimModuleSyntax": true,
     "typeRoots": ["./node_modules/@types"],
     "types": ["node"]
   },

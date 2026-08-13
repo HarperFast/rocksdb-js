@@ -1,4 +1,4 @@
-import { RocksDatabase, RocksDatabaseOptions, shutdown } from '../dist/index.mjs';
+import { RocksDatabase, type RocksDatabaseOptions, shutdown } from '../dist/index.mjs';
 import * as lmdb from 'lmdb';
 import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';

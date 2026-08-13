@@ -6,7 +6,7 @@ import {
 	type BufferWithDataView,
 	createFixedBuffer,
 	type Encoder,
-	Encoding,
+	type Encoding,
 	initKeyEncoder,
 	type Key,
 	type KeyEncoding,
