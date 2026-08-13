@@ -612,7 +612,6 @@ void TransactionHandle::getCount(
 	if (this->snapshotSet) {
 		itOptions.readOptions.snapshot = this->txn->GetSnapshot();
 	}
-	}
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
 		std::make_unique<DBIteratorHandle>(this, itOptions, dbHandleOverride);

@@ -295,10 +295,7 @@ struct ParkedFlagRegistry {
 		// the same amortized cost as the vector's own growth -- instead of
 		// an O(n) scan under this process-global lock on every single park.
 		if (flags.size() == flags.capacity()) {
-			flags.erase(
-				std::remove_if(flags.begin(), flags.end(), [](const std::weak_ptr<ParkedFlag>& w) { return w.expired(); }),
-				flags.end()
-			);
+			std::erase_if(flags, [](const std::weak_ptr<ParkedFlag>& w) { return w.expired(); });
 		}
 		flags.push_back(flag);
 		return flag;
