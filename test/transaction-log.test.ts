@@ -58,7 +58,7 @@ describe('Transaction Log', () => {
 				const txn = new Transaction(db.store);
 				await txn.put('key', 'value');
 				txn.abort();
-				expect(() => txn.useLog('foo')).toThrowError(/Transaction is closed/);
+				expect(() => txn.useLog('foo')).toThrow(new Error('Transaction is closed'));
 			}));
 
 		it('should support numeric log names', () =>
