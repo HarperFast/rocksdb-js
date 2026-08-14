@@ -379,9 +379,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     leaked that handle — holding a live RocksDB transaction + snapshot — into the shared
     descriptor, with its `env` left dangling once the worker died. The last env's
     `DBRegistry::Shutdown → finishClose → close()` then walked those corpses and corrupted the
-    glibc heap (production signatures: `corrupted size vs. prev_size`, `corrupted double-linked
-list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 — reproduced 10/10 on Linux/glibc
-    by `test/lingering-txn-shutdown.test.ts`, 10/10 clean with the fix). The reap is
+    glibc heap (production signatures: `corrupted size vs. prev_size`,
+    `corrupted double-linked list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 —
+    reproduced 10/10 on Linux/glibc by `test/lingering-txn-shutdown.test.ts`, 10/10 clean with
+    the fix). The reap is
     `DBRegistry::CloseTransactionsByEnv` → `DBDescriptor::closeTransactionsByEnv`, wired into the
     module's per-env cleanup hook (binding.cpp) so it runs on the dying env's own thread while the
     env is still valid.
@@ -399,8 +400,9 @@ list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 — reproduced 10/10
     Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
     no `napi_env`/`napi_ref` fields (the JS database is passed to `UseLog` per-call; its former
     weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
-    thread-identity guard was the Linux corrupting write: `napi_delete_reference(dead env, dead
-ref)` from Shutdown). Close is therefore safe from any thread and any teardown phase; do not
+    thread-identity guard was the Linux corrupting write:
+    `napi_delete_reference(dead env, dead ref)` from Shutdown). Close is therefore safe from any
+    thread and any teardown phase; do not
     reintroduce napi calls into close paths. Known macOS-only artifact: under Guard Malloc the
     leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the

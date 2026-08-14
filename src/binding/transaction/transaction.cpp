@@ -1137,6 +1137,33 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	// The caller supplies the JS database (the transaction deliberately holds no
+	// napi_ref to it). Validate it is THIS transaction's database before any
+	// state changes: transaction ids are descriptor-local and collide freely
+	// across databases, so binding through a foreign database would hand the
+	// TransactionLog a database whose descriptor resolves the id to an
+	// unrelated transaction — addEntry() would then silently attach entries to
+	// it. Checked before the bind below so a mismatch cannot leave
+	// pendingTransactionCount incremented.
+	napi_value exports;
+	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports), "Failed to get 'exports' reference");
+
+	napi_value databaseCtor;
+	bool isDatabase = false;
+	NAPI_STATUS_THROWS_ERROR(::napi_get_named_property(env, exports, "Database", &databaseCtor), "Failed to get 'Database' constructor");
+	NAPI_STATUS_THROWS_ERROR(::napi_instanceof(env, argv[1], databaseCtor, &isDatabase), "Failed to check 'database' argument");
+	if (!isDatabase) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected Database instance");
+		return nullptr;
+	}
+
+	std::shared_ptr<DBHandle>* jsDbHandle = nullptr;
+	NAPI_STATUS_THROWS_ERROR(::napi_unwrap(env, argv[1], reinterpret_cast<void**>(&jsDbHandle)), "Failed to unwrap 'database' argument");
+	if (jsDbHandle == nullptr || (*jsDbHandle).get() != (*txnHandle)->dbHandle.get()) {
+		::napi_throw_error(env, nullptr, "Database does not own this transaction");
+		return nullptr;
+	}
+
 	// check if transaction is already bound to a different log store
 	auto boundStore = (*txnHandle)->boundLogStore.lock();
 	if (boundStore && boundStore->name != name) {
@@ -1171,22 +1198,11 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 
 	// this needs to create a new TransactionLog instance that is not tracked by
 	// the DBHandle and is bound to this transaction
-	napi_value exports;
-	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports), "Failed to get 'exports' reference");
-
 	napi_value transactionLogCtor;
 	NAPI_STATUS_THROWS_ERROR(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor), "Failed to get 'TransactionLog' constructor");
 
-	napi_value jsDatabase = argv[1];
-	napi_valuetype jsDatabaseType;
-	NAPI_STATUS_THROWS_ERROR(::napi_typeof(env, jsDatabase, &jsDatabaseType), "Failed to check 'jsDatabase' argument");
-	if (jsDatabaseType != napi_object) {
-		::napi_throw_error(env, nullptr, "Database argument is required");
-		return nullptr;
-	}
-
 	napi_value args[3];
-	args[0] = jsDatabase;
+	args[0] = argv[1];
 
 	NAPI_STATUS_THROWS_ERROR(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]), "Invalid log name");
 	NAPI_STATUS_THROWS_ERROR(::napi_create_uint32(env, (*txnHandle)->id, &args[2]), "Failed to create transaction id argument");

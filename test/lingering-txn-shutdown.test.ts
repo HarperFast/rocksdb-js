@@ -90,7 +90,12 @@ describe('pending transactions leaked by dead worker envs', () => {
 		120_000
 	);
 
-	it('control: survives worker churn with no pending transactions leaked', async () => {
+	// The differentiating condition, isolated: identical topology and
+	// NativeTransaction lifecycle as the repro above — ten sequential workers
+	// each creating a transaction and exiting — except these COMMIT, so
+	// transactionRemove() takes each one out of the registry before its env
+	// dies. Nothing lingers, so this stays green on main as well as here.
+	it('control: committed transactions survive the same worker churn', async () => {
 		const { code, signal } = await new Promise<{
 			code: number | null;
 			signal: NodeJS.Signals | null;
@@ -100,7 +105,9 @@ describe('pending transactions leaked by dead worker envs', () => {
 				env.DYLD_INSERT_LIBRARIES = '/usr/lib/libgmalloc.dylib';
 				env.MallocScribble = '1';
 			}
-			const child = spawn(process.execPath, [fixturePath, generateDBPath(), '0'], { env });
+			const child = spawn(process.execPath, [fixturePath, generateDBPath(), '10', 'committer'], {
+				env,
+			});
 			child.on('close', (code, signal) => resolve({ code, signal }));
 			child.on('error', reject);
 		});

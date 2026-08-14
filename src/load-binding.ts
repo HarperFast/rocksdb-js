@@ -63,10 +63,9 @@ export type NativeTransaction = {
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
 	setTimestamp(timestamp?: number): void;
-	// jsDatabase is accepted (and ignored) so Store.useLog can pass it
-	// unconditionally for both StoreContext shapes; only the transaction
-	// variant consumes it.
-	useLog(name: string | number, jsDatabase?: NativeDatabase): TransactionLog;
+	// The transaction holds no napi_ref to its database (#741), so the owning
+	// NativeDatabase must be supplied per-call; native rejects a foreign one.
+	useLog(name: string | number, jsDatabase: NativeDatabase): TransactionLog;
 };
 
 export type LogBuffer = Buffer & {
@@ -381,7 +380,10 @@ export type NativeDatabase = {
 	setIteratorState(buffer: Buffer | Uint8Array): void;
 	tryLock(key: BufferWithDataView, callback?: () => void): boolean;
 	unlock(key: BufferWithDataView): void;
-	useLog(name: string, jsDatabase: NativeDatabase): TransactionLog;
+	// jsDatabase is accepted (and ignored) so Store.useLog can pass it
+	// unconditionally for both StoreContext shapes; only the transaction
+	// variant consumes it.
+	useLog(name: string, jsDatabase?: NativeDatabase): TransactionLog;
 	verifyVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): boolean;
 	withLock(key: BufferWithDataView, callback: () => void | Promise<void>): Promise<void>;
 };

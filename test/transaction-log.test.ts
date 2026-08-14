@@ -61,6 +61,25 @@ describe('Transaction Log', () => {
 				expect(() => txn.useLog('foo')).toThrow(new Error('Transaction is closed'));
 			}));
 
+		it('should reject binding a log through a foreign database', () =>
+			dbRunner(async ({ db }) => {
+				db.open();
+
+				await dbRunner(async ({ db: otherDb }) => {
+					otherDb.open();
+
+					// Transaction ids are descriptor-local and collide across
+					// databases, so binding through a foreign database would let
+					// addEntry() attach entries to an unrelated transaction.
+					const txn = new Transaction(db.store);
+					await txn.put('key', 'value');
+					expect(() => otherDb.store.useLog(txn._context, 'foo')).toThrow(
+						new Error('Database does not own this transaction')
+					);
+					txn.abort();
+				});
+			}));
+
 		it('should support numeric log names', () =>
 			dbRunner(async ({ db }) => {
 				db.open();
