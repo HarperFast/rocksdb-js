@@ -1,7 +1,9 @@
+#include "core/background_error.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "napi/helpers.h"
+#include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/listener.h"
@@ -235,44 +237,37 @@ public:
 		}
 	}
 
-	// Mirrors RocksDB's latched background error onto the descriptor so a consumer
-	// can observe it and recover in-process (HarperFast/rocksdb-js#730). We do NOT
-	// suppress the error (leaving *bg_error untouched) — the point is to surface
-	// the read-only latch, not hide it. Runs on flush/compaction/write threads, so
-	// it must stay cheap: a mutex-guarded copy, nothing blocking.
-	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bg_error) override {
-		if (!descriptorPtr || bg_error == nullptr) {
+	// Surfaces a RocksDB background error to JS (HarperFast/rocksdb-js#730). The
+	// error is serialized to a JSON string and stored on the descriptor so it is
+	// available on demand via `db.getLastError()`, then — if anyone is listening —
+	// emitted as an `'error'` event carrying a `BackgroundError`. Both paths
+	// reconstruct the same instance from this string on the JS thread, so nothing
+	// N-API/env-bound is touched here. We do NOT suppress the error (leaving
+	// *bgError untouched) — the point is to surface it, not hide it. Runs on
+	// flush/compaction/write threads; storing a string and the thread-safe,
+	// asynchronous `notify` keep this cheap and non-blocking.
+	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bgError) override {
+		if (!this->descriptorPtr || bgError == nullptr) {
 			return;
 		}
-		auto desc = descriptorPtr->lock();
+		auto desc = this->descriptorPtr->lock();
 		if (!desc) {
 			return;
 		}
-		desc->latchBackgroundError(static_cast<int>(reason), *bg_error);
-	}
-
-	// Fires when a recovery attempt (auto-recovery or an explicit DB::Resume())
-	// completes. These callbacks run on RocksDB background threads and race each
-	// other and OnBackgroundError, so reconciliation must be a single atomic step
-	// conditioned on the error actually being recovered — never a blind clear.
-	// `reconcileRecoveryEnd` (in BackgroundErrorMirror) does that: on success it
-	// clears only if the currently-latched error IS `old_bg_error` (so a newer
-	// error latched in between survives); on failure it seeds `old_bg_error` only
-	// when nothing is latched (RocksDB retains it as the read-only latch). Format
-	// the message outside the mirror lock (ToString allocates on a bg thread).
-	void OnErrorRecoveryEnd(const rocksdb::BackgroundErrorRecoveryInfo& info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-		auto desc = descriptorPtr->lock();
-		if (!desc) {
-			return;
-		}
-		desc->reconcileRecoveryEnd(
-			info.old_bg_error.ToString(),
-			static_cast<int>(info.old_bg_error.severity()),
-			info.new_bg_error.ok()
+		int severity = static_cast<int>(bgError->severity());
+		int reasonInt = static_cast<int>(reason);
+		std::string json = backgroundErrorToJson(
+			bgError->ToString(),
+			severity,
+			backgroundErrorSeverityName(severity),
+			backgroundErrorDisablesWrites(severity),
+			reasonInt,
+			backgroundErrorReasonName(reasonInt)
 		);
+		desc->setLastError(json);
+		if (desc->events.hasListeners()) {
+			desc->events.notify("error", ListenerData::backgroundError(json));
+		}
 	}
 
 private:
@@ -1776,24 +1771,17 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
 }
 
-void DBDescriptor::latchBackgroundError(int reason, const rocksdb::Status& status) {
-	this->backgroundError.latch(reason, status);
+void DBDescriptor::setLastError(std::string json) {
+	std::lock_guard<std::mutex> lock(this->lastErrorMutex);
+	this->lastError = std::move(json);
 }
 
-void DBDescriptor::reconcileRecoveryEnd(
-	const std::string& recoveredMessage,
-	int recoveredSeverity,
-	bool recovered
-) {
-	this->backgroundError.reconcileRecoveryEnd(recoveredMessage, recoveredSeverity, recovered);
-}
-
-bool DBDescriptor::clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration) {
-	return this->backgroundError.clearIfUnchanged(expectedGeneration);
-}
-
-bool DBDescriptor::getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation) {
-	return this->backgroundError.get(out, generation);
+/**
+ * Returns a copy of the last error that occurred on this database.
+ */
+std::string DBDescriptor::getLastError() {
+	std::lock_guard<std::mutex> lock(this->lastErrorMutex);
+	return this->lastError;
 }
 
 rocksdb::Status DBDescriptor::flush() {

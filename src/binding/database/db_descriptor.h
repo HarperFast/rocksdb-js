@@ -16,7 +16,6 @@
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
 #include "database/commit_worker.h"
-#include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
 #include "core/platform.h"
@@ -29,6 +28,7 @@ namespace rocksdb_js {
 // forward declarations
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
+struct DBHandle;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -190,13 +190,22 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	EventEmitter events;
 
 	/**
-	 * Mirror of RocksDB's latched background-error state (HarperFast/rocksdb-js#730).
-	 * Written by the event listener's `OnBackgroundError`/`OnErrorRecoveryEnd`
-	 * callbacks (RocksDB background threads) and read by the JS thread; the mirror
-	 * is internally synchronized. RocksDB exposes no public getter for the current
-	 * background error, so this is the source of truth for the JS surface.
+	 * The most recent background error, serialized to a JSON string
+	 * (`backgroundErrorToJson`), or empty when none has occurred. Stored as a
+	 * plain string — not any N-API value — so `OnBackgroundError` can write it
+	 * from a RocksDB background thread with no `napi_env` involved; the JS thread
+	 * reconstructs a `BackgroundError` from it on demand (`getLastError()`) and
+	 * when emitting the `'error'` event. Guarded by `lastErrorMutex`. Purely
+	 * historical: it is NOT cleared by `resume()` (see HarperFast/rocksdb-js#730).
 	 */
-	BackgroundErrorMirror backgroundError;
+	std::mutex lastErrorMutex;
+	std::string lastError;
+
+	/** Stores the latest serialized background error (background thread). */
+	void setLastError(std::string json);
+
+	/** Returns the latest serialized background error, or empty when none (JS thread). */
+	std::string getLastError();
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv
@@ -276,18 +285,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * tsfn so the commit thread stops marshalling into a torn-down env.
 	 */
 	void releaseCommitCompletionsByEnv(napi_env env);
-
-	/**
-	 * Background-error mirror accessors — thin delegates to `backgroundError`
-	 * (see `BackgroundErrorMirror`). All thread-safe. `latchBackgroundError`
-	 * records an error; `reconcileRecoveryEnd` atomically applies an
-	 * `OnErrorRecoveryEnd`; `clearBackgroundErrorIfUnchanged` lets `resume()`
-	 * clear only the error it observed; `getBackgroundError` reads the mirror.
-	 */
-	void latchBackgroundError(int reason, const rocksdb::Status& status);
-	void reconcileRecoveryEnd(const std::string& recoveredMessage, int recoveredSeverity, bool recovered);
-	bool clearBackgroundErrorIfUnchanged(uint64_t expectedGeneration);
-	bool getBackgroundError(BackgroundErrorInfo& out, uint64_t* generation = nullptr);
 
 private:
 	DBDescriptor(

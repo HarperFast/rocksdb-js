@@ -20,9 +20,15 @@ namespace rocksdb_js {
 struct ListenerData final {
 	std::string args;
 
+	// When true, `args` is a JSON *object* (not the usual args array) of error
+	// fields, and the trampoline materializes it into a JS `Error` passed as the
+	// listener's single argument. Used by the per-database `'error'` event so a
+	// background error reaches JS as a real `Error` (HarperFast/rocksdb-js#730).
+	bool asError = false;
+
 	ListenerData() = default;
 	ListenerData(size_t size) : args(size, '\0') {}
-	ListenerData(const ListenerData& other) : args(other.args) {}
+	ListenerData(const ListenerData& other) : args(other.args), asError(other.asError) {}
 
 	/**
 	 * Builds a ListenerData payload from one or more pre-stringified args,
@@ -60,6 +66,22 @@ struct ListenerData final {
 
 		auto* data = new ListenerData();
 		data->args = std::move(payload);
+		return data;
+	}
+
+	/**
+	 * Builds an `asError` payload from a background error's JSON string form
+	 * (`backgroundErrorToJson`). The trampoline (`callListenerCallback`)
+	 * reconstructs a `BackgroundError` instance from it on the delivering env's
+	 * thread. Safe to call off the JS thread (no N-API).
+	 *
+	 * Returns a heap-allocated ListenerData; ownership transfers to
+	 * `EventEmitter::notify`.
+	 */
+	static ListenerData* backgroundError(const std::string& json) {
+		auto* data = new ListenerData();
+		data->args = json;
+		data->asError = true;
 		return data;
 	}
 };

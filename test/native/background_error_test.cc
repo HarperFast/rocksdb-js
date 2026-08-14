@@ -4,11 +4,10 @@
 #include "rocksdb/listener.h"
 #include "rocksdb/status.h"
 
-using rocksdb_js::backgroundErrorIsReadOnly;
+using rocksdb_js::backgroundErrorDisablesWrites;
 using rocksdb_js::backgroundErrorReasonName;
 using rocksdb_js::backgroundErrorSeverityName;
-using rocksdb_js::BackgroundErrorInfo;
-using rocksdb_js::BackgroundErrorMirror;
+using rocksdb_js::backgroundErrorToJson;
 
 TEST(BackgroundError, SeverityNames) {
 	EXPECT_STREQ(backgroundErrorSeverityName(rocksdb::Status::Severity::kNoError), "none");
@@ -39,102 +38,50 @@ TEST(BackgroundError, ReasonUnknownFallsBack) {
 	EXPECT_STREQ(backgroundErrorReasonName(999), "unknown");
 }
 
-// The info struct defaults to a healthy, cleared state.
-TEST(BackgroundError, InfoDefaultsToHealthy) {
-	BackgroundErrorInfo info;
-	EXPECT_FALSE(info.latched);
-	EXPECT_TRUE(info.message.empty());
-	EXPECT_EQ(info.severity, 0);
-	EXPECT_EQ(info.reason, -1);
-}
-
 // The #730 disk-quota case surfaces as a NoSpace IO error; its ToString() is
-// what latchBackgroundError captures as the message. In production RocksDB's
+// what the `'error'` event carries as the message. In production RocksDB's
 // error handler classifies such an error >= hard, and backgroundErrorSeverityName
 // maps that to an actionable "read-only" signal for a consumer.
-TEST(BackgroundError, NoSpaceStatusLatchesWithMessage) {
+TEST(BackgroundError, NoSpaceStatusHasMessage) {
 	rocksdb::Status s = rocksdb::Status::NoSpace("quota exceeded");
 	EXPECT_FALSE(s.ok());
 	EXPECT_NE(s.ToString().find("quota exceeded"), std::string::npos);
 	EXPECT_STREQ(backgroundErrorSeverityName(rocksdb::Status::Severity::kHardError), "hard");
 }
 
-// Only a hard-or-worse severity stops writes; a soft error auto-recovers.
-TEST(BackgroundError, IsReadOnlyBySeverity) {
-	EXPECT_FALSE(backgroundErrorIsReadOnly(rocksdb::Status::Severity::kNoError));   // 0
-	EXPECT_FALSE(backgroundErrorIsReadOnly(rocksdb::Status::Severity::kSoftError)); // 1
-	EXPECT_TRUE(backgroundErrorIsReadOnly(rocksdb::Status::Severity::kHardError));  // 2
-	EXPECT_TRUE(backgroundErrorIsReadOnly(rocksdb::Status::Severity::kFatalError)); // 3
-	EXPECT_TRUE(backgroundErrorIsReadOnly(rocksdb::Status::Severity::kUnrecoverableError)); // 4
+// backgroundErrorToJson is the serialized form stored on the descriptor and
+// reconstructed into a BackgroundError on the JS thread.
+TEST(BackgroundError, ToJsonIncludesAllFields) {
+	std::string json = backgroundErrorToJson("disk full", 2, "hard", true, 0, "flush");
+	EXPECT_NE(json.find("\"type\":\"background\""), std::string::npos);
+	EXPECT_NE(json.find("\"message\":\"disk full\""), std::string::npos);
+	EXPECT_NE(json.find("\"severity\":2"), std::string::npos);
+	EXPECT_NE(json.find("\"severityName\":\"hard\""), std::string::npos);
+	EXPECT_NE(json.find("\"writesDisabled\":true"), std::string::npos);
+	EXPECT_NE(json.find("\"reason\":0"), std::string::npos);
+	EXPECT_NE(json.find("\"reasonName\":\"flush\""), std::string::npos);
 }
 
-// --- BackgroundErrorMirror: deterministic interleavings of the recovery
-// reconciliation, which in production races across RocksDB background threads. ---
-
-TEST(BackgroundErrorMirror, LatchAndGet) {
-	BackgroundErrorMirror m;
-	BackgroundErrorInfo info;
-	EXPECT_FALSE(m.get(info));
-	m.latch(0, rocksdb::Status::IOError("disk full"));
-	ASSERT_TRUE(m.get(info));
-	EXPECT_NE(info.message.find("disk full"), std::string::npos);
-	EXPECT_EQ(info.reason, 0);
+// A negative reason (no reason-bearing callback) omits reason/reasonName.
+TEST(BackgroundError, ToJsonOmitsReasonWhenNegative) {
+	std::string json = backgroundErrorToJson("soft hiccup", 1, "soft", false, -1, "unknown");
+	EXPECT_EQ(json.find("\"reason\""), std::string::npos);
+	EXPECT_EQ(json.find("\"reasonName\""), std::string::npos);
+	EXPECT_NE(json.find("\"writesDisabled\":false"), std::string::npos);
 }
 
-TEST(BackgroundErrorMirror, RecoverySuccessClearsTheRecoveredError) {
-	BackgroundErrorMirror m;
-	m.latch(0, rocksdb::Status::IOError("A"));
-	BackgroundErrorInfo info;
-	ASSERT_TRUE(m.get(info));
-	m.reconcileRecoveryEnd(info.message, info.severity, /*recovered=*/true);
-	EXPECT_FALSE(m.get(info));
+// The message is JSON-escaped so quotes/control chars round-trip through JSON.parse.
+TEST(BackgroundError, ToJsonEscapesMessage) {
+	std::string json = backgroundErrorToJson("say \"hi\"\n", 2, "hard", true, 0, "flush");
+	EXPECT_NE(json.find("\\\"hi\\\""), std::string::npos);
+	EXPECT_NE(json.find("\\n"), std::string::npos);
 }
 
-// A newer error B latches between recovery A starting and A's callback; A's
-// success must NOT clear B.
-TEST(BackgroundErrorMirror, RecoverySuccessDoesNotClearANewerError) {
-	BackgroundErrorMirror m;
-	m.latch(0, rocksdb::Status::IOError("A"));
-	BackgroundErrorInfo a;
-	ASSERT_TRUE(m.get(a));
-	m.latch(0, rocksdb::Status::IOError("B"));
-	m.reconcileRecoveryEnd(a.message, a.severity, /*recovered=*/true);
-	BackgroundErrorInfo info;
-	ASSERT_TRUE(m.get(info));
-	EXPECT_NE(info.message.find("B"), std::string::npos);
-}
-
-// A failed recovery seeds old_bg_error only when nothing is latched.
-TEST(BackgroundErrorMirror, FailedRecoverySeedsOnlyWhenEmpty) {
-	BackgroundErrorMirror m;
-	m.reconcileRecoveryEnd("stale IO error", 2, /*recovered=*/false);
-	BackgroundErrorInfo info;
-	ASSERT_TRUE(m.get(info));
-	EXPECT_EQ(info.message, "stale IO error");
-	EXPECT_EQ(info.severity, 2);
-}
-
-TEST(BackgroundErrorMirror, FailedRecoveryDoesNotClobberNewerError) {
-	BackgroundErrorMirror m;
-	m.latch(0, rocksdb::Status::IOError("B"));
-	m.reconcileRecoveryEnd("old A", 2, /*recovered=*/false);
-	BackgroundErrorInfo info;
-	ASSERT_TRUE(m.get(info));
-	EXPECT_NE(info.message.find("B"), std::string::npos);
-}
-
-// resume()'s generation-guarded clear: a stale clear (after a newer error
-// latched) is a no-op; clearing at the observed generation succeeds.
-TEST(BackgroundErrorMirror, ClearIfUnchangedRespectsGeneration) {
-	BackgroundErrorMirror m;
-	uint64_t gen = 0;
-	m.latch(0, rocksdb::Status::IOError("A"));
-	BackgroundErrorInfo info;
-	ASSERT_TRUE(m.get(info, &gen));
-	m.latch(0, rocksdb::Status::IOError("B")); // bumps generation
-	EXPECT_FALSE(m.clearIfUnchanged(gen));
-	ASSERT_TRUE(m.get(info, &gen));
-	EXPECT_NE(info.message.find("B"), std::string::npos);
-	EXPECT_TRUE(m.clearIfUnchanged(gen));
-	EXPECT_FALSE(m.get(info));
+// Only a hard-or-worse severity disables writes; a soft error auto-recovers.
+TEST(BackgroundError, DisablesWritesBySeverity) {
+	EXPECT_FALSE(backgroundErrorDisablesWrites(rocksdb::Status::Severity::kNoError));   // 0
+	EXPECT_FALSE(backgroundErrorDisablesWrites(rocksdb::Status::Severity::kSoftError)); // 1
+	EXPECT_TRUE(backgroundErrorDisablesWrites(rocksdb::Status::Severity::kHardError));  // 2
+	EXPECT_TRUE(backgroundErrorDisablesWrites(rocksdb::Status::Severity::kFatalError)); // 3
+	EXPECT_TRUE(backgroundErrorDisablesWrites(rocksdb::Status::Severity::kUnrecoverableError)); // 4
 }

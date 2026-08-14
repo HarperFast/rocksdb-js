@@ -9,6 +9,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/background_error.h"
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
@@ -17,7 +18,6 @@
 #include "napi/async.h"
 #include "core/verification_table.h"
 #include "core/compression.h"
-#include "core/background_error.h"
 
 namespace rocksdb_js {
 
@@ -799,75 +799,45 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Returns the currently latched RocksDB background error as an object
- * `{ message, severity, severityName, reason?, reasonName? }`, or `null` when
- * the database is healthy. A latched error means RocksDB has stopped accepting
- * writes (it is effectively read-only) until recovery; `resume()` attempts that
- * recovery. See HarperFast/rocksdb-js#730.
+ * Returns the most recent background error as a `BackgroundError` instance, or
+ * `null` when none has occurred on this database. The value is purely historical
+ * — it is not cleared by a successful `resume()`. A background error with
+ * `writesDisabled === true` means RocksDB has stopped accepting writes; call
+ * `resume()` once the underlying condition clears. See HarperFast/rocksdb-js#730.
  *
  * @example
  * ```typescript
- * const err = db.getBackgroundError();
- * if (err) console.error(`database is read-only: ${err.message}`);
+ * const err = db.getLastError();
+ * if (err?.writesDisabled) db.resume();
  * ```
  */
-napi_value Database::GetBackgroundError(napi_env env, napi_callback_info info) {
+napi_value Database::GetLastError(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	BackgroundErrorInfo err;
-	if (!(*dbHandle)->descriptor->getBackgroundError(err)) {
+	std::string json = (*dbHandle)->descriptor->getLastError();
+	if (json.empty()) {
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_get_null(env, &result));
 		return result;
 	}
 
-	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
-
-	napi_value message;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, err.message.c_str(), NAPI_AUTO_LENGTH, &message));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "message", message));
-
-	napi_value severity;
-	NAPI_STATUS_THROWS(::napi_create_int32(env, err.severity, &severity));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "severity", severity));
-
-	napi_value severityName;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, backgroundErrorSeverityName(err.severity), NAPI_AUTO_LENGTH, &severityName));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "severityName", severityName));
-
-	// The read-only signal: only a hard-or-worse severity stops writes. A soft
-	// error is observed here but auto-recovers, so `resume()` guidance keys off
-	// `isReadOnly`, not merely a non-null value.
-	napi_value isReadOnly;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, backgroundErrorIsReadOnly(err.severity), &isReadOnly));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "isReadOnly", isReadOnly));
-
-	// reason is absent when the error was recorded outside a reason-bearing
-	// callback (e.g. a failed resume), so only surface it when known.
-	if (err.reason >= 0) {
-		napi_value reason;
-		NAPI_STATUS_THROWS(::napi_create_int32(env, err.reason, &reason));
-		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "reason", reason));
-
-		napi_value reasonName;
-		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, backgroundErrorReasonName(err.reason), NAPI_AUTO_LENGTH, &reasonName));
-		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "reasonName", reasonName));
-	}
-
-	return result;
+	// Returns nullptr with a pending exception on failure (propagated to JS).
+	return BackgroundError::New(env, json);
 }
 
 /**
- * Attempts to recover the database from a latched background error by calling
- * RocksDB's `DB::Resume()`. On success the read-only latch is cleared and
- * writes are accepted again (and RocksDB can resume the obsolete-file cleanup
- * it was blocking); on failure the underlying condition (e.g. the disk is still
- * full) has not cleared, and this throws with the RocksDB error while the latch
- * remains. A no-op on a healthy database. Runs synchronously — recovery can
- * re-flush memtables, so it may briefly block. See HarperFast/rocksdb-js#730.
+ * Attempts to recover the database from a background error by calling RocksDB's
+ * `DB::Resume()`. When a write fails at the filesystem level (e.g. a full disk),
+ * RocksDB records a hard background error and stops accepting writes; the
+ * database emits an `'error'` event and becomes effectively read-only until
+ * recovery. Call this after the underlying condition has cleared (e.g. disk
+ * space freed): on success writes are accepted again (and RocksDB can resume the
+ * obsolete-file cleanup it was blocking); on failure the condition has not
+ * actually cleared, and this throws with the RocksDB error while the database
+ * stays read-only. A no-op on a healthy database. Runs synchronously — recovery
+ * can re-flush memtables, so it may briefly block. See HarperFast/rocksdb-js#730.
  *
  * @example
  * ```typescript
@@ -880,13 +850,6 @@ napi_value Database::Resume(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	// Capture the mirror generation before recovery so we clear only the error we
-	// set out to recover — if a NEW background error latches on another thread
-	// during Resume(), it must stay visible rather than be erased by our clear.
-	uint64_t generation = 0;
-	BackgroundErrorInfo before;
-	(*dbHandle)->descriptor->getBackgroundError(before, &generation);
-
 	rocksdb::Status status = (*dbHandle)->descriptor->db->Resume();
 	if (!status.ok()) {
 		napi_value error;
@@ -895,11 +858,6 @@ napi_value Database::Resume(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Reconcile the mirror even if OnErrorRecoveryEnd did not fire for this error
-	// class (auto-recovery is only eligible for retryable errors; the disk-quota
-	// case in #730 is non-retryable, but an explicit Resume() still recovers it).
-	// Generation-guarded so a concurrently-latched newer error is not lost.
-	(*dbHandle)->descriptor->clearBackgroundErrorIfUnchanged(generation);
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -2096,8 +2054,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getBackgroundError", nullptr, GetBackgroundError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },

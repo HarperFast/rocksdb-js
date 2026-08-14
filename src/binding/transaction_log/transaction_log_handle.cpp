@@ -1,5 +1,6 @@
 #include "database/db_descriptor.h"
 #include "napi/macros.h"
+#include "transaction/transaction_handle.h"
 #include "transaction_log_handle.h"
 #include "core/platform.h"
 #include "napi/helpers.h"

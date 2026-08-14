@@ -1,4 +1,5 @@
 #include "napi/event_emitter.h"
+#include "napi/background_error.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -75,6 +76,11 @@ static void releaseListenerResources(ListenerCallback& listener) {
 static void callListenerCallback(napi_env env, napi_value jsCallback, void* unusedContext, void* data) {
 	(void)unusedContext;
 	if (env == nullptr || jsCallback == nullptr) {
+		// Node-API invokes the trampoline with a null env/callback for calls still
+		// queued when the tsfn is torn down, purely so we can release the per-call
+		// data. Returning without freeing it leaks the ListenerData (and its
+		// payload string). `delete nullptr` is safe when there was no data.
+		delete static_cast<ListenerData*>(data);
 		return;
 	}
 
@@ -88,8 +94,21 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* unus
 	if (listenerData != nullptr) {
 		DEBUG_LOG("callListenerCallback deserializing listenerData (listenerData=%p)\n", listenerData);
 
-		// only deserialize the emitted data if it exists and is not empty
-		if (!listenerData->args.empty()) {
+		if (listenerData->asError) {
+			// `args` is a background error's JSON string; reconstruct the real
+			// BackgroundError instance and pass it as the listener's single arg —
+			// the same instance db.getLastError() returns. New() leaves a pending
+			// exception on failure, so bail the same way the macro would.
+			napi_value error = BackgroundError::New(env, listenerData->args);
+			if (error == nullptr) {
+				delete listenerData;
+				return;
+			}
+			argc = 1;
+			argv = new napi_value[1];
+			argv[0] = error;
+		} else if (!listenerData->args.empty()) {
+			// only deserialize the emitted data if it exists and is not empty
 			napi_value json;
 			napi_value parse;
 			napi_value jsonString;

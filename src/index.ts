@@ -19,6 +19,7 @@ export { DBI, type IteratorOptions } from './dbi.ts';
 export type { Key } from './encoding.ts';
 export type * from './stats.ts';
 export {
+	BackgroundError,
 	constants,
 	coolTransactionLogs,
 	currentThreadId,
@@ -41,7 +42,6 @@ export {
 	type ValidateTransactionLogStoreOptions,
 } from './validate-transaction-log.ts';
 export {
-	type BackgroundErrorInfo,
 	type CompressionAlgorithm,
 	type CompressionInfo,
 	type CompressionOption,

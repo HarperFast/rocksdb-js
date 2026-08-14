@@ -8,6 +8,7 @@ import {
 	globalListenerCount,
 	globalNotify,
 	removeGlobalListener,
+	type BackgroundError,
 	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
@@ -16,7 +17,6 @@ import {
 import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
-	type BackgroundErrorInfo,
 	type CompactOptions,
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
@@ -272,32 +272,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * The RocksDB background error currently observed on this database, or `null`
-	 * when none is. A non-null value means an error was observed — but only a
-	 * hard-or-worse one (`isReadOnly === true`, i.e. `severity >= 2`) has stopped
-	 * writes. A soft error (`severity === 1`) is auto-recoverable and does NOT make
-	 * the database read-only, so it should not trigger recovery. The database must
-	 * be open.
-	 *
-	 * The value mirrors RocksDB's background-error notifications, so a transient or
-	 * auto-recoverable error may appear briefly and then clear once RocksDB
-	 * recovers. When `isReadOnly` is `true` and the underlying condition has
-	 * cleared (e.g. disk space freed), call {@link RocksDatabase.resume} to recover
-	 * in-process.
-	 *
-	 * @example
-	 * ```typescript
-	 * const err = db.backgroundError;
-	 * if (err?.isReadOnly) {
-	 *   console.error(`database is read-only (${err.severityName}): ${err.message}`);
-	 * }
-	 * ```
-	 */
-	get backgroundError(): BackgroundErrorInfo | null {
-		return this.store.db.getBackgroundError();
-	}
-
-	/**
 	 * The compression currently in effect for this database's column family, read
 	 * live from RocksDB, as `{ algorithm, level? }`. `algorithm` is a friendly
 	 * name (e.g. `'lz4'`, `'zstd'`, `'none'`); `level` is present only when a
@@ -446,22 +420,49 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Attempts to recover the database from a latched background error (see
-	 * {@link RocksDatabase.backgroundError}) by calling RocksDB's `DB::Resume()`.
-	 * Call this after the underlying condition has cleared — e.g. once disk space
-	 * has been freed. On success the read-only latch is cleared and writes are
-	 * accepted again; on failure (the condition has not actually cleared) it
-	 * throws and the latch remains. A no-op on a healthy database.
+	 * Returns the most recent {@link BackgroundError} observed on this database, or
+	 * `null` when none has occurred. The `'error'` event is the push counterpart;
+	 * this is the pull equivalent for on-demand checks (e.g. a health probe) and
+	 * for catching an error that fired before a listener was attached.
+	 *
+	 * Purely historical — it is not cleared by a successful {@link RocksDatabase.resume}.
+	 * When the returned error's `writesDisabled` is `true`, writes are stopped
+	 * until recovery.
+	 *
+	 * @example
+	 * ```typescript
+	 * const err = db.getLastError();
+	 * if (err?.writesDisabled) {
+	 *   // ...free disk space...
+	 *   db.resume();
+	 * }
+	 * ```
+	 */
+	getLastError(): BackgroundError | null {
+		return this.store.db.getLastError();
+	}
+
+	/**
+	 * Attempts to recover the database from a background error by calling
+	 * RocksDB's `DB::Resume()`. When a write fails at the filesystem level (e.g. a
+	 * full disk), RocksDB stops accepting writes and this database emits an
+	 * {@link BackgroundError} via the `'error'` event. Call `resume()` after the
+	 * underlying condition has cleared — e.g. once disk space has been freed. On
+	 * success writes are accepted again; on failure (the condition has not
+	 * actually cleared) it throws and the database stays read-only. A no-op on a
+	 * healthy database.
 	 *
 	 * Runs synchronously and may briefly block, since recovery can re-flush
 	 * memtables.
 	 *
 	 * @example
 	 * ```typescript
-	 * if (db.backgroundError) {
-	 *   // ...free disk space...
-	 *   db.resume();
-	 * }
+	 * db.on('error', (err) => {
+	 *   if (err.writesDisabled) {
+	 *     // ...free disk space...
+	 *     db.resume();
+	 *   }
+	 * });
 	 * ```
 	 */
 	resume(): void {

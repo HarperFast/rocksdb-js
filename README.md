@@ -11,7 +11,8 @@ A Node.js binding for the RocksDB library.
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
 - Configurable block/blob compression (LZ4, Zstd, Zlib, and more)
-- Observable background-error state with in-process recovery (`db.backgroundError` / `db.resume()`)
+- Observable background errors via the `'error'` event or `db.getLastError()`, with in-process
+  recovery (`db.resume()`)
 - Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
@@ -171,64 +172,6 @@ const db = RocksDatabase.open('path/to/db', {
 console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
-### `db.backgroundError: BackgroundErrorInfo | null`
-
-Returns the RocksDB background error currently observed on this database, or `null` when none
-is. When a write fails at the filesystem level — a full disk, an exhausted quota — RocksDB
-records a background error. A non-null value means an error was **observed**, but only a
-hard-or-worse one (`isReadOnly`) has actually stopped writes; a soft error is auto-recoverable and
-does **not** make the database read-only. When `isReadOnly` is `true`, call
-[`db.resume()`](#dbresume-void) after the underlying condition clears to recover in-process
-instead of restarting. The database must be open.
-
-The returned object has:
-
-- `message: string` — the RocksDB error string captured when the error was recorded.
-- `severity: number` — the RocksDB `Status::Severity`: `1` soft, `2` hard, `3` fatal,
-  `4` unrecoverable.
-- `severityName: string` — `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`.
-- `isReadOnly: boolean` — whether writes are stopped (`severity >= 2`). Only then is the database
-  read-only and `resume()` warranted.
-- `reason?: number` / `reasonName?: string` — the originating `BackgroundErrorReason`
-  (e.g. `'flush'`, `'compaction'`), present when the error came from a reason-bearing callback.
-
-```typescript
-const err = db.backgroundError;
-if (err?.isReadOnly) {
-	console.error(`database is read-only (${err.severityName}): ${err.message}`);
-}
-```
-
-### `db.resume(): void`
-
-Attempts to recover the database from a latched background error (see
-[`db.backgroundError`](#dbbackgrounderror-backgrounderrorinfo--null)) by calling RocksDB's
-`DB::Resume()`. Call this after the underlying condition has cleared — e.g. once disk space has
-been freed. On success the read-only latch is cleared and writes are accepted again (and RocksDB
-can resume the obsolete-file cleanup it was blocking); on failure — the condition has not actually
-cleared — it throws with the RocksDB error and the latch remains. A no-op on a healthy database.
-
-Runs synchronously and may briefly block, since recovery can re-flush memtables.
-
-```typescript
-if (db.backgroundError) {
-	// ...free disk space, then...
-	db.resume();
-}
-```
-
-### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
-
-Returns the informational-log settings currently in effect for this database, read live from
-RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
-per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
-verbosity. The database must be open.
-
-```typescript
-const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
-console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
-```
-
 ### `db.config(options)`
 
 Sets global database settings.
@@ -272,6 +215,18 @@ Returns `true` if the database is open, otherwise false.
 
 ```typescript
 console.log(db.isOpen()); // true or false
+```
+
+### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
+
+Returns the informational-log settings currently in effect for this database, read live from
+RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
+per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
+verbosity. The database must be open.
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
 ```
 
 ### `db.name: string`
@@ -839,6 +794,44 @@ await db.transaction(async (txn) => {
 });
 ```
 
+## Error Handling
+
+### `db.getLastError(): BackgroundError | null`
+
+Returns the most recent [`BackgroundError`](#event-error) observed on this database, or `null` when
+none has occurred. This is the **pull** counterpart to the `'error'` [event](#event-error): use it
+for an on-demand check (e.g. a health probe) or to catch an error that fired before a listener was
+attached. The value is purely historical — it is **not** cleared by a successful
+[`db.resume()`](#dbresume-void). When the returned error's `writesDisabled` is `true`, writes are
+stopped until recovery.
+
+```typescript
+const err = db.getLastError();
+if (err?.writesDisabled) {
+	// ...free disk space, then...
+	db.resume();
+}
+```
+
+### `db.resume(): void`
+
+Attempts to recover the database from a background error (see the `'error'` [event](#event-error))
+by calling RocksDB's `DB::Resume()`. Call this after the underlying condition has cleared — e.g.
+once disk space has been freed. On success writes are accepted again (and RocksDB can resume the
+obsolete-file cleanup it was blocking); on failure — the condition has not actually cleared — it
+throws with the RocksDB error and the database stays read-only. A no-op on a healthy database.
+
+Runs synchronously and may briefly block, since recovery can re-flush memtables.
+
+```typescript
+db.on('error', (err) => {
+	if (err.writesDisabled) {
+		// ...free disk space, then...
+		db.resume();
+	}
+});
+```
+
 ## Events
 
 ### Event: `'aftercommit'`
@@ -864,6 +857,57 @@ The `'begin-transaction'` event is emitted right before the transaction function
 The `'committed'` event is emitted after the transaction has been written. When this event is
 emitted, the transaction is still cleaning up. If you need to know when the transaction is fully
 complete, use the `'aftercommit'` event.
+
+### Event: `'error'`
+
+When a write fails at the filesystem level — a full disk, an exhausted quota — RocksDB records a
+background error and, for a hard-or-worse severity, stops accepting writes. The database emits an
+`'error'` event carrying a `BackgroundError` so a consumer can observe it and recover in-process
+instead of restarting. When `writesDisabled` is `true`, call
+[`db.resume()`](#dbresume-void) after the underlying condition clears. Register the listener with
+`db.on('error', ...)` before the database is put under load — or use the pull-based
+[`db.getLastError()`](#dbgetlasterror-backgrounderror--null) to catch an error that fired earlier.
+
+`BackgroundError` is a real `Error` subclass, exported from the package, so both
+`err instanceof Error` and `err instanceof BackgroundError` hold. It extends `Error` with:
+
+- `message: string` — the RocksDB error string.
+- `name: string` — always `'BackgroundError'`.
+- `type: string` — the error-class discriminator; always `'background'`.
+- `severity: number` — the RocksDB `Status::Severity`: `1` soft, `2` hard, `3` fatal,
+  `4` unrecoverable.
+- `severityName: string` — `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`.
+- `writesDisabled: boolean` — whether RocksDB has disabled writes on the database (`severity >= 2`).
+  Only then is `resume()` warranted; a soft error is auto-recoverable and leaves writes enabled.
+  Distinct from opening the database in read-only mode.
+- `reason?: number` / `reasonName?: string` — the originating `BackgroundErrorReason`
+  (e.g. `'flush'`, `'compaction'`), present when the error came from a reason-bearing callback.
+
+```typescript
+import { BackgroundError } from '@harperfast/rocksdb-js';
+
+db.on('error', (err) => {
+	if (err instanceof BackgroundError && err.writesDisabled) {
+		console.error(`writes disabled (${err.severityName}): ${err.message}`);
+	}
+});
+```
+
+```typescript
+db.on('error', (err) => {
+	if (err.writesDisabled) {
+		// Hard-or-worse: RocksDB has disabled writes on this database. They stay
+		// disabled until you clear the underlying condition and call db.resume().
+		console.error(`database writes disabled (${err.severityName}): ${err.message}`);
+	} else {
+		// Soft error: writes are NOT disabled and RocksDB will auto-recover. This
+		// is typically a transient background hiccup (e.g. a retryable I/O error
+		// during flush or compaction), surfaced for visibility only — no action
+		// is required.
+		console.warn(`recoverable background error (${err.severityName}): ${err.message}`);
+	}
+});
+```
 
 ## Event API
 
@@ -1776,7 +1820,7 @@ snapshots of a database. A backup covers the **entire database** — every colum
 manifest, and (by default) the write-ahead log — so it is not scoped to an individual `Store`.
 
 A backup can be written to a local **directory** (incremental, with a management API) or streamed to
-a **`WritableStream`** as a tar archive with no intermediate copy on disk. See
+a `WritableStream` as a tar archive with no intermediate copy on disk. See
 [docs/backups.md](docs/backups.md) for a full guide covering both modes, restore, checkpoints, and
 caveats.
 
@@ -1852,10 +1896,10 @@ required bytes — before any files are copied, so a full destination fails fast
 through (a mid-copy failure can leave zero usable backups). The required size is estimated
 conservatively as a full copy of the database's live files, plus the transaction-log snapshot when
 `transactionLogs` is set; since a backup only ever copies files, this can never under-estimate.
-Incremental backups to a right-sized volume may therefore be over-rejected — set `checkDiskSpace:
-false` to skip the check. It also self-disables when free space can't be determined (e.g. some
-network filesystems report `0`), so it never blocks a backup on an untrustworthy number. Only
-directory-target backups are checked; the streaming backup path is unaffected.
+Incremental backups to a right-sized volume may therefore be over-rejected — set
+`checkDiskSpace: false` to skip the check. It also self-disables when free space can't be determined
+(e.g. some network filesystems report `0`), so it never blocks a backup on an untrustworthy number.
+Only directory-target backups are checked; the streaming backup path is unaffected.
 
 ### `db.backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>`
 

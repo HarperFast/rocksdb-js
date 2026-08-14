@@ -58,6 +58,7 @@
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
 				'src/binding/core/verification_table.cpp',
+				'src/binding/napi/background_error.cpp',
 				'src/binding/napi/event_emitter.cpp',
 				'src/binding/napi/global_events.cpp',
 				'src/binding/napi/helpers.cpp',
