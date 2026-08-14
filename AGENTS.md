@@ -381,7 +381,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     descriptor, with its `env` left dangling once the worker died. The last env's
     `DBRegistry::Shutdown → finishClose → close()` then walked those corpses, corrupting the
     glibc heap (production signatures: `corrupted size vs. prev_size`, `corrupted double-linked
-    list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 — reproduced 10/10 on
+list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 — reproduced 10/10 on
     Linux/glibc by `test/lingering-txn-shutdown.test.ts`, 10/10 clean with the fix).
     `DBHandle::close()` calls `releaseByOwner` (listeners + pending transactions + locks in one
     sweep) so nothing an env registered outlives its handle; new per-handle state must be added
