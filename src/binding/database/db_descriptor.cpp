@@ -1147,35 +1147,29 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 }
 
 /**
- * Closes every registered transaction created through `owner`.
+ * Closes every registered transaction owned by a handle created on `env`.
+ * See the header for why this is env-scoped rather than part of
+ * DBHandle::close().
  */
-void DBDescriptor::closeTransactionsByOwner(DBHandle* owner) {
+void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	// Collect matches under the mutex, close outside it: close() calls
 	// transactionRemove(), which re-takes txnsMutex, and may block in
-	// waitForAsyncWorkCompletion().
+	// waitForAsyncWorkCompletion() draining an execute still running on the
+	// commit thread.
 	std::vector<std::shared_ptr<TransactionHandle>> toClose;
 	{
 		std::lock_guard<std::mutex> lock(this->txnsMutex);
 		for (auto& [id, txnHandle] : this->transactions) {
-			if (txnHandle && txnHandle->dbHandle.get() == owner) {
+			if (txnHandle && txnHandle->dbHandle && txnHandle->dbHandle->env == env) {
 				toClose.push_back(txnHandle);
 			}
 		}
 	}
 
 	for (auto& txnHandle : toClose) {
-		DEBUG_LOG("%p DBDescriptor::closeTransactionsByOwner closing transaction %u (owner=%p)\n", this, txnHandle->id, owner);
+		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %u (env=%p)\n", this, txnHandle->id, env);
 		txnHandle->close();
 	}
-}
-
-/**
- * Releases everything `owner` registered on this shared descriptor.
- */
-void DBDescriptor::releaseByOwner(DBHandle* owner) {
-	this->removeListenersByOwner(owner);
-	this->closeTransactionsByOwner(owner);
-	this->lockReleaseByOwner(owner);
 }
 
 /**

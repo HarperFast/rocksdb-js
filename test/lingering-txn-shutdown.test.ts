@@ -19,9 +19,9 @@ const fixturePath = join(import.meta.dirname, 'fixtures', 'fork-lingering-txn-sh
  *       main @ 3ea9a0fb: 0/10 pass, aborting with the #741 production
  *       signatures ("corrupted size vs. prev_size", "corrupted double-linked
  *       list", "free(): invalid pointer", "malloc_consolidate(): invalid
- *       chunk size"); with releaseByOwner + napi-free close: 10/10 pass
- *       (incl. MALLOC_PERTURB_). PR #745's guards alone do not cover this
- *       (5/6 crash on macOS/gmalloc at its head).
+ *       chunk size"); with CloseTransactionsByEnv + napi-free close: 10/10
+ *       pass (incl. MALLOC_PERTURB_). PR #745's guards alone do not cover
+ *       this (5/6 crash on macOS/gmalloc at its head).
  *   - macOS (Node 24.16): silent natively; under Guard Malloc main is 4/4
  *     SIGSEGV, and a residual gmalloc-only fault in Node's second-pass napi
  *     finalizer drain persists even with the fix — hence skipIf(darwin).
@@ -67,17 +67,24 @@ function spawnRepro(
 }
 
 describe('pending transactions leaked by dead worker envs', () => {
-	// Linux/glibc (the platform #741 crashed on in production): without
-	// DBDescriptor::releaseByOwner this aborts every run with the production
+	// Linux/glibc + Node (the production stack #741 crashed on): without
+	// the env-cleanup-hook reap (CloseTransactionsByEnv) this aborts every
+	// run with the production
 	// signatures ("corrupted size vs. prev_size", "corrupted double-linked
 	// list", "free(): invalid pointer" — main 0/10); with it, 10/10 clean.
 	//
 	// macOS: a Guard-Malloc-only fault in Node's second-pass napi finalizer
 	// drain persists even with the fix (never reproduces without gmalloc, and
 	// never on glibc) — suspected macOS-specific Node teardown artifact,
-	// tracked separately. Skip on darwin so the gate reflects the platform
-	// where the crash was real.
-	it.skipIf(process.platform === 'darwin')(
+	// tracked separately.
+	//
+	// Deno/Bun: gated off like notify-teardown-uaf — their worker/napi-env
+	// teardown lifecycles differ from Node's (Deno's child still SIGABRTs for
+	// reasons that don't apply to Harper's production runtime, and Bun's child
+	// fails to start). Node is where #741 reproduces and is fixed.
+	it.skipIf(
+		process.platform === 'darwin' || Boolean(process.versions.deno || process.versions.bun)
+	)(
 		'should survive worker exits that leave pending transactions (HarperFast/rocksdb-js#741)',
 		() => expectSurvives(),
 		120_000

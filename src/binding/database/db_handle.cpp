@@ -140,10 +140,16 @@ void DBHandle::close() {
 	}
 
 	if (this->descriptor) {
-		// release listeners, pending transactions, and locks owned by this
-		// handle — pending transactions especially must not outlive the
-		// handle/env that created them (HarperFast/rocksdb-js#741)
-		this->descriptor->releaseByOwner(this);
+		// clean up listeners owned by this handle before releasing locks
+		this->descriptor->removeListenersByOwner(this);
+		this->descriptor->lockReleaseByOwner(this);
+
+		// Note: pending transactions created through this handle are NOT
+		// reaped here — a user-called close() can have a legitimate commit
+		// one microtask behind it (db.transaction() awaits its callback
+		// before committing). Env-owned transactions are closed by
+		// DBRegistry::CloseTransactionsByEnv from the env cleanup hook
+		// (HarperFast/rocksdb-js#741).
 
 		// release our reference to the descriptor
 		this->descriptor.reset();
