@@ -9,7 +9,7 @@ import {
 	globalNotify,
 	removeGlobalListener,
 	type BackgroundError,
-	type BackgroundErrorInit,
+	type BackgroundErrorOptions,
 	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
@@ -458,7 +458,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * db.setLastError(null); // recovered — clear the historical error
 	 * ```
 	 */
-	setLastError(error?: BackgroundErrorInit | null): void {
+	setLastError(error?: BackgroundErrorOptions | null): void {
 		return this.store.db.setLastError(error == null ? null : { type: 'background', ...error });
 	}
 

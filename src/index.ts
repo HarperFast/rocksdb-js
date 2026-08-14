@@ -20,7 +20,7 @@ export type { Key } from './encoding.ts';
 export type * from './stats.ts';
 export {
 	BackgroundError,
-	type BackgroundErrorInit,
+	type BackgroundErrorOptions,
 	constants,
 	coolTransactionLogs,
 	currentThreadId,

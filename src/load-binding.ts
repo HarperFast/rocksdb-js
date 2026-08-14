@@ -76,7 +76,7 @@ export interface BackgroundError extends Error {
  * `type` defaults to `'background'`. Pass `null`/nothing to `setLastError` to
  * clear instead of an object of this shape.
  */
-export type BackgroundErrorInit = {
+export type BackgroundErrorOptions = {
 	message: string;
 	severity?: number;
 	severityName?: string;
@@ -401,7 +401,7 @@ export type NativeDatabase = {
 	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getLastError(): BackgroundError | null;
-	setLastError(error?: BackgroundErrorInit | null): void;
+	setLastError(error?: BackgroundErrorOptions | null): void;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
 	getLogOptions(): { maxLogFileSize: number; infoLogLevel: number };
