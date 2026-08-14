@@ -237,15 +237,14 @@ public:
 		}
 	}
 
-	// Surfaces a RocksDB background error to JS (HarperFast/rocksdb-js#730). The
-	// error is serialized to a JSON string and stored on the descriptor so it is
-	// available on demand via `db.getLastError()`, then — if anyone is listening —
-	// emitted as an `'error'` event carrying a `BackgroundError`. Both paths
-	// reconstruct the same instance from this string on the JS thread, so nothing
-	// N-API/env-bound is touched here. We do NOT suppress the error (leaving
-	// *bgError untouched) — the point is to surface it, not hide it. Runs on
-	// flush/compaction/write threads; storing a string and the thread-safe,
-	// asynchronous `notify` keep this cheap and non-blocking.
+	// Surfaces a RocksDB background error to JS (HarperFast/rocksdb-js#730).
+	// Serializes it to a JSON string and hands it to `setLastError`, which stores
+	// it (readable on demand via `db.getLastError()`) and emits the `'error'`
+	// event — both reconstruct the same `BackgroundError` from this string on the
+	// JS thread, so nothing N-API/env-bound is touched here. We do NOT suppress
+	// the error (leaving *bgError untouched) — the point is to surface it, not
+	// hide it. Runs on flush/compaction/write threads; storing a string and the
+	// thread-safe, asynchronous emit keep this cheap and non-blocking.
 	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bgError) override {
 		if (!this->descriptorPtr || bgError == nullptr) {
 			return;
@@ -256,18 +255,14 @@ public:
 		}
 		int severity = static_cast<int>(bgError->severity());
 		int reasonInt = static_cast<int>(reason);
-		std::string json = backgroundErrorToJson(
+		desc->setLastError(backgroundErrorToJson(
 			bgError->ToString(),
 			severity,
 			backgroundErrorSeverityName(severity),
 			backgroundErrorDisablesWrites(severity),
 			reasonInt,
 			backgroundErrorReasonName(reasonInt)
-		);
-		desc->setLastError(json);
-		if (desc->events.hasListeners()) {
-			desc->events.notify("error", ListenerData::backgroundError(json));
-		}
+		));
 	}
 
 private:
@@ -1772,8 +1767,20 @@ std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(co
 }
 
 void DBDescriptor::setLastError(std::string json) {
-	std::lock_guard<std::mutex> lock(this->lastErrorMutex);
-	this->lastError = std::move(json);
+	// Store, then (for a real error) emit — a single place so "stored" and
+	// "emitted" never drift apart, whether the source is OnBackgroundError on a
+	// RocksDB background thread or db.setLastError() on the JS thread.
+	const bool hasError = !json.empty();
+	{
+		std::lock_guard<std::mutex> lock(this->lastErrorMutex);
+		this->lastError = json;
+	}
+	// Emit OUTSIDE lastErrorMutex: notify takes the emitter's own lock and
+	// dispatches asynchronously. Clearing (empty json) is a silent reset — no
+	// event — mirroring Win32 SetLastError(0).
+	if (hasError && this->events.hasListeners()) {
+		this->events.notify("error", ListenerData::backgroundError(json));
+	}
 }
 
 /**

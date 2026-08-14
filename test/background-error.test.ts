@@ -157,4 +157,49 @@ describe('background error', () => {
 			}
 		}
 	);
+
+	// setLastError injects/clears deterministically (no filesystem hack), so this
+	// runs on every platform — including Windows and root, where the read-only-dir
+	// reproduction above is skipped.
+	it('setLastError injects a BackgroundError, emits it, and getLastError returns it', async () => {
+		const db = open(generateDBPath());
+		const errored = nextError(db);
+
+		db.setLastError({
+			message: 'injected disk quota exceeded',
+			severity: 2,
+			severityName: 'hard',
+			writesDisabled: true,
+		});
+
+		const err = await errored;
+		expect(err).toBeInstanceOf(BackgroundError);
+		expect(err.message).toBe('injected disk quota exceeded');
+		expect(err.severity).toBe(2);
+		expect(err.writesDisabled).toBe(true);
+		expect(err.type).toBe('background'); // defaulted by setLastError
+
+		const pulled = db.getLastError();
+		expect(pulled).toBeInstanceOf(BackgroundError);
+		expect(pulled!.message).toBe('injected disk quota exceeded');
+		expect(pulled!.writesDisabled).toBe(true);
+	});
+
+	it('setLastError(null) resets the last error and emits nothing', async () => {
+		const db = open(generateDBPath());
+
+		db.setLastError({ message: 'boom', severity: 2, severityName: 'hard', writesDisabled: true });
+		expect(db.getLastError()).not.toBeNull();
+
+		let emitted = 0;
+		db.on('error', () => {
+			emitted++;
+		});
+		db.setLastError(null);
+		expect(db.getLastError()).toBeNull();
+
+		// A clear is a silent reset — no 'error' event.
+		await new Promise((r) => setTimeout(r, 50));
+		expect(emitted).toBe(0);
+	});
 });

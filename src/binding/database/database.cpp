@@ -828,6 +828,58 @@ napi_value Database::GetLastError(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Sets or clears the last background error (mirroring the Win32
+ * `SetLastError`/`GetLastError` pair). Passing an object stores it as the last
+ * error and emits the `'error'` event with the reconstructed `BackgroundError`;
+ * passing `null`/`undefined` (or no argument) clears it, so a subsequent
+ * `getLastError()` returns `null` and no event fires. Useful to reset the error
+ * after handling/recovering it, and to inject one in tests. See
+ * HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * db.setLastError(null); // reset after recovery
+ * ```
+ */
+napi_value Database::SetLastError(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	napi_valuetype argType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &argType));
+
+	if (argType == napi_undefined || argType == napi_null) {
+		(*dbHandle)->descriptor->setLastError(""); // clear (silent)
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	if (argType != napi_object) {
+		::napi_throw_type_error(env, nullptr, "setLastError expects an object or null");
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	// Serialize the object to the same JSON form OnBackgroundError stores, so it
+	// round-trips through BackgroundError::New when read back / emitted.
+	napi_value global;
+	napi_value json;
+	napi_value stringify;
+	napi_value jsonString;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
+	NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &argv[0], &jsonString));
+
+	size_t len = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
+	std::string jsonStr(len, '\0');
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &jsonStr[0], len + 1, nullptr));
+
+	(*dbHandle)->descriptor->setLastError(std::move(jsonStr));
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Attempts to recover the database from a background error by calling RocksDB's
  * `DB::Resume()`. When a write fails at the filesystem level (e.g. a full disk),
  * RocksDB records a hard background error and stops accepting writes; the
@@ -2056,6 +2108,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setLastError", nullptr, SetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },

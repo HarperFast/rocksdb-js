@@ -201,7 +201,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex lastErrorMutex;
 	std::string lastError;
 
-	/** Stores the latest serialized background error (background thread). */
+	/**
+	 * Stores the latest serialized background error AND, for a non-empty `json`,
+	 * emits the per-database `'error'` event with the reconstructed
+	 * `BackgroundError`. An empty `json` is a silent reset (no event) — the
+	 * clear path behind `db.setLastError(null)`. Safe to call from a RocksDB
+	 * background thread (store) or the JS thread; the emit is dispatched
+	 * asynchronously via the thread-safe emitter.
+	 */
 	void setLastError(std::string json);
 
 	/** Returns the latest serialized background error, or empty when none (JS thread). */

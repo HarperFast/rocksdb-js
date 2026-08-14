@@ -70,6 +70,22 @@ export interface BackgroundError extends Error {
 	reasonName?: string;
 }
 
+/**
+ * The shape accepted by `db.setLastError(...)` to inject or reset a background
+ * error. `message` is required; the rest default/omit as with a real error.
+ * `type` defaults to `'background'`. Pass `null`/nothing to `setLastError` to
+ * clear instead of an object of this shape.
+ */
+export type BackgroundErrorInit = {
+	message: string;
+	severity?: number;
+	severityName?: string;
+	writesDisabled?: boolean;
+	reason?: number;
+	reasonName?: string;
+	type?: string;
+};
+
 export type NativeTransactionOptions = {
 	/**
 	 * Whether to disable snapshots.
@@ -385,6 +401,7 @@ export type NativeDatabase = {
 	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getLastError(): BackgroundError | null;
+	setLastError(error?: BackgroundErrorInit | null): void;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
 	getLogOptions(): { maxLogFileSize: number; infoLogLevel: number };

@@ -801,9 +801,10 @@ await db.transaction(async (txn) => {
 Returns the most recent [`BackgroundError`](#event-error) observed on this database, or `null` when
 none has occurred. This is the **pull** counterpart to the `'error'` [event](#event-error): use it
 for an on-demand check (e.g. a health probe) or to catch an error that fired before a listener was
-attached. The value is purely historical — it is **not** cleared by a successful
-[`db.resume()`](#dbresume-void). When the returned error's `writesDisabled` is `true`, writes are
-stopped until recovery.
+attached. The value is historical — it is **not** cleared by a successful
+[`db.resume()`](#dbresume-void); reset it explicitly with
+[`db.setLastError(null)`](#dbsetlasterrorerror-void). When the returned error's `writesDisabled` is
+`true`, writes are stopped until recovery.
 
 ```typescript
 const err = db.getLastError();
@@ -811,6 +812,34 @@ if (err?.writesDisabled) {
 	// ...free disk space, then...
 	db.resume();
 }
+```
+
+### `db.setLastError(error?): void`
+
+Sets or clears the last background error, mirroring the Win32 `SetLastError` / `GetLastError` pair.
+
+- **Clear** — pass `null` (or no argument). [`db.getLastError()`](#dbgetlasterror-backgrounderror--null)
+  then returns `null` and no event fires. This is how you reset the error after handling or
+  recovering it (e.g. after [`db.resume()`](#dbresume-void)) — the equivalent of
+  `SetLastError(ERROR_SUCCESS)`.
+- **Set** — pass an object (`{ message, severity?, severityName?, writesDisabled?, reason?, reasonName? }`;
+  `type` defaults to `'background'`). It is stored and the `'error'` [event](#event-error) fires with
+  the reconstructed [`BackgroundError`](#event-error). Useful for surfacing an application-level
+  "this database is unusable" state, and for deterministically exercising the error path in tests.
+
+```typescript
+// reset after recovery
+db.resume();
+db.setLastError(null);
+
+// inject (e.g. in a test)
+db.on('error', (err) => console.error(err.message));
+db.setLastError({
+	message: 'disk quota exceeded',
+	severity: 2,
+	severityName: 'hard',
+	writesDisabled: true,
+});
 ```
 
 ### `db.resume(): void`

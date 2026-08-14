@@ -9,6 +9,7 @@ import {
 	globalNotify,
 	removeGlobalListener,
 	type BackgroundError,
+	type BackgroundErrorInit,
 	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
@@ -440,6 +441,25 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	getLastError(): BackgroundError | null {
 		return this.store.db.getLastError();
+	}
+
+	/**
+	 * Sets or clears the last background error, mirroring the Win32
+	 * `SetLastError`/`GetLastError` pair. Pass `null` (or no argument) to **reset**
+	 * it — {@link RocksDatabase.getLastError} then returns `null` and no event
+	 * fires; this is the intended way to clear the error after handling or
+	 * recovering it (e.g. after {@link RocksDatabase.resume}). Pass an object to
+	 * set it: it is stored and the `'error'` event fires with the reconstructed
+	 * {@link BackgroundError}. `type` defaults to `'background'`.
+	 *
+	 * @example
+	 * ```typescript
+	 * db.resume();
+	 * db.setLastError(null); // recovered — clear the historical error
+	 * ```
+	 */
+	setLastError(error?: BackgroundErrorInit | null): void {
+		return this.store.db.setLastError(error == null ? null : { type: 'background', ...error });
 	}
 
 	/**
