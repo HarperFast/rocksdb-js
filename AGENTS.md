@@ -372,6 +372,26 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
+12. **No per-handle state survives the handle — pending transactions close with their owning
+    `DBHandle`**: `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the
+    process-global `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap
+    finalizer just drops the JS-side ref). Before `DBDescriptor::releaseByOwner`, a handle that
+    closed (explicit `db.close()`, GC, or worker-env teardown) with a transaction still pending
+    leaked that handle — holding a live RocksDB transaction + snapshot — into the shared
+    descriptor, with its `env` left dangling once the worker died. The last env's
+    `DBRegistry::Shutdown → finishClose → close()` then walked those corpses, corrupting the
+    glibc heap (production signatures: `corrupted size vs. prev_size`, `corrupted double-linked
+    list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 — reproduced 10/10 on
+    Linux/glibc by `test/lingering-txn-shutdown.test.ts`, 10/10 clean with the fix).
+    `DBHandle::close()` calls `releaseByOwner` (listeners + pending transactions + locks in one
+    sweep) so nothing an env registered outlives its handle; new per-handle state must be added
+    to `releaseByOwner`, not cleaned up ad hoc. Relatedly, `TransactionHandle::close()` is
+    deliberately **napi-free** (the JS database is passed to `UseLog` per-call instead of held as
+    a `napi_ref`), so close is safe from any thread and any teardown phase — do not reintroduce
+    napi calls into close paths. Known macOS-only artifact: under Guard Malloc the leaker repro
+    still faults in Node's second-pass napi finalizer drain even with the fix; it never
+    reproduces natively or on glibc, so the repro test is `skipIf(darwin)`.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
