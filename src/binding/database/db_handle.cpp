@@ -140,9 +140,10 @@ void DBHandle::close() {
 	}
 
 	if (this->descriptor) {
-		// clean up listeners owned by this handle before releasing locks
-		this->descriptor->removeListenersByOwner(this);
-		this->descriptor->lockReleaseByOwner(this);
+		// release listeners, pending transactions, and locks owned by this
+		// handle — pending transactions especially must not outlive the
+		// handle/env that created them (HarperFast/rocksdb-js#741)
+		this->descriptor->releaseByOwner(this);
 
 		// release our reference to the descriptor
 		this->descriptor.reset();

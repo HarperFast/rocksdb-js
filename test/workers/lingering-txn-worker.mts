@@ -42,6 +42,18 @@ if (role === 'leaker') {
 	process.exit(0);
 }
 
+if (role === 'committer') {
+	// Discriminator: same shape as 'leaker' but the transaction is committed,
+	// so nothing lingers in DBDescriptor::transactions. If teardown still
+	// crashes with committers, the trigger is the Transaction object lifecycle
+	// at env teardown, not the pending-transaction leak.
+	const t = new Transaction(db.store);
+	await t.put(Buffer.from(`committed-${id}`), Buffer.from(`v${id}`));
+	await t.commit();
+	parentPort?.postMessage('committed');
+	process.exit(0);
+}
+
 // anchor / final: report ready, then park until told to stop.
 parentPort?.postMessage('ready');
 await new Promise<void>((resolve) => {

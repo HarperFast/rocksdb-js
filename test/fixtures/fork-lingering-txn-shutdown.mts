@@ -35,6 +35,7 @@ import { Worker } from 'node:worker_threads';
 
 const dbPath = process.argv[2];
 const leakerCount = Number(process.argv[3] ?? 4);
+const leakerRole = process.argv[4] ?? 'leaker';
 
 if (!dbPath) {
 	console.error('Usage: fork-lingering-txn-shutdown.mts <dbPath> [leakerCount]');
@@ -70,7 +71,7 @@ async function run(): Promise<void> {
 	// 2. Sequential leakers: each exits with a pending transaction, and the
 	//    next one typically recycles its pthread.
 	for (let i = 0; i < leakerCount; i++) {
-		const leaker = spawn('leaker', i);
+		const leaker = spawn(leakerRole, i);
 		await leaker.msg; // 'leaked' — pending txn created
 		await leaker.exited; // env fully torn down before the next spawn
 	}

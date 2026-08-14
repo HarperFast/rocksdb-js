@@ -80,12 +80,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	bool coordinatedRetry = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
 
-	napi_ref jsDatabaseRef;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 0, &jsDatabaseRef));
-
 	// create shared_ptr on heap so it persists after function returns
 	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
-		std::make_shared<TransactionHandle>(*dbHandle, env, jsDatabaseRef, disableSnapshot)
+		std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
 	);
 	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
@@ -1120,9 +1117,14 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 
 /**
  * Creates a new transaction log instance bound to this transaction.
+ *
+ * The JS database object is passed per-call by the TS layer instead of being
+ * held as a napi_ref on the TransactionHandle: a weak ref still alive at
+ * worker-env teardown crashes Node's second-pass finalizer drain
+ * (HarperFast/rocksdb-js#741), and this is the ref's only consumer.
  */
 napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], name, "Name is required");
 	UNWRAP_TRANSACTION_HANDLE("UseLog");
 
@@ -1166,8 +1168,13 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	napi_value transactionLogCtor;
 	NAPI_STATUS_THROWS_ERROR(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor), "Failed to get 'TransactionLog' constructor");
 
-	napi_value jsDatabase;
-	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->jsDatabaseRef, &jsDatabase), "Failed to get 'jsDatabase' reference");
+	napi_value jsDatabase = argv[1];
+	napi_valuetype jsDatabaseType;
+	NAPI_STATUS_THROWS_ERROR(::napi_typeof(env, jsDatabase, &jsDatabaseType), "Failed to check 'jsDatabase' argument");
+	if (jsDatabaseType != napi_object) {
+		::napi_throw_error(env, nullptr, "Database argument is required");
+		return nullptr;
+	}
 
 	napi_value args[3];
 	args[0] = jsDatabase;

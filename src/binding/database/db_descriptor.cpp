@@ -1147,6 +1147,38 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 }
 
 /**
+ * Closes every registered transaction created through `owner`.
+ */
+void DBDescriptor::closeTransactionsByOwner(DBHandle* owner) {
+	// Collect matches under the mutex, close outside it: close() calls
+	// transactionRemove(), which re-takes txnsMutex, and may block in
+	// waitForAsyncWorkCompletion().
+	std::vector<std::shared_ptr<TransactionHandle>> toClose;
+	{
+		std::lock_guard<std::mutex> lock(this->txnsMutex);
+		for (auto& [id, txnHandle] : this->transactions) {
+			if (txnHandle && txnHandle->dbHandle.get() == owner) {
+				toClose.push_back(txnHandle);
+			}
+		}
+	}
+
+	for (auto& txnHandle : toClose) {
+		DEBUG_LOG("%p DBDescriptor::closeTransactionsByOwner closing transaction %u (owner=%p)\n", this, txnHandle->id, owner);
+		txnHandle->close();
+	}
+}
+
+/**
+ * Releases everything `owner` registered on this shared descriptor.
+ */
+void DBDescriptor::releaseByOwner(DBHandle* owner) {
+	this->removeListenersByOwner(owner);
+	this->closeTransactionsByOwner(owner);
+	this->lockReleaseByOwner(owner);
+}
+
+/**
  * Generates the next unique transaction ID for this database.
  */
 uint32_t DBDescriptor::transactionGetNextId() {

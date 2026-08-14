@@ -353,6 +353,25 @@ public:
 	uint32_t transactionGetNextId();
 
 	/**
+	 * Closes every registered transaction created through `owner`. Pending
+	 * transactions are only removed from the registry by commit/abort, so
+	 * without this a handle that closes (explicit `db.close()`, GC, or env
+	 * teardown) with a transaction still pending leaks that
+	 * TransactionHandle — holding a live RocksDB transaction/snapshot — into
+	 * the shared descriptor with `env`/`jsDatabaseRef` pointing into the
+	 * owner's (soon-)dead env (HarperFast/rocksdb-js#741).
+	 */
+	void closeTransactionsByOwner(DBHandle* owner);
+
+	/**
+	 * Releases everything `owner` registered on this shared descriptor:
+	 * listeners, pending transactions, and locks. Single entry point so no
+	 * close path can forget one of them — no per-handle state may survive
+	 * the handle.
+	 */
+	void releaseByOwner(DBHandle* owner);
+
+	/**
 	 * Removes a dropped column family from the columns map (under
 	 * `columnsMutex`) so a later open-by-name creates a fresh column family
 	 * instead of reusing the dangling dropped handle. DBHandles still holding

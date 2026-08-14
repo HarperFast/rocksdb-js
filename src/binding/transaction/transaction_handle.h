@@ -53,17 +53,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::shared_ptr<DBHandle> dbHandle;
 
 	/**
-	 * The node environment. This is needed to release the database reference
-	 * when the transaction is closed.
-	 */
-	napi_env env;
-
-	/**
-	 * A reference to the main `rocksdb_js` exports object.
-	 */
-	napi_ref jsDatabaseRef;
-
-	/**
 	 * Whether to disable snapshots.
 	 */
 	bool disableSnapshot;
@@ -122,16 +111,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<bool> closed{false};
 
 	/**
-	 * The thread ID of the JS thread that owns `env` (set at construction time).
-	 * Used in close() to guard napi_delete_reference: calling it from a thread
-	 * other than the owning JS thread is undefined behaviour and will crash.
-	 * When close() is invoked from a different env's JS thread (PATH A, the
-	 * DBDescriptor::close() path), the deletion is skipped and the ref is left
-	 * for Node to clean up on env teardown.
-	 */
-	std::thread::id envThreadId;
-
-	/**
 	 * A batch of log entries to write to the transaction log. It can only be
 	 * set once via `addLogEntry()`.
 	 */
@@ -162,12 +141,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	LogPosition committedPosition;
 
-	TransactionHandle(
-		std::shared_ptr<DBHandle> dbHandle,
-		napi_env env,
-		napi_ref jsDatabaseRef,
-		bool disableSnapshot = false
-	);
+	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
 	void resetTransaction();
