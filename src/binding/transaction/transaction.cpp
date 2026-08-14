@@ -1128,6 +1128,15 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], name, "Name is required");
 	UNWRAP_TRANSACTION_HANDLE("UseLog");
 
+	// A closed transaction has txn/dbHandle reset, and a transaction whose
+	// database handle was closed (db.close() with the txn still open) keeps
+	// dbHandle but loses its descriptor — every path below dereferences one
+	// of these, so guard them all rather than crash.
+	if (!(*txnHandle)->txn || !(*txnHandle)->dbHandle || !(*txnHandle)->dbHandle->descriptor) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+
 	// check if transaction is already bound to a different log store
 	auto boundStore = (*txnHandle)->boundLogStore.lock();
 	if (boundStore && boundStore->name != name) {

@@ -49,6 +49,18 @@ describe('Transaction Log', () => {
 				expect(db.listLogs()).toEqual(['bar', 'foo']);
 			}));
 
+		it('should throw instead of crash when the transaction is closed', () =>
+			dbRunner(async ({ db }) => {
+				db.open();
+
+				// Aborting closes the native handle (txn/dbHandle reset); useLog
+				// used to null-deref dbHandle->descriptor/exportsRef here.
+				const txn = new Transaction(db.store);
+				await txn.put('key', 'value');
+				txn.abort();
+				expect(() => txn.useLog('foo')).toThrowError(/Transaction is closed/);
+			}));
+
 		it('should support numeric log names', () =>
 			dbRunner(async ({ db }) => {
 				db.open();
