@@ -191,6 +191,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_DESTROY_DELAY_MS` - Test-only: delay after descriptor teardown and
+  before physical database destruction (widens same-path reopen races)
 
 ## Test Structure
 
@@ -250,6 +252,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
    and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672).
+   Database destruction is path-global rather than `(path, readOnly)`-scoped: `DestroyDB` closes every
+   descriptor for the path and keeps the path in `destroyingPaths` until both `rocksdb::DestroyDB` and
+   directory cleanup finish. `OpenDB` waits on that state before resolving a registry entry and must
+   re-resolve the map after every condition-variable wake; retaining a map-node reference across an
+   unlocked wait is a use-after-free when the closer erases that node.
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
