@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 
 const destroyOpenFixture = join(__dirname, 'fixtures', 'fork-destroy-open.mts');
 const destroyFailureFixture = join(__dirname, 'fixtures', 'fork-destroy-failure.mts');
+const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts');
+const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 
 function runDestroyFixture(
 	fixture: string,
@@ -108,7 +110,19 @@ describe('Destroy', () => {
 
 	it('quarantines a descriptor whose native close fails', async () => {
 		await runDestroyFixture(destroyFailureFixture, generateDBPath(), {
-			ROCKSDB_JS_DESTROY_FAILURE: '2',
+			ROCKSDB_JS_CLOSE_FAILURE: '1',
+		});
+	}, 15_000);
+
+	it('surfaces shutdown close failures and quarantines the whole path', async () => {
+		await runDestroyFixture(shutdownFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FAILURE: '1',
+		});
+	}, 15_000);
+
+	it('quarantines a failed automatic last-handle close', async () => {
+		await runDestroyFixture(closeFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FAILURE: '1',
 		});
 	}, 15_000);
 });
