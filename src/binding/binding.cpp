@@ -38,16 +38,19 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
+	std::string error;
 	try {
 		DBRegistry::Shutdown();
-	} catch (const std::exception& error) {
-		::napi_throw_error(env, nullptr, error.what());
-		return nullptr;
+	} catch (const std::exception& exception) {
+		error = exception.what();
 	} catch (...) {
-		::napi_throw_error(env, nullptr, "Unknown native database shutdown failure");
-		return nullptr;
+		error = "Unknown native database shutdown failure";
 	}
 	GlobalEvents::Shutdown();
+	if (!error.empty()) {
+		::napi_throw_error(env, nullptr, error.c_str());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -161,6 +164,7 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 static std::atomic<int32_t> moduleRefCount{0};
 
 NAPI_MODULE_INIT() {
+	initializeTestSeams();
 #ifdef DEBUG
 	// disable buffering for stderr to ensure messages are written immediately
 	::setvbuf(stderr, nullptr, _IONBF, 0);
@@ -221,9 +225,9 @@ NAPI_MODULE_INIT() {
 					::fprintf(stderr, "rocksdb-js %s cleanup failed: unknown native error\n", name);
 				}
 			};
-			cleanup("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
-			cleanup("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
 			cleanup("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
+			cleanup("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
+			cleanup("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");

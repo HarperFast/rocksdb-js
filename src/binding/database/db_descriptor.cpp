@@ -337,7 +337,7 @@ void DBDescriptor::finishClose() {
 		}
 	}
 
-	if (testConsumeFlag("ROCKSDB_JS_CLOSE_FAILURE")) {
+	if (testConsumeCloseFailure()) {
 		throw rocksdb_js::DBException("Injected database close failure");
 	}
 	if (!this->db) {

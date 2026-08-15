@@ -30,6 +30,17 @@ if (!destroying.destroying)
 const registryDeadline = Date.now() + 5_000;
 while (registryStatus().some((entry) => entry.path === path)) {
 	if (Date.now() >= registryDeadline) throw new Error('Timed out waiting for the destroy window');
+	try {
+		const value = original.getSync('before-destroy');
+		if (value !== 'present') throw new Error(`Destroy raced a read with ${String(value)}`);
+	} catch (error) {
+		if (
+			!String(error).includes('Database not open') &&
+			!String(error).includes('Database is closing')
+		) {
+			throw error;
+		}
+	}
 	await delay(1);
 }
 
@@ -43,6 +54,7 @@ if (process.env.ROCKSDB_JS_TEST_SHUTDOWN_DURING_DESTROY === '1') {
 	if (shutdownDuration < 500)
 		throw new Error(`Shutdown did not wait for destroy (${shutdownDuration}ms)`);
 	await worker.terminate();
+	original.close();
 	process.exit(0);
 }
 const reopened = RocksDatabase.open(path);
@@ -57,3 +69,4 @@ if (reopened.getSync('after-destroy') !== 'present')
 	throw new Error('Reopened database is not usable');
 reopened.close();
 await worker.terminate();
+original.close();

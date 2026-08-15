@@ -144,13 +144,17 @@ void DBHandle::close() {
 		this->descriptor->removeListenersByOwner(this);
 		this->descriptor->lockReleaseByOwner(this);
 
-		// release our reference to the descriptor
-		this->descriptor.reset();
+		// A foreign thread can close a handle while its owner is copying this
+		// shared_ptr for an operation. Keep that member owner-thread-only; the
+		// descriptor itself is already closed before any foreign close returns.
+		if (std::this_thread::get_id() == this->ownerThreadId) {
+			this->descriptor.reset();
+		}
 	}
 
 	// N-API references are environment-thread-affine. Destroying a shared
-	// descriptor can close this handle from another worker; retain the refs in
-	// that case so the owning environment's later close/finalizer releases them.
+	// descriptor can close this handle from another worker; retain the refs and
+	// descriptor until the owning environment's close or finalizer releases them.
 	if (std::this_thread::get_id() == this->ownerThreadId) {
 		for (auto& [name, ref] : this->logRefs) {
 			DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
