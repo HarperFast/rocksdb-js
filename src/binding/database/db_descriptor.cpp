@@ -269,7 +269,13 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
-	this->close();
+	try {
+		this->close();
+	} catch (const std::exception& error) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\": %s\n", this, this->path.c_str(), error.what());
+	} catch (...) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\"\n", this, this->path.c_str());
+	}
 }
 
 /**
@@ -329,9 +335,10 @@ void DBDescriptor::finishClose() {
 	}
 
 	// We want to ensure that all in-memory data is written to disk
+	std::string closeError;
 	rocksdb::Status status = this->flush();
 	if (!status.ok()) {
-		throw rocksdb_js::DBException("Failed to flush database during close: " + status.ToString());
+		closeError = "Failed to flush database during close: " + status.ToString();
 	}
 
 	// Trigger manual compaction on all column families to reclaim space from
@@ -361,8 +368,8 @@ void DBDescriptor::finishClose() {
 	// trigger a flush
 	rocksdb::WaitForCompactOptions options;
 	status = this->db->WaitForCompact(options);
-	if (!status.ok()) {
-		throw rocksdb_js::DBException("Failed waiting for database compaction during close: " + status.ToString());
+	if (!status.ok() && closeError.empty()) {
+		closeError = "Failed waiting for database compaction during close: " + status.ToString();
 	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
@@ -410,6 +417,9 @@ void DBDescriptor::finishClose() {
 	this->events.releaseAll();
 
 	this->db.reset();
+	if (!closeError.empty()) {
+		throw rocksdb_js::DBException(closeError);
+	}
 }
 
 napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {

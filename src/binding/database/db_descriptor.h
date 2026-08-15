@@ -288,6 +288,7 @@ public:
 
 	void close();
 	bool isClosing() const { return this->closing.load(); }
+	bool isClosed() const { return !this->db; }
 
 	/**
 	 * Atomically transitions the descriptor into the closing state. Returns

@@ -213,7 +213,8 @@ describe('Drop', () => {
 	// pre-existing bug tracked as
 	// https://github.com/HarperFast/rocksdb-js/issues/726 (needs the drop
 	// interlocked against in-flight transactions), so this test asserts only
-	// atomicity and leaves the handles to dbRunner's per-test database.)
+	// atomicity and verifies that the poisoned environment is reported while
+	// still completing native teardown.)
 	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
 		dbRunner(
 			{
@@ -235,6 +236,10 @@ describe('Drop', () => {
 
 				// the live half must NOT have been applied
 				expect(victim.getSync('live')).toBeUndefined();
+
+				stale.close();
+				doomed.close();
+				expect(() => victim.close()).toThrow('Failed to flush database during close');
 			}
 		));
 

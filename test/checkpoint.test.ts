@@ -1,4 +1,4 @@
-import { RocksDatabase, shutdown } from '../src/index.ts';
+import { RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -26,13 +26,10 @@ async function writeAll(db: RocksDatabase, count: number, prefix = 'value'): Pro
 
 describe('Checkpoints', () => {
 	afterEach(() => {
-		// The close()/destroy()-during-checkpoint tests can leave a descriptor
-		// pending registry purge (closing before an in-flight, descriptor-pinned
-		// checkpoint settles defers the purge — see #672), which keeps the source
-		// database open and its temp dir locked. That fails cleanup on Windows and
-		// crashes the Bun worker on exit. Purge the registry first so the locks are
-		// released before we remove the directories.
-		shutdown();
+		// The checkpoint completion path purges a descriptor that became
+		// unreferenced while the copy was in flight. Avoid process-global shutdown
+		// here: test files share a process, so it can close another suite's active
+		// database while that suite is dropping a column family.
 		for (const dir of tempDirs) {
 			rmSync(dir, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 		}
