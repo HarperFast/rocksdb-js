@@ -566,6 +566,11 @@ void backupStreamExecute(napi_env, void* data) {
 void backupStreamComplete(napi_env env, napi_status status, void* data) {
 	auto* state = static_cast<AsyncBackupStreamState*>(data);
 	state->deleteAsyncWork();
+	if (status == napi_cancelled &&
+		--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
+	) {
+		state->descriptor->operationsInFlight.notify_all();
+	}
 
 	// Release the tsfn. On a normal run its queue is already drained; on a
 	// teardown abort a trampoline may still be queued. Either way, tsfnFinalize
