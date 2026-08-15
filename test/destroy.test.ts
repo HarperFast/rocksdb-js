@@ -68,14 +68,17 @@ describe('Destroy', () => {
 			expect(db.isOpen()).toBe(false);
 		}));
 
-	it('should destroy a database from an unopened handle', () =>
+	it('should reject destroy from a never-opened handle', () =>
 		dbRunner(({ db, dbPath }) => {
 			db.close();
 			expect(() => new RocksDatabase(dbPath, { readOnly: true }).destroy()).toThrow(
 				'Unsupported operation in read-only mode'
 			);
+			expect(() => new RocksDatabase(dbPath).destroy()).toThrow(
+				'Database path is required for destroy'
+			);
 			expect(existsSync(dbPath)).toBe(true);
-			new RocksDatabase(dbPath).destroy();
+			db.destroy();
 			expect(existsSync(dbPath)).toBe(false);
 		}));
 
