@@ -42,6 +42,7 @@ struct DBRegistryEntry final {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 	std::string closeError;
+	bool closeRetrying = false;
 
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}

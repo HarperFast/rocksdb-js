@@ -39,13 +39,16 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
-	GlobalEvents::Shutdown();
 	try {
 		DBRegistry::Shutdown();
 	} catch (const std::exception& error) {
 		::napi_throw_error(env, nullptr, error.what());
 		return nullptr;
+	} catch (...) {
+		::napi_throw_error(env, nullptr, "Unknown native database shutdown failure");
+		return nullptr;
 	}
+	GlobalEvents::Shutdown();
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -227,6 +230,8 @@ NAPI_MODULE_INIT() {
 				rocksdb_js::DBRegistry::Shutdown();
 			} catch (const std::exception& error) {
 				::fprintf(stderr, "rocksdb-js cleanup failed: %s\n", error.what());
+			} catch (...) {
+				::fprintf(stderr, "rocksdb-js cleanup failed: unknown native error\n");
 			}
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {

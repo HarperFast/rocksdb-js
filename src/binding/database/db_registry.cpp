@@ -56,6 +56,13 @@ struct ClosingDescriptor final {
 	) : key(key), descriptor(std::move(descriptor)), condition(std::move(condition)) {}
 };
 
+void finishCloseWithTestSeam(const std::shared_ptr<DBDescriptor>& descriptor) {
+	if (testDelayMs("ROCKSDB_JS_CLOSE_FAILURE") > 0) {
+		throw rocksdb_js::DBException("Injected database close failure");
+	}
+	descriptor->finishClose();
+}
+
 } // namespace
 
 // Initialize the static instance
@@ -153,15 +160,27 @@ void DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
 	if (descriptor) {
 		// We claimed the close under the lock via beginClose(); run the actual
 		// teardown now. The local copy keeps the descriptor alive throughout.
-		descriptor->finishClose();
+		std::string closeError;
+		try {
+			finishCloseWithTestSeam(descriptor);
+		} catch (const std::exception& error) {
+			closeError = error.what();
+		} catch (...) {
+			closeError = "unknown native close failure";
+		}
 
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto eraseIt = instance->databases.find(key);
 		// Only erase the entry we claimed. A brand-new descriptor cannot appear
 		// because OpenDB blocks until we notify below.
-		if (eraseIt != instance->databases.end()
-			&& (!eraseIt->second.descriptor || eraseIt->second.descriptor == descriptor)) {
-			instance->databases.erase(eraseIt);
+		if (eraseIt != instance->databases.end() && eraseIt->second.descriptor == descriptor) {
+			if (closeError.empty()) {
+				instance->databases.erase(eraseIt);
+			} else {
+				eraseIt->second.closeError = closeError;
+				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Quarantined \"%s\": %s\n",
+					instance.get(), path.c_str(), closeError.c_str());
+			}
 		}
 	}
 
@@ -215,10 +234,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		instance->destroyingPaths,
 		path
 	);
-	// Test-only failure modes: 1 fails before physical deletion; 2 fails the
-	// descriptor-close stage so quarantine and waiter behavior are testable.
-	const int destroyFailureMode = testDelayMs("ROCKSDB_JS_DESTROY_FAILURE");
-
 	while (true) {
 		std::vector<ClosingDescriptor> claimed;
 		std::vector<ClosingDescriptor> alreadyClosing;
@@ -253,10 +268,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor %p for \"%s\" (ref count = %ld)\n",
 				instance.get(), closing.descriptor.get(), path.c_str(), closing.descriptor.use_count());
 			try {
-				if (destroyFailureMode == 2) {
-					throw rocksdb_js::DBException("Injected database close failure");
-				}
-				closing.descriptor->finishClose();
+				finishCloseWithTestSeam(closing.descriptor);
 				closing.closed = true;
 			} catch (const std::exception& error) {
 				closing.closeError = error.what();
@@ -311,7 +323,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			std::unique_lock<std::mutex> lock(instance->databasesMutex);
 			if (!closing.condition->wait_until(lock, deadline, [&]() {
 				auto entry = instance->databases.find(closing.key);
-				return entry == instance->databases.end() || entry->second.descriptor != closing.descriptor;
+				return entry == instance->databases.end() ||
+					!entry->second.closeError.empty() || entry->second.descriptor != closing.descriptor;
 			})) {
 				throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": an open descriptor is still closing");
 			}
@@ -334,7 +347,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
 	}
-	if (destroyFailureMode == 1) {
+	if (testDelayMs("ROCKSDB_JS_DESTROY_FAILURE") > 0) {
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
@@ -400,6 +413,15 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": destruction is still in progress");
 			}
 			continue;
+		}
+
+		for (const auto& [registeredKey, registeredEntry] : instance->databases) {
+			if (registeredKey.path == path && !registeredEntry.closeError.empty()) {
+				throw rocksdb_js::DBException(
+					"Cannot open database \"" + path + "\": previous close failed: " +
+					registeredEntry.closeError
+				);
+			}
 		}
 
 		entryIterator = instance->databases.find(key);
@@ -603,6 +625,10 @@ void DBRegistry::PurgeAll() {
 			auto condition = it->second.condition;
 			auto descriptor = it->second.descriptor;
 			if (descriptor) {
+				if (descriptor->isClosing()) {
+					++it;
+					continue;
+				}
 				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.path.c_str(), descriptor.use_count());
 				descriptor->close();
 			}
@@ -870,7 +896,11 @@ void DBRegistry::Shutdown() {
 					continue;
 				}
 				ClosingDescriptor closing{key, entry.descriptor, entry.condition};
-				if (entry.descriptor->beginClose()) {
+				if (!entry.closeError.empty() && !entry.closeRetrying) {
+					entry.closeRetrying = true;
+					descriptorsToClose.push_back(std::move(closing));
+				} else if (entry.closeError.empty() && entry.descriptor->beginClose()) {
+					entry.closeRetrying = true;
 					descriptorsToClose.push_back(std::move(closing));
 				}
 			}
@@ -881,7 +911,7 @@ void DBRegistry::Shutdown() {
 		for (auto& closing : descriptorsToClose) {
 			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), closing.descriptor->path.c_str());
 			try {
-				closing.descriptor->finishClose();
+				finishCloseWithTestSeam(closing.descriptor);
 				closing.closed = true;
 			} catch (const std::exception& error) {
 				closing.closeError = error.what();
@@ -902,6 +932,7 @@ void DBRegistry::Shutdown() {
 						instance->databases.erase(entry);
 					} else {
 						entry->second.closeError = closing.closeError;
+						entry->second.closeRetrying = false;
 					}
 				}
 			}

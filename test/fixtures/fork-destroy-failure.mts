@@ -1,7 +1,7 @@
 import { RocksDatabase } from '../../src/index.ts';
 
 const path = process.argv[2];
-const failureMode = process.env.ROCKSDB_JS_DESTROY_FAILURE;
+const closeFailure = process.env.ROCKSDB_JS_CLOSE_FAILURE === '1';
 const db = RocksDatabase.open(path);
 db.putSync('key', 'value');
 
@@ -11,12 +11,13 @@ try {
 } catch (error) {
 	destroyError = error;
 }
-const expectedError =
-	failureMode === '2' ? 'Injected database close failure' : 'Injected database destruction failure';
+const expectedError = closeFailure
+	? 'Injected database close failure'
+	: 'Injected database destruction failure';
 if (!String(destroyError).includes(expectedError))
 	throw new Error(`Expected injected destroy failure, received: ${String(destroyError)}`);
 
-if (failureMode === '2') {
+if (closeFailure) {
 	const startedAt = Date.now();
 	try {
 		RocksDatabase.open(path);
