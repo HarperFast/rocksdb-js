@@ -449,8 +449,21 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	THROW_IF_READONLY((*dbHandle)->descriptor, "Destroy failed: ");
 
 	if (*dbHandle) {
+		std::string path = (*dbHandle)->path;
+		napi_valuetype pathType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &pathType));
+		if (pathType == napi_string) {
+			NAPI_STATUS_THROWS_ERROR(rocksdb_js::getString(env, argv[0], path), "Database path must be a string");
+		} else if (pathType != napi_undefined) {
+			::napi_throw_type_error(env, nullptr, "Database path must be a string");
+			return nullptr;
+		}
+		if (path.empty()) {
+			::napi_throw_error(env, nullptr, "Database path is required for destroy");
+			return nullptr;
+		}
 		try {
-			DBRegistry::DestroyDB((*dbHandle)->path);
+			DBRegistry::DestroyDB(path);
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
 			::napi_throw_error(env, nullptr, e.what());

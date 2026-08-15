@@ -1970,7 +1970,7 @@ Returns an array containing that status of all active RocksDB instances.
 - `path: string` The database path.
 - `closeError?: string` The native lifecycle error retaining this registry entry.
 - `destroyCleanupPending?: boolean` The native database is closed, but physical path cleanup must
-  finish before the next open. Opening the path retries cleanup automatically.
+  finish before the next open. Call `destroy()` or `shutdown()` to retry cleanup.
 - `refCount: number` The number of JavaScript database instances plus the registry's reference.
 - `columnFamiles: object` A map of column family names and their their info.
   - `userSharedBuffers: number` The count of active user shared buffers.
