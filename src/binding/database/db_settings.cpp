@@ -1,4 +1,5 @@
 #include "database/db_settings.h"
+#include <cmath>
 #include <limits>
 #include <random>
 #include "napi/macros.h"
@@ -215,11 +216,12 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
 
-	int64_t lifecycleWaitSeconds = 0;
+	double lifecycleWaitSeconds = 0;
 	status = rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true);
 	if (status == napi_ok) {
-		if (lifecycleWaitSeconds <= 0 ||
-			static_cast<uint64_t>(lifecycleWaitSeconds) > std::numeric_limits<uint32_t>::max()
+		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
+			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
+			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()
 		) {
 			::napi_throw_range_error(env, nullptr, "Lifecycle wait seconds must be a positive integer");
 			return nullptr;

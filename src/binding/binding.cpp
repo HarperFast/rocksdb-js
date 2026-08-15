@@ -40,7 +40,12 @@ namespace rocksdb_js {
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
 	GlobalEvents::Shutdown();
-	DBRegistry::Shutdown();
+	try {
+		DBRegistry::Shutdown();
+	} catch (const std::exception& error) {
+		::napi_throw_error(env, nullptr, error.what());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -216,9 +221,13 @@ NAPI_MODULE_INIT() {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
-			rocksdb_js::GlobalEvents::Shutdown();
-			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
-			rocksdb_js::DBRegistry::Shutdown();
+			try {
+				rocksdb_js::GlobalEvents::Shutdown();
+				rocksdb_js::TransactionLogStoreRegistry::Shutdown();
+				rocksdb_js::DBRegistry::Shutdown();
+			} catch (const std::exception& error) {
+				::fprintf(stderr, "rocksdb-js cleanup failed: %s\n", error.what());
+			}
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");

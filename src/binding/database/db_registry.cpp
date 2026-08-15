@@ -47,6 +47,13 @@ struct ClosingDescriptor final {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 	bool closed = false;
+	std::string closeError;
+
+	ClosingDescriptor(
+		const DBKey& key,
+		std::shared_ptr<DBDescriptor> descriptor,
+		std::shared_ptr<std::condition_variable> condition
+	) : key(key), descriptor(std::move(descriptor)), condition(std::move(condition)) {}
 };
 
 } // namespace
@@ -208,6 +215,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		instance->destroyingPaths,
 		path
 	);
+	// Test-only failure modes: 1 fails before physical deletion; 2 fails the
+	// descriptor-close stage so quarantine and waiter behavior are testable.
+	const int destroyFailureMode = testDelayMs("ROCKSDB_JS_DESTROY_FAILURE");
 
 	while (true) {
 		std::vector<ClosingDescriptor> claimed;
@@ -216,6 +226,13 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			claimed.reserve(instance->databases.size());
 			alreadyClosing.reserve(instance->databases.size());
+			for (const auto& [key, entry] : instance->databases) {
+				if (key.path == path && !entry.closeError.empty()) {
+					throw rocksdb_js::DBException(
+						"Cannot destroy database \"" + path + "\": previous close failed: " + entry.closeError
+					);
+				}
+			}
 			for (auto& [key, entry] : instance->databases) {
 				if (key.path != path || !entry.descriptor) {
 					continue;
@@ -236,9 +253,18 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor %p for \"%s\" (ref count = %ld)\n",
 				instance.get(), closing.descriptor.get(), path.c_str(), closing.descriptor.use_count());
 			try {
+				if (destroyFailureMode == 2) {
+					throw rocksdb_js::DBException("Injected database close failure");
+				}
 				closing.descriptor->finishClose();
 				closing.closed = true;
+			} catch (const std::exception& error) {
+				closing.closeError = error.what();
+				if (!closeError) {
+					closeError = std::current_exception();
+				}
 			} catch (...) {
+				closing.closeError = "unknown native close failure";
 				if (!closeError) {
 					closeError = std::current_exception();
 				}
@@ -248,19 +274,19 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			for (const auto& closing : claimed) {
-				if (!closing.closed) {
+				auto entry = instance->databases.find(closing.key);
+				if (entry == instance->databases.end() || entry->second.descriptor != closing.descriptor) {
 					continue;
 				}
-				auto entry = instance->databases.find(closing.key);
-				if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
+				if (closing.closed) {
 					instance->databases.erase(entry);
+				} else {
+					entry->second.closeError = closing.closeError;
 				}
 			}
 		}
 		for (const auto& closing : claimed) {
-			if (closing.closed) {
-				closing.condition->notify_all();
-			}
+			closing.condition->notify_all();
 		}
 		if (closeError) {
 			std::rethrow_exception(closeError);
@@ -308,7 +334,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
 	}
-	if (testFailureEnabled("ROCKSDB_JS_DESTROY_FAILURE")) {
+	if (destroyFailureMode == 1) {
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
@@ -380,6 +406,12 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		if (entryIterator == instance->databases.end()) {
 			entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
 		}
+		if (!entryIterator->second.closeError.empty()) {
+			throw rocksdb_js::DBException(
+				"Cannot open database \"" + path + "\": previous close failed: " +
+				entryIterator->second.closeError
+			);
+		}
 		if (!entryIterator->second.descriptor || !entryIterator->second.descriptor->isClosing()) {
 			break;
 		}
@@ -389,6 +421,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		if (!condition->wait_until(lock, deadline, [&]() {
 			auto current = instance->databases.find(key);
 			return current == instance->databases.end() ||
+				!current->second.closeError.empty() ||
 				!current->second.descriptor || !current->second.descriptor->isClosing();
 		})) {
 			throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": the previous instance is still closing");
@@ -563,12 +596,18 @@ void DBRegistry::PurgeAll() {
 				++it;
 				continue;
 			}
+			if (!it->second.closeError.empty()) {
+				++it;
+				continue;
+			}
+			auto condition = it->second.condition;
 			auto descriptor = it->second.descriptor;
 			if (descriptor) {
 				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.path.c_str(), descriptor.use_count());
 				descriptor->close();
 			}
 			it = instance->databases.erase(it);
+			condition->notify_all();
 #ifdef DEBUG
 			++i;
 #endif
@@ -844,17 +883,26 @@ void DBRegistry::Shutdown() {
 			try {
 				closing.descriptor->finishClose();
 				closing.closed = true;
-			} catch (...) {
+			} catch (const std::exception& error) {
+				closing.closeError = error.what();
 				if (!closeError) {
 					closeError = std::current_exception();
 				}
-				continue;
+			} catch (...) {
+				closing.closeError = "unknown native close failure";
+				if (!closeError) {
+					closeError = std::current_exception();
+				}
 			}
 			{
 				std::lock_guard<std::mutex> lock(instance->databasesMutex);
 				auto entry = instance->databases.find(closing.key);
 				if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
-					instance->databases.erase(entry);
+					if (closing.closed) {
+						instance->databases.erase(entry);
+					} else {
+						entry->second.closeError = closing.closeError;
+					}
 				}
 			}
 			closing.condition->notify_all();
