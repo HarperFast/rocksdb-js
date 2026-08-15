@@ -208,6 +208,7 @@ describe('Destroy', () => {
 	it('waits for an in-progress shutdown retry before reopening', async () => {
 		await runDestroyFixture(shutdownRetryFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
+			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '1000',
 		});
 	}, 15_000);
 });

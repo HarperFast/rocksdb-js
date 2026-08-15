@@ -12,8 +12,6 @@ try {
 	if (!String(error).includes('Injected database close failure')) throw error;
 }
 
-delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
-process.env.ROCKSDB_JS_CLOSE_RETRY_DELAY_MS = '1000';
 const worker = new Worker(createWorkerBootstrapScript('./test/workers/shutdown-retry-worker.mts'), {
 	eval: true,
 });
@@ -31,6 +29,5 @@ if (elapsed < 500) throw new Error(`Open did not wait for the shutdown retry (${
 if (reopened.getSync('key') !== 'value') throw new Error('Shutdown retry did not preserve data');
 const result = await shutdownResult;
 if (!result.shutdown) throw new Error(`Shutdown retry failed: ${JSON.stringify(result)}`);
-delete process.env.ROCKSDB_JS_CLOSE_RETRY_DELAY_MS;
 reopened.destroy();
 await worker.terminate();
