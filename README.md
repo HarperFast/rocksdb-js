@@ -137,7 +137,9 @@ Creates a new database instance.
 ### `db.close()`
 
 Closes a database. This function can be called multiple times and will only close an opened
-database. A database instance can be reopened once its closed.
+database. A database instance can be reopened once it is closed. A flush or compaction failure is
+reported as an exception after native teardown completes. A failure that prevents teardown emits
+`database:closeFailed`; same-path opens then fail until `destroy()` or `shutdown()` retries cleanup.
 
 ```typescript
 const db = RocksDatabase.open('foo');
@@ -1681,7 +1683,9 @@ console.log(registryStatus());
 
 The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to
 finish, for all open databases. It is highly recommended to call this in a `process` `exit` event
-listener (on the main thread), to ensure that all data is flushed to disk before the process exits:
+listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
+It throws the first close failure after attempting every claimed database; call it again to retry
+any descriptor whose teardown did not complete:
 
 ```typescript
 import { shutdown } from '@harperfast/rocksdb-js';
