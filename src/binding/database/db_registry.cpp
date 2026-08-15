@@ -168,7 +168,7 @@ std::string DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOn
 		// Only erase the entry we claimed. A brand-new descriptor cannot appear
 		// because OpenDB blocks until we notify below.
 		if (eraseIt != instance->databases.end() && eraseIt->second.descriptor == descriptor) {
-			if (closeError.empty()) {
+			if (closeError.empty() || descriptor->isClosed()) {
 				instance->databases.erase(eraseIt);
 			} else {
 				eraseIt->second.closeError = closeError;
@@ -265,13 +265,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 				closing.descriptor->finishClose();
 				closing.closed = true;
 			} catch (const std::exception& error) {
+				closing.closed = closing.descriptor->isClosed();
 				closing.closeError = error.what();
-				if (!closeError) {
+				if (!closing.closed && !closeError) {
 					closeError = std::current_exception();
 				}
 			} catch (...) {
+				closing.closed = closing.descriptor->isClosed();
 				closing.closeError = "unknown native close failure";
-				if (!closeError) {
+				if (!closing.closed && !closeError) {
 					closeError = std::current_exception();
 				}
 			}
@@ -644,9 +646,11 @@ void DBRegistry::PurgeAll() {
 				closing.descriptor->finishClose();
 				closing.closed = true;
 			} catch (const std::exception& error) {
+				closing.closed = closing.descriptor->isClosed();
 				closing.closeError = error.what();
 				if (!closeError) closeError = std::current_exception();
 			} catch (...) {
+				closing.closed = closing.descriptor->isClosed();
 				closing.closeError = "unknown native close failure";
 				if (!closeError) closeError = std::current_exception();
 			}
@@ -954,11 +958,13 @@ void DBRegistry::Shutdown() {
 				closing.descriptor->finishClose();
 				closing.closed = true;
 			} catch (const std::exception& error) {
+				closing.closed = closing.descriptor->isClosed();
 				closing.closeError = error.what();
 				if (!closeError) {
 					closeError = std::current_exception();
 				}
 			} catch (...) {
+				closing.closed = closing.descriptor->isClosed();
 				closing.closeError = "unknown native close failure";
 				if (!closeError) {
 					closeError = std::current_exception();
