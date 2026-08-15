@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../src/index.ts';
+import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -11,6 +11,7 @@ const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts'
 const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
+const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 
 function runDestroyFixture(
 	fixture: string,
@@ -75,6 +76,12 @@ describe('Destroy', () => {
 			expect(db.isOpen()).toBe(false);
 		}));
 
+	it('waits for an in-flight directory backup before destroying', async () => {
+		await runDestroyFixture(backupDestroyFixture, generateDBPath(), {
+			ROCKSDB_JS_BACKUP_DELAY_MS: '500',
+		});
+	});
+
 	it('should destroy all related instances', () =>
 		dbRunner(
 			{ dbOptions: [{}, { name: 'test' }, { readOnly: true }] },
@@ -111,11 +118,13 @@ describe('Destroy', () => {
 				chmodSync(lockedDirectory, 0o000);
 				try {
 					expect(() => db.destroy()).toThrow('Failed to remove database directory');
-					expect(() => RocksDatabase.open(dbPath)).toThrow('previous destroy cleanup failed');
+					expect(
+						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
+					).toBe(true);
+					expect(() => RocksDatabase.open(dbPath)).toThrow('Failed to remove database directory');
 				} finally {
 					chmodSync(lockedDirectory, 0o700);
 				}
-				db.destroy();
 				const reopened = RocksDatabase.open(dbPath);
 				reopened.close();
 			})

@@ -57,6 +57,28 @@ struct ClosingDescriptor final {
 	) : key(key), descriptor(std::move(descriptor)), condition(std::move(condition)) {}
 };
 
+std::string destroyPhysicalPath(const std::string& path) {
+	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
+	if (!status.ok()) return status.ToString();
+
+	std::error_code cleanupError;
+	std::filesystem::remove_all(path, cleanupError);
+	if (cleanupError) return "Failed to remove database directory: " + cleanupError.message();
+	return {};
+}
+
+void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
+	if (!GlobalEvents::hasListeners()) return;
+	for (const auto& closing : descriptors) {
+		if (!closing.closeError.empty()) {
+			emitGlobalEvent(
+				"database:closeFailed",
+				ListenerData::fromStrings({closing.key.path, closing.closeError})
+			);
+		}
+	}
+}
+
 } // namespace
 
 // Initialize the static instance
@@ -299,10 +321,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		for (const auto& closing : claimed) {
 			closing.condition->notify_all();
 		}
-		if (closeError) {
-			std::rethrow_exception(closeError);
-		}
+		emitCloseFailures(claimed);
 		if (alreadyClosing.empty()) {
+			if (closeError) std::rethrow_exception(closeError);
 			break;
 		}
 		for (const auto& closing : alreadyClosing) {
@@ -316,6 +337,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 				throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": an open descriptor is still closing");
 			}
 		}
+		if (closeError) std::rethrow_exception(closeError);
 	}
 
 	{
@@ -338,22 +360,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
-	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
-	if (!status.ok()) {
-		const std::string error = status.ToString();
+	const std::string destroyError = destroyPhysicalPath(path);
+	if (!destroyError.empty()) {
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		instance->databases[DBKey{path, false}].closeError = error;
-		throw rocksdb_js::DBException(error);
-	}
-
-	// remove the database directory including transaction logs
-	std::error_code cleanupError;
-	std::filesystem::remove_all(path, cleanupError);
-	if (cleanupError) {
-		const std::string error = cleanupError.message();
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		instance->databases[DBKey{path, false}].closeError = error;
-		throw rocksdb_js::DBException("Failed to remove database directory: " + error);
+		instance->databases[DBKey{path, false}].closeError = destroyError;
+		throw rocksdb_js::DBException(destroyError);
 	}
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
@@ -409,6 +420,32 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			})) {
 				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": destruction is still in progress");
 			}
+			continue;
+		}
+
+		auto failedDestroy = instance->databases.find(DBKey{path, false});
+		if (failedDestroy != instance->databases.end() &&
+			!failedDestroy->second.descriptor && !failedDestroy->second.closeError.empty()
+		) {
+			instance->databases.erase(failedDestroy);
+			instance->destroyingPaths.insert(path);
+			lock.unlock();
+			std::string destroyError;
+			{
+				DestroyPathGuard pathGuard(
+					instance->databasesMutex,
+					instance->lifecycleCondition,
+					instance->destroyingPaths,
+					path
+				);
+				destroyError = destroyPhysicalPath(path);
+				if (!destroyError.empty()) {
+					std::lock_guard<std::mutex> cleanupLock(instance->databasesMutex);
+					instance->databases[DBKey{path, false}].closeError = destroyError;
+				}
+			}
+			if (!destroyError.empty()) throw rocksdb_js::DBException(destroyError);
+			lock.lock();
 			continue;
 		}
 
@@ -690,6 +727,7 @@ void DBRegistry::PurgeAll() {
 			}
 			closing.condition->notify_all();
 		}
+		emitCloseFailures(descriptorsToClose);
 		if (closeError) {
 			std::rethrow_exception(closeError);
 		}
@@ -713,9 +751,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 
 		size_t i = 0;
 		for (auto& [key, entry] : instance->databases) {
-			if (!entry.descriptor) {
-				continue;
-			}
 			napi_value database;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
 			napi_value pathValue;
@@ -730,6 +765,21 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 					&closeErrorValue
 				));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closeError", closeErrorValue));
+			}
+			if (!entry.descriptor) {
+				napi_value pending;
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &pending));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "destroyCleanupPending", pending));
+				napi_value zero;
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &zero));
+				for (const char* property : {"refCount", "transactions", "closables", "locks", "listenerCallbacks"}) {
+					NAPI_STATUS_THROWS(::napi_set_named_property(env, database, property, zero));
+				}
+				napi_value columnFamilies;
+				NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
+				NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, database));
+				continue;
 			}
 			napi_value modeValue;
 			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
@@ -945,6 +995,7 @@ void DBRegistry::Shutdown() {
 		while (true) {
 			std::vector<ClosingDescriptor> descriptorsToClose;
 			std::vector<ClosingDescriptor> descriptorsToWaitFor;
+			std::string destroyCleanupError;
 			bool destroysInFlight;
 			{
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
@@ -958,11 +1009,10 @@ void DBRegistry::Shutdown() {
 						continue;
 					}
 					if (!entry.descriptor) {
-						if (!entry.closeError.empty()) {
-							throw rocksdb_js::DBException(
+						if (!entry.closeError.empty() && destroyCleanupError.empty()) {
+							destroyCleanupError =
 								"Cannot complete shutdown: database \"" + key.path +
-								"\" requires destroy() cleanup: " + entry.closeError
-							);
+								"\" requires destroy cleanup: " + entry.closeError;
 						}
 						continue;
 					}
@@ -1008,7 +1058,7 @@ void DBRegistry::Shutdown() {
 				}
 				closing.condition->notify_all();
 			}
-			if (closeError) std::rethrow_exception(closeError);
+			emitCloseFailures(descriptorsToClose);
 
 			for (const auto& closing : descriptorsToWaitFor) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
@@ -1021,8 +1071,7 @@ void DBRegistry::Shutdown() {
 					throw rocksdb_js::DBException("Timed out waiting for database close to finish during shutdown");
 				}
 			}
-			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty()) {
-				if (!destroysInFlight) break;
+			if (destroysInFlight) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
 				if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
 					return instance->destroyingPaths.empty();
@@ -1030,6 +1079,11 @@ void DBRegistry::Shutdown() {
 					throw rocksdb_js::DBException("Timed out waiting for database destruction to finish during shutdown");
 				}
 			}
+			if (closeError) std::rethrow_exception(closeError);
+			if (!destroyCleanupError.empty()) {
+				throw rocksdb_js::DBException(destroyCleanupError);
+			}
+			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty()) break;
 		}
 
 		// Purge the registry

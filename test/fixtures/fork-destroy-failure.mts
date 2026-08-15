@@ -4,6 +4,9 @@ const path = process.argv[2];
 const closeFailure = process.env.ROCKSDB_JS_CLOSE_FAILURE === '1';
 const db = RocksDatabase.open(path);
 db.putSync('key', 'value');
+let resolveCloseFailure: (args: unknown[]) => void;
+const closeFailureEvent = new Promise<unknown[]>((resolve) => (resolveCloseFailure = resolve));
+RocksDatabase.on('database:closeFailed', (...args) => resolveCloseFailure(args));
 
 let destroyError: unknown;
 try {
@@ -18,6 +21,15 @@ if (!String(destroyError).includes(expectedError))
 	throw new Error(`Expected injected destroy failure, received: ${String(destroyError)}`);
 
 if (closeFailure) {
+	const args = await Promise.race([
+		closeFailureEvent,
+		new Promise<never>((_, reject) =>
+			setTimeout(() => reject(new Error('Destroy did not emit database:closeFailed')), 1_000)
+		),
+	]);
+	if (args[0] !== path || args[1] !== expectedError) {
+		throw new Error(`Unexpected database:closeFailed arguments: ${JSON.stringify(args)}`);
+	}
 	const startedAt = Date.now();
 	try {
 		RocksDatabase.open(path);
