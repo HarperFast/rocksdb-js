@@ -386,7 +386,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// committed
 
 	destroy(): void {
-		this.store.db.destroy(this.store.path, this.store.readOnly);
+		this.store.db.destroy(this.store.readOnly);
 	}
 
 	async drop(): Promise<void> {

@@ -354,8 +354,9 @@ native database, and prevents another handle from reopening the path until remov
 waits are synchronous and can outlive `lifecycleWaitSeconds` once destruction has claimed the path,
 because releasing the native database beneath an active copy would be unsafe.
 
-The instance does not need to be open, which allows an explicit `destroy()` retry after failed
-physical cleanup. A read-only instance cannot destroy the database.
+A previously opened instance does not need to remain open, which allows an explicit `destroy()`
+retry after failed physical cleanup. A never-opened or read-only instance cannot destroy the
+database; `shutdown()` can recover a tombstone when its original handle is no longer available.
 
 ```typescript
 db.destroy();

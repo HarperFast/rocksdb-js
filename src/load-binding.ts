@@ -319,7 +319,7 @@ export type NativeDatabase = {
 		reject: RejectCallback,
 		targetPath: string
 	): void;
-	destroy(path?: string, readOnly?: boolean): void;
+	destroy(readOnly?: boolean): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
