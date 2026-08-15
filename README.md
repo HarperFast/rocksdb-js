@@ -195,7 +195,7 @@ Sets global database settings.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
-  - `lifecycleWaitSeconds: number` Maximum time a synchronous open, destroy, or shutdown waits for
+  - `lifecycleWaitSeconds: number` Total maximum time a synchronous open, destroy, or shutdown waits for
     another lifecycle operation before throwing a retryable timeout error. Defaults to `30` seconds
     and must be a positive integer.
   - `verificationTableEntries: number` The number of slots in the process-global
@@ -1668,6 +1668,9 @@ console.log(currentThreadId());
 Returns an array containing that status of all active RocksDB instances.
 
 - `path: string` The database path.
+- `closeError?: string` The native lifecycle error retaining this registry entry.
+- `destroyCleanupPending?: boolean` The native database is closed, but physical path cleanup must
+  finish before the next open. Opening the path retries cleanup automatically.
 - `refCount: number` The number of JavaScript database instances plus the registry's reference.
 - `columnFamiles: object` A map of column family names and their their info.
   - `userSharedBuffers: number` The count of active user shared buffers.

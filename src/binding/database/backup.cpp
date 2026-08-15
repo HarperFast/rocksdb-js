@@ -5,15 +5,18 @@
 #include "database/db_handle.h"
 #include "database/db_registry.h"
 #include "core/file_lock.h"
+#include "core/test_seam.h"
 #include "napi/async.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
 #include "rocksdb/env.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/backup_engine.h"
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace rocksdb_js {
@@ -63,6 +66,17 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
+		}
+	}
+};
+
+struct BackupInFlightClaim final {
+	DBDescriptor* descriptor;
+	const bool& handedOff;
+
+	~BackupInFlightClaim() {
+		if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
 		}
 	}
 };
@@ -135,7 +149,8 @@ static napi_value queueBackupWork(
 	State* state,
 	napi_async_execute_callback execute,
 	napi_async_complete_callback complete,
-	bool registerWork
+	bool registerWork,
+	bool* queued = nullptr
 ) {
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
@@ -150,6 +165,7 @@ static napi_value queueBackupWork(
 	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (queued) *queued = true;
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -179,6 +195,10 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 	// starting a backup once close() has been requested.
 	if (!state->descriptor || !state->handle || state->handle->isCancelled()) {
 		return rocksdb::Status::Aborted("Database closed during backup operation");
+	}
+	const int backupDelayMs = testDelayMs("ROCKSDB_JS_BACKUP_DELAY_MS");
+	if (backupDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(backupDelayMs));
 	}
 
 	const std::string& backupDir = state->engineOptions.backup_dir;
@@ -335,10 +355,19 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 	bool checkDiskSpace = true;
 	NAPI_STATUS_THROWS(getProperty(env, options, "checkDiskSpace", checkDiskSpace));
 
+	auto descriptor = (*dbHandle)->descriptor;
+	++descriptor->operationsInFlight;
+	bool handedOff = false;
+	BackupInFlightClaim claim{descriptor.get(), handedOff};
+	if (descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	auto state = new AsyncBackupState(
 		env,
 		*dbHandle,
-		(*dbHandle)->descriptor,
+		descriptor,
 		std::move(engineOptions),
 		std::move(createOptions),
 		std::move(appMetadata)
@@ -355,6 +384,9 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
 			state->status = runCreateBackup(state);
+			if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -373,7 +405,8 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 			}
 			delete state;
 		},
-		true // registerWork
+		true, // registerWork
+		&handedOff
 	);
 }
 

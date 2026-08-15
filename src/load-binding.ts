@@ -511,6 +511,7 @@ function locateBinding(): string {
 export type RegistryStatusDB = {
 	path: string;
 	closeError?: string;
+	destroyCleanupPending?: boolean;
 	refCount: number;
 	columnFamilies: string[];
 	transactions: number;
