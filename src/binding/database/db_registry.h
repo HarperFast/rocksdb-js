@@ -81,7 +81,7 @@ private:
 	 * Mutex to protect the databases map.
 	 */
 	std::mutex databasesMutex;
-	std::mutex shutdownMutex;
+	std::timed_mutex shutdownMutex;
 	// Destruction owns a physical path across every (path, readOnly) entry.
 	// Waiters must re-resolve databases after every wake because the closer can
 	// erase the node while the mutex is released.

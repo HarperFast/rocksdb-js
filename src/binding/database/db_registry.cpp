@@ -235,11 +235,12 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			claimed.reserve(instance->databases.size());
 			alreadyClosing.reserve(instance->databases.size());
-			for (const auto& [key, entry] : instance->databases) {
-				if (key.path == path && !entry.closeError.empty()) {
+			for (bool readOnly : {false, true}) {
+				auto entry = instance->databases.find(DBKey{path, readOnly});
+				if (entry != instance->databases.end() && !entry->second.closeError.empty()) {
 					throw rocksdb_js::DBException(
 						"Cannot destroy database \"" + path + "\": previous close failed: " +
-						entry.closeError + ". Call shutdown() to retry cleanup"
+						entry->second.closeError + ". Call shutdown() to retry cleanup"
 					);
 				}
 			}
@@ -410,11 +411,12 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			continue;
 		}
 
-		for (const auto& [registeredKey, registeredEntry] : instance->databases) {
-			if (registeredKey.path == path && !registeredEntry.closeError.empty()) {
+		for (bool readOnly : {false, true}) {
+			auto registeredEntry = instance->databases.find(DBKey{path, readOnly});
+			if (registeredEntry != instance->databases.end() && !registeredEntry->second.closeError.empty()) {
 				throw rocksdb_js::DBException(
 					"Cannot open database \"" + path + "\": previous close failed: " +
-					registeredEntry.closeError + ". Call shutdown() to retry cleanup"
+					registeredEntry->second.closeError + ". Call shutdown() to retry cleanup"
 				);
 			}
 		}
@@ -596,62 +598,70 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
  */
 void DBRegistry::PurgeAll() {
 	if (instance) {
+		std::vector<ClosingDescriptor> descriptorsToClose;
+		std::vector<std::shared_ptr<std::condition_variable>> removedConditions;
 		std::exception_ptr closeError;
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 #ifdef DEBUG
-		size_t initialSize = instance->databases.size();
-		DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), instance->databases.size());
-		uint32_t i = 0;
+			size_t initialSize = instance->databases.size();
+			DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), initialSize);
 #endif
-		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
-			if (instance->destroyingPaths.find(it->first.path) != instance->destroyingPaths.end()) {
-				++it;
-				continue;
-			}
-			if (!it->second.closeError.empty()) {
-				++it;
-				continue;
-			}
-			auto condition = it->second.condition;
-			auto descriptor = it->second.descriptor;
-			if (descriptor) {
-				if (descriptor->isClosing()) {
+			descriptorsToClose.reserve(instance->databases.size());
+			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
+				if (instance->destroyingPaths.find(it->first.path) != instance->destroyingPaths.end() ||
+					!it->second.closeError.empty()
+				) {
 					++it;
 					continue;
 				}
-				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.path.c_str(), descriptor.use_count());
-				try {
-					descriptor->close();
-				} catch (const std::exception& error) {
-					it->second.closeError = error.what();
-					condition->notify_all();
-					if (!closeError) closeError = std::current_exception();
-					++it;
-					continue;
-				} catch (...) {
-					it->second.closeError = "unknown native close failure";
-					condition->notify_all();
-					if (!closeError) closeError = std::current_exception();
+				auto descriptor = it->second.descriptor;
+				if (descriptor) {
+					if (!descriptor->beginClose()) {
+						++it;
+						continue;
+					}
+					DEBUG_LOG("%p DBRegistry::PurgeAll Claiming \"%s\" (ref count = %ld)\n",
+						instance.get(), it->first.path.c_str(), descriptor.use_count());
+					descriptorsToClose.emplace_back(it->first, descriptor, it->second.condition);
 					++it;
 					continue;
 				}
+				removedConditions.push_back(it->second.condition);
+				it = instance->databases.erase(it);
 			}
-			it = instance->databases.erase(it);
-			condition->notify_all();
 #ifdef DEBUG
-			++i;
+			DEBUG_LOG("%p DBRegistry::PurgeAll Claimed %zu of %zu descriptors\n",
+				instance.get(), descriptorsToClose.size(), initialSize);
 #endif
 		}
-#ifdef DEBUG
-		size_t currentSize = instance->databases.size();
-		DEBUG_LOG(
-			"%p DBRegistry::PurgeAll Purged %zu unused descriptors (size=%zu)\n",
-			instance.get(),
-			initialSize - currentSize,
-			currentSize
-		);
-#endif
+		for (const auto& condition : removedConditions) {
+			condition->notify_all();
+		}
+
+		for (auto& closing : descriptorsToClose) {
+			try {
+				closing.descriptor->finishClose();
+				closing.closed = true;
+			} catch (const std::exception& error) {
+				closing.closeError = error.what();
+				if (!closeError) closeError = std::current_exception();
+			} catch (...) {
+				closing.closeError = "unknown native close failure";
+				if (!closeError) closeError = std::current_exception();
+			}
+			{
+				std::lock_guard<std::mutex> lock(instance->databasesMutex);
+				auto entry = instance->databases.find(closing.key);
+				if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
+					if (closing.closed) {
+						instance->databases.erase(entry);
+					} else {
+						entry->second.closeError = closing.closeError;
+					}
+				}
+			}
+			closing.condition->notify_all();
 		}
 		if (closeError) {
 			std::rethrow_exception(closeError);
@@ -899,7 +909,12 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
  */
 void DBRegistry::Shutdown() {
 	if (instance) {
-		std::lock_guard<std::mutex> shutdownLock(instance->shutdownMutex);
+		const auto deadline = std::chrono::steady_clock::now() +
+			std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
+		std::unique_lock<std::timed_mutex> shutdownLock(instance->shutdownMutex, std::defer_lock);
+		if (!shutdownLock.try_lock_until(deadline)) {
+			throw rocksdb_js::DBException("Timed out waiting for another database shutdown to finish");
+		}
 		std::vector<ClosingDescriptor> descriptorsToClose;
 
 		{

@@ -10,7 +10,6 @@ try {
 } catch (error) {
 	if (!String(error).includes('Injected database close failure')) throw error;
 }
-
 const startedAt = Date.now();
 try {
 	RocksDatabase.open(path, { readOnly: true });
