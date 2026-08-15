@@ -53,13 +53,6 @@ struct ClosingDescriptor final {
 	) : key(key), descriptor(std::move(descriptor)), condition(std::move(condition)) {}
 };
 
-void finishCloseWithTestSeam(const std::shared_ptr<DBDescriptor>& descriptor) {
-	if (testDelayMs("ROCKSDB_JS_CLOSE_FAILURE") > 0) {
-		throw rocksdb_js::DBException("Injected database close failure");
-	}
-	descriptor->finishClose();
-}
-
 } // namespace
 
 // Initialize the static instance
@@ -68,15 +61,15 @@ std::unique_ptr<DBRegistry> DBRegistry::instance;
 /**
  * Close a RocksDB database handle.
  */
-void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
+std::string DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Registry not initialized\n", instance.get());
-		return;
+		return {};
 	}
 
 	if (!handle) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Invalid handle\n", instance.get());
-		return;
+		return {};
 	}
 
 #ifdef DEBUG
@@ -85,7 +78,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 
 	if (!handle->descriptor) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get());
-		return;
+		return {};
 	}
 
 	DBKey key{handle->descriptor->path, handle->descriptor->readOnly};
@@ -95,7 +88,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DBRegistry::PurgeIfUnreferenced(key.path, key.readOnly);
+	return DBRegistry::PurgeIfUnreferenced(key.path, key.readOnly);
 }
 
 /**
@@ -130,14 +123,15 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
  *     the duration of finishClose(), so a concurrent OpenDB keeps waiting on
  *     the condition rather than re-opening the path mid-close.
  */
-void DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
+std::string DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
 	if (!instance) {
-		return;
+		return {};
 	}
 
 	DBKey key{path, readOnly};
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
+	std::string closeError;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto entryIterator = instance->databases.find(key);
@@ -157,9 +151,8 @@ void DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
 	if (descriptor) {
 		// We claimed the close under the lock via beginClose(); run the actual
 		// teardown now. The local copy keeps the descriptor alive throughout.
-		std::string closeError;
 		try {
-			finishCloseWithTestSeam(descriptor);
+			descriptor->finishClose();
 		} catch (const std::exception& error) {
 			closeError = error.what();
 		} catch (...) {
@@ -185,6 +178,7 @@ void DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
 	if (condition) {
 		condition->notify_all();
 	}
+	return closeError;
 }
 
 /**
@@ -241,7 +235,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			for (const auto& [key, entry] : instance->databases) {
 				if (key.path == path && !entry.closeError.empty()) {
 					throw rocksdb_js::DBException(
-						"Cannot destroy database \"" + path + "\": previous close failed: " + entry.closeError
+						"Cannot destroy database \"" + path + "\": previous close failed: " +
+						entry.closeError + ". Call shutdown() to retry cleanup"
 					);
 				}
 			}
@@ -265,7 +260,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor %p for \"%s\" (ref count = %ld)\n",
 				instance.get(), closing.descriptor.get(), path.c_str(), closing.descriptor.use_count());
 			try {
-				finishCloseWithTestSeam(closing.descriptor);
+				closing.descriptor->finishClose();
 				closing.closed = true;
 			} catch (const std::exception& error) {
 				closing.closeError = error.what();
@@ -416,7 +411,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			if (registeredKey.path == path && !registeredEntry.closeError.empty()) {
 				throw rocksdb_js::DBException(
 					"Cannot open database \"" + path + "\": previous close failed: " +
-					registeredEntry.closeError
+					registeredEntry.closeError + ". Call shutdown() to retry cleanup"
 				);
 			}
 		}
@@ -424,12 +419,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		entryIterator = instance->databases.find(key);
 		if (entryIterator == instance->databases.end()) {
 			entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
-		}
-		if (!entryIterator->second.closeError.empty()) {
-			throw rocksdb_js::DBException(
-				"Cannot open database \"" + path + "\": previous close failed: " +
-				entryIterator->second.closeError
-			);
 		}
 		if (!entryIterator->second.descriptor || !entryIterator->second.descriptor->isClosing()) {
 			break;
@@ -604,7 +593,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
  */
 void DBRegistry::PurgeAll() {
 	if (instance) {
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		std::exception_ptr closeError;
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 #ifdef DEBUG
 		size_t initialSize = instance->databases.size();
 		DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), instance->databases.size());
@@ -627,7 +618,21 @@ void DBRegistry::PurgeAll() {
 					continue;
 				}
 				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.path.c_str(), descriptor.use_count());
-				descriptor->close();
+				try {
+					descriptor->close();
+				} catch (const std::exception& error) {
+					it->second.closeError = error.what();
+					condition->notify_all();
+					if (!closeError) closeError = std::current_exception();
+					++it;
+					continue;
+				} catch (...) {
+					it->second.closeError = "unknown native close failure";
+					condition->notify_all();
+					if (!closeError) closeError = std::current_exception();
+					++it;
+					continue;
+				}
 			}
 			it = instance->databases.erase(it);
 			condition->notify_all();
@@ -644,6 +649,10 @@ void DBRegistry::PurgeAll() {
 			currentSize
 		);
 #endif
+		}
+		if (closeError) {
+			std::rethrow_exception(closeError);
+		}
 	}
 }
 
@@ -672,6 +681,16 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value pathValue;
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, key.path.c_str(), key.path.size(), &pathValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
+			if (!entry.closeError.empty()) {
+				napi_value closeErrorValue;
+				NAPI_STATUS_THROWS(::napi_create_string_utf8(
+					env,
+					entry.closeError.c_str(),
+					entry.closeError.size(),
+					&closeErrorValue
+				));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closeError", closeErrorValue));
+			}
 			napi_value modeValue;
 			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, mode.c_str(), mode.size(), &modeValue));
@@ -778,6 +797,7 @@ void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
  */
 void DBRegistry::Shutdown() {
 	if (instance) {
+		std::lock_guard<std::mutex> shutdownLock(instance->shutdownMutex);
 		std::vector<ClosingDescriptor> descriptorsToClose;
 
 		{
@@ -809,7 +829,7 @@ void DBRegistry::Shutdown() {
 		for (auto& closing : descriptorsToClose) {
 			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), closing.descriptor->path.c_str());
 			try {
-				finishCloseWithTestSeam(closing.descriptor);
+				closing.descriptor->finishClose();
 				closing.closed = true;
 			} catch (const std::exception& error) {
 				closing.closeError = error.what();
