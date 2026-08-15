@@ -929,6 +929,15 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+struct RangeEstimate {
+	double count = 0;
+	double memtableCount = 0;
+	double sstCount = 0;
+	double entriesPerBlock = 0;
+	double liveFraction = 1;
+	bool degraded = false;
+};
+
 /**
  * Estimates the number of live keys in `[start, end)` from RocksDB statistics
  * alone — no iteration:
@@ -948,22 +957,6 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
  * compaction; resolution is bounded by SST data-block granularity, so tiny
  * ranges over-report.
  */
-struct RangeEstimate {
-	double count = 0;
-	double memtableCount = 0;
-	double sstCount = 0;
-	// Live-entry resolution of one SST data block — the granularity the SST
-	// portion of the estimate is quantized to (0 when unknown/no SST data).
-	double entriesPerBlock = 0;
-	// Live fraction of SST entries ((entries - deletions) / entries); 1 when
-	// no table properties were available.
-	double liveFraction = 1;
-	// Set when a statistics call failed, so the count is missing a portion it
-	// should have had — the confidence must reflect that, or a failed estimate
-	// masquerades as a trustworthy small count.
-	bool degraded = false;
-};
-
 static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
 	rocksdb::Range range(start, end);
 	RangeEstimate result;
@@ -993,8 +986,6 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	if (status.ok()) {
 		for (const auto& prop : props) {
 			if (!prop.second) {
-				// A missing entry means the density is computed from an
-				// incomplete sample.
 				result.degraded = true;
 				continue;
 			}
@@ -1011,8 +1002,7 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 		result.degraded = true;
 	}
 	if (entries <= deletions || fileBytes == 0) {
-		// SST bytes overlap the range but no usable density: the SST portion
-		// is missing from the count.
+		// A nonzero byte estimate without density leaves the SST portion unknown.
 		result.degraded = sstBytes != 0;
 		return result;
 	}
@@ -1040,14 +1030,9 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
  */
 static double estimateConfidence(const RangeEstimate& est) {
 	if (est.degraded) {
-		// A statistics call failed, so a portion of the count is simply
-		// missing; without the cap a failed estimate would report a small
-		// count with high confidence.
 		return 0.1;
 	}
 	if (est.count <= 0) {
-		// Nothing overlaps the range per both memtable stats and SST sizes;
-		// nearly certain but not provably exact (in-flight flush/compaction).
 		return 0.95;
 	}
 	double sstResolution = std::max(est.entriesPerBlock, 1.0);
@@ -1078,9 +1063,7 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 	rocksdb::DB* db = (*dbHandle)->descriptor->db.get();
 	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
 
-	// Presence is tracked separately from the data pointer: napi may return a
-	// null pointer for a zero-length buffer, and an empty bound (the smallest
-	// key) must not be confused with an omitted one.
+	// N-API may return a null data pointer for a zero-length buffer.
 	void* startData = nullptr;
 	size_t startLength = 0;
 	napi_valuetype startType;
@@ -1109,25 +1092,15 @@ napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
 		bool totalOk = db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
 		double total = static_cast<double>(totalKeys);
 		if (!totalOk) {
-			// A failed property read leaves totalKeys at 0 — that is a
-			// missing answer, not an empty database.
 			estimate = 0;
 			confidence = 0;
 		} else if (!hasStart || startLength == 0 || totalKeys == 0) {
 			estimate = total;
-			// estimate-num-keys is RocksDB's own memtable+SST estimate; it
-			// skews high on overwrite/delete-heavy data until compaction, and
-			// even a zero is an estimate (deletion entries offset puts), so
-			// nothing on this path claims exactness.
 			confidence = totalKeys == 0 ? 0.95 : 0.9;
 		} else {
 			// No upper bound: estimate [start, ∞) as total minus [min, start).
 			RangeEstimate complement = estimateRangeCount(db, cf, rocksdb::Slice(), startSlice);
 			estimate = std::max(0.0, total - complement.count);
-			// Subtracting two independent estimates compounds their absolute
-			// errors, so trust shrinks with the complement's share of the
-			// total (a narrow tail range after a large complement is mostly
-			// error).
 			double share = estimate / std::max(estimate + complement.count, 1.0);
 			confidence = std::min(0.9, estimateConfidence(complement)) * share;
 		}
