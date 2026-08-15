@@ -287,6 +287,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
+	// finishClose() can be retried after a quarantined failure. These guards
+	// prevent its one-shot stages from running twice while later idempotent
+	// cleanup resumes from the failed point.
+	bool closeWorkersStopped = false;
+	bool transactionLogsUnregistered = false;
 
 	/**
 	 * Counter tracking in-flight database operations. close() uses

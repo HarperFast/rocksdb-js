@@ -224,15 +224,18 @@ NAPI_MODULE_INIT() {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
-			try {
-				rocksdb_js::GlobalEvents::Shutdown();
-				rocksdb_js::TransactionLogStoreRegistry::Shutdown();
-				rocksdb_js::DBRegistry::Shutdown();
-			} catch (const std::exception& error) {
-				::fprintf(stderr, "rocksdb-js cleanup failed: %s\n", error.what());
-			} catch (...) {
-				::fprintf(stderr, "rocksdb-js cleanup failed: unknown native error\n");
-			}
+			auto cleanup = [](const char* name, auto shutdown) {
+				try {
+					shutdown();
+				} catch (const std::exception& error) {
+					::fprintf(stderr, "rocksdb-js %s cleanup failed: %s\n", name, error.what());
+				} catch (...) {
+					::fprintf(stderr, "rocksdb-js %s cleanup failed: unknown native error\n", name);
+				}
+			};
+			cleanup("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
+			cleanup("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
+			cleanup("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");

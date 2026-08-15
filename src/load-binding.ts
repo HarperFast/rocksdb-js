@@ -633,6 +633,7 @@ export type RegistryStatusTransaction = {
 
 export type RegistryStatusDB = {
 	path: string;
+	closeError?: string;
 	refCount: number;
 	columnFamilies: string[];
 	transactions: number;

@@ -3,7 +3,17 @@ import { RocksDatabase, registryStatus, shutdown } from '../../src/index.ts';
 const path = process.argv[2];
 const db = RocksDatabase.open(path);
 db.putSync('key', 'value');
-db.close();
+try {
+	db.close();
+	throw new Error('Expected close to surface the injected native failure');
+} catch (error) {
+	if (!String(error).includes('Injected database close failure')) throw error;
+}
+if (
+	registryStatus().find((entry) => entry.path === path)?.closeError !==
+	'Injected database close failure'
+)
+	throw new Error('Registry status did not expose the quarantined close failure');
 
 const startedAt = Date.now();
 try {

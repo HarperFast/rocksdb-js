@@ -190,7 +190,11 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 
 	if (*dbHandle) {
 		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
-		DBRegistry::CloseDB(*dbHandle);
+		std::string closeError = DBRegistry::CloseDB(*dbHandle);
+		if (!closeError.empty()) {
+			::napi_throw_error(env, nullptr, closeError.c_str());
+			return nullptr;
+		}
 		DEBUG_LOG("%p Database::Close Closed database\n", dbHandle->get());
 	} else {
 		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get());
@@ -446,6 +450,9 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
 			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		} catch (...) {
+			::napi_throw_error(env, nullptr, "Unknown native database destruction failure");
 			return nullptr;
 		}
 	} else {

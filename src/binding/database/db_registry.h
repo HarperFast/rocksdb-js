@@ -81,6 +81,7 @@ private:
 	 * Mutex to protect the databases map.
 	 */
 	std::mutex databasesMutex;
+	std::mutex shutdownMutex;
 	// Destruction owns a physical path across every (path, readOnly) entry.
 	// Waiters must re-resolve databases after every wake because the closer can
 	// erase the node while the mutex is released.
@@ -93,7 +94,7 @@ private:
 	static std::unique_ptr<DBRegistry> instance;
 
 public:
-	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+	static std::string CloseDB(const std::shared_ptr<DBHandle> handle);
 #ifdef DEBUG
 	static void DebugLogDescriptorRefs();
 #endif
@@ -101,7 +102,7 @@ public:
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
-	static void PurgeIfUnreferenced(const std::string& path, bool readOnly);
+	static std::string PurgeIfUnreferenced(const std::string& path, bool readOnly);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void CloseTransactionsByEnv(napi_env env);
 	static void RemoveListenersByEnv(napi_env env);
