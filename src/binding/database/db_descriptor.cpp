@@ -436,6 +436,8 @@ void DBDescriptor::finishClose() {
 		this->logWorker.shutdown();
 		this->commitWorker.shutdown();
 
+		// An in-flight commit pins this descriptor through its transaction and DB
+		// handles, so reaching this release pass means only idle per-env TSFNs remain.
 		{
 			std::lock_guard<std::mutex> lock(this->commitMutex);
 			for (auto& [env, completion] : this->commitCompletions) {
@@ -449,8 +451,6 @@ void DBDescriptor::finishClose() {
 		this->closeWorkersStopped = true;
 	}
 
-	// Inject after the one-shot pipeline shutdown so retry coverage exercises
-	// a genuinely partially-completed close rather than an untouched descriptor.
 	if (testDelayMs("ROCKSDB_JS_CLOSE_FAILURE") > 0) {
 		throw rocksdb_js::DBException("Injected database close failure");
 	}

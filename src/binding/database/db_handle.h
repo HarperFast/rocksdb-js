@@ -6,6 +6,7 @@
 #include <utility>
 #include <string>
 #include <unordered_map>
+#include <thread>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -64,6 +65,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * The node environment.
 	 */
 	napi_env env;
+	std::thread::id ownerThreadId;
 
 	/**
 	 * A reference to the main `rocksdb_js` exports object. This is needed to

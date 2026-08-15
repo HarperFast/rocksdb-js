@@ -6,6 +6,7 @@ import { Worker } from 'node:worker_threads';
 const path = process.argv[2];
 const original = RocksDatabase.open(path);
 original.putSync('before-destroy', 'present');
+original.useLog('cross-env-close');
 
 const worker = new Worker(createWorkerBootstrapScript('./test/workers/destroy-open-worker.mts'), {
 	eval: true,

@@ -67,7 +67,7 @@ void setTxnlogSummaryStatsOnObject(
  * Creates a new DBHandle.
  */
 DBHandle::DBHandle(napi_env env, napi_ref exportsRef)
-	: descriptor(nullptr), env(env), exportsRef(exportsRef) {}
+	: descriptor(nullptr), env(env), ownerThreadId(std::this_thread::get_id()), exportsRef(exportsRef) {}
 
 /**
  * Close the DBHandle and destroy it.
@@ -155,12 +155,16 @@ void DBHandle::close() {
 		this->descriptor.reset();
 	}
 
-	// clean up transaction log references
-	for (auto& [name, ref] : this->logRefs) {
-		DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
-		::napi_delete_reference(this->env, ref);
+	// N-API references are environment-thread-affine. Destroying a shared
+	// descriptor can close this handle from another worker; retain the refs in
+	// that case so the owning environment's later close/finalizer releases them.
+	if (std::this_thread::get_id() == this->ownerThreadId) {
+		for (auto& [name, ref] : this->logRefs) {
+			DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
+			::napi_delete_reference(this->env, ref);
+		}
+		this->logRefs.clear();
 	}
-	this->logRefs.clear();
 
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this);
 }
