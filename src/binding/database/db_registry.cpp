@@ -89,15 +89,15 @@ std::string destroyPhysicalPath(const std::string& path) {
 	return {};
 }
 
+void emitCloseFailure(const std::string& path, const std::string& error) {
+	if (!error.empty() && GlobalEvents::hasListeners()) {
+		emitGlobalEvent("database:closeFailed", ListenerData::fromStrings({path, error}));
+	}
+}
+
 void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
-	if (!GlobalEvents::hasListeners()) return;
 	for (const auto& closing : descriptors) {
-		if (!closing.closeError.empty()) {
-			emitGlobalEvent(
-				"database:closeFailed",
-				ListenerData::fromStrings({closing.key.path, closing.closeError})
-			);
-		}
+		emitCloseFailure(closing.key.path, closing.closeError);
 	}
 }
 
@@ -228,9 +228,7 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOn
 	if (condition) {
 		condition->notify_all();
 	}
-	if (!closeError.empty() && GlobalEvents::hasListeners()) {
-		emitGlobalEvent("database:closeFailed", ListenerData::fromStrings({path, closeError}));
-	}
+	emitCloseFailure(path, closeError);
 	return CloseResult{closeError, quarantined};
 }
 
@@ -385,8 +383,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
 	const std::string destroyError = destroyPhysicalPath(path);
 	if (!destroyError.empty()) {
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		instance->databases[DBKey{path, false}].closeError = destroyError;
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			instance->databases[DBKey{path, false}].closeError = destroyError;
+		}
+		emitCloseFailure(path, destroyError);
 		throw rocksdb_js::DBException(destroyError);
 	}
 
@@ -1097,6 +1098,7 @@ void DBRegistry::Shutdown() {
 						}
 					}
 				}
+				emitCloseFailure(key.path, cleanupError);
 				if (!cleanupError.empty() && destroyCleanupError.empty()) {
 					destroyCleanupError =
 						"Cannot complete shutdown: database \"" + key.path +

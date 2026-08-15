@@ -135,9 +135,17 @@ describe('Destroy', () => {
 	it.skipIf(process.platform === 'win32')(
 		'quarantines a path when post-destroy cleanup fails',
 		() =>
-			dbRunner(({ db, dbPath }) => {
+			dbRunner(async ({ db, dbPath }) => {
 				const healthyPath = generateDBPath();
 				const healthy = RocksDatabase.open(healthyPath);
+				let resolveCloseFailure: (args: unknown[]) => void;
+				const closeFailure = new Promise<unknown[]>((resolve) => {
+					resolveCloseFailure = resolve;
+				});
+				const listener = (...args: unknown[]) => {
+					if (args[0] === dbPath) resolveCloseFailure(args);
+				};
+				RocksDatabase.on('database:closeFailed', listener);
 				healthy.putSync('key', 'value');
 				const lockedDirectory = join(dbPath, 'transaction_logs', 'locked');
 				mkdirSync(lockedDirectory, { recursive: true });
@@ -149,7 +157,12 @@ describe('Destroy', () => {
 						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
 					).toBe(true);
 					expect(() => RocksDatabase.open(dbPath)).toThrow('previous destroy cleanup failed');
+					await expect(closeFailure).resolves.toMatchObject([
+						dbPath,
+						expect.stringContaining('Failed to remove database directory'),
+					]);
 				} finally {
+					RocksDatabase.off('database:closeFailed', listener);
 					chmodSync(lockedDirectory, 0o700);
 				}
 				shutdown();

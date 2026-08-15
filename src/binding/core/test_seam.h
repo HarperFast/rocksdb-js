@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
 // delay read from an environment variable (0 = disabled). They are inert in
@@ -16,19 +17,23 @@ inline int testDelayMs(const char* envName) {
 	return value ? ::atoi(value) : 0;
 }
 
-// Consume native fault flags in the same C runtime that reads them. JavaScript
-// process.env deletion does not reliably update the MSVC runtime environment.
-inline bool testConsumeFlag(const char* envName) {
-	const char* value = ::getenv(envName);
-	if (!value || ::atoi(value) <= 0) {
-		return false;
-	}
-#ifdef _WIN32
-	::_putenv_s(envName, "");
-#else
-	::unsetenv(envName);
-#endif
-	return true;
+// Snapshot native fault flags once; mutating process.env while native workers
+// can read it is unsafe, and process.env deletion does not update MSVC's CRT.
+inline std::atomic<bool>& closeFailureFlag() {
+	static std::atomic<bool> pending{false};
+	return pending;
+}
+
+inline void initializeTestSeams() {
+	static std::once_flag initialized;
+	std::call_once(initialized, []() {
+		const char* value = ::getenv("ROCKSDB_JS_CLOSE_FAILURE");
+		closeFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+	});
+}
+
+inline bool testConsumeCloseFailure() {
+	return closeFailureFlag().exchange(false, std::memory_order_relaxed);
 }
 
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
