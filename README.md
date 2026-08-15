@@ -356,7 +356,14 @@ db.compactSync({ bottommost: true });
 ### `db.destroy(): void`
 
 Completely removes a database based on the `db` instance's path including all data, column families,
-and files on disk.
+and files on disk. Destruction owns the physical path for the process: it closes every writable and
+read-only handle for that path, waits for registered backups and checkpoints to stop using the
+native database, and prevents another handle from reopening the path until removal finishes. Those
+waits are synchronous and can outlive `lifecycleWaitSeconds` once destruction has claimed the path,
+because releasing the native database beneath an active copy would be unsafe.
+
+The instance does not need to be open, which allows an explicit `destroy()` retry after failed
+physical cleanup. A read-only instance cannot destroy the database.
 
 ```typescript
 db.destroy();
