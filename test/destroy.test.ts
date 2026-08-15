@@ -19,7 +19,7 @@ function runDestroyFixture(
 	env?: NodeJS.ProcessEnv
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, ['--expose-gc', fixture, dbPath], {
+		const child = spawn('node', ['--expose-gc', fixture, dbPath], {
 			env: { ...process.env, ...env },
 		});
 		let stderr = '';
