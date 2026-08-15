@@ -129,13 +129,17 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	// Our descriptor ref can be the reason a concurrent close skipped its
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
-	~AsyncBackupStreamState() override {
+	void releaseDescriptor() {
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
 		}
+	}
+
+	~AsyncBackupStreamState() override {
+		this->releaseDescriptor();
 	}
 
 	/**
@@ -582,6 +586,9 @@ void backupStreamComplete(napi_env env, napi_status status, void* data) {
 		state->tsfn = nullptr;
 	}
 
+	// Promise settlement is the public completion boundary. The worker is done,
+	// so pending JS acknowledgements no longer need the descriptor pin.
+	state->releaseDescriptor();
 	if (status != napi_cancelled) {
 		if (state->status.ok()) {
 			napi_value undefined;

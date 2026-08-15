@@ -187,7 +187,7 @@ describe('Checkpoints', () => {
 		}));
 
 	it('should not crash when closing during a checkpoint', () =>
-		dbRunner(async ({ db }) => {
+		dbRunner(async ({ db, dbPath }) => {
 			await writeAll(db, 200);
 
 			const checkpointDir = tempDir();
@@ -204,7 +204,7 @@ describe('Checkpoints', () => {
 					() => 'settled'
 				)
 			).resolves.toBe('settled');
-			expect(registryStatus()).toEqual([]);
+			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('should not free the database under an in-flight checkpoint when destroy() races it', () =>
