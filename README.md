@@ -447,7 +447,7 @@ Estimates the number of keys in the database, or within a key range, returning
 from RocksDB statistics (memtable stats plus approximate SST sizes converted through the entry
 density of the SSTs overlapping the range), so its cost scales with the number of SSTs overlapping
 the range rather than the number of keys. Reading cold table properties can do I/O through the
-table cache, so bounded ranges are preferable. A start-only range is computed as the
+table cache, so narrow ranges are preferable. A start-only range is computed as the
 whole-database estimate minus the complement, so it does the work of the range _below_ `start`.
 Accuracy improves with range size (resolution is bounded by SST data-block granularity, so tiny
 ranges over-report), and recently deleted or overwritten entries may be counted until compaction.

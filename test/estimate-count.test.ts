@@ -35,6 +35,15 @@ describe('estimateCount', () => {
 			// a large uniform range should be high-confidence
 			expectConfidence(full.confidence, 0.5, 1);
 
+			const singleKey = db.estimateCount({
+				start: KEY(N / 2),
+				end: KEY(N / 2),
+				inclusiveEnd: true,
+			});
+			if (singleKey.count === 0) {
+				expect(singleKey.confidence).toBeLessThanOrEqual(0.1);
+			}
+
 			// half range [25%, 75%)
 			const half = db.estimateCount({ start: KEY(N / 4), end: KEY((3 * N) / 4) });
 			expectWithin(half.count, N / 2, 2);
@@ -251,7 +260,9 @@ describe('CountEstimator', () => {
 			initial.count = 0;
 			expect(estimator.estimate()).toEqual(expected);
 
-			estimator.advance(undefined, 1);
+			expect(() => estimator.advance(undefined, 1)).toThrow(
+				'CountEstimator.advance requires lastKey when count is nonzero'
+			);
 			expect(estimator.traversed).toBe(0);
 			expect(estimator.estimate()).toEqual(expected);
 			expect(estimateCount).toHaveBeenCalledTimes(1);

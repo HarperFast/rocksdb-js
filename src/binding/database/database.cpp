@@ -979,8 +979,8 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	sizeOptions.files_size_error_margin = 0.1;
 	uint64_t sstBytes = 0;
 	rocksdb::Status status = db->GetApproximateSizes(sizeOptions, cf, &range, 1, &sstBytes);
-	if (!status.ok() || sstBytes == 0) {
-		result.degraded = !status.ok();
+	if (!status.ok()) {
+		result.degraded = true;
 		return result;
 	}
 
@@ -1013,6 +1013,10 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	if (entries <= deletions || fileBytes == 0) {
 		// SST bytes overlap the range but no usable density: the SST portion
 		// is missing from the count.
+		result.degraded = sstBytes != 0;
+		return result;
+	}
+	if (sstBytes == 0) {
 		result.degraded = true;
 		return result;
 	}

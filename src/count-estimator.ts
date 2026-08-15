@@ -73,6 +73,9 @@ export class CountEstimator {
 	 */
 	advance(lastKey: Key | Uint8Array | undefined, count = 1): void {
 		if (lastKey === undefined) {
+			if (count !== 0) {
+				throw new Error('CountEstimator.advance requires lastKey when count is nonzero');
+			}
 			return;
 		}
 		this.#cursor = lastKey;
@@ -155,10 +158,13 @@ export class CountEstimator {
 		// Cap below 1: only finish() (or an exact-by-construction range) may
 		// claim exactness, even when rounding makes the remainder vanish.
 		const confidence =
-			calibrationConfidence *
-			(count > 0
-				? Math.min(0.999, (this.#traversed + remainingEstimate.confidence * remaining) / count)
-				: Math.min(0.999, remainingEstimate.confidence));
+			count > 0
+				? Math.min(
+						0.999,
+						(this.#traversed + calibrationConfidence * remainingEstimate.confidence * remaining) /
+							count
+					)
+				: Math.min(0.999, calibrationConfidence * remainingEstimate.confidence);
 		this.#memoized = { count, confidence };
 		return { ...this.#memoized };
 	}
