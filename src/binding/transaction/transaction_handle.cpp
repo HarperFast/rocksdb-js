@@ -258,16 +258,14 @@ void TransactionHandle::close() {
 		return;
 	}
 
-	// update state to aborted if not already committed
-	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
-		this->state = TransactionState::Aborted;
-	}
-
 	// cancel all active async work before closing
 	this->cancelAllAsyncWork();
 
-	// wait for all async work to complete before closing
-	this->waitForAsyncWorkCompletion();
+	// Drain BEFORE touching anything the in-flight work owns. Nothing below is
+	// safe while a commit is still executing: `state` feeds the commitAborted()
+	// decision, releaseIntent() mutates VT state the commit is using, and
+	// `delete txn` hands RocksDB a dangling transaction.
+	const bool drained = this->waitForAsyncWorkCompletion();
 
 	// Test seam: widen the PATH A vs PATH B race window (see txnCloseTestDelayMs).
 	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
@@ -276,6 +274,25 @@ void TransactionHandle::close() {
 	const int closeDelayMs = testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS");
 	if (closeDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
+	}
+
+	if (!drained) {
+		// The drain timed out with work still executing against `txn` (e.g. a
+		// worker env torn down during a slow commit). Destroying now would free
+		// a transaction RocksDB is still using and could mark the log aborted
+		// while the data commit goes on to succeed — so deliberately leak
+		// instead. The in-flight commit owns its own cleanup (it releases VT
+		// intents and resolves the log position on completion); this close must
+		// not steal it. A leaked transaction is recoverable; a use-after-free
+		// and a log/data disagreement are not. The complete admission-and-drain
+		// contract that removes this window is HarperFast/rocksdb-js#784.
+		DEBUG_LOG("%p TransactionHandle::close async work still in flight after drain timeout; leaking txn rather than freeing it\n", this);
+		return;
+	}
+
+	// Only now that no native work can be running: settle the final state.
+	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
+		this->state = TransactionState::Aborted;
 	}
 
 	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need

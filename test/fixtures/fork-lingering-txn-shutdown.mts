@@ -72,7 +72,7 @@ async function run(): Promise<void> {
 	//    next one typically recycles its pthread.
 	for (let i = 0; i < leakerCount; i++) {
 		const leaker = spawn(leakerRole, i);
-		await leaker.msg; // 'leaked' — pending txn created
+		await leaker.msg; // 'leaked'/'committing' — work created
 		await leaker.exited; // env fully torn down before the next spawn
 	}
 

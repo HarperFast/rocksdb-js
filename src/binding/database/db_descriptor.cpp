@@ -1169,6 +1169,13 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	for (auto& txnHandle : toClose) {
 		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %u (env=%p)\n", this, txnHandle->id, env);
 		txnHandle->close();
+		// close() can only self-remove while it can still reach this descriptor
+		// through its DBHandle, and a handle closed earlier by the user has
+		// already reset that pointer — so for exactly the case this reap exists
+		// to catch, the registry entry (a strong ref to the handle, and through
+		// it the DBHandle) would otherwise outlive the env for the life of the
+		// process. Removing here is idempotent when close() already did it.
+		this->transactionRemove(txnHandle);
 	}
 }
 

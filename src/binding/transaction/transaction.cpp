@@ -303,6 +303,16 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
+				// Test seam: stall immediately before the RocksDB commit, with the
+				// async work still registered and `txn` about to be dereferenced.
+				// This is the window TransactionHandle::close()'s bounded drain is
+				// supposed to protect: if close() gives up and destroys `txn`, this
+				// thread then commits through a destroyed transaction. Distinct from
+				// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
+				// therefore cannot exercise the drain at all. Noop in production.
+				if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+				}
 				state->status = txnHandle->txn->Commit();
 			}
 

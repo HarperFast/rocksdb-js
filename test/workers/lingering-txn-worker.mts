@@ -42,6 +42,21 @@ if (role === 'leaker') {
 	process.exit(0);
 }
 
+if (role === 'slowcommit') {
+	// Start a commit and exit the env WHILE it is still executing natively.
+	// ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS holds the commit inside its execute
+	// phase (work still registered), so the env cleanup hook's reap hits a
+	// transaction whose native work is genuinely in flight and its bounded
+	// drain expires. Deliberately not awaited — the point is to die mid-commit.
+	const t = new Transaction(db.store);
+	await t.put(Buffer.from(`slow-${id}`), Buffer.from(`v${id}`));
+	void t.commit().catch(() => {});
+	// Give the commit thread time to enter execute before tearing the env down.
+	await new Promise((r) => setTimeout(r, 250));
+	parentPort?.postMessage('committing');
+	process.exit(0);
+}
+
 if (role === 'committer') {
 	// Discriminator: same shape as 'leaker' but the transaction is committed,
 	// so nothing lingers in DBDescriptor::transactions. If teardown still

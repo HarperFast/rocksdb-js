@@ -90,9 +90,36 @@ describe('pending transactions leaked by dead worker envs', () => {
 		120_000
 	);
 
+	// The drain-timeout path from the #780 review. Each worker dies with a
+	// commit stalled immediately before rocksdb::Transaction::Commit()
+	// (ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS), so the env-cleanup reap's bounded
+	// 5s drain expires while `txn` is about to be dereferenced. Before the
+	// close() hardening this segfaults every run — the commit thread wakes and
+	// commits through a destroyed transaction (3/3 exit 139 on macOS, no
+	// allocator instrumentation needed); with it, close() leaves the
+	// transaction to its in-flight commit and the process survives.
+	//
+	// Runs everywhere: unlike the pending-transaction repro above, this failure
+	// is a plain null/dangling dereference rather than silent heap corruption,
+	// so it is not platform-gated.
+	it('should survive worker exits during a commit that outlasts the close drain', async () => {
+		const { code, signal } = await new Promise<{
+			code: number | null;
+			signal: NodeJS.Signals | null;
+		}>((resolve, reject) => {
+			const child = spawn(process.execPath, [fixturePath, generateDBPath(), '2', 'slowcommit'], {
+				env: { ...process.env, ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000' },
+			});
+			child.on('close', (code, signal) => resolve({ code, signal }));
+			child.on('error', reject);
+		});
+		expect(signal).toBeNull();
+		expect(code).toBe(0);
+	}, 120_000);
+
 	// The differentiating condition, isolated: identical topology and
-	// NativeTransaction lifecycle as the repro above — ten sequential workers
-	// each creating a transaction and exiting — except these COMMIT, so
+	// NativeTransaction lifecycle as the pending repro above — ten sequential
+	// workers each creating a transaction and exiting — except these COMMIT, so
 	// transactionRemove() takes each one out of the registry before its env
 	// dies. Nothing lingers, so this stays green on main as well as here.
 	it('control: committed transactions survive the same worker churn', async () => {
