@@ -188,7 +188,7 @@ describe('Streaming backups', () => {
 			await expect(settled).resolves.toBe('settled');
 		}));
 
-	it('throws on destroy() during a stream and the stream still settles', () =>
+	it('waits for an in-flight stream before destroying', () =>
 		dbRunner(async ({ db }) => {
 			await writeAll(db, 200);
 
@@ -203,9 +203,9 @@ describe('Streaming backups', () => {
 			);
 
 			await new Promise((r) => setTimeout(r, 50));
-			// The in-flight stream pins the descriptor, so destroy() refuses to tear
-			// the database down mid-stream and throws instead.
-			expect(() => db.destroy()).toThrow();
+			// The stream pins the descriptor and registers an in-flight operation, so
+			// destroy waits for it before closing the native DB and removing the path.
+			expect(() => db.destroy()).not.toThrow();
 
 			await expect(settled).resolves.toBe('settled');
 		}));
