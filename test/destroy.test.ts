@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../src/index.ts';
+import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -68,6 +68,13 @@ describe('Destroy', () => {
 			expect(db.isOpen()).toBe(false);
 		}));
 
+	it('should destroy a database from an unopened handle', () =>
+		dbRunner(({ db, dbPath }) => {
+			db.close();
+			new RocksDatabase(dbPath).destroy();
+			expect(existsSync(dbPath)).toBe(false);
+		}));
+
 	it('should destroy an open database', () =>
 		dbRunner(({ db, dbPath }) => {
 			db.putSync('key', 'value');
@@ -113,6 +120,9 @@ describe('Destroy', () => {
 		'quarantines a path when post-destroy cleanup fails',
 		() =>
 			dbRunner(({ db, dbPath }) => {
+				const healthyPath = generateDBPath();
+				const healthy = RocksDatabase.open(healthyPath);
+				healthy.putSync('key', 'value');
 				const lockedDirectory = join(dbPath, 'transaction_logs', 'locked');
 				mkdirSync(lockedDirectory, { recursive: true });
 				writeFileSync(join(lockedDirectory, 'leftover'), 'data');
@@ -122,10 +132,15 @@ describe('Destroy', () => {
 					expect(
 						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
 					).toBe(true);
-					expect(() => RocksDatabase.open(dbPath)).toThrow('Failed to remove database directory');
+					expect(() => RocksDatabase.open(dbPath)).toThrow('previous destroy cleanup failed');
 				} finally {
 					chmodSync(lockedDirectory, 0o700);
 				}
+				shutdown();
+				expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
+				const healthyReopened = RocksDatabase.open(healthyPath);
+				expect(healthyReopened.getSync('key')).toBe('value');
+				healthyReopened.destroy();
 				const reopened = RocksDatabase.open(dbPath);
 				reopened.close();
 			})

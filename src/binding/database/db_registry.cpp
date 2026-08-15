@@ -451,32 +451,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			continue;
 		}
 
-		auto failedDestroy = instance->databases.find(DBKey{path, false});
-		if (failedDestroy != instance->databases.end() &&
-			!failedDestroy->second.descriptor && !failedDestroy->second.closeError.empty()
-		) {
-			instance->databases.erase(failedDestroy);
-			instance->destroyingPaths.insert(path);
-			lock.unlock();
-			std::string destroyError;
-			{
-				DestroyPathGuard pathGuard(
-					instance->databasesMutex,
-					instance->lifecycleCondition,
-					instance->destroyingPaths,
-					path
-				);
-				destroyError = destroyPhysicalPath(path);
-				if (!destroyError.empty()) {
-					std::lock_guard<std::mutex> cleanupLock(instance->databasesMutex);
-					instance->databases[DBKey{path, false}].closeError = destroyError;
-				}
-			}
-			if (!destroyError.empty()) throw rocksdb_js::DBException(destroyError);
-			lock.lock();
-			continue;
-		}
-
 		for (bool readOnly : {false, true}) {
 			auto registeredEntry = instance->databases.find(DBKey{path, readOnly});
 			if (registeredEntry != instance->databases.end() &&
@@ -933,7 +907,7 @@ void DBRegistry::Shutdown() {
 		while (true) {
 			std::vector<ClosingDescriptor> descriptorsToClose;
 			std::vector<ClosingDescriptor> descriptorsToWaitFor;
-			std::string destroyCleanupError;
+			std::vector<DBKey> destroyCleanupEntries;
 			bool destroysInFlight;
 			{
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
@@ -941,17 +915,14 @@ void DBRegistry::Shutdown() {
 				DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size());
 				descriptorsToClose.reserve(instance->databases.size());
 				descriptorsToWaitFor.reserve(instance->databases.size());
+				destroyCleanupEntries.reserve(instance->databases.size());
 
 				for (auto& [key, entry] : instance->databases) {
 					if (instance->destroyingPaths.find(key.path) != instance->destroyingPaths.end()) {
 						continue;
 					}
 					if (!entry.descriptor) {
-						if (!entry.closeError.empty() && destroyCleanupError.empty()) {
-							destroyCleanupError =
-								"Cannot complete shutdown: database \"" + key.path +
-								"\" requires destroy cleanup: " + entry.closeError;
-						}
+						if (!entry.closeError.empty()) destroyCleanupEntries.push_back(key);
 						continue;
 					}
 					ClosingDescriptor closing{key, entry.descriptor, entry.condition};
@@ -1009,6 +980,27 @@ void DBRegistry::Shutdown() {
 					throw rocksdb_js::DBException("Timed out waiting for database close to finish during shutdown");
 				}
 			}
+
+			std::string destroyCleanupError;
+			for (const auto& key : destroyCleanupEntries) {
+				const std::string cleanupError = destroyPhysicalPath(key.path);
+				{
+					std::lock_guard<std::mutex> lock(instance->databasesMutex);
+					auto entry = instance->databases.find(key);
+					if (entry != instance->databases.end() && !entry->second.descriptor) {
+						if (cleanupError.empty()) {
+							instance->databases.erase(entry);
+						} else {
+							entry->second.closeError = cleanupError;
+						}
+					}
+				}
+				if (!cleanupError.empty() && destroyCleanupError.empty()) {
+					destroyCleanupError =
+						"Cannot complete shutdown: database \"" + key.path +
+						"\" requires destroy cleanup: " + cleanupError;
+				}
+			}
 			if (destroysInFlight) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
 				if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
@@ -1026,7 +1018,9 @@ void DBRegistry::Shutdown() {
 			if (!destroyCleanupError.empty()) {
 				throw rocksdb_js::DBException(destroyCleanupError);
 			}
-			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty()) break;
+			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty() &&
+				destroyCleanupEntries.empty()
+			) break;
 		}
 
 		// Purge the registry
