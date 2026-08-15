@@ -1118,6 +1118,11 @@ void DBRegistry::Shutdown() {
 				})) {
 					throw rocksdb_js::DBException("Timed out waiting for database destruction to finish during shutdown");
 				}
+				if (closeError) std::rethrow_exception(closeError);
+				if (!destroyCleanupError.empty()) {
+					throw rocksdb_js::DBException(destroyCleanupError);
+				}
+				continue;
 			}
 			if (closeError) std::rethrow_exception(closeError);
 			if (!destroyCleanupError.empty()) {
