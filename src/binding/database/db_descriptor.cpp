@@ -454,9 +454,12 @@ void DBDescriptor::finishClose() {
 		return;
 	}
 
-	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
-	// purpose: flushing immediately here races transaction-log-store teardown (AGENTS invariant 15).
-	this->flush();
+	// We want to ensure that all in-memory data is written to disk. Keep the waiting default: an
+	// immediate flush races transaction-log-store teardown (AGENTS invariant 15).
+	rocksdb::Status status = this->flush();
+	if (!status.ok()) {
+		throw rocksdb_js::DBException("Failed to flush database during close: " + status.ToString());
+	}
 
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing
@@ -484,7 +487,10 @@ void DBDescriptor::finishClose() {
 	// suggestions of the documentation, this method alone does not seem to
 	// trigger a flush
 	rocksdb::WaitForCompactOptions options;
-	this->db->WaitForCompact(options);
+	status = this->db->WaitForCompact(options);
+	if (!status.ok()) {
+		throw rocksdb_js::DBException("Failed waiting for database compaction during close: " + status.ToString());
+	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 

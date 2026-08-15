@@ -48,6 +48,9 @@ describe('Destroy', () => {
 		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: 1.5 })).toThrow(
 			'Lifecycle wait seconds must be a positive integer'
 		);
+		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: '30' as unknown as number })).toThrow(
+			'Lifecycle wait seconds must be a number'
+		);
 		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: 30 })).not.toThrow();
 	});
 
@@ -100,6 +103,13 @@ describe('Destroy', () => {
 	it('waits for physical destruction before reopening the same path', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
 			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
+		});
+	}, 15_000);
+
+	it('waits for physical destruction before shutdown completes', async () => {
+		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
+			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
+			ROCKSDB_JS_TEST_SHUTDOWN_DURING_DESTROY: '1',
 		});
 	}, 15_000);
 
