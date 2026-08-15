@@ -1,5 +1,5 @@
 import { dbRunner } from './lib/util.ts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 /**
  * Estimates are statistical (block-granular SST approximation + memtable
@@ -145,6 +145,22 @@ describe('estimateCount', () => {
 			expect(tenth).toBeLessThan(half);
 			expect(half).toBeLessThan(full);
 		}));
+
+	it('should use range-local density for varied value sizes', () =>
+		dbRunner(async ({ db }) => {
+			const N = 3000;
+			for (let i = 0; i < N; i++) {
+				await db.put(`small-${KEY(i)}`, 'x'.repeat(20));
+			}
+			await db.flush();
+			for (let i = 0; i < N; i++) {
+				await db.put(`large-${KEY(i)}`, 'x'.repeat(1000));
+			}
+			await db.flush();
+
+			expectWithin(db.estimateCount({ start: 'small-', end: 'small.' }).count, N, 2);
+			expectWithin(db.estimateCount({ start: 'large-', end: 'large.' }).count, N, 2);
+		}));
 });
 
 describe('CountEstimator', () => {
@@ -184,7 +200,7 @@ describe('CountEstimator', () => {
 			const refined = estimator.estimate();
 			expect(refined.count).toBeGreaterThanOrEqual(N / 2);
 			expectWithin(refined.count, N, 1.6);
-			expect(refined.confidence).toBeGreaterThan(initial.confidence);
+			expectConfidence(refined.confidence);
 		}));
 
 	it('should support reverse iteration', () =>
@@ -195,12 +211,63 @@ describe('CountEstimator', () => {
 			}
 			await db.flush();
 
-			const estimator = db.createCountEstimator({ start: KEY(0), end: KEY(N), reverse: true });
-			// walk the last quarter in reverse
-			estimator.advance(KEY((3 * N) / 4), N / 4);
-			const refined = estimator.estimate();
-			expect(refined.count).toBeGreaterThanOrEqual(N / 4);
-			expectWithin(refined.count, N, 2);
+			const range = { start: KEY(N), end: KEY(0), reverse: true };
+			const estimator = db.createCountEstimator(range);
+			expectWithin(db.estimateCount(range).count, N - 1, 2);
+			let upperBound = range.start;
+			let inclusiveEnd = true;
+			for (;;) {
+				const page = Array.from(
+					db.getKeys({ ...range, start: upperBound, inclusiveEnd, limit: 500 })
+				);
+				if (page.length === 0) {
+					break;
+				}
+				upperBound = page[page.length - 1] as string;
+				inclusiveEnd = false;
+				estimator.advance(upperBound, page.length);
+				const checkpoint = estimator.estimate();
+				expect(checkpoint.count).toBeGreaterThanOrEqual(estimator.traversed);
+				expectWithin(checkpoint.count, N - 1, 2);
+			}
+			expect(estimator.traversed).toBe(N - 1);
+			estimator.finish();
+			expect(estimator.estimate()).toEqual({ count: N - 1, confidence: 1 });
+		}));
+
+	it('should memoize before traversal and ignore an empty page', () =>
+		dbRunner(async ({ db }) => {
+			for (let i = 0; i < 1000; i++) {
+				await db.put(KEY(i), `value-${i}`);
+			}
+			await db.flush();
+
+			const estimateCount = vi.spyOn(db.store, 'estimateCount');
+			const estimator = db.createCountEstimator({ start: KEY(0), end: KEY(1000) });
+			const initial = estimator.estimate();
+			const expected = { ...initial };
+			expect(estimator.estimate()).toEqual(initial);
+			expect(estimateCount).toHaveBeenCalledTimes(1);
+			initial.count = 0;
+			expect(estimator.estimate()).toEqual(expected);
+
+			estimator.advance(undefined, 1);
+			expect(estimator.traversed).toBe(0);
+			expect(estimator.estimate()).toEqual(expected);
+			expect(estimateCount).toHaveBeenCalledTimes(1);
+		}));
+
+	it('should not calibrate from a block-granular partial page', () =>
+		dbRunner(async ({ db }) => {
+			const N = 20000;
+			for (let i = 0; i < N; i++) {
+				await db.put(KEY(i), `value-${i}`);
+			}
+			await db.flush();
+
+			const estimator = db.createCountEstimator({ start: KEY(0), end: KEY(N) });
+			estimator.advance(KEY(24), 25);
+			expectWithin(estimator.estimate().count, N, 2);
 		}));
 
 	it('should converge to near-exact as traversal completes', () =>

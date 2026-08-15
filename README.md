@@ -440,19 +440,20 @@ const estimated = db.getEstimatedKeyCount();
 console.log(estimated);
 ```
 
-### `db.estimateCount(options?: RangeOptions): CountEstimate`
+### `db.estimateCount(options?: CountEstimateOptions): CountEstimate`
 
 Estimates the number of keys in the database, or within a key range, returning
 `{ count, confidence }`. Unlike `getKeysCount()`, this never iterates: the estimate is derived
 from RocksDB statistics (memtable stats plus approximate SST sizes converted through the entry
 density of the SSTs overlapping the range), so its cost scales with the number of SSTs overlapping
-the range rather than the number of keys — typically microseconds where an exact count takes
-milliseconds, though reading table properties for cold files can do I/O through the table cache. A
-start-only range is computed as the whole-database estimate minus the complement, so it does the
-work of the range _below_ `start`. Accuracy improves with range size (resolution is bounded by SST
-data-block granularity, so tiny ranges over-report), and recently deleted or overwritten entries
-may be counted until compaction. Estimates always reflect committed state; writes pending in a
-transaction are not included. An inverted range (`start` ≥ `end`) returns
+the range rather than the number of keys. Reading cold table properties can do I/O through the
+table cache, so bounded ranges are preferable. A start-only range is computed as the
+whole-database estimate minus the complement, so it does the work of the range _below_ `start`.
+Accuracy improves with range size (resolution is bounded by SST data-block granularity, so tiny
+ranges over-report), and recently deleted or overwritten entries may be counted until compaction.
+Estimates always reflect committed state; writes pending in a transaction are not included. Set
+`reverse: true` to use `getRange()`'s reverse convention (`start` is the upper bound and `end` is
+the lower bound). An inverted range (`start` ≥ `end`) returns
 `{ count: 0, confidence: 1 }`.
 
 `confidence` is a heuristic 0–1 indicator of how trustworthy `count` is — exactly 1 only when the
@@ -477,9 +478,9 @@ remainder, calibrated by the observed ratio of actual-to-estimated entries over 
 already traversed — so the count converges toward the exact total, and `confidence` (the
 exactness-weighted blend of the traversed portion and the remainder's confidence) converges to 1.
 When traversal completes, call `finish()` and `estimate()` returns the exact count with
-confidence 1. Set `reverse: true` when iterating from `end` toward `start`. The caller owns the
-progress contract: cursors must move monotonically through the range and each entry must be
-reported exactly once.
+confidence 1. Reverse ranges follow `getRange`: set `start` to the upper bound and `end` to the
+lower bound, then set `reverse: true`. The caller owns the progress contract: cursors must move
+monotonically through the range and each entry must be reported exactly once.
 
 ```typescript
 const range = { start: 'a', end: 'z' };

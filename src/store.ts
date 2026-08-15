@@ -1,7 +1,13 @@
 import { type BackupStreamOptions, backupToStream } from './backup-stream.ts';
 import { assertBackupDirOutsideDatabase, type BackupOptions } from './backup.ts';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.ts';
-import type { CountEstimate, DBITransactional, IteratorOptions, RangeOptions } from './dbi.ts';
+import type {
+	CountEstimate,
+	CountEstimateOptions,
+	DBITransactional,
+	IteratorOptions,
+	RangeOptions,
+} from './dbi.ts';
 import {
 	type BufferWithDataView,
 	createFixedBuffer,
@@ -852,20 +858,25 @@ export class Store {
 	 * without iterating. Estimates always reflect committed state, so there is
 	 * no transactional variant.
 	 */
-	estimateCount(options?: RangeOptions): CountEstimate {
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
 		let startBuffer: Buffer | undefined;
 		let endBuffer: Buffer | undefined;
+		const reverse = options?.reverse ?? false;
+		const start = reverse ? options?.end : options?.start;
+		const end = reverse ? options?.start : options?.end;
+		const exclusiveStart = options?.exclusiveStart ?? reverse;
+		const inclusiveEnd = options?.inclusiveEnd ?? reverse;
 
-		if (options?.start !== undefined) {
-			const start = this.encodeKey(options.start);
+		if (start !== undefined) {
+			const encodedStart = this.encodeKey(start);
 			// A zero byte appended to a key is its bytewise successor, turning an
 			// inclusive bound into an exclusive one (and vice versa for the end).
-			startBuffer = copyEncodedKey(start, options.exclusiveStart === true);
+			startBuffer = copyEncodedKey(encodedStart, exclusiveStart);
 		}
 
-		if (options?.end !== undefined) {
-			const end = this.encodeKey(options.end);
-			endBuffer = copyEncodedKey(end, options.inclusiveEnd === true);
+		if (end !== undefined) {
+			const encodedEnd = this.encodeKey(end);
+			endBuffer = copyEncodedKey(encodedEnd, inclusiveEnd);
 		}
 
 		return this.db.estimateCount(startBuffer, endBuffer);
