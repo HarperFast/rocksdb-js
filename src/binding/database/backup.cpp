@@ -398,6 +398,13 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
 			state->deleteAsyncWork();
+			// A cancelled queued work item never ran execute, so complete owns the
+			// in-flight decrement in that case.
+			if (status == napi_cancelled &&
+				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
+			) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					napi_value result;
