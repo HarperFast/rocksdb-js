@@ -53,6 +53,7 @@ describe('Destroy', () => {
 		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: '30' as unknown as number })).toThrow(
 			'Lifecycle wait seconds must be a number'
 		);
+		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: undefined })).not.toThrow();
 		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: 30 })).not.toThrow();
 	});
 

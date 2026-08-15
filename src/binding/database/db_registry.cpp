@@ -40,6 +40,28 @@ private:
 	const std::string& path;
 };
 
+class ShutdownGuard final {
+public:
+	ShutdownGuard(
+		std::mutex& mutex,
+		std::condition_variable& condition,
+		bool& shutdownInProgress
+	) : mutex(mutex), condition(condition), shutdownInProgress(shutdownInProgress) {}
+
+	~ShutdownGuard() {
+		{
+			std::lock_guard<std::mutex> lock(this->mutex);
+			this->shutdownInProgress = false;
+		}
+		this->condition.notify_all();
+	}
+
+private:
+	std::mutex& mutex;
+	std::condition_variable& condition;
+	bool& shutdownInProgress;
+};
+
 struct ClosingDescriptor final {
 	DBKey key;
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -239,9 +261,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	{
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
 		if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
-			return instance->destroyingPaths.find(path) == instance->destroyingPaths.end();
+			return !instance->shutdownInProgress &&
+				instance->destroyingPaths.find(path) == instance->destroyingPaths.end();
 		})) {
-			throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": another destroy is still in progress");
+			throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": another lifecycle operation is still in progress");
 		}
 		instance->destroyingPaths.insert(path);
 	}
@@ -348,7 +371,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
-	// Now the database lock should be released, safe to destroy
+	// All in-process descriptors are closed; physical destruction can proceed.
 	const int destroyDelayMs = testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS");
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
@@ -408,6 +431,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	DBKey key{path, options.readOnly};
 	decltype(instance->databases)::iterator entryIterator;
 	while (true) {
+		if (instance->shutdownInProgress) {
+			if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
+				return !instance->shutdownInProgress;
+			})) {
+				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": shutdown is still in progress");
+			}
+			continue;
+		}
 		if (!instance->destroyingPaths.empty() &&
 			instance->destroyingPaths.find(path) != instance->destroyingPaths.end()
 		) {
@@ -890,6 +921,15 @@ void DBRegistry::Shutdown() {
 		if (!shutdownLock.try_lock_until(deadline)) {
 			throw rocksdb_js::DBException("Timed out waiting for another database shutdown to finish");
 		}
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			instance->shutdownInProgress = true;
+		}
+		ShutdownGuard shutdownGuard(
+			instance->databasesMutex,
+			instance->lifecycleCondition,
+			instance->shutdownInProgress
+		);
 		while (true) {
 			std::vector<ClosingDescriptor> descriptorsToClose;
 			std::vector<ClosingDescriptor> descriptorsToWaitFor;
