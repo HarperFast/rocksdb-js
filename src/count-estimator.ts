@@ -1,21 +1,15 @@
-import type { CountEstimate, RangeOptions } from './dbi.ts';
+import type { CountEstimate, CountEstimateOptions } from './dbi.ts';
 import type { Key } from './encoding.ts';
 import type { Store } from './store.ts';
 
-export interface CountEstimatorOptions extends RangeOptions {
-	/**
-	 * When `true`, iteration proceeds from `end` toward `start`, so keys
-	 * passed to `advance()` are treated as the new lower edge of the
-	 * untraversed remainder.
-	 */
-	reverse?: boolean;
-}
+export interface CountEstimatorOptions extends CountEstimateOptions {}
 
 /**
  * Below this many traversed entries the observed density is too noisy to
  * calibrate with, so `estimate()` returns the raw statistical estimate.
  */
 const CALIBRATION_MIN_TRAVERSED = 16;
+const CALIBRATION_MIN_CONFIDENCE = 0.8;
 
 /**
  * Bounds on how far the observed-vs-estimated ratio may scale the remainder;
@@ -59,11 +53,11 @@ export class CountEstimator {
 
 	constructor(store: Store, options?: CountEstimatorOptions) {
 		this.#store = store;
-		this.#start = options?.start;
-		this.#end = options?.end;
-		this.#exclusiveStart = options?.exclusiveStart ?? false;
-		this.#inclusiveEnd = options?.inclusiveEnd ?? false;
 		this.#reverse = options?.reverse ?? false;
+		this.#start = this.#reverse ? options?.end : options?.start;
+		this.#end = this.#reverse ? options?.start : options?.end;
+		this.#exclusiveStart = options?.exclusiveStart ?? this.#reverse;
+		this.#inclusiveEnd = options?.inclusiveEnd ?? this.#reverse;
 	}
 
 	/**
@@ -77,7 +71,10 @@ export class CountEstimator {
 	 * Records that iteration has advanced through `count` more entries, ending
 	 * at `lastKey`.
 	 */
-	advance(lastKey: Key | Uint8Array, count = 1): void {
+	advance(lastKey: Key | Uint8Array | undefined, count = 1): void {
+		if (lastKey === undefined) {
+			return;
+		}
 		this.#cursor = lastKey;
 		this.#traversed += count;
 		this.#memoized = undefined;
@@ -102,16 +99,17 @@ export class CountEstimator {
 		if (this.#finished) {
 			return { count: this.#traversed, confidence: 1 };
 		}
+		if (this.#memoized !== undefined) {
+			return { ...this.#memoized };
+		}
 		if (this.#cursor === undefined) {
-			return this.#store.estimateCount({
+			this.#memoized = this.#store.estimateCount({
 				start: this.#start,
 				end: this.#end,
 				exclusiveStart: this.#exclusiveStart,
 				inclusiveEnd: this.#inclusiveEnd,
 			});
-		}
-		if (this.#memoized !== undefined) {
-			return this.#memoized;
+			return { ...this.#memoized };
 		}
 
 		// The cursor entry itself belongs to the traversed side, so the
@@ -137,23 +135,31 @@ export class CountEstimator {
 
 		const remainingEstimate = this.#store.estimateCount(remainingRange);
 		let remaining = remainingEstimate.count;
+		let calibrationConfidence = 1;
 		if (this.#traversed >= CALIBRATION_MIN_TRAVERSED) {
 			const traversedEstimate = this.#store.estimateCount(traversedRange);
-			const calibration = Math.min(
-				CALIBRATION_MAX,
-				Math.max(1 / CALIBRATION_MAX, this.#traversed / Math.max(traversedEstimate.count, 1))
-			);
-			remaining *= calibration;
+			if (
+				traversedEstimate.count >= CALIBRATION_MIN_TRAVERSED &&
+				traversedEstimate.confidence >= CALIBRATION_MIN_CONFIDENCE
+			) {
+				const calibration = Math.min(
+					CALIBRATION_MAX,
+					Math.max(1 / CALIBRATION_MAX, this.#traversed / traversedEstimate.count)
+				);
+				remaining *= calibration;
+				calibrationConfidence = Math.min(calibration, 1 / calibration);
+			}
 		}
 
 		const count = Math.round(this.#traversed + remaining);
 		// Cap below 1: only finish() (or an exact-by-construction range) may
 		// claim exactness, even when rounding makes the remainder vanish.
 		const confidence =
-			count > 0
+			calibrationConfidence *
+			(count > 0
 				? Math.min(0.999, (this.#traversed + remainingEstimate.confidence * remaining) / count)
-				: Math.min(0.999, remainingEstimate.confidence);
+				: Math.min(0.999, remainingEstimate.confidence));
 		this.#memoized = { count, confidence };
-		return this.#memoized;
+		return { ...this.#memoized };
 	}
 }

@@ -1,7 +1,12 @@
 import type { BackupStreamOptions } from './backup-stream.ts';
 import type { BackupOptions } from './backup.ts';
 import { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
-import { DBI, type CountEstimate, type DBITransactional, type RangeOptions } from './dbi.ts';
+import {
+	DBI,
+	type CountEstimate,
+	type CountEstimateOptions,
+	type DBITransactional,
+} from './dbi.ts';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
@@ -495,7 +500,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
 	 * ```
 	 */
-	estimateCount(options?: RangeOptions): CountEstimate {
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
 		return this.store.estimateCount(options);
 	}
 

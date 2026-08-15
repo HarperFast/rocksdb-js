@@ -105,6 +105,14 @@ export interface RangeOptions extends RocksDBOptions {
 	start?: Key | Uint8Array;
 }
 
+export interface CountEstimateOptions extends RangeOptions {
+	/**
+	 * Interpret `start` as the upper bound and `end` as the lower bound, as
+	 * `getRange()` does for reverse iteration. Defaults to `false`.
+	 */
+	reverse?: boolean;
+}
+
 export interface IteratorOptions extends RangeOptions {
 	// decoder?: (value: any) => any,
 

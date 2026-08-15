@@ -989,6 +989,7 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	uint64_t entries = 0;
 	uint64_t deletions = 0;
 	uint64_t fileBytes = 0;
+	uint64_t dataBlocks = 0;
 	if (status.ok()) {
 		for (const auto& prop : props) {
 			if (!prop.second) {
@@ -1004,6 +1005,7 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 			// GetApproximateSizes offsets span data + index + filter blocks,
 			// so the density denominator must too.
 			fileBytes += p.data_size + p.index_size + p.filter_size;
+			dataBlocks += p.num_data_blocks;
 		}
 	} else {
 		result.degraded = true;
@@ -1018,7 +1020,9 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	double density = static_cast<double>(entries - deletions) / static_cast<double>(fileBytes);
 	result.sstCount = static_cast<double>(sstBytes) * density;
 	result.count += result.sstCount;
-	result.entriesPerBlock = density * 4096;
+	result.entriesPerBlock = dataBlocks > 0
+		? static_cast<double>(entries - deletions) / static_cast<double>(dataBlocks)
+		: 0;
 	result.liveFraction = static_cast<double>(entries - deletions) / static_cast<double>(entries);
 	return result;
 }
