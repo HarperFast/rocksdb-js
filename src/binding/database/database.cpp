@@ -428,11 +428,25 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Destroy(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE();
-	THROW_IF_READONLY((*dbHandle)->descriptor, "Destroy failed: ");
 
 	if (*dbHandle) {
+		bool readOnly = (*dbHandle)->descriptor && (*dbHandle)->descriptor->readOnly;
+		napi_valuetype readOnlyType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &readOnlyType));
+		if (readOnlyType == napi_boolean) {
+			bool requestedReadOnly = false;
+			NAPI_STATUS_THROWS_ERROR(rocksdb_js::getValue(env, argv[1], requestedReadOnly), "Read-only flag must be a boolean");
+			readOnly = readOnly || requestedReadOnly;
+		} else if (readOnlyType != napi_undefined) {
+			::napi_throw_type_error(env, nullptr, "Read-only flag must be a boolean");
+			return nullptr;
+		}
+		if (readOnly) {
+			::napi_throw_error(env, "ERR_DATABASE_READONLY", "Destroy failed: Unsupported operation in read-only mode");
+			return nullptr;
+		}
 		std::string path = (*dbHandle)->path;
 		napi_valuetype pathType;
 		NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &pathType));
@@ -444,6 +458,10 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 		}
 		if (path.empty()) {
 			::napi_throw_error(env, nullptr, "Database path is required for destroy");
+			return nullptr;
+		}
+		if (!(*dbHandle)->path.empty() && path != (*dbHandle)->path) {
+			::napi_throw_error(env, nullptr, "Destroy path must match the open database");
 			return nullptr;
 		}
 		try {
