@@ -12,6 +12,11 @@ const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
+const nodeExecutable =
+	process.env.NODE_BINARY ??
+	(process.versions.bun || process.versions.deno
+		? (process.env.npm_node_execpath ?? 'node')
+		: process.execPath);
 
 function runDestroyFixture(
 	fixture: string,
@@ -19,7 +24,8 @@ function runDestroyFixture(
 	env?: NodeJS.ProcessEnv
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn('node', ['--expose-gc', fixture, dbPath], {
+		// These fixtures depend on Node's type stripping, GC flag, and worker semantics.
+		const child = spawn(nodeExecutable, ['--expose-gc', fixture, dbPath], {
 			env: { ...process.env, ...env },
 		});
 		let stderr = '';
@@ -30,7 +36,10 @@ function runDestroyFixture(
 			child.kill();
 			reject(new Error(`Destroy fixture timed out\n${stderr}`));
 		}, 10_000);
-		child.on('error', reject);
+		child.on('error', (error) => {
+			clearTimeout(timeout);
+			reject(new Error(`Unable to run lifecycle fixture with Node (${nodeExecutable}): ${error}`));
+		});
 		child.on('close', (code, signal) => {
 			clearTimeout(timeout);
 			if (code === 0 && signal === null) {
