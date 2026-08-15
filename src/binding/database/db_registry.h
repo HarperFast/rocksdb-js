@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
 #include "transaction/transaction.h"
@@ -78,6 +79,8 @@ private:
 	 * Mutex to protect the databases map.
 	 */
 	std::mutex databasesMutex;
+	std::condition_variable lifecycleCondition;
+	std::unordered_set<std::string> destroyingPaths;
 
 	/**
 	 * The singleton instance of the registry.
