@@ -49,6 +49,7 @@ private:
 	std::mutex writeBufferManagerMutex;
 
 	bool compactOnClose;
+	std::atomic<uint32_t> lifecycleWaitSeconds;
 
 	// Number of slots requested for the verification table. Default 128K
 	// (1 MB at 8 bytes per slot). 0 disables the table. Configurable via
@@ -96,6 +97,10 @@ public:
 
 	inline bool getCompactOnClose() const {
 		return compactOnClose;
+	}
+
+	uint32_t getLifecycleWaitSeconds() const {
+		return lifecycleWaitSeconds.load(std::memory_order_relaxed);
 	}
 
 	/**

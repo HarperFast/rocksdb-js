@@ -1,25 +1,19 @@
 import { RocksDatabase } from '../../src/index.ts';
-import { chmodSync } from 'node:fs';
 
 const path = process.argv[2];
 const db = RocksDatabase.open(path);
 db.putSync('key', 'value');
-db.close();
 
-chmodSync(path, 0o500);
-let destroyFailed = false;
+let destroyError: unknown;
 try {
 	db.destroy();
-} catch {
-	destroyFailed = true;
-} finally {
-	chmodSync(path, 0o700);
+} catch (error) {
+	destroyError = error;
 }
-if (!destroyFailed)
-	throw new Error('Expected destroy to fail for a non-writable database directory');
+if (!String(destroyError).includes('Injected database destruction failure'))
+	throw new Error(`Expected injected destroy failure, received: ${String(destroyError)}`);
 
-try {
-	RocksDatabase.open(path).close();
-} catch {
-	// Physical destruction may have partially completed; only gate release is asserted.
-}
+const reopened = RocksDatabase.open(path);
+if (reopened.getSync('key') !== 'value')
+	throw new Error('Reopen after failed destruction did not preserve the database');
+reopened.close();

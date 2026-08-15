@@ -1,3 +1,4 @@
+import { RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -37,6 +38,13 @@ function runDestroyFixture(
 }
 
 describe('Destroy', () => {
+	it('validates the lifecycle wait configuration', () => {
+		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: 0 })).toThrow(
+			'Lifecycle wait seconds must be a positive integer'
+		);
+		expect(() => RocksDatabase.config({ lifecycleWaitSeconds: 30 })).not.toThrow();
+	});
+
 	it('should destroy a closed database', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			expect(db.isOpen()).toBe(true);
@@ -85,15 +93,13 @@ describe('Destroy', () => {
 
 	it('waits for physical destruction before reopening the same path', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
-			ROCKSDB_JS_DESTROY_DELAY_MS: '1000',
+			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
 		});
 	}, 15_000);
 
-	it.skipIf(process.platform === 'win32')(
-		'releases the path gate when physical destruction fails',
-		async () => {
-			await runDestroyFixture(destroyFailureFixture, generateDBPath());
-		},
-		15_000
-	);
+	it('releases the path gate when physical destruction fails', async () => {
+		await runDestroyFixture(destroyFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_DESTROY_FAILURE: '1',
+		});
+	}, 15_000);
 });
