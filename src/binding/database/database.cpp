@@ -15,6 +15,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
 #include "core/verification_table.h"
 #include "core/compression.h"
 
@@ -47,7 +48,14 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("Database::Constructor NativeDatabase GC'd dbHandle=%p\n", data);
 				auto* dbHandle = static_cast<std::shared_ptr<DBHandle>*>(data);
 				if (*dbHandle) {
-					DBRegistry::CloseDB(*dbHandle);
+					std::string path = (*dbHandle)->path;
+					std::string closeError = DBRegistry::CloseDB(*dbHandle);
+					if (!closeError.empty() && GlobalEvents::hasListeners()) {
+						emitGlobalEvent(
+							"database:closeFailed",
+							ListenerData::fromStrings({path, closeError})
+						);
+					}
 				}
 				delete dbHandle;
 			},

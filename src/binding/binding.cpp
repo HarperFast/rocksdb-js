@@ -38,16 +38,19 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
+	std::string shutdownError;
 	try {
 		DBRegistry::Shutdown();
 	} catch (const std::exception& error) {
-		::napi_throw_error(env, nullptr, error.what());
-		return nullptr;
+		shutdownError = error.what();
 	} catch (...) {
-		::napi_throw_error(env, nullptr, "Unknown native database shutdown failure");
-		return nullptr;
+		shutdownError = "Unknown native database shutdown failure";
 	}
 	GlobalEvents::Shutdown();
+	if (!shutdownError.empty()) {
+		::napi_throw_error(env, nullptr, shutdownError.c_str());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;

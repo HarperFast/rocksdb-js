@@ -391,8 +391,8 @@ void DBDescriptor::finishClose() {
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
 	if (!this->transactionLogsUnregistered) {
-		TransactionLogStoreRegistry::Unregister(this->path);
 		this->transactionLogsUnregistered = true;
+		TransactionLogStoreRegistry::Unregister(this->path);
 	}
 
 	this->transactions.clear();

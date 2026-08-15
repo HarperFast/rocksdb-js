@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 const destroyOpenFixture = join(__dirname, 'fixtures', 'fork-destroy-open.mts');
 const destroyFailureFixture = join(__dirname, 'fixtures', 'fork-destroy-failure.mts');
 const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts');
+const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 
 function runDestroyFixture(
@@ -16,7 +17,7 @@ function runDestroyFixture(
 	env?: NodeJS.ProcessEnv
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [fixture, dbPath], {
+		const child = spawn(process.execPath, ['--expose-gc', fixture, dbPath], {
 			env: { ...process.env, ...env },
 		});
 		let stderr = '';
@@ -121,6 +122,12 @@ describe('Destroy', () => {
 	}, 15_000);
 
 	it('quarantines a failed automatic last-handle close', async () => {
+		await runDestroyFixture(gcCloseFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FAILURE: '1',
+		});
+	}, 15_000);
+
+	it('surfaces an explicit close failure and permits a shutdown retry', async () => {
 		await runDestroyFixture(closeFailureFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
 		});
