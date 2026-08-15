@@ -2,6 +2,7 @@
 #include <vector>
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
+#include "database/db_settings.h"
 #include "core/test_seam.h"
 #include "napi/macros.h"
 #include "core/platform.h"
@@ -10,13 +11,12 @@
 #include "napi/async.h"
 #include "rocksdb/table.h"
 #include <chrono>
+#include <exception>
 #include <thread>
 
 namespace rocksdb_js {
 
 namespace {
-
-constexpr std::chrono::seconds DATABASE_LIFECYCLE_WAIT{30};
 
 class DestroyPathGuard final {
 public:
@@ -24,8 +24,8 @@ public:
 		std::mutex& mutex,
 		std::condition_variable& condition,
 		std::unordered_set<std::string>& destroyingPaths,
-		std::string path
-	) : mutex(mutex), condition(condition), destroyingPaths(destroyingPaths), path(std::move(path)) {}
+		const std::string& path
+	) : mutex(mutex), condition(condition), destroyingPaths(destroyingPaths), path(path) {}
 
 	~DestroyPathGuard() {
 		{
@@ -39,13 +39,14 @@ private:
 	std::mutex& mutex;
 	std::condition_variable& condition;
 	std::unordered_set<std::string>& destroyingPaths;
-	std::string path;
+	const std::string& path;
 };
 
 struct ClosingDescriptor final {
 	DBKey key;
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
+	bool closed = false;
 };
 
 } // namespace
@@ -188,7 +189,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	}
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
-	const auto deadline = std::chrono::steady_clock::now() + DATABASE_LIFECYCLE_WAIT;
+	const auto deadline = std::chrono::steady_clock::now() +
+		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 	{
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
 		if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
@@ -212,6 +214,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		std::vector<ClosingDescriptor> alreadyClosing;
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			claimed.reserve(instance->databases.size());
+			alreadyClosing.reserve(instance->databases.size());
 			for (auto& [key, entry] : instance->databases) {
 				if (key.path != path || !entry.descriptor) {
 					continue;
@@ -225,15 +229,28 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 
+		// Keep entries discoverable while finishClose runs: env cleanup uses the
+		// registry to remove callbacks owned by a worker that exits mid-close.
+		std::exception_ptr closeError;
 		for (auto& closing : claimed) {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor %p for \"%s\" (ref count = %ld)\n",
 				instance.get(), closing.descriptor.get(), path.c_str(), closing.descriptor.use_count());
-			closing.descriptor->finishClose();
+			try {
+				closing.descriptor->finishClose();
+				closing.closed = true;
+			} catch (...) {
+				if (!closeError) {
+					closeError = std::current_exception();
+				}
+			}
 		}
 
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			for (const auto& closing : claimed) {
+				if (!closing.closed) {
+					continue;
+				}
 				auto entry = instance->databases.find(closing.key);
 				if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
 					instance->databases.erase(entry);
@@ -241,7 +258,17 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 		for (const auto& closing : claimed) {
-			closing.condition->notify_all();
+			if (closing.closed) {
+				closing.condition->notify_all();
+			}
+		}
+		if (closeError) {
+			std::rethrow_exception(closeError);
+		}
+		for (const auto& closing : claimed) {
+			if (!closing.closed) {
+				continue;
+			}
 			const size_t refCountAfterClose = closing.descriptor.use_count();
 			if (refCountAfterClose > 1) {
 				std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 1) +
@@ -280,6 +307,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	const int destroyDelayMs = testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS");
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
+	}
+	if (testFailureEnabled("ROCKSDB_JS_DESTROY_FAILURE")) {
+		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
 	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
@@ -329,7 +359,8 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
-	const auto deadline = std::chrono::steady_clock::now() + DATABASE_LIFECYCLE_WAIT;
+	const auto deadline = std::chrono::steady_clock::now() +
+		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 	DBKey key{path, options.readOnly};
 	decltype(instance->databases)::iterator entryIterator;
 	while (true) {
@@ -784,26 +815,52 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
  */
 void DBRegistry::Shutdown() {
 	if (instance) {
-		std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
+		std::vector<ClosingDescriptor> descriptorsToClose;
 
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size());
+			descriptorsToClose.reserve(instance->databases.size());
 
-			// Collect all descriptors to close
-			for (auto& [_key, entry] : instance->databases) {
-				if (entry.descriptor &&
-					instance->destroyingPaths.find(entry.descriptor->path) == instance->destroyingPaths.end()
+			// Claim each close while holding the registry lock so DestroyDB can
+			// safely wait on the matching erase-and-notify below.
+			for (auto& [key, entry] : instance->databases) {
+				if (!entry.descriptor ||
+					instance->destroyingPaths.find(key.path) != instance->destroyingPaths.end()
 				) {
-					descriptorsToClose.push_back(entry.descriptor);
+					continue;
+				}
+				ClosingDescriptor closing{key, entry.descriptor, entry.condition};
+				if (entry.descriptor->beginClose()) {
+					descriptorsToClose.push_back(std::move(closing));
 				}
 			}
 		}
 
 		// Close all descriptors without holding the lock
-		for (auto& descriptor : descriptorsToClose) {
-			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str());
-			descriptor->close();
+		std::exception_ptr closeError;
+		for (auto& closing : descriptorsToClose) {
+			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), closing.descriptor->path.c_str());
+			try {
+				closing.descriptor->finishClose();
+				closing.closed = true;
+			} catch (...) {
+				if (!closeError) {
+					closeError = std::current_exception();
+				}
+				continue;
+			}
+			{
+				std::lock_guard<std::mutex> lock(instance->databasesMutex);
+				auto entry = instance->databases.find(closing.key);
+				if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
+					instance->databases.erase(entry);
+				}
+			}
+			closing.condition->notify_all();
+		}
+		if (closeError) {
+			std::rethrow_exception(closeError);
 		}
 
 		// Purge the registry

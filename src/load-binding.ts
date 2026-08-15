@@ -511,6 +511,11 @@ export type RocksDatabaseConfig = {
 	verificationTableEntries?: number;
 	compactOnClose?: boolean;
 	/**
+	 * Maximum seconds an open or destroy call waits for another lifecycle
+	 * operation on the same path. Defaults to 30.
+	 */
+	lifecycleWaitSeconds?: number;
+	/**
 	 * Total memtable memory limit (bytes) shared across every database opened
 	 * in this process. When set, RocksDB uses a single `WriteBufferManager` so
 	 * write buffers are bounded process-wide rather than per database. 0 (the

@@ -16,6 +16,10 @@ inline int testDelayMs(const char* envName) {
 	return value ? ::atoi(value) : 0;
 }
 
+inline bool testFailureEnabled(const char* envName) {
+	return ::getenv(envName) != nullptr;
+}
+
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
 // transaction commits to fail with TryAgain (the caller rolls back so no data is committed),
 // reproducing an ERR_TRY_AGAIN that a real memtable flush would cause but that is finicky to
