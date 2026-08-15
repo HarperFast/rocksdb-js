@@ -41,6 +41,7 @@ struct DBKeyHash {
 struct DBRegistryEntry final {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
+	std::string closeError;
 
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
@@ -79,6 +80,9 @@ private:
 	 * Mutex to protect the databases map.
 	 */
 	std::mutex databasesMutex;
+	// Destruction owns a physical path across every (path, readOnly) entry.
+	// Waiters must re-resolve databases after every wake because the closer can
+	// erase the node while the mutex is released.
 	std::condition_variable lifecycleCondition;
 	std::unordered_set<std::string> destroyingPaths;
 
