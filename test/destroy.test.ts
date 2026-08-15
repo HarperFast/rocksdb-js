@@ -1,7 +1,7 @@
 import { RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -10,6 +10,7 @@ const destroyFailureFixture = join(__dirname, 'fixtures', 'fork-destroy-failure.
 const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts');
 const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
+const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
 
 function runDestroyFixture(
 	fixture: string,
@@ -100,6 +101,26 @@ describe('Destroy', () => {
 			}
 		));
 
+	it.skipIf(process.platform === 'win32')(
+		'quarantines a path when post-destroy cleanup fails',
+		() =>
+			dbRunner(({ db, dbPath }) => {
+				const lockedDirectory = join(dbPath, 'transaction_logs', 'locked');
+				mkdirSync(lockedDirectory, { recursive: true });
+				writeFileSync(join(lockedDirectory, 'leftover'), 'data');
+				chmodSync(lockedDirectory, 0o000);
+				try {
+					expect(() => db.destroy()).toThrow('Failed to remove database directory');
+					expect(() => RocksDatabase.open(dbPath)).toThrow('previous destroy cleanup failed');
+				} finally {
+					chmodSync(lockedDirectory, 0o700);
+				}
+				db.destroy();
+				const reopened = RocksDatabase.open(dbPath);
+				reopened.close();
+			})
+	);
+
 	it('waits for physical destruction before reopening the same path', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
 			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
@@ -139,6 +160,12 @@ describe('Destroy', () => {
 
 	it('surfaces an explicit close failure and permits a shutdown retry', async () => {
 		await runDestroyFixture(closeFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FAILURE: '1',
+		});
+	}, 15_000);
+
+	it('waits for an in-progress shutdown retry before reopening', async () => {
+		await runDestroyFixture(shutdownRetryFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
 		});
 	}, 15_000);

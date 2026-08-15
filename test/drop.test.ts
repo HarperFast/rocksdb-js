@@ -224,7 +224,7 @@ describe('Drop', () => {
 					{ name: 'doomed', pessimistic: true },
 				],
 			},
-			async ({ db: victim }, { db: doomed }, { db: stale }) => {
+			async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
 				await expect(
 					stale.transaction(async (txn: Transaction) => {
 						await victim.put('live', 'A', { transaction: txn });
@@ -240,6 +240,8 @@ describe('Drop', () => {
 				stale.close();
 				doomed.close();
 				expect(() => victim.close()).toThrow('Failed to flush database during close');
+				const reopened = RocksDatabase.open(dbPath);
+				reopened.close();
 			}
 		));
 

@@ -296,6 +296,7 @@ void DBDescriptor::finishClose() {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
+	const bool retryingClose = this->closeWorkersStopped;
 	if (!this->closeWorkersStopped) {
 		// Wait for all in-flight operations to complete before cleanup.
 		// The closing flag is already set, so new operations will fail with "Database is closing".
@@ -325,6 +326,12 @@ void DBDescriptor::finishClose() {
 			this->commitCompletionsClosed = true;
 		}
 		this->closeWorkersStopped = true;
+	}
+	if (retryingClose) {
+		const int retryDelayMs = testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS");
+		if (retryDelayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(retryDelayMs));
+		}
 	}
 
 	if (testDelayMs("ROCKSDB_JS_CLOSE_FAILURE") > 0) {

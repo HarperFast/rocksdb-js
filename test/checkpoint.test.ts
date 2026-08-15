@@ -220,9 +220,9 @@ describe('Checkpoints', () => {
 			// close()) bypasses the async-work tracker. The checkpoint registers in
 			// operationsInFlight, so finishClose() waits for the copy to finish
 			// before resetting descriptor->db — the worker never touches a freed DB.
-			// The in-flight op still holds a descriptor reference, so destroy() throws
-			// rather than tearing the database down mid-copy.
-			expect(() => db.destroy()).toThrow();
+			// The operation reference can outlive registry removal safely because
+			// finishClose waits for it and resets the native DB before physical destroy.
+			expect(() => db.destroy()).not.toThrow();
 
 			// The checkpoint itself completed (finishClose waited for it), so the
 			// promise settles cleanly and nothing crashes.
