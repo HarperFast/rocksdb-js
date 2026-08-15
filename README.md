@@ -477,6 +477,8 @@ per page), `estimate()` returns the exact traversed count plus a statistical est
 remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
 already traversed — so the count converges toward the exact total, and `confidence` (the
 exactness-weighted blend of the traversed portion and the remainder's confidence) converges to 1.
+Each checkpoint reads committed state, so a traversal performed against a transaction snapshot may
+be calibrated against data committed after that snapshot.
 When traversal completes, call `finish()` and `estimate()` returns the exact count with
 confidence 1. Reverse ranges follow `getRange`: set `start` to the upper bound and `end` to the
 lower bound, then set `reverse: true`. The caller owns the progress contract: cursors must move

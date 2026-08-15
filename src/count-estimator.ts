@@ -69,7 +69,7 @@ export class CountEstimator {
 
 	/**
 	 * Records that iteration has advanced through `count` more entries, ending
-	 * at `lastKey`.
+	 * at `lastKey`. Pass `count: 0` when an empty page has no last key.
 	 */
 	advance(lastKey: Key | Uint8Array | undefined, count = 1): void {
 		if (lastKey === undefined) {
