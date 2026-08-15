@@ -25,3 +25,7 @@ delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
 shutdown();
 if (registryStatus().some((entry) => entry.path === path))
 	throw new Error('Shutdown retry did not clear the quarantined descriptor');
+const reopened = RocksDatabase.open(path);
+if (reopened.getSync('key') !== 'value')
+	throw new Error('Shutdown recovery did not preserve the database');
+reopened.destroy();

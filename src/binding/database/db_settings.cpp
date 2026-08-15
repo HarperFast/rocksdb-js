@@ -217,8 +217,14 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
 
 	double lifecycleWaitSeconds = 0;
-	status = rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true);
-	if (status == napi_ok) {
+	bool lifecycleWaitProvided = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
+	if (lifecycleWaitProvided) {
+		status = rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true);
+		if (status != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "Lifecycle wait seconds must be a number");
+			return nullptr;
+		}
 		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
 			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
 			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()

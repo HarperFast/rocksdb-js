@@ -35,3 +35,7 @@ if (
 
 delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
 shutdown();
+const reopened = RocksDatabase.open(path);
+if (reopened.getSync('key') !== 'value')
+	throw new Error('Shutdown recovery did not preserve the database');
+reopened.destroy();

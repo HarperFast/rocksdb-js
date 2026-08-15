@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, registryStatus, shutdown } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -34,6 +34,16 @@ while (registryStatus().some((entry) => entry.path === path)) {
 
 const destroyResult = nextMessage();
 const startedAt = Date.now();
+if (process.env.ROCKSDB_JS_TEST_SHUTDOWN_DURING_DESTROY === '1') {
+	shutdown();
+	const shutdownDuration = Date.now() - startedAt;
+	const destroyed = await destroyResult;
+	if (!destroyed.destroyed) throw new Error(`Destroy failed: ${JSON.stringify(destroyed)}`);
+	if (shutdownDuration < 500)
+		throw new Error(`Shutdown did not wait for destroy (${shutdownDuration}ms)`);
+	await worker.terminate();
+	process.exit(0);
+}
 const reopened = RocksDatabase.open(path);
 const openDuration = Date.now() - startedAt;
 const destroyed = await destroyResult;

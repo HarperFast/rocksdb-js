@@ -27,12 +27,8 @@ if (closeFailure) {
 	}
 	if (Date.now() - startedAt >= 1_000)
 		throw new Error('Opening a quarantined descriptor waited instead of failing immediately');
-	try {
-		db.destroy();
-		throw new Error('Expected repeated destroy to report the previous close failure');
-	} catch (error) {
-		if (!String(error).includes(`previous close failed: ${expectedError}`)) throw error;
-	}
+	delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
+	db.destroy();
 	process.exit(0);
 }
 
