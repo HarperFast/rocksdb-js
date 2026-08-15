@@ -190,9 +190,12 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 
 	if (*dbHandle) {
 		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
-		std::string closeError = DBRegistry::CloseDB(*dbHandle);
-		if (!closeError.empty()) {
-			std::string message = closeError + ". Call destroy() or shutdown() to retry cleanup";
+		CloseResult closeResult = DBRegistry::CloseDB(*dbHandle);
+		if (!closeResult.error.empty()) {
+			std::string message = closeResult.error;
+			if (closeResult.quarantined) {
+				message += ". Call destroy() or shutdown() to retry cleanup";
+			}
 			::napi_throw_error(env, nullptr, message.c_str());
 			return nullptr;
 		}

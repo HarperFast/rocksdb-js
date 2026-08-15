@@ -142,8 +142,10 @@ Creates a new database instance.
 
 Closes a database. This function can be called multiple times and will only close an opened
 database. A database instance can be reopened once it is closed. A flush or compaction failure is
-reported as an exception after native teardown completes. A failure that prevents teardown emits
-`database:closeFailed`; same-path opens then fail until `destroy()` or `shutdown()` retries cleanup.
+reported as an exception after native teardown completes. All native close errors emit
+`database:closeFailed`; when teardown does not complete, same-path opens also fail until
+`destroy()` or `shutdown()` retries cleanup. The quarantine applies to both writable and read-only
+opens because both modes share the physical path lifecycle.
 
 ```typescript
 const db = RocksDatabase.open('foo');

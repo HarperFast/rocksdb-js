@@ -511,8 +511,8 @@ export type RocksDatabaseConfig = {
 	verificationTableEntries?: number;
 	compactOnClose?: boolean;
 	/**
-	 * Maximum seconds an open or destroy call waits for another lifecycle
-	 * operation on the same path. Defaults to 30.
+	 * Maximum seconds an open, destroy, or shutdown call waits for another
+	 * lifecycle operation. Defaults to 30.
 	 */
 	lifecycleWaitSeconds?: number;
 	/**
