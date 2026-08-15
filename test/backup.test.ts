@@ -475,7 +475,7 @@ describe('Backups', () => {
 			// backup must retry it on release so the entry does not leak (a leaked
 			// entry keeps the RocksDB open forever and shows up in registryStatus()
 			// long after every handle is closed).
-			expect(registryStatus().length).toBe(0);
+			expect(registryStatus()).toEqual([]);
 		}));
 
 	it('should reject listing a non-existent backup directory', async () => {
