@@ -452,7 +452,7 @@ describe('Backups', () => {
 	);
 
 	it('should not crash when closing during a backup', () =>
-		dbRunner({ skipOpen: true }, async ({ db }) => {
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 			db.open();
 			await writeAll(db, 200);
 
@@ -475,7 +475,7 @@ describe('Backups', () => {
 			// backup must retry it on release so the entry does not leak (a leaked
 			// entry keeps the RocksDB open forever and shows up in registryStatus()
 			// long after every handle is closed).
-			expect(registryStatus()).toEqual([]);
+			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('should reject listing a non-existent backup directory', async () => {

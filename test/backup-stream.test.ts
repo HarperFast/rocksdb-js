@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../src/index.ts';
+import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
@@ -164,7 +164,7 @@ describe('Streaming backups', () => {
 		}));
 
 	it('settles without hanging when the database is closed mid-stream', () =>
-		dbRunner({ skipOpen: true }, async ({ db }) => {
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 			db.open();
 			await writeAll(db, 200);
 
@@ -186,6 +186,7 @@ describe('Streaming backups', () => {
 
 			// If the worker deadlocked against close(), this would time out.
 			await expect(settled).resolves.toBe('settled');
+			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('waits for an in-flight stream before destroying', () =>
