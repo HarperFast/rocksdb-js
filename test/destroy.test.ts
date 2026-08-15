@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
+import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -132,7 +132,7 @@ describe('Destroy', () => {
 			}
 		));
 
-	it.skipIf(process.platform === 'win32')(
+	it.skipIf(process.platform === 'win32' || (process.getuid?.() ?? 0) === 0)(
 		'quarantines a path when post-destroy cleanup fails',
 		() =>
 			dbRunner(async ({ db, dbPath }) => {
@@ -163,9 +163,9 @@ describe('Destroy', () => {
 					]);
 				} finally {
 					RocksDatabase.off('database:closeFailed', listener);
-					chmodSync(lockedDirectory, 0o700);
+					if (existsSync(lockedDirectory)) chmodSync(lockedDirectory, 0o700);
 				}
-				shutdown();
+				db.destroy();
 				expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 				const healthyReopened = RocksDatabase.open(healthyPath);
 				expect(healthyReopened.getSync('key')).toBe('value');

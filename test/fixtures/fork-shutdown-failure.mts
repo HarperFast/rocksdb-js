@@ -33,7 +33,6 @@ try {
 if (Date.now() - startedAt >= 1_000)
 	throw new Error('Cross-mode open waited instead of reporting the quarantined path immediately');
 
-delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
 shutdown();
 if (registryStatus().some((entry) => entry.path === path))
 	throw new Error('Shutdown retry did not clear the quarantined descriptor');

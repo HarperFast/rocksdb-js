@@ -39,7 +39,6 @@ if (closeFailure) {
 	}
 	if (Date.now() - startedAt >= 1_000)
 		throw new Error('Opening a quarantined descriptor waited instead of failing immediately');
-	delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
 	db.destroy();
 	process.exit(0);
 }
