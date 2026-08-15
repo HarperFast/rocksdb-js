@@ -2002,7 +2002,13 @@ any descriptor whose teardown did not complete:
 
 ```typescript
 import { shutdown } from '@harperfast/rocksdb-js';
-process.on('exit', shutdown);
+process.on('exit', () => {
+	try {
+		shutdown();
+	} catch (error) {
+		console.error('rocksdb-js shutdown failed', error);
+	}
+});
 ```
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`

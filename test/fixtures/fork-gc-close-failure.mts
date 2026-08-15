@@ -33,7 +33,6 @@ if (
 	throw new Error('Automatic close failure was not quarantined');
 }
 
-delete process.env.ROCKSDB_JS_CLOSE_FAILURE;
 shutdown();
 const reopened = RocksDatabase.open(path);
 if (reopened.getSync('key') !== 'value')

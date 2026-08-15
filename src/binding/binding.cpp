@@ -47,11 +47,11 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 	} catch (...) {
 		error = "Unknown native database shutdown failure";
 	}
-	GlobalEvents::Shutdown();
 	if (!error.empty()) {
 		::napi_throw_error(env, nullptr, error.c_str());
 		return nullptr;
 	}
+	GlobalEvents::Shutdown();
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;

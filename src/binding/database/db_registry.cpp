@@ -361,18 +361,22 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		if (closeError) std::rethrow_exception(closeError);
 	}
 
+	std::vector<std::shared_ptr<std::condition_variable>> conditions;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 			if (it->first.path == path) {
+				conditions.push_back(it->second.condition);
 				it = instance->databases.erase(it);
 			} else {
 				++it;
 			}
 		}
 	}
+	for (const auto& condition : conditions) {
+		condition->notify_all();
+	}
 
-	// All in-process descriptors are closed; physical destruction can proceed.
 	const int destroyDelayMs = testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS");
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
