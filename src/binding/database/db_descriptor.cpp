@@ -439,6 +439,9 @@ void DBDescriptor::finishClose() {
 
 		// An in-flight commit pins this descriptor through its transaction and DB
 		// handles, so reaching this release pass means only idle per-env TSFNs remain.
+		// Release rather than abort: queued completions are still delivered before
+		// finalization, while a later registration observes commitCompletionsClosed
+		// and falls back to the legacy libuv path.
 		{
 			std::lock_guard<std::mutex> lock(this->commitMutex);
 			for (auto& [env, completion] : this->commitCompletions) {
@@ -542,8 +545,8 @@ void DBDescriptor::finishClose() {
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
 	if (!this->transactionLogsUnregistered) {
-		this->transactionLogsUnregistered = true;
 		TransactionLogStoreRegistry::Unregister(this->path);
+		this->transactionLogsUnregistered = true;
 	}
 
 	this->transactions.clear();

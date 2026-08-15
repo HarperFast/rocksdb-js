@@ -220,6 +220,15 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	bool lifecycleWaitProvided = false;
 	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
 	if (lifecycleWaitProvided) {
+		napi_value lifecycleWaitValue;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitValue));
+		napi_valuetype lifecycleWaitType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, lifecycleWaitValue, &lifecycleWaitType));
+		if (lifecycleWaitType == napi_undefined || lifecycleWaitType == napi_null) {
+			lifecycleWaitProvided = false;
+		}
+	}
+	if (lifecycleWaitProvided) {
 		status = rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true);
 		if (status != napi_ok) {
 			::napi_throw_type_error(env, nullptr, "Lifecycle wait seconds must be a number");
