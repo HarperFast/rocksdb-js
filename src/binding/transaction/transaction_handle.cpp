@@ -491,11 +491,10 @@ napi_value TransactionHandle::get(
 				// While the database and the caller's column family are still pinned — the completion
 				// runs after teardown may have released both.
 				if (state->status.ok() && state->vtSlot) {
-					state->vtLatest = vtCheckLatest(
+					vtCheckAsyncGet(
+						state,
 						state->handle->dbHandle->descriptor->db.get(),
-						state->readColumnDescriptor->column.get(),
-						state->key,
-						state->readOptions.snapshot
+						state->readColumnDescriptor->column.get()
 					);
 				}
 			}
