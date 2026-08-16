@@ -766,11 +766,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 					&state->value
 				);
 				if (state->status.ok() && state->vtSlot) {
-					state->vtLatest = vtCheckLatest(
+					vtCheckAsyncGet(
+						state,
 						state->handle->descriptor->db.get(),
-						state->handle->getColumnFamilyHandle(),
-						state->key,
-						state->readOptions.snapshot
+						state->handle->getColumnFamilyHandle()
 					);
 				}
 			}

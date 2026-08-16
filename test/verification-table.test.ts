@@ -269,6 +269,30 @@ describe('Verification Table', () => {
 				expect(db.verifyVersion(key, backdatedVersion)).toBe(true);
 			}));
 
+		it('suppresses async seeding while an older snapshot is open', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('async-backdated-key');
+					const backdatedVersion = 1.0e12;
+					await db.put(Buffer.from('async-sentinel'), makeValue(1.5e12));
+
+					const snap = new Transaction(db.store);
+					snap.getBinarySync(Buffer.from('async-sentinel'));
+					try {
+						await db.put(key, makeValue(backdatedVersion));
+						await db.flush();
+
+						const result = db.getBinary(key, { expectedVersion: backdatedVersion } as any);
+						expect(result).toBeInstanceOf(Promise);
+						expect(await result).toBeDefined();
+						expect(db.verifyVersion(key, backdatedVersion)).toBe(false);
+					} finally {
+						snap.abort();
+					}
+				}
+			));
+
 		// A snapshot taken on a fresh DB legitimately has sequence 0; Gate 2 must
 		// still protect it (no `oldestSnapshotSeq != 0` exemption — a backdated
 		// write at seq > 0 would otherwise publish past the seq-0 snapshot).
@@ -677,7 +701,7 @@ describe('Verification Table', () => {
 				}
 			}));
 
-		it('publishes the latest version from an async transactional snapshot read', () =>
+		it('does not publish from an async transactional snapshot read while its snapshot is behind', () =>
 			dbRunner(
 				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
 				async ({ db }) => {
@@ -695,9 +719,9 @@ describe('Verification Table', () => {
 
 						const result = txn.getBinary(key, { expectedVersion: version } as any);
 						expect(result).toBeInstanceOf(Promise);
-						expect(await result).toBe(FRESH_VERSION_FLAG);
+						expect(await result).toBeDefined();
 						expect(db.verifyVersion(key, version)).toBe(false);
-						expect(db.verifyVersion(key, latestVersion)).toBe(true);
+						expect(db.verifyVersion(key, latestVersion)).toBe(false);
 					} finally {
 						txn.abort();
 					}
