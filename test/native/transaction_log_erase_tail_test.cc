@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "core/encoding.h"
 #include "transaction_log/transaction_log_file.h"
 
 struct EraseTailTestAccessor {
@@ -17,6 +18,18 @@ struct EraseTailTestAccessor {
 	static bool truncate(rocksdb_js::TransactionLogFile& file, uint32_t newSize) {
 		std::lock_guard<std::mutex> lock(file.fileMutex);
 		return file.truncateFile(newSize);
+	}
+
+	static void seedIndex(rocksdb_js::TransactionLogFile& file, double timestamp, uint32_t position) {
+		std::lock_guard<std::mutex> lock(file.indexMutex);
+		file.positionByTimestampIndex[timestamp] = position;
+		file.lastIndexedPosition = position;
+	}
+
+	static bool hasResetIndex(rocksdb_js::TransactionLogFile& file) {
+		std::lock_guard<std::mutex> lock(file.indexMutex);
+		return file.positionByTimestampIndex.empty() &&
+			file.lastIndexedPosition == rocksdb_js::TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 	}
 };
 
@@ -72,6 +85,41 @@ TEST_F(TransactionLogEraseTail, PhysicallyTruncatesATornTail) {
 
 	EXPECT_TRUE(EraseTailTestAccessor::truncate(*file, boundary));
 	expectPhysicalSize(boundary);
+}
+
+TEST_F(TransactionLogEraseTail, TornTailRecoveryClearsThePreRecoveryIndex) {
+	constexpr uint32_t completeEnd = rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE +
+		rocksdb_js::TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
+	constexpr uint32_t tornSize = completeEnd + rocksdb_js::TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
+	std::vector<char> image(tornSize, 0);
+	rocksdb_js::writeUint32BE(image.data(), rocksdb_js::TRANSACTION_LOG_TOKEN);
+	rocksdb_js::writeUint8(image.data() + 4, 1);
+	rocksdb_js::writeDoubleBE(image.data() + 5, 1.0);
+	rocksdb_js::writeDoubleBE(image.data() + rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE, 2.0);
+	rocksdb_js::writeUint32BE(image.data() + rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE + 8, 4);
+	rocksdb_js::writeUint8(image.data() + rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE + 12, 1);
+	rocksdb_js::writeDoubleBE(image.data() + completeEnd, 3.0);
+	rocksdb_js::writeUint32BE(image.data() + completeEnd + 8, 100);
+
+	HANDLE handle = ::CreateFileW(
+		path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr
+	);
+	ASSERT_NE(handle, INVALID_HANDLE_VALUE);
+	DWORD written = 0;
+	ASSERT_TRUE(::WriteFile(handle, image.data(), static_cast<DWORD>(image.size()), &written, nullptr));
+	ASSERT_EQ(written, static_cast<DWORD>(image.size()));
+
+	file = std::make_unique<rocksdb_js::TransactionLogFile>(path, 1);
+	file->fileHandle = handle;
+	file->size = tornSize;
+	file->version = 1;
+	EraseTailTestAccessor::seedIndex(*file, 3.0, tornSize + 100);
+
+	file->recoverTail();
+
+	expectPhysicalSize(completeEnd);
+	EXPECT_TRUE(EraseTailTestAccessor::hasResetIndex(*file));
 }
 
 #endif

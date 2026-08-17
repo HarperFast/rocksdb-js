@@ -263,6 +263,7 @@ struct TransactionLogFile final {
 	 * @param entriesEnd End of the entries after any torn-tail truncation.
 	 */
 	void discardUnclosedTransaction(const RecoveryScan& scan, uint32_t entriesEnd);
+	void resetTimestampIndex();
 
 	/**
 	 * Reads this file and returns the offset just past its last complete

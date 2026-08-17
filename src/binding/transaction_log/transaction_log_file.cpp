@@ -238,6 +238,7 @@ void TransactionLogFile::recoverTail() {
 				if (this->lastFlushedSize > scan.validEnd) {
 					this->lastFlushedSize = scan.validEnd;
 				}
+				this->resetTimestampIndex();
 
 				std::ostringstream msg;
 				msg << "Transaction log " << this->path.string()
@@ -303,13 +304,7 @@ void TransactionLogFile::discardUnclosedTransaction(const RecoveryScan& scan, ui
 	if (this->lastFlushedSize > boundary) {
 		this->lastFlushedSize = boundary;
 	}
-	{
-		// Windows indexes the file during open(), before this runs, so entries that
-		// no longer exist can already be in the index.
-		std::lock_guard<std::mutex> indexLock(this->indexMutex);
-		this->positionByTimestampIndex.clear();
-		this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
-	}
+	this->resetTimestampIndex();
 
 	std::ostringstream msg;
 	msg << "Transaction log " << this->path.string() << " ended mid-transaction; dropped "
@@ -318,6 +313,12 @@ void TransactionLogFile::discardUnclosedTransaction(const RecoveryScan& scan, ui
 		<< boundary << ").";
 	DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
 	emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+}
+
+void TransactionLogFile::resetTimestampIndex() {
+	std::lock_guard<std::mutex> indexLock(this->indexMutex);
+	this->positionByTimestampIndex.clear();
+	this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 }
 
 uint32_t TransactionLogFile::countEntries() const {
