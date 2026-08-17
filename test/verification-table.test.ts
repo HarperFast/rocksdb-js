@@ -196,6 +196,23 @@ describe('Verification Table', () => {
 				expect(db.verifyVersion(key, version)).toBe(true);
 			}));
 
+		it('an async read seeds the VT when the key is settled', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('async-seeds');
+					const version = 1.7e12;
+					await db.put(key, makeValue(version));
+					await db.flush();
+					expect(db.verifyVersion(key, version)).toBe(false);
+
+					const result = db.getBinary(key, { expectedVersion: version } as any);
+					expect(result).toBeInstanceOf(Promise);
+					expect(await result).toBe(FRESH_VERSION_FLAG);
+					expect(db.verifyVersion(key, version)).toBe(true);
+				}
+			));
+
 		it('suppresses seeding while a snapshot older than the latest version is open', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = Buffer.from('gated');
