@@ -182,6 +182,94 @@ describe('Transaction log crash recovery', () => {
 			}
 		}));
 
+	it('never seeds the committed watermark behind the flushed position', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			let database = db;
+			try {
+				const log = database.useLog('foo');
+				for (let i = 0; i < 3; i++) {
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(24, 'x'), txn.id);
+						database.putSync(`key-${i}`, i, { transaction: txn });
+					});
+				}
+				await database.flush();
+				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				database.close();
+
+				const image = readFileSync(logPath);
+				const { entries } = parseTransactionLog(logPath);
+				let offset = TRANSACTION_LOG_FILE_HEADER_SIZE;
+				for (const [index, entry] of entries.entries()) {
+					if (index > 0) {
+						image[offset + TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1] = 0;
+					}
+					offset += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry.length;
+				}
+				await writeFile(logPath, image);
+
+				database = RocksDatabase.open(dbPath);
+				const reopened = database.useLog('foo');
+				expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
+			} finally {
+				database.close();
+			}
+		}));
+
+	it('seeds from the immediately preceding file when the active file is header-only', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
+			let database = db;
+			try {
+				const log = database.useLog('foo');
+				for (let i = 0; i < 9; i++) {
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(100, 'x'), txn.id);
+					});
+				}
+				const logDir = join(dbPath, 'transaction_logs', 'foo');
+				const secondLog = join(logDir, '2.txnlog');
+				database.close();
+				await writeFile(
+					join(logDir, '3.txnlog'),
+					readFileSync(secondLog).subarray(0, TRANSACTION_LOG_FILE_HEADER_SIZE)
+				);
+
+				database = RocksDatabase.open(dbPath);
+				const reopened = database.useLog('foo');
+				expect(Array.from(reopened.query({ start: 0 })).length).toBe(9);
+			} finally {
+				database.close();
+			}
+		}));
+
+	it('does not fail load when the preceding log file is damaged', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
+			let database = db;
+			try {
+				const log = database.useLog('foo');
+				for (let i = 0; i < 9; i++) {
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(100, 'x'), txn.id);
+					});
+				}
+				const logDir = join(dbPath, 'transaction_logs', 'foo');
+				const header = readFileSync(join(logDir, '2.txnlog')).subarray(
+					0,
+					TRANSACTION_LOG_FILE_HEADER_SIZE
+				);
+				database.close();
+				await writeFile(join(logDir, '2.txnlog'), header.subarray(0, 6));
+				await writeFile(join(logDir, '3.txnlog'), header);
+
+				expect(() => {
+					database = RocksDatabase.open(dbPath);
+					database.useLog('foo');
+				}).not.toThrow();
+			} finally {
+				database.close();
+			}
+		}));
+
 	it('exposes the post-flush window to committed reads after a SIGKILL', async () => {
 		const dbPath = generateDBPath();
 		await mkdir(dbPath, { recursive: true });

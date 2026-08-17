@@ -364,14 +364,16 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `Transaction::Commit()` in every commit path and both commit-thread lanes preserve dispatch
     order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
     never ran. It is gated on proof that the writer sets the flag — a boundary earlier in the same
-    file — plus a single timestamp across the trailing run (every entry of a batch is stamped with
-    the batch timestamp, and `getMonotonicTimestamp()` never repeats). Without that proof the bytes
-    are kept and warned about: a batch split across a rotation has no boundary in the active file,
-    and a log written before the flag existed would otherwise be truncated wholesale. There the
-    watermark seed in `TransactionLogStore::load()` keeps initial committed readers off the partial
-    transaction, but only until a later commit advances the watermark; a rotation-spanning batch
-    remains an unresolved phantom-group hazard. Both platforms truncate; Windows first drops the
-    cached mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file.
+    file — plus a single timestamp across the trailing run. Callers can assign repeated timestamps,
+    but an earlier transaction would still carry its own flag and reset the run. Without that proof
+    the bytes are kept and warned about: a batch split across a rotation has no boundary in the
+    active file, and a log written before the flag existed would otherwise be truncated wholesale.
+    `TransactionLogStore::load()` seeds from the latest proved boundary (looking back at most one
+    file), floored by `txn.state` so recovery never hides entries already absorbed by RocksDB. A
+    rotation-spanning batch remains an unresolved phantom-group hazard after a later commit advances
+    the watermark. Both platforms truncate; Windows first drops the cached mapping because mapped
+    ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same physical truncation
+    for torn tails; recovery runs before mappings can be handed to readers.
 
 ## Debugging native heap corruption
 

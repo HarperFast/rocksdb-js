@@ -52,14 +52,10 @@ struct RecoveryScan final {
 	uint32_t unclosedTailEntries;
 	/**
 	 * True when that trailing run exists and every entry in it carries the same
-	 * timestamp — the evidence that it is exactly one interrupted batch, since
-	 * writeEntriesV1() stamps every entry of a batch with the batch timestamp.
-	 *
-	 * This is the safety gate on discarding the run. Two distinct timestamps mean
-	 * more than one transaction went unflagged, which a writer that sets
-	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG` cannot produce — so the file is not ours
-	 * to repair (a log written before the flag existed, or corruption that
-	 * survived the framing walk), and the bytes are kept.
+	 * timestamp. Together with a prior flagged boundary, this is the safety gate
+	 * for discarding one interrupted batch. Distinct timestamps prove the file is
+	 * not safe to repair; equal timestamps alone do not, because callers may
+	 * assign repeated timestamps to separate transactions.
 	 */
 	bool unclosedTailIsOneTransaction;
 };

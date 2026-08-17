@@ -449,39 +449,37 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 }
 
 bool TransactionLogFile::truncateFile(uint32_t newSize) {
-	// No-op on Windows. The Win32 backend pre-extends and zero-pads its log
-	// files, so a torn tail surfaces as a zero-padding end marker that the
-	// recovery scan reports as Clean — there is no torn-tail truncation to do.
-	// (Open-time torn-tail repair is the POSIX O_APPEND scenario.) Returning
-	// false keeps recoverTail()'s TruncateTail branch a safe no-op here.
-	(void)newSize;
-	return false;
+	if (this->fileHandle == INVALID_HANDLE_VALUE) {
+		return false;
+	}
+	if (this->memoryMap && this->memoryMap.use_count() > 1) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile Refusing to truncate %s with an outstanding memory map\n",
+			this, this->path.string().c_str());
+		return false;
+	}
+
+	this->memoryMap.reset();
+	LARGE_INTEGER boundary;
+	boundary.QuadPart = newSize;
+	if (!::SetFilePointerEx(this->fileHandle, boundary, nullptr, FILE_BEGIN) ||
+		!::SetEndOfFile(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile Failed to truncate %s to %u bytes (error=%lu)\n",
+			this, this->path.string().c_str(), newSize, ::GetLastError());
+		return false;
+	}
+
+	if (!::FlushFileBuffers(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile FlushFileBuffers failed for %s (error=%lu)\n",
+			this, this->path.string().c_str(), ::GetLastError());
+	}
+	return true;
 }
 
 bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
 		return false;
 	}
-
-	// openFile() maps the pre-extended file while correcting its logical size;
-	// Windows refuses to shrink a file while this process still maps the range.
-	this->memoryMap.reset();
-	LARGE_INTEGER boundary;
-	boundary.QuadPart = newSize;
-	if (!::SetFilePointerEx(this->fileHandle, boundary, nullptr, FILE_BEGIN) ||
-		!::SetEndOfFile(this->fileHandle)) {
-		DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to truncate %s to %u bytes (error=%lu)\n",
-			this, this->path.string().c_str(), newSize, ::GetLastError());
-		return false;
-	}
-
-	if (!::FlushFileBuffers(this->fileHandle)) {
-		DEBUG_LOG("%p TransactionLogFile::eraseTail FlushFileBuffers failed for %s (error=%lu)\n",
-			this, this->path.string().c_str(), ::GetLastError());
-		// the truncation succeeded; a later flush() will sync again
-	}
-
-	return true;
+	return this->truncateFile(newSize);
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {

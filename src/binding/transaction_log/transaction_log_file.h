@@ -431,9 +431,8 @@ private:
 	/**
 	 * Platform specific function that truncates the file to `newSize` bytes and
 	 * flushes the change to disk so a subsequent crash cannot resurrect the
-	 * dropped bytes. Returns `true` on success. POSIX-only effect; a no-op
-	 * returning `false` on Windows, which pre-extends and zero-pads its log
-	 * files (torn tails are handled there by the zero-padding end marker).
+	 * dropped bytes. Returns `true` on success. Caller holds fileMutex. On
+	 * Windows, recovery must run before any mapping is handed to another owner.
 	 */
 	bool truncateFile(uint32_t newSize);
 
@@ -443,8 +442,9 @@ private:
 	 * truncateFile() this must work on Windows too: the bytes are real entries, not
 	 * the partial tail that Windows' zero-padding already hides. Both platforms
 	 * truncate; Windows first drops the cached read-only mapping because mapped
-	 * ranges prevent SetEndOfFile from shrinking the file. Returns
-	 * `true` on success. Caller holds fileMutex and must update `size` itself.
+	 * ranges prevent SetEndOfFile from shrinking the file. Returns `true` on
+	 * success. Caller holds fileMutex, guarantees no outstanding mapping owner,
+	 * and must update `size` itself.
 	 */
 	bool eraseTail(uint32_t newSize, uint32_t entriesEnd);
 
