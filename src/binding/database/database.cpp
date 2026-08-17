@@ -67,6 +67,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 static napi_value doClear(napi_env env, napi_callback_info info, const char* failureMsg) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -257,6 +258,7 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -655,6 +657,7 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -758,6 +761,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
 		return nullptr;

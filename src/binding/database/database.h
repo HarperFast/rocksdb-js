@@ -236,35 +236,6 @@ inline void vtPopulateIfSettled(
 	} while (0)
 
 /**
- * RAII guard that tracks in-flight operations on a DBDescriptor.
- * Increments counter on construction, decrements on destruction.
- * Notifies waiters via atomic::notify_all() when count reaches zero.
- */
-struct OperationGuard {
-	std::shared_ptr<DBDescriptor> descriptor;
-
-	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
-		if (descriptor) {
-			++descriptor->operationsInFlight;
-		}
-	}
-
-	~OperationGuard() {
-		if (descriptor) {
-			if (--descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-				descriptor->operationsInFlight.notify_all();
-			}
-		}
-	}
-
-	// Non-copyable, non-movable
-	OperationGuard(const OperationGuard&) = delete;
-	OperationGuard& operator=(const OperationGuard&) = delete;
-	OperationGuard(OperationGuard&&) = delete;
-	OperationGuard& operator=(OperationGuard&&) = delete;
-};
-
-/**
  * Registers an in-flight operation to prevent use-after-free during shutdown.
  * Also checks if the database is closing and throws an error if so.
  *

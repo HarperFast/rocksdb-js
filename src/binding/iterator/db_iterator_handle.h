@@ -1,6 +1,7 @@
 #ifndef __DB_ITERATOR_HANDLE_H__
 #define __DB_ITERATOR_HANDLE_H__
 
+#include <mutex>
 #include "database/db_handle.h"
 #include "iterator/db_iterator.h"
 #include "transaction/transaction_handle.h"
@@ -45,6 +46,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * Closes the iterator handle.
 	 */
 	void close() override;
+	bool closeIfOpen();
 
 	/**
 	 * Initializes the iterator start and end key, then registers this handle
@@ -64,6 +66,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	std::string endKeyStr;
 	rocksdb::Slice startKey;
 	rocksdb::Slice endKey;
+	std::mutex iteratorMutex;
 
 private:
 	/**

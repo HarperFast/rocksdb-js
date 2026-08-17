@@ -188,6 +188,14 @@ describe('Destroy', () => {
 		});
 	}, 15_000);
 
+	it('closes an iterator safely when destroy races its construction', async () => {
+		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
+			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
+			ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS: '250',
+			ROCKSDB_JS_TEST_ITERATOR_DESTROY_RACE: '1',
+		});
+	}, 15_000);
+
 	it('waits for physical destruction before shutdown completes', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
 			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
