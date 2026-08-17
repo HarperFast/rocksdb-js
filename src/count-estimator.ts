@@ -95,8 +95,9 @@ export class CountEstimator {
 	 * Estimates the total number of entries in the full range: the exact
 	 * traversed count plus a calibrated statistical estimate of the remainder.
 	 * `confidence` is the exactness-weighted blend of the traversed portion
-	 * (exact) and the remainder's statistical confidence, so it converges to 1
-	 * as traversal proceeds (and is exactly 1 after `finish()`).
+	 * (exact) and the remainder's statistical confidence, so it approaches 1
+	 * as the exact portion grows (though a checkpoint can decrease when
+	 * calibration makes a large correction), and is exactly 1 after `finish()`.
 	 */
 	estimate(): CountEstimate {
 		if (this.#finished) {
