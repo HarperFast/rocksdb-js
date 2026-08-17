@@ -285,7 +285,7 @@ describe('Verification Table', () => {
 
 						const result = db.getBinary(key, { expectedVersion: backdatedVersion } as any);
 						expect(result).toBeInstanceOf(Promise);
-						expect(await result).toBeDefined();
+						expect(await result).toBe(FRESH_VERSION_FLAG);
 						expect(db.verifyVersion(key, backdatedVersion)).toBe(false);
 					} finally {
 						snap.abort();
@@ -719,7 +719,7 @@ describe('Verification Table', () => {
 
 						const result = txn.getBinary(key, { expectedVersion: version } as any);
 						expect(result).toBeInstanceOf(Promise);
-						expect(await result).toBeDefined();
+						expect(await result).toBe(FRESH_VERSION_FLAG);
 						expect(db.verifyVersion(key, version)).toBe(false);
 						expect(db.verifyVersion(key, latestVersion)).toBe(false);
 					} finally {
