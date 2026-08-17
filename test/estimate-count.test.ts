@@ -40,9 +40,8 @@ describe('estimateCount', () => {
 				end: KEY(N / 2),
 				inclusiveEnd: true,
 			});
-			if (singleKey.count === 0) {
-				expect(singleKey.confidence).toBeLessThanOrEqual(0.1);
-			}
+			expect(singleKey.count).toBe(0);
+			expect(singleKey.confidence).toBeLessThanOrEqual(0.1);
 
 			// half range [25%, 75%)
 			const half = db.estimateCount({ start: KEY(N / 4), end: KEY((3 * N) / 4) });
