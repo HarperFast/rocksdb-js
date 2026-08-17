@@ -485,10 +485,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * SSTs overlapping the range rather than the number of keys — though
 	 * reading table properties for cold files can do I/O through the table
 	 * cache, and a start-only range does the work of its complement below
-	 * `start`. Accuracy improves with range size — resolution is bounded by
-	 * SST data-block granularity, so tiny ranges over-report — and recently
-	 * deleted or overwritten entries may be counted until compaction. An
-	 * inverted range (`start` >= `end`) returns `{ count: 0, confidence: 1 }`.
+	 * `start`. Accuracy improves with range size. Resolution is bounded by SST
+	 * data-block granularity, so tiny ranges may over-report or report zero for
+	 * present keys; low `confidence` is the signal. Recently deleted or
+	 * overwritten entries may be counted until compaction. An inverted range
+	 * (`start` >= `end`) returns `{ count: 0, confidence: 1 }`.
 	 *
 	 * `confidence` is a heuristic 0–1 trust indicator (1 only when exact) —
 	 * see `CountEstimate`. Estimates always reflect committed state; writes
