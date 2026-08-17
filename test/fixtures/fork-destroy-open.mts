@@ -10,7 +10,10 @@ original.useLog('cross-env-close');
 
 const worker = new Worker(createWorkerBootstrapScript('./test/workers/destroy-open-worker.mts'), {
 	eval: true,
-	workerData: { path },
+	workerData: {
+		path,
+		destroyStartDelayMs: process.env.ROCKSDB_JS_TEST_ITERATOR_DESTROY_RACE === '1' ? 50 : 0,
+	},
 });
 
 function nextMessage(): Promise<any> {
@@ -26,6 +29,20 @@ worker.postMessage({ destroy: true });
 const destroying = await nextMessage();
 if (!destroying.destroying)
 	throw new Error(`Destroy worker did not start: ${JSON.stringify(destroying)}`);
+
+if (process.env.ROCKSDB_JS_TEST_ITERATOR_DESTROY_RACE === '1') {
+	try {
+		const rows = original.getRange({ limit: 1 }).asArray;
+		if (rows.length !== 1) throw new Error(`Iterator returned ${rows.length} rows before destroy`);
+	} catch (error) {
+		if (
+			!String(error).includes('Database not open') &&
+			!String(error).includes('Database is closing')
+		) {
+			throw error;
+		}
+	}
+}
 
 const registryDeadline = Date.now() + 5_000;
 while (registryStatus().some((entry) => entry.path === path)) {

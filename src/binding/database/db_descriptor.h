@@ -417,6 +417,31 @@ public:
 };
 
 /**
+ * Pins a descriptor operation across cross-environment teardown. Callers must
+ * check `isClosing()` after construction and before touching native DB state.
+ */
+struct OperationGuard final {
+	std::shared_ptr<DBDescriptor> descriptor;
+
+	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
+		if (descriptor) {
+			++descriptor->operationsInFlight;
+		}
+	}
+
+	~OperationGuard() {
+		if (descriptor && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
+		}
+	}
+
+	OperationGuard(const OperationGuard&) = delete;
+	OperationGuard& operator=(const OperationGuard&) = delete;
+	OperationGuard(OperationGuard&&) = delete;
+	OperationGuard& operator=(OperationGuard&&) = delete;
+};
+
+/**
  * State to pass into `napi_call_threadsafe_function()` for a lock callback.
  */
 struct LockCallbackCompletionData final {
