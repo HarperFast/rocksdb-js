@@ -249,7 +249,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
-   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672).
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). Once `beginClose()` wins,
+   `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
+   path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
+   immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
+   from another env after the in-flight count drains. A failed physical destroy leaves a registry
+   tombstone, but `shutdown()` is deliberately non-destructive: it reports the tombstone and only an
+   explicit `destroy()` retries path deletion.
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.

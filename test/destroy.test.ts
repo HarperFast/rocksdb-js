@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../src/index.ts';
+import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -161,6 +161,12 @@ describe('Destroy', () => {
 						dbPath,
 						expect.stringContaining('Failed to remove database directory'),
 					]);
+					chmodSync(lockedDirectory, 0o700);
+					expect(() => shutdown()).toThrow('requires explicit destroy() cleanup');
+					expect(existsSync(dbPath)).toBe(true);
+					expect(
+						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
+					).toBe(true);
 				} finally {
 					RocksDatabase.off('database:closeFailed', listener);
 					if (existsSync(lockedDirectory)) chmodSync(lockedDirectory, 0o700);
