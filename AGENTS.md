@@ -329,7 +329,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
-   from another env after the in-flight count drains. A failed physical destroy leaves a registry
+   from another env after the in-flight count drains. `DBHandle::close()` itself is cross-env and must
+   serialize mutation of its `shared_ptr` members. A close-time flush failure keeps the native DB
+   quarantined so `shutdown()` can retry without losing `disableWAL` writes; an explicit destroy may
+   force teardown because the caller requested deletion. A failed physical destroy leaves a registry
    tombstone, but `shutdown()` is deliberately non-destructive: it reports the tombstone and only an
    explicit `destroy()` retries path deletion.
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its

@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <thread>
+#include <mutex>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -72,6 +73,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * get the `TransactionLog` class.
 	 */
 	napi_ref exportsRef;
+	std::mutex closeMutex;
 
 	/**
 	 * The default transaction log store.

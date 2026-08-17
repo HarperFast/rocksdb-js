@@ -126,6 +126,7 @@ rocksdb::Status DBHandle::clear() {
  * Closes the DBHandle.
  */
 void DBHandle::close() {
+	std::lock_guard<std::mutex> closeLock(this->closeMutex);
 	DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, this->descriptor.get(), this->descriptor.use_count());
 
 	// cancel all active async work before closing
