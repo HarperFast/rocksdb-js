@@ -544,9 +544,9 @@ export const constants: {
 	 * so a consumer holding a differing cached copy at that version cannot have it confirmed.
 	 * Clear it again on the next write that gives the value a version of its own.
 	 *
-	 * Read only from values in a column family that opted into the verification table, and not
-	 * consulted by the explicit `populateVersion()` call, which never sees a value and trusts its
-	 * caller.
+	 * Read only from values in a column family that opted into the verification table. Do not call
+	 * `populateVersion()` for a marked version: that explicit primitive never sees the value and
+	 * cannot enforce this flag.
 	 */
 	VERSION_NOT_UNIQUE_FLAG: number;
 	/**
