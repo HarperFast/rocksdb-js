@@ -11,6 +11,13 @@
 #include <cstdio>
 #include <vector>
 
+// Hook point for the native test that forces a later zero-fill write to fail.
+#ifdef ROCKSDB_JS_WRITE_FILE
+extern "C" BOOL WINAPI ROCKSDB_JS_WRITE_FILE(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+#else
+#define ROCKSDB_JS_WRITE_FILE ::WriteFile
+#endif
+
 namespace rocksdb_js {
 
 std::string getWindowsErrorMessage(DWORD errorCode);
@@ -446,7 +453,7 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	}
 
 	DWORD bytesWritten;
-	bool success = ::WriteFile(this->fileHandle, buffer, size, &bytesWritten, nullptr);
+	bool success = ROCKSDB_JS_WRITE_FILE(this->fileHandle, buffer, size, &bytesWritten, nullptr);
 	return success ? static_cast<int64_t>(bytesWritten) : -1;
 }
 
@@ -486,23 +493,42 @@ bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 
 	constexpr uint32_t CHUNK = 64 * 1024;
 	std::vector<char> zeros(std::min(CHUNK, entriesEnd - newSize), 0);
+	bool zeroingFailed = false;
+	DWORD zeroingError = ERROR_SUCCESS;
 	for (uint32_t offset = newSize; offset < entriesEnd;) {
 		uint32_t chunk = std::min(static_cast<uint32_t>(zeros.size()), entriesEnd - offset);
 		int64_t written = this->writeToFile(zeros.data(), chunk, offset);
 		if (written <= 0) {
-			DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to zero %u bytes at offset %u in %s (error=%lu); "
-				"end-of-entries marker at %u is already committed, so the unzeroed remainder is unreachable dead "
-				"space that a future append will overwrite\n",
-				this, chunk, offset, this->path.string().c_str(), ::GetLastError(), newSize);
+			zeroingFailed = true;
+			zeroingError = ::GetLastError();
 			break;
 		}
 		offset += static_cast<uint32_t>(written);
 	}
 
+	if (zeroingFailed) {
+		// Appends resume at newSize, so stale bytes beyond a partial zero-fill would
+		// eventually become visible again. Unmap before shrinking; Windows rejects
+		// SetEndOfFile while this process still maps the truncated range.
+		this->memoryMap.reset();
+		LARGE_INTEGER boundary;
+		boundary.QuadPart = newSize;
+		if (!::SetFilePointerEx(this->fileHandle, boundary, nullptr, FILE_BEGIN) ||
+			!::SetEndOfFile(this->fileHandle)) {
+			DWORD truncateError = ::GetLastError();
+			throw rocksdb_js::DBException(
+				"Failed to erase transaction log tail after zero-fill error " + std::to_string(zeroingError) +
+				" (truncate error " + std::to_string(truncateError) + "): " + this->path.string()
+			);
+		}
+		DEBUG_LOG("%p TransactionLogFile::eraseTail Zero-fill failed in %s (error=%lu); truncated to %u bytes\n",
+			this, this->path.string().c_str(), zeroingError, newSize);
+	}
+
 	if (!::FlushFileBuffers(this->fileHandle)) {
 		DEBUG_LOG("%p TransactionLogFile::eraseTail FlushFileBuffers failed for %s (error=%lu)\n",
 			this, this->path.string().c_str(), ::GetLastError());
-		// the zeros are written; a later flush() will sync again
+		// the erase is complete; a later flush() will sync again
 	}
 
 	// Mapped views and WriteFile are not guaranteed coherent, and open() has already

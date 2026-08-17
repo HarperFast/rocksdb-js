@@ -50,6 +50,7 @@
 // Forward declaration so that the friend designation inside namespace
 // rocksdb_js can refer to the global-scope test accessor.
 struct WriteBatchToFileTestAccessor;
+struct EraseTailTestAccessor;
 #endif
 
 namespace rocksdb_js {
@@ -386,6 +387,7 @@ struct TransactionLogFile final {
 	// Expose writeBatchToFile to the gtest test accessor without pulling
 	// gtest headers into the production build.
 	friend struct ::WriteBatchToFileTestAccessor;
+	friend struct ::EraseTailTestAccessor;
 
 	/**
 	 * Resets the process-global MADV_COLD-unsupported latch (see adviseCold) so
