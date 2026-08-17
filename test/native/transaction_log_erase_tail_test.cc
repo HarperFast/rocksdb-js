@@ -29,7 +29,7 @@ struct EraseTailTestAccessor {
 	static bool hasResetIndex(rocksdb_js::TransactionLogFile& file) {
 		std::lock_guard<std::mutex> lock(file.indexMutex);
 		return file.positionByTimestampIndex.empty() &&
-			file.lastIndexedPosition == rocksdb_js::TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+			file.lastIndexedPosition == TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 	}
 };
 
@@ -88,16 +88,15 @@ TEST_F(TransactionLogEraseTail, PhysicallyTruncatesATornTail) {
 }
 
 TEST_F(TransactionLogEraseTail, TornTailRecoveryClearsThePreRecoveryIndex) {
-	constexpr uint32_t completeEnd = rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE +
-		rocksdb_js::TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
-	constexpr uint32_t tornSize = completeEnd + rocksdb_js::TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
+	constexpr uint32_t completeEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
+	constexpr uint32_t tornSize = completeEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
 	std::vector<char> image(tornSize, 0);
-	rocksdb_js::writeUint32BE(image.data(), rocksdb_js::TRANSACTION_LOG_TOKEN);
+	rocksdb_js::writeUint32BE(image.data(), TRANSACTION_LOG_TOKEN);
 	rocksdb_js::writeUint8(image.data() + 4, 1);
 	rocksdb_js::writeDoubleBE(image.data() + 5, 1.0);
-	rocksdb_js::writeDoubleBE(image.data() + rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE, 2.0);
-	rocksdb_js::writeUint32BE(image.data() + rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE + 8, 4);
-	rocksdb_js::writeUint8(image.data() + rocksdb_js::TRANSACTION_LOG_FILE_HEADER_SIZE + 12, 1);
+	rocksdb_js::writeDoubleBE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE, 2.0);
+	rocksdb_js::writeUint32BE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 8, 4);
+	rocksdb_js::writeUint8(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 12, 1);
 	rocksdb_js::writeDoubleBE(image.data() + completeEnd, 3.0);
 	rocksdb_js::writeUint32BE(image.data() + completeEnd + 8, 100);
 

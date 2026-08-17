@@ -311,6 +311,11 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
+		// Directory iteration order is unspecified, so registerLogFile() may not
+		// have opened an older file before a higher sequence became current.
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
 		positionInLogFile = logFile->findPositionByTimestamp(
 			timestamp,
 			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
