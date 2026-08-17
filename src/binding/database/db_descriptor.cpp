@@ -292,7 +292,7 @@ void DBDescriptor::close() {
 	this->finishClose();
 }
 
-void DBDescriptor::finishClose() {
+void DBDescriptor::finishClose(bool destroying) {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
@@ -346,9 +346,14 @@ void DBDescriptor::finishClose() {
 
 	// We want to ensure that all in-memory data is written to disk
 	std::string closeError;
-	rocksdb::Status status = this->flush();
+	rocksdb::Status status = testConsumeCloseFlushFailure()
+		? rocksdb::Status::IOError("Injected database close flush failure")
+		: this->flush();
 	if (!status.ok()) {
 		closeError = "Failed to flush database during close: " + status.ToString();
+		if (!destroying) {
+			throw rocksdb_js::DBException(closeError);
+		}
 	}
 
 	// Trigger manual compaction on all column families to reclaim space from

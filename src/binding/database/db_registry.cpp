@@ -304,7 +304,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor %p for \"%s\" (ref count = %ld)\n",
 				instance.get(), closing.descriptor.get(), path.c_str(), closing.descriptor.use_count());
 			try {
-				closing.descriptor->finishClose();
+				closing.descriptor->finishClose(true);
 				closing.closed = true;
 			} catch (const std::exception& error) {
 				closing.closed = closing.descriptor->isClosed();
@@ -466,7 +466,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					"Cannot open database \"" + path + "\": previous " +
 					(destroyCleanupFailed ? "destroy cleanup" : "close") + " failed: " +
 					registeredEntry->second.closeError +
-					(destroyCleanupFailed ? ". Call destroy() to retry cleanup" : ". Call destroy() or shutdown() to retry cleanup")
+					(destroyCleanupFailed
+						? ". Call destroy() to retry cleanup"
+						: ". Call shutdown() to retry close, or destroy() to delete the database")
 				);
 			}
 		}

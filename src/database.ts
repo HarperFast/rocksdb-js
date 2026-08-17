@@ -327,8 +327,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Listeners are not tied to any specific database — they fire for every
 	 * matching event emitted in this process. Native lifecycle failures use
 	 * `'database:closeFailed'` with `(path, error)` string arguments. The event
-	 * reports both completed and incomplete teardowns; only an incomplete
-	 * teardown quarantines the path until `destroy()` retries.
+	 * reports both completed and incomplete teardowns; an incomplete close can
+	 * be retried by `shutdown()` or explicitly deleted by `destroy()`.
 	 *
 	 * @example
 	 * ```typescript

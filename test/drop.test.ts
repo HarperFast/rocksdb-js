@@ -240,6 +240,8 @@ describe('Drop', () => {
 				stale.close();
 				doomed.close();
 				expect(() => victim.close()).toThrow('Failed to flush database during close');
+				expect(() => RocksDatabase.open(dbPath)).toThrow('previous close failed');
+				victim.destroy();
 				const reopened = RocksDatabase.open(dbPath);
 				reopened.close();
 			}

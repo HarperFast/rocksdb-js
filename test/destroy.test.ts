@@ -11,6 +11,7 @@ const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts'
 const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
+const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts');
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const nodeExecutable =
 	process.env.NODE_BINARY ??
@@ -221,6 +222,12 @@ describe('Destroy', () => {
 	it('surfaces an explicit close failure and permits a shutdown retry', async () => {
 		await runDestroyFixture(closeFailureFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
+		});
+	}, 15_000);
+
+	it('quarantines a flush failure until shutdown preserves the unflushed data', async () => {
+		await runDestroyFixture(flushFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '1',
 		});
 	}, 15_000);
 

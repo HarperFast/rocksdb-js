@@ -23,16 +23,27 @@ inline std::atomic<bool>& closeFailureFlag() {
 	return pending;
 }
 
+inline std::atomic<bool>& closeFlushFailureFlag() {
+	static std::atomic<bool> pending{false};
+	return pending;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
 		const char* value = ::getenv("ROCKSDB_JS_CLOSE_FAILURE");
 		closeFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
+		closeFlushFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 	});
 }
 
 inline bool testConsumeCloseFailure() {
 	return closeFailureFlag().exchange(false, std::memory_order_relaxed);
+}
+
+inline bool testConsumeCloseFlushFailure() {
+	return closeFlushFailureFlag().exchange(false, std::memory_order_relaxed);
 }
 
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N

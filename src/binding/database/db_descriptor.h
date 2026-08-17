@@ -307,7 +307,7 @@ public:
 	 * Only valid after `beginClose()` returned true; `close()` is the all-in-one
 	 * entry point that claims and then runs this.
 	 */
-	void finishClose();
+	void finishClose(bool destroying = false);
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);

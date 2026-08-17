@@ -193,7 +193,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 		if (!closeResult.error.empty()) {
 			std::string message = closeResult.error;
 			if (closeResult.quarantined) {
-				message += ". Call destroy() or shutdown() to retry cleanup";
+				message += ". Call shutdown() to retry close, or destroy() to delete the database";
 			}
 			::napi_throw_error(env, nullptr, message.c_str());
 			return nullptr;
@@ -1290,6 +1290,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
@@ -1326,6 +1327,7 @@ napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
