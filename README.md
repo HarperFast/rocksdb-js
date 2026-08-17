@@ -449,8 +449,10 @@ density of the SSTs overlapping the range), so its cost scales with the number o
 the range rather than the number of keys. Reading cold table properties can do I/O through the
 table cache, so narrow ranges are preferable. A start-only range is computed as the
 whole-database estimate minus the complement, so it does the work of the range _below_ `start`.
-Accuracy improves with range size (resolution is bounded by SST data-block granularity, so tiny
-ranges over-report), and recently deleted or overwritten entries may be counted until compaction.
+Accuracy improves with range size. Resolution is bounded by SST data-block granularity, so a range
+narrower than a block is unreliable in either direction: it may over-report or report 0 for present
+keys, and its low `confidence` is the signal. Recently deleted or overwritten entries may be counted
+until compaction.
 Estimates always reflect committed state; writes pending in a transaction are not included. Set
 `reverse: true` to use `getRange()`'s reverse convention (`start` is the upper bound and `end` is
 the lower bound). An inverted range (`start` ≥ `end`) returns
@@ -475,8 +477,10 @@ range. Before any traversal, `estimate()` returns the pure statistical estimate 
 `estimateCount(range)`). As the caller reports progress with `advance(lastKey, count)` (e.g. once
 per page), `estimate()` returns the exact traversed count plus a statistical estimate of the
 remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
-already traversed — so the count converges toward the exact total, and `confidence` (the
-exactness-weighted blend of the traversed portion and the remainder's confidence) converges to 1.
+already traversed — so the count converges toward the exact total. `confidence` is the
+exactness-weighted blend of the traversed portion and the remainder's confidence, so it approaches 1
+as the exact portion grows, although a checkpoint may decrease when calibration makes a large
+correction.
 Each checkpoint reads committed state, so a traversal performed against a transaction snapshot may
 be calibrated against data committed after that snapshot.
 When traversal completes, call `finish()` and `estimate()` returns the exact count with
