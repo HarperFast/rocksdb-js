@@ -434,10 +434,12 @@ void vtCheckAsyncGet(
 	rocksdb::DB* db,
 	rocksdb::ColumnFamilyHandle* cf
 ) {
+	rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+	if (VerificationTable::valueVersionIsNotUnique(valueSlice)) return;
+
 	state->vtLatest = vtCheckLatest(db, cf, state->key, state->readOptions.snapshot);
 	if (state->vtLatest.notUnique) return;
 
-	rocksdb::Slice valueSlice(state->value.data(), state->value.size());
 	const uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 	const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
 	state->vtVersionSettled = vtVersionIsSettled(db, cf, populateVersion);

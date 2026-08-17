@@ -738,5 +738,27 @@ describe('Verification Table', () => {
 				expect(result).toBeDefined();
 				expect(db.verifyVersion(key, version)).toBe(false);
 			}));
+
+		it('does not answer FRESH on the async transactional path either', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('not-unique-async-txn');
+					await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+					await db.flush();
+
+					const txn = new Transaction(db.store, { coordinatedRetry: true });
+					try {
+						const result = txn.getBinary(key, { expectedVersion: version } as any);
+						expect(result).toBeInstanceOf(Promise);
+						const value = await result;
+						expect(value).not.toBe(FRESH_VERSION_FLAG);
+						expect(value).toBeDefined();
+						expect(db.verifyVersion(key, version)).toBe(false);
+					} finally {
+						txn.abort();
+					}
+				}
+			));
 	});
 });
