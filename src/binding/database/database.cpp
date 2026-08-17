@@ -948,7 +948,7 @@ struct RangeEstimate {
  * Overlapping versions of a key in multiple levels are counted once per
  * level, so the estimate skews high on heavily-overwritten ranges until
  * compaction; resolution is bounded by SST data-block granularity, so tiny
- * ranges over-report.
+ * ranges can over-report or report zero for present keys.
  */
 static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
 	rocksdb::Range range(start, end);
@@ -996,7 +996,7 @@ static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHa
 	}
 	if (entries <= deletions || fileBytes == 0) {
 		// A nonzero byte estimate without density leaves the SST portion unknown.
-		result.degraded = sstBytes != 0;
+		result.degraded = result.degraded || sstBytes != 0;
 		return result;
 	}
 	if (sstBytes == 0) {

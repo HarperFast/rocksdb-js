@@ -203,13 +203,13 @@ describe('CountEstimator', () => {
 			}
 			expect(estimator.traversed).toBe(N / 2);
 
-			// with half the range traversed exactly, the estimate must be at
-			// least the traversed count, within a tighter overall bound, and
-			// more trusted than the untraversed estimate
+			// With half the range traversed exactly, the estimate must be at
+			// least the traversed count, within a tighter overall bound, and at
+			// least as confident as the exact fraction of the estimate.
 			const refined = estimator.estimate();
 			expect(refined.count).toBeGreaterThanOrEqual(N / 2);
 			expectWithin(refined.count, N, 1.6);
-			expectConfidence(refined.confidence);
+			expectConfidence(refined.confidence, estimator.traversed / refined.count, 1);
 		}));
 
 	it('should support reverse iteration', () =>
