@@ -120,17 +120,7 @@ describe('Transaction log crash recovery', () => {
 				database = RocksDatabase.open(dbPath);
 				const reopened = database.useLog('foo');
 				// The prefix is gone from the file itself, not just hidden behind the watermark.
-				// POSIX truncates it; Windows keeps the physical allocation and zeroes the range.
-				// Check this before query() because Windows may extend the current file for mapping.
-				const recoveredImage = readFileSync(logPath);
-				if (process.platform === 'win32') {
-					expect(recoveredImage.length).toBe(crashedSize);
-					expect(recoveredImage.subarray(afterComplete)).toEqual(
-						Buffer.alloc(crashedSize - afterComplete)
-					);
-				} else {
-					expect(recoveredImage.length).toBe(afterComplete);
-				}
+				expect(statSync(logPath).size).toBe(afterComplete);
 				expect(parseTransactionLog(logPath).size).toBe(afterComplete);
 				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(1);
 				expect(Array.from(reopened.query({ start: 0 })).length).toBe(1);

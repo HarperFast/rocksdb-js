@@ -441,10 +441,9 @@ private:
 	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`
 	 * disappear from every reader and frees the range for the next append. Unlike
 	 * truncateFile() this must work on Windows too: the bytes are real entries, not
-	 * the partial tail that Windows' zero-padding already hides. POSIX truncates;
-	 * Windows overwrites the range with zeros (its files are pre-extended and
-	 * zero-padded, so a zero timestamp is the end-of-entries marker) and drops the
-	 * cached read-only mapping, which is not coherent with WriteFile. Returns
+	 * the partial tail that Windows' zero-padding already hides. Both platforms
+	 * truncate; Windows first drops the cached read-only mapping because mapped
+	 * ranges prevent SetEndOfFile from shrinking the file. Returns
 	 * `true` on success. Caller holds fileMutex and must update `size` itself.
 	 */
 	bool eraseTail(uint32_t newSize, uint32_t entriesEnd);

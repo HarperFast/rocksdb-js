@@ -7,16 +7,7 @@
 #include "core/platform.h"
 #include <aclapi.h>
 #include <sddl.h>
-#include <algorithm>
 #include <cstdio>
-#include <vector>
-
-// Hook point for the native test that forces a later zero-fill write to fail.
-#ifdef ROCKSDB_JS_WRITE_FILE
-extern "C" BOOL WINAPI ROCKSDB_JS_WRITE_FILE(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
-#else
-#define ROCKSDB_JS_WRITE_FILE ::WriteFile
-#endif
 
 namespace rocksdb_js {
 
@@ -453,7 +444,7 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 	}
 
 	DWORD bytesWritten;
-	bool success = ROCKSDB_JS_WRITE_FILE(this->fileHandle, buffer, size, &bytesWritten, nullptr);
+	bool success = ::WriteFile(this->fileHandle, buffer, size, &bytesWritten, nullptr);
 	return success ? static_cast<int64_t>(bytesWritten) : -1;
 }
 
@@ -472,69 +463,24 @@ bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 		return false;
 	}
 
-	// These are whole entries, so unlike a torn tail they are not already hidden by
-	// the zero padding — overwrite them with zeros to restore the end-of-entries
-	// marker at `newSize`. The file keeps its pre-extended length and the next
-	// append (which writes at `size`, not at EOF) reuses the range.
-	//
-	// A reader stops at the first zero timestamp regardless of what follows it, so
-	// establish that 8-byte marker at `newSize` with its own write before the bulk
-	// zeroing below. Once it lands, `newSize` is a safe end-of-log position even if
-	// a later chunk write fails partway through the rest of the range — the caller
-	// can trust the returned success and lower `size` to `newSize` unconditionally,
-	// instead of leaving `size` at `entriesEnd` while the on-disk marker is already
-	// at `newSize`, which would make the next append land past where readers stop.
-	char terminator[8] = { 0 };
-	if (this->writeToFile(terminator, sizeof(terminator), newSize) != static_cast<int64_t>(sizeof(terminator))) {
-		DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to write end-of-entries marker at offset %u in %s (error=%lu)\n",
-			this, newSize, this->path.string().c_str(), ::GetLastError());
+	// openFile() maps the pre-extended file while correcting its logical size;
+	// Windows refuses to shrink a file while this process still maps the range.
+	this->memoryMap.reset();
+	LARGE_INTEGER boundary;
+	boundary.QuadPart = newSize;
+	if (!::SetFilePointerEx(this->fileHandle, boundary, nullptr, FILE_BEGIN) ||
+		!::SetEndOfFile(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::eraseTail Failed to truncate %s to %u bytes (error=%lu)\n",
+			this, this->path.string().c_str(), newSize, ::GetLastError());
 		return false;
-	}
-
-	constexpr uint32_t CHUNK = 64 * 1024;
-	std::vector<char> zeros(std::min(CHUNK, entriesEnd - newSize), 0);
-	bool zeroingFailed = false;
-	DWORD zeroingError = ERROR_SUCCESS;
-	for (uint32_t offset = newSize; offset < entriesEnd;) {
-		uint32_t chunk = std::min(static_cast<uint32_t>(zeros.size()), entriesEnd - offset);
-		int64_t written = this->writeToFile(zeros.data(), chunk, offset);
-		if (written <= 0) {
-			zeroingFailed = true;
-			zeroingError = ::GetLastError();
-			break;
-		}
-		offset += static_cast<uint32_t>(written);
-	}
-
-	if (zeroingFailed) {
-		// Appends resume at newSize, so stale bytes beyond a partial zero-fill would
-		// eventually become visible again. Unmap before shrinking; Windows rejects
-		// SetEndOfFile while this process still maps the truncated range.
-		this->memoryMap.reset();
-		LARGE_INTEGER boundary;
-		boundary.QuadPart = newSize;
-		if (!::SetFilePointerEx(this->fileHandle, boundary, nullptr, FILE_BEGIN) ||
-			!::SetEndOfFile(this->fileHandle)) {
-			DWORD truncateError = ::GetLastError();
-			throw rocksdb_js::DBException(
-				"Failed to erase transaction log tail after zero-fill error " + std::to_string(zeroingError) +
-				" (truncate error " + std::to_string(truncateError) + "): " + this->path.string()
-			);
-		}
-		DEBUG_LOG("%p TransactionLogFile::eraseTail Zero-fill failed in %s (error=%lu); truncated to %u bytes\n",
-			this, this->path.string().c_str(), zeroingError, newSize);
 	}
 
 	if (!::FlushFileBuffers(this->fileHandle)) {
 		DEBUG_LOG("%p TransactionLogFile::eraseTail FlushFileBuffers failed for %s (error=%lu)\n",
 			this, this->path.string().c_str(), ::GetLastError());
-		// the erase is complete; a later flush() will sync again
+		// the truncation succeeded; a later flush() will sync again
 	}
 
-	// Mapped views and WriteFile are not guaranteed coherent, and open() has already
-	// mapped this file to index it. Drop our reference so the next reader maps the
-	// zeroed image; views other callers still hold keep their own.
-	this->memoryMap.reset();
 	return true;
 }
 

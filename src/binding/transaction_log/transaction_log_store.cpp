@@ -1111,8 +1111,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// interrupted batch of a flag-setting writer: a batch that writeBatch() split "across multiple
 	// log files" at a rotation (no flagged entry in the active file at all), and a file written
 	// before the flag existed. There the bytes stay and this walk falls back through older
-	// sequences until one ends on a real boundary — so committed readers still never see a
-	// transaction that never closed, even where the file could not be repaired.
+	// sequences until one ends on a real boundary, keeping initial committed reads off the partial
+	// transaction. A later commit can advance past a rotation-spanning prefix; recovery cannot
+	// discard that case without a boundary in the active file.
 	//
 	// Otherwise this is not a new recovery rule: commitFinished() already defines the watermark as
 	// the front of uncommittedTransactionPositions, which — after the sentinel insert above, with

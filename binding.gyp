@@ -254,7 +254,6 @@
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',
-				'ROCKSDB_JS_WRITE_FILE=rocksdb_js_mock_write_file',
 				'ROCKSDB_JS_WRITEV=rocksdb_js_mock_writev',
 				'ROCKSDB_JS_MADVISE=rocksdb_js_mock_madvise',
 			],

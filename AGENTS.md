@@ -353,7 +353,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
-12. **A recovered transaction log ends on a transaction boundary**: only a batch's final entry
+12. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+    prove one**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them
     (`discardUnclosedTransaction`) rather than leaving them for the committed watermark to step
@@ -367,9 +368,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     the batch timestamp, and `getMonotonicTimestamp()` never repeats). Without that proof the bytes
     are kept and warned about: a batch split across a rotation has no boundary in the active file,
     and a log written before the flag existed would otherwise be truncated wholesale. There the
-    watermark seed in `TransactionLogStore::load()` still keeps committed readers off the partial
-    transaction. POSIX truncates; Windows overwrites the range with zeros (its pre-extended files
-    use a zero timestamp as the end marker) and drops the cached mapping.
+    watermark seed in `TransactionLogStore::load()` keeps initial committed readers off the partial
+    transaction, but only until a later commit advances the watermark; a rotation-spanning batch
+    remains an unresolved phantom-group hazard. Both platforms truncate; Windows first drops the
+    cached mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file.
 
 ## Debugging native heap corruption
 

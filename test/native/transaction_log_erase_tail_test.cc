@@ -1,27 +1,12 @@
 #ifdef _WIN32
 
 #include <gtest/gtest.h>
-#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 #include "transaction_log/transaction_log_file.h"
-
-static std::atomic<int> g_writeFileCall = 0;
-static std::atomic<int> g_failWriteFileCall = 0;
-
-extern "C" BOOL WINAPI rocksdb_js_mock_write_file(
-	HANDLE file, LPCVOID buffer, DWORD size, LPDWORD bytesWritten, LPOVERLAPPED overlapped)
-{
-	int call = ++g_writeFileCall;
-	if (call == g_failWriteFileCall.load()) {
-		::SetLastError(ERROR_WRITE_FAULT);
-		return FALSE;
-	}
-	return ::WriteFile(file, buffer, size, bytesWritten, overlapped);
-}
 
 struct EraseTailTestAccessor {
 	static bool call(rocksdb_js::TransactionLogFile& file, uint32_t newSize, uint32_t entriesEnd) {
@@ -33,8 +18,6 @@ struct EraseTailTestAccessor {
 class TransactionLogEraseTail : public ::testing::Test {
 protected:
 	void TearDown() override {
-		g_failWriteFileCall = 0;
-		g_writeFileCall = 0;
 		file.reset();
 		std::error_code error;
 		std::filesystem::remove(path, error);
@@ -45,7 +28,7 @@ protected:
 	std::unique_ptr<rocksdb_js::TransactionLogFile> file;
 };
 
-TEST_F(TransactionLogEraseTail, TruncatesIfZeroFillFailsAfterACompletedChunk) {
+TEST_F(TransactionLogEraseTail, PhysicallyTruncatesTheDiscardedRange) {
 	constexpr uint32_t boundary = 128;
 	constexpr uint32_t entriesEnd = boundary + (2 * 64 * 1024) + 100;
 	HANDLE handle = ::CreateFileW(
@@ -64,8 +47,6 @@ TEST_F(TransactionLogEraseTail, TruncatesIfZeroFillFailsAfterACompletedChunk) {
 	file->size = entriesEnd;
 	ASSERT_NE(file->getMemoryMap(entriesEnd, true), nullptr);
 
-	g_writeFileCall = 0;
-	g_failWriteFileCall = 3;
 	EXPECT_TRUE(EraseTailTestAccessor::call(*file, boundary, entriesEnd));
 
 	LARGE_INTEGER physicalSize;
