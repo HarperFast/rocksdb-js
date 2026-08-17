@@ -1663,7 +1663,6 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
@@ -1700,7 +1699,6 @@ napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {

@@ -63,6 +63,14 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool enableVerificationTable = false;
 
 	/**
+	 * Immutable VerificationTable address components for this open lifecycle.
+	 * These let VT-only fast paths avoid dereferencing teardown-owned native
+	 * descriptors or registering as in-flight database operations.
+	 */
+	uint64_t verificationTableDbId = 0;
+	uint32_t verificationTableColumnFamilyId = 0;
+
+	/**
 	 * The node environment.
 	 */
 	napi_env env;

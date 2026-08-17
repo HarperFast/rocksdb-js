@@ -329,7 +329,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
-   from another env after the in-flight count drains. `DBHandle::close()` itself is cross-env and must
+   from another env after the in-flight count drains. The VT-only `verifyVersion` / `populateVersion`
+   fast paths are the exception: `DBHandle::open()` snapshots their immutable per-open VT epoch and
+   column-family ID so they do not touch teardown-owned native state or register an in-flight operation.
+   `DBHandle::close()` itself is cross-env and must
    serialize mutation of its `shared_ptr` members. A close-time flush failure keeps the native DB
    quarantined so `shutdown()` can retry without losing `disableWAL` writes; an explicit destroy may
    force teardown because the caller requested deletion. A failed physical destroy leaves a registry
