@@ -22,6 +22,7 @@ const args = await Promise.race([
 if (args[0] !== path || args[1] !== 'Injected database close failure') {
 	throw new Error(`Unexpected database:closeFailed arguments: ${JSON.stringify(args)}`);
 }
+if (db.isOpen()) throw new Error('A quarantined database still reports itself open');
 const startedAt = Date.now();
 try {
 	RocksDatabase.open(path, { readOnly: true });

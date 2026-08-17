@@ -469,6 +469,7 @@ export type NativeDatabase = {
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];
+	closing: boolean;
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
 	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;

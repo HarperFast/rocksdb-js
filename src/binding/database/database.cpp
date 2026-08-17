@@ -389,6 +389,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Slice startSlice;
 	rocksdb::Slice* startPtr = nullptr;
@@ -508,6 +509,7 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return doClear(env, info, "Drop failed");
@@ -568,12 +570,12 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return doClearSync(env, info, "Drop failed");
 	}
 
-	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
 	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
@@ -1001,6 +1003,7 @@ napi_value Database::Resume(napi_env env, napi_callback_info info) {
 napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Options opts = (*dbHandle)->descriptor->db->GetOptions((*dbHandle)->getColumnFamilyHandle());
 	std::string name = compressionNameFromType(opts.compression);
@@ -1075,6 +1078,7 @@ napi_value Database::GetLogOptions(napi_env env, napi_callback_info info) {
 napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	DBIteratorOptions itOptions;
 	itOptions.initFromNapiObject(env, argv[0]);
@@ -1332,6 +1336,7 @@ napi_value Database::GetMonotonicTimestamp(napi_env env, napi_callback_info info
 napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	uint64_t timestamp = 0;
 	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
@@ -1362,6 +1367,7 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	NAPI_GET_STRING(argv[0], propertyName, "Property name is required");
 
@@ -1398,6 +1404,7 @@ napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	NAPI_GET_STRING(argv[0], propertyName, "Property name is required");
 
@@ -1428,6 +1435,7 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetStat(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	NAPI_GET_STRING(argv[0], statName, "Stat name is required");
 	return (*dbHandle)->getStat(env, statName);
 }
@@ -1444,6 +1452,7 @@ napi_value Database::GetStat(napi_env env, napi_callback_info info) {
 napi_value Database::GetStats(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	bool all = false;
 	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &all));
@@ -1793,6 +1802,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_METHOD_ARGV(3);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	// if we have a callback, add it as a listener
@@ -1836,6 +1846,20 @@ napi_value Database::HasLock(napi_env env, napi_callback_info info) {
 		hasLock,
 		&result
 	));
+	return result;
+}
+
+/**
+ * Checks if the RocksDB database is closing or quarantined.
+ */
+napi_value Database::IsClosing(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE();
+
+	const bool closing = dbHandle != nullptr && *dbHandle && (*dbHandle)->descriptor &&
+		(*dbHandle)->descriptor->isClosing();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, closing, &result));
 	return result;
 }
 
@@ -2105,10 +2129,10 @@ napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
  */
 napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
-	NAPI_GET_BUFFER(argv[0], key, "Key is required");
-	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
+	NAPI_GET_BUFFER(argv[0], key, "Key is required");
+	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "Put failed: ");
 
 	rocksdb::Status status;
@@ -2191,9 +2215,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
  */
 napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
-	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
+	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "Remove failed: ");
 
 	rocksdb::Status status;
@@ -2407,6 +2431,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "closing", nullptr, nullptr, IsClosing, nullptr, nullptr, napi_default, nullptr },
 		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -362,10 +362,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
  * Checks if the referenced database is opened.
  */
 bool DBHandle::opened() const {
-	if (this->descriptor && this->descriptor->db) {
-		return true;
-	}
-	return false;
+	return this->descriptor && !this->descriptor->isClosing();
 }
 
 /**

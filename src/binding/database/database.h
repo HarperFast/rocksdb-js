@@ -227,7 +227,10 @@ inline void vtPopulateIfSettled(
 	UNWRAP_DB_HANDLE(); \
 	do { \
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-			::napi_throw_error(env, nullptr, "Database not open"); \
+			const char* message = dbHandle != nullptr && *dbHandle && (*dbHandle)->descriptor && (*dbHandle)->descriptor->isClosing() \
+				? "Database is closing" \
+				: "Database not open"; \
+			::napi_throw_error(env, nullptr, message); \
 			NAPI_RETURN_UNDEFINED(); \
 		} \
 	} while (0)
@@ -327,6 +330,7 @@ struct Database final {
 	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value GetUserSharedBuffer(napi_env env, napi_callback_info info);
 	static napi_value HasLock(napi_env env, napi_callback_info info);
+	static napi_value IsClosing(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Listeners(napi_env env, napi_callback_info info);
 	static napi_value ListLogs(napi_env env, napi_callback_info info);
