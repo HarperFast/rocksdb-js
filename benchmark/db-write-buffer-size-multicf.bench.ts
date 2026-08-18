@@ -131,7 +131,8 @@ function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResul
 describe('dbWriteBufferSize multi-column-family ingest', () => {
 	bench(
 		'round-robin ingest counters',
-		() => {
+		// Tinybench probes synchronous callbacks before the timed iteration.
+		async () => {
 			const results: ArmResult[] = [];
 			for (const columnFamilies of COLUMN_FAMILY_COUNTS) {
 				for (const dbWriteBufferSize of DB_WRITE_BUFFER_SIZES) {
@@ -139,7 +140,8 @@ describe('dbWriteBufferSize multi-column-family ingest', () => {
 				}
 			}
 			console.table(results);
+			await Promise.resolve();
 		},
-		{ iterations: 1, time: 1, warmupIterations: 0, warmupTime: 0 }
+		{ iterations: 1, time: 0, warmupIterations: 0, warmupTime: 0 }
 	);
 });
