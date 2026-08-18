@@ -11,22 +11,41 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { bench, describe } from 'vitest';
 
+function parseInteger(name: string, raw: string, minimum: number): number {
+	const value = Number(raw);
+	if (!Number.isInteger(value) || value < minimum) {
+		throw new Error(`${name} must be an integer >= ${minimum}; received ${raw}`);
+	}
+	return value;
+}
+
+function environmentInteger(name: string, fallback: number, minimum: number = 1): number {
+	const raw = process.env[name];
+	return raw === undefined ? fallback : parseInteger(name, raw, minimum);
+}
+
+function environmentIntegerList(name: string, fallback: number[]): number[] {
+	const raw = process.env[name];
+	return raw === undefined
+		? fallback
+		: raw.split(',').map((value, index) => parseInteger(`${name}[${index}]`, value, 1));
+}
+
 const MIB = 1024 * 1024;
 const TMPFS_MAGIC = 0x01021994;
-const RECORD_COUNT = Number(process.env.BENCH_RECORDS ?? 256 * 1024);
+const RECORD_COUNT = environmentInteger('BENCH_RECORDS', 256 * 1024);
 const VALUE_BYTES = 1024;
 const VALUE_POOL_BYTES = 64 * MIB;
-const COLUMN_FAMILY_COUNTS = process.env.BENCH_CFS
-	? process.env.BENCH_CFS.split(',').map(Number)
-	: [1, 4, 8, 16];
+const COLUMN_FAMILY_COUNTS = environmentIntegerList('BENCH_CFS', [1, 4, 8, 16]);
 const DB_WRITE_BUFFER_SIZES = [32 * MIB, 256 * MIB, 0] as const;
-const WRITE_BUFFER_SIZE = Number(process.env.BENCH_WRITE_BUFFER ?? 16 * MIB);
-const MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN = Number(
-	process.env.BENCH_MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN ?? -1
+const WRITE_BUFFER_SIZE = environmentInteger('BENCH_WRITE_BUFFER', 16 * MIB);
+const MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN = environmentInteger(
+	'BENCH_MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN',
+	-1,
+	-1
 );
 const BENCH_DATA_DIR = process.env.BENCH_DATA_DIR ?? join('benchmark', 'data');
-const SETTLE_TIMEOUT_MS = Number(process.env.BENCH_SETTLE_TIMEOUT_MS ?? 5 * 60_000);
-const ARM_COUNT = COLUMN_FAMILY_COUNTS.length * DB_WRITE_BUFFER_SIZES.length;
+const SETTLE_TIMEOUT_MS = environmentInteger('BENCH_SETTLE_TIMEOUT_MS', 5 * 60_000);
 let valuePool: Buffer | undefined;
 let sweepRuns = 0;
 
@@ -90,16 +109,20 @@ function flushHistogram(database: RocksDatabase): StatsCurated['rocksdb.db.flush
 	return flush;
 }
 
-async function waitForBackgroundWork(database: RocksDatabase): Promise<void> {
+async function waitForBackgroundWork(databases: RocksDatabase[]): Promise<void> {
 	const deadline = performance.now() + SETTLE_TIMEOUT_MS;
 	let idleChecks = 0;
-	while (idleChecks < 2) {
-		const stats = database.getStats() as StatsDefault;
-		if (
-			stats['rocksdb.mem-table-flush-pending'] === 0 &&
-			stats['rocksdb.compaction-pending'] === 0 &&
-			stats['rocksdb.num-running-compactions'] === 0
-		) {
+	while (idleChecks < 3) {
+		const idle = databases.every((database) => {
+			const stats = database.getStats() as StatsDefault;
+			return (
+				stats['rocksdb.mem-table-flush-pending'] === 0 &&
+				stats['rocksdb.compaction-pending'] === 0 &&
+				stats['rocksdb.num-running-compactions'] === 0 &&
+				stats['rocksdb.num-running-flushes'] === 0
+			);
+		});
+		if (idle) {
 			idleChecks++;
 		} else {
 			idleChecks = 0;
@@ -169,12 +192,10 @@ async function measureArm(columnFamilies: number, dbWriteBufferSize: number): Pr
 		}
 		const elapsedMs = performance.now() - start;
 
-		for (const db of databases) {
-			db.flushSync();
-		}
-		await waitForBackgroundWork(databases[0]);
+		databases[0].flushSync();
+		await waitForBackgroundWork(databases);
 
-		const stats = databases[0].getStats() as StatsDefault;
+		const stats = databases[0].getStats() as StatsCurated;
 		const flush = flushHistogram(databases[0]);
 		if (flush.count === 0) {
 			throw new Error('The completed arm did not record any memtable flushes');
@@ -220,9 +241,6 @@ describe.skipIf(process.env.BENCHMARK_MODE === 'essential' || !!process.env.LMDB
 						for (const dbWriteBufferSize of DB_WRITE_BUFFER_SIZES) {
 							results.push(await measureArm(columnFamilies, dbWriteBufferSize));
 						}
-					}
-					if (results.length !== ARM_COUNT) {
-						throw new Error(`Expected ${ARM_COUNT} benchmark arms, received ${results.length}`);
 					}
 				} finally {
 					console.table(results);
