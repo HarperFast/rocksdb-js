@@ -2,24 +2,33 @@ import {
 	RocksDatabase,
 	shutdown,
 	type RocksDatabaseOptions,
+	type StatsCurated,
 	type StatsDefault,
 } from '../dist/index.mjs';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { bench, describe } from 'vitest';
 
 const MIB = 1024 * 1024;
 const TMPFS_MAGIC = 0x01021994;
 const RECORD_COUNT = Number(process.env.BENCH_RECORDS ?? 256 * 1024);
 const VALUE_BYTES = 1024;
-const VALUE_POOL = randomBytes(64 * MIB);
+const VALUE_POOL_BYTES = 64 * MIB;
 const COLUMN_FAMILY_COUNTS = process.env.BENCH_CFS
 	? process.env.BENCH_CFS.split(',').map(Number)
 	: [1, 4, 8, 16];
 const DB_WRITE_BUFFER_SIZES = [32 * MIB, 256 * MIB, 0] as const;
 const WRITE_BUFFER_SIZE = Number(process.env.BENCH_WRITE_BUFFER ?? 16 * MIB);
+const MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN = Number(
+	process.env.BENCH_MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN ?? -1
+);
 const BENCH_DATA_DIR = process.env.BENCH_DATA_DIR ?? join('benchmark', 'data');
+const SETTLE_TIMEOUT_MS = Number(process.env.BENCH_SETTLE_TIMEOUT_MS ?? 5 * 60_000);
+const ARM_COUNT = COLUMN_FAMILY_COUNTS.length * DB_WRITE_BUFFER_SIZES.length;
+let valuePool: Buffer | undefined;
+let sweepRuns = 0;
 
 type ArmResult = {
 	columnFamilies: number;
@@ -28,6 +37,7 @@ type ArmResult = {
 	flushMedianMs: string;
 	ingestMiBPerSecond: string;
 	levelFiles: string;
+	memtableHistory: string;
 	stallMs: string;
 	sstMiB: string;
 };
@@ -59,6 +69,10 @@ function scatteredKey(record: number): string {
 	return `key-${hash.toString().padStart(10, '0')}-${record.toString().padStart(8, '0')}`;
 }
 
+function getValuePool(): Buffer {
+	return (valuePool ??= randomBytes(VALUE_POOL_BYTES));
+}
+
 function ensureDurableStorage(): void {
 	mkdirSync(BENCH_DATA_DIR, { recursive: true });
 	if (Number(statfsSync(BENCH_DATA_DIR).type) === TMPFS_MAGIC) {
@@ -68,7 +82,60 @@ function ensureDurableStorage(): void {
 	}
 }
 
-function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResult {
+function flushHistogram(database: RocksDatabase): StatsCurated['rocksdb.db.flush.micros'] {
+	const flush = (database.getStats() as StatsCurated)['rocksdb.db.flush.micros'];
+	if (!flush) {
+		throw new Error('rocksdb.db.flush.micros is unavailable; enableStats did not take effect');
+	}
+	return flush;
+}
+
+async function waitForBackgroundWork(database: RocksDatabase): Promise<void> {
+	const deadline = performance.now() + SETTLE_TIMEOUT_MS;
+	let idleChecks = 0;
+	while (idleChecks < 2) {
+		const stats = database.getStats() as StatsDefault;
+		if (
+			stats['rocksdb.mem-table-flush-pending'] === 0 &&
+			stats['rocksdb.compaction-pending'] === 0 &&
+			stats['rocksdb.num-running-compactions'] === 0
+		) {
+			idleChecks++;
+		} else {
+			idleChecks = 0;
+		}
+		if (performance.now() >= deadline) {
+			throw new Error(`RocksDB background work did not settle within ${SETTLE_TIMEOUT_MS} ms`);
+		}
+		await delay(100);
+	}
+}
+
+function cleanupArm(databases: RocksDatabase[], dbPath: string, armError: unknown): void {
+	const errors: unknown[] = armError === undefined ? [] : [armError];
+	for (let index = databases.length - 1; index >= 0; index--) {
+		try {
+			databases[index].close();
+		} catch (error) {
+			errors.push(error);
+		}
+	}
+	try {
+		shutdown();
+	} catch (error) {
+		errors.push(error);
+	}
+	try {
+		rmSync(dbPath, { force: true, recursive: true, maxRetries: 3 });
+	} catch (error) {
+		errors.push(error);
+	}
+	if (errors.length > (armError === undefined ? 0 : 1)) {
+		throw new AggregateError(errors, `Failed to clean up benchmark arm at ${dbPath}`);
+	}
+}
+
+async function measureArm(columnFamilies: number, dbWriteBufferSize: number): Promise<ArmResult> {
 	ensureDurableStorage();
 	const dbPath = join(
 		BENCH_DATA_DIR,
@@ -78,9 +145,11 @@ function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResul
 		dbWriteBufferSize,
 		enableStats: true,
 		maxWriteBufferNumber: 16,
+		maxWriteBufferSizeToMaintain: MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN,
 		writeBufferSize: WRITE_BUFFER_SIZE,
 	};
 	const databases: RocksDatabase[] = [];
+	let armError: unknown;
 
 	try {
 		for (let index = 0; index < columnFamilies; index++) {
@@ -89,12 +158,13 @@ function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResul
 			);
 		}
 
+		const currentValuePool = getValuePool();
 		const start = performance.now();
 		for (let record = 0; record < RECORD_COUNT; record++) {
-			const offset = (record * 4099) % (VALUE_POOL.length - VALUE_BYTES);
+			const offset = (record * 4099) % (currentValuePool.length - VALUE_BYTES);
 			databases[record % columnFamilies].putSync(
 				scatteredKey(record),
-				VALUE_POOL.subarray(offset, offset + VALUE_BYTES)
+				currentValuePool.subarray(offset, offset + VALUE_BYTES)
 			);
 		}
 		const elapsedMs = performance.now() - start;
@@ -102,9 +172,13 @@ function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResul
 		for (const db of databases) {
 			db.flushSync();
 		}
+		await waitForBackgroundWork(databases[0]);
 
 		const stats = databases[0].getStats() as StatsDefault;
-		const flush = stats['rocksdb.db.flush.micros'];
+		const flush = flushHistogram(databases[0]);
+		if (flush.count === 0) {
+			throw new Error('The completed arm did not record any memtable flushes');
+		}
 		const sstBytes = databases.reduce(
 			(total, db) => total + (db.getDBIntProperty('rocksdb.total-sst-files-size') ?? 0),
 			0
@@ -116,32 +190,45 @@ function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResul
 			flushMedianMs: (flush.median / 1000).toFixed(2),
 			ingestMiBPerSecond: formatMiB((RECORD_COUNT * VALUE_BYTES * 1000) / elapsedMs),
 			levelFiles: levelFiles(databases),
+			memtableHistory:
+				MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN === -1
+					? 'derived'
+					: formatDbWriteBufferSize(MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN),
 			stallMs: ((stats['rocksdb.stall.micros'] ?? 0) / 1000).toFixed(2),
 			sstMiB: formatMiB(sstBytes),
 		};
+	} catch (error) {
+		armError = error;
+		throw error;
 	} finally {
-		for (const db of databases.reverse()) {
-			db.close();
-		}
-		shutdown();
-		rmSync(dbPath, { force: true, recursive: true, maxRetries: 3 });
+		cleanupArm(databases, dbPath, armError);
 	}
 }
 
-describe('dbWriteBufferSize multi-column-family ingest', () => {
-	bench(
-		'round-robin ingest counters',
-		// Tinybench probes synchronous callbacks before the timed iteration.
-		async () => {
-			const results: ArmResult[] = [];
-			for (const columnFamilies of COLUMN_FAMILY_COUNTS) {
-				for (const dbWriteBufferSize of DB_WRITE_BUFFER_SIZES) {
-					results.push(measureArm(columnFamilies, dbWriteBufferSize));
+describe.skipIf(process.env.BENCHMARK_MODE === 'essential' || !!process.env.LMDB_ONLY)(
+	'dbWriteBufferSize multi-column-family ingest',
+	() => {
+		bench(
+			'round-robin ingest counters',
+			async () => {
+				if (++sweepRuns !== 1) {
+					throw new Error('The multi-column-family counter sweep must execute exactly once');
 				}
-			}
-			console.table(results);
-			await Promise.resolve();
-		},
-		{ iterations: 1, time: 0, warmupIterations: 0, warmupTime: 0 }
-	);
-});
+				const results: ArmResult[] = [];
+				try {
+					for (const columnFamilies of COLUMN_FAMILY_COUNTS) {
+						for (const dbWriteBufferSize of DB_WRITE_BUFFER_SIZES) {
+							results.push(await measureArm(columnFamilies, dbWriteBufferSize));
+						}
+					}
+					if (results.length !== ARM_COUNT) {
+						throw new Error(`Expected ${ARM_COUNT} benchmark arms, received ${results.length}`);
+					}
+				} finally {
+					console.table(results);
+				}
+			},
+			{ iterations: 1, throws: true, time: 0, warmupIterations: 0, warmupTime: 0 }
+		);
+	}
+);
