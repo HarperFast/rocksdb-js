@@ -5,16 +5,21 @@ import {
 	type StatsDefault,
 } from '../dist/index.mjs';
 import { randomBytes } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { mkdirSync, rmSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import { bench, describe } from 'vitest';
 
 const MIB = 1024 * 1024;
-const RECORD_COUNT = 64 * 1024;
+const TMPFS_MAGIC = 0x01021994;
+const RECORD_COUNT = Number(process.env.BENCH_RECORDS ?? 256 * 1024);
 const VALUE_BYTES = 1024;
 const VALUE_POOL = randomBytes(64 * MIB);
-const COLUMN_FAMILY_COUNTS = [1, 4, 16] as const;
+const COLUMN_FAMILY_COUNTS = process.env.BENCH_CFS
+	? process.env.BENCH_CFS.split(',').map(Number)
+	: [1, 4, 8, 16];
 const DB_WRITE_BUFFER_SIZES = [32 * MIB, 256 * MIB, 0] as const;
+const WRITE_BUFFER_SIZE = Number(process.env.BENCH_WRITE_BUFFER ?? 16 * MIB);
+const BENCH_DATA_DIR = process.env.BENCH_DATA_DIR ?? join('benchmark', 'data');
 
 type ArmResult = {
 	columnFamilies: number;
@@ -39,7 +44,7 @@ function levelFiles(databases: RocksDatabase[]): string {
 	const levels: string[] = [];
 	for (let level = 0; level < 7; level++) {
 		const files = databases.reduce(
-			(total, db) => total + (db.getDBIntProperty(`rocksdb.num-files-at-level${level}`) ?? 0),
+			(total, db) => total + Number(db.getDBProperty(`rocksdb.num-files-at-level${level}`) ?? 0),
 			0
 		);
 		if (files > 0) {
@@ -49,17 +54,31 @@ function levelFiles(databases: RocksDatabase[]): string {
 	return levels.join(' ') || 'none';
 }
 
+function scatteredKey(record: number): string {
+	const hash = Math.imul(record, 2654435761) >>> 0;
+	return `key-${hash.toString().padStart(10, '0')}-${record.toString().padStart(8, '0')}`;
+}
+
+function ensureDurableStorage(): void {
+	mkdirSync(BENCH_DATA_DIR, { recursive: true });
+	if (Number(statfsSync(BENCH_DATA_DIR).type) === TMPFS_MAGIC) {
+		throw new Error(
+			`BENCH_DATA_DIR must use durable storage; ${BENCH_DATA_DIR} is on a tmpfs filesystem`
+		);
+	}
+}
+
 function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResult {
+	ensureDurableStorage();
 	const dbPath = join(
-		'benchmark',
-		'data',
+		BENCH_DATA_DIR,
 		`db-write-buffer-size-multicf-${columnFamilies}-${dbWriteBufferSize}-${randomBytes(8).toString('hex')}`
 	);
 	const options: RocksDatabaseOptions = {
 		dbWriteBufferSize,
 		enableStats: true,
 		maxWriteBufferNumber: 16,
-		writeBufferSize: 64 * MIB,
+		writeBufferSize: WRITE_BUFFER_SIZE,
 	};
 	const databases: RocksDatabase[] = [];
 
@@ -74,7 +93,7 @@ function measureArm(columnFamilies: number, dbWriteBufferSize: number): ArmResul
 		for (let record = 0; record < RECORD_COUNT; record++) {
 			const offset = (record * 4099) % (VALUE_POOL.length - VALUE_BYTES);
 			databases[record % columnFamilies].putSync(
-				`key-${record.toString().padStart(8, '0')}`,
+				scatteredKey(record),
 				VALUE_POOL.subarray(offset, offset + VALUE_BYTES)
 			);
 		}
