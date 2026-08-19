@@ -55,10 +55,32 @@ Creates a new database instance.
     when linked, else no compression). See [Compression](#compression). Throws if the algorithm is
     not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
     the available list.
+  - `compressionForAllColumnFamilies: boolean` When `true`, applies `compression` to every column
+    family opened for the database rather than only the column family specified by `name`. Requires an explicit
+    `compression`. Defaults to `false`. See [Compression](#compression).
+  - `dbWriteBufferSize: number` The total memtable memory budget in bytes shared across all of the
+    database's column families. When the combined size of all memtables reaches this value, RocksDB
+    flushes the largest one. `0` (the default) disables this global trigger, so per-column-family
+    `writeBufferSize` alone drives flushing. This is distinct from the process-wide
+    [`writeBufferManagerSize`](#dbconfigoptions) config option. Database-wide, so it binds when the
+    path is first opened in this process: a later open of the same path — including from another
+    worker thread — keeps the first opener's value rather than overriding or rejecting it.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
     Defaults to `false`.
+  - `infoLogLevel: number` The verbosity of RocksDB's informational logging (`LOG` /
+    `LOG.old.*`): `0` (debug), `1` (info), `2` (warn), `3` (error), `4` (fatal), or `5`
+    (header-only). Omit to leave RocksDB's own default (`INFO_LEVEL` in a release build of the
+    linked RocksDB library). See [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
+  - `maxLogFileSize: number` The per-file size cap, in bytes, for informational log files (`LOG` /
+    `LOG.old.*`). RocksDB retains up to 5 of these files, so the total informational-log footprint
+    is bounded at roughly `5 * maxLogFileSize`. Defaults to 16 MB (an 80 MB bound), which stops
+    purely informational logging from growing without bound. A value of `0` is RocksDB's special
+    "single unbounded log file" mode — it **disables size-based rotation entirely**, so the log
+    can grow without limit; only set `0` if you deliberately want that (it forgoes the bounded
+    footprint this option otherwise provides). See
+    [`db.logOptions`](#dblogoptions-maxlogfilesize-number-infologlevel-number).
   - `maxOpenFiles: number` The maximum number of table files RocksDB keeps open. `0` (the default)
     derives a budget from the effective per-process open-file limit (an eighth of the limit —
     several databases can share one process — clamped to `[1024, 262144]`); `-1` holds every table
@@ -66,6 +88,17 @@ Creates a new database instance.
     compaction falls behind under sustained ingest); a positive `int32` is an explicit cap. Reads
     only pay a reopen cost when the number of live table files exceeds the budget, so raise the
     process fd limit (and with it the derived budget) for very large databases.
+  - `maxWriteBufferNumber: number` The maximum number of memtables that can be queued per column
+    family before writes stall. Higher values absorb write bursts while flushes catch up, at the
+    cost of memory (roughly `maxWriteBufferNumber * writeBufferSize` per column family). Defaults to
+    `16`.
+  - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
+    memory for transaction conflict checking. `-1` (the default) derives the value from
+    `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
+    transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
+    (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
+    `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
+    value is always honored as-is.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -99,6 +132,9 @@ Creates a new database instance.
     the verification slot for each written key. Enable this only for column families whose records
     are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
     `verificationTableEntries` to be configured before the first database is opened.
+  - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
+    sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
+    values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
 
 ### `db.close()`
 
