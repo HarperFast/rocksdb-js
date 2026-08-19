@@ -408,9 +408,11 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 	// current sequence so we can mark rotated (immutable) files.
 	std::vector<std::pair<uint32_t, std::shared_ptr<TransactionLogFile>>> files;
 	uint32_t current;
+	double latestTimestamp;
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		current = this->currentSequenceNumber.load(std::memory_order_relaxed);
+		latestTimestamp = this->latestTimestamp;
 		files.reserve(this->sequenceFiles.size());
 		for (const auto& [seq, file] : this->sequenceFiles) {
 			files.emplace_back(seq, file);
@@ -420,6 +422,20 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 	std::vector<TransactionLogBackupEntry> entries;
 	entries.reserve(files.size() + 1);
 	for (const auto& [seq, file] : files) {
+		// `size` only carries the written extent once the file has been opened —
+		// registerLogFile() opens the current file eagerly but leaves older ones
+		// lazy, and directory iteration order decides which those are. Opening here
+		// makes `size == 0` mean only what the check below assumes it means; without
+		// it a rotated segment would be silently omitted from the backup on the
+		// iteration orders where it was never opened (ext4 hits them, APFS hides
+		// them). A file we cannot open is a hard failure rather than a skip: an
+		// incomplete log in a backup is invisible until a restore needs it.
+		// Leave it open: this runs concurrently with readers, so closing a file we
+		// only borrowed could pull the fd out from under one.
+		if (file->size.load(std::memory_order_relaxed) == 0 && !file->isOpen()) {
+			file->open(latestTimestamp);
+		}
+
 		// `size` is atomic and append-owned, so [0, byteLimit) is a stable,
 		// complete prefix even if a concurrent append is in flight (we simply
 		// capture the pre-append extent).
@@ -500,6 +516,9 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	const bool retentionEnabled = this->retentionMs.count() > 0;
 
 	for (const auto& [seq, logFile] : this->sequenceFiles) {
+		// A registered-but-never-opened older file still reads 0 here (see
+		// snapshotForBackup); collectStats is deliberately syscall-free, so it
+		// under-reports totalSizeBytes for those until something opens them.
 		uint32_t fileSize = logFile->size.load(std::memory_order_relaxed);
 		out.totalSizeBytes += fileSize;
 		if (seq == this->currentSequenceNumber) {

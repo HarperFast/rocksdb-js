@@ -423,7 +423,10 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 				if (::SetFilePointerEx(this->fileHandle, zero, &current, FILE_CURRENT)) {
 					int64_t landed = current.QuadPart -
 						static_cast<int64_t>(this->size.load(std::memory_order_relaxed));
-					bytesLanded = landed > 0 ? landed : 0;
+					// A negative delta means the pointer is BEHIND where we seeked to,
+					// which is nonsense for a write — treat it as unknown, not as
+					// "nothing landed", so the caller still retires the file.
+					bytesLanded = landed >= 0 ? landed : TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
 				} else {
 					bytesLanded = TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
 				}

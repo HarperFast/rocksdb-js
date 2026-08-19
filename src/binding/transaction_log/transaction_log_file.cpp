@@ -517,23 +517,37 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s (%lld byte(s) landed)\n",
 			this, this->path.string().c_str(), static_cast<long long>(bytesLanded));
 
-		// Restore first: the erase below allocates, and a throw from there must not
-		// leave the batch claiming entries that never reached disk.
+		// Restore first: nothing below may leave the batch claiming entries that
+		// never reached disk, and the erase path can still throw (removeFileLocked,
+		// the warning's string building).
 		batch.currentEntryIndex = startEntryIndex;
 
 		// Nothing can have landed beyond what we handed the OS, so a larger figure
 		// means the platform mis-reported and the extent is as good as unknown.
 		bool extentUnknown = bytesLanded < 0 || bytesLanded > static_cast<int64_t>(attemptedBytes);
 
-		// The fd is O_APPEND, so a landed partial entry is not a torn tail the next
-		// append overwrites — that append lands after it, and recoverTail() then has
-		// to leave the break in place because valid entries follow it.
+		// A landed partial entry is not a torn tail the next append overwrites. On
+		// POSIX the fd is O_APPEND, so that append lands *after* it and recoverTail()
+		// then has to leave the break in place because valid entries follow it. On
+		// Windows the append seeks back to `size`, but a shorter batch would leave the
+		// orphan's stale non-zero bytes past its own end, where they read as another
+		// entry instead of the end-of-entries marker. Both platforms must therefore
+		// erase, or stop appending to this file.
 		if (extentUnknown || bytesLanded > 0) {
 			uint32_t committedSize = this->size.load(std::memory_order_relaxed);
 
-			// Retire up front and lift it only once the erase has actually succeeded:
-			// the Windows erase allocates, so every way out of it short of success —
-			// including a throw — has to leave this file closed to further appends.
+			// Retire up front and lift it only once the erase has actually succeeded,
+			// so every way out short of success — a refusal, a failed truncate, a
+			// throw — leaves this file closed to further appends.
+			//
+			// Platform note: on Windows eraseTail() truncates, and truncateFile()
+			// refuses while any other owner holds the memory map (a JS reader tailing
+			// the live log holds exactly that). So a failed append on Windows under a
+			// live reader retires the file instead of erasing it. That is still safe —
+			// the orphan stays a trailing partial that recoverTail() can repair, and
+			// the store rotates to a fresh file — but it is the common outcome there
+			// while POSIX erases in place. Dropping the map to force the truncate is
+			// not an option: JS owns that mapping.
 			this->appendBoundaryLost.store(true, std::memory_order_relaxed);
 			if (!extentUnknown &&
 				this->eraseTail(committedSize, committedSize + static_cast<uint32_t>(bytesLanded))) {

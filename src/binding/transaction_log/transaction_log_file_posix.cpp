@@ -427,6 +427,18 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	if (this->fd < 0) {
 		return false;
 	}
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+	// The MAP_SHARED overlay covers [0, lastOverlaySize); pages of it past the new
+	// EOF SIGBUS on touch. Every current caller is safe by construction — the erase
+	// path truncates back to a `size` that was already published, and recoverTail()
+	// runs before any mapping is handed to a reader — but nothing structural enforces
+	// it, so make a violation visible rather than silent.
+	uint32_t overlaySize = this->lastOverlaySize.load(std::memory_order_relaxed);
+	if (newSize < overlaySize) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile Truncating %s to %u, below the MAP_SHARED overlay boundary %u; readers holding this map would SIGBUS past the new EOF\n",
+			this, this->path.string().c_str(), newSize, overlaySize);
+	}
+#endif
 	if (ROCKSDB_JS_FTRUNCATE(this->fd, static_cast<off_t>(newSize)) != 0) {
 		DEBUG_LOG("%p TransactionLogFile::truncateFile ftruncate failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
@@ -439,6 +451,14 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 			this, ::strerror(errno), errno);
 		// the truncation itself succeeded; a later flush() will sync again
 	}
+#if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
+	// The overlay can no longer extend past the new EOF; lower the bookkeeping so a
+	// later append re-overlays the reused range instead of assuming it is covered.
+	uint32_t overlayAfter = this->lastOverlaySize.load(std::memory_order_relaxed);
+	if (overlayAfter > newSize) {
+		this->lastOverlaySize.store(newSize, std::memory_order_relaxed);
+	}
+#endif
 	return true;
 }
 

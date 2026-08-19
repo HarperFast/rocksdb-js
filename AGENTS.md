@@ -233,15 +233,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    timestamp seen mid-index during concurrent appends is a not-yet-visible memory-map artifact, not
    EOF. Reads during writes are bounded by the committed position, not `size` (see
    `hasAppendedSinceOpen`; HarperFast/harper#1148). The other half of that contract is that
-   `size` is also the _physical_ extent: an append that fails part-way (ENOSPC, a short write
-   on a full volume) must erase the bytes it already wrote before throwing
-   (`writeBatchToFile` reports them via `bytesLanded`; `writeEntriesV1` calls `eraseTail`).
-   Leaving them makes every later append land after a partial entry — with the file opened
-   `O_APPEND`, writes go to physical EOF, not to `size` — which is a mid-file framing break
-   that `recoverTail()` deliberately will not repair, so every entry after it is unreachable
-   (HarperFast/rocksdb-js#748). Initialization owes the same discipline: a header write that
-   lands short removes the file, since a size in `(0, HEADER_SIZE)` fails `open()`'s validity
-   check on every future open and freeing disk space would not heal it.
+   an append that fails part-way (ENOSPC, a short write on a full volume) must erase the bytes
+   it already wrote before throwing (`writeBatchToFile` reports them via `bytesLanded`;
+   `writeEntriesV1` calls `eraseTail`), or — when it cannot erase them — stop appending to
+   that file. **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
+   so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
+   append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
+   will not repair, so every entry after it is unreachable (HarperFast/rocksdb-js#748). On
+   Windows `size` is the logical end of entries only — an active segment is pre-extended to
+   `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
+   size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
+   found by the zero-timestamp convention instead. Windows appends seek to `size` first, so an
+   orphan is overwritten rather than skipped past — but a *shorter* next batch would leave the
+   orphan's stale bytes past its own end, reading as an entry instead of the marker, so the
+   erase-or-retire rule is the same on both platforms. Initialization owes the same discipline:
+   a header write that lands short removes the file, since a size in `(0, HEADER_SIZE)` fails
+   `open()`'s validity check on every future open and freeing disk space would not heal it.
 6. **Shared DBDescriptor teardown is cross-env**: a `DBDescriptor` is process-global and shared by
    every env that opens the same path (`worker_threads` workers included), so multiple threads can
    reach `DBRegistry::CloseDB` for one descriptor at the same time — e.g. several worker envs tearing
