@@ -46,6 +46,28 @@
  */
 #define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
 
+namespace rocksdb_js {
+
+/**
+ * How much of a failed append reached the file, derived from where the file
+ * pointer ended up relative to the offset the batch started writing at.
+ *
+ * A pointer BEHIND the origin is not "nothing landed" — it is nonsense for a
+ * write, and reporting 0 would tell the caller there is nothing to erase and
+ * nothing to retire, leaving the file appendable over a partial entry. Report
+ * it as unknown so the caller retires the file instead.
+ *
+ * Used by the Windows append path (`WriteFile` does not promise to set
+ * `lpNumberOfBytesWritten` on failure); defined here, unconditionally, so the
+ * branch is covered by the GoogleTest suite on every platform.
+ */
+inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t writeOrigin) {
+	int64_t landed = pointerAfterWrite - writeOrigin;
+	return landed >= 0 ? landed : TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
+}
+
+} // namespace rocksdb_js
+
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13

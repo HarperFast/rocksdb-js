@@ -516,4 +516,22 @@ TEST_F(AppendBoundary, AppendThatWritesNothingLeavesTheFileUntouched) {
 	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 1u);
 }
 
+// ---------------------------------------------------------------------------
+// The Windows append path derives bytesLanded from the file pointer. The
+// derivation is platform-independent and lives in the shared header, so its
+// branches are covered here rather than only on a Windows runner.
+// ---------------------------------------------------------------------------
+
+TEST(LandedBytesFromFilePointer, PointerPastOriginReportsTheDelta) {
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(4096, 4096), 0);
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(5000, 4096), 904);
+}
+
+TEST(LandedBytesFromFilePointer, PointerBehindOriginIsUnknownNotZero) {
+	// Reporting 0 here would mean "nothing landed": no erase, no retire, and an
+	// append-boundary break left open. See HarperFast/rocksdb-js#748.
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(4095, 4096), TRANSACTION_LOG_BYTES_LANDED_UNKNOWN);
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(0, 4096), TRANSACTION_LOG_BYTES_LANDED_UNKNOWN);
+}
+
 #endif // !_WIN32
