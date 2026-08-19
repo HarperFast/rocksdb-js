@@ -364,6 +364,16 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 		return;
 	}
 
+	// Never borrow the active segment's handle. Its lifecycle belongs to the
+	// write path — registerLogFile()/getLogFile() open it before the first
+	// append — so the only way it reads size 0 and closed is the window between
+	// getLogFile() creating it and the first append, where 0 is the truth. A
+	// close() here would drop a handle (and, on Windows, the mapping) the next
+	// append expects to still hold.
+	if (file->sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
+		return;
+	}
+
 	// Only a definite absence skips the open: a stat that *errors* leaves us
 	// unable to tell, and both callers fail unsafely on an unresolved extent,
 	// while the worst case of opening a since-deleted path is a 13-byte header
@@ -672,30 +682,31 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			continue;
 		}
 
-		// The guard below reads `size`, so a lazily-registered segment must have
-		// its extent resolved first: `size == 0` makes the `==` branch compare
-		// `0 > positionInLogFile`, which is false, so a file whose tail never
-		// reached RocksDB would be deleted as if fully flushed.
-		try {
-			this->ensureExtent(logFile);
-		} catch (const std::exception& e) {
-			// Unresolvable extent — refuse to purge rather than delete a segment
-			// we cannot prove is flushed.
-			DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
-			continue;
-		} catch (...) {
-			DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s\n", this, logFile->path.string().c_str());
-			continue;
-		}
-
 		// only purge files that are entirely before the last flushed position,
 		// guaranteeing all their transactions have been committed to RocksDB
 		auto lastFlushedPosition = this->getLastFlushedPosition();
-		if (sequenceNumber > lastFlushedPosition.logSequenceNumber ||
-			(sequenceNumber == lastFlushedPosition.logSequenceNumber &&
-				logFile->size > lastFlushedPosition.positionInLogFile)
-		) {
+		if (sequenceNumber > lastFlushedPosition.logSequenceNumber) {
 			continue;
+		}
+		if (sequenceNumber == lastFlushedPosition.logSequenceNumber) {
+			// The only comparison here that reads `size`, and the only file whose
+			// extent therefore has to be resolved: a lazily-registered segment
+			// reads 0, so `0 > positionInLogFile` is false and a file whose tail
+			// never reached RocksDB would be deleted as if fully flushed.
+			try {
+				this->ensureExtent(logFile);
+			} catch (const std::exception& e) {
+				// Unresolvable extent — refuse to purge rather than delete a
+				// segment we cannot prove is flushed.
+				DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
+				continue;
+			} catch (...) {
+				DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s\n", this, logFile->path.string().c_str());
+				continue;
+			}
+			if (logFile->size > lastFlushedPosition.positionInLogFile) {
+				continue;
+			}
 		}
 
 		// count the entries before removing the file (counting is opt-in extra

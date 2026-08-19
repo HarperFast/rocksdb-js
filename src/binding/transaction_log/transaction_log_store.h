@@ -556,6 +556,8 @@ private:
 	 * Windows, mappings) for its lifetime. A file that fails to open releases
 	 * its handle in open() itself.
 	 *
+	 * Never touches the active segment: its handle belongs to the write path.
+	 *
 	 * Important! Must be called with `dataSetsMutex` held, which is also what
 	 * makes the exists() check meaningful: outside it the file could be
 	 * unlinked between the check and open(), whose O_CREAT / OPEN_ALWAYS would
