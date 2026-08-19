@@ -435,9 +435,6 @@ export type NativeDatabase = {
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	resume(): void;
-	// Dynamically changes the compression algorithm (and optional level) in effect for this
-	// database's column family via RocksDB's `DB::SetOptions()`; applies to subsequent flush/
-	// compaction output only, without closing/reopening the database.
 	setCompression(algorithm: string, level?: number): void;
 	// Provide a buffer that is used as the default/shared buffer for keys, where functions that provide a key can do so by assigning the key to the shared buffer and providing the length.
 	// A null value will reset the buffer.

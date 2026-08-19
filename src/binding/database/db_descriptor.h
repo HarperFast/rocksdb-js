@@ -597,16 +597,7 @@ struct ColumnFamilyDescriptor final {
 	 */
 	std::mutex userSharedBuffersMutex;
 
-	/**
-	 * Set when a `SetCompression()` call successfully applied its change to the
-	 * live in-memory options but failed to persist the OPTIONS file (e.g.
-	 * ENOSPC/EROFS/EIO). While set, `SetCompression()` must not skip the
-	 * `SetOptions()` call just because the live options already match the
-	 * request -- the live/durable split from the failed attempt is otherwise
-	 * unrecoverable by retry (a repeat call at the same algorithm would see
-	 * "already matches" and return success without ever writing OPTIONS).
-	 * Cleared on the next persist that succeeds.
-	 */
+	// Forces a persist retry after SetOptions changes memory but not OPTIONS.
 	std::atomic<bool> compressionPersistDirty{false};
 
 	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
