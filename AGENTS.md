@@ -217,7 +217,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     the type. `tsc` enforces this.
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
     `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
-      from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
+    from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
 - **GC is not exposed to Deno's test workers** (#770): tests that force collection run in Vitest's
   worker, not the process you launched. Node's `threads` pool inherits `--expose-gc` through
   `execArgv`, and Bun exposes `Bun.gc()`, but Deno uses the `forks` pool and
