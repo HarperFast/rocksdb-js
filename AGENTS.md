@@ -368,12 +368,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     but an earlier transaction would still carry its own flag and reset the run. Without that proof
     the bytes are kept and warned about: a batch split across a rotation has no boundary in the
     active file, and a log written before the flag existed would otherwise be truncated wholesale.
-    `TransactionLogStore::load()` seeds from the latest proved boundary (looking back at most one
-    file), floored by `txn.state` so recovery never hides entries already absorbed by RocksDB. A
-    rotation-spanning batch remains an unresolved phantom-group hazard after a later commit advances
-    the watermark. Both platforms truncate; Windows first drops the cached mapping because mapped
-    ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same physical truncation
-    for torn tails; recovery runs before mappings can be handed to readers.
+    `TransactionLogStore::load()` seeds from the latest proved boundary, walking backward across
+    rotation-spanning batches until it reaches a boundary or the `txn.state` floor, so recovery never
+    hides entries already absorbed by RocksDB. Both platforms truncate; Windows first drops the cached
+    mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same
+    physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an
+    entry with a durable header and partially durable payload look complete; detecting that case needs
+    a payload checksum. Recovery runs before mappings can be handed to readers.
 
 ## Debugging native heap corruption
 

@@ -234,9 +234,12 @@ struct TransactionLogFile final {
 
 	/**
 	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
-	 * if a torn/partial entry is found at the tail (e.g. an O_APPEND short write
-	 * interrupted by a crash), truncates the file back to the last valid entry
-	 * boundary and flushes. If a framing break is found mid-file with valid
+	 * if a torn/partial entry is detectable at the tail (e.g. an O_APPEND short
+	 * write interrupted by a crash), truncates the file back to the last valid
+	 * entry boundary and flushes. A Windows file is pre-extended with zeros, so a
+	 * durable entry header whose payload was only partly written is indistinguishable
+	 * from a complete payload ending in zeros and is not detectable without a checksum.
+	 * If a framing break is found mid-file with valid
 	 * entries still following it, the file is left intact — truncating would
 	 * discard committed/replicated entries — and the break is logged so the
 	 * reader's per-entry guards can surface it. Then, via
@@ -441,7 +444,7 @@ private:
 	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`
 	 * disappear from every reader and frees the range for the next append. Unlike
 	 * truncateFile() this must work on Windows too: the bytes are real entries, not
-	 * the partial tail that Windows' zero-padding already hides. Both platforms
+	 * a partial tail that the framing scan detected. Both platforms
 	 * truncate; Windows first drops the cached read-only mapping because mapped
 	 * ranges prevent SetEndOfFile from shrinking the file. Returns `true` on
 	 * success. Caller holds fileMutex, guarantees no outstanding mapping owner,

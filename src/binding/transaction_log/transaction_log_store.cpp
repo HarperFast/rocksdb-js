@@ -1098,19 +1098,19 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	// Seed from the last closed transaction, but never behind txn.state: flushed
 	// log entries are already durable in RocksDB and are therefore a safe floor.
-	// If the active file has no boundary, inspect only its predecessor so old
-	// pre-flag stores cannot turn startup into an unbounded full-history scan.
+	// A batch can span any number of rotations, so walk back through its unflagged
+	// files until a boundary is found. Once the flushed file has been scanned,
+	// older files cannot improve the floor and need not be read.
+	LogPosition flushedPosition = store->getLastFlushedPosition();
 	LogPosition recoveredPosition = { 0, 0 };
-	bool scannedOlderFile = false;
 	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
 		if (it->first > storeCurrentSeq) {
 			continue;
 		}
 		const bool isCurrent = it->first == storeCurrentSeq;
-		if (!isCurrent && scannedOlderFile) {
+		if (flushedPosition.logSequenceNumber > 0 && it->first < flushedPosition.logSequenceNumber) {
 			break;
 		}
-		scannedOlderFile = !isCurrent;
 
 		auto& logFile = it->second;
 		const bool openedForScan = !logFile->isOpen();
@@ -1141,8 +1141,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			DEBUG_LOG("%p TransactionLogStore::load Failed to scan transaction boundary in %s\n",
 				store.get(), logFile->path.string().c_str());
 		}
+		if (flushedPosition.logSequenceNumber > 0 && it->first == flushedPosition.logSequenceNumber) {
+			break;
+		}
 	}
-	LogPosition flushedPosition = store->getLastFlushedPosition();
 	*store->lastCommittedPosition = recoveredPosition < flushedPosition ? flushedPosition : recoveredPosition;
 
 	return store;

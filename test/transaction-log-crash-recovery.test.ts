@@ -242,6 +242,45 @@ describe('Transaction log crash recovery', () => {
 			}
 		}));
 
+	it('finds a committed boundary before a transaction spanning multiple rotations', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
+			let database = db;
+			try {
+				const log = database.useLog('foo');
+				await database.transaction(async (txn) => {
+					log.addEntry(Buffer.alloc(100, 'a'), txn.id);
+				});
+				await database.transaction(async (txn) => {
+					for (let i = 0; i < 25; i++) {
+						log.addEntry(Buffer.alloc(100, 'b'), txn.id);
+					}
+				});
+
+				const logDir = join(dbPath, 'transaction_logs', 'foo');
+				const activeLogPath = join(logDir, '4.txnlog');
+				database.close();
+				rmSync(join(logDir, 'txn.state'), { force: true });
+
+				const activeImage = readFileSync(activeLogPath);
+				const activeEntries = parseTransactionLog(activeLogPath).entries;
+				let entryOffset = TRANSACTION_LOG_FILE_HEADER_SIZE;
+				let lastFlagOffset = 0;
+				for (const entry of activeEntries) {
+					lastFlagOffset = entryOffset + TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1;
+					entryOffset += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry.length;
+				}
+				activeImage[lastFlagOffset] = 0;
+				await writeFile(activeLogPath, activeImage);
+
+				database = RocksDatabase.open(dbPath);
+				const reopened = database.useLog('foo');
+				expect(Array.from(reopened.query({ start: 0 })).length).toBe(1);
+				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(26);
+			} finally {
+				database.close();
+			}
+		}));
+
 	it('does not fail load when the preceding log file is damaged', () =>
 		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
 			let database = db;
