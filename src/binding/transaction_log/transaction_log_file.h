@@ -58,9 +58,8 @@ namespace rocksdb_js {
  * it as unknown so the caller retires the file instead.
  *
  * Used by the Windows append path (`WriteFile` does not promise to set
- * `lpNumberOfBytesWritten` on failure); defined here, unconditionally, and
- * tested from transaction_log_validation_test.cc (which, unlike the writev
- * suite, is not `#ifndef _WIN32`) so the branches run on every platform.
+ * `lpNumberOfBytesWritten` on failure); defined here, unconditionally, so it
+ * is testable off Windows.
  */
 inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t writeOrigin) {
 	int64_t landed = pointerAfterWrite - writeOrigin;

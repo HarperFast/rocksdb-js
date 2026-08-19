@@ -1,10 +1,12 @@
 #include <chrono>
 #include <exception>
+#include <sstream>
 #include <vector>
 #include "transaction_log_store.h"
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
+#include "napi/global_events.h"
 #include "fstream"
 
 namespace rocksdb_js {
@@ -445,7 +447,21 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			// (directory iteration order decides which segments are lazy, so ext4
 			// hits those orders and APFS hides them). close() leaves `size` set, so
 			// this walk costs its syscalls once per process, not once per backup.
-			this->ensureExtent(file);
+			try {
+				this->ensureExtent(file);
+			} catch (const std::exception& e) {
+				// A segment whose header will not open has no readable entries, so
+				// there is nothing to back up. Warn and continue: letting it throw
+				// would make one bad legacy segment fail every future backup of an
+				// otherwise healthy database.
+				std::ostringstream msg;
+				msg << "Transaction log segment " << file->path.string()
+					<< " could not be opened to measure its extent (" << e.what()
+					<< "); it is excluded from this backup.";
+				DEBUG_LOG("%p TransactionLogStore::snapshotForBackup WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				continue;
+			}
 			files.emplace_back(seq, file);
 		}
 	}

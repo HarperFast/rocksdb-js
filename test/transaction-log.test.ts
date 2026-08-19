@@ -2167,6 +2167,74 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFile)).toBe(false);
 			}));
 
+		// doPurge()'s flushed-position guard, which reads TransactionLogFile::size.
+		// A registered-but-never-opened segment reads 0 there and would be deleted
+		// with an unflushed tail (HarperFast/rocksdb-js#751); these cover the guard
+		// itself — whether a given segment is left lazy depends on directory
+		// iteration order, which a test cannot pin down.
+		it('should not purge a log file whose tail is past the flushed position', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+
+				const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+				const logFiles: string[] = [];
+				for (const sequence of [1, 2, 3]) {
+					const logFile = join(logDirectory, `${sequence}.txnlog`);
+					await writeFile(logFile, header);
+					await utimes(logFile, twoHoursAgo, twoHoursAgo);
+					logFiles.push(logFile);
+				}
+
+				// flushed position sits inside segment 1: { position: 8, sequence: 1 }
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(8, 0);
+				state.writeUInt32LE(1, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				expect(db.listLogs()).toEqual(['foo']);
+
+				expect(db.purgeLogs({ before: Date.now() - 60 * 60 * 1000 })).toEqual([]);
+				expect(existsSync(logFiles[0])).toBe(true);
+			}));
+
+		it('should purge a log file that is entirely before the flushed position', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+
+				const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+				const logFiles: string[] = [];
+				for (const sequence of [1, 2, 3]) {
+					const logFile = join(logDirectory, `${sequence}.txnlog`);
+					await writeFile(logFile, header);
+					await utimes(logFile, twoHoursAgo, twoHoursAgo);
+					logFiles.push(logFile);
+				}
+
+				// flushed position is at segment 1's end of entries — nothing unflushed
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+				state.writeUInt32LE(1, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+
+				expect(db.purgeLogs({ before: Date.now() - 60 * 60 * 1000 })).toEqual([logFiles[0]]);
+				expect(existsSync(logFiles[0])).toBe(false);
+			}));
+
 		it('should purge log files before a specific timestamp', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

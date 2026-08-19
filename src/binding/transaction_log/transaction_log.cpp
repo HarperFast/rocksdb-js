@@ -257,7 +257,9 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition");
 	double timestamp = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
-	LogPosition position;
+	// findPosition() opens lazily-registered segments, and open() throws on a
+	// bad header — a C++ exception escaping an N-API callback aborts the process.
+	LogPosition position = { 0, 0 };
 	try {
 		position = (*txnLogHandle)->findPosition(timestamp);
 	} catch (const std::exception& e) {
