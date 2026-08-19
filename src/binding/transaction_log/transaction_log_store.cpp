@@ -425,9 +425,16 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			// backup. Borrow the handle only — a file that was closed is closed again,
 			// so a backup of a store with many rotated segments does not accumulate
 			// fds (or, on Windows, mappings) for the rest of the process's life.
+			// close() leaves `size` set, so this walk costs its syscalls once per
+			// process, not once per backup.
+			//
+			// Only a definite absence skips the open: a stat that *errors* leaves us
+			// unable to tell, and omitting a segment from a backup is the failure this
+			// is here to prevent, while the worst case of opening a since-deleted path
+			// is a 13-byte header stub that the next startup rescan purges.
 			if (file->size.load(std::memory_order_relaxed) == 0 && !file->isOpen()) {
 				std::error_code existsEc;
-				if (std::filesystem::exists(file->path, existsEc) && !existsEc) {
+				if (std::filesystem::exists(file->path, existsEc) || existsEc) {
 					file->open(this->latestTimestamp);
 					file->close();
 				}
