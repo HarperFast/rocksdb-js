@@ -339,11 +339,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    the backup lock, **degrades to a skip** where the answer is untrustworthy: `GetFreeSpace`
    unsupported/errored or reporting 0 (which also lets a genuinely-full local volume through — a real 0
    is indistinguishable from the spurious 0 some network filesystems report). The stream-target backup
-   path never opens a `BackupEngine` against a volume and is not checked. A malformed transaction-log
-   header is excluded with a warning because it has no readable entries, but an environmental open/read
-   failure must reject the backup: the segment may be healthy, and success would publish an incomplete
-   snapshot. `collectTransactionLogBackupEntries()` converts those failures to a `rocksdb::Status` so no
-   C++ exception escapes either async backup worker (and a directory backup still releases its lock).
+   path never opens a `BackupEngine` against a volume and is not checked.
 9. **Transactional reads are database-wide, but async column-family pins end before teardown**:
    a RocksDB transaction can read any column family in its database, so a read issued through another
    `RocksDatabase` must use that caller's `ColumnFamilyDescriptor`, not the transaction's original
