@@ -244,7 +244,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
    size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
    found by the zero-timestamp convention instead. Windows appends seek to `size` first, so an
-   orphan is overwritten rather than skipped past — but a *shorter* next batch would leave the
+   orphan is overwritten rather than skipped past — but a _shorter_ next batch would leave the
    orphan's stale bytes past its own end, reading as an entry instead of the marker, so the
    erase-or-retire rule is the same on both platforms. Initialization owes the same discipline:
    a header write that lands short removes the file, since a size in `(0, HEADER_SIZE)` fails
