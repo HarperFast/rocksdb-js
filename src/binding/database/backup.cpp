@@ -203,7 +203,13 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		// sum counts SSTs that BackupEngine will hard-link.
 		uint64_t transactionLogBytes = 0;
 		if (state->backupTransactionLogs) {
-			for (const auto& entry : collectTransactionLogBackupEntries(state->descriptor.get())) {
+			std::vector<NamedTransactionLogBackupEntry> entries;
+			rocksdb::Status snapshotStatus =
+				collectTransactionLogBackupEntries(state->descriptor.get(), entries);
+			if (!snapshotStatus.ok()) {
+				return snapshotStatus;
+			}
+			for (const auto& entry : entries) {
 				transactionLogBytes +=
 					entry.file.inlineContents.empty() ? entry.file.byteLimit : entry.file.inlineContents.size();
 			}

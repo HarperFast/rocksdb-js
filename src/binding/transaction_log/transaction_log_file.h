@@ -6,6 +6,8 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <string>
+#include <utility>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/exception.h"
@@ -47,6 +49,13 @@
 #define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
 
 namespace rocksdb_js {
+
+class TransactionLogFormatException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogFormatException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
 
 /**
  * How much of a failed append reached the file, derived from where the file

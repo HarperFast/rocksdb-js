@@ -15,6 +15,8 @@
 #include "transaction_log/transaction_log_validation.h"
 
 using rocksdb_js::DBException;
+using rocksdb_js::TransactionLogFile;
+using rocksdb_js::TransactionLogFormatException;
 using rocksdb_js::TransactionLogFileValidation;
 using rocksdb_js::TransactionLogStoreValidation;
 using rocksdb_js::validateTransactionLogImage;
@@ -517,4 +519,27 @@ TEST(LandedBytesFromFilePointer, PointerBehindOriginIsUnknownNotZero) {
 	// append-boundary break left open. See HarperFast/rocksdb-js#748.
 	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(4095, 4096), TRANSACTION_LOG_BYTES_LANDED_UNKNOWN);
 	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(0, 4096), TRANSACTION_LOG_BYTES_LANDED_UNKNOWN);
+}
+
+TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures) {
+	auto dir = makeTempStoreDir("rocksdb-js-transaction-log-open-errors");
+	auto tooSmallPath = dir / "1.txnlog";
+	std::ofstream(tooSmallPath, std::ios::binary).write("short", 5);
+	TransactionLogFile tooSmall(tooSmallPath, 1);
+	EXPECT_THROW(tooSmall.open(0), TransactionLogFormatException);
+
+	auto badTokenPath = dir / "2.txnlog";
+	LogImage(/*token=*/0).writeTo(badTokenPath);
+	TransactionLogFile badToken(badTokenPath, 2);
+	EXPECT_THROW(badToken.open(0), TransactionLogFormatException);
+
+	auto badVersionPath = dir / "3.txnlog";
+	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/2).writeTo(badVersionPath);
+	TransactionLogFile badVersion(badVersionPath, 3);
+	EXPECT_THROW(badVersion.open(0), TransactionLogFormatException);
+
+	TransactionLogFile ioFailure(dir, 4);
+	EXPECT_THROW(ioFailure.open(0), DBException);
+
+	std::filesystem::remove_all(dir);
 }

@@ -700,6 +700,41 @@ describe('Transaction Log', () => {
 				expect(statSync(join(dbPath, 'transaction_logs', 'foo', '1.txnlog')).size).toBe(totalSize);
 			}));
 
+		it('reports lazy-segment open failures as JavaScript errors', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'open-error');
+				await mkdir(logDirectory, { recursive: true });
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(Date.now(), 5);
+				for (let sequence = 1; sequence <= 64; sequence++) {
+					await writeFile(join(logDirectory, `${sequence}.txnlog`), header);
+				}
+				const discoveryOrder = (await readdir(logDirectory)).map((file) =>
+					Number.parseInt(file, 10)
+				);
+				const predecessor = discoveryOrder.toSorted((a, b) => b - a)[1];
+				let highestSeen = 0;
+				const lazySequence = discoveryOrder.find((sequence) => {
+					if (sequence >= highestSeen) {
+						highestSeen = sequence;
+						return false;
+					}
+					return sequence !== predecessor;
+				});
+				expect(lazySequence).toBeDefined();
+
+				db.open();
+				const log = db.useLog('open-error');
+				await writeFile(join(logDirectory, `${lazySequence}.txnlog`), Buffer.alloc(header.length));
+
+				expect(() => log.getLogFileSize(lazySequence!)).toThrow('Invalid transaction log file');
+				expect(() => log._getMemoryMapOfFile(lazySequence!)).toThrow(
+					'Invalid transaction log file'
+				);
+			}));
+
 		it('should not commit the log if the transaction is aborted', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');

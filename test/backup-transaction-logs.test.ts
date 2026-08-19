@@ -1,9 +1,11 @@
 import { backups, RocksDatabase } from '../src/index.ts';
+import { constants } from '../src/load-binding.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	readdirSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -15,6 +17,7 @@ import * as tar from 'tar';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const tempPaths: string[] = [];
+const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_TOKEN } = constants;
 
 function tempPath(): string {
 	const p = generateDBPath();
@@ -31,6 +34,29 @@ async function writeLog(db: RocksDatabase, name: string, count = 5, fill = 'x'):
 			log.addEntry(value, txn.id);
 		});
 	}
+}
+
+function writeDiscoveredSegments(dbPath: string, name: string): string {
+	const logDirectory = join(dbPath, 'transaction_logs', name);
+	mkdirSync(logDirectory, { recursive: true });
+	const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+	header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+	header.writeUInt8(1, 4);
+	header.writeDoubleBE(Date.now(), 5);
+	for (let sequence = 1; sequence <= 64; sequence++) {
+		writeFileSync(join(logDirectory, `${sequence}.txnlog`), header);
+	}
+	const discoveryOrder = readdirSync(logDirectory).map((file) => Number.parseInt(file, 10));
+	const predecessor = discoveryOrder.toSorted((a, b) => b - a)[1];
+	let highestSeen = 0;
+	for (const sequence of discoveryOrder) {
+		if (sequence >= highestSeen) {
+			highestSeen = sequence;
+		} else if (sequence !== predecessor) {
+			return join(logDirectory, `${sequence}.txnlog`);
+		}
+	}
+	throw new Error('Could not construct a lazily discovered transaction log segment');
 }
 
 describe('Transaction log backups', () => {
@@ -78,6 +104,27 @@ describe('Transaction log backups', () => {
 			await db.backup(backupDir);
 			expect(existsSync(join(backupDir, 'transaction_logs'))).toBe(false);
 		}));
+
+	it.each(['directory', 'stream'] as const)(
+		'rejects a transaction log snapshot when a segment cannot be opened (%s)',
+		(target) =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const lazySegment = writeDiscoveredSegments(dbPath, 'unopenable');
+				db.open();
+				rmSync(lazySegment);
+				mkdirSync(lazySegment);
+
+				const backup =
+					target === 'directory'
+						? db.backup(tempPath(), { transactionLogs: true })
+						: db.backup(new WritableStream<Uint8Array>({ write() {} }), {
+								transactionLogs: true,
+							});
+				await expect(backup).rejects.toThrow(
+					/Failed to snapshot transaction log metadata.*Failed to open sequence file/s
+				);
+			})
+	);
 
 	it('preserves the log file mtime through backup and restore', () =>
 		dbRunner(async ({ db }) => {

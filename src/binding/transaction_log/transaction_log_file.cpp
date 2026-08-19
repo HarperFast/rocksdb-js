@@ -137,7 +137,7 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
-		throw rocksdb_js::DBException("File is too small to be a valid transaction log file: " + this->path.string());
+		throw rocksdb_js::TransactionLogFormatException("File is too small to be a valid transaction log file: " + this->path.string());
 	} else {
 		// try to read the token and version from the log file
 		int64_t result = this->readFromFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
@@ -150,7 +150,7 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 		uint32_t token = readUint32BE(buffer);
 		if (token != TRANSACTION_LOG_TOKEN) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Invalid transaction log file: %s\n", this, this->path.string().c_str());
-			throw rocksdb_js::DBException("Invalid transaction log file: " + this->path.string());
+			throw rocksdb_js::TransactionLogFormatException("Invalid transaction log file: " + this->path.string());
 		}
 
 		// version
@@ -163,7 +163,7 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 
 		if (this->version != 1) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
-			throw rocksdb_js::DBException("Unsupported transaction log file version: " + std::to_string(this->version));
+			throw rocksdb_js::TransactionLogFormatException("Unsupported transaction log file version: " + std::to_string(this->version));
 		}
 
 		// file timestamp

@@ -450,11 +450,10 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			// this walk costs its syscalls once per process, not once per backup.
 			try {
 				this->ensureExtent(file);
-			} catch (const std::exception& e) {
-				// A segment whose header will not open has no readable entries, so
-				// there is nothing to back up. Warn and continue: letting it throw
-				// would make one bad legacy segment fail every future backup of an
-				// otherwise healthy database.
+			} catch (const TransactionLogFormatException& e) {
+				// A malformed header has no readable entries, so there is nothing to
+				// back up. Other open failures propagate: the segment may be healthy,
+				// and reporting success would publish an incomplete backup.
 				std::ostringstream msg;
 				msg << "Transaction log segment " << file->path.string()
 					<< " could not be opened to measure its extent (" << e.what()

@@ -25,10 +25,13 @@ struct NamedTransactionLogBackupEntry final {
 /**
  * Collects the backup entries for every transaction log store owned by the
  * database at `descriptor` (via the process-global store registry). Each
- * store's files are snapshotted under that store's `dataSetsMutex`. Intended to
- * run on a backup worker thread while the database stays pinned.
+ * store's files are snapshotted under that store's `dataSetsMutex`. Returns an
+ * I/O status instead of letting a native exception escape the backup worker.
  */
-std::vector<NamedTransactionLogBackupEntry> collectTransactionLogBackupEntries(DBDescriptor* descriptor);
+rocksdb::Status collectTransactionLogBackupEntries(
+	DBDescriptor* descriptor,
+	std::vector<NamedTransactionLogBackupEntry>& entries
+);
 
 /**
  * Prefix of the staging directory a snapshot is copied into before being
