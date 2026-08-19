@@ -551,9 +551,10 @@ private:
 	 * pre-extended to maxFileSize, so only openFile()'s index scan finds the
 	 * real end of entries (see AGENTS.md invariant 5).
 	 *
-	 * Borrows the handle only — a file that was closed is closed again, on the
-	 * throwing paths too, so this costs its syscalls once per process rather
-	 * than accumulating fds (or, on Windows, mappings) for its lifetime.
+	 * Borrows the handle only — a file that was closed is closed again, so this
+	 * costs its syscalls once per process rather than accumulating fds (or, on
+	 * Windows, mappings) for its lifetime. A file that fails to open releases
+	 * its handle in open() itself.
 	 *
 	 * Important! Must be called with `dataSetsMutex` held, which is also what
 	 * makes the exists() check meaningful: outside it the file could be

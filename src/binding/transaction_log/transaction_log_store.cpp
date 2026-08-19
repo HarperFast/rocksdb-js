@@ -373,16 +373,7 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 		return;
 	}
 
-	// open() can throw after openFile() succeeded (bad token, unsupported
-	// version, short file, failed header read). Let it propagate — the file is
-	// known bad — but not while still holding its handle and, on Windows, the
-	// mapping the index scan created.
-	try {
-		file->open(this->latestTimestamp);
-	} catch (...) {
-		file->close();
-		throw;
-	}
+	file->open(this->latestTimestamp);
 	file->close();
 }
 

@@ -20,7 +20,10 @@ TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uin
 
 void TransactionLogFile::close() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
+	this->closeLocked();
+}
 
+void TransactionLogFile::closeLocked() {
 	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",

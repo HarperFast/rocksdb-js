@@ -87,6 +87,19 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 
 void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	try {
+		this->openLocked(latestTimestamp);
+	} catch (...) {
+		// A rejected file must not keep its handle — or, on Windows, the mapping
+		// openFile()'s index scan created. Every caller that opens speculatively
+		// (findPositionByTimestamp, ensureExtent) would otherwise leak one per
+		// attempt against a file that can never open.
+		this->closeLocked();
+		throw;
+	}
+}
+
+void TransactionLogFile::openLocked(const double latestTimestamp) {
 	this->openFile();
 
 	// Cache the file's effective last-write time now, once, so writeBatch can
