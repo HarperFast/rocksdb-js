@@ -357,6 +357,33 @@ LogPosition TransactionLogStore::getLastFlushedPosition() {
 	return position;
 }
 
+void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>& file) {
+	if (file->size.load(std::memory_order_relaxed) != 0 || file->isOpen()) {
+		return;
+	}
+
+	// Only a definite absence skips the open: a stat that *errors* leaves us
+	// unable to tell, and both callers fail unsafely on an unresolved extent,
+	// while the worst case of opening a since-deleted path is a 13-byte header
+	// stub that the next startup rescan purges.
+	std::error_code existsEc;
+	if (!std::filesystem::exists(file->path, existsEc) && !existsEc) {
+		return;
+	}
+
+	// open() can throw after openFile() succeeded (bad token, unsupported
+	// version, short file, failed header read). Let it propagate — the file is
+	// known bad — but not while still holding its handle and, on Windows, the
+	// mapping the index scan created.
+	try {
+		file->open(this->latestTimestamp);
+	} catch (...) {
+		file->close();
+		throw;
+	}
+	file->close();
+}
+
 std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() {
 	// Capture txn.state (the flushed-position side file) FIRST, and inline its
 	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
@@ -413,32 +440,12 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 		current = this->currentSequenceNumber.load(std::memory_order_relaxed);
 		files.reserve(this->sequenceFiles.size());
 		for (const auto& [seq, file] : this->sequenceFiles) {
-			// `size` only carries the written extent once the file has been opened.
-			// registerLogFile() opens the current file eagerly but leaves older ones
-			// lazy, and directory iteration order decides which those are, so without
-			// this a rotated segment is silently omitted from the backup by the
-			// `byteLimit == 0` skip below (ext4 hits those orders, APFS hides them).
-			//
-			// Done under dataSetsMutex, which purge() also holds: outside it the file
-			// could be unlinked between the isOpen() check and open(), whose O_CREAT /
-			// OPEN_ALWAYS would then resurrect a header-only ghost segment into the
-			// backup. Borrow the handle only — a file that was closed is closed again,
-			// so a backup of a store with many rotated segments does not accumulate
-			// fds (or, on Windows, mappings) for the rest of the process's life.
-			// close() leaves `size` set, so this walk costs its syscalls once per
-			// process, not once per backup.
-			//
-			// Only a definite absence skips the open: a stat that *errors* leaves us
-			// unable to tell, and omitting a segment from a backup is the failure this
-			// is here to prevent, while the worst case of opening a since-deleted path
-			// is a 13-byte header stub that the next startup rescan purges.
-			if (file->size.load(std::memory_order_relaxed) == 0 && !file->isOpen()) {
-				std::error_code existsEc;
-				if (std::filesystem::exists(file->path, existsEc) || existsEc) {
-					file->open(this->latestTimestamp);
-					file->close();
-				}
-			}
+			// Resolve the written extent of a lazily-registered segment, or the
+			// `byteLimit == 0` skip below silently omits it from the backup
+			// (directory iteration order decides which segments are lazy, so ext4
+			// hits those orders and APFS hides them). close() leaves `size` set, so
+			// this walk costs its syscalls once per process, not once per backup.
+			this->ensureExtent(file);
 			files.emplace_back(seq, file);
 		}
 	}
@@ -579,6 +586,10 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 			if (fileAgeMs > this->retentionMs) {
 				// old enough to purge by retention; only actually purgeable if the
 				// whole file lies before the flushed position (see doPurge()).
+				// A lazily-registered file reads `size == 0` here (collectStats is
+				// syscall-free, so it does not call ensureExtent()), which can
+				// count it as purgeable when doPurge() — which does resolve the
+				// extent — would retain it. Gauge-only skew; nothing acts on it.
 				bool fullyFlushed = !(seq > flushedPosition.logSequenceNumber ||
 					(seq == flushedPosition.logSequenceNumber && fileSize > flushedPosition.positionInLogFile));
 				if (fullyFlushed) {
@@ -651,6 +662,22 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		}
 
 		if (!shouldPurge) {
+			continue;
+		}
+
+		// The guard below reads `size`, so a lazily-registered segment must have
+		// its extent resolved first: `size == 0` makes the `==` branch compare
+		// `0 > positionInLogFile`, which is false, so a file whose tail never
+		// reached RocksDB would be deleted as if fully flushed.
+		try {
+			this->ensureExtent(logFile);
+		} catch (const std::exception& e) {
+			// Unresolvable extent — refuse to purge rather than delete a segment
+			// we cannot prove is flushed.
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
+			continue;
+		} catch (...) {
+			DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s\n", this, logFile->path.string().c_str());
 			continue;
 		}
 

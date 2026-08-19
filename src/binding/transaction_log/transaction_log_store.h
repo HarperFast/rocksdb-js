@@ -536,6 +536,32 @@ private:
 	 */
 	std::shared_ptr<TransactionLogFile> getLogFile(const uint32_t sequenceNumber);
 
+	/**
+	 * Resolves `file->size` — the written extent — for a file that was
+	 * registered but never opened, by borrowing its handle briefly.
+	 *
+	 * registerLogFile() opens the current file eagerly but leaves older ones
+	 * lazy, and a lazy file reads `size == 0`, which is indistinguishable from
+	 * "empty" to every consumer of the field. Two of them act on that: the
+	 * backup snapshot would omit the segment, and doPurge()'s flushed-position
+	 * guard would delete a segment whose tail never reached RocksDB. Anything
+	 * that makes a decision from `size` must call this first.
+	 *
+	 * A bare stat is not equivalent: on Windows an active segment is
+	 * pre-extended to maxFileSize, so only openFile()'s index scan finds the
+	 * real end of entries (see AGENTS.md invariant 5).
+	 *
+	 * Borrows the handle only — a file that was closed is closed again, on the
+	 * throwing paths too, so this costs its syscalls once per process rather
+	 * than accumulating fds (or, on Windows, mappings) for its lifetime.
+	 *
+	 * Important! Must be called with `dataSetsMutex` held, which is also what
+	 * makes the exists() check meaningful: outside it the file could be
+	 * unlinked between the check and open(), whose O_CREAT / OPEN_ALWAYS would
+	 * resurrect a header-only ghost segment.
+	 */
+	void ensureExtent(const std::shared_ptr<TransactionLogFile>& file);
+
 	void doPurge(
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,
 		const bool all = false,

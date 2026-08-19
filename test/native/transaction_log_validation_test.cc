@@ -498,3 +498,23 @@ TEST(TransactionLogValidation, StrictStoreTornTailIsInvalid) {
 
 	std::filesystem::remove_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// landedBytesFromFilePointer: how much of a failed append reached the file,
+// derived from where the file pointer ended up. Only the Windows append path
+// calls it, but the derivation is platform-independent and lives in the shared
+// header — so the tests live in this translation unit, which compiles
+// everywhere, rather than in the `#ifndef _WIN32` writev suite.
+// ---------------------------------------------------------------------------
+
+TEST(LandedBytesFromFilePointer, PointerPastOriginReportsTheDelta) {
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(4096, 4096), 0);
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(5000, 4096), 904);
+}
+
+TEST(LandedBytesFromFilePointer, PointerBehindOriginIsUnknownNotZero) {
+	// Reporting 0 here would mean "nothing landed": no erase, no retire, and an
+	// append-boundary break left open. See HarperFast/rocksdb-js#748.
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(4095, 4096), TRANSACTION_LOG_BYTES_LANDED_UNKNOWN);
+	EXPECT_EQ(rocksdb_js::landedBytesFromFilePointer(0, 4096), TRANSACTION_LOG_BYTES_LANDED_UNKNOWN);
+}
