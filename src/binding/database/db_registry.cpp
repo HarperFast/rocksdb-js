@@ -1016,7 +1016,6 @@ void DBRegistry::Shutdown() {
 		while (true) {
 			std::vector<ClosingDescriptor> descriptorsToClose;
 			std::vector<ClosingDescriptor> descriptorsToWaitFor;
-			std::string destroyCleanupError;
 			bool destroysInFlight;
 			{
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
@@ -1030,11 +1029,13 @@ void DBRegistry::Shutdown() {
 						continue;
 					}
 					if (!entry.descriptor) {
-						if (!entry.closeError.empty() && destroyCleanupError.empty()) {
-							destroyCleanupError =
-								"Cannot complete shutdown: database \"" + key.path +
-								"\" requires explicit destroy() cleanup: " + entry.closeError;
-						}
+						// A prior destroy() left a tombstone (descriptor cleared,
+						// closeError set) after its physical cleanup failed. That
+						// failure was already surfaced via database:closeFailed and
+						// stays visible in registryStatus().destroyCleanupPending.
+						// shutdown() is deliberately non-destructive -- only an
+						// explicit destroy() retries path deletion -- so skip it
+						// here rather than re-throwing the same error forever.
 						continue;
 					}
 					ClosingDescriptor closing{key, entry.descriptor, entry.condition};
@@ -1101,18 +1102,10 @@ void DBRegistry::Shutdown() {
 					throw rocksdb_js::DBException("Timed out waiting for database destruction to finish during shutdown");
 				}
 				if (closeError) std::rethrow_exception(closeError);
-				if (!destroyCleanupError.empty()) {
-					throw rocksdb_js::DBException(destroyCleanupError);
-				}
 				continue;
 			}
 			if (closeError) std::rethrow_exception(closeError);
-			if (!destroyCleanupError.empty()) {
-				throw rocksdb_js::DBException(destroyCleanupError);
-			}
-			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty() &&
-				destroyCleanupError.empty()
-			) break;
+			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty()) break;
 		}
 
 		// Purge the registry

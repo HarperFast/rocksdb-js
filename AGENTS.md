@@ -330,8 +330,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
    from another env after the in-flight count drains. The VT-only `verifyVersion` / `populateVersion`
-   fast paths are the exception: `DBHandle::open()` snapshots their immutable per-open VT epoch and
-   column-family ID so they do not touch teardown-owned native state or register an in-flight operation.
+   fast paths narrow, but do not remove, that requirement: both still start with
+   `UNWRAP_DB_HANDLE_AND_OPEN()`, so they still gate on `descriptor`/`isClosing()`. What
+   `DBHandle::open()`'s snapshotted `verificationTableDbId` / `verificationTableColumnFamilyId` actually
+   avoids is the `getColumnFamilyHandle()` dereference and the `OperationGuard`'s in-flight
+   registration — the two things that are unsafe to skip everywhere else. `PutSync`/`RemoveSync`/
+   `TransactionHandle` still compute the VT address as `descriptor->vtEpoch` +
+   `getColumnFamilyHandle()->GetID()` rather than reading the cached fields, so there are two
+   spellings of the same address computation that must stay in agreement.
    Async N-API setup must hold the guard until it hands off to `DBHandle::registerAsyncWork()`. Iterators
    take the guard through construction/descriptor attachment, then serialize each native iterator call
    against foreign forced close with their per-iterator mutex. `DBHandle::close()` itself is cross-env and must

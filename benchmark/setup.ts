@@ -503,6 +503,8 @@ export function workerBenchmark(type: string, options: any): void {
 					} catch (err) {
 						console.warn(`Benchmark teardown failed to delete db path: ${err}`);
 					}
+				} else {
+					console.warn(`Benchmark teardown failed; retaining ${dbPath} for inspection`);
 				}
 
 				resolve();

@@ -425,11 +425,18 @@ void DBDescriptor::finishClose(bool destroying) {
 		// Wait for all in-flight operations to complete before cleanup.
 		// The closing flag is already set, so new operations will fail with "Database is closing".
 		// Existing operations will decrement operationsInFlight and notify us when done.
+		// A long-running compactRange() holding an OperationGuard is the one
+		// in-flight op that can run unboundedly, so ask it to cancel rather
+		// than blocking this untimed wait for its full duration.
+		this->compactCancelRequested.store(true);
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {
 			this->operationsInFlight.wait(current);
 		}
+		// Clear it before any further compaction runs below (compact-on-close),
+		// which must not be cancelled -- nothing external is waiting on it.
+		this->compactCancelRequested.store(false);
 		DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
 		// Drain the commit pipeline before flushing so its data is included in
@@ -2253,6 +2260,9 @@ rocksdb::Status DBDescriptor::compactRange(
 	std::lock_guard<std::mutex> lock(this->compactMutex);
 	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
 	rocksdb::CompactRangeOptions options;
+	// Let a concurrent finishClose() interrupt this compaction rather than
+	// wait out its full, unbounded duration; see compactCancelRequested.
+	options.canceled = &this->compactCancelRequested;
 	if (bottommost) {
 		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
 		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting

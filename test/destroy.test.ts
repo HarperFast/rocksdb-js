@@ -13,6 +13,7 @@ const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failur
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
 const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts');
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
+const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
 const nodeExecutable =
 	process.env.NODE_BINARY ??
 	(process.versions.bun || process.versions.deno
@@ -163,7 +164,11 @@ describe('Destroy', () => {
 						expect.stringContaining('Failed to remove database directory'),
 					]);
 					chmodSync(lockedDirectory, 0o700);
-					expect(() => shutdown()).toThrow('requires explicit destroy() cleanup');
+					// shutdown() is deliberately non-destructive: it must not retry
+					// path deletion (only an explicit destroy() call may), so a
+					// pending tombstone does not make it throw, and it does not
+					// clear the tombstone even though the underlying cause is fixed.
+					shutdown();
 					expect(existsSync(dbPath)).toBe(true);
 					expect(
 						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
@@ -193,6 +198,16 @@ describe('Destroy', () => {
 			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
 			ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS: '250',
 			ROCKSDB_JS_TEST_ITERATOR_DESTROY_RACE: '1',
+		});
+	}, 15_000);
+
+	it('serializes an in-progress Next() against a foreign forced close', async () => {
+		// Unlike the constructor race above, this positions the destroy while
+		// a Next() call already holds iteratorMutex, so it must block on the
+		// mutex rather than racing it -- the actual case iteratorMutex exists
+		// for. See fork-iterator-next-race.mts.
+		await runDestroyFixture(iteratorNextRaceFixture, generateDBPath(), {
+			ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS: '250',
 		});
 	}, 15_000);
 
