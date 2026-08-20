@@ -251,7 +251,8 @@ void TransactionHandle::releaseIntent() {
  * again — release it. In-flight work is the exception: closing here would destroy the RocksDB
  * transaction under a still-running worker (`waitForAsyncWorkCompletion` is allowed to time out).
  * A commit keeps its own shared_ptr and completeCommitWork closes it; an async get is cancelled
- * so it rejects, and its complete callback closes once execute has finished.
+ * so it rejects, and each get complete callback re-enters onWrapperCollected so only the last
+ * in-flight get closes (waitForAsyncWorkCompletion can time out).
  */
 void TransactionHandle::onWrapperCollected() {
 	this->wrapperCollected.store(true);
@@ -548,7 +549,7 @@ napi_value TransactionHandle::get(
 			}
 
 			if (state->handle && state->handle->wrapperCollected.load()) {
-				state->handle->close();
+				state->handle->onWrapperCollected();
 			}
 
 			delete state;
