@@ -187,6 +187,47 @@ describe('orphaned transactions', () => {
 		})
 	);
 
+	itWithGC('should reject two in-flight async gets when the transaction is dropped', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			await db.put('foo', 'bar');
+			await db.put('baz', 'qux');
+			await db.flush();
+
+			setTxnGetExecuteDelayMsForTesting(250);
+			let first: Promise<unknown> | undefined;
+			let second: Promise<unknown> | undefined;
+			try {
+				await (async () => {
+					const txn = new Transaction(db.store);
+					const firstResult = txn.getBinary('foo');
+					const secondResult = txn.getBinary('baz');
+					if (!(firstResult instanceof Promise) || !(secondResult instanceof Promise)) {
+						throw new Error('expected cache-miss async gets');
+					}
+					first = firstResult;
+					second = secondResult;
+				})();
+
+				const deadline = Date.now() + 100;
+				while (Date.now() < deadline) {
+					forceGC!();
+					await delay(10);
+				}
+
+				await Promise.all([
+					expect(first).rejects.toThrow(/closed/i),
+					expect(second).rejects.toThrow(/closed/i),
+				]);
+				await collectOrphans(dbPath);
+			} finally {
+				setTxnGetExecuteDelayMsForTesting(0);
+			}
+
+			expect(status(dbPath).transactions).toBe(0);
+			expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
+		})
+	);
+
 	// An orphan that never read holds no snapshot, so close() reaches ClearSnapshot with nothing set
 	// — a different teardown path than every case above.
 	itWithGC('should release a transaction dropped before it ever read', () =>
