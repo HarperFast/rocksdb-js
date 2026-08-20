@@ -176,6 +176,16 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	bool transactionLogsUnregistered = false;
 
 	/**
+	 * Set by finishClose() only while it is draining operationsInFlight, so an
+	 * OperationGuard-holding compactRange() in progress on another thread can
+	 * cancel its manual compaction and release the guard promptly instead of
+	 * blocking the untimed drain wait for the compaction's full duration.
+	 * Cleared once the drain completes so the close-time "compact on close"
+	 * pass below always runs to completion.
+	 */
+	std::atomic<bool> compactCancelRequested{false};
+
+	/**
 	 * Counter tracking in-flight database operations. close() uses
 	 * atomic::wait() to block until this reaches zero.
 	 */
