@@ -333,6 +333,7 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): number;
+	estimateCount(startKey?: Buffer, endKey?: Buffer): { count: number; confidence: number };
 	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
 	getDBIntProperty(propertyName: string): number | undefined;
