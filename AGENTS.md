@@ -384,8 +384,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
     never ran. Recovery walks entry headers via positional reads (never a whole-file buffer);
     payload bytes are skipped. Discarding is gated on proof that the writer sets the flag — a
-    boundary earlier in the same
-    file — plus a single timestamp across the trailing run. Callers can assign repeated timestamps,
+    boundary earlier in the same file — plus a single timestamp across the trailing run. Callers can
+    assign repeated timestamps,
     but an earlier transaction would still carry its own flag and reset the run. Without that proof
     the bytes are kept and warned about: a batch split across a rotation has no boundary in the
     active file, and a log written before the flag existed would otherwise be truncated wholesale.

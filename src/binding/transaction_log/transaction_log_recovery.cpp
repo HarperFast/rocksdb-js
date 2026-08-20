@@ -36,9 +36,9 @@ struct ScanReader {
 		}
 	}
 
-	// Nearby sequential headers share a 64 KiB window. The first header, and
-	// any jump past that window (a large payload skip), read exactly 13 bytes
-	// so the payload is not pulled in.
+	// Sequential headers within 64 KiB of the current window refill from the
+	// next header. A larger gap is a payload skip: read exactly 13 bytes so
+	// that payload is not pulled in.
 	void readHeaderAt(uint32_t pos, char* dest) {
 		if (pos >= windowStart &&
 			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
@@ -46,7 +46,7 @@ struct ScanReader {
 			return;
 		}
 		const bool nearby =
-			windowLen > 0 && pos <= windowStart + windowLen + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+			windowLen > 0 && pos <= windowStart + windowLen + RESYNC_WINDOW;
 		if (nearby) {
 			if (window.size() < RESYNC_WINDOW) {
 				window.resize(RESYNC_WINDOW);
@@ -163,11 +163,14 @@ RecoveryScan scanTransactionLogForRecovery(
 		source.readHeaderAt(pos, header);
 		double timestamp = readDoubleBE(header);
 		if (timestamp == 0) {
+			// End-of-entries marker, including the zero padding of a pre-extended file.
 			return scan(RecoveryScan::Kind::Clean, pos);
 		}
 		uint32_t length = readUint32BE(header + 8);
 		if (length == 0 ||
 			static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
+			// Intact frames after the break are mid-file corruption; truncating would
+			// discard them. A torn tail has nothing valid behind it.
 			if (validFramingResumes(source, pos + 1)) {
 				return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 			}
