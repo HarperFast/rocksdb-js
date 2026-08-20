@@ -247,19 +247,12 @@ void TransactionHandle::releaseIntent() {
 }
 
 /**
- * Release the transaction. This is called after successful commit, after
- * the transaction has been aborted, or when the transaction is destroyed.
- *
- * The `closed` atomic gate ensures this runs at most once even when called
- * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
- * JS thread racing the async commit's complete callback on env W's JS thread).
- */
-/**
  * The JS wrapper was garbage collected, so nothing can commit, abort, or read through this handle
- * again — release it. A commit in flight is the exception: TransactionCommitState holds its own
- * shared_ptr and closing here would cancel it mid-flight, so completeCommitWork closes it instead
- * when it settles. close() is safe from a finalizer because it cancels and waits for in-flight
- * async work (an async get holds a raw TransactionHandle*) before destroying the transaction.
+ * again — release it. In-flight work is the exception: closing here would destroy the RocksDB
+ * transaction under a still-running worker (`waitForAsyncWorkCompletion` is allowed to time out).
+ * A commit keeps its own shared_ptr and completeCommitWork closes it; an async get is cancelled
+ * so it rejects, and each get complete callback re-enters onWrapperCollected so only the last
+ * in-flight get closes (waitForAsyncWorkCompletion can time out).
  */
 void TransactionHandle::onWrapperCollected() {
 	this->wrapperCollected.store(true);
@@ -269,11 +262,27 @@ void TransactionHandle::onWrapperCollected() {
 		return;
 	}
 
+	this->cancelAllAsyncWork();
+
+	if (this->activeAsyncWorkCount.load() > 0) {
+		DEBUG_LOG("%p TransactionHandle::onWrapperCollected Async work in flight, deferring close (txnId=%u, count=%d)\n",
+			this, this->id, this->activeAsyncWorkCount.load());
+		return;
+	}
+
 	DEBUG_LOG("%p TransactionHandle::onWrapperCollected Closing orphaned transaction (txnId=%u, state=%d)\n",
 		this, this->id, static_cast<int>(this->state));
 	this->close();
 }
 
+/**
+ * Release the transaction. This is called after successful commit, after
+ * the transaction has been aborted, or when the transaction is destroyed.
+ *
+ * The `closed` atomic gate ensures this runs at most once even when called
+ * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
+ * JS thread racing the async commit's complete callback on env W's JS thread).
+ */
 void TransactionHandle::close() {
 	if (this->closed.exchange(true)) {
 		return;
@@ -477,7 +486,7 @@ napi_value TransactionHandle::get(
 	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	auto state = new AsyncGetState<std::shared_ptr<TransactionHandle>>(env, shared_from_this(), readOptions, std::move(key));
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
 	state->completed.store(true);
@@ -499,9 +508,16 @@ napi_value TransactionHandle::get(
 		nullptr,   // async_resource
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
-			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
+			const int getDelayMs = txnGetExecuteDelayMs().load(std::memory_order_relaxed);
+			if (getDelayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
+			}
+			auto transactionGone = [](const std::shared_ptr<TransactionHandle>& handle) {
+				return !handle || handle->isCancelled() || handle->wrapperCollected.load() || !handle->txn;
+			};
+			if (transactionGone(state->handle)) {
+				state->status = rocksdb::Status::Aborted("Transaction is closed");
 			} else {
 				state->status = state->handle->txn->Get(
 					state->readOptions,
@@ -509,9 +525,11 @@ napi_value TransactionHandle::get(
 					state->key,
 					&state->value
 				);
-				// While the database and the caller's column family are still pinned — the completion
-				// runs after teardown may have released both.
-				if (state->status.ok() && state->vtSlot) {
+				if (transactionGone(state->handle)) {
+					state->status = rocksdb::Status::Aborted("Transaction is closed");
+				} else if (state->status.ok() && state->vtSlot) {
+					// While the database and the caller's column family are still pinned — the completion
+					// runs after teardown may have released both.
 					vtCheckAsyncGet(
 						state,
 						state->handle->dbHandle->descriptor->db.get(),
@@ -520,15 +538,18 @@ napi_value TransactionHandle::get(
 				}
 			}
 			state->readColumnDescriptor.reset();
-			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
 				resolveGetResult(env, "Transaction get failed", state);
+			}
+
+			if (state->handle && state->handle->wrapperCollected.load()) {
+				state->handle->onWrapperCollected();
 			}
 
 			delete state;

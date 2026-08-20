@@ -630,6 +630,13 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
 /**
+ * Test-only: delay the transactional async-get execute handler by `ms` so a test can GC the
+ * JS wrapper first. Pass 0 to disarm. Used by the orphaned-transaction in-flight get test.
+ */
+export const setTxnGetExecuteDelayMsForTesting: (ms: number) => void =
+	binding.setTxnGetExecuteDelayMsForTesting;
+
+/**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
  * `LockFileEx` on Windows), creating the file and any missing parent
  * directories. Exclusive by default; pass `shared` for a shared (reader) lock

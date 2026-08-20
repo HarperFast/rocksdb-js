@@ -1,4 +1,5 @@
 import { registryStatus } from '../src/index.js';
+import { setTxnGetExecuteDelayMsForTesting } from '../src/load-binding.js';
 import { Transaction } from '../src/transaction.js';
 import { dbRunner } from './lib/util.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -146,6 +147,85 @@ describe('orphaned transactions', () => {
 				expect(status(dbPath).transactions).toBe(0);
 				expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
 			})
+	);
+
+	// txn.get() / db.get({ transaction }) keep the Transaction alive via a then-callback until
+	// the promise settles. getBinary does not, so the wrapper can be collected while the
+	// cache-miss get is still queued. The execute delay keeps the worker from finishing Get
+	// before GC; without it this would race and sometimes succeed.
+	itWithGC('should reject an in-flight async get when the transaction is dropped', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			await db.put('foo', 'bar');
+			await db.flush();
+
+			setTxnGetExecuteDelayMsForTesting(250);
+			let pending: Promise<unknown> | undefined;
+			try {
+				await (async () => {
+					const txn = new Transaction(db.store);
+					const result = txn.getBinary('foo');
+					if (!(result instanceof Promise)) {
+						throw new Error('expected a cache-miss async get');
+					}
+					pending = result;
+				})();
+
+				const deadline = Date.now() + 100;
+				while (Date.now() < deadline) {
+					forceGC!();
+					await delay(10);
+				}
+
+				await expect(pending).rejects.toThrow(/closed/i);
+				await collectOrphans(dbPath);
+			} finally {
+				setTxnGetExecuteDelayMsForTesting(0);
+			}
+
+			expect(status(dbPath).transactions).toBe(0);
+			expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
+		})
+	);
+
+	itWithGC('should reject two in-flight async gets when the transaction is dropped', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			await db.put('foo', 'bar');
+			await db.put('baz', 'qux');
+			await db.flush();
+
+			setTxnGetExecuteDelayMsForTesting(250);
+			let first: Promise<unknown> | undefined;
+			let second: Promise<unknown> | undefined;
+			try {
+				await (async () => {
+					const txn = new Transaction(db.store);
+					const firstResult = txn.getBinary('foo');
+					const secondResult = txn.getBinary('baz');
+					if (!(firstResult instanceof Promise) || !(secondResult instanceof Promise)) {
+						throw new Error('expected cache-miss async gets');
+					}
+					first = firstResult;
+					second = secondResult;
+				})();
+
+				const deadline = Date.now() + 100;
+				while (Date.now() < deadline) {
+					forceGC!();
+					await delay(10);
+				}
+
+				await Promise.all([
+					expect(first).rejects.toThrow(/closed/i),
+					expect(second).rejects.toThrow(/closed/i),
+				]);
+				await collectOrphans(dbPath);
+			} finally {
+				setTxnGetExecuteDelayMsForTesting(0);
+			}
+
+			expect(status(dbPath).transactions).toBe(0);
+			expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
+		})
 	);
 
 	// An orphan that never read holds no snapshot, so close() reaches ClearSnapshot with nothing set
