@@ -463,6 +463,19 @@ TEST(TransactionLogRecoverySource, DenseTinyEntriesAmortizesReads) {
 	EXPECT_GT(counted.maxN, 13u);
 }
 
+TEST(TransactionLogRecoverySource, TypicalPayloadsAmortizesReads) {
+	LogImage img;
+	for (int i = 0; i < 500; ++i) {
+		img.entry(200);
+	}
+	CountingRead counted{ img.data(), img.size() };
+	auto scan = scanTransactionLogForRecovery(img.size(), countingRead, &counted);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.validEnd, img.size());
+	EXPECT_LT(counted.reads, 10u);
+	EXPECT_GT(counted.maxN, 13u);
+}
+
 TEST(TransactionLogRecoverySource, IoFailureThrowsRatherThanTruncate) {
 	LogImage img;
 	img.entry(10).entry(20);
@@ -512,7 +525,10 @@ TEST(TransactionLogRecoveryFile, MatchesBufferScanOnMidFileCorruption) {
 #ifndef _WIN32
 TEST(TransactionLogRecoveryFile, ReadsAHeaderPastTwoGiBOnASparseFile) {
 	namespace fs = std::filesystem;
-	auto path = fs::temp_directory_path() / "rocksdb-js-recovery-sparse-2g.txnlog";
+	static uint32_t sparseSeq = 0;
+	auto path = fs::temp_directory_path() /
+		("rocksdb-js-recovery-sparse-2g-" + std::to_string(::getpid()) + "-" +
+			std::to_string(++sparseSeq) + ".txnlog");
 	std::error_code error;
 	fs::remove(path, error);
 
@@ -522,31 +538,40 @@ TEST(TransactionLogRecoveryFile, ReadsAHeaderPastTwoGiBOnASparseFile) {
 	const uint32_t firstLength = secondHeader - TRANSACTION_LOG_FILE_HEADER_SIZE -
 		TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 
-	int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0640);
-	ASSERT_GE(fd, 0);
-	ASSERT_EQ(::ftruncate(fd, static_cast<off_t>(fileSize)), 0);
+	struct Fd {
+		int fd = -1;
+		~Fd() {
+			if (fd >= 0) {
+				::close(fd);
+			}
+		}
+	} owned;
+	owned.fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0640);
+	ASSERT_GE(owned.fd, 0);
+	ASSERT_EQ(::ftruncate(owned.fd, static_cast<off_t>(fileSize)), 0);
 
 	std::vector<char> fileHeader(TRANSACTION_LOG_FILE_HEADER_SIZE);
 	rocksdb_js::writeUint32BE(fileHeader.data(), 0x574f4f46);
 	rocksdb_js::writeUint8(fileHeader.data() + 4, 1);
 	rocksdb_js::writeDoubleBE(fileHeader.data() + 5, 2.0);
-	ASSERT_EQ(::pwrite(fd, fileHeader.data(), fileHeader.size(), 0),
+	ASSERT_EQ(::pwrite(owned.fd, fileHeader.data(), fileHeader.size(), 0),
 		static_cast<ssize_t>(fileHeader.size()));
 
 	std::vector<char> firstHeader(TRANSACTION_LOG_ENTRY_HEADER_SIZE);
 	rocksdb_js::writeDoubleBE(firstHeader.data(), 3.0);
 	rocksdb_js::writeUint32BE(firstHeader.data() + 8, firstLength);
 	rocksdb_js::writeUint8(firstHeader.data() + 12, 0);
-	ASSERT_EQ(::pwrite(fd, firstHeader.data(), firstHeader.size(), TRANSACTION_LOG_FILE_HEADER_SIZE),
+	ASSERT_EQ(::pwrite(owned.fd, firstHeader.data(), firstHeader.size(), TRANSACTION_LOG_FILE_HEADER_SIZE),
 		static_cast<ssize_t>(firstHeader.size()));
 
 	std::vector<char> second(TRANSACTION_LOG_ENTRY_HEADER_SIZE + payload, static_cast<char>(0xAB));
 	rocksdb_js::writeDoubleBE(second.data(), 4.0);
 	rocksdb_js::writeUint32BE(second.data() + 8, payload);
 	rocksdb_js::writeUint8(second.data() + 12, 1);
-	ASSERT_EQ(::pwrite(fd, second.data(), second.size(), secondHeader),
+	ASSERT_EQ(::pwrite(owned.fd, second.data(), second.size(), secondHeader),
 		static_cast<ssize_t>(second.size()));
-	::close(fd);
+	::close(owned.fd);
+	owned.fd = -1;
 
 	TransactionLogFile file(path, 1);
 	file.open(2.0);
