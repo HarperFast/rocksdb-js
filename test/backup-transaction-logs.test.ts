@@ -43,7 +43,7 @@ function writeDiscoveredSegments(dbPath: string, name: string): string {
 	header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
 	header.writeUInt8(1, 4);
 	header.writeDoubleBE(Date.now(), 5);
-	for (let sequence = 1; sequence <= 64; sequence++) {
+	for (let sequence = 64; sequence >= 1; sequence--) {
 		writeFileSync(join(logDirectory, `${sequence}.txnlog`), header);
 	}
 	const discoveryOrder = readdirSync(logDirectory).map((file) => Number.parseInt(file, 10));
