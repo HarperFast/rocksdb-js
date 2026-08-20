@@ -1699,7 +1699,7 @@ napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_val
 	return this->events.removeListener(env, key, callback);
 }
 
-void DBDescriptor::removeListener(std::string& key, const std::shared_ptr<ListenerCallback>& target) {
+void DBDescriptor::removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target) {
 	this->events.removeListener(key, target);
 }
 

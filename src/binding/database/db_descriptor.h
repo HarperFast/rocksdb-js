@@ -385,7 +385,7 @@ public:
 	bool notify(std::string key, ListenerData* data);
 	napi_value listeners(napi_env env, std::string& key);
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
-	void removeListener(std::string& key, const std::shared_ptr<ListenerCallback>& target);
+	void removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target);
 	void removeListenersByOwner(DBHandle* owner);
 	void removeListenersByEnv(napi_env env);
 

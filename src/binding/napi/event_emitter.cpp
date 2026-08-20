@@ -455,11 +455,8 @@ void EventEmitter::removeListener(const std::string& key, const std::shared_ptr<
 	}
 
 	auto& listeners = it->second;
-	for (auto listener = listeners.begin(); listener != listeners.end(); ++listener) {
-		if (*listener != target) {
-			continue;
-		}
-
+	auto listener = std::find(listeners.begin(), listeners.end(), target);
+	if (listener != listeners.end()) {
 		// Release the tsfn first (queues napi_ref deletion on the JS thread via
 		// the tsfn finalizer), then erase. No napi_ref is dereferenced here, so
 		// this is safe from a finalizer during teardown.
@@ -468,7 +465,6 @@ void EventEmitter::removeListener(const std::string& key, const std::shared_ptr<
 		this->listenerCount.fetch_sub(1, std::memory_order_relaxed);
 		DEBUG_LOG("%p EventEmitter::removeListener (by identity) removed listener for key:", this);
 		DEBUG_LOG_KEY_LN(key);
-		break;
 	}
 
 	if (listeners.empty()) {
