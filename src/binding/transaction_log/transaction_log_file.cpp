@@ -176,7 +176,7 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	return end;
 }
 
-void TransactionLogFile::recoverTail() {
+void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
 	if (this->version != 1) {
@@ -204,7 +204,7 @@ void TransactionLogFile::recoverTail() {
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
-			this->discardUnclosedTransaction(scan, scan.validEnd);
+			this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
 			return;
 
 		case RecoveryScan::Kind::MidFileCorruption: {
@@ -231,6 +231,15 @@ void TransactionLogFile::recoverTail() {
 			if (scan.validEnd >= fileSize) {
 				return;
 			}
+			if (scan.validEnd < protectedPosition) {
+				std::ostringstream msg;
+				msg << "Transaction log " << this->path.string()
+					<< " has a torn tail before the flushed position " << protectedPosition
+					<< "; leaving it intact to preserve durable log history.";
+				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				return;
+			}
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Torn tail in %s: truncating %u -> %u bytes\n",
 				this, this->path.string().c_str(), fileSize, scan.validEnd);
 			if (this->truncateFile(scan.validEnd)) {
@@ -249,7 +258,7 @@ void TransactionLogFile::recoverTail() {
 
 				// The partial bytes are gone; whole entries of the same interrupted
 				// batch can still precede them.
-				this->discardUnclosedTransaction(scan, scan.validEnd);
+				this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
 			} else {
 				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
 					this, this->path.string().c_str());
@@ -258,10 +267,21 @@ void TransactionLogFile::recoverTail() {
 	}
 }
 
-void TransactionLogFile::discardUnclosedTransaction(const RecoveryScan& scan, uint32_t entriesEnd) {
+void TransactionLogFile::discardUnclosedTransaction(
+	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition) {
 	uint32_t boundary = scan.lastCompleteTransactionEnd;
 	if (entriesEnd <= boundary) {
 		return; // the file ends on a transaction boundary
+	}
+	if (boundary < protectedPosition) {
+		std::ostringstream msg;
+		msg << "Transaction log " << this->path.string()
+			<< " has an unclosed transaction crossing the flushed position " << protectedPosition
+			<< "; leaving it intact to preserve durable log history.";
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n",
+			this, msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		return;
 	}
 
 	// A zero boundary means no entry in this file closed a transaction. Either the

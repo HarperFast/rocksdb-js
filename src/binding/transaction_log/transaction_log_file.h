@@ -245,9 +245,10 @@ struct TransactionLogFile final {
 	 * reader's per-entry guards can surface it. Then, via
 	 * discardUnclosedTransaction(), drops any whole entries left over from a batch
 	 * that never closed. Must be called after open() and before the file receives
-	 * any appends; only meaningful for the active (current) log file.
+	 * any appends; only meaningful for the active (current) log file. Bytes before
+	 * protectedPosition are retained because txn.state proves RocksDB flushed them.
 	 */
-	void recoverTail();
+	void recoverTail(uint32_t protectedPosition = 0);
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -264,8 +265,10 @@ struct TransactionLogFile final {
 	 *
 	 * @param scan       The scan recoverTail() already ran on this file.
 	 * @param entriesEnd End of the entries after any torn-tail truncation.
+	 * @param protectedPosition Earliest offset that recovery may erase.
 	 */
-	void discardUnclosedTransaction(const RecoveryScan& scan, uint32_t entriesEnd);
+	void discardUnclosedTransaction(
+		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
 	void resetTimestampIndex();
 
 	/**

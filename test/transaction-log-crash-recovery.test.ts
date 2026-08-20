@@ -179,7 +179,7 @@ describe('Transaction log crash recovery', () => {
 			}
 		}));
 
-	it('never seeds the committed watermark behind the flushed position', () =>
+	it('never truncates or seeds the committed watermark behind the flushed position', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			let database = db;
 			try {
@@ -197,8 +197,14 @@ describe('Transaction log crash recovery', () => {
 				const image = readFileSync(logPath);
 				const { entries } = parseTransactionLog(logPath);
 				let offset = TRANSACTION_LOG_FILE_HEADER_SIZE;
+				let tailTimestampOffset = 0;
 				for (const [index, entry] of entries.entries()) {
-					if (index > 0) {
+					if (index === 1) {
+						tailTimestampOffset = offset;
+					} else if (index === 2) {
+						image.copy(image, offset, tailTimestampOffset, tailTimestampOffset + 8);
+					}
+					if (index >= 1) {
 						image[offset + TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1] = 0;
 					}
 					offset += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entry.length;
@@ -207,7 +213,9 @@ describe('Transaction log crash recovery', () => {
 
 				database = RocksDatabase.open(dbPath);
 				const reopened = database.useLog('foo');
+				expect(statSync(logPath).size).toBe(image.length);
 				expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
+				expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
 			} finally {
 				database.close();
 			}

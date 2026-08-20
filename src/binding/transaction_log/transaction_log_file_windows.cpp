@@ -469,8 +469,11 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	}
 
 	if (!::FlushFileBuffers(this->fileHandle)) {
+		DWORD error = ::GetLastError();
 		DEBUG_LOG("%p TransactionLogFile::truncateFile FlushFileBuffers failed for %s (error=%lu)\n",
-			this, this->path.string().c_str(), ::GetLastError());
+			this, this->path.string().c_str(), error);
+		throw rocksdb_js::DBException(
+			"Failed to flush transaction log truncation: " + this->path.string());
 	}
 	return true;
 }

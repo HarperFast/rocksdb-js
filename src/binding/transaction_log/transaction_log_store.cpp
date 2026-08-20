@@ -1079,6 +1079,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store.get(), e.what());
 	}
 
+	LogPosition flushedPosition = store->getLastFlushedPosition();
+
 	// Only the active file can carry a torn append; recover it after discovery and
 	// refresh the write position if recovery shortened it.
 	uint32_t storeCurrentSeq = store->currentSequenceNumber.load(std::memory_order_relaxed);
@@ -1089,7 +1091,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			if (!currentFile->isOpen()) {
 				currentFile->open(store->latestTimestamp);
 			}
-			currentFile->recoverTail();
+			uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
+				? flushedPosition.positionInLogFile
+				: 0;
+			currentFile->recoverTail(protectedPosition);
 			store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 		}
 	}
@@ -1101,7 +1106,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// A batch can span any number of rotations, so walk back through its unflagged
 	// files until a boundary is found. Once the flushed file has been scanned,
 	// older files cannot improve the floor and need not be read.
-	LogPosition flushedPosition = store->getLastFlushedPosition();
 	LogPosition recoveredPosition = { 0, 0 };
 	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
 		if (it->first > storeCurrentSeq) {

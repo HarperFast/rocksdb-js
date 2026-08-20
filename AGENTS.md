@@ -368,6 +368,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     but an earlier transaction would still carry its own flag and reset the run. Without that proof
     the bytes are kept and warned about: a batch split across a rotation has no boundary in the
     active file, and a log written before the flag existed would otherwise be truncated wholesale.
+    Recovery reads `txn.state` before repairing the active file and never truncates below its
+    same-file flushed offset: a missing flag can be media corruption on a batch RocksDB already
+    absorbed, not proof that the commit never ran.
     `TransactionLogStore::load()` seeds from the latest proved boundary, walking backward across
     rotation-spanning batches until it reaches a boundary or the `txn.state` floor, so recovery never
     hides entries already absorbed by RocksDB. Both platforms truncate; Windows first drops the cached
