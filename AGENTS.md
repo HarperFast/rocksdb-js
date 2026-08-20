@@ -382,7 +382,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     anything grouping on the flag. Discarding is safe because `writeBatch()` completes before
     `Transaction::Commit()` in every commit path and both commit-thread lanes preserve dispatch
     order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
-    never ran. It is gated on proof that the writer sets the flag — a boundary earlier in the same
+    never ran. Recovery walks entry headers via positional reads (never a whole-file buffer);
+    payload bytes are skipped. Discarding is gated on proof that the writer sets the flag — a
+    boundary earlier in the same
     file — plus a single timestamp across the trailing run. Callers can assign repeated timestamps,
     but an earlier transaction would still carry its own flag and reset the run. Without that proof
     the bytes are kept and warned about: a batch split across a rotation has no boundary in the

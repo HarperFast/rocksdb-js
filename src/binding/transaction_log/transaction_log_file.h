@@ -10,6 +10,7 @@
 #include "core/encoding.h"
 #include "core/exception.h"
 #include "core/platform.h"
+#include "transaction_log/transaction_log_recovery.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -58,9 +59,6 @@ namespace rocksdb_js {
 // forward declarations
 struct MemoryMap;
 struct TransactionLogEntryBatch;
-// defined in transaction_log_recovery.h, which includes this header for the
-// framing constants — so it can only be forward declared here
-struct RecoveryScan;
 
 struct TransactionLogFile final {
 	/**
@@ -110,9 +108,10 @@ struct TransactionLogFile final {
 	 * Offset just past the last entry that closed a transaction (carried
 	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`), as observed by the open-time recovery
 	 * scan; 0 if this file holds no complete transaction or was never scanned.
-	 * Only written by recoverTail() before the store is published, and read by
-	 * TransactionLogStore::load() to seed the committed watermark — see
-	 * scanForLastCompleteTransactionEnd() for files that skip recovery.
+	 * Only written by recoverTail() / scanForLastCompleteTransactionEnd() before
+	 * the store is published, and read by TransactionLogStore::load() to seed the
+	 * committed watermark — see scanForLastCompleteTransactionEnd() for files that
+	 * skip recovery.
 	 */
 	std::atomic<uint32_t> lastCompleteTransactionEnd = 0;
 
@@ -251,6 +250,14 @@ struct TransactionLogFile final {
 	void recoverTail(uint32_t protectedPosition = 0);
 
 	/**
+	 * Open-time framing scan via positional header reads. Precondition: the caller
+	 * holds fileMutex. Throws DBException if a read fails or is short of the
+	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
+	 * this->size (append-owned written extent), not the mapped/pre-extended size.
+	 */
+	RecoveryScan scanRecoveryLocked();
+
+	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
 	 * ends on a transaction boundary. Unlike the torn-tail truncation these are
 	 * whole, well-framed entries — only the batch's final entry carries
@@ -272,10 +279,11 @@ struct TransactionLogFile final {
 	void resetTimestampIndex();
 
 	/**
-	 * Reads this file and returns the offset just past its last complete
-	 * transaction (0 if it holds none). recoverTail() already computes this for
-	 * the active file; this is for the older, rotated files the store walks back
-	 * through when the active one ends mid-transaction.
+	 * Returns the offset just past this file's last complete transaction (0 if it
+	 * holds none). recoverTail() already computes this for the active file; this
+	 * is for the older, rotated files the store walks back through when the active
+	 * one ends mid-transaction. Throws DBException on I/O failure; load() catches
+	 * that and falls back toward txn.state.
 	 */
 	uint32_t scanForLastCompleteTransactionEnd();
 
@@ -420,6 +428,12 @@ private:
 	 * Platform specific function that reads data from the log file.
 	 */
 	int64_t readFromFile(void* buffer, uint32_t size, int64_t offset = -1);
+
+	/**
+	 * Reads `n` bytes at `offset` via readFromFile, retrying short reads and EINTR.
+	 * Precondition: caller holds fileMutex. Returns false on error or unexpected EOF.
+	 */
+	bool readFullyFromFile(uint32_t offset, void* dest, uint32_t n);
 
 	/**
 	 * Platform specific function that writes multiple buffers to the log file.
