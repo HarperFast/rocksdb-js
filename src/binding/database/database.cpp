@@ -1415,21 +1415,21 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	// if we have a callback, add it as a listener
-	napi_ref callbackRef = nullptr;
+	std::shared_ptr<ListenerCallback> listener;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
 	if (type != napi_undefined) {
 		if (type == napi_function) {
 			DEBUG_LOG("Database::GetUserSharedBuffer key start=%u end=%u:", keyStart, keyEnd);
 			DEBUG_LOG_KEY_LN(keyStr);
-			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
+			listener = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;
 		}
 	}
 
-	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, *dbHandle, argv[1], callbackRef);
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, *dbHandle, argv[1], std::move(listener));
 }
 
 /**

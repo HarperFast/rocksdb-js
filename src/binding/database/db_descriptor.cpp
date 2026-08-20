@@ -1569,19 +1569,21 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 
 	if (auto dbHandle = finalizeData->dbHandle.lock()) {
 		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle=%p\n", dbHandle.get());
-		if (finalizeData->callbackRef) {
-			napi_value callback;
-			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
+		// Remove the listener registered for this buffer's key by identity, but
+		// only while it is still live. The listener's napi_ref is owned by its
+		// threadsafe function, which deletes it once the listener is torn down
+		// (on close / env teardown), so re-resolving the ref here would be a
+		// use-after-free during shutdown (HarperFast/rocksdb-js#790). A live
+		// weak_ptr means the listener is still in the emitter's map; if it has
+		// already been removed (e.g. by close's removeListenersByOwner, which
+		// runs before descriptor.reset()), the lock fails and there is nothing
+		// to do.
+		if (auto listener = finalizeData->listener.lock()) {
+			if (dbHandle->descriptor) {
 				DEBUG_LOG("%p userSharedBufferFinalize removing listener for key:", dbHandle.get());
 				DEBUG_LOG_KEY_LN(finalizeData->key);
-				if (dbHandle->descriptor) {
-					DEBUG_LOG("%p userSharedBufferFinalize descriptor is still alive %p", dbHandle.get(), dbHandle->descriptor.get());
-					dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
-				} else {
-					DEBUG_LOG("%p userSharedBufferFinalize descriptor is not alive %p", dbHandle.get(), dbHandle->descriptor.get());
-				}
+				dbHandle->descriptor->removeListener(finalizeData->key, listener);
 			}
-			finalizeData->callbackRef = nullptr;
 		}
 	} else {
 		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle was already destroyed for key:");
@@ -1611,7 +1613,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	std::string& key,
 	std::shared_ptr<DBHandle> dbHandle,
 	napi_value defaultBuffer,
-	napi_ref callbackRef
+	std::shared_ptr<ListenerCallback> listener
 ) {
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
@@ -1655,7 +1657,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		std::weak_ptr<DBHandle>(dbHandle),
 		std::weak_ptr<ColumnFamilyDescriptor>(dbHandle->columnDescriptor),
 		userSharedBuffer,
-		callbackRef
+		std::weak_ptr<ListenerCallback>(listener)
 	);
 
 	napi_value result;
@@ -1673,7 +1675,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 /**
  * Adds an event listener to this descriptor's event emitter.
  */
-napi_ref DBDescriptor::addListener(
+std::shared_ptr<ListenerCallback> DBDescriptor::addListener(
 	napi_env env,
 	std::string& key,
 	napi_value callback,
@@ -1700,6 +1702,10 @@ napi_value DBDescriptor::listeners(napi_env env, std::string& key) {
 
 napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_value callback) {
 	return this->events.removeListener(env, key, callback);
+}
+
+void DBDescriptor::removeListener(std::string& key, const std::shared_ptr<ListenerCallback>& target) {
+	this->events.removeListener(key, target);
 }
 
 void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
