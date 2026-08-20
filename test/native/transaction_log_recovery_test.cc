@@ -370,11 +370,13 @@ struct CountingRead {
 	uint32_t size;
 	uint64_t bytes = 0;
 	uint32_t maxN = 0;
+	uint32_t reads = 0;
 };
 
 bool countingRead(void* context, uint32_t offset, void* dest, uint32_t n) {
 	auto* counted = static_cast<CountingRead*>(context);
 	counted->bytes += n;
+	counted->reads += 1;
 	if (n > counted->maxN) {
 		counted->maxN = n;
 	}
@@ -445,6 +447,20 @@ TEST(TransactionLogRecoverySource, CleanWalkReadsOnlyHeaders) {
 	EXPECT_EQ(scan.validEnd, img.size());
 	EXPECT_EQ(counted.maxN, 13u);
 	EXPECT_EQ(counted.bytes, 26u);
+	EXPECT_EQ(counted.reads, 2u);
+}
+
+TEST(TransactionLogRecoverySource, DenseTinyEntriesAmortizesReads) {
+	LogImage img;
+	for (int i = 0; i < 2000; ++i) {
+		img.entry(1);
+	}
+	CountingRead counted{ img.data(), img.size() };
+	auto scan = scanTransactionLogForRecovery(img.size(), countingRead, &counted);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.validEnd, img.size());
+	EXPECT_LT(counted.reads, 10u);
+	EXPECT_GT(counted.maxN, 13u);
 }
 
 TEST(TransactionLogRecoverySource, IoFailureThrowsRatherThanTruncate) {
@@ -461,8 +477,7 @@ TEST(TransactionLogRecoverySource, IoFailureDuringResyncThrowsRatherThanTruncate
 	for (int i = 0; i < 12; ++i) {
 		img.entry(16);
 	}
-	// Two success-path headers, then the broken frame header, then resync.
-	FailingRead failing{ img.data(), img.size(), /*succeedCount=*/3 };
+	FailingRead failing{ img.data(), img.size(), /*succeedCount=*/2 };
 	EXPECT_THROW(scanTransactionLogForRecovery(img.size(), failingRead, &failing), DBException);
 }
 
