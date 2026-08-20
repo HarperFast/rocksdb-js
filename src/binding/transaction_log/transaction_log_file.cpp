@@ -91,10 +91,10 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		this->openLocked(latestTimestamp);
 	} catch (...) {
 		// A rejected file must not keep its handle — or, on Windows, the mapping
-		// openFile()'s index scan created. Every caller that opens speculatively
-		// (findPositionByTimestamp, ensureExtent) would otherwise leak one per
-		// attempt against a file that can never open.
+		// openFile()'s index scan created — or retain an unvalidated extent that a
+		// later caller could mistake for a successfully opened segment.
 		this->closeLocked();
+		this->size.store(0, std::memory_order_relaxed);
 		throw;
 	}
 }

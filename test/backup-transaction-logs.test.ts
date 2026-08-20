@@ -12,7 +12,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import * as tar from 'tar';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -125,6 +125,20 @@ describe('Transaction log backups', () => {
 				);
 			})
 	);
+
+	it('consistently excludes a malformed lazy segment across backup preflight and copy', () =>
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+			const lazySegment = writeDiscoveredSegments(dbPath, 'malformed');
+			db.open();
+			writeFileSync(lazySegment, Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE));
+
+			const backupDir = tempPath();
+			const id = await db.backup(backupDir, { transactionLogs: true });
+			const backedUpStore = join(backupDir, 'transaction_logs', String(id), 'malformed');
+
+			expect(existsSync(join(backedUpStore, basename(lazySegment)))).toBe(false);
+			expect(readdirSync(backedUpStore).length).toBe(63);
+		}));
 
 	it('preserves the log file mtime through backup and restore', () =>
 		dbRunner(async ({ db }) => {
