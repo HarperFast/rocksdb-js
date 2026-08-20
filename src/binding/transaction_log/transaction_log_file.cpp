@@ -158,6 +158,9 @@ bool TransactionLogFile::readFullyFromFile(uint32_t offset, void* dest, uint32_t
 	uint32_t remaining = n;
 	uint32_t at = offset;
 	while (remaining > 0) {
+#ifdef PLATFORM_POSIX
+		errno = 0;
+#endif
 		int64_t got = this->readFromFile(out, remaining, static_cast<int64_t>(at));
 		if (got < 0) {
 #ifdef PLATFORM_POSIX

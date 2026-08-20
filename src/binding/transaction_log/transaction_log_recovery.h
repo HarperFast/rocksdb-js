@@ -77,7 +77,8 @@ using TransactionLogReadFn = bool (*)(void* context, uint32_t offset, void* dest
  * so that threshold must not be used as a cap (doing so would misclassify a
  * large committed entry as broken).
  *
- * The success-path walk reads only entry headers (13 bytes). A failed `read`
+ * Sequential headers share a 64 KiB read window. A large payload skip reads
+ * exactly one 13-byte header so the payload is not pulled in. A failed `read`
  * throws DBException — it is not reported as TruncateTail or MidFileCorruption.
  *
  * @param fileSize Number of bytes in the log image (append-owned extent).

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -16,14 +17,18 @@ namespace {
 // follow — must NOT truncate) from a torn tail (only partial bytes follow).
 constexpr int RESYNC_MIN_FRAMES = 8;
 
-// Sequential window for the corruption-only byte search in validFramingResumes.
-// The success-path walk never uses this: it reads exactly one 13-byte header.
+// Sequential window for nearby success-path headers and for the corruption-only
+// byte search in validFramingResumes. Heap-allocated: 64 KiB on the stack is
+// hostile to musl/small-stack threads.
 constexpr uint32_t RESYNC_WINDOW = 65536;
 
 struct ScanReader {
 	TransactionLogReadFn read;
 	void* context;
 	uint32_t fileSize;
+	std::vector<char> window;
+	uint32_t windowStart = 0;
+	uint32_t windowLen = 0;
 
 	void readExact(uint32_t offset, void* dest, uint32_t n) const {
 		if (!read(context, offset, dest, n)) {
@@ -31,12 +36,34 @@ struct ScanReader {
 		}
 	}
 
-	bool readHeader(uint32_t pos, char* dest) const {
-		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
-			return false;
+	// Nearby sequential headers share a 64 KiB window. The first header, and
+	// any jump past that window (a large payload skip), read exactly 13 bytes
+	// so the payload is not pulled in.
+	void readHeaderAt(uint32_t pos, char* dest) {
+		if (pos >= windowStart &&
+			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
+			std::memcpy(dest, window.data() + (pos - windowStart), TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+			return;
+		}
+		const bool nearby =
+			windowLen > 0 && pos <= windowStart + windowLen + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+		if (nearby) {
+			if (window.size() < RESYNC_WINDOW) {
+				window.resize(RESYNC_WINDOW);
+			}
+			windowStart = pos;
+			windowLen = std::min(RESYNC_WINDOW, fileSize - pos);
+			readExact(windowStart, window.data(), windowLen);
+			std::memcpy(dest, window.data(), TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+			return;
 		}
 		readExact(pos, dest, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-		return true;
+		if (window.size() < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+			window.resize(TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+		}
+		windowStart = pos;
+		windowLen = TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+		std::memcpy(window.data(), dest, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
 	}
 };
 
@@ -56,8 +83,8 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 // lands exactly on EOF. Sequential candidate offsets are served from a 64 KiB
 // window; chain hops (HEADER+length) read a 13-byte header so a large payload is
 // not pulled in. A failed read throws — it must not look like "no resume".
-bool validFramingResumes(const ScanReader& source, uint32_t from) {
-	char window[RESYNC_WINDOW];
+bool validFramingResumes(ScanReader& source, uint32_t from) {
+	std::vector<char> window(RESYNC_WINDOW);
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
 	char headerBuf[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
@@ -68,7 +95,7 @@ bool validFramingResumes(const ScanReader& source, uint32_t from) {
 		}
 		if (pos >= windowStart &&
 			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
-			out = window + (pos - windowStart);
+			out = window.data() + (pos - windowStart);
 			return true;
 		}
 		source.readExact(pos, headerBuf, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
@@ -82,7 +109,7 @@ bool validFramingResumes(const ScanReader& source, uint32_t from) {
 		if (start < windowStart || start + TRANSACTION_LOG_ENTRY_HEADER_SIZE > windowStart + windowLen) {
 			windowStart = start;
 			windowLen = std::min(RESYNC_WINDOW, source.fileSize - start);
-			source.readExact(windowStart, window, windowLen);
+			source.readExact(windowStart, window.data(), windowLen);
 		}
 
 		const char* header = nullptr;
@@ -123,7 +150,7 @@ RecoveryScan scanTransactionLogForRecovery(
 		return scan(RecoveryScan::Kind::Clean, fileSize);
 	}
 
-	ScanReader source{ read, context, fileSize };
+	ScanReader source{ read, context, fileSize, {}, 0, 0 };
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	while (true) {
@@ -133,7 +160,7 @@ RecoveryScan scanTransactionLogForRecovery(
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
-		source.readExact(pos, header, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+		source.readHeaderAt(pos, header);
 		double timestamp = readDoubleBE(header);
 		if (timestamp == 0) {
 			return scan(RecoveryScan::Kind::Clean, pos);
