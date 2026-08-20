@@ -1,7 +1,9 @@
+#include <cerrno>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <string>
 #include <system_error>
 #include <vector>
 #include "napi/global_events.h"
@@ -151,6 +153,41 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	}
 }
 
+bool TransactionLogFile::readFullyFromFile(uint32_t offset, void* dest, uint32_t n) {
+	auto* out = static_cast<char*>(dest);
+	uint32_t remaining = n;
+	uint32_t at = offset;
+	while (remaining > 0) {
+		int64_t got = this->readFromFile(out, remaining, static_cast<int64_t>(at));
+		if (got < 0) {
+#ifdef PLATFORM_POSIX
+			if (errno == EINTR) {
+				continue;
+			}
+#endif
+			return false;
+		}
+		if (got == 0) {
+			return false;
+		}
+		out += got;
+		at += static_cast<uint32_t>(got);
+		remaining -= static_cast<uint32_t>(got);
+	}
+	return true;
+}
+
+RecoveryScan TransactionLogFile::scanRecoveryLocked() {
+	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
+	return scanTransactionLogForRecovery(
+		fileSize,
+		[](void* context, uint32_t offset, void* dest, uint32_t n) {
+			return static_cast<TransactionLogFile*>(context)->readFullyFromFile(offset, dest, n);
+		},
+		this
+	);
+}
+
 uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
@@ -163,17 +200,14 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 		return 0; // header-only or empty: no transactions at all
 	}
 
-	std::vector<char> buffer(fileSize);
-	int64_t bytesRead = this->readFromFile(buffer.data(), fileSize, 0);
-	if (bytesRead < 0 || static_cast<uint32_t>(bytesRead) != fileSize) {
-		DEBUG_LOG("%p TransactionLogFile::scanForLastCompleteTransactionEnd Failed to read file: %s (read=%lld, size=%u)\n",
-			this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
-		return 0;
+	RecoveryScan scan;
+	try {
+		scan = this->scanRecoveryLocked();
+	} catch (const DBException& error) {
+		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
-
-	uint32_t end = findLastCompleteTransactionEnd(buffer.data(), fileSize);
-	this->lastCompleteTransactionEnd.store(end, std::memory_order_relaxed);
-	return end;
+	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
+	return scan.lastCompleteTransactionEnd;
 }
 
 void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
@@ -188,17 +222,12 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 		return; // header-only or empty: nothing to recover
 	}
 
-	// Read the whole file image for the framing scan. This runs once, at open
-	// time, on the active log file only — never on a hot path.
-	std::vector<char> buffer(fileSize);
-	int64_t bytesRead = this->readFromFile(buffer.data(), fileSize, 0);
-	if (bytesRead < 0 || static_cast<uint32_t>(bytesRead) != fileSize) {
-		DEBUG_LOG("%p TransactionLogFile::recoverTail Failed to read file for recovery scan: %s (read=%lld, size=%u)\n",
-			this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
-		return;
+	RecoveryScan scan;
+	try {
+		scan = this->scanRecoveryLocked();
+	} catch (const DBException& error) {
+		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
-
-	RecoveryScan scan = scanTransactionLogForRecovery(buffer.data(), fileSize);
 	// Publish the complete-transaction boundary from this same scan so the store can
 	// seed its committed watermark without re-reading the file.
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
