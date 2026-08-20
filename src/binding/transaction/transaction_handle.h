@@ -130,7 +130,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/**
 	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
-	 * handle again, so the only possible remaining owner is an in-flight commit.
+	 * handle again, so the only possible remaining owners are in-flight commit or async get.
 	 */
 	std::atomic<bool> wrapperCollected{false};
 

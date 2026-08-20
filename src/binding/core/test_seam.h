@@ -41,4 +41,13 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
+// Widens the window between queueing a transactional async get and its execute
+// handler running, so a test can GC the JS wrapper first. Set from JS via
+// `setTxnGetExecuteDelayMsForTesting(ms)` (same worker_threads getenv caveat
+// as forceTryAgainForTesting). 0 = inert.
+inline std::atomic<int>& txnGetExecuteDelayMs() {
+	static std::atomic<int> delay{0};
+	return delay;
+}
+
 #endif

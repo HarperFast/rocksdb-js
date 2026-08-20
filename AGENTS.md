@@ -415,18 +415,20 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
     path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
     `onWrapperCollected()` before dropping its reference: once V8 has collected the wrapper, no JS
-    code can commit, abort, retry, or read through that handle again, so it is closed. The one
-    exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
-    closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
-    always closes, and the failure paths (which deliberately leave the handle open for a caller that
-    may retry) check `wrapperCollected`, because there is no caller left. Without this a transaction
-    dropped without `commit()`/`abort()` pinned `rocksdb.oldest-snapshot-time` for the life of the
+    code can commit, abort, retry, or read through that handle again, so it is closed. In-flight
+    work defers that close: `state == Committing` (`TransactionCommitState` holds a `shared_ptr`;
+    `completeCommitWork` closes it — success always, and failure paths check `wrapperCollected`
+    because a failed commit is otherwise left open for retry) and an async get still executing
+    (`AsyncGetState` holds a `shared_ptr`; `onWrapperCollected` cancels it so the get rejects,
+    and the complete callback closes once execute has finished). Do not `close()` from the
+    finalizer while `activeAsyncWorkCount > 0` — `waitForAsyncWorkCompletion` can time out and
+    would then free the RocksDB transaction under the worker. Without this a transaction dropped
+    without `commit()`/`abort()` pinned `rocksdb.oldest-snapshot-time` for the life of the
     process, so RocksDB could never discard obsolete versions for that database — restart was the
     only recovery (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on
-    any redesign here: the registry reference cannot simply be made weak, because an async `get`
-    holds a raw `TransactionHandle*` (`AsyncGetState<TransactionHandle*>`) and relies on `close()`'s
-    `cancelAllAsyncWork()`/`waitForAsyncWorkCompletion()`, which a plain destructor race would skip;
-    and `registryStatus()` may only report handle fields that are fixed before the handle is
+    any redesign here: the registry reference cannot simply be made weak, because `close()` must
+    still cancel and wait for in-flight work before destroying the RocksDB transaction; and
+    `registryStatus()` may only report handle fields that are fixed before the handle is
     published to the registry (`id`, `createdAt`), because `txnsMutex` covers the map's membership
     while the mutable fields' writers — the owning thread's read paths, the commit-completion
     callback — hold no lock at all.
