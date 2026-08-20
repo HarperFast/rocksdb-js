@@ -60,6 +60,16 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value SetTxnGetExecuteDelayMsForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &delayMs));
+	txnGetExecuteDelayMs().store(delayMs, std::memory_order_relaxed);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
 /**
  * Returns the current thread id.
  */
@@ -248,6 +258,10 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	napi_value setTxnGetExecuteDelayMsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setTxnGetExecuteDelayMsForTesting", NAPI_AUTO_LENGTH, SetTxnGetExecuteDelayMsForTesting, nullptr, &setTxnGetExecuteDelayMsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setTxnGetExecuteDelayMsForTesting", setTxnGetExecuteDelayMsFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;
