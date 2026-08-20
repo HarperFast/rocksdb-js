@@ -1,4 +1,4 @@
-import { dbRunner } from './lib/util.js';
+import { dbRunner } from './lib/util.ts';
 import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 

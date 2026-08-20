@@ -1,6 +1,6 @@
-import { constants } from '../src/load-binding.js';
-import { RETRY_NOW, Transaction } from '../src/transaction.js';
-import { dbRunner } from './lib/util.js';
+import { constants } from '../src/load-binding.ts';
+import { RETRY_NOW, Transaction } from '../src/transaction.ts';
+import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;

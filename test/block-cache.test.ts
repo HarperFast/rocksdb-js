@@ -1,5 +1,5 @@
-import { RocksDatabase } from '../src/index.js';
-import { dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import { dbRunner } from './lib/util.ts';
 import { assert, describe, expect, it } from 'vitest';
 
 describe('Block Cache', () => {

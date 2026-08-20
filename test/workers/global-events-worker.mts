@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../src/index.ts';
 import { parentPort } from 'node:worker_threads';
 
 RocksDatabase.on('global-events-test:from-main', (value) => {

@@ -28,8 +28,8 @@
  * Set ROCKSDB_JS_COMMIT_DELAY_MS (see the test) to widen the window so the
  * race reproduces deterministically.
  */
-import { RocksDatabase } from '../../src/index.js';
-import { createWorkerBootstrapScript } from '../lib/util.js';
+import { RocksDatabase } from '../../src/index.ts';
+import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';

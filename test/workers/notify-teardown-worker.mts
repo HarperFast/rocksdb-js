@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../src/index.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 
 // Open the SAME path as the parent so all envs share one DBDescriptor (and its

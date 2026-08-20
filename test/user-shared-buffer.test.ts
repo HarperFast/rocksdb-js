@@ -1,10 +1,6 @@
-import { withResolvers } from '../src/util.js';
-import {
-	createWorkerBootstrapScript,
-	dbRunner,
-	generateDBPath,
-	terminateWorker,
-} from './lib/util.js';
+import { withResolvers } from '../src/util.ts';
+import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -212,10 +208,7 @@ function spawnRepro(
 	mode: ReproMode
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
 	return new Promise((resolve, reject) => {
-		const args =
-			process.versions.bun || process.versions.deno
-				? [fixturePath, dbPath, mode]
-				: ['node_modules/tsx/dist/cli.mjs', fixturePath, dbPath, mode];
+		const args = [fixturePath, dbPath, mode];
 
 		const child = spawn(process.execPath, args, {
 			env: { ...process.env },

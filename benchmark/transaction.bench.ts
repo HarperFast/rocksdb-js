@@ -1,4 +1,4 @@
-import { benchmark, generateTestData } from './setup.js';
+import { benchmark, generateTestData } from './setup.ts';
 import { ABORT } from 'lmdb';
 import { describe } from 'vitest';
 

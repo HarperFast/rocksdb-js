@@ -370,21 +370,22 @@ public:
 	 * @param key The key of the user shared buffer.
 	 * @param defaultBuffer The default buffer to use if the user shared buffer does
 	 * not exist.
-	 * @param callbackRef An optional callback reference to remove the listener when
-	 * the user shared buffer is garbage collected.
+	 * @param listener An optional listener (from addListener) to remove when the
+	 * user shared buffer is garbage collected.
 	 */
 	napi_value getUserSharedBuffer(
 		napi_env env,
 		std::string& key,
 		std::shared_ptr<DBHandle> dbHandle,
 		napi_value defaultBuffer,
-		napi_ref callbackRef = nullptr
+		std::shared_ptr<ListenerCallback> listener = nullptr
 	);
 
-	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
+	std::shared_ptr<ListenerCallback> addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
 	bool notify(std::string key, ListenerData* data);
 	napi_value listeners(napi_env env, std::string& key);
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
+	void removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target);
 	void removeListenersByOwner(DBHandle* owner);
 	void removeListenersByEnv(napi_env env);
 
@@ -528,21 +529,27 @@ struct UserSharedBufferData final {
  * until JS releases every retained ArrayBuffer for the key. The weak pointers
  * to `DBHandle` / `ColumnFamilyDescriptor` are used for opportunistic cleanup
  * (removing listeners, erasing map entries) when those are still alive.
+ *
+ * The listener is held as a `weak_ptr` (not the raw `napi_ref`): the ref's
+ * ownership belongs to the listener's threadsafe function, which deletes it
+ * once the listener is torn down. A `weak_ptr` lets the finalizer remove the
+ * listener by identity only while it is still live, without ever dereferencing
+ * a ref it does not own (HarperFast/rocksdb-js#790).
  */
 struct UserSharedBufferFinalizeData final {
 	std::string key;
 	std::weak_ptr<DBHandle> dbHandle;
 	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
 	std::shared_ptr<UserSharedBufferData> sharedData;
-	napi_ref callbackRef;
+	std::weak_ptr<ListenerCallback> listener;
 
 	UserSharedBufferFinalizeData(
 		const std::string& k,
 		std::weak_ptr<DBHandle> d,
 		std::weak_ptr<ColumnFamilyDescriptor> c,
 		std::shared_ptr<UserSharedBufferData> data,
-		napi_ref callbackRef = nullptr
-	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), callbackRef(callbackRef) {}
+		std::weak_ptr<ListenerCallback> listener = {}
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), listener(std::move(listener)) {}
 };
 
 /**

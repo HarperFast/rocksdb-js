@@ -1,6 +1,6 @@
-import type { TransactionLogStats } from '../src/load-binding.js';
-import { dbRunner } from '../test/lib/util.js';
-import { stressTest } from './setup.js';
+import type { TransactionLogStats } from '../src/load-binding.ts';
+import { dbRunner } from '../test/lib/util.ts';
+import { stressTest } from './setup.ts';
 import { describe } from 'vitest';
 
 /**

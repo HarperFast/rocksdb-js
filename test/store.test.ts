@@ -1,6 +1,6 @@
-import { RocksDatabase } from '../src/index.js';
-import { Store, StoreContext, type StorePutOptions } from '../src/store.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import { Store, type StoreContext, type StorePutOptions } from '../src/store.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { rm } from 'node:fs/promises';
 import type { Key } from 'ordered-binary';
 import { describe, expect, it } from 'vitest';

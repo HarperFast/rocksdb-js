@@ -1,4 +1,4 @@
-import { benchmark, generateRandomKeys, generateSequentialKeys, randomString } from './setup.js';
+import { benchmark, generateRandomKeys, generateSequentialKeys, randomString } from './setup.ts';
 import { describe } from 'vitest';
 
 describe('putSync()', () => {

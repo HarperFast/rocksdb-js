@@ -23,8 +23,8 @@
  * this isolates the notify path from the unrelated transaction-close double
  * free. Exit 0 = survived; a crash exits via signal / non-zero.
  */
-import { RocksDatabase } from '../../src/index.js';
-import { createWorkerBootstrapScript } from '../lib/util.js';
+import { RocksDatabase } from '../../src/index.ts';
+import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';

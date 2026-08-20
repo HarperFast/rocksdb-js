@@ -4,8 +4,8 @@ import {
 	registryStatus,
 	RocksDatabase,
 	tryFileLock,
-} from '../src/index.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+} from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import {
 	chmodSync,
 	existsSync,

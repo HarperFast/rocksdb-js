@@ -1,6 +1,7 @@
-import { RocksDatabase } from '../src/database.js';
-import { withResolvers } from '../src/util.js';
-import { createWorkerBootstrapScript, dbRunner } from './lib/util.js';
+import { RocksDatabase } from '../src/database.ts';
+import { withResolvers } from '../src/util.ts';
+import { dbRunner } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';

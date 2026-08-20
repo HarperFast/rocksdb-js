@@ -1,5 +1,5 @@
-import { RETRY_NOW, Transaction } from '../src/transaction.js';
-import { dbRunner } from './lib/util.js';
+import { RETRY_NOW, Transaction } from '../src/transaction.ts';
+import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 const settled = <T>(promise: Promise<T>) => {

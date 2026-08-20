@@ -6,14 +6,14 @@
  * variable is set. Otherwise, it will download the latest RocksDB prebuild
  * from https://github.com/HarperFast/rocksdb-prebuilds/releases.
  *
- * To manually run this script: pnpm tsx scripts/init-rocksdb/main.ts
+ * To manually run this script: node scripts/init-rocksdb/main.ts
  */
 
-import { buildRocksDBFromSource } from './build-rocksdb-from-source';
-import { downloadRocksDB } from './download-rocksdb';
-import { getCurrentVersion } from './get-current-version';
-import { getPrebuild } from './get-prebuild';
-import { installedSatisfiesPin, prebuildIsRedundant } from './version-check';
+import { buildRocksDBFromSource } from './build-rocksdb-from-source.ts';
+import { downloadRocksDB } from './download-rocksdb.ts';
+import { getCurrentVersion } from './get-current-version.ts';
+import { getPrebuild } from './get-prebuild.ts';
+import { installedSatisfiesPin, prebuildIsRedundant } from './version-check.ts';
 import { config } from 'dotenv';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';

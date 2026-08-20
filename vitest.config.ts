@@ -10,9 +10,11 @@ const runtime = process.versions.bun
 const memory = `${(os.totalmem() / 1024 / 1024 / 1024).toFixed(0)}GB`;
 const machine = `${process.platform}/${process.arch}, ${os.cpus().length} cpus, ${memory}`;
 const version = JSON.parse(readFileSync('./package.json', 'utf8')).version;
-const rocksdbVersion = await import('./dist/index.mjs')
-	.then((m) => m.versions.rocksdb)
-	.catch(() => '?');
+// Computed specifier (not a literal) so the config bundler doesn't hard-resolve it:
+// the version banner degrades to '?' when the module can't load, and tests run from
+// src with no dist build required.
+const indexUrl = new URL('./src/index.ts', import.meta.url).href;
+const rocksdbVersion = await import(indexUrl).then((m) => m.versions.rocksdb).catch(() => '?');
 console.log(`${runtime} (${machine}) rocksdb-js/${version} RocksDB/${rocksdbVersion}`);
 
 const isAlternateRuntime = !!(process.versions.bun || process.versions.deno);

@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../dist/index.mjs';
 import { setImmediate as yieldTick } from 'node:timers/promises';
 import { parentPort, workerData } from 'node:worker_threads';
 

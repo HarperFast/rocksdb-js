@@ -1,5 +1,6 @@
-import { currentThreadId } from '../src/index.js';
-import { createWorkerBootstrapScript, terminateWorker } from './lib/util.js';
+import { currentThreadId } from '../src/index.ts';
+import { terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 

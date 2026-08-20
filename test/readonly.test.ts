@@ -1,5 +1,5 @@
-import { TransactionLog } from '../src/load-binding.js';
-import { dbRunner } from './lib/util.js';
+import { TransactionLog } from '../src/load-binding.ts';
+import { dbRunner } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -196,14 +196,7 @@ describe('Readonly Operations', () => {
 			db.putSync('foo', 'bar');
 
 			await new Promise<void>((resolve, reject) => {
-				const args =
-					process.versions.bun || process.versions.deno
-						? [join(__dirname, 'fixtures', 'fork-open-readonly.mts'), dbPath]
-						: [
-								'node_modules/tsx/dist/cli.mjs',
-								join(__dirname, 'fixtures', 'fork-open-readonly.mts'),
-								dbPath,
-							];
+				const args = [join(__dirname, 'fixtures', 'fork-open-readonly.mts'), dbPath];
 
 				const child = spawn(process.execPath, args, {
 					// stdio: 'inherit',

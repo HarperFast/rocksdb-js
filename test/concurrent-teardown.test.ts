@@ -1,4 +1,5 @@
-import { createWorkerBootstrapScript, generateDBPath } from './lib/util.js';
+import { generateDBPath } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { rmSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';

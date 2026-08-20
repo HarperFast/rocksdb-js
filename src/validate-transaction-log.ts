@@ -1,4 +1,4 @@
-import { nativeValidateTransactionLog } from './load-binding.js';
+import { nativeValidateTransactionLog } from './load-binding.ts';
 
 /**
  * The validation result for a single transaction log file within a store, as

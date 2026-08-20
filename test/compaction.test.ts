@@ -1,5 +1,5 @@
-import { RocksDatabase, supportedCompression } from '../src/index.js';
-import { dbRunner } from './lib/util.js';
+import { RocksDatabase, supportedCompression } from '../src/index.ts';
+import { dbRunner } from './lib/util.ts';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';

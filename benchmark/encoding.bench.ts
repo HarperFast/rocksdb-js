@@ -1,4 +1,4 @@
-import { benchmark, generateTestData, randomString } from './setup.js';
+import { benchmark, generateTestData, randomString } from './setup.ts';
 import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;

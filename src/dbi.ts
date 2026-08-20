@@ -1,9 +1,9 @@
-import type { BufferWithDataView, Key } from './encoding.js';
-import { FRESH_VERSION_FLAG } from './load-binding.js';
-import type { NativeTransaction, TransactionLog } from './load-binding.js';
-import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.js';
-import type { Transaction } from './transaction.js';
-import { type MaybePromise, when } from './util.js';
+import type { BufferWithDataView, Key } from './encoding.ts';
+import { FRESH_VERSION_FLAG } from './load-binding.ts';
+import type { NativeTransaction, TransactionLog } from './load-binding.ts';
+import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.ts';
+import type { Transaction } from './transaction.ts';
+import { type MaybePromise, when } from './util.ts';
 
 export interface RocksDBOptions {
 	/**
@@ -62,6 +62,23 @@ export interface RocksDBOptions {
 	tailing?: boolean;
 }
 
+export interface CountEstimate {
+	/**
+	 * The estimated number of keys.
+	 */
+	count: number;
+
+	/**
+	 * Heuristic 0–1 indicator of how trustworthy `count` is; exactly 1 only
+	 * when the count is exact. Derived from the estimate's resolution
+	 * (SST data-block / memtable sampling granularity relative to the count),
+	 * the tombstone fraction of the overlapping SSTs, and — for open-ended
+	 * starts — the error compounded by complement subtraction. A heuristic
+	 * ordering signal, not a statistical bound.
+	 */
+	confidence: number;
+}
+
 export interface RangeOptions extends RocksDBOptions {
 	/**
 	 * The range end key, otherwise known as the "upper bound". Defaults to
@@ -86,6 +103,14 @@ export interface RangeOptions extends RocksDBOptions {
 	 * the first key in the database.
 	 */
 	start?: Key | Uint8Array;
+}
+
+export interface CountEstimateOptions extends RangeOptions {
+	/**
+	 * Interpret `start` as the upper bound and `end` as the lower bound, as
+	 * `getRange()` does for reverse iteration. Defaults to `false`.
+	 */
+	reverse?: boolean;
 }
 
 export interface IteratorOptions extends RangeOptions {

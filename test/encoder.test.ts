@@ -1,5 +1,5 @@
-import type { BufferWithDataView } from '../src/encoding';
-import { dbRunner } from './lib/util.js';
+import type { BufferWithDataView } from '../src/encoding.ts';
+import { dbRunner } from './lib/util.ts';
 import { describe, it } from 'vitest';
 import { expect } from 'vitest';
 

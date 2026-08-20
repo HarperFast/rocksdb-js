@@ -1,6 +1,6 @@
-import { RocksDatabase } from '../src/index.js';
-import type { Transaction } from '../src/transaction.js';
-import { dbRunner } from '../test/lib/util.js';
+import { RocksDatabase } from '../src/index.ts';
+import type { Transaction } from '../src/transaction.ts';
+import { dbRunner } from '../test/lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 // Tiny VT (8 slots) guarantees hash collisions for any set of distinct keys.

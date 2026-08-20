@@ -1,4 +1,4 @@
-import { benchmark, generateSequentialKeys, generateTestData } from './setup.js';
+import { benchmark, generateSequentialKeys, generateTestData } from './setup.ts';
 import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;

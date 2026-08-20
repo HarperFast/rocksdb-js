@@ -1,7 +1,13 @@
-import type { BackupStreamOptions } from './backup-stream.js';
-import type { BackupOptions } from './backup.js';
-import { DBI, type DBITransactional } from './dbi.js';
-import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.js';
+import type { BackupStreamOptions } from './backup-stream.ts';
+import type { BackupOptions } from './backup.ts';
+import { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
+import {
+	DBI,
+	type CountEstimate,
+	type CountEstimateOptions,
+	type DBITransactional,
+} from './dbi.ts';
+import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
 	config,
@@ -12,11 +18,11 @@ import {
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type NativeTransactionOptions,
-} from './load-binding.js';
-import type { StatsAll, StatsDefault, StatsValue } from './stats.js';
+} from './load-binding.ts';
+import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
-	CompactOptions,
+	type CompactOptions,
 	type CompressionInfo,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
@@ -25,14 +31,14 @@ import {
 	type StoreOptions,
 	type UserSharedBufferOptions,
 	VALUE_BUFFER,
-} from './store.js';
+} from './store.ts';
 import {
 	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
 	TransactionRetryableError,
-} from './transaction.js';
+} from './transaction.ts';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -455,7 +461,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Retrieves the estimated number of keys in the database.
+	 * Retrieves the estimated number of keys in the database. This is an alias
+	 * for `db.estimateCount().count`; use `estimateCount()` for range support
+	 * and a confidence indicator.
 	 *
 	 * @example
 	 * ```typescript
@@ -466,6 +474,60 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	getEstimatedKeyCount(): number {
 		return this.getDBIntProperty('rocksdb.estimate-num-keys') ?? 0;
+	}
+
+	/**
+	 * Estimates the number of keys in the database, or within a key range,
+	 * returning `{ count, confidence }`. Unlike `getKeysCount()`, this never
+	 * iterates: the estimate is derived from RocksDB statistics (memtable
+	 * stats plus approximate SST sizes converted through the entry density of
+	 * the SSTs overlapping the range), so its cost scales with the number of
+	 * SSTs overlapping the range rather than the number of keys — though
+	 * reading table properties for cold files can do I/O through the table
+	 * cache, and a start-only range does the work of its complement below
+	 * `start`. Accuracy improves with range size. Resolution is bounded by SST
+	 * data-block granularity, so tiny ranges may over-report or report zero for
+	 * present keys; low `confidence` is the signal. Recently deleted or
+	 * overwritten entries may be counted until compaction. An inverted range
+	 * (`start` >= `end`) returns `{ count: 0, confidence: 1 }`.
+	 *
+	 * `confidence` is a heuristic 0–1 trust indicator (1 only when exact) —
+	 * see `CountEstimate`. Estimates always reflect committed state; writes
+	 * pending in a transaction are not included.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
+	 * ```
+	 */
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
+		return this.store.estimateCount(options);
+	}
+
+	/**
+	 * Creates a `CountEstimator` for progressively refining a range count
+	 * estimate while iterating the range: report progress with
+	 * `advance(lastKey, count)` (e.g. once per page of results) and
+	 * `estimate()` returns the exact traversed count plus a calibrated
+	 * estimate of the remainder, converging toward the exact total. Call
+	 * `finish()` when traversal completes to make `estimate()` exact.
+	 *
+	 * @example
+	 * ```typescript
+	 * const estimator = db.createCountEstimator({ start: 'a', end: 'z' });
+	 * let lastKey;
+	 * let pageSize = 0;
+	 * for (const { key } of db.getRange({ start: 'a', end: 'z', limit: 25 })) {
+	 *   lastKey = key;
+	 *   pageSize++;
+	 * }
+	 * estimator.advance(lastKey, pageSize);
+	 * const { count, confidence } = estimator.estimate();
+	 * ```
+	 */
+	createCountEstimator(options?: CountEstimatorOptions): CountEstimator {
+		return new CountEstimator(this.store, options);
 	}
 
 	/**

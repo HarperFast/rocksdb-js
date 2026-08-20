@@ -43,29 +43,20 @@ const candidates = isWin
 	? ['snappy.lib', 'lz4.lib', 'zstd.lib', 'bz2.lib', 'zs.lib']
 	: ['libsnappy.a', 'liblz4.a', 'libzstd.a', 'libbz2.a', 'libz.a'];
 
-// Run tsx via `node <tsx-cli> <script>` rather than the `.bin/tsx` shim. On
-// Windows the shim is a `.cmd`/`.ps1` wrapper that requires `shell: true` to
-// launch (slower, and mis-parses a repo path containing spaces); invoking the
-// current Node executable against tsx's CLI entry avoids the shell entirely and
-// is identical across platforms.
-const result = spawnSync(
-	process.execPath,
-	[
-		join(root, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
-		join(root, 'scripts', 'init-rocksdb', 'main.ts'),
-	],
-	{
-		cwd: root,
-		stdio: ['ignore', 'ignore', 'inherit'],
-	}
-);
+// Run the .ts script directly with the current Node executable — its native
+// type stripping needs no tsx. Passing the absolute script path as a single
+// argv element (no shell) is space-safe and identical across platforms.
+const result = spawnSync(process.execPath, [join(root, 'scripts', 'init-rocksdb', 'main.ts')], {
+	cwd: root,
+	stdio: ['ignore', 'ignore', 'inherit'],
+});
 
 // Provisioning is a hard prerequisite: if it failed, enumerating below would
 // emit a stale or empty lib set and defer the failure to a confusing link
 // error. A non-zero exit here aborts gyp configure. init-rocksdb prints its own
 // diagnostics to inherited stderr.
 if (result.error) {
-	// tsx itself could not be launched (e.g. ENOENT / missing dependency).
+	// Node itself could not be launched (e.g. ENOENT).
 	console.error(`Failed to run init-rocksdb: ${result.error.message}`);
 	process.exit(1);
 }

@@ -10,6 +10,8 @@ const runtime = process.versions.bun
 const memory = `${(os.totalmem() / 1024 / 1024 / 1024).toFixed(0)}GB`;
 const machine = `${process.platform}/${process.arch}, ${os.cpus().length} cpus, ${memory}`;
 const version = JSON.parse(readFileSync('./package.json', 'utf8')).version;
+// Stress tests exercise the built artifact (workers import dist), so the banner reads
+// dist too; the workflow builds first.
 const rocksdbVersion = await import('./dist/index.mjs')
 	.then((m) => m.versions.rocksdb)
 	.catch(() => '?');

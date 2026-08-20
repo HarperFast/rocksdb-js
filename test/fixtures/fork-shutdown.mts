@@ -1,4 +1,4 @@
-import { RocksDatabase, shutdown } from '../../src/index.js';
+import { RocksDatabase, shutdown } from '../../src/index.ts';
 import { fork } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';

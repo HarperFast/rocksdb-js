@@ -1,4 +1,4 @@
-import { TarEncoder, type TarSink } from '../src/tar.js';
+import { TarEncoder, type TarSink } from '../src/tar.ts';
 import { Parser } from 'tar';
 import { describe, expect, it } from 'vitest';
 

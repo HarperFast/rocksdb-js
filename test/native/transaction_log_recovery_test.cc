@@ -61,20 +61,23 @@ public:
 	uint32_t size() const { return static_cast<uint32_t>(bytes.size()); }
 
 private:
+	// Grow-then-write instead of insert(end, ptr, ptr+N): GCC 12/13 emit a
+	// -Wstringop-overflow false positive on the vector range-insert under
+	// inlining (it assumes the pre-grow capacity while sizing the copy).
 	void appendU8(uint8_t v) {
-		char b[1];
-		rocksdb_js::writeUint8(b, v);
-		bytes.insert(bytes.end(), b, b + 1);
+		size_t off = bytes.size();
+		bytes.resize(off + 1);
+		rocksdb_js::writeUint8(bytes.data() + off, v);
 	}
 	void appendU32(uint32_t v) {
-		char b[4];
-		rocksdb_js::writeUint32BE(b, v);
-		bytes.insert(bytes.end(), b, b + 4);
+		size_t off = bytes.size();
+		bytes.resize(off + 4);
+		rocksdb_js::writeUint32BE(bytes.data() + off, v);
 	}
 	void appendF64(double v) {
-		char b[8];
-		rocksdb_js::writeDoubleBE(b, v);
-		bytes.insert(bytes.end(), b, b + 8);
+		size_t off = bytes.size();
+		bytes.resize(off + 8);
+		rocksdb_js::writeDoubleBE(bytes.data() + off, v);
 	}
 
 	std::vector<char> bytes;

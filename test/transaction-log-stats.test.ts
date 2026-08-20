@@ -1,5 +1,5 @@
-import { constants } from '../src/load-binding.js';
-import { dbRunner, generateDBPath } from './lib/util.js';
+import { constants } from '../src/load-binding.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';

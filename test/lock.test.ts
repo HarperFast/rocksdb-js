@@ -1,4 +1,5 @@
-import { createWorkerBootstrapScript, dbRunner, terminateWorker } from './lib/util.js';
+import { dbRunner, terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';

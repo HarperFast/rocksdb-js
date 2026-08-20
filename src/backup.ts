@@ -6,8 +6,8 @@ import {
 	nativeBackupPurge,
 	nativeBackupRestore,
 	nativeBackupVerify,
-} from './load-binding.js';
-import { validateTransactionLogStore } from './validate-transaction-log.js';
+} from './load-binding.ts';
+import { validateTransactionLogStore } from './validate-transaction-log.ts';
 import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 

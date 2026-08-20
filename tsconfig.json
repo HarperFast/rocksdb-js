@@ -4,6 +4,7 @@
     "declaration": true,
     "declarationMap": false,
     "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "inlineSources": false,
@@ -12,6 +13,7 @@
     "lib": ["esnext"],
     "module": "esnext",
     "moduleResolution": "bundler",
+    "noEmit": true,
     "noImplicitAny": false,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
@@ -22,6 +24,7 @@
     "strict": true,
     "sourceMap": false,
     "target": "esnext",
+    "verbatimModuleSyntax": true,
     "typeRoots": ["./node_modules/@types"],
     "types": ["node"]
   },

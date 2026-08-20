@@ -4,7 +4,7 @@ import {
 	generateSequentialKeys,
 	generateTestData,
 	randomString,
-} from './setup.js';
+} from './setup.ts';
 import { describe } from 'vitest';
 
 const SMALL_DATASET = 100;

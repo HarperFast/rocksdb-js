@@ -5,7 +5,7 @@ import {
 	type LMDBDatabase,
 	workerBenchmark as benchmark,
 	workerDescribe as describe,
-} from './setup.js';
+} from './setup.ts';
 
 describe('Transaction log with workers', () => {
 	const data = Buffer.alloc(100, 'a');

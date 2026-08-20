@@ -1,6 +1,6 @@
-import { RocksDatabase } from '../src/database.js';
-import type { Transaction } from '../src/transaction.js';
-import { generateDBPath } from './lib/util.js';
+import { RocksDatabase } from '../src/database.ts';
+import type { Transaction } from '../src/transaction.ts';
+import { generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 /**

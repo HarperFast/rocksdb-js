@@ -1,4 +1,4 @@
-import { benchmark, generateTestData } from './setup.js';
+import { benchmark, generateTestData } from './setup.ts';
 import { describe } from 'vitest';
 
 describe('put', () => {

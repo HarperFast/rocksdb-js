@@ -82,6 +82,79 @@ inline std::atomic<uint64_t>* vtSlotFor(
  * Reads stay lock-free: this runs only on the cold populate path (after a cache
  * miss), never on the verifyVersion fast path.
  */
+/**
+ * Result of consulting the key's LATEST committed value about whether its version is unique. A read
+ * that may be behind the latest cannot answer that from the value in hand: the value that made the
+ * version ambiguous can have been committed after the snapshot, and FRESH speaks about the
+ * consumer's cached copy — which may have come from that newer value — not about the snapshot.
+ */
+struct VtLatestCheck {
+	// Whether a latest read was needed and succeeded. False means the caller's value is provably the
+	// latest (nothing to check) or the read failed; `notUnique` carries the answer in that case.
+	bool read = false;
+	// True when FRESH must not be answered and nothing may be published for this key.
+	bool notUnique = false;
+	// The latest value's version, valid only when `read`; lets the caller skip the second Get
+	// vtPopulateIfSettled would otherwise make.
+	uint64_t latestVersion = 0;
+};
+
+/**
+ * Consults the latest committed value when `readSnapshot` may be behind it. Free (no Get) when the
+ * caller's value is provably the latest. A failed Get answers `notUnique` — the conservative
+ * direction, since a key that cannot be read is not one whose cached copy should be confirmed.
+ */
+inline VtLatestCheck vtCheckLatest(
+	rocksdb::DB* db,
+	rocksdb::ColumnFamilyHandle* cf,
+	const rocksdb::Slice& key,
+	const rocksdb::Snapshot* readSnapshot
+) {
+	VtLatestCheck result;
+	if (!db || !cf) {
+		result.notUnique = true;
+		return result;
+	}
+	if (readSnapshot == nullptr || readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
+		return result;
+	}
+	rocksdb::PinnableSlice latest;
+	rocksdb::ReadOptions readOptions;
+	if (!db->Get(readOptions, cf, key, &latest).ok()) {
+		result.notUnique = true;
+		return result;
+	}
+	result.read = true;
+	result.notUnique = VerificationTable::valueVersionIsNotUnique(latest);
+	result.latestVersion = VerificationTable::extractVersionFromValue(latest);
+	return result;
+}
+
+// The wall-clock gate catches ordinary forward-dated writes; the sequence gate catches backdated
+// replicated writes. The latter is deliberately conservative: any open snapshot predating the
+// database's latest write blocks publication because RocksDB does not expose a key's write sequence.
+inline bool vtVersionIsSettled(
+	rocksdb::DB* db,
+	rocksdb::ColumnFamilyHandle* cf,
+	uint64_t version
+) {
+	if (!db || !cf || version == 0 || vtIsLock(version)) return false;
+
+	uint64_t oldestSnapshotSec = 0;
+	bool hasOpenSnapshot = db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
+	                       oldestSnapshotSec != 0;
+	if (!hasOpenSnapshot) return true;
+
+	double versionMs;
+	std::memcpy(&versionMs, &version, sizeof(double));
+	if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) return false;
+
+	uint64_t oldestSnapshotSeq = 0;
+	uint64_t latestSeq = db->GetLatestSequenceNumber();
+	return !db->GetIntProperty(cf, "rocksdb.oldest-snapshot-sequence", &oldestSnapshotSeq) ||
+	       oldestSnapshotSeq >= latestSeq;
+}
+
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
 	std::atomic<uint64_t>* slot,
@@ -115,59 +188,14 @@ inline void vtPopulateIfSettled(
 		rocksdb::ReadOptions readOptions;
 		rocksdb::Status status = db->Get(readOptions, cf, key, &latest);
 		if (!status.ok()) return; // not found or error — nothing settled to cache
+		// The caller's value passed its own non-unique check, but it was read at an older snapshot;
+		// the latest is what a slot would vouch for, and it may be the value that made the version
+		// ambiguous in the first place.
+		if (VerificationTable::valueVersionIsNotUnique(latest)) return;
 		version = VerificationTable::extractVersionFromValue(latest);
-		if (version == 0 || vtIsLock(version)) return;
 	}
 
-	// Two-gate snapshot check.
-	//
-	// Gate 1 (wall-clock, pre-filter): suppresses publication when the version
-	// is forward-dated relative to the oldest open snapshot — the common case
-	// for locally-minted versions that race with a snapshot reader. Fast: a
-	// single GetIntProperty call.
-	//
-	// Gate 2 (sequence number): suppresses publication when any open snapshot
-	// predates the latest write in the DB. This catches backdated replicated /
-	// catch-up writes whose origin timestamp (Gate 1's comparand) lies BEFORE
-	// the oldest snapshot's creation time but whose local write sequence lies
-	// AFTER the snapshot's sequence — a case Gate 1 incorrectly passes. We
-	// capture the latest sequence at the point of population; if oldest-snapshot
-	// sequence < latest sequence, some snapshot does not see the latest write
-	// and we defer publication until the snapshot drains.
-	//
-	// Gate 2 is conservative in active systems (any open snapshot + any write
-	// after the snapshot blocks publication). In practice Harper transaction
-	// bodies are short-lived, so slots settle quickly between transactions.
-	// "rocksdb.oldest-snapshot-sequence" is available in the vendored RocksDB
-	// (confirmed in include/rocksdb/db.h kOldestSnapshotSequence).
-	uint64_t oldestSnapshotSec = 0;
-	bool hasOpenSnapshot = db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
-	                       oldestSnapshotSec != 0;
-	if (hasOpenSnapshot) {
-		// Gate 1: forward-dated version.
-		double versionMs;
-		std::memcpy(&versionMs, &version, sizeof(double));
-		if (static_cast<double>(oldestSnapshotSec) * 1000.0 < versionMs) {
-			return;
-		}
-		// Gate 2: sequence-number gate for backdated replicated versions.
-		// Only run when Gate 1 passes (there IS an open snapshot, but the
-		// version's timestamp predates it — exactly the backdated-write case).
-		// No `oldestSnapshotSeq != 0` guard: a snapshot taken on a fresh DB
-		// legitimately has sequence 0, and exempting it would let a backdated
-		// write at seq > 0 publish past it. hasOpenSnapshot already guarantees
-		// a snapshot exists; if GetIntProperty fails (property unsupported)
-		// the && short-circuit skips the gate.
-		uint64_t oldestSnapshotSeq = 0;
-		uint64_t latestSeq = db->GetLatestSequenceNumber();
-		if (db->GetIntProperty(cf, "rocksdb.oldest-snapshot-sequence", &oldestSnapshotSeq) &&
-		    oldestSnapshotSeq < latestSeq) {
-			// Some snapshot was taken before the latest write. We cannot
-			// determine without the key's individual write sequence whether
-			// that snapshot sees this version, so we defer conservatively.
-			return;
-		}
-	}
+	if (!vtVersionIsSettled(db, cf, version)) return;
 	// Conditional CAS from the value observed before the read: a no-op if any
 	// write cycle intervened, so a stale/superseded version is never published.
 	VerificationTable::populateVersionIfUnchanged(slot, observedSlot, version);
@@ -285,6 +313,7 @@ struct Database final {
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCompression(napi_env env, napi_callback_info info);
+	static napi_value EstimateCount(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetDBIntProperty(napi_env env, napi_callback_info info);
 	static napi_value GetDBProperty(napi_env env, napi_callback_info info);
@@ -394,7 +423,28 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// Slot value observed before the async read was queued; the post-read CAS
 	// publishes only if the slot is still this (no write cycle intervened).
 	uint64_t vtObserved = 0;
+	// Filled by the worker, which is where the database and column family are known to be alive:
+	// the completion runs after teardown may have released both, so it must not read from them.
+	VtLatestCheck vtLatest;
+	bool vtVersionSettled = false;
 };
+
+template<typename T>
+void vtCheckAsyncGet(
+	AsyncGetState<T>* state,
+	rocksdb::DB* db,
+	rocksdb::ColumnFamilyHandle* cf
+) {
+	rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+	if (VerificationTable::valueVersionIsNotUnique(valueSlice)) return;
+
+	state->vtLatest = vtCheckLatest(db, cf, state->key, state->readOptions.snapshot);
+	if (state->vtLatest.notUnique) return;
+
+	const uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
+	const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
+	state->vtVersionSettled = vtVersionIsSettled(db, cf, populateVersion);
+}
 
 napi_value resolveGetSyncResult(
 	napi_env env,
@@ -415,22 +465,26 @@ void resolveGetResult(
 	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
 
 	if (state->status.IsNotFound() || state->status.ok()) {
-		if (state->status.ok() && state->vtSlot) {
-			// VT check and populate for the async read result.
-			rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+		rocksdb::Slice valueSlice(state->value.data(), state->value.size());
+		if (state->status.ok() && state->vtSlot && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
-			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion) {
+			const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
+			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion
+					&& !state->vtLatest.notUnique) {
 				// Soft miss: value still carries the expected version — signal FRESH.
 				// Conditional CAS from the value observed before the read (no-op if
 				// a write cycle intervened) so we never publish a superseded version.
-				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, state->expectedVersion);
+				if (state->vtVersionSettled) {
+					VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, populateVersion);
+				}
 				napi_value freshResult;
 				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
 				state->callResolve(freshResult);
 				return;
 			}
-			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0) {
-				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, extracted);
+			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0
+					&& !state->vtLatest.notUnique && state->vtVersionSettled) {
+				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, populateVersion);
 			}
 		}
 		napi_value result;

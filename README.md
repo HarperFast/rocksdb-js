@@ -53,6 +53,16 @@ Creates a new database instance.
     when linked, else no compression). See [Compression](#compression). Throws if the algorithm is
     not compiled into the native build — check [`supportedCompression`](#supportedcompression) for
     the available list.
+  - `compressionForAllColumnFamilies: boolean` When `true`, applies `compression` to every column
+    family opened for the database rather than only the column family specified by `name`. Requires an explicit
+    `compression`. Defaults to `false`. See [Compression](#compression).
+  - `dbWriteBufferSize: number` The total memtable memory budget in bytes shared across all of the
+    database's column families. When the combined size of all memtables reaches this value, RocksDB
+    flushes the largest one. `0` (the default) disables this global trigger, so per-column-family
+    `writeBufferSize` alone drives flushing. This is distinct from the process-wide
+    [`writeBufferManagerSize`](#dbconfigoptions) config option. Database-wide, so it binds when the
+    path is first opened in this process: a later open of the same path — including from another
+    worker thread — keeps the first opener's value rather than overriding or rejecting it.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
@@ -76,6 +86,17 @@ Creates a new database instance.
     compaction falls behind under sustained ingest); a positive `int32` is an explicit cap. Reads
     only pay a reopen cost when the number of live table files exceeds the budget, so raise the
     process fd limit (and with it the derived budget) for very large databases.
+  - `maxWriteBufferNumber: number` The maximum number of memtables that can be queued per column
+    family before writes stall. Higher values absorb write bursts while flushes catch up, at the
+    cost of memory (roughly `maxWriteBufferNumber * writeBufferSize` per column family). Defaults to
+    `16`.
+  - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
+    memory for transaction conflict checking. `-1` (the default) derives the value from
+    `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
+    transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
+    (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
+    `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
+    value is always honored as-is.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -109,6 +130,9 @@ Creates a new database instance.
     the verification slot for each written key. Enable this only for column families whose records
     are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
     `verificationTableEntries` to be configured before the first database is opened.
+  - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
+    sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
+    values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
 
 ### `db.close()`
 
@@ -408,11 +432,73 @@ the `expectedVersion` option is used.
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
-`db.getDBIntProperty('rocksdb.estimate-num-keys')`.
+`db.getDBIntProperty('rocksdb.estimate-num-keys')`; use `estimateCount()` for range support and a
+confidence indicator.
 
 ```typescript
 const estimated = db.getEstimatedKeyCount();
 console.log(estimated);
+```
+
+### `db.estimateCount(options?: CountEstimateOptions): CountEstimate`
+
+Estimates the number of keys in the database, or within a key range, returning
+`{ count, confidence }`. Unlike `getKeysCount()`, this never iterates: the estimate is derived
+from RocksDB statistics (memtable stats plus approximate SST sizes converted through the entry
+density of the SSTs overlapping the range), so its cost scales with the number of SSTs overlapping
+the range rather than the number of keys. Reading cold table properties can do I/O through the
+table cache, so narrow ranges are preferable. A start-only range is computed as the
+whole-database estimate minus the complement, so it does the work of the range _below_ `start`.
+Accuracy improves with range size. Resolution is bounded by SST data-block granularity, so a range
+narrower than a block is unreliable in either direction: it may over-report or report 0 for present
+keys, and its low `confidence` is the signal. Recently deleted or overwritten entries may be counted
+until compaction.
+Estimates always reflect committed state; writes pending in a transaction are not included. Set
+`reverse: true` to use `getRange()`'s reverse convention (`start` is the upper bound and `end` is
+the lower bound). An inverted range (`start` ≥ `end`) returns
+`{ count: 0, confidence: 1 }`.
+
+`confidence` is a heuristic 0–1 indicator of how trustworthy `count` is — exactly 1 only when the
+count is exact. It is derived from the estimate's resolution (data-block/memtable-sampling
+granularity relative to the count), the tombstone fraction of the overlapping SSTs, and — for
+start-only ranges — the error compounded by complement subtraction. Treat it as an ordering
+signal (e.g. when to trust an estimate for query planning vs fall back to a heuristic), not a
+statistical bound.
+
+```typescript
+const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
+```
+
+### `db.createCountEstimator(options?: CountEstimatorOptions): CountEstimator`
+
+Creates an estimator that progressively refines a range count estimate while the range is being
+iterated — useful for reporting a total alongside a page of results without scanning the full
+range. Before any traversal, `estimate()` returns the pure statistical estimate (same as
+`estimateCount(range)`). As the caller reports progress with `advance(lastKey, count)` (e.g. once
+per page), `estimate()` returns the exact traversed count plus a statistical estimate of the
+remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
+already traversed — so the count converges toward the exact total. `confidence` is the
+exactness-weighted blend of the traversed portion and the remainder's confidence, so it approaches 1
+as the exact portion grows, although a checkpoint may decrease when calibration makes a large
+correction.
+Each checkpoint reads committed state, so a traversal performed against a transaction snapshot may
+be calibrated against data committed after that snapshot.
+When traversal completes, call `finish()` and `estimate()` returns the exact count with
+confidence 1. Reverse ranges follow `getRange`: set `start` to the upper bound and `end` to the
+lower bound, then set `reverse: true`. The caller owns the progress contract: cursors must move
+monotonically through the range and each entry must be reported exactly once.
+
+```typescript
+const range = { start: 'a', end: 'z' };
+const estimator = db.createCountEstimator(range);
+let lastKey;
+let pageSize = 0;
+for (const { key } of db.getRange({ ...range, limit: 25 })) {
+	lastKey = key;
+	pageSize++;
+}
+estimator.advance(lastKey, pageSize);
+const { count, confidence } = estimator.estimate();
 ```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
