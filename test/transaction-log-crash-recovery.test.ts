@@ -14,11 +14,8 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
 
 function runCrashFixture(dbPath: string, env: Record<string, string> = {}) {
 	return new Promise<void>((resolve, reject) => {
-		const fixture = join(__dirname, 'fixtures', 'txnlog-crash-window.mts');
-		const args =
-			process.versions.bun || process.versions.deno
-				? [fixture, dbPath]
-				: ['node_modules/tsx/dist/cli.mjs', fixture, dbPath];
+		const fixture = join(__dirname, 'fixtures', 'txnlog-crash-window.mjs');
+		const args = [fixture, dbPath];
 		let output = '';
 		const child = spawn(process.execPath, args, { env: { ...process.env, ...env } });
 		child.stdout.setEncoding('utf8');

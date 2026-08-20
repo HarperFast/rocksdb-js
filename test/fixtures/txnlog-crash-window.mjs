@@ -2,7 +2,7 @@
 // records a flushed position in the middle of the log), writes more, then SIGKILLs
 // itself so no shutdown/close ever runs. The parent asserts the post-flush window is
 // still readable by a *committed* query after reopening. See HarperFast/harper#1949.
-import { RocksDatabase } from '../../src/index.js';
+import { RocksDatabase } from '../../dist/index.mjs';
 import { writeSync } from 'node:fs';
 
 if (process.argv.length < 3) {
@@ -16,7 +16,7 @@ const afterFlush = Number.parseInt(process.env.AFTER_FLUSH || '4', 10);
 const db = RocksDatabase.open(dbPath);
 const log = db.useLog('foo');
 
-async function write(count: number, prefix: string) {
+async function write(count, prefix) {
 	const value = Buffer.alloc(24, prefix);
 	for (let i = 0; i < count; i++) {
 		await db.transaction(async (txn) => {
