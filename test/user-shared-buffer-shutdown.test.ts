@@ -1,6 +1,6 @@
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -74,6 +74,11 @@ function spawnShutdownRepro(
 		child.on('close', (code, signal) => {
 			if (code !== 0 || signal) {
 				console.error(`Shutdown repro stderr:\n${stderr}`);
+			}
+			// The child creates the DB dir; clean it up so repeated runs don't
+			// accumulate databases under the temp dir (honoring KEEP_FILES).
+			if (!process.env.KEEP_FILES) {
+				rmSync(dbPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 			}
 			resolve({ code, signal });
 		});

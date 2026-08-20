@@ -1569,15 +1569,10 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 
 	if (auto dbHandle = finalizeData->dbHandle.lock()) {
 		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle=%p\n", dbHandle.get());
-		// Remove the listener registered for this buffer's key by identity, but
-		// only while it is still live. The listener's napi_ref is owned by its
-		// threadsafe function, which deletes it once the listener is torn down
-		// (on close / env teardown), so re-resolving the ref here would be a
-		// use-after-free during shutdown (HarperFast/rocksdb-js#790). A live
-		// weak_ptr means the listener is still in the emitter's map; if it has
-		// already been removed (e.g. by close's removeListenersByOwner, which
-		// runs before descriptor.reset()), the lock fails and there is nothing
-		// to do.
+		// Remove this buffer's listener by identity, never by its napi_ref: the
+		// ref is owned by the listener's tsfn (see UserSharedBufferFinalizeData),
+		// so re-resolving it here was the shutdown UAF in #790. removeListener is
+		// a no-op if the listener is already gone (close / env teardown).
 		if (auto listener = finalizeData->listener.lock()) {
 			if (dbHandle->descriptor) {
 				DEBUG_LOG("%p userSharedBufferFinalize removing listener for key:", dbHandle.get());
