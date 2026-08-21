@@ -396,7 +396,7 @@ struct TransactionLogFile final {
 	 */
 	void closeLocked();
 
-	/** Create and durably initialize the fixed-size marker if it is absent. */
+	/** Durably initialize a temporary marker, then atomically publish it if absent. */
 	void ensureAppendBoundaryMarker();
 
 	/** Durably overwrite the existing marker with a non-zero logical boundary. */

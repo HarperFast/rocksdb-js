@@ -781,7 +781,8 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
 	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
-	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber, true);
+	auto logFile = std::make_shared<TransactionLogFile>(
+		path, sequenceNumber, retiredBoundary > 0);
 	if (retiredBoundary > 0) {
 		logFile->retiredAppendBoundary.store(retiredBoundary, std::memory_order_relaxed);
 		logFile->appendBoundaryLost.store(true, std::memory_order_relaxed);
@@ -812,6 +813,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	if (retiredBoundary == 0 &&
 		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
+		logFile->appendBoundaryMarkerEnabled = true;
 		if (!logFile->isOpen()) {
 			logFile->open(this->latestTimestamp);
 		}

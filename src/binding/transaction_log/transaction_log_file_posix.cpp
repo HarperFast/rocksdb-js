@@ -56,6 +56,8 @@ extern "C" int ROCKSDB_JS_MADVISE(void*, size_t, int);
 
 namespace rocksdb_js {
 
+static std::atomic<uint64_t> appendBoundaryTempSequence{0};
+
 static void syncAppendBoundaryMarkerDirectory(const std::filesystem::path& directory) {
 	int directoryFd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (directoryFd < 0) {
@@ -87,9 +89,25 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
 	std::error_code existsError;
 	if (std::filesystem::exists(markerPath, existsError)) {
-		this->retiredAppendBoundary.store(
-			readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
-		return;
+		try {
+			uint32_t boundary = readTransactionLogAppendBoundaryMarker(this->path);
+			if (boundary == 0 || std::filesystem::exists(this->path)) {
+				this->retiredAppendBoundary.store(boundary, std::memory_order_relaxed);
+				return;
+			}
+		} catch (const TransactionLogAppendBoundaryException&) {
+			if (std::filesystem::exists(this->path)) {
+				throw;
+			}
+		}
+		// A non-clean or malformed marker with no segment belongs to a generation
+		// purge already removed. It cannot protect data that no longer exists.
+		std::error_code removeError;
+		if (!std::filesystem::remove(markerPath, removeError) || removeError) {
+			throw rocksdb_js::TransactionLogAppendBoundaryException(
+				"Failed to remove stale transaction log append-boundary marker: " +
+				markerPath.string());
+		}
 	}
 	if (existsError) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
@@ -101,15 +119,14 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 	bool markerDirectoryExisted = std::filesystem::exists(markerDirectory);
 	bool markerRootExisted = std::filesystem::exists(markerRoot);
 	rocksdb_js::tryCreateDirectory(markerDirectory);
-	int markerFd = ::open(markerPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0640);
+	auto tempMarkerPath = markerPath;
+	tempMarkerPath += ".tmp-" + std::to_string(::getpid()) + "-" +
+		std::to_string(appendBoundaryTempSequence.fetch_add(1, std::memory_order_relaxed));
+	int markerFd = ::open(tempMarkerPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0640);
 	if (markerFd < 0) {
-		if (errno == EEXIST) {
-			this->retiredAppendBoundary.store(
-				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
-			return;
-		}
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to create transaction log append-boundary marker: " + markerPath.string());
+			"Failed to create temporary transaction log append-boundary marker: " +
+			tempMarkerPath.string());
 	}
 
 	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
@@ -122,11 +139,24 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 	int syncError = errno;
 	::close(markerFd);
 	if (!synced) {
-		std::filesystem::remove(markerPath);
+		std::filesystem::remove(tempMarkerPath);
 		errno = written == static_cast<ssize_t>(sizeof(bytes)) ? syncError : writeError;
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Failed to initialize transaction log append-boundary marker: " + markerPath.string());
 	}
+
+	if (::link(tempMarkerPath.c_str(), markerPath.c_str()) != 0) {
+		int publishError = errno;
+		std::filesystem::remove(tempMarkerPath);
+		if (publishError == EEXIST) {
+			this->retiredAppendBoundary.store(
+				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+			return;
+		}
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to publish transaction log append-boundary marker: " + markerPath.string());
+	}
+	std::filesystem::remove(tempMarkerPath);
 
 	try {
 		syncAppendBoundaryMarkerDirectory(markerDirectory);

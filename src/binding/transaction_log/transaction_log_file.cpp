@@ -141,10 +141,10 @@ void TransactionLogFile::open(const double latestTimestamp) {
 }
 
 void TransactionLogFile::openLocked(const double latestTimestamp) {
-	this->openFile();
 	if (this->appendBoundaryMarkerEnabled) {
 		this->ensureAppendBoundaryMarker();
 	}
+	this->openFile();
 	uint32_t physicalExtent = this->size.load(std::memory_order_relaxed);
 	uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
 	if (retiredBoundary > physicalExtent) {

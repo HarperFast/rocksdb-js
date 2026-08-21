@@ -240,10 +240,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    extent has been written and synced to that segment's preallocated marker under
    `transaction_logs/.append-boundaries/<store>/`; retirement overwrites that fixed extent rather
    than extending it, and a filesystem that still cannot persist the overwrite fails closed instead
-   of rotating. The marker carries a token and complemented boundary so a torn/corrupt marker fails
-   load closed. On restart, registered files, readers, purge counting, backup snapshots, and strict
-   validation all use the marked logical prefix and never expose the orphaned physical tail. The
-   marker is not copied into backups: the copied prefix is already a clean canonical `.txnlog`.
+   of rotating. Initial creation writes and syncs a temporary marker before atomically publishing the
+   final name, so neither a crash nor a concurrent opener can observe a short initialization. The
+   marker carries a token and complemented boundary so a torn/corrupt marker fails load closed. On
+   restart, registered files, readers, purge counting, backup snapshots, and strict validation all
+   use the marked logical prefix and never expose the orphaned physical tail. The marker is not copied
+   into backups: the copied prefix is already a clean canonical `.txnlog`.
    A known-zero-byte failure leaves the segment and its zero marker reusable.
    **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
    so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
