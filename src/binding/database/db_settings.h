@@ -21,6 +21,18 @@ private:
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
 
+	// Capacity of the shared cache for blob (large value) contents. RocksDB does
+	// NOT put blob values in the block cache, so without this every blob read is
+	// real I/O. 0 (the default) leaves blob reads uncached, matching RocksDB's
+	// own default.
+	// Atomic + mutex for the same reason as the WriteBufferManager below: the
+	// size is read lock-free from libuv worker threads during async open while
+	// Config() writes it from the JS thread, and the cache pointer must not be
+	// created twice.
+	std::atomic<size_t> blobCacheSize;
+	std::shared_ptr<rocksdb::Cache> blobCache;
+	std::mutex blobCacheMutex;
+
 	// Total memory limit (bytes) shared across all databases for active and
 	// immutable memtables. 0 disables the manager (each database uses its own
 	// unbounded memtable budget).
@@ -79,6 +91,12 @@ public:
 	}
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
+
+	/**
+	 * Returns the shared blob cache, creating it on first request. Null when
+	 * disabled (size 0).
+	 */
+	std::shared_ptr<rocksdb::Cache> getBlobCache();
 
 	size_t getWriteBufferManagerSize() const {
 		return writeBufferManagerSize.load(std::memory_order_relaxed);

@@ -1679,6 +1679,174 @@ napi_value Database::ListLogs(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Leaves `result` untouched when the property is absent.
+ */
+static bool getRatioProperty(napi_env env, napi_value obj, const char* prop, double& result) {
+	double value = result;
+	if (rocksdb_js::getProperty(env, obj, prop, value) != napi_ok) {
+		::napi_throw_error(env, nullptr, (std::string(prop) + " must be a number").c_str());
+		return false;
+	}
+	if (std::isnan(value) || value < 0.0 || value > 1.0) {
+		::napi_throw_error(env, nullptr, (std::string(prop) + " must be between 0.0 and 1.0").c_str());
+		return false;
+	}
+	result = value;
+	return true;
+}
+
+/**
+ * Reads a byte-size option, rejecting anything that would not survive the
+ * conversion to `uint64_t`: the unsigned `getProperty` overload goes through
+ * `napi_get_value_int64` and a cast, so a negative wraps to a huge size and a
+ * fractional value truncates, both silently. Absent leaves `result` untouched.
+ */
+static bool getByteSizeProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	uint64_t& result,
+	bool required = false,
+	const char* label = nullptr
+) {
+	double value = static_cast<double>(result);
+	if (rocksdb_js::getProperty(env, obj, prop, value, required) != napi_ok ||
+		!std::isfinite(value) || value != std::trunc(value) || value < 0.0 ||
+		value > 9007199254740991.0
+	) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			(std::string(label ? label : prop) +
+				" must be a non-negative integer no larger than Number.MAX_SAFE_INTEGER").c_str()
+		);
+		return false;
+	}
+	result = static_cast<uint64_t>(value);
+	return true;
+}
+
+/**
+ * Returns false with a pending JS exception on malformed input.
+ */
+static bool parseStoragePaths(napi_env env, napi_value options, std::vector<StoragePath>& result) {
+	bool has = false;
+	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "paths", &has), false);
+	if (!has) {
+		return true;
+	}
+
+	napi_value pathsValue;
+	NAPI_STATUS_THROWS_RVAL(::napi_get_named_property(env, options, "paths", &pathsValue), false);
+	napi_valuetype pathsType;
+	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, pathsValue, &pathsType), false);
+	if (pathsType == napi_undefined || pathsType == napi_null) {
+		return true;
+	}
+
+	bool isArray = false;
+	NAPI_STATUS_THROWS_RVAL(::napi_is_array(env, pathsValue, &isArray), false);
+	if (!isArray) {
+		::napi_throw_error(env, nullptr, "paths must be an array of { path, targetSize } objects");
+		return false;
+	}
+
+	uint32_t length = 0;
+	NAPI_STATUS_THROWS_RVAL(::napi_get_array_length(env, pathsValue, &length), false);
+	result.reserve(length);
+
+	for (uint32_t i = 0; i < length; i++) {
+		napi_value entry;
+		NAPI_STATUS_THROWS_RVAL(::napi_get_element(env, pathsValue, i, &entry), false);
+
+		StoragePath storagePath;
+		if (rocksdb_js::getProperty(env, entry, "path", storagePath.path, true) != napi_ok ||
+			storagePath.path.empty()
+		) {
+			::napi_throw_error(
+				env,
+				nullptr,
+				("paths[" + std::to_string(i) + "].path must be a non-empty string").c_str()
+			);
+			return false;
+		}
+
+		// Required rather than defaulted: an omitted target would silently mean
+		// "spill immediately".
+		const std::string targetSizeLabel = "paths[" + std::to_string(i) + "].targetSize";
+		if (!getByteSizeProperty(
+				env, entry, "targetSize", storagePath.targetSize, true, targetSizeLabel.c_str())
+		) {
+			return false;
+		}
+		// Resolve now: RocksDB interprets a relative path against the process
+		// working directory at open time, so storing it raw would let the same
+		// string resolve to a different volume on a later open.
+		storagePath.path = std::filesystem::absolute(storagePath.path).lexically_normal().string();
+		result.push_back(std::move(storagePath));
+	}
+
+	return true;
+}
+
+/**
+ * Returns false with a pending JS exception on malformed input.
+ */
+static bool parseBlobOptions(napi_env env, napi_value options, BlobOptions& result) {
+	bool has = false;
+	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "blobs", &has), false);
+	if (!has) {
+		return true;
+	}
+
+	napi_value blobs;
+	NAPI_STATUS_THROWS_RVAL(::napi_get_named_property(env, options, "blobs", &blobs), false);
+	napi_valuetype blobsType;
+	NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, blobs, &blobsType), false);
+	if (blobsType == napi_undefined || blobsType == napi_null) {
+		return true;
+	}
+	if (blobsType != napi_object) {
+		::napi_throw_error(env, nullptr, "blobs must be an object");
+		return false;
+	}
+
+	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "enabled", result.enabled), false);
+	if (!getByteSizeProperty(env, blobs, "minSize", result.minSize)) {
+		return false;
+	}
+	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "dir", result.dir), false);
+	if (!result.dir.empty()) {
+		// Same reason as paths[].path: the persisted value is compared as a
+		// string on reopen, so a relative directory would compare equal while
+		// resolving somewhere else.
+		result.dir = std::filesystem::absolute(result.dir).lexically_normal().string();
+	}
+	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "allowDirChange", result.allowDirChange), false);
+	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "garbageCollection", result.garbageCollection), false);
+	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "prepopulateCache", result.prepopulateCache), false);
+
+	if (!getRatioProperty(env, blobs, "garbageCollectionAgeCutoff", result.garbageCollectionAgeCutoff) ||
+		!getRatioProperty(env, blobs, "garbageCollectionForceThreshold", result.garbageCollectionForceThreshold)
+	) {
+		return false;
+	}
+
+#ifndef ROCKSDB_HAS_CF_BLOB_DIR
+	if (!result.dir.empty()) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			"blobs.dir requires a RocksDB build with the blob_dir patch (ROCKSDB_HAS_CF_BLOB_DIR)"
+		);
+		return false;
+	}
+#endif
+
+	return true;
+}
+
+/**
  * Opens the RocksDB database. This must be called before any data methods are called.
  */
 napi_value Database::Open(napi_env env, napi_callback_info info) {
@@ -1879,6 +2047,12 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	std::string transactionLogsPath = (std::filesystem::path(path) / "transaction_logs").string();
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
 	dbHandleOptions.transactionLogsPath = transactionLogsPath;
+
+	if (!parseStoragePaths(env, options, dbHandleOptions.paths) ||
+		!parseBlobOptions(env, options, dbHandleOptions.blobs)
+	) {
+		return nullptr;
+	}
 
 	if (dbHandleOptions.transactionLogMaxAgeThreshold < 0.0f || dbHandleOptions.transactionLogMaxAgeThreshold > 1.0f) {
 		::napi_throw_error(env, nullptr, "transactionLogMaxAgeThreshold must be between 0.0 and 1.0");

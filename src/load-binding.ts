@@ -202,6 +202,131 @@ export declare class NativeIteratorCls {
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
+/**
+ * One volume RocksDB may place SST files on.
+ *
+ * RocksDB fills paths in order: newer/smaller levels go to earlier entries and
+ * spill to the next once the running total of estimated level sizes exceeds an
+ * entry's `targetSize`. Placement is a static function of the target sizes and
+ * the level-size options — it does not react to actual disk usage.
+ *
+ * Two constraints are worth knowing before using this:
+ *
+ * - A path's **index** is what gets recorded per SST file in the MANIFEST, so
+ *   entries may only ever be **appended** across reopens. Reordering or
+ *   removing one makes RocksDB look for existing files in the wrong directory.
+ * - Supplying more than one entry disables
+ *   `level_compaction_dynamic_level_bytes`, so level sizing becomes static.
+ * - A directory must not be shared with another **database** — SST file
+ *   numbers come from a per-database counter, so each would delete the other's
+ *   live files during obsolete-file scanning.
+ *
+ * Blob files do **not** follow these paths — every blob file goes to
+ * `blobs.dir` (or alongside the first path when unset).
+ */
+export type NativeStoragePath = {
+	/**
+	 * Directory SST files may be written to. Resolved by RocksDB the same way
+	 * the database path is, so prefer an absolute path — a relative one is
+	 * interpreted against the process working directory at open time.
+	 */
+	path: string;
+	/**
+	 * Bytes this path should try to hold. Best-effort: RocksDB places a file
+	 * here while the running total of estimated level sizes fits, then moves on
+	 * to the next path. The last path is the fallback and takes everything that
+	 * doesn't fit earlier, regardless of its target.
+	 */
+	targetSize: number;
+};
+
+export type NativeBlobOptions = {
+	/**
+	 * Whether values at or above `minSize` are written to blob files.
+	 *
+	 * Turning this off does not make existing blob files unreadable, and with
+	 * `garbageCollection` enabled compaction gradually pulls their values back
+	 * inline into SST files. That costs write amplification — rewriting large
+	 * values at every level is exactly what blob separation avoids.
+	 *
+	 * @default true
+	 */
+	enabled?: boolean;
+	/**
+	 * Smallest value stored in a blob file rather than inline in an SST file.
+	 *
+	 * @default 2048
+	 */
+	minSize?: number;
+	/**
+	 * Directory blob files are written to and read from. When unset they live
+	 * alongside the SST files in the first entry of `paths`.
+	 *
+	 * Setting this decouples blob placement from SST placement, which is the
+	 * only way to put large values on a different volume than the LSM tree
+	 * (`paths` does not affect blob files).
+	 *
+	 * Must not be shared with another **database**: blob file numbers come from
+	 * a per-database counter, so two databases pointed at one directory mint
+	 * colliding names and each deletes the other's live files during
+	 * obsolete-file scanning. Column families of the *same* database draw from
+	 * one counter and may share. The same rule applies to `paths` entries.
+	 *
+	 * Requires a native build linked against a RocksDB carrying the `blob_dir`
+	 * patch; opening with this set otherwise throws.
+	 *
+	 * A blob file's directory is derived from this option every time the file
+	 * is opened — it is **not** recorded per file the way an SST's path index
+	 * is. Reopening with a different directory therefore strands the existing
+	 * blob files rather than moving them, so a mismatch against what the
+	 * database was last opened with is rejected at open — see
+	 * {@link NativeBlobOptions.allowDirChange} for the migration path.
+	 */
+	dir?: string;
+	/**
+	 * Acknowledges that the existing blob files have already been moved to
+	 * `dir`, permitting an open that would otherwise be rejected as a mismatch
+	 * against the directory recorded in the database's `OPTIONS` file.
+	 *
+	 * Nothing is moved for you — this only suppresses the check, so opening with
+	 * it set before actually relocating the `.blob` files makes every value at
+	 * or above `minSize` unreadable.
+	 *
+	 * @default false
+	 */
+	allowDirChange?: boolean;
+	/**
+	 * Whether compaction relocates live values out of the oldest blob files so
+	 * those files can be deleted. Required for blob files to ever shrink.
+	 *
+	 * @default true
+	 */
+	garbageCollection?: boolean;
+	/**
+	 * Fraction (0–1) of the oldest blob files eligible for relocation. The
+	 * RocksDB default of 0.25 leaves three quarters of the blob files
+	 * untouched by any given compaction; raise it toward 1 to drain them.
+	 *
+	 * @default 0.25
+	 */
+	garbageCollectionAgeCutoff?: number;
+	/**
+	 * Garbage ratio (0–1) above which RocksDB schedules targeted compactions
+	 * to reclaim the oldest blob files. The default of 1.0 never forces one.
+	 *
+	 * @default 1
+	 */
+	garbageCollectionForceThreshold?: number;
+	/**
+	 * Whether values written by a flush are inserted into the blob cache
+	 * immediately instead of waiting to be read back. Only has an effect when
+	 * a blob cache is configured via `RocksDatabase.config({ blobCacheSize })`.
+	 *
+	 * @default false
+	 */
+	prepopulateCache?: boolean;
+};
+
 export type NativeDatabaseOptions = {
 	/**
 	 * The friendly name of a compression algorithm compiled into this RocksDB
@@ -222,6 +347,17 @@ export type NativeDatabaseOptions = {
 	compressionForAllColumnFamilies?: boolean;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
+	/**
+	 * Blob-file (large value) settings. Values at or above `blobs.minSize` are
+	 * stored in separate blob files rather than inline in SST files, so
+	 * compaction does not rewrite them at every level.
+	 */
+	blobs?: NativeBlobOptions;
+	/**
+	 * Volumes SST files may be placed on, mapped to RocksDB's `db_paths`.
+	 * See {@link NativeStoragePath}.
+	 */
+	paths?: NativeStoragePath[];
 	enableStats?: boolean;
 	/**
 	 * Verbosity of RocksDB's informational logging (`info_log_level`): `0`
@@ -386,6 +522,24 @@ export type NativeDatabase = {
 
 export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
+	/**
+	 * Capacity (bytes) of the process-wide cache for blob (large value)
+	 * contents. RocksDB does **not** put blob values in the block cache, so
+	 * with the default of 0 every blob read is real I/O — which matters a lot
+	 * when blob files live on slower storage than the SST files
+	 * (see `blobs.dir`).
+	 *
+	 * Kept separate from the block cache so large values cannot evict
+	 * index/filter/data blocks.
+	 *
+	 * Must be set **before** a database is opened to affect it: the cache is
+	 * attached to a column family at open, so a database opened while this was
+	 * `0` keeps uncached blob reads for its lifetime. Changing it later resizes
+	 * the cache for databases that already have it attached.
+	 *
+	 * @default 0
+	 */
+	blobCacheSize?: number;
 	/**
 	 * Number of slots in the process-global verification table. Each slot is
 	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.
