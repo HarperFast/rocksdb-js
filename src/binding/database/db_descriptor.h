@@ -597,6 +597,9 @@ struct ColumnFamilyDescriptor final {
 	 */
 	std::mutex userSharedBuffersMutex;
 
+	// Forces a persist retry after SetOptions changes memory but not OPTIONS.
+	std::atomic<bool> compressionPersistDirty{false};
+
 	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
 
 	~ColumnFamilyDescriptor() {

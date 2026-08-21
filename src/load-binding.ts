@@ -435,6 +435,7 @@ export type NativeDatabase = {
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
 	resume(): void;
+	setCompression(algorithm: string, level?: number): void;
 	// Provide a buffer that is used as the default/shared buffer for keys, where functions that provide a key can do so by assigning the key to the shared buffer and providing the length.
 	// A null value will reset the buffer.
 	setDefaultKeyBuffer(buffer: Buffer | Uint8Array | null): void;
