@@ -372,6 +372,42 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
+12. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+    `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
+    `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer just
+    drops the JS-side ref). A worker env that exited with a transaction still pending therefore
+    leaked that handle — holding a live RocksDB transaction + snapshot — into the shared
+    descriptor, with its `env` left dangling once the worker died. The last env's
+    `DBRegistry::Shutdown → finishClose → close()` then walked those corpses and corrupted the
+    glibc heap (production signatures: `corrupted size vs. prev_size`,
+    `corrupted double-linked list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 —
+    reproduced 10/10 on Linux/glibc by `test/lingering-txn-shutdown.test.ts`, 10/10 clean with
+    the fix). The reap is
+    `DBRegistry::CloseTransactionsByEnv` → `DBDescriptor::closeTransactionsByEnv`, wired into the
+    module's per-env cleanup hook (binding.cpp) so it runs on the dying env's own thread while the
+    env is still valid.
+
+    **Do not "simplify" this into `DBHandle::close()`.** A user-called `db.close()` runs with live
+    microtasks: `db.transaction()` awaits its callback before committing, so a legitimate commit
+    is routinely one microtask behind the close and must still reach the native layer (that
+    close-then-commit overlap is exactly what `test/txn-close-commit-uaf.test.ts` exercises).
+    Reaping at handle close rejects those commits with "Database not open" — and under Deno's
+    scheduling it stranded the caller's commit promise entirely (CI hang on all three Deno
+    platforms). At env teardown no such continuation can exist, so the hook is the only safe reap
+    point. Between a user `db.close()` and env death, an open transaction's handle intentionally
+    lingers (bounded, cleaned at env exit).
+
+    Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
+    no `napi_env`/`napi_ref` fields (the JS database is passed to `UseLog` per-call; its former
+    weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
+    thread-identity guard was the Linux corrupting write:
+    `napi_delete_reference(dead env, dead ref)` from Shutdown). Close is therefore safe from any
+    thread and any teardown phase; do not
+    reintroduce napi calls into close paths. Known macOS-only artifact: under Guard Malloc the
+    leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
+    never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
+    repo's other teardown repros, gated to Node).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

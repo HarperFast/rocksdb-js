@@ -144,6 +144,13 @@ void DBHandle::close() {
 		this->descriptor->removeListenersByOwner(this);
 		this->descriptor->lockReleaseByOwner(this);
 
+		// Note: pending transactions created through this handle are NOT
+		// reaped here — a user-called close() can have a legitimate commit
+		// one microtask behind it (db.transaction() awaits its callback
+		// before committing). Env-owned transactions are closed by
+		// DBRegistry::CloseTransactionsByEnv from the env cleanup hook
+		// (HarperFast/rocksdb-js#741).
+
 		// release our reference to the descriptor
 		this->descriptor.reset();
 	}

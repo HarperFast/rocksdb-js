@@ -1231,7 +1231,10 @@ export class Store {
 		if (typeof name === 'string' && /[\t\n\r\\/]/.test(name)) {
 			throw new Error(`Invalid transaction log name "${name}"`);
 		}
-		return context.useLog(String(name));
+		// Pass the JS database per-call: the native transaction deliberately
+		// holds no napi_ref to it (HarperFast/rocksdb-js#741); the database
+		// context ignores the extra argument.
+		return context.useLog(String(name), this.db);
 	}
 
 	/**
