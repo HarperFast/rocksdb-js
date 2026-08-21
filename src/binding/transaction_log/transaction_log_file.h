@@ -433,7 +433,7 @@ private:
 	 * Reads `n` bytes at `offset` via readFromFile, retrying short reads and EINTR.
 	 * Precondition: caller holds fileMutex. Returns false on error or unexpected EOF.
 	 */
-	bool readFullyFromFile(uint32_t offset, void* dest, uint32_t n);
+	bool readBytes(uint32_t offset, void* dest, uint32_t n);
 
 	/**
 	 * Platform specific function that writes multiple buffers to the log file.
