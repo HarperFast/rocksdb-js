@@ -151,7 +151,7 @@ describe('Verification Table', () => {
 
 	describe('config({ verificationTableEntries })', () => {
 		it('throws when set to a negative value', () => {
-			expect(() => RocksDatabase.config({ verificationTableEntries: -1 })).toThrowError(
+			expect(() => RocksDatabase.config({ verificationTableEntries: -1 })).toThrow(
 				'Verification table entries must be a positive integer or 0 to disable verification'
 			);
 		});
@@ -160,7 +160,7 @@ describe('Verification Table', () => {
 			dbRunner(async ({ db }) => {
 				// Touching populateVersion materializes the verification table.
 				db.populateVersion('any-key', 1e12);
-				expect(() => RocksDatabase.config({ verificationTableEntries: 64 })).toThrowError(
+				expect(() => RocksDatabase.config({ verificationTableEntries: 64 })).toThrow(
 					'Verification table size cannot be changed after the first database is opened'
 				);
 			}));
