@@ -63,10 +63,8 @@ TEST(TransactionLogRetirement, PersistedBoundarySurvivesRestartAndFailsClosedWhe
 	EXPECT_TRUE(rocksdb_js::validateTransactionLogStore(storePath, true).valid);
 	reopened->close();
 
-	{
-		std::ofstream marker(markerPath, std::ios::binary | std::ios::trunc);
-		marker.write("bad", 3);
-	}
+	std::filesystem::resize_file(markerPath, 3);
+	ASSERT_EQ(std::filesystem::file_size(markerPath), 3u);
 	EXPECT_FALSE(rocksdb_js::validateTransactionLogStore(storePath, true).valid);
 	EXPECT_THROW(
 		rocksdb_js::TransactionLogStore::load(
