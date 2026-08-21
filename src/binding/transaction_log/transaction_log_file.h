@@ -50,10 +50,33 @@
 
 namespace rocksdb_js {
 
+/**
+ * Path of the fixed-size append-boundary marker paired with a transaction-log
+ * segment. Markers live outside the store directory so existing directory
+ * listings and backup enumeration continue to contain only log data.
+ */
+std::filesystem::path transactionLogAppendBoundaryMarkerPath(
+	const std::filesystem::path& logPath);
+
+/**
+ * Reads a persisted append boundary. Returns 0 when no marker exists or the
+ * marker records a clean segment; throws when an existing marker is malformed.
+ */
+uint32_t readTransactionLogAppendBoundaryMarker(
+	const std::filesystem::path& logPath);
+
 class TransactionLogFormatException final : public std::exception {
 	std::string message;
 public:
 	explicit TransactionLogFormatException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/** A marker failure makes the safe logical end unknowable and must fail load. */
+class TransactionLogAppendBoundaryException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogAppendBoundaryException(std::string msg) noexcept : message(std::move(msg)) {}
 	const char* what() const noexcept override { return message.c_str(); }
 };
 
@@ -82,6 +105,8 @@ inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t wri
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
+#define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
+#define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 // Forward declaration so that the friend designation inside namespace
@@ -230,15 +255,33 @@ struct TransactionLogFile final {
 	std::atomic<bool> hasAppendedSinceOpen = false;
 
 	/**
-	 * True once a failed append left bytes past `size` that could not be erased. The file is then
-	 * refused for further appends (writeEntriesV1 defers to the next file, exactly as it does for a
-	 * file at its max size) so the orphaned bytes stay the trailing partial that recoverTail() can
-	 * repair, instead of becoming a mid-file break with valid entries on both sides — the shape it
-	 * must leave intact (HarperFast/rocksdb-js#748).
+	 * True once a failed append may have left bytes past `size`. The file is refused for further
+	 * appends; the store persists `size` to the preallocated boundary marker before rotating, so the
+	 * orphaned bytes remain outside the logical file both now and after restart instead of becoming a
+	 * mid-file break with valid entries on both sides (HarperFast/rocksdb-js#748).
 	 */
 	std::atomic<bool> appendBoundaryLost = false;
 
-	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
+	/**
+	 * Last safe logical extent persisted after an uncertain append. A non-zero
+	 * value is authoritative across restarts even when the physical file still
+	 * contains orphaned bytes beyond it.
+	 */
+	std::atomic<uint32_t> retiredAppendBoundary = 0;
+
+	/** Whether this store-owned file maintains a persistent boundary marker. */
+	bool appendBoundaryMarkerEnabled = false;
+
+	/**
+	 * Suppresses repeated backup warnings for the same malformed segment. The extent remains
+	 * unresolved so each backup still verifies whether the segment has since become readable.
+	 */
+	std::atomic<bool> malformedBackupWarningEmitted = false;
+
+	TransactionLogFile(
+		const std::filesystem::path& p,
+		const uint32_t seq,
+		bool appendBoundaryMarkerEnabled = false);
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;
@@ -255,6 +298,13 @@ struct TransactionLogFile final {
 	 * Flushes any buffered data to disk.
 	 */
 	void flush();
+
+	/**
+	 * Persists the current logical size as the last safe boundary. The marker is
+	 * preallocated before the first append, so retirement overwrites a fixed extent
+	 * rather than extending it. Throws unless persistence succeeds.
+	 */
+	void persistAppendBoundaryRetirement();
 
 	/**
 	 * Gets the last write time of the log file or throws an error if the file
@@ -345,6 +395,12 @@ struct TransactionLogFile final {
 	 * mapping its index scan created) behind when it rejects a file.
 	 */
 	void closeLocked();
+
+	/** Create and durably initialize the fixed-size marker if it is absent. */
+	void ensureAppendBoundaryMarker();
+
+	/** Durably overwrite the existing marker with a non-zero logical boundary. */
+	void writeAppendBoundaryMarker(uint32_t boundary);
 
 	/**
 	 * Body of open(). Precondition: the caller already holds fileMutex.
@@ -507,10 +563,9 @@ private:
 	 *
 	 * @param bytesLanded Set to the number of bytes that reached the file, or to
 	 *   TRANSACTION_LOG_BYTES_LANDED_UNKNOWN when the platform cannot report it. On a
-	 *   hard error (return -1) those bytes are still on disk and the caller must
-	 *   erase them: an append that stops part-way through an entry leaves a
-	 *   framing break that hides everything written after it. An unknown extent
-	 *   cannot be erased safely, so the caller retires the file instead.
+	 *   hard error (return -1) those bytes may still be on disk. Any positive or
+	 *   unknown extent retires the segment so later appends cannot turn that
+	 *   trailing partial into a mid-file framing break.
 	 */
 	int64_t writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded);
 

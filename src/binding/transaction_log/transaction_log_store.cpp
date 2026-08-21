@@ -181,7 +181,7 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 
 		std::string filename = std::to_string(sequenceNumber) + ".txnlog";
 		auto logFilePath = this->path / filename;
-		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber);
+		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber, true);
 		this->sequenceFiles[sequenceNumber] = logFile;
 		this->nextLogPosition = { 0, sequenceNumber };
 	}
@@ -211,6 +211,7 @@ void TransactionLogStore::rotateToNextSequence(const std::shared_ptr<Transaction
 		oldFile->downgradeMapToFrozen();
 	}
 	this->advanceSequence();
+	this->nextLogPosition = { 0, this->currentSequenceNumber.load(std::memory_order_relaxed) };
 }
 
 std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenceNumber) {
@@ -447,19 +448,22 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			// `byteLimit == 0` skip below silently omits it from the backup
 			// (directory iteration order decides which segments are lazy, so ext4
 			// hits those orders and APFS hides them). close() leaves `size` set, so
-			// this walk costs its syscalls once per process, not once per backup.
+			// successful opens cost their syscalls once per process. A malformed file
+			// remains unresolved and is retried so a repaired segment can rejoin backups.
 			try {
 				this->ensureExtent(file);
 			} catch (const TransactionLogFormatException& e) {
 				// A malformed header has no readable entries, so there is nothing to
 				// back up. Other open failures propagate: the segment may be healthy,
 				// and reporting success would publish an incomplete backup.
-				std::ostringstream msg;
-				msg << "Transaction log segment " << file->path.string()
-					<< " could not be opened to measure its extent (" << e.what()
-					<< "); it is excluded from this backup.";
-				DEBUG_LOG("%p TransactionLogStore::snapshotForBackup WARNING: %s\n", this, msg.str().c_str());
-				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				if (!file->malformedBackupWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+					std::ostringstream msg;
+					msg << "Transaction log segment " << file->path.string()
+						<< " could not be opened to measure its extent (" << e.what()
+						<< "); it is excluded from this backup.";
+					DEBUG_LOG("%p TransactionLogStore::snapshotForBackup WARNING: %s\n", this, msg.str().c_str());
+					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				}
 				continue;
 			}
 			files.emplace_back(seq, file);
@@ -492,7 +496,10 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			file->path,
 			byteLimit,
 			mtime,
-			seq != current, // rotated files are immutable → hard-linkable
+			// A retired file is frozen but its physical inode includes an orphaned
+			// tail beyond byteLimit, so it must take the prefix-copy path.
+			seq != current &&
+				file->retiredAppendBoundary.load(std::memory_order_relaxed) == 0,
 			{}, // read from disk, not inline
 		});
 	}
@@ -773,7 +780,21 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
-	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber);
+	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
+	auto logFile = std::make_shared<TransactionLogFile>(path, sequenceNumber, true);
+	if (retiredBoundary > 0) {
+		logFile->retiredAppendBoundary.store(retiredBoundary, std::memory_order_relaxed);
+		logFile->appendBoundaryLost.store(true, std::memory_order_relaxed);
+		// Validate the header and seed the authoritative logical extent now. This
+		// file must remain frozen even when it is the highest discovered sequence.
+		try {
+			logFile->open(this->latestTimestamp);
+		} catch (const std::exception& e) {
+			throw TransactionLogAppendBoundaryException(
+				"Failed to open retired transaction log segment " + path.string() + ": " + e.what());
+		}
+		logFile->close();
+	}
 	this->sequenceFiles[sequenceNumber] = logFile;
 
 	// Seed the in-memory last-write time from the on-disk mtime so the
@@ -789,17 +810,24 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		// "now" seed
 	}
 
-	if (sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
+	if (retiredBoundary == 0 &&
+		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		if (!logFile->isOpen()) {
 			logFile->open(this->latestTimestamp);
 		}
 		this->currentSequenceNumber.store(sequenceNumber, std::memory_order_relaxed);
 		this->nextLogPosition = { logFile->size, sequenceNumber };
+	} else if (retiredBoundary > 0 &&
+		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
+		uint32_t nextWritableSequence = sequenceNumber + 1;
+		this->currentSequenceNumber.store(nextWritableSequence, std::memory_order_relaxed);
+		this->nextLogPosition = { 0, nextWritableSequence };
 	}
 
 	// update next sequence number to be one higher than the highest existing
-	if (sequenceNumber >= this->nextSequenceNumber) {
-		this->nextSequenceNumber = sequenceNumber + 1;
+	uint32_t sequenceAfterFile = sequenceNumber + (retiredBoundary > 0 ? 2 : 1);
+	if (sequenceAfterFile > this->nextSequenceNumber) {
+		this->nextSequenceNumber = sequenceAfterFile;
 	}
 
 	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
@@ -830,6 +858,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		std::shared_ptr<TransactionLogFile> logFile = nullptr;
+		bool rotatedAfterOpenFailure = false;
 
 		// get the current log file and rotate if needed
 		while (logFile == nullptr) {
@@ -845,13 +874,19 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				} catch (const std::exception& e) {
 					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
 					this->writeFailures.fetch_add(1, std::memory_order_relaxed);
+					if (rotatedAfterOpenFailure) {
+						// A corrupt/colliding existing segment may be bypassed once, but a
+						// repeated environmental failure must become a bounded caller error.
+						throw;
+					}
+					rotatedAfterOpenFailure = true;
 					// move to next sequence number and try again
 					logFile = nullptr;
 				}
 			}
 
 			// rotate to next sequence if file open failed or file is at max size
-			// this prevents infinite loops when file open fails (even with maxIndexSize=0)
+			// one retry avoids an infinite sequence of files on an environmental failure
 			if (logFile == nullptr || this->maxFileSize > 0) {
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Advancing sequence number from %u to %u for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
 					this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
@@ -901,6 +936,12 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			logFile->writeEntries(batch, this->maxFileSize);
 		} catch (...) {
 			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
+			if (logFile->appendBoundaryLost.load(std::memory_order_relaxed)) {
+				// Persist the logical boundary before the sequence becomes visible as
+				// rotated. A restart can then ignore every orphaned physical byte.
+				logFile->persistAppendBoundaryRetirement();
+				this->rotateToNextSequence(logFile);
+			}
 			throw;
 		}
 		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
@@ -924,7 +965,12 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		{
 			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-			this->nextLogPosition = { logFile->size, this->currentSequenceNumber.load(std::memory_order_relaxed) };
+			// rotateToNextSequence() already reset the next position to the new
+			// segment. Preserve that boundary; only advance within this file when
+			// it is still current.
+			if (this->currentSequenceNumber.load(std::memory_order_relaxed) == logFile->sequenceNumber) {
+				this->nextLogPosition = { logFile->size, logFile->sequenceNumber };
+			}
 		}
 	}
 
@@ -1122,7 +1168,14 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count());
 							try {
 								DEBUG_LOG("%p TransactionLogStore::load Removing expired file: %s\n", store.get(), filePath.string().c_str());
-								std::filesystem::remove(filePath);
+								if (std::filesystem::remove(filePath)) {
+									std::error_code markerError;
+									auto markerPath = transactionLogAppendBoundaryMarkerPath(filePath);
+									std::filesystem::remove(markerPath, markerError);
+									std::filesystem::remove(markerPath.parent_path(), markerError);
+									std::filesystem::remove(
+										markerPath.parent_path().parent_path(), markerError);
+								}
 							} catch (const std::filesystem::filesystem_error& e) {
 								DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
 									store.get(), filePath.string().c_str(), e.what());
@@ -1136,6 +1189,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 					store->registerLogFile(filePath, sequenceNumber);
 				}
+			} catch (const TransactionLogAppendBoundaryException&) {
+				// The marker is the only authoritative record of a retired file's
+				// logical end. Ignoring it could expose orphaned bytes after restart.
+				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
 					store.get(), e.what());
@@ -1178,9 +1235,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	// Seed from the last closed transaction, but never behind txn.state: flushed
 	// log entries are already durable in RocksDB and are therefore a safe floor.
-	// A batch can span any number of rotations, so walk back through its unflagged
-	// files until a boundary is found. Once the flushed file has been scanned,
-	// older files cannot improve the floor and need not be read.
+	// Legacy batches can span any number of rotations, so walk back through their
+	// unflagged files until a boundary is found. Once the flushed file has been
+	// scanned, older files cannot improve the floor and need not be read.
 	LogPosition recoveredPosition = { 0, 0 };
 	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
 		if (it->first > storeCurrentSeq) {

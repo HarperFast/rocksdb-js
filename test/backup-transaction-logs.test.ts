@@ -1,5 +1,6 @@
 import { backups, RocksDatabase } from '../src/index.ts';
 import { constants } from '../src/load-binding.ts';
+import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import {
 	existsSync,
@@ -13,11 +14,16 @@ import {
 	writeFileSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import * as tar from 'tar';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const tempPaths: string[] = [];
-const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_TOKEN } = constants;
+const {
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_TOKEN,
+} = constants;
 
 function tempPath(): string {
 	const p = generateDBPath();
@@ -34,29 +40,6 @@ async function writeLog(db: RocksDatabase, name: string, count = 5, fill = 'x'):
 			log.addEntry(value, txn.id);
 		});
 	}
-}
-
-function writeDiscoveredSegments(dbPath: string, name: string): string {
-	const logDirectory = join(dbPath, 'transaction_logs', name);
-	mkdirSync(logDirectory, { recursive: true });
-	const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
-	header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
-	header.writeUInt8(1, 4);
-	header.writeDoubleBE(Date.now(), 5);
-	for (let sequence = 64; sequence >= 1; sequence--) {
-		writeFileSync(join(logDirectory, `${sequence}.txnlog`), header);
-	}
-	const discoveryOrder = readdirSync(logDirectory).map((file) => Number.parseInt(file, 10));
-	const predecessor = discoveryOrder.toSorted((a, b) => b - a)[1];
-	let highestSeen = 0;
-	for (const sequence of discoveryOrder) {
-		if (sequence >= highestSeen) {
-			highestSeen = sequence;
-		} else if (sequence !== predecessor) {
-			return join(logDirectory, `${sequence}.txnlog`);
-		}
-	}
-	throw new Error('Could not construct a lazily discovered transaction log segment');
 }
 
 describe('Transaction log backups', () => {
@@ -109,7 +92,12 @@ describe('Transaction log backups', () => {
 		'rejects a transaction log snapshot when a segment cannot be opened (%s)',
 		(target) =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
-				const lazySegment = writeDiscoveredSegments(dbPath, 'unopenable');
+				const { path: lazySegment } = writeLazyTransactionLogSegments(
+					join(dbPath, 'transaction_logs', 'unopenable'),
+					TRANSACTION_LOG_FILE_HEADER_SIZE,
+					TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+					TRANSACTION_LOG_TOKEN
+				);
 				db.open();
 				rmSync(lazySegment);
 				mkdirSync(lazySegment);
@@ -128,16 +116,32 @@ describe('Transaction log backups', () => {
 
 	it('consistently excludes a malformed lazy segment across backup preflight and copy', () =>
 		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
-			const lazySegment = writeDiscoveredSegments(dbPath, 'malformed');
+			const { path: lazySegment } = writeLazyTransactionLogSegments(
+				join(dbPath, 'transaction_logs', 'malformed'),
+				TRANSACTION_LOG_FILE_HEADER_SIZE,
+				TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+				TRANSACTION_LOG_TOKEN
+			);
 			db.open();
 			writeFileSync(lazySegment, Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE));
 
-			const backupDir = tempPath();
-			const id = await db.backup(backupDir, { transactionLogs: true });
-			const backedUpStore = join(backupDir, 'transaction_logs', String(id), 'malformed');
+			const warnings: string[] = [];
+			const onWarning = (message: string) => {
+				if (message.includes(lazySegment)) warnings.push(message);
+			};
+			RocksDatabase.on('log.warn', onWarning);
+			try {
+				const backupDir = tempPath();
+				const id = await db.backup(backupDir, { transactionLogs: true });
+				const backedUpStore = join(backupDir, 'transaction_logs', String(id), 'malformed');
 
-			expect(existsSync(join(backedUpStore, basename(lazySegment)))).toBe(false);
-			expect(readdirSync(backedUpStore).length).toBe(63);
+				expect(existsSync(join(backedUpStore, basename(lazySegment)))).toBe(false);
+				expect(readdirSync(backedUpStore).length).toBe(63);
+				await delay(0);
+				expect(warnings).toHaveLength(1);
+			} finally {
+				RocksDatabase.off('log.warn', onWarning);
+			}
 		}));
 
 	it('preserves the log file mtime through backup and restore', () =>

@@ -1,0 +1,98 @@
+#include <gtest/gtest.h>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <string>
+#include "transaction_log/transaction_log_entry.h"
+#include "transaction_log/transaction_log_file.h"
+#include "transaction_log/transaction_log_store.h"
+#include "transaction_log/transaction_log_validation.h"
+
+namespace {
+
+std::filesystem::path uniqueRetirementStorePath() {
+	auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+	return std::filesystem::temp_directory_path() /
+		("rocksdb-js-retirement-" + std::to_string(nonce)) / "store";
+}
+
+} // namespace
+
+TEST(TransactionLogRetirement, PersistedBoundarySurvivesRestartAndFailsClosedWhenCorrupt) {
+	auto storePath = uniqueRetirementStorePath();
+	auto logPath = storePath / "1.txnlog";
+	auto markerPath = rocksdb_js::transactionLogAppendBoundaryMarkerPath(logPath);
+	std::filesystem::create_directories(storePath);
+	uint32_t committedSize = 0;
+
+	{
+		rocksdb_js::TransactionLogFile file(logPath, 1, true);
+		file.open(1770000000000.0);
+		EXPECT_EQ(
+			std::filesystem::file_size(markerPath),
+			static_cast<uintmax_t>(TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE));
+		std::string payload = "committed";
+		rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		file.writeEntries(batch);
+		committedSize = file.size.load(std::memory_order_relaxed);
+		file.close();
+
+		std::ofstream physicalTail(logPath, std::ios::binary | std::ios::app);
+		physicalTail.write("orphan", 6);
+		physicalTail.close();
+
+		file.appendBoundaryLost.store(true, std::memory_order_relaxed);
+		file.persistAppendBoundaryRetirement();
+	}
+
+	EXPECT_EQ(std::filesystem::file_size(logPath), committedSize + 6);
+	EXPECT_EQ(rocksdb_js::readTransactionLogAppendBoundaryMarker(logPath), committedSize);
+	EXPECT_EQ(
+		std::filesystem::file_size(markerPath),
+		static_cast<uintmax_t>(TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE));
+
+	auto reopened = rocksdb_js::TransactionLogStore::load(
+		storePath, 0, std::chrono::milliseconds(0), 0);
+	ASSERT_NE(reopened, nullptr);
+	EXPECT_EQ(reopened->currentSequenceNumber.load(std::memory_order_relaxed), 2u);
+	EXPECT_EQ(reopened->getLogFileSize(1), committedSize);
+	EXPECT_TRUE(rocksdb_js::validateTransactionLogStore(storePath, true).valid);
+	reopened->close();
+
+	{
+		std::ofstream marker(markerPath, std::ios::binary | std::ios::trunc);
+		marker.write("bad", 3);
+	}
+	EXPECT_FALSE(rocksdb_js::validateTransactionLogStore(storePath, true).valid);
+	EXPECT_THROW(
+		rocksdb_js::TransactionLogStore::load(
+			storePath, 0, std::chrono::milliseconds(0), 0),
+		rocksdb_js::TransactionLogAppendBoundaryException);
+
+	std::filesystem::remove_all(storePath.parent_path());
+	std::filesystem::remove_all(markerPath.parent_path());
+}
+
+TEST(TransactionLogRetirement, RepeatedSegmentOpenFailureIsBounded) {
+	auto storePath = uniqueRetirementStorePath();
+	std::filesystem::create_directories(storePath / "1.txnlog");
+	std::filesystem::create_directories(storePath / "2.txnlog");
+
+	rocksdb_js::TransactionLogStore store(
+		"store", storePath, 0, std::chrono::milliseconds(0), 0);
+	rocksdb_js::LogPosition position;
+	std::string payload = "entry";
+	rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
+	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+
+	EXPECT_THROW(store.writeBatch(batch, position), rocksdb_js::DBException);
+	EXPECT_EQ(store.currentSequenceNumber.load(std::memory_order_relaxed), 2u);
+	EXPECT_FALSE(batch.isComplete());
+
+	store.close();
+	std::filesystem::remove_all(storePath.parent_path());
+}

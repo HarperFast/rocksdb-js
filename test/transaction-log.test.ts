@@ -7,6 +7,7 @@ import {
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { withResolvers } from '../src/util.ts';
+import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
@@ -703,36 +704,22 @@ describe('Transaction Log', () => {
 		it('reports lazy-segment open failures as JavaScript errors', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'open-error');
-				await mkdir(logDirectory, { recursive: true });
-				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
-				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
-				header.writeUInt8(1, 4);
-				header.writeDoubleBE(Date.now(), 5);
-				for (let sequence = 64; sequence >= 1; sequence--) {
-					await writeFile(join(logDirectory, `${sequence}.txnlog`), header);
-				}
-				const discoveryOrder = (await readdir(logDirectory)).map((file) =>
-					Number.parseInt(file, 10)
+				const { sequence: lazySequence } = writeLazyTransactionLogSegments(
+					logDirectory,
+					TRANSACTION_LOG_FILE_HEADER_SIZE,
+					TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+					TRANSACTION_LOG_TOKEN
 				);
-				const predecessor = discoveryOrder.toSorted((a, b) => b - a)[1];
-				let highestSeen = 0;
-				const lazySequence = discoveryOrder.find((sequence) => {
-					if (sequence >= highestSeen) {
-						highestSeen = sequence;
-						return false;
-					}
-					return sequence !== predecessor;
-				});
-				expect(lazySequence).toBeDefined();
 
 				db.open();
 				const log = db.useLog('open-error');
-				await writeFile(join(logDirectory, `${lazySequence}.txnlog`), Buffer.alloc(header.length));
-
-				expect(() => log.getLogFileSize(lazySequence!)).toThrow('Invalid transaction log file');
-				expect(() => log._getMemoryMapOfFile(lazySequence!)).toThrow(
-					'Invalid transaction log file'
+				await writeFile(
+					join(logDirectory, `${lazySequence}.txnlog`),
+					Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE)
 				);
+
+				expect(() => log.getLogFileSize(lazySequence)).toThrow('Invalid transaction log file');
+				expect(() => log._getMemoryMapOfFile(lazySequence)).toThrow('Invalid transaction log file');
 			}));
 
 		it('should not commit the log if the transaction is aborted', () =>
@@ -864,7 +851,7 @@ describe('Transaction Log', () => {
 				expect(queryResults.length).toBe(2);
 			}));
 
-		it('should continue batch in next file', () =>
+		it('should keep an oversized transaction batch in one file', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 				const value = Buffer.alloc(100, 'a');
@@ -876,26 +863,17 @@ describe('Transaction Log', () => {
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 				const logFiles = await readdir(logStorePath);
-				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
+				expect(logFiles).toEqual(['1.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
-				const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
 				const info1 = parseTransactionLog(log1Path);
-				const info2 = parseTransactionLog(log2Path);
 
 				expect(info1.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 15
 				);
-				expect(info1.entries.length).toBe(8);
+				expect(info1.entries.length).toBe(15);
 				expect(info1.entries[0].length).toBe(100);
 				expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
-
-				expect(info2.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 7
-				);
-				expect(info2.entries.length).toBe(7);
-				expect(info2.entries[0].length).toBe(100);
-				expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 
 				const queryResults = Array.from(log.query({ start: 0 }));
 				expect(queryResults.length).toBe(15);
@@ -903,9 +881,9 @@ describe('Transaction Log', () => {
 				expect(queryResults[14].endTxn).toBe(true);
 			}));
 
-		it('should be able to rotate with entries that span a transaction', () =>
+		it('should rotate before a transaction instead of splitting its entries', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
-				let log = db.useLog('foo');
+				const log = db.useLog('foo');
 				const value = Buffer.alloc(100, 'a');
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
@@ -927,16 +905,16 @@ describe('Transaction Log', () => {
 				const info2 = parseTransactionLog(log2Path);
 
 				expect(info1.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 7
 				);
-				expect(info1.entries.length).toBe(8);
+				expect(info1.entries.length).toBe(7);
 				expect(info1.entries[0].length).toBe(100);
 				expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 
 				expect(info2.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 3
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4
 				);
-				expect(info2.entries.length).toBe(3);
+				expect(info2.entries.length).toBe(4);
 				expect(info2.entries[0].length).toBe(100);
 				expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 

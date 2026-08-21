@@ -13,10 +13,90 @@ namespace rocksdb_js {
 
 std::string getWindowsErrorMessage(DWORD errorCode);
 
-TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
+TransactionLogFile::TransactionLogFile(
+	const std::filesystem::path& p,
+	const uint32_t seq,
+	bool appendBoundaryMarkerEnabled) :
 	path(p),
-	sequenceNumber(seq)
+	sequenceNumber(seq),
+	appendBoundaryMarkerEnabled(appendBoundaryMarkerEnabled)
 {}
+
+void TransactionLogFile::ensureAppendBoundaryMarker() {
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	std::error_code existsError;
+	if (std::filesystem::exists(markerPath, existsError)) {
+		this->retiredAppendBoundary.store(
+			readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+		return;
+	}
+	if (existsError) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to inspect transaction log append-boundary marker: " + markerPath.string());
+	}
+
+	rocksdb_js::tryCreateDirectory(markerPath.parent_path());
+	HANDLE marker = ::CreateFileW(
+		markerPath.wstring().c_str(),
+		GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		CREATE_NEW,
+		FILE_ATTRIBUTE_HIDDEN,
+		nullptr);
+	if (marker == INVALID_HANDLE_VALUE) {
+		DWORD createError = ::GetLastError();
+		if (createError == ERROR_FILE_EXISTS || createError == ERROR_ALREADY_EXISTS) {
+			this->retiredAppendBoundary.store(
+				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+			return;
+		}
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to create transaction log append-boundary marker: " + markerPath.string());
+	}
+
+	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
+	writeUint32BE(bytes, TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN);
+	writeUint32BE(bytes + 4, 0);
+	writeUint32BE(bytes + 8, UINT32_MAX);
+	DWORD written = 0;
+	bool success = ::WriteFile(marker, bytes, sizeof(bytes), &written, nullptr) &&
+		written == static_cast<DWORD>(sizeof(bytes)) && ::FlushFileBuffers(marker);
+	::CloseHandle(marker);
+	if (!success) {
+		std::filesystem::remove(markerPath);
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to initialize transaction log append-boundary marker: " + markerPath.string());
+	}
+}
+
+void TransactionLogFile::writeAppendBoundaryMarker(uint32_t boundary) {
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	HANDLE marker = ::CreateFileW(
+		markerPath.wstring().c_str(),
+		GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_HIDDEN,
+		nullptr);
+	if (marker == INVALID_HANDLE_VALUE) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to open transaction log append-boundary marker: " + markerPath.string());
+	}
+	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
+	writeUint32BE(bytes, TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN);
+	writeUint32BE(bytes + 4, boundary);
+	writeUint32BE(bytes + 8, ~boundary);
+	DWORD written = 0;
+	bool success = ::WriteFile(marker, bytes, sizeof(bytes), &written, nullptr) &&
+		written == static_cast<DWORD>(sizeof(bytes)) && ::FlushFileBuffers(marker);
+	::CloseHandle(marker);
+	if (!success) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to persist transaction log append boundary: " + markerPath.string());
+	}
+}
 
 void TransactionLogFile::close() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
@@ -372,6 +452,11 @@ bool TransactionLogFile::removeFileLocked() {
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
 		this, this->path.string().c_str());
+	std::error_code markerError;
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	std::filesystem::remove(markerPath, markerError);
+	std::filesystem::remove(markerPath.parent_path(), markerError);
+	std::filesystem::remove(markerPath.parent_path().parent_path(), markerError);
 	return true;
 }
 

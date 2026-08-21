@@ -11,6 +11,7 @@
 #ifndef _WIN32
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -26,6 +27,8 @@
 #include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_recovery.h"
+#include "transaction_log/transaction_log_store.h"
+#include "transaction_log/transaction_log_validation.h"
 
 // ---------------------------------------------------------------------------
 // writev mock
@@ -44,15 +47,10 @@ static size_t g_writev_budget_bytes = kUnlimitedWritevBudget;
 // header) at this many bytes. SIZE_MAX passes through.
 static size_t g_write_cap_bytes = SIZE_MAX;
 
-// When true, ftruncate() fails with EIO — the double fault where the erase of a
-// failed append's bytes cannot itself complete.
-static bool g_ftruncate_fails = false;
+static size_t g_ftruncate_calls = 0;
 
 extern "C" int rocksdb_js_mock_ftruncate(int fd, off_t length) {
-	if (g_ftruncate_fails) {
-		errno = EIO;
-		return -1;
-	}
+	++g_ftruncate_calls;
 	return ::ftruncate(fd, length);
 }
 
@@ -338,14 +336,14 @@ protected:
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
 		g_write_cap_bytes = SIZE_MAX;
-		g_ftruncate_fails = false;
+		g_ftruncate_calls = 0;
 		rocksdb_js::TransactionLogFile::forcedBytesLandedForTests.store(INT64_MIN);
 	}
 	void TearDown() override {
 		g_writev_max_bytes_per_call = 0;
 		g_writev_budget_bytes = kUnlimitedWritevBudget;
 		g_write_cap_bytes = SIZE_MAX;
-		g_ftruncate_fails = false;
+		g_ftruncate_calls = 0;
 		rocksdb_js::TransactionLogFile::forcedBytesLandedForTests.store(INT64_MIN);
 		if (file_) {
 			file_->close();
@@ -367,10 +365,10 @@ protected:
 
 } // namespace
 
-TEST_F(AppendBoundary, FailedAppendLeavesTheLogOnAnEntryBoundary) {
+TEST_F(AppendBoundary, FailedPartialAppendRetiresWithoutTruncating) {
 	auto& file = openLog("orphan");
 
-	auto first = makeBatch(1001.0, { "first-entry" });
+	auto first = makeBatch(1001.0, { "a" });
 	file.writeEntries(first, 0);
 	const uint32_t committedSize = file.size.load();
 	ASSERT_EQ(std::filesystem::file_size(path_), committedSize);
@@ -382,51 +380,101 @@ TEST_F(AppendBoundary, FailedAppendLeavesTheLogOnAnEntryBoundary) {
 	g_writev_budget_bytes = kUnlimitedWritevBudget;
 
 	EXPECT_EQ(file.size.load(), committedSize);
-	EXPECT_EQ(std::filesystem::file_size(path_), committedSize)
-		<< "partial bytes from the failed append were left on disk";
+	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
+	EXPECT_EQ(g_ftruncate_calls, size_t{ 0 }) << "failed append truncated beneath a potentially live mapping";
 	EXPECT_EQ(interrupted.currentEntryIndex, 0u)
 		<< "the batch was marked as written when nothing reached the file";
 
-	// The next append must land on the boundary, not after an orphaned fragment.
+	// The next append must be refused, leaving the orphan as a trailing partial.
 	auto second = makeBatch(1003.0, { "second-entry" });
-	file.writeEntries(second, 0);
-
-	auto image = readWholeFile(path_);
-	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
-	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::Clean);
-	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 2u);
-}
-
-// When the erase itself fails, the file must stop accepting appends. Writing on
-// would put valid entries past the orphaned bytes, which is the mid-file break
-// recoverTail() has to leave intact; refusing keeps them a repairable torn tail.
-TEST_F(AppendBoundary, UnerasableOrphanRetiresTheFile) {
-	auto& file = openLog("unerasable");
-
-	auto first = makeBatch(1001.0, { "first-entry" });
-	file.writeEntries(first, 0);
-	const uint32_t committedSize = file.size.load();
-
-	g_writev_budget_bytes = 6;
-	g_ftruncate_fails = true;
-	auto interrupted = makeBatch(1002.0, { "interrupted-entry" });
-	EXPECT_THROW(file.writeEntries(interrupted, 0), rocksdb_js::DBException);
-	g_writev_budget_bytes = kUnlimitedWritevBudget;
-	g_ftruncate_fails = false;
-
-	ASSERT_EQ(std::filesystem::file_size(path_), committedSize + 6);
-
-	auto next = makeBatch(1003.0, { "next-entry" });
-	file.writeEntries(next, 0);
-	EXPECT_EQ(next.currentEntryIndex, 0u) << "the retired file accepted another append";
-	EXPECT_EQ(file.size.load(), committedSize);
+	EXPECT_THROW(file.writeEntries(second, 0), rocksdb_js::DBException);
+	EXPECT_EQ(second.currentEntryIndex, 0u);
 	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
 
-	// Still the torn-tail shape, so open-time recovery can repair it.
 	auto image = readWholeFile(path_);
 	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
 	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
 	EXPECT_EQ(scan.validEnd, committedSize);
+}
+
+TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {
+	auto storePath = uniqueLogPath("store-rotation");
+	std::filesystem::remove(storePath);
+	std::filesystem::create_directories(storePath);
+	uint32_t committedSize = 0;
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store-rotation", storePath, 0, std::chrono::milliseconds(0), 0);
+		rocksdb_js::LogPosition firstPosition;
+		auto first = makeBatch(1001.0, { "first-entry" });
+		store.writeBatch(first, firstPosition);
+
+		auto firstPath = storePath / "1.txnlog";
+		committedSize = static_cast<uint32_t>(std::filesystem::file_size(firstPath));
+
+		g_writev_budget_bytes = 6;
+		rocksdb_js::LogPosition interruptedPosition;
+		auto interrupted = makeBatch(1002.0, { "interrupted-entry" });
+		EXPECT_THROW(store.writeBatch(interrupted, interruptedPosition), rocksdb_js::DBException);
+		g_writev_budget_bytes = kUnlimitedWritevBudget;
+
+		EXPECT_EQ(store.currentSequenceNumber.load(std::memory_order_relaxed), 2u);
+		EXPECT_EQ(interrupted.currentEntryIndex, 0u);
+		EXPECT_EQ(std::filesystem::file_size(firstPath), committedSize + 6);
+		EXPECT_EQ(rocksdb_js::readTransactionLogAppendBoundaryMarker(firstPath), committedSize);
+		EXPECT_FALSE(std::filesystem::exists(storePath / "2.txnlog"));
+
+		rocksdb_js::LogPosition nextPosition;
+		auto next = makeBatch(1003.0, { "next-entry" });
+		store.writeBatch(next, nextPosition);
+		EXPECT_TRUE(next.isComplete());
+		EXPECT_EQ(nextPosition.logSequenceNumber, 2u);
+		EXPECT_EQ(nextPosition.positionInLogFile, 0u);
+
+		auto firstImage = readWholeFile(firstPath);
+		auto firstScan = rocksdb_js::scanTransactionLogForRecovery(
+			firstImage.data(), static_cast<uint32_t>(firstImage.size()));
+		EXPECT_EQ(firstScan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
+		EXPECT_EQ(firstScan.validEnd, committedSize);
+
+		auto nextImage = readWholeFile(storePath / "2.txnlog");
+		EXPECT_EQ(rocksdb_js::countTransactionLogEntries(
+			nextImage.data(), static_cast<uint32_t>(nextImage.size())), 1u);
+
+		auto snapshot = store.snapshotForBackup();
+		auto retiredEntry = std::find_if(snapshot.begin(), snapshot.end(),
+			[](const rocksdb_js::TransactionLogBackupEntry& entry) {
+				return entry.relativeName == "1.txnlog";
+			});
+		ASSERT_NE(retiredEntry, snapshot.end());
+		EXPECT_EQ(retiredEntry->byteLimit, committedSize);
+		EXPECT_FALSE(retiredEntry->immutable);
+	}
+
+	// The marker makes the retirement authoritative after restart: the orphaned
+	// physical tail is neither validated nor exposed as part of the log.
+	auto reopened = rocksdb_js::TransactionLogStore::load(
+		storePath, 0, std::chrono::milliseconds(0), 0);
+	ASSERT_NE(reopened, nullptr);
+	EXPECT_EQ(reopened->currentSequenceNumber.load(std::memory_order_relaxed), 2u);
+	EXPECT_EQ(reopened->getLogFileSize(1), committedSize);
+	auto validation = rocksdb_js::validateTransactionLogStore(storePath, true);
+	EXPECT_TRUE(validation.valid);
+	reopened->close();
+
+	auto markerPath = rocksdb_js::transactionLogAppendBoundaryMarkerPath(storePath / "1.txnlog");
+	{
+		std::ofstream marker(markerPath, std::ios::binary | std::ios::trunc);
+		marker.write("bad", 3);
+	}
+	EXPECT_THROW(
+		rocksdb_js::TransactionLogStore::load(
+			storePath, 0, std::chrono::milliseconds(0), 0),
+		rocksdb_js::TransactionLogAppendBoundaryException);
+
+	std::filesystem::remove_all(storePath);
+	std::filesystem::remove_all(markerPath.parent_path());
 }
 
 // The Windows backend cannot always report how much of a failed append landed.
@@ -456,7 +504,7 @@ TEST_P(UnerasableExtent, RetiresTheFileWithoutErasing) {
 	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
 
 	auto next = makeBatch(1003.0, { "next-entry" });
-	file.writeEntries(next, 0);
+	EXPECT_THROW(file.writeEntries(next, 0), rocksdb_js::DBException);
 	EXPECT_EQ(next.currentEntryIndex, 0u) << "the retired file accepted another append";
 	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
 
@@ -494,7 +542,9 @@ TEST_F(AppendBoundary, ShortHeaderWriteDiscardsTheFileInsteadOfBrickingIt) {
 	file_ = std::make_unique<rocksdb_js::TransactionLogFile>(path_, 1);
 	file_->open(1000.0);
 	EXPECT_EQ(file_->size.load(), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
-	EXPECT_EQ(std::filesystem::file_size(path_), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(
+		std::filesystem::file_size(path_),
+		static_cast<uintmax_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 }
 
 TEST_F(AppendBoundary, AppendThatWritesNothingLeavesTheFileUntouched) {
@@ -512,8 +562,37 @@ TEST_F(AppendBoundary, AppendThatWritesNothingLeavesTheFileUntouched) {
 	EXPECT_EQ(file.size.load(), committedSize);
 	EXPECT_EQ(std::filesystem::file_size(path_), committedSize);
 
+	auto next = makeBatch(1003.0, { "next-entry" });
+	file.writeEntries(next, 0);
+	EXPECT_TRUE(next.isComplete()) << "a known-zero-byte failure retired a reusable file";
+
 	auto image = readWholeFile(path_);
-	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 1u);
+	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 2u);
+}
+
+TEST_F(AppendBoundary, WholeBatchRotatesOrExceedsTheTargetTogether) {
+	auto& file = openLog("whole-batch-source");
+	auto first = makeBatch(1001.0, { "a" });
+	file.writeEntries(first, 0);
+	const uint32_t committedSize = file.size.load();
+
+	auto batch = makeBatch(1002.0, { "entry-one", "entry-two" });
+	const uint32_t oneEntryCapacity = committedSize + batch.entries[0]->size;
+	file.writeEntries(batch, oneEntryCapacity);
+	EXPECT_EQ(batch.currentEntryIndex, 0u);
+	EXPECT_EQ(file.size.load(), committedSize);
+
+	file.close();
+	file_.reset();
+	path_ = uniqueLogPath("whole-batch-target");
+	file_ = std::make_unique<rocksdb_js::TransactionLogFile>(path_, 2);
+	file_->open(1002.0);
+	file_->writeEntries(batch, oneEntryCapacity);
+	EXPECT_TRUE(batch.isComplete());
+	EXPECT_GT(file_->size.load(), oneEntryCapacity);
+
+	auto image = readWholeFile(path_);
+	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 2u);
 }
 
 #endif // !_WIN32
