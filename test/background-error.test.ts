@@ -202,4 +202,30 @@ describe('background error', () => {
 		await new Promise((r) => setTimeout(r, 50));
 		expect(emitted).toBe(0);
 	});
+
+	it('setLastError fills required fields from a partial input', () => {
+		const db = open(generateDBPath());
+
+		// message-only: severity/severityName/writesDisabled must be defined, not undefined.
+		db.setLastError({ message: 'bare' });
+		const bare = db.getLastError()!;
+		expect(bare.message).toBe('bare');
+		expect(bare.severity).toBe(0);
+		expect(bare.severityName).toBe('none');
+		expect(bare.writesDisabled).toBe(false);
+		expect(bare.type).toBe('background');
+
+		// severity given, name/writesDisabled derived from it.
+		db.setLastError({ message: 'fatal one', severity: 3 });
+		const derived = db.getLastError()!;
+		expect(derived.severity).toBe(3);
+		expect(derived.severityName).toBe('fatal');
+		expect(derived.writesDisabled).toBe(true);
+
+		// explicit values win over derivation.
+		db.setLastError({ message: 'x', severity: 3, severityName: 'custom', writesDisabled: false });
+		const explicit = db.getLastError()!;
+		expect(explicit.severityName).toBe('custom');
+		expect(explicit.writesDisabled).toBe(false);
+	});
 });

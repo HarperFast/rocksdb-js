@@ -76,6 +76,13 @@ export interface TransactionOptions extends NativeTransactionOptions {
 export type RocksDBStat = StatsValue;
 export type RocksDBStats = StatsDefault | StatsAll;
 
+// Mirrors the native `backgroundErrorSeverityName` (core/background_error) so
+// setLastError can derive a severityName from a bare severity.
+const BACKGROUND_ERROR_SEVERITY_NAMES = ['none', 'soft', 'hard', 'fatal', 'unrecoverable'];
+function backgroundErrorSeverityName(severity: number): string {
+	return BACKGROUND_ERROR_SEVERITY_NAMES[severity] ?? 'unknown';
+}
+
 /**
  * The main class for interacting with a RocksDB database.
  *
@@ -430,7 +437,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Returns the most recent {@link BackgroundError} observed on this database, or
 	 * `null` when none has occurred. The `'error'` event is the push counterpart;
 	 * this is the pull equivalent for on-demand checks (e.g. a health probe) and
-	 * for catching an error that fired before a listener was attached.
+	 * for catching an error that fired after open but before a listener was
+	 * attached. (A background error that occurs *during* the initial open is a
+	 * narrow startup window not yet captured, addressed separately.)
 	 *
 	 * Purely historical — it is not cleared by a successful {@link RocksDatabase.resume}.
 	 * When the returned error's `writesDisabled` is `true`, writes are stopped
@@ -465,7 +474,21 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * ```
 	 */
 	setLastError(error?: BackgroundErrorOptions | null): void {
-		return this.store.db.setLastError(error == null ? null : { type: 'background', ...error });
+		if (error == null) {
+			return this.store.db.setLastError(null);
+		}
+		// Fill the fields the BackgroundError type declares as required so a partial
+		// input (e.g. just `{ message }`) never yields an error with `undefined`
+		// severity/severityName/writesDisabled. severityName and writesDisabled
+		// derive from severity unless the caller supplied them explicitly.
+		const severity = error.severity ?? 0;
+		return this.store.db.setLastError({
+			...error,
+			type: error.type ?? 'background',
+			severity,
+			severityName: error.severityName ?? backgroundErrorSeverityName(severity),
+			writesDisabled: error.writesDisabled ?? severity >= 2,
+		});
 	}
 
 	/**
