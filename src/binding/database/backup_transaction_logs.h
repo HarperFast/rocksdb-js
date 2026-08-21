@@ -27,6 +27,8 @@ struct NamedTransactionLogBackupEntry final {
  * database at `descriptor` (via the process-global store registry). Each
  * store's files are snapshotted under that store's `dataSetsMutex`. Returns an
  * I/O status instead of letting a native exception escape the backup worker.
+ * Malformed headers are warned about and omitted because they have no readable
+ * entries; every other open/read failure rejects the incomplete snapshot.
  */
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,

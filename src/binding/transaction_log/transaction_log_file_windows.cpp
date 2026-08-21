@@ -533,10 +533,9 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 					this, error, errorMessage.c_str(), i, iovcnt);
 				// The batch seeks to `size` before writing, so the distance from there
 				// to the file pointer is what reached the file. WriteFile does not
-				// promise to set lpNumberOfBytesWritten on failure, and the caller
-				// erases exactly the range reported here — so if the pointer cannot be
-				// read either, report the extent as unknown rather than guess with a
-				// count that may be short.
+				// promise to set lpNumberOfBytesWritten on failure. If the pointer
+				// cannot be read either, report the extent as unknown so the caller
+				// retires the segment instead of treating it as untouched.
 				LARGE_INTEGER zero, current;
 				zero.QuadPart = 0;
 				if (::SetFilePointerEx(this->fileHandle, zero, &current, FILE_CURRENT)) {
