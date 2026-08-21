@@ -6,6 +6,8 @@
 #include <utility>
 #include <string>
 #include <unordered_map>
+#include <thread>
+#include <mutex>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -61,15 +63,25 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool enableVerificationTable = false;
 
 	/**
+	 * Immutable VerificationTable address components for this open lifecycle.
+	 * These let VT-only fast paths avoid dereferencing teardown-owned native
+	 * descriptors or registering as in-flight database operations.
+	 */
+	uint64_t verificationTableDbId = 0;
+	uint32_t verificationTableColumnFamilyId = 0;
+
+	/**
 	 * The node environment.
 	 */
 	napi_env env;
+	std::thread::id ownerThreadId;
 
 	/**
 	 * A reference to the main `rocksdb_js` exports object. This is needed to
 	 * get the `TransactionLog` class.
 	 */
 	napi_ref exportsRef;
+	std::mutex closeMutex;
 
 	/**
 	 * The default transaction log store.

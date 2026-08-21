@@ -129,13 +129,17 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	// Our descriptor ref can be the reason a concurrent close skipped its
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
-	~AsyncBackupStreamState() override {
+	void releaseDescriptor() {
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
 		}
+	}
+
+	~AsyncBackupStreamState() override {
+		this->releaseDescriptor();
 	}
 
 	/**
@@ -566,6 +570,11 @@ void backupStreamExecute(napi_env, void* data) {
 void backupStreamComplete(napi_env env, napi_status status, void* data) {
 	auto* state = static_cast<AsyncBackupStreamState*>(data);
 	state->deleteAsyncWork();
+	if (status == napi_cancelled &&
+		--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
+	) {
+		state->descriptor->operationsInFlight.notify_all();
+	}
 
 	// Release the tsfn. On a normal run its queue is already drained; on a
 	// teardown abort a trampoline may still be queued. Either way, tsfnFinalize
@@ -577,6 +586,9 @@ void backupStreamComplete(napi_env env, napi_status status, void* data) {
 		state->tsfn = nullptr;
 	}
 
+	// Promise settlement is the public completion boundary. The worker is done,
+	// so pending JS acknowledgements no longer need the descriptor pin.
+	state->releaseDescriptor();
 	if (status != napi_cancelled) {
 		if (state->status.ok()) {
 			napi_value undefined;

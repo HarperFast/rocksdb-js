@@ -58,11 +58,16 @@ DBIteratorHandle::~DBIteratorHandle() {
 }
 
 void DBIteratorHandle::close() {
+	this->closeIfOpen();
+}
+
+bool DBIteratorHandle::closeIfOpen() {
+	std::lock_guard<std::mutex> lock(this->iteratorMutex);
 	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
-	if (this->iterator) {
-		this->iterator->Reset();
-		this->iterator.reset();
-	}
+	if (!this->iterator) return false;
+	this->iterator->Reset();
+	this->iterator.reset();
+	return true;
 }
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {

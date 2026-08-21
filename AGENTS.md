@@ -249,7 +249,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
-   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672).
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). Once `beginClose()` wins,
+   `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
+   path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
+   immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
+   from another env after the in-flight count drains. The VT-only `verifyVersion` / `populateVersion`
+   fast paths narrow, but do not remove, that requirement: both still start with
+   `UNWRAP_DB_HANDLE_AND_OPEN()`, so they still gate on `descriptor`/`isClosing()`. What
+   `DBHandle::open()`'s snapshotted `verificationTableDbId` / `verificationTableColumnFamilyId` actually
+   avoids is the `getColumnFamilyHandle()` dereference and the `OperationGuard`'s in-flight
+   registration — the two things that are unsafe to skip everywhere else. `PutSync`/`RemoveSync`/
+   `TransactionHandle` still compute the VT address as `descriptor->vtEpoch` +
+   `getColumnFamilyHandle()->GetID()` rather than reading the cached fields, so there are two
+   spellings of the same address computation that must stay in agreement.
+   Async N-API setup must hold the guard until it hands off to `DBHandle::registerAsyncWork()`. Iterators
+   take the guard through construction/descriptor attachment, then serialize each native iterator call
+   against foreign forced close with their per-iterator mutex. `DBHandle::close()` itself is cross-env and must
+   serialize mutation of its `shared_ptr` members. A close-time flush failure keeps the native DB
+   quarantined so `shutdown()` can retry without losing `disableWAL` writes; an explicit destroy may
+   force teardown because the caller requested deletion. A failed physical destroy leaves a registry
+   tombstone, but `shutdown()` is deliberately non-destructive: it reports the tombstone and only an
+   explicit `destroy()` retries path deletion.
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.

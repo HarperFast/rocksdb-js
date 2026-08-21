@@ -5,8 +5,11 @@
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <chrono>
+#include <thread>
 
 namespace rocksdb_js {
 
@@ -140,6 +143,20 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		}
 		DEBUG_LOG("DBIterator::Constructor Initializing iterator handle with Database instance (dbHandle=%p)\n", (*dbHandle).get());
 	}
+	const int setupDelayMs = testDelayMs("ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS");
+	if (setupDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(setupDelayMs));
+	}
+	auto descriptor = (*dbHandle)->descriptor;
+	if (!descriptor) {
+		::napi_throw_error(env, nullptr, "Database not open");
+		return nullptr;
+	}
+	OperationGuard operationGuard(descriptor);
+	if (descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		return nullptr;
+	}
 
 	// Resolve start/end key pointers from the shared default key buffer
 	char* keyBufferPtr = (*dbHandle)->defaultKeyBufferPtr;
@@ -212,7 +229,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
 	do { \
 		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
-		if (!itHandle || (*itHandle)->iterator == nullptr) { \
+		if (!itHandle || !*itHandle) { \
 			::napi_throw_error(env, nullptr, fnName " failed: Iterator not initialized"); \
 			return nullptr; \
 		} \
@@ -264,6 +281,19 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	UNWRAP_ITERATOR_HANDLE("Next");
 
 	auto& it = *itHandle;
+	std::lock_guard<std::mutex> iteratorLock(it->iteratorMutex);
+	// Test-only: widen the window where a foreign finishClose()'s closables
+	// sweep is blocked on iteratorMutex behind this call, so a fixture can
+	// reliably position a forced close mid-Next() rather than only ever
+	// between calls.
+	const int nextDelayMs = testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS");
+	if (nextDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(nextDelayMs));
+	}
+	if (!it->iterator) {
+		::napi_throw_error(env, nullptr, "Next failed: Iterator not initialized");
+		return nullptr;
+	}
 	napi_value result;
 
 	if (!it->iterator->Valid()) {
@@ -350,6 +380,10 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	UNWRAP_ITERATOR_HANDLE("Return");
 
 	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", (*itHandle).get());
+	// Idempotent by design: a foreign forced close (finishClose()'s closables
+	// sweep) or an earlier limit-triggered return() may have already closed
+	// this iterator, and a clean loop exit / a second explicit return() must
+	// not turn into a thrown error.
 	(*itHandle)->close();
 
 	NAPI_RETURN_UNDEFINED();
@@ -364,6 +398,8 @@ napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	UNWRAP_ITERATOR_HANDLE("Throw");
 
 	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", (*itHandle).get());
+	// Idempotent for the same reason as Return above -- must not replace the
+	// caller's real thrown error with a spurious native one.
 	(*itHandle)->close();
 
 	NAPI_RETURN_UNDEFINED();

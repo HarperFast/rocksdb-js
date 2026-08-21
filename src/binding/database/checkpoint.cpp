@@ -47,13 +47,17 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		descriptor(std::move(descriptor)),
 		targetPath(std::move(targetPath)) {}
 
-	~AsyncCheckpointState() override {
+	void releaseDescriptor() {
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
 		}
+	}
+
+	~AsyncCheckpointState() override {
+		this->releaseDescriptor();
 	}
 };
 
@@ -167,6 +171,12 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncCheckpointState*>(data);
 			state->deleteAsyncWork();
+			if (status == napi_cancelled &&
+				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
+			) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
+			state->releaseDescriptor();
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					napi_value undefined;

@@ -170,6 +170,21 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
+	// finishClose() can be retried after a quarantined failure. These guards
+	// prevent its one-shot stages from running twice while later idempotent
+	// cleanup resumes from the failed point.
+	bool closeWorkersStopped = false;
+	bool transactionLogsUnregistered = false;
+
+	/**
+	 * Set by finishClose() only while it is draining operationsInFlight, so an
+	 * OperationGuard-holding compactRange() in progress on another thread can
+	 * cancel its manual compaction and release the guard promptly instead of
+	 * blocking the untimed drain wait for the compaction's full duration.
+	 * Cleared once the drain completes so the close-time "compact on close"
+	 * pass below always runs to completion.
+	 */
+	std::atomic<bool> compactCancelRequested{false};
 
 	/**
 	 * Counter tracking in-flight database operations. close() uses
@@ -309,6 +324,7 @@ public:
 
 	void close();
 	bool isClosing() const { return this->closing.load(); }
+	bool isClosed() const { return !this->db; }
 
 	/**
 	 * Atomically transitions the descriptor into the closing state. Returns
@@ -327,7 +343,7 @@ public:
 	 * Only valid after `beginClose()` returned true; `close()` is the all-in-one
 	 * entry point that claims and then runs this.
 	 */
-	void finishClose();
+	void finishClose(bool destroying = false);
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
@@ -435,6 +451,31 @@ public:
 		const rocksdb::Slice* end,
 		bool bottommost = false
 	);
+};
+
+/**
+ * Pins a descriptor operation across cross-environment teardown. Callers must
+ * check `isClosing()` after construction and before touching native DB state.
+ */
+struct OperationGuard final {
+	std::shared_ptr<DBDescriptor> descriptor;
+
+	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
+		if (descriptor) {
+			++descriptor->operationsInFlight;
+		}
+	}
+
+	~OperationGuard() {
+		if (descriptor && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
+		}
+	}
+
+	OperationGuard(const OperationGuard&) = delete;
+	OperationGuard& operator=(const OperationGuard&) = delete;
+	OperationGuard(OperationGuard&&) = delete;
+	OperationGuard& operator=(OperationGuard&&) = delete;
 };
 
 /**

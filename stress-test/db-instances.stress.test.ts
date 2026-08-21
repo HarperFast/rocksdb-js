@@ -39,8 +39,6 @@ describe('Stress DB Instances', () => {
 							worker.on('message', (event) => {
 								if (event.done) {
 									resolve();
-								} else if (event.closed) {
-									resolve();
 								}
 							});
 						})
@@ -48,14 +46,22 @@ describe('Stress DB Instances', () => {
 				}
 
 				await Promise.all(promises);
-				promises.length = 0;
 
 				const [before] = registryStatus();
 
+				const closePromises = workers.map(
+					(worker) =>
+						new Promise<void>((resolve, reject) => {
+							worker.on('error', reject);
+							worker.on('message', (event) => {
+								if (event.closed) resolve();
+							});
+						})
+				);
 				for (const worker of workers) {
 					worker.postMessage({ close: true });
 				}
-				await Promise.all(promises);
+				await Promise.all(closePromises);
 
 				if (globalThis.gc) {
 					globalThis.gc();

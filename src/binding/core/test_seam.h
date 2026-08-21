@@ -3,16 +3,47 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
 // delay read from an environment variable (0 = disabled). They are inert in
 // production where the env var is unset.
 //
 // Pass the env var name to testDelayMs() at the call site; see
-// EventEmitter::notify and TransactionHandle::close for usage.
+// EventEmitter::notify, TransactionHandle::close, and DBRegistry::DestroyDB for usage.
 inline int testDelayMs(const char* envName) {
 	const char* value = ::getenv(envName);
 	return value ? ::atoi(value) : 0;
+}
+
+// Snapshot native fault flags once; mutating process.env while native workers
+// can read it is unsafe, and process.env deletion does not update MSVC's CRT.
+inline std::atomic<bool>& closeFailureFlag() {
+	static std::atomic<bool> pending{false};
+	return pending;
+}
+
+inline std::atomic<bool>& closeFlushFailureFlag() {
+	static std::atomic<bool> pending{false};
+	return pending;
+}
+
+inline void initializeTestSeams() {
+	static std::once_flag initialized;
+	std::call_once(initialized, []() {
+		const char* value = ::getenv("ROCKSDB_JS_CLOSE_FAILURE");
+		closeFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
+		closeFlushFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+	});
+}
+
+inline bool testConsumeCloseFailure() {
+	return closeFailureFlag().exchange(false, std::memory_order_relaxed);
+}
+
+inline bool testConsumeCloseFlushFailure() {
+	return closeFlushFailureFlag().exchange(false, std::memory_order_relaxed);
 }
 
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N

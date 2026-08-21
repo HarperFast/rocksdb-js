@@ -340,7 +340,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * native binding use namespaced keys (e.g. `'transactionLog:warning'`).
 	 *
 	 * Listeners are not tied to any specific database — they fire for every
-	 * matching event emitted in this process.
+	 * matching event emitted in this process. Native lifecycle failures use
+	 * `'database:closeFailed'` with `(path, error)` string arguments. The event
+	 * reports both completed and incomplete teardowns; an incomplete close can
+	 * be retried by `shutdown()` or explicitly deleted by `destroy()`.
 	 *
 	 * @example
 	 * ```typescript
@@ -398,7 +401,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	// committed
 
 	destroy(): void {
-		this.store.db.destroy();
+		this.store.db.destroy(this.store.readOnly);
 	}
 
 	async drop(): Promise<void> {

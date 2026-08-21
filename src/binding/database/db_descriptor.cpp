@@ -1,5 +1,6 @@
 #include "core/background_error.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "napi/helpers.h"
@@ -357,7 +358,13 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
-	this->close();
+	try {
+		this->close();
+	} catch (const std::exception& error) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\": %s\n", this, this->path.c_str(), error.what());
+	} catch (...) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\"\n", this, this->path.c_str());
+	}
 }
 
 /**
@@ -374,49 +381,76 @@ void DBDescriptor::close() {
 	this->finishClose();
 }
 
-void DBDescriptor::finishClose() {
+void DBDescriptor::finishClose(bool destroying) {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
-	// Wait for all in-flight operations to complete before cleanup.
-	// The closing flag is already set, so new operations will fail with "Database is closing".
-	// Existing operations will decrement operationsInFlight and notify us when done.
-	DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
-	uint32_t current;
-	while ((current = this->operationsInFlight.load()) != 0) {
-		this->operationsInFlight.wait(current);
-	}
-	DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
-
-	// Drain the commit pipeline before flushing so its data is included in
-	// the flush. The log lane feeds the commit lane, so it must drain first;
-	// its final tasks enqueue onto the still-running commit lane (or run
-	// inline once that lane stops).
-	this->logWorker.shutdown();
-	this->commitWorker.shutdown();
-
-	// Release any remaining per-env commit-completion tsfns. An in-flight
-	// commit pins this descriptor (state -> txnHandle -> dbHandle -> descriptor),
-	// so reaching here means no commit is in flight; only idle (unref'd) tsfns
-	// for still-living envs can remain, and those envs will issue no further
-	// commits to this descriptor. Queued completions already handed to a tsfn
-	// are still delivered (napi_tsfn_release, not abort).
-	{
-		std::lock_guard<std::mutex> lock(this->commitMutex);
-		for (auto& [env, completion] : this->commitCompletions) {
-			if (completion.tsfn) {
-				::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
-			}
+	const bool retryingClose = this->closeWorkersStopped;
+	if (!this->closeWorkersStopped) {
+		// Wait for all in-flight operations to complete before cleanup.
+		// The closing flag is already set, so new operations will fail with "Database is closing".
+		// Existing operations will decrement operationsInFlight and notify us when done.
+		// A long-running compactRange() holding an OperationGuard is the one
+		// in-flight op that can run unboundedly, so ask it to cancel rather
+		// than blocking this untimed wait for its full duration.
+		this->compactCancelRequested.store(true);
+		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
+		uint32_t current;
+		while ((current = this->operationsInFlight.load()) != 0) {
+			this->operationsInFlight.wait(current);
 		}
-		this->commitCompletions.clear();
-		// Block any later registerCommitCompletion (a commit racing this close
-		// from another env) from re-creating a tsfn that would never be
-		// released; such commits fall back to the legacy libuv path.
-		this->commitCompletionsClosed = true;
+		// Clear it before any further compaction runs below (compact-on-close),
+		// which must not be cancelled -- nothing external is waiting on it.
+		this->compactCancelRequested.store(false);
+		DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
+
+		// Drain the commit pipeline before flushing so its data is included in
+		// the flush. The log lane feeds the commit lane, so it must drain first.
+		this->logWorker.shutdown();
+		this->commitWorker.shutdown();
+
+		// An in-flight commit pins this descriptor through its transaction and DB
+		// handles, so reaching this release pass means only idle per-env TSFNs remain.
+		// Release rather than abort: queued completions are still delivered before
+		// finalization, while a later registration observes commitCompletionsClosed
+		// and falls back to the legacy libuv path.
+		{
+			std::lock_guard<std::mutex> lock(this->commitMutex);
+			for (auto& [env, completion] : this->commitCompletions) {
+				if (completion.tsfn) {
+					::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
+				}
+			}
+			this->commitCompletions.clear();
+			this->commitCompletionsClosed = true;
+		}
+		this->closeWorkersStopped = true;
+	}
+	if (retryingClose) {
+		const int retryDelayMs = testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS");
+		if (retryDelayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(retryDelayMs));
+		}
+	}
+
+	if (testConsumeCloseFailure()) {
+		throw rocksdb_js::DBException("Injected database close failure");
+	}
+	if (!this->db) {
+		return;
 	}
 
 	// We want to ensure that all in-memory data is written to disk
-	this->flush();
+	std::string closeError;
+	rocksdb::Status status = testConsumeCloseFlushFailure()
+		? rocksdb::Status::IOError("Injected database close flush failure")
+		: this->flush();
+	if (!status.ok()) {
+		closeError = "Failed to flush database during close: " + status.ToString();
+		if (!destroying) {
+			throw rocksdb_js::DBException(closeError);
+		}
+	}
 
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing
@@ -444,7 +478,10 @@ void DBDescriptor::finishClose() {
 	// suggestions of the documentation, this method alone does not seem to
 	// trigger a flush
 	rocksdb::WaitForCompactOptions options;
-	this->db->WaitForCompact(options);
+	status = this->db->WaitForCompact(options);
+	if (!status.ok() && closeError.empty()) {
+		closeError = "Failed waiting for database compaction during close: " + status.ToString();
+	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
@@ -477,7 +514,10 @@ void DBDescriptor::finishClose() {
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
-	TransactionLogStoreRegistry::Unregister(this->path);
+	if (!this->transactionLogsUnregistered) {
+		TransactionLogStoreRegistry::Unregister(this->path);
+		this->transactionLogsUnregistered = true;
+	}
 
 	this->transactions.clear();
 	{
@@ -488,6 +528,9 @@ void DBDescriptor::finishClose() {
 	this->events.releaseAll();
 
 	this->db.reset();
+	if (!closeError.empty()) {
+		throw rocksdb_js::DBException(closeError);
+	}
 }
 
 napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
@@ -1896,6 +1939,9 @@ rocksdb::Status DBDescriptor::compactRange(
 	std::lock_guard<std::mutex> lock(this->compactMutex);
 	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
 	rocksdb::CompactRangeOptions options;
+	// Let a concurrent finishClose() interrupt this compaction rather than
+	// wait out its full, unbounded duration; see compactCancelRequested.
+	options.canceled = &this->compactCancelRequested;
 	if (bottommost) {
 		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
 		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting

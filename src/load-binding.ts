@@ -384,7 +384,7 @@ export type NativeDatabase = {
 		reject: RejectCallback,
 		targetPath: string
 	): void;
-	destroy(): void;
+	destroy(readOnly?: boolean): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
@@ -425,6 +425,7 @@ export type NativeDatabase = {
 	hasLock(key: BufferWithDataView): boolean;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];
+	closing: boolean;
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
 	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;
@@ -463,6 +464,11 @@ export type RocksDatabaseConfig = {
 	 */
 	verificationTableEntries?: number;
 	compactOnClose?: boolean;
+	/**
+	 * Maximum seconds an open, destroy, or shutdown call waits for another
+	 * lifecycle operation. Defaults to 30.
+	 */
+	lifecycleWaitSeconds?: number;
 	/**
 	 * Total memtable memory limit (bytes) shared across every database opened
 	 * in this process. When set, RocksDB uses a single `WriteBufferManager` so
@@ -574,6 +580,8 @@ function locateBinding(): string {
 
 export type RegistryStatusDB = {
 	path: string;
+	closeError?: string;
+	destroyCleanupPending?: boolean;
 	refCount: number;
 	columnFamilies: string[];
 	transactions: number;
