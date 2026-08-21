@@ -349,6 +349,34 @@ export type PurgeLogsOptions = {
  */
 export type PurgedLog = { path: string; entries: number };
 
+export type FlushOptions = {
+	/**
+	 * Whether the flush may proceed even though it will stall writes for its duration.
+	 *
+	 * Maps to `rocksdb::FlushOptions::allow_write_stall`. RocksDB's default is `false`, which
+	 * means the opposite of what the name suggests on first read: the flush **waits** until it
+	 * can run without causing a stall. That wait has no timeout, so a database sitting in a stall
+	 * condition — immutable-memtable backlog, L0 stop trigger, pending-compaction-bytes limit, an
+	 * exhausted WriteBufferManager budget — blocks the caller for as long as the condition lasts.
+	 * `flush()` runs on the libuv threadpool, so there the wait shows up as a promise that simply
+	 * never settles while the event loop stays alive.
+	 *
+	 * Pass `true` when the flush is a durability gate the caller is blocked on and stalling
+	 * writers is the acceptable cost of it completing. Weigh that cost database-wide, not
+	 * per-caller: a flush covers **every column family** on the database, and the descriptor is
+	 * process-global and shared across `worker_threads`, so the stall lands on every other column
+	 * family and every other handle that opened the same path — not just the one you called.
+	 *
+	 * Note this is a *different* knob from the `writeBufferManagerAllowStall` config, and their
+	 * polarity is nearly opposite: that one decides whether the WriteBufferManager may stall
+	 * writers at all, this one decides whether a manual flush is willing to cause a stall rather
+	 * than wait one out.
+	 *
+	 * @default false
+	 */
+	allowWriteStall?: boolean;
+};
+
 export type NativeDatabase = {
 	new (): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
@@ -387,8 +415,8 @@ export type NativeDatabase = {
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
-	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
-	flushSync(): void;
+	flush(resolve: ResolveCallback<void>, reject: RejectCallback, options?: FlushOptions): void;
+	flushSync(options?: FlushOptions): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(

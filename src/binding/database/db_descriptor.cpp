@@ -415,7 +415,8 @@ void DBDescriptor::finishClose() {
 		this->commitCompletionsClosed = true;
 	}
 
-	// We want to ensure that all in-memory data is written to disk
+	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
+	// purpose: flushing immediately here races transaction-log-store teardown (AGENTS invariant 13).
 	this->flush();
 
 	// Trigger manual compaction on all column families to reclaim space from
@@ -1856,7 +1857,7 @@ std::string DBDescriptor::getLastError() {
 	return this->lastError;
 }
 
-rocksdb::Status DBDescriptor::flush() {
+rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 	if (this->readOnly) {
 		DEBUG_LOG("%p DBDescriptor::flush Skipping flush for readonly database\n", this);
 		return rocksdb::Status::OK();
@@ -1881,6 +1882,7 @@ rocksdb::Status DBDescriptor::flush() {
 	}
 	// Perform flush
 	rocksdb::FlushOptions flushOptions;
+	flushOptions.allow_write_stall = allowWriteStall;
 	return this->db->Flush(
 		flushOptions,
 		columnHandles

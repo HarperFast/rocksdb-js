@@ -47,6 +47,28 @@ describe('WriteBufferManager stall', () => {
 		60_000
 	);
 
+	// Plumbing: the option survives a real stalling-WBM configuration. It does NOT prove the flag
+	// changes RocksDB's behavior — that needs a reliably-reachable stall to time the arms against,
+	// which #755 removed, and whose failure mode would be a wedged libuv thread rather than a red
+	// assertion. Both arms are expected to complete.
+	it(
+		'should accept allowWriteStall against a stalling WriteBufferManager (plumbing, not behavior)',
+		() =>
+			dbRunner({ dbOptions: [{}, { name: 'late' }] }, async (_, { db }) => {
+				const value = 'y'.repeat(8192);
+				for (let i = 0; i < 250; i++) {
+					await db.put(`stall-${i.toString().padStart(6, '0')}`, value);
+				}
+				await db.flush({ allowWriteStall: true });
+				expect(await db.get('stall-000249')).toBe(value);
+
+				await db.put('stall-after', value);
+				await db.flush();
+				expect(await db.get('stall-after')).toBe(value);
+			}),
+		60_000
+	);
+
 	// Zeroing history is only safe because RocksDB's fallback is conservative: asked to validate a
 	// sequence it no longer holds, it refuses the commit rather than passing it. A change that
 	// turned that into a silent accept would be a lost update, and the stall test above would

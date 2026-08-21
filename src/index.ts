@@ -32,6 +32,7 @@ export {
 	shutdown,
 	supportedCompression,
 	TransactionLog,
+	type FlushOptions,
 	type TransactionEntry,
 	type TransactionLogPosition,
 	type TransactionLogStats,

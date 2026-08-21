@@ -418,7 +418,12 @@ public:
 	napi_value listTransactionLogStores(napi_env env);
 	napi_value purgeTransactionLogs(napi_env env, napi_value options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
-	rocksdb::Status flush();
+	/**
+	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
+	 * makes this WAIT, unbounded, on the calling thread — see the `FlushOptions` JSDoc in
+	 * `src/load-binding.ts` and AGENTS invariant 13.
+	 */
+	rocksdb::Status flush(bool allowWriteStall = false);
 
 	/**
 	 * Compacts a range of keys in the specified column family. This method is
