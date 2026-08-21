@@ -613,6 +613,33 @@ void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
 }
 
 /**
+ * Cancels each descriptor's pending park timeouts owned by the given env.
+ * Called from the module env-cleanup hook so a worker thread exiting does not
+ * leave a coordinated-retry park's timeout thread calling into a torn-down
+ * env ~ROCKSDB_JS_PARK_TIMEOUT_MS later. Mirrors ReleaseCommitCompletionsByEnv.
+ */
+void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->releaseParkTimeoutsByEnv(env);
+	}
+}
+
+/**
  * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
  */
 void DBRegistry::Shutdown() {
