@@ -311,6 +311,11 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	}
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
+		// Directory iteration order is unspecified, so registerLogFile() may not
+		// have opened an older file before a higher sequence became current.
+		if (!logFile->isOpen()) {
+			logFile->open(this->latestTimestamp);
+		}
 		positionInLogFile = logFile->findPositionByTimestamp(
 			timestamp,
 			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
@@ -1074,11 +1079,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store.get(), e.what());
 	}
 
-	// Crash recovery: only the active (highest-sequence) file can carry a torn
-	// partial write from an interrupted append — rotated files are immutable and
-	// already complete. Scan it once, here, rather than re-scanning every file as
-	// it transiently becomes the highest during registration. A truncation
-	// corrects logFile->size, so refresh nextLogPosition from it afterwards.
+	LogPosition flushedPosition = store->getLastFlushedPosition();
+
+	// Only the active file can carry a torn append; recover it after discovery and
+	// refresh the write position if recovery shortened it.
 	uint32_t storeCurrentSeq = store->currentSequenceNumber.load(std::memory_order_relaxed);
 	if (storeCurrentSeq > 0) {
 		auto currentIt = store->sequenceFiles.find(storeCurrentSeq);
@@ -1087,12 +1091,65 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			if (!currentFile->isOpen()) {
 				currentFile->open(store->latestTimestamp);
 			}
-			currentFile->recoverTail();
+			uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
+				? flushedPosition.positionInLogFile
+				: 0;
+			currentFile->recoverTail(protectedPosition);
 			store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 		}
 	}
 
 	store->positionInsert(store->nextLogPosition);
+
+	// Seed from the last closed transaction, but never behind txn.state: flushed
+	// log entries are already durable in RocksDB and are therefore a safe floor.
+	// A batch can span any number of rotations, so walk back through its unflagged
+	// files until a boundary is found. Once the flushed file has been scanned,
+	// older files cannot improve the floor and need not be read.
+	LogPosition recoveredPosition = { 0, 0 };
+	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
+		if (it->first > storeCurrentSeq) {
+			continue;
+		}
+		const bool isCurrent = it->first == storeCurrentSeq;
+		if (flushedPosition.logSequenceNumber > 0 && it->first < flushedPosition.logSequenceNumber) {
+			break;
+		}
+
+		auto& logFile = it->second;
+		const bool openedForScan = !logFile->isOpen();
+		try {
+			if (openedForScan) {
+				logFile->open(store->latestTimestamp);
+			}
+			uint32_t completeEnd = isCurrent
+				? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
+				: logFile->scanForLastCompleteTransactionEnd();
+			if (openedForScan) {
+				logFile->close();
+			}
+			if (completeEnd > 0) {
+				recoveredPosition = { completeEnd, it->first };
+				break;
+			}
+		} catch (const std::exception& e) {
+			if (openedForScan && logFile->isOpen()) {
+				logFile->close();
+			}
+			DEBUG_LOG("%p TransactionLogStore::load Failed to scan transaction boundary in %s: %s\n",
+				store.get(), logFile->path.string().c_str(), e.what());
+		} catch (...) {
+			if (openedForScan && logFile->isOpen()) {
+				logFile->close();
+			}
+			DEBUG_LOG("%p TransactionLogStore::load Failed to scan transaction boundary in %s\n",
+				store.get(), logFile->path.string().c_str());
+		}
+		if (flushedPosition.logSequenceNumber > 0 && it->first == flushedPosition.logSequenceNumber) {
+			break;
+		}
+	}
+	*store->lastCommittedPosition = recoveredPosition < flushedPosition ? flushedPosition : recoveredPosition;
 
 	return store;
 }

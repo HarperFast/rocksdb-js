@@ -10,6 +10,7 @@
 #include "core/encoding.h"
 #include "core/exception.h"
 #include "core/platform.h"
+#include "transaction_log/transaction_log_recovery.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -50,6 +51,7 @@
 // Forward declaration so that the friend designation inside namespace
 // rocksdb_js can refer to the global-scope test accessor.
 struct WriteBatchToFileTestAccessor;
+struct EraseTailTestAccessor;
 #endif
 
 namespace rocksdb_js {
@@ -101,6 +103,17 @@ struct TransactionLogFile final {
 	 * The size of the file at the last flush operation.
 	 */
 	uint32_t lastFlushedSize = 0;
+
+	/**
+	 * Offset just past the last entry that closed a transaction (carried
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`), as observed by the open-time recovery
+	 * scan; 0 if this file holds no complete transaction or was never scanned.
+	 * Only written by recoverTail() / scanForLastCompleteTransactionEnd() before
+	 * the store is published, and read by TransactionLogStore::load() to seed the
+	 * committed watermark — see scanForLastCompleteTransactionEnd() for files that
+	 * skip recovery.
+	 */
+	std::atomic<uint32_t> lastCompleteTransactionEnd = 0;
 
 	/**
 	 * The time of the last write to this file, kept in-memory to avoid a
@@ -220,16 +233,59 @@ struct TransactionLogFile final {
 
 	/**
 	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
-	 * if a torn/partial entry is found at the tail (e.g. an O_APPEND short write
-	 * interrupted by a crash), truncates the file back to the last valid entry
-	 * boundary and flushes. If a framing break is found mid-file with valid
+	 * if a torn/partial entry is detectable at the tail (e.g. an O_APPEND short
+	 * write interrupted by a crash), truncates the file back to the last valid
+	 * entry boundary and flushes. A Windows file is pre-extended with zeros, so a
+	 * durable entry header whose payload was only partly written is indistinguishable
+	 * from a complete payload ending in zeros and is not detectable without a checksum.
+	 * If a framing break is found mid-file with valid
 	 * entries still following it, the file is left intact — truncating would
 	 * discard committed/replicated entries — and the break is logged so the
-	 * reader's per-entry guards can surface it. Must be called after open() and
-	 * before the file receives any appends; only meaningful for the active
-	 * (current) log file.
+	 * reader's per-entry guards can surface it. Then, via
+	 * discardUnclosedTransaction(), drops any whole entries left over from a batch
+	 * that never closed. Must be called after open() and before the file receives
+	 * any appends; only meaningful for the active (current) log file. Bytes before
+	 * protectedPosition are retained because txn.state proves RocksDB flushed them.
 	 */
-	void recoverTail();
+	void recoverTail(uint32_t protectedPosition = 0);
+
+	/**
+	 * Open-time framing scan via positional header reads. Precondition: the caller
+	 * holds fileMutex. Throws DBException if a read fails or is short of the
+	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
+	 * this->size (append-owned written extent), not the mapped/pre-extended size.
+	 */
+	RecoveryScan scanRecoveryLocked();
+
+	/**
+	 * Drops the trailing entries of a transaction that never closed, so the file
+	 * ends on a transaction boundary. Unlike the torn-tail truncation these are
+	 * whole, well-framed entries — only the batch's final entry carries
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves valid framing
+	 * around an incomplete transaction. Keeping them would let the *next* batch's
+	 * flag close the phantom group once the committed watermark moves past them.
+	 *
+	 * No-op unless the scan proves the run is exactly one interrupted batch of a
+	 * flag-setting writer (see `RecoveryScan::unclosedTailIsOneTransaction` and
+	 * `lastCompleteTransactionEnd`); ambiguous tails are kept and warned about.
+	 * Called by recoverTail() with fileMutex held.
+	 *
+	 * @param scan       The scan recoverTail() already ran on this file.
+	 * @param entriesEnd End of the entries after any torn-tail truncation.
+	 * @param protectedPosition Earliest offset that recovery may erase.
+	 */
+	void discardUnclosedTransaction(
+		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
+	void resetTimestampIndex();
+
+	/**
+	 * Returns the offset just past this file's last complete transaction (0 if it
+	 * holds none). recoverTail() already computes this for the active file; this
+	 * is for the older, rotated files the store walks back through when the active
+	 * one ends mid-transaction. Throws DBException on I/O failure; load() catches
+	 * that and falls back toward txn.state.
+	 */
+	uint32_t scanForLastCompleteTransactionEnd();
 
 	/**
 	 * Closes the log file and removes it.
@@ -346,6 +402,7 @@ struct TransactionLogFile final {
 	// Expose writeBatchToFile to the gtest test accessor without pulling
 	// gtest headers into the production build.
 	friend struct ::WriteBatchToFileTestAccessor;
+	friend struct ::EraseTailTestAccessor;
 
 	/**
 	 * Resets the process-global MADV_COLD-unsupported latch (see adviseCold) so
@@ -373,6 +430,12 @@ private:
 	int64_t readFromFile(void* buffer, uint32_t size, int64_t offset = -1);
 
 	/**
+	 * Reads `n` bytes at `offset` via readFromFile, retrying short reads and EINTR.
+	 * Precondition: caller holds fileMutex. Returns false on error or unexpected EOF.
+	 */
+	bool readBytes(uint32_t offset, void* dest, uint32_t n);
+
+	/**
 	 * Platform specific function that writes multiple buffers to the log file.
 	 *
 	 * NOTE: `iovecs` is non-const and may be mutated on partial writes (the
@@ -389,11 +452,22 @@ private:
 	/**
 	 * Platform specific function that truncates the file to `newSize` bytes and
 	 * flushes the change to disk so a subsequent crash cannot resurrect the
-	 * dropped bytes. Returns `true` on success. POSIX-only effect; a no-op
-	 * returning `false` on Windows, which pre-extends and zero-pads its log
-	 * files (torn tails are handled there by the zero-padding end marker).
+	 * dropped bytes. Returns `true` on success. Caller holds fileMutex. On
+	 * Windows, recovery must run before any mapping is handed to another owner.
 	 */
 	bool truncateFile(uint32_t newSize);
+
+	/**
+	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`
+	 * disappear from every reader and frees the range for the next append. Unlike
+	 * truncateFile() this must work on Windows too: the bytes are real entries, not
+	 * a partial tail that the framing scan detected. Both platforms
+	 * truncate; Windows first drops the cached read-only mapping because mapped
+	 * ranges prevent SetEndOfFile from shrinking the file. Returns `true` on
+	 * success. Caller holds fileMutex, guarantees no outstanding mapping owner,
+	 * and must update `size` itself.
+	 */
+	bool eraseTail(uint32_t newSize, uint32_t entriesEnd);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1

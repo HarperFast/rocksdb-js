@@ -245,6 +245,7 @@
 				'test/native/json_test.cc',
 				'test/native/platform_fd_limit_test.cc',
 				'test/native/transaction_log_madvise_test.cc',
+				'test/native/transaction_log_erase_tail_test.cc',
 				'test/native/transaction_log_mmap_test.cc',
 				'test/native/transaction_log_recovery_test.cc',
 				'test/native/transaction_log_validation_test.cc',

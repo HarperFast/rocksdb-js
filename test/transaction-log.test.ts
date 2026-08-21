@@ -1947,9 +1947,11 @@ describe('Transaction Log', () => {
 						database = RocksDatabase.open(dbPath);
 						const reopened = database.useLog('foo');
 						expect(statSync(logPath).size).toBe(validSize);
-						// the committed position isn't persisted without a RocksDB flush,
-						// so read uncommitted to verify the entries survived on disk
+						// the surviving entries are visible to committed reads too: load()
+						// seeds the committed watermark at the recovered write head, so a
+						// truncated tail costs only the torn entry (HarperFast/harper#1949)
 						expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+						expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
 
 						// the log must remain writable and consistent after recovery
 						await database.transaction(async (txn) => {
@@ -1981,6 +1983,45 @@ describe('Transaction Log', () => {
 					const reopened = database.useLog('foo');
 					expect(statSync(logPathFor(dbPath, 'foo')).size).toBe(validSize);
 					expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+					expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
+				} finally {
+					database.close();
+				}
+			}));
+
+		// A zero in the header's own timestamp slot is a legitimate file timestamp (the store's
+		// latestTimestamp was still 0 when the file was created), not the zero-padding that marks
+		// end-of-data. Indexing used to check for end-of-data before special-casing that slot, so
+		// it corrected `size` down to the header timestamp offset — below the 13-byte header —
+		// and the file read as empty. Only Windows reached this at open (its openFile() indexes to
+		// undo memory-map zero-padding), but the indexing path itself is cross-platform, so
+		// driving it directly via _findPosition reproduces it everywhere.
+		it('does not treat a zero header timestamp as end-of-data', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				let database = db;
+				try {
+					const log = database.useLog('foo');
+					const value = Buffer.alloc(24, 'x');
+					for (let i = 0; i < 3; i++) {
+						await database.transaction(async (txn) => {
+							log.addEntry(value, txn.id);
+						});
+					}
+					database.close();
+
+					// rewrite the header timestamp (8 bytes at offset 5) to zero
+					const logPath = logPathFor(dbPath, 'foo');
+					const image = readFileSync(logPath);
+					image.writeDoubleBE(0, 5);
+					await writeFile(logPath, image);
+					const fullSize = image.length;
+
+					database = RocksDatabase.open(dbPath);
+					const reopened = database.useLog('foo');
+					reopened._findPosition(0); // the indexing pass that used to truncate size
+					expect(reopened.getLogFileSize(1)).toBe(fullSize);
+					expect(Array.from(reopened.query({ start: 0, readUncommitted: true })).length).toBe(3);
+					expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
 				} finally {
 					database.close();
 				}
