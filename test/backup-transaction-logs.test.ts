@@ -1,20 +1,29 @@
 import { backups, RocksDatabase } from '../src/index.ts';
+import { constants } from '../src/load-binding.ts';
+import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	readdirSync,
 	renameSync,
 	rmSync,
 	statSync,
 	utimesSync,
 	writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import * as tar from 'tar';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const tempPaths: string[] = [];
+const {
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_TOKEN,
+} = constants;
 
 function tempPath(): string {
 	const p = generateDBPath();
@@ -77,6 +86,62 @@ describe('Transaction log backups', () => {
 			const backupDir = tempPath();
 			await db.backup(backupDir);
 			expect(existsSync(join(backupDir, 'transaction_logs'))).toBe(false);
+		}));
+
+	it.each(['directory', 'stream'] as const)(
+		'rejects a transaction log snapshot when a segment cannot be opened (%s)',
+		(target) =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const { path: lazySegment } = writeLazyTransactionLogSegments(
+					join(dbPath, 'transaction_logs', 'unopenable'),
+					TRANSACTION_LOG_FILE_HEADER_SIZE,
+					TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+					TRANSACTION_LOG_TOKEN
+				);
+				db.open();
+				rmSync(lazySegment);
+				mkdirSync(lazySegment);
+
+				const backup =
+					target === 'directory'
+						? db.backup(tempPath(), { transactionLogs: true })
+						: db.backup(new WritableStream<Uint8Array>({ write() {} }), {
+								transactionLogs: true,
+							});
+				await expect(backup).rejects.toThrow(
+					/Failed to snapshot transaction log metadata.*Failed to open sequence file/s
+				);
+			})
+	);
+
+	it('consistently excludes a malformed lazy segment across backup preflight and copy', () =>
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+			const { path: lazySegment } = writeLazyTransactionLogSegments(
+				join(dbPath, 'transaction_logs', 'malformed'),
+				TRANSACTION_LOG_FILE_HEADER_SIZE,
+				TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+				TRANSACTION_LOG_TOKEN
+			);
+			db.open();
+			writeFileSync(lazySegment, Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE));
+
+			const warnings: string[] = [];
+			const onWarning = (message: string) => {
+				if (message.includes(lazySegment)) warnings.push(message);
+			};
+			RocksDatabase.on('log.warn', onWarning);
+			try {
+				const backupDir = tempPath();
+				const id = await db.backup(backupDir, { transactionLogs: true });
+				const backedUpStore = join(backupDir, 'transaction_logs', String(id), 'malformed');
+
+				expect(existsSync(join(backedUpStore, basename(lazySegment)))).toBe(false);
+				expect(readdirSync(backedUpStore).length).toBe(63);
+				await delay(0);
+				expect(warnings).toHaveLength(1);
+			} finally {
+				RocksDatabase.off('log.warn', onWarning);
+			}
 		}));
 
 	it('preserves the log file mtime through backup and restore', () =>

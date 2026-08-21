@@ -51,9 +51,8 @@ struct TransactionLogEntry final {
 };
 
 /**
- * A batch of transaction log entries. `writeBatchToFile` is now write-everything
- * -or-fail, so a partial entry can never end up on disk; only whole-entry
- * progress needs to be tracked across log-file rotations.
+ * A batch of transaction log entries. A batch is placed wholly in one segment
+ * so the last-entry flag always closes the transaction in that same file.
  */
 struct TransactionLogEntryBatch final {
 	/**

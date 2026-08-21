@@ -171,7 +171,13 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 		::napi_throw_type_error(env, nullptr, "Expected sequence number to be a number");
 	} // if type == napi_undefined, leave sequenceNumber as 0, get all log files
 
-	uint64_t fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
+	uint64_t fileSize;
+	try {
+		fileSize = (*txnLogHandle)->getLogFileSize(sequenceNumber);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_double(env, (double) fileSize, &result));
 	return result;
@@ -218,7 +224,13 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	uint32_t sequenceNumber = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
 
-	std::shared_ptr<MemoryMap> memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	std::shared_ptr<MemoryMap> memoryMap;
+	try {
+		memoryMap = (*txnLogHandle)->getMemoryMap(sequenceNumber);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	if (!memoryMap) {
 		// if memory map is not found (if given a sequence number to a file that doesn't exist), return undefined
 		NAPI_RETURN_UNDEFINED();
@@ -257,7 +269,9 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition");
 	double timestamp = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
-	LogPosition position;
+	// findPosition() opens lazily-registered segments, and open() throws on a
+	// bad header — a C++ exception escaping an N-API callback aborts the process.
+	LogPosition position = { 0, 0 };
 	try {
 		position = (*txnLogHandle)->findPosition(timestamp);
 	} catch (const std::exception& e) {

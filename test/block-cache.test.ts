@@ -36,6 +36,9 @@ describe('Block Cache', () => {
 			const firstRead = db.get('foo');
 			expect(firstRead).toBeInstanceOf(Promise);
 			expect(await firstRead).toBe('bar');
+
+			// Await it: an unawaited read still in flight when dbRunner closes the
+			// database is aborted, and the rejection fails the run.
 			const secondRead = db.get('foo');
 			expect(secondRead).toBeInstanceOf(Promise);
 			expect(await secondRead).toBe('bar');
