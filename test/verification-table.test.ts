@@ -4,7 +4,20 @@ import { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
-const { POPULATE_VERSION_FLAG, FRESH_VERSION_FLAG } = constants;
+const { POPULATE_VERSION_FLAG, FRESH_VERSION_FLAG, VERSION_NOT_UNIQUE_FLAG } = constants;
+
+const VERSION_HEADER_TAG = 0x0e;
+
+/**
+ * A value carrying the version header: 8-byte big-endian version, then the 4-byte big-endian
+ * metadata word (tag byte + 24 flag bits) a producer writes when it has flags to declare.
+ */
+function valueWithHeader(version: number, flags = 0, tag = VERSION_HEADER_TAG): Buffer {
+	const value = Buffer.alloc(16);
+	value.writeDoubleBE(version, 0);
+	value.writeUInt32BE((((tag << 24) >>> 0) | flags) >>> 0, 8);
+	return value;
+}
 
 describe('Verification Table', () => {
 	describe('verifyVersion() / populateVersion()', () => {
@@ -183,6 +196,23 @@ describe('Verification Table', () => {
 				expect(db.verifyVersion(key, version)).toBe(true);
 			}));
 
+		it('an async read seeds the VT when the key is settled', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('async-seeds');
+					const version = 1.7e12;
+					await db.put(key, makeValue(version));
+					await db.flush();
+					expect(db.verifyVersion(key, version)).toBe(false);
+
+					const result = db.getBinary(key, { expectedVersion: version } as any);
+					expect(result).toBeInstanceOf(Promise);
+					expect(await result).toBe(FRESH_VERSION_FLAG);
+					expect(db.verifyVersion(key, version)).toBe(true);
+				}
+			));
+
 		it('suppresses seeding while a snapshot older than the latest version is open', () =>
 			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = Buffer.from('gated');
@@ -255,6 +285,30 @@ describe('Verification Table', () => {
 				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
 				expect(db.verifyVersion(key, backdatedVersion)).toBe(true);
 			}));
+
+		it('suppresses async seeding while an older snapshot is open', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('async-backdated-key');
+					const backdatedVersion = 1.0e12;
+					await db.put(Buffer.from('async-sentinel'), makeValue(1.5e12));
+
+					const snap = new Transaction(db.store);
+					snap.getBinarySync(Buffer.from('async-sentinel'));
+					try {
+						await db.put(key, makeValue(backdatedVersion));
+						await db.flush();
+
+						const result = db.getBinary(key, { expectedVersion: backdatedVersion } as any);
+						expect(result).toBeInstanceOf(Promise);
+						expect(await result).toBe(FRESH_VERSION_FLAG);
+						expect(db.verifyVersion(key, backdatedVersion)).toBe(false);
+					} finally {
+						snap.abort();
+					}
+				}
+			));
 
 		// A snapshot taken on a fresh DB legitimately has sequence 0; Gate 2 must
 		// still protect it (no `oldestSnapshotSeq != 0` exemption — a backdated
@@ -559,5 +613,169 @@ describe('Verification Table', () => {
 				}
 			}
 		});
+	});
+
+	describe('VERSION_NOT_UNIQUE_FLAG', () => {
+		// The flag is the producer telling us it has stored more than one distinct value under this
+		// version, which is the one thing that invalidates version equality as evidence.
+		const version = 1.7e12;
+
+		it('does not answer FRESH for a marked value whose version matches expectedVersion', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = 'not-unique-no-fresh';
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+
+				const native = (db as any).store.db;
+				const result = native.getSync(Buffer.from(key), 0, undefined, version);
+				expect(result).not.toBe(FRESH_VERSION_FLAG);
+				expect(result).toBeDefined();
+			}));
+
+		it('answers FRESH for the same value once the flag is cleared', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = 'not-unique-control';
+				await db.put(key, valueWithHeader(version));
+
+				const native = (db as any).store.db;
+				expect(native.getSync(Buffer.from(key), 0, undefined, version)).toBe(FRESH_VERSION_FLAG);
+			}));
+
+		it('does not publish a marked value’s version to a slot', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = 'not-unique-no-populate';
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+
+				const native = (db as any).store.db;
+				native.getSync(Buffer.from(key), POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(false);
+
+				// ...and a read carrying expectedVersion does not publish it either, which is what
+				// would otherwise let a second holder of a differing value verify against it.
+				native.getSync(Buffer.from(key), 0, undefined, version);
+				expect(db.verifyVersion(key, version)).toBe(false);
+			}));
+
+		it('caches again once a later write gives the value a version of its own', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = 'not-unique-recovers';
+				const native = (db as any).store.db;
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+				native.getSync(Buffer.from(key), POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(false);
+
+				const advanced = version + 1;
+				await db.put(key, valueWithHeader(advanced));
+				native.getSync(Buffer.from(key), POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, advanced)).toBe(true);
+			}));
+
+		it('reads the flag only from a tagged metadata word', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				// Same bit, but the word is not tagged as a metadata word — it is the value's own
+				// payload, so it must not be interpreted. Producers that write no header keep the
+				// behaviour they had.
+				const key = 'not-unique-untagged';
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG, 0xab));
+
+				const native = (db as any).store.db;
+				expect(native.getSync(Buffer.from(key), 0, undefined, version)).toBe(FRESH_VERSION_FLAG);
+			}));
+
+		it('does not answer FRESH on the transactional path either', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = Buffer.from('not-unique-txn');
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+
+				const txn = new Transaction(db.store, { coordinatedRetry: true });
+				try {
+					const result = txn.getBinarySync(key, { expectedVersion: version } as any);
+					expect(result).not.toBe(FRESH_VERSION_FLAG);
+					expect(result).toBeDefined();
+					expect(db.verifyVersion(key, version)).toBe(false);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('does not answer FRESH from a snapshot value when the latest is marked', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				// The value in hand is not the evidence — the consumer's cached copy may have come from
+				// the newer value that made the version ambiguous, which the snapshot cannot see.
+				const key = Buffer.from('not-unique-behind-snapshot');
+				await db.put(key, valueWithHeader(version));
+
+				const txn = new Transaction(db.store, { coordinatedRetry: true });
+				try {
+					// Pin the snapshot on the pre-marked value, then mark it under the same version.
+					expect(txn.getBinarySync(key, {} as any)).toBeDefined();
+					await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+
+					const result = txn.getBinarySync(key, { expectedVersion: version } as any);
+					expect(result).not.toBe(FRESH_VERSION_FLAG);
+					expect(db.verifyVersion(key, version)).toBe(false);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('does not publish from an async transactional snapshot read while its snapshot is behind', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('async-behind-snapshot');
+					const latestVersion = version + 1;
+					await db.put(key, valueWithHeader(version));
+
+					const txn = new Transaction(db.store, { coordinatedRetry: true });
+					try {
+						// Pin a snapshot on the first value before advancing it. Flushing then forces
+						// the second read through TransactionHandle's async kReadAllTier fallback.
+						expect(txn.getBinarySync(key, {} as any)).toBeDefined();
+						await db.put(key, valueWithHeader(latestVersion));
+						await db.flush();
+
+						const result = txn.getBinary(key, { expectedVersion: version } as any);
+						expect(result).toBeInstanceOf(Promise);
+						expect(await result).toBe(FRESH_VERSION_FLAG);
+						expect(db.verifyVersion(key, version)).toBe(false);
+						expect(db.verifyVersion(key, latestVersion)).toBe(false);
+					} finally {
+						txn.abort();
+					}
+				}
+			));
+
+		it('does not answer FRESH on the async path either', () =>
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+				const key = 'not-unique-async';
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+
+				const result = await db.getBinary(key, { expectedVersion: version } as any);
+				expect(result).not.toBe(FRESH_VERSION_FLAG);
+				expect(result).toBeDefined();
+				expect(db.verifyVersion(key, version)).toBe(false);
+			}));
+
+		it('does not answer FRESH on the async transactional path either', () =>
+			dbRunner(
+				{ dbOptions: [{ encoding: false, verificationTable: true, noBlockCache: true }] },
+				async ({ db }) => {
+					const key = Buffer.from('not-unique-async-txn');
+					await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+					await db.flush();
+
+					const txn = new Transaction(db.store, { coordinatedRetry: true });
+					try {
+						const result = txn.getBinary(key, { expectedVersion: version } as any);
+						expect(result).toBeInstanceOf(Promise);
+						const value = await result;
+						expect(value).not.toBe(FRESH_VERSION_FLAG);
+						expect(value).toBeDefined();
+						expect(db.verifyVersion(key, version)).toBe(false);
+					} finally {
+						txn.abort();
+					}
+				}
+			));
 	});
 });

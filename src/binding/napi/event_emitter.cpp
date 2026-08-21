@@ -182,7 +182,7 @@ ListenerData* serializeListenerArgs(napi_env env, napi_value value) {
 	return data;
 }
 
-napi_ref EventEmitter::addListener(
+std::shared_ptr<ListenerCallback> EventEmitter::addListener(
 	napi_env env,
 	const std::string& key,
 	napi_value callback,
@@ -284,7 +284,7 @@ napi_ref EventEmitter::addListener(
 	DEBUG_LOG_KEY(key);
 	DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size());
 
-	return callbackRef;
+	return listenerCallback;
 }
 
 bool EventEmitter::notify(const std::string& key, ListenerData* data) {
@@ -460,6 +460,35 @@ napi_value EventEmitter::removeListener(napi_env env, const std::string& key, na
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, found, &result));
 	return result;
+}
+
+void EventEmitter::removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target) {
+	if (!target) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(this->mutex);
+	auto it = this->callbacks.find(key);
+	if (it == this->callbacks.end()) {
+		return;
+	}
+
+	auto& listeners = it->second;
+	auto listener = std::find(listeners.begin(), listeners.end(), target);
+	if (listener != listeners.end()) {
+		// Release the tsfn first (queues napi_ref deletion on the JS thread via
+		// the tsfn finalizer), then erase. No napi_ref is dereferenced here, so
+		// this is safe from a finalizer during teardown.
+		releaseListenerResources(**listener);
+		listeners.erase(listener);
+		this->listenerCount.fetch_sub(1, std::memory_order_relaxed);
+		DEBUG_LOG("%p EventEmitter::removeListener (by identity) removed listener for key:", this);
+		DEBUG_LOG_KEY_LN(key);
+	}
+
+	if (listeners.empty()) {
+		this->callbacks.erase(it);
+	}
 }
 
 void EventEmitter::removeListenersByOwner(void* owner) {

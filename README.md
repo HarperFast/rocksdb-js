@@ -434,11 +434,73 @@ the `expectedVersion` option is used.
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
-`db.getDBIntProperty('rocksdb.estimate-num-keys')`.
+`db.getDBIntProperty('rocksdb.estimate-num-keys')`; use `estimateCount()` for range support and a
+confidence indicator.
 
 ```typescript
 const estimated = db.getEstimatedKeyCount();
 console.log(estimated);
+```
+
+### `db.estimateCount(options?: CountEstimateOptions): CountEstimate`
+
+Estimates the number of keys in the database, or within a key range, returning
+`{ count, confidence }`. Unlike `getKeysCount()`, this never iterates: the estimate is derived
+from RocksDB statistics (memtable stats plus approximate SST sizes converted through the entry
+density of the SSTs overlapping the range), so its cost scales with the number of SSTs overlapping
+the range rather than the number of keys. Reading cold table properties can do I/O through the
+table cache, so narrow ranges are preferable. A start-only range is computed as the
+whole-database estimate minus the complement, so it does the work of the range _below_ `start`.
+Accuracy improves with range size. Resolution is bounded by SST data-block granularity, so a range
+narrower than a block is unreliable in either direction: it may over-report or report 0 for present
+keys, and its low `confidence` is the signal. Recently deleted or overwritten entries may be counted
+until compaction.
+Estimates always reflect committed state; writes pending in a transaction are not included. Set
+`reverse: true` to use `getRange()`'s reverse convention (`start` is the upper bound and `end` is
+the lower bound). An inverted range (`start` ≥ `end`) returns
+`{ count: 0, confidence: 1 }`.
+
+`confidence` is a heuristic 0–1 indicator of how trustworthy `count` is — exactly 1 only when the
+count is exact. It is derived from the estimate's resolution (data-block/memtable-sampling
+granularity relative to the count), the tombstone fraction of the overlapping SSTs, and — for
+start-only ranges — the error compounded by complement subtraction. Treat it as an ordering
+signal (e.g. when to trust an estimate for query planning vs fall back to a heuristic), not a
+statistical bound.
+
+```typescript
+const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
+```
+
+### `db.createCountEstimator(options?: CountEstimatorOptions): CountEstimator`
+
+Creates an estimator that progressively refines a range count estimate while the range is being
+iterated — useful for reporting a total alongside a page of results without scanning the full
+range. Before any traversal, `estimate()` returns the pure statistical estimate (same as
+`estimateCount(range)`). As the caller reports progress with `advance(lastKey, count)` (e.g. once
+per page), `estimate()` returns the exact traversed count plus a statistical estimate of the
+remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
+already traversed — so the count converges toward the exact total. `confidence` is the
+exactness-weighted blend of the traversed portion and the remainder's confidence, so it approaches 1
+as the exact portion grows, although a checkpoint may decrease when calibration makes a large
+correction.
+Each checkpoint reads committed state, so a traversal performed against a transaction snapshot may
+be calibrated against data committed after that snapshot.
+When traversal completes, call `finish()` and `estimate()` returns the exact count with
+confidence 1. Reverse ranges follow `getRange`: set `start` to the upper bound and `end` to the
+lower bound, then set `reverse: true`. The caller owns the progress contract: cursors must move
+monotonically through the range and each entry must be reported exactly once.
+
+```typescript
+const range = { start: 'a', end: 'z' };
+const estimator = db.createCountEstimator(range);
+let lastKey;
+let pageSize = 0;
+for (const { key } of db.getRange({ ...range, limit: 25 })) {
+	lastKey = key;
+	pageSize++;
+}
+estimator.advance(lastKey, pageSize);
+const { count, confidence } = estimator.estimate();
 ```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`

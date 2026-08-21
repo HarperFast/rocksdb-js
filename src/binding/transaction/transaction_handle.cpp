@@ -415,21 +415,33 @@ napi_value TransactionHandle::get(
 		// transaction's snapshot value) and gates on the single-version invariant,
 		// so a transactional read seeds the cache only when settled and can never
 		// publish a stale snapshot value.
-		if (vtSlot && status.ok()) {
-			rocksdb::Slice valueSlice(value.data(), value.size());
+		rocksdb::Slice valueSlice(value.data(), value.size());
+		if (vtSlot && status.ok() && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
-			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
-				napi_value global, freshResult;
-				::napi_get_global(env, &global);
-				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
-				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-				return returnStatus;
-			}
-			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
+			const rocksdb::Slice keySlice(key.data(), key.size());
+			// The caller's column family, not the handle's: this read may be routed to another one.
+			const VtLatestCheck latest = vtCheckLatest(
+				dbHandle->descriptor->db.get(),
+				readColumnDescriptor->column.get(),
+				keySlice,
+				readSnapshot
+			);
+			if (!latest.notUnique) {
+				const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
+				const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
+				if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
+					napi_value global, freshResult;
+					::napi_get_global(env, &global);
+					::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+					::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
+					NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
+					return returnStatus;
+				}
+				if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
+					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
+				}
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
@@ -476,6 +488,15 @@ napi_value TransactionHandle::get(
 					state->key,
 					&state->value
 				);
+				// While the database and the caller's column family are still pinned — the completion
+				// runs after teardown may have released both.
+				if (state->status.ok() && state->vtSlot) {
+					vtCheckAsyncGet(
+						state,
+						state->handle->dbHandle->descriptor->db.get(),
+						state->readColumnDescriptor->column.get()
+					);
+				}
 			}
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete

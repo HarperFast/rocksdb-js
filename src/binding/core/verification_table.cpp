@@ -188,6 +188,21 @@ uint64_t VerificationTable::extractVersionFromValue(const rocksdb::Slice& value)
 	return toHostEndian(be);
 }
 
+bool VerificationTable::valueVersionIsNotUnique(const rocksdb::Slice& value) {
+	constexpr size_t headerSize = sizeof(uint64_t) + sizeof(uint32_t);
+	if (value.size() < headerSize) {
+		return false;
+	}
+	const uint8_t* word = reinterpret_cast<const uint8_t*>(value.data()) + sizeof(uint64_t);
+	if (word[0] != VERSION_HEADER_TAG) {
+		return false;
+	}
+	const uint32_t flags = (static_cast<uint32_t>(word[1]) << 16)
+		| (static_cast<uint32_t>(word[2]) << 8)
+		| static_cast<uint32_t>(word[3]);
+	return (flags & VERSION_NOT_UNIQUE_FLAG) != 0;
+}
+
 uint16_t vtNextGen() {
 	return vtGlobalGen.fetch_add(1, std::memory_order_relaxed) & 0x3FFF;
 }

@@ -180,9 +180,12 @@ public:
 	 * @param callback The JS function to invoke when the event is emitted.
 	 * @param owner Optional weak reference to the owning object. Defaults to
 	 *              an empty weak_ptr for ownerless listeners (global emitter).
-	 * @returns The napi_ref backing the callback, suitable for later removal.
+	 * @returns The registered listener, or nullptr on failure. Callers that need
+	 *          a lifetime-safe removal handle (e.g. the user-shared-buffer
+	 *          finalizer) hold a std::weak_ptr to it; the backing napi_ref is
+	 *          reachable via `->callbackRef` while the listener is live.
 	 */
-	napi_ref addListener(
+	std::shared_ptr<ListenerCallback> addListener(
 		napi_env env,
 		const std::string& key,
 		napi_value callback,
@@ -226,6 +229,16 @@ public:
 	 * found and removed.
 	 */
 	napi_value removeListener(napi_env env, const std::string& key, napi_value callback);
+
+	/**
+	 * Removes a specific listener by identity (the shared_ptr returned from
+	 * addListener) for the given key. Env-free and does not touch the listener's
+	 * napi_ref, so it is safe to call from a finalizer during env/process
+	 * teardown -- the tsfn (and, through it, the napi_ref) is released here, but
+	 * the ref itself is deleted later on the JS thread by the tsfn finalizer.
+	 * A no-op if `target` is null or no longer registered.
+	 */
+	void removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target);
 
 	/**
 	 * Removes all listeners owned by the given raw pointer. The pointer must
