@@ -218,6 +218,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
     `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
     from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
+- **GC is not exposed to Deno's test workers** (#770): tests that force collection run in Vitest's
+  worker, not the process you launched. Node's `threads` pool inherits `--expose-gc` through
+  `execArgv`, and Bun exposes `Bun.gc()`, but Deno uses the `forks` pool and
+  `--v8-flags=--expose-gc` applies only to the CLI process it was passed to — so `globalThis.gc` is
+  undefined in every Deno worker and each `skipIf(!globalThis.gc)` test silently skips there. Guard
+  GC-dependent tests with `skipIf`, never with a throw. `DENO_V8_FLAGS=--expose-gc` is the fix (the
+  environment is inherited by children) but cannot land until #771 is fixed: the restored coverage
+  makes `test/lock.test.ts` and one macOS `verification-table.test.ts` case fail.
 
 ## Important Implementation Notes
 
@@ -371,6 +379,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
+
+12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+    `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
+    `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
+    path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
+    `onWrapperCollected()` before dropping its reference: once V8 has collected the wrapper, no JS
+    code can commit, abort, retry, or read through that handle again, so it is closed. The one
+    exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
+    closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
+    always closes, and the failure paths (which deliberately leave the handle open for a caller that
+    may retry) check `wrapperCollected`, because there is no caller left. Without this a transaction
+    dropped without `commit()`/`abort()` pinned `rocksdb.oldest-snapshot-time` for the life of the
+    process, so RocksDB could never discard obsolete versions for that database — restart was the
+    only recovery (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on
+    any redesign here: the registry reference cannot simply be made weak, because an async `get`
+    holds a raw `TransactionHandle*` (`AsyncGetState<TransactionHandle*>`) and relies on `close()`'s
+    `cancelAllAsyncWork()`/`waitForAsyncWorkCompletion()`, which a plain destructor race would skip;
+    and `registryStatus()` may only report handle fields that are fixed before the handle is
+    published to the registry (`id`, `createdAt`), because `txnsMutex` covers the map's membership
+    while the mutable fields' writers — the owning thread's read paths, the commit-completion
+    callback — hold no lock at all.
 
 ## Debugging native heap corruption
 

@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -100,6 +101,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	double startTimestamp;
 
 	/**
+	 * Construction time. Separate from startTimestamp, which JS can overwrite via setTimestamp();
+	 * this is the clock registryStatus() ages a handle against.
+	 */
+	std::chrono::steady_clock::time_point createdAt;
+
+	/**
 	 * The state of the transaction.
 	 */
 	TransactionState state;
@@ -120,6 +127,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * (HarperFast/harper#1370, close-vs-commit variant).
 	 */
 	std::atomic<bool> closed{false};
+
+	/**
+	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
+	 * handle again, so the only possible remaining owner is an in-flight commit.
+	 */
+	std::atomic<bool> wrapperCollected{false};
 
 	/**
 	 * The thread ID of the JS thread that owns `env` (set at construction time).
@@ -197,6 +210,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
 	void close() override;
+
+	/**
+	 * Called from the `NativeTransaction` napi finalizer. The registry holds a strong reference
+	 * (transactionAdd), so without this a dropped handle pins its read snapshot — and every
+	 * obsolete version behind it — until the process exits.
+	 */
+	void onWrapperCollected();
 
 	napi_value get(
 		napi_env env,
