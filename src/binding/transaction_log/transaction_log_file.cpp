@@ -153,7 +153,7 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	}
 }
 
-bool TransactionLogFile::readFullyFromFile(uint32_t offset, void* dest, uint32_t n) {
+bool TransactionLogFile::readBytes(uint32_t offset, void* dest, uint32_t n) {
 	auto* out = static_cast<char*>(dest);
 	uint32_t remaining = n;
 	uint32_t at = offset;
@@ -185,7 +185,7 @@ RecoveryScan TransactionLogFile::scanRecoveryLocked() {
 	return scanTransactionLogForRecovery(
 		fileSize,
 		[](void* context, uint32_t offset, void* dest, uint32_t n) {
-			return static_cast<TransactionLogFile*>(context)->readFullyFromFile(offset, dest, n);
+			return static_cast<TransactionLogFile*>(context)->readBytes(offset, dest, n);
 		},
 		this
 	);
