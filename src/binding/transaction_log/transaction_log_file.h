@@ -77,6 +77,7 @@ class TransactionLogAppendBoundaryException final : public std::exception {
 	std::string message;
 public:
 	explicit TransactionLogAppendBoundaryException(std::string msg) noexcept : message(std::move(msg)) {}
+	~TransactionLogAppendBoundaryException() override = default;
 	const char* what() const noexcept override { return message.c_str(); }
 };
 
