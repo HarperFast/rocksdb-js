@@ -152,23 +152,84 @@ struct JobTracker final {
 };
 
 /**
+ * Shared state between the RocksDB `EventListener` and the `DBDescriptor`,
+ * created BEFORE `DB::Open` so background callbacks fired during open have a
+ * valid, race-free target even though the descriptor does not exist yet
+ * (HarperFast/rocksdb-js#754). The descriptor pointer is published under
+ * `mutex_` once construction succeeds, and every read takes the same lock — so
+ * there is no data race on the `weak_ptr`. (The previous design bound a shared
+ * `weak_ptr` object after open while background threads called `lock()` on that
+ * same object concurrently, which is undefined behavior.)
+ *
+ * A background error that latches before the descriptor is attached is stashed
+ * as `pendingError_` (the same JSON form `setLastError` stores) and transferred
+ * to the descriptor on publish, so an error during open still reaches
+ * `getLastError()` / the `'error'` event instead of being silently dropped.
+ */
+struct DBEventListenerState final {
+	// Flush callbacks: the attached descriptor, or null before attach / after close.
+	std::shared_ptr<DBDescriptor> lockDescriptor() {
+		std::lock_guard<std::mutex> lock(this->mutex_);
+		return this->descriptor_.lock();
+	}
+
+	// OnBackgroundError: route the serialized error to the descriptor when it is
+	// attached, else stash it for transfer on publish. Touches no N-API and never
+	// blocks, so it is safe on a RocksDB background thread.
+	void recordBackgroundError(std::string json) {
+		std::shared_ptr<DBDescriptor> desc;
+		{
+			std::lock_guard<std::mutex> lock(this->mutex_);
+			desc = this->descriptor_.lock();
+			if (!desc) {
+				this->pendingError_ = std::move(json);
+				return;
+			}
+		}
+		// setLastError stores + emits; call it outside our lock.
+		desc->setLastError(std::move(json));
+	}
+
+	// Publish the descriptor once open succeeds and flush any error captured
+	// during open. A concurrent recordBackgroundError therefore either stashes
+	// (observed before publish, drained here) or routes straight to the
+	// descriptor (after) — never lost.
+	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor) {
+		std::string pending;
+		{
+			std::lock_guard<std::mutex> lock(this->mutex_);
+			this->descriptor_ = descriptor;
+			pending.swap(this->pendingError_);
+		}
+		if (!pending.empty()) {
+			descriptor->setLastError(std::move(pending));
+		}
+	}
+
+private:
+	std::mutex mutex_;
+	std::weak_ptr<DBDescriptor> descriptor_;
+	std::string pendingError_;
+};
+
+/**
  * Custom event listener that handles flush completion events and notifies
  * transaction log stores to track what has been flushed to the database.
  */
 class TransactionLogEventListener : public rocksdb::EventListener {
 public:
-	TransactionLogEventListener(std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr)
-		: descriptorPtr(descriptorPtr) {}
+	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state)
+		: state(std::move(state)) {}
 
 	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-
-		auto desc = descriptorPtr->lock();
+		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
 		}
+		// RocksDB can run flushes concurrently across background threads, so guard
+		// the shared jobTrackers map — concurrent std::unordered_map access is a
+		// data race.
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id, so we can determine when all the flushes have completed for
 		// With atomic flushes, there will be multiple flush events for each column family in the database
 		// We we want to flush at the beginning of the flush job (for first time job_id appears)
@@ -197,11 +258,7 @@ public:
 	}
 
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-
-		auto desc = descriptorPtr->lock();
+		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
 		}
@@ -210,6 +267,8 @@ public:
 		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted cf name=%s job id=%u flushedSequence=%llu\n",
 			desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
 
+		// Guard the shared jobTrackers map — see OnFlushBegin.
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
@@ -246,16 +305,15 @@ public:
 	// hide it. Runs on flush/compaction/write threads; storing a string and the
 	// thread-safe, asynchronous emit keep this cheap and non-blocking.
 	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bgError) override {
-		if (!this->descriptorPtr || bgError == nullptr) {
+		if (bgError == nullptr) {
 			return;
 		}
-		auto desc = this->descriptorPtr->lock();
-		if (!desc) {
-			return;
-		}
+		// Route through the shared state (NOT the descriptor directly): an error
+		// latched during DB::Open, before the descriptor is attached, is stashed
+		// and transferred on publish rather than dropped (#754).
 		int severity = static_cast<int>(bgError->severity());
 		int reasonInt = static_cast<int>(reason);
-		desc->setLastError(backgroundErrorToJson(
+		this->state->recordBackgroundError(backgroundErrorToJson(
 			bgError->ToString(),
 			severity,
 			backgroundErrorSeverityName(severity),
@@ -266,7 +324,8 @@ public:
 	}
 
 private:
-	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
+	std::shared_ptr<DBEventListenerState> state;
+	std::mutex jobTrackersMutex;
 	std::unordered_map<int, JobTracker> jobTrackers;
 };
 
@@ -988,9 +1047,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// below so opening one family cannot restamp another's algorithm.
 	auto cfOptions = buildColumnFamilyOptions(options);
 
-	// create a shared pointer to hold the weak descriptor reference for the event listener
-	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
-	auto eventListener = std::make_shared<TransactionLogEventListener>(descriptorWeakPtr);
+	// Shared listener state, created BEFORE DB::Open so a background error fired
+	// during open has a valid, race-free target (the descriptor does not exist
+	// yet). The descriptor is published into it once constructed, transferring any
+	// error captured mid-open (HarperFast/rocksdb-js#754).
+	auto listenerState = std::make_shared<DBEventListenerState>();
+	auto eventListener = std::make_shared<TransactionLogEventListener>(listenerState);
 	dbOptions.listeners.push_back(eventListener);
 
 	// prepare the column family stuff - first check if database exists
@@ -1120,8 +1182,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 
-	// set the weak pointer for the event listener
-	*descriptorWeakPtr = descriptor;
+	// Publish the descriptor into the shared listener state (guarded), so flush
+	// callbacks can reach it and any background error captured during open is
+	// transferred to it now.
+	listenerState->publishDescriptor(descriptor);
 
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;
