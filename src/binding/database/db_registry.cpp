@@ -680,7 +680,7 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
 	}
 
 	for (auto& descriptor : descriptors) {
-		descriptor->releaseParkTimeoutsByEnv(env);
+		descriptor->parkTimeouts->releaseByEnv(env);
 	}
 }
 

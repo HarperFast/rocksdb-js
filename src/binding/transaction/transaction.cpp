@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
@@ -233,36 +234,39 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
  * Default is the top of the 2-5s range this was scoped to: a timeout
  * consumes a coordinatedRetry attempt like a genuine wake would, so a
  * higher default leaves more headroom for a merely-slow (not abandoned)
- * holder before maxRetries exhausts. Malformed input falls back to the
- * default rather than producing a degenerate effective timeout.
+ * holder before maxRetries exhausts -- a deployment that would rather wait
+ * than fail raises this, it cannot disable the bound. Read per park (this is
+ * the conflict path, not a hot path) so a process can be started with a small
+ * value for tests without depending on which park happens to run first.
+ * Malformed input falls back to the default rather than producing a
+ * degenerate effective timeout; a positive value below kMinimum is clamped up
+ * to it instead, since the intent there is unambiguous.
  */
 static unsigned parkTimeoutMs() {
-	static const unsigned ms = []() -> unsigned {
-		constexpr unsigned kDefault = 5000;
-		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
-		if (v == nullptr) {
-			return kDefault;
-		}
-		const char* firstNonSpace = v;
-		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
-			++firstNonSpace;
-		}
-		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
-			return kDefault;
-		}
-		char* end = nullptr;
-		errno = 0;
-		unsigned long parsed = ::strtoul(v, &end, 10);
-		// parsed == 0 covers both a literal "0" and `atoi`'s old silent
-		// non-numeric fallback; either way, firing every park immediately is
-		// exactly the unparked spin this bound exists to prevent, so treat it
-		// the same as malformed input rather than as a deliberate opt-out.
-		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
-			return kDefault;
-		}
-		return static_cast<unsigned>(parsed);
-	}();
-	return ms;
+	constexpr unsigned kDefault = 5000;
+	constexpr unsigned kMinimum = 50;
+	const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
+	if (v == nullptr) {
+		return kDefault;
+	}
+	const char* firstNonSpace = v;
+	while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+		++firstNonSpace;
+	}
+	if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
+		return kDefault;
+	}
+	char* end = nullptr;
+	errno = 0;
+	unsigned long parsed = ::strtoul(v, &end, 10);
+	// parsed == 0 is the one ambiguous input: a literal "0" reads as "disable
+	// the bound", which is exactly the unbounded park this exists to prevent,
+	// so it falls back to the default like malformed input rather than being
+	// honored as an opt-out or clamped up to kMinimum.
+	if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
+		return kDefault;
+	}
+	return std::max(kMinimum, static_cast<unsigned>(parsed));
 }
 
 /**
@@ -509,7 +513,9 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			// when the descriptor is closing and when there is no descriptor
 			// at all (DBHandle::close() can reset it concurrently) -- either
 			// way there is no timeout thread behind this park.
-			uint64_t parkId = descriptor ? descriptor->scheduleParkTimeout(env, parkTimeoutMs(), tsfn, fired) : 0;
+			uint64_t parkId = descriptor
+				? descriptor->parkTimeouts->schedule(env, parkTimeoutMs(), tsfn, fired)
+				: 0;
 
 			if (parkId == 0) {
 				// No timeout thread behind this park -- resolve now rather
@@ -525,31 +531,18 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			}
 
 			// weak_ptr, not raw: LockTracker::wakeCallbacks has no removal API,
-			// so this closure can outlive `descriptor` (e.g. a foreign-dbId
+			// so this closure can outlive the park registry (e.g. a foreign-dbId
 			// tracker from a colliding VT slot). `.lock()` failing means
-			// shutdownParkTimeouts already resolved this park at close.
-			std::weak_ptr<DBDescriptor> weakDescriptor = descriptor;
-			auto fireOnce = [tsfn, fired, weakDescriptor, parkId]() {
-				if (parkId != 0) {
-					if (auto d = weakDescriptor.lock()) {
-						// This lock() is itself a transient extra ref, exactly
-						// the shape that can make a racing close()'s
-						// PurgeIfUnreferenced observe use_count() > 1 and skip
-						// (HarperFast/rocksdb-js#672) -- retry it after
-						// dropping our ref, like BackupState/checkpoint state
-						// do for the same reason.
-						d->fireParkTimeout(parkId);
-						std::string path = d->path;
-						bool readOnly = d->readOnly;
-						d.reset();
-						DBRegistry::PurgeIfUnreferenced(path, readOnly);
-					}
-					return;
-				}
-				bool expected = false;
-				if (fired->compare_exchange_strong(expected, true)) {
-					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+			// ParkTimeoutRegistry::shutdown already resolved this park at close.
+			// The weak reference is deliberately to the registry and not to the
+			// descriptor: this runs inline under the process-global VT
+			// `writerMutex_`, where re-entering DBRegistry can self-deadlock and
+			// where a transient descriptor ref would perturb the use_count that
+			// PurgeIfUnreferenced decides on (see the ParkTimeoutRegistry docs).
+			std::weak_ptr<ParkTimeoutRegistry> weakParks = descriptor->parkTimeouts;
+			auto fireOnce = [weakParks, parkId]() {
+				if (auto parks = weakParks.lock()) {
+					parks->fire(parkId);
 				}
 			};
 

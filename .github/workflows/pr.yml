@@ -214,12 +214,24 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
-        # macos-latest gets an extra retry for a known pre-existing native crash in
-        # commit-teardown.test.ts (HarperFast/rocksdb-js#746, mutex lock failed:
-        # Invalid argument during worker-env teardown vs. the shared commit thread)
-        # that has hit multiple unrelated PRs on this OS/runtime combo. Not a fix
-        # for #746 itself, just enough retry budget that a rare pre-existing race
-        # doesn't block unrelated PRs -- same pattern as the windows-latest retry
-        # below (HarperFast/rocksdb-js#695).
+        # macos-latest gets an extra retry ONLY for the known pre-existing native
+        # crash in commit-teardown.test.ts (HarperFast/rocksdb-js#746, "mutex lock
+        # failed: Invalid argument" during worker-env teardown vs. the shared commit
+        # thread), which has hit multiple unrelated PRs on this OS/runtime combo.
+        # Gating on that crash string, rather than re-rolling any failure like the
+        # windows-latest retry below (HarperFast/rocksdb-js#695), keeps this OS's
+        # signal for every other regression. Not a fix for #746 itself.
         shell: bash
-        run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" -o "${{ matrix.os }}" = "macos-latest" ] && pnpm test:deno)
+        run: |
+          # pipefail is what makes the `| tee` below report the test exit code
+          # instead of tee's.
+          set -o pipefail
+          if pnpm test:deno 2>&1 | tee "$RUNNER_TEMP/deno-test.log"; then
+            exit 0
+          fi
+          case "${{ matrix.os }}" in
+            windows-latest) ;;
+            macos-latest) grep -q 'mutex lock failed' "$RUNNER_TEMP/deno-test.log" || exit 1 ;;
+            *) exit 1 ;;
+          esac
+          pnpm test:deno

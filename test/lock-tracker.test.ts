@@ -1,6 +1,7 @@
 import { constants } from '../src/load-binding.ts';
 import { RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner } from './lib/util.ts';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
@@ -202,13 +203,52 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 			await db.put(key, valueWithVersion(2.2e12));
 			txn.putSync(key, valueWithVersion(2.3e12));
 
-			const start = Date.now();
+			const start = performance.now();
 			const result = await txn.commit();
-			const elapsed = Date.now() - start;
+			const elapsed = performance.now() - start;
 
 			expect(result).toBe(RETRY_NOW);
 			expect(elapsed).toBeGreaterThanOrEqual(4500);
 			expect(elapsed).toBeLessThan(10000);
+		}));
+
+	// Covers the wake-during-close path (the holder's intents are released from
+	// inside finishClose(), so the park's LockTracker callback runs while the
+	// close is in progress) and the timeout thread being joined with a park
+	// live. It does NOT reach ParkTimeoutRegistry::shutdown()'s drain of still
+	// -pending parks: that only happens when the holder belongs to a different
+	// database on a colliding VT slot, which is hash-dependent and not
+	// arrangeable from here (verified by disabling the drain — this stays green).
+	it('a commit parked at db.close() settles instead of hanging', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('park-timeout-close-drain');
+			const v0 = 1.6e12;
+			await db.put(key, valueWithVersion(v0));
+			db.populateVersion(key, v0);
+
+			const holder = new Transaction(db.store, { coordinatedRetry: true });
+			holder.putSync(key, valueWithVersion(2.1e12));
+
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			await txn.get(key);
+			await db.put(key, valueWithVersion(2.2e12));
+			txn.putSync(key, valueWithVersion(2.3e12));
+
+			const commit = txn.commit();
+			// Long enough for the park to be registered with the timeout thread,
+			// short enough to stay far from its 5000ms deadline.
+			await delay(250);
+
+			const start = performance.now();
+			db.close();
+			// Settled, not resolved: `commit()`'s `aftercommit` notify rejects
+			// once the database is closed, whatever the native result was.
+			const [settled] = await Promise.allSettled([commit]);
+			const elapsed = performance.now() - start;
+
+			expect(settled.status).toBe('rejected');
+			// Under the deadline, so this can only have come from the close.
+			expect(elapsed).toBeLessThan(4000);
 		}));
 });
 
