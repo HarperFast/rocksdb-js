@@ -648,7 +648,8 @@ export type RocksDatabaseConfig = {
 	 * index/filter/data blocks. When `blockCacheSize` is supplied in the same
 	 * `config()` call and this property is omitted, the blob cache defaults to
 	 * `Math.floor(blockCacheSize / 10)`. This capacity is additional to the
-	 * configured block-cache capacity. An explicit value, including `0`, wins.
+	 * configured block-cache capacity. An explicit value, including `0`, wins
+	 * in the same call; a later block-cache-only call recalculates the default.
 	 *
 	 * Must be set **before** a database is opened to affect it: the cache is
 	 * attached to a column family at open, so a database opened while this was

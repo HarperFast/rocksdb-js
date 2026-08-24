@@ -216,12 +216,14 @@ Sets global database settings.
     When omitted from a call that supplies `blockCacheSize`, defaults to
     `Math.floor(blockCacheSize / 10)`; otherwise its initial default is `0` (disabled), matching
     RocksDB. This capacity is additional to the block-cache capacity, and an explicit value,
-    including `0`, wins. RocksDB does **not** put blob values in the block cache, so with the cache
-    disabled every blob read is real I/O — which matters most when blob files live on slower
-    storage than the SST files (see [`blobs.dir`](docs/tiered-storage.md)). Kept separate from the
-    block cache so large values cannot evict index/filter/data blocks. Must be set before a database
-    is opened to affect it — the cache is attached to a column family at open — after which changing
-    it resizes the cache for databases that already have it. Negative values throw an error.
+    including `0`, wins in the same call. A later call that supplies only `blockCacheSize`
+    recalculates the derived blob-cache capacity. RocksDB does **not** put blob values in the block
+    cache, so with the cache disabled every blob read is real I/O — which matters most when blob
+    files live on slower storage than the SST files (see [`blobs.dir`](docs/tiered-storage.md)).
+    Kept separate from the block cache so large values cannot evict index/filter/data blocks. Must
+    be set before a database is opened to affect it — the cache is attached to a column family at
+    open — after which changing it resizes the cache for databases that already have it. Negative
+    values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
   - `verificationTableEntries: number` The number of slots in the process-global
     [Verification Table](#verification-table). Each slot is 8 bytes, so the default of `131072`

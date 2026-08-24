@@ -98,6 +98,7 @@ Because RocksDB does **not** put blob values in the block cache, that extra read
 unless a blob cache is configured. When `blockCacheSize` is configured and `blobCacheSize` is
 omitted from the same call, rocksdb-js assigns the blob cache an additional 10% of the block-cache
 capacity. An explicit value, including `0` to disable the blob cache, overrides that default. When
+a later call supplies only `blockCacheSize`, the derived blob-cache capacity is recalculated. When
 blob files are on slower storage, a larger explicit cache can be useful:
 
 ```js
