@@ -431,7 +431,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     into an indefinite hang that also blocks every other backup/delete/purge on that directory
     until the process dies. Opting a flush in is also database-wide: it covers every column family
     on a process-global descriptor shared across `worker_threads`, so the stall reaches every
-    handle on that path, not just the caller's.
+    handle on that path, not just the caller's. It relocates the hang rather than removing it, too:
+    a stalled `db->Write()` blocks whichever thread calls it, and for a committing transaction that
+    is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
+    every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
+    behind it, including ones from callers that never touched flush.
 
 ## Debugging native heap corruption
 

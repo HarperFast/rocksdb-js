@@ -383,7 +383,10 @@ Flushes all in-memory data to disk asynchronously.
     budget), the returned promise never settles. Pass `true` when the flush is a durability gate
     you're already blocked on and stalling writers is an acceptable cost; that cost is
     database-wide, covering every column family on the (process-global, `worker_threads`-shared)
-    database handle, not just the caller's. This is a different knob from `writeBufferManagerAllowStall`
+    database handle, not just the caller's — and it relocates the hang rather than removing it: a
+    stalled write blocks the database's single commit thread, which dispatches every
+    `Transaction.commit()` in order, so every commit behind it queues up too, including ones from
+    callers that never touched flush. This is a different knob from `writeBufferManagerAllowStall`
     (see [`new RocksDatabase()`](#new-rocksdatabasepath-options) options), with nearly opposite
     polarity: that one governs whether the `WriteBufferManager` may stall writers at all, this one
     governs whether one manual flush is willing to cause a stall rather than wait one out.

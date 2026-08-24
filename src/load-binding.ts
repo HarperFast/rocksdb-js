@@ -365,7 +365,11 @@ export type FlushOptions = {
 	 * writers is the acceptable cost of it completing. Weigh that cost database-wide, not
 	 * per-caller: a flush covers **every column family** on the database, and the descriptor is
 	 * process-global and shared across `worker_threads`, so the stall lands on every other column
-	 * family and every other handle that opened the same path — not just the one you called.
+	 * family and every other handle that opened the same path — not just the one you called. It
+	 * also relocates the hang rather than removing it: a stalled `db->Write()` blocks the
+	 * database's single `CommitWorker` thread, which dispatches every `Transaction.commit()` in
+	 * order, so the stall queues up every commit behind it — including ones from callers that
+	 * never touched flush — until the stall clears.
 	 *
 	 * Note this is a *different* knob from the `writeBufferManagerAllowStall` config, and their
 	 * polarity is nearly opposite: that one decides whether the WriteBufferManager may stall

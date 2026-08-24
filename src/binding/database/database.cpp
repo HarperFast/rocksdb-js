@@ -385,10 +385,6 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
-
 	rocksdb::Slice startSlice;
 	rocksdb::Slice* startPtr = nullptr;
 	napi_valuetype startType;
@@ -414,6 +410,10 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &bottommostType));
 	if (bottommostType == napi_boolean) {
 		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &bottommost));
+	}
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		NAPI_RETURN_UNDEFINED();
 	}
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(

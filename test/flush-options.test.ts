@@ -91,6 +91,8 @@ describe('flush options', () => {
 							/must be a buffer/
 						);
 						expect(() => (db as any).store.db.compact(noop, noop, 42)).toThrow(/must be a buffer/);
+						expect(() => (readOnlyDb as any).store.db.compactSync(42)).toThrow(/must be a buffer/);
+						expect(() => (db as any).store.db.compactSync(42)).toThrow(/must be a buffer/);
 					}
 				),
 			10_000
