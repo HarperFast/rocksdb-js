@@ -2,7 +2,7 @@ import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 /**
- * `flush()` / `flushSync()` options and the settle-exactly-once contract (AGENTS invariant 12).
+ * `flush()` / `flushSync()` options and the settle-exactly-once contract (AGENTS invariant 13).
  * The behavioral half of `allowWriteStall` is not covered anywhere — see
  * `write-buffer-manager-stall.test.ts`.
  */
@@ -21,7 +21,6 @@ describe('flush options', () => {
 			expect(await db.get('b')).toBe('two');
 		}));
 
-	// Additive: every existing caller passes nothing and keeps the RocksDB default.
 	it('should flush with no options, and with an empty or partial bag', () =>
 		dbRunner(async ({ db }) => {
 			await db.put('c', 'three');
@@ -39,9 +38,12 @@ describe('flush options', () => {
 				/Flush options must be an object/
 			);
 			await expect(db.flush('yes' as any)).rejects.toThrow(/Flush options must be an object/);
+			await expect(db.flush({ allowWriteStall: 'yes' } as any)).rejects.toThrow(
+				/Flush options must be an object/
+			);
 		}));
 
-	// #774. A regression is a hang, not a failed assertion, so the per-test timeout IS the
+	// A regression here is a hang, not a failed assertion, so the per-test timeout IS the
 	// assertion.
 	describe('read-only databases settle their promise', () => {
 		it(
@@ -82,8 +84,8 @@ describe('flush options', () => {
 						await expect(readOnlyDb.compact()).resolves.toBeUndefined();
 
 						// `RocksDatabase.compact` always materializes real Buffers, so the native
-						// method is the only place a malformed key is reachable. Both modes must
-						// refuse it: before the reorder, read-only resolved without looking.
+						// method is the only place a malformed key is reachable; both modes must
+						// refuse it identically.
 						const noop = () => {};
 						expect(() => (readOnlyDb as any).store.db.compact(noop, noop, 42)).toThrow(
 							/must be a buffer/

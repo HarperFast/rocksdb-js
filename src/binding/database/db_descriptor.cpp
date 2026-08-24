@@ -416,7 +416,7 @@ void DBDescriptor::finishClose() {
 	}
 
 	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
-	// purpose: flushing immediately here races transaction-log-store teardown (AGENTS invariant 13).
+	// purpose: flushing immediately here races transaction-log-store teardown (AGENTS invariant 14).
 	this->flush();
 
 	// Trigger manual compaction on all column families to reclaim space from

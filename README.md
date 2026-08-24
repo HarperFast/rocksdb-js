@@ -371,21 +371,41 @@ db.dropSync();
 db.close();
 ```
 
-### `db.flush(): Promise<void>`
+### `db.flush(options?): Promise<void>`
 
 Flushes all in-memory data to disk asynchronously.
 
+- `options: object`
+  - `allowWriteStall?: boolean` Whether the flush may proceed even though it will stall writes for
+    its duration. Defaults to `false`, which — despite how that reads — means the flush **waits**
+    until it can run without causing a stall, with no timeout: on a database stuck in a stall
+    condition (immutable-memtable backlog, L0 stop trigger, an exhausted `WriteBufferManager`
+    budget), the returned promise never settles. Pass `true` when the flush is a durability gate
+    you're already blocked on and stalling writers is an acceptable cost; that cost is
+    database-wide, covering every column family on the (process-global, `worker_threads`-shared)
+    database handle, not just the caller's. This is a different knob from `writeBufferManagerAllowStall`
+    (see [`new RocksDatabase()`](#new-rocksdatabasepath-options) options), with nearly opposite
+    polarity: that one governs whether the `WriteBufferManager` may stall writers at all, this one
+    governs whether one manual flush is willing to cause a stall rather than wait one out.
+
 ```typescript
 await db.flush();
+
+// Escape a hang instead of waiting out the stall indefinitely
+await db.flush({ allowWriteStall: true });
 ```
 
-### `db.flushSync(): void`
+### `db.flushSync(options?): void`
 
 Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
 it is recommended to use `flush()` if you want to keep the event loop free.
 
+- `options: object` Same as [`flush()`](#dbflushoptions-promisevoid).
+
 ```typescript
 db.flushSync();
+
+db.flushSync({ allowWriteStall: true });
 ```
 
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`

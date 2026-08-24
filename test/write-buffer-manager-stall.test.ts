@@ -49,8 +49,8 @@ describe('WriteBufferManager stall', () => {
 
 	// Plumbing: the option survives a real stalling-WBM configuration. It does NOT prove the flag
 	// changes RocksDB's behavior — that needs a reliably-reachable stall to time the arms against,
-	// which #755 removed, and whose failure mode would be a wedged libuv thread rather than a red
-	// assertion. Both arms are expected to complete.
+	// and its failure mode would be a wedged libuv thread rather than a red assertion. Both arms
+	// are expected to complete.
 	it(
 		'should accept allowWriteStall against a stalling WriteBufferManager (plumbing, not behavior)',
 		() =>
