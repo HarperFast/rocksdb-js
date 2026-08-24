@@ -6,6 +6,8 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <string>
+#include <utility>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/exception.h"
@@ -41,11 +43,71 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY 1
+/**
+ * `bytesLanded` value meaning the platform could not tell us how much of a failed append reached
+ * the file. The caller must then retire the file rather than erase a range it cannot bound.
+ */
+#define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
+
+namespace rocksdb_js {
+
+/**
+ * Path of the fixed-size append-boundary marker paired with a transaction-log
+ * segment. Markers live outside the store directory so existing directory
+ * listings and backup enumeration continue to contain only log data.
+ */
+std::filesystem::path transactionLogAppendBoundaryMarkerPath(
+	const std::filesystem::path& logPath);
+
+/**
+ * Reads a persisted append boundary. Returns 0 when no marker exists or the
+ * marker records a clean segment; throws when an existing marker is malformed.
+ */
+uint32_t readTransactionLogAppendBoundaryMarker(
+	const std::filesystem::path& logPath);
+
+class TransactionLogFormatException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogFormatException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/** A marker failure makes the safe logical end unknowable and must fail load. */
+class TransactionLogAppendBoundaryException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogAppendBoundaryException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/**
+ * How much of a failed append reached the file, derived from where the file
+ * pointer ended up relative to the offset the batch started writing at.
+ *
+ * A pointer BEHIND the origin is not "nothing landed" — it is nonsense for a
+ * write, and reporting 0 would tell the caller there is nothing to erase and
+ * nothing to retire, leaving the file appendable over a partial entry. Report
+ * it as unknown so the caller retires the file instead.
+ *
+ * Used by the Windows append path (`WriteFile` does not promise to set
+ * `lpNumberOfBytesWritten` on failure); defined here, unconditionally, so it
+ * is testable off Windows.
+ */
+inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t writeOrigin) {
+	int64_t landed = pointerAfterWrite - writeOrigin;
+	return landed >= 0 ? landed : TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
+}
+
+} // namespace rocksdb_js
+
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
+#define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
+#define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 // Forward declaration so that the friend designation inside namespace
@@ -191,7 +253,34 @@ struct TransactionLogFile final {
 	 */
 	std::atomic<bool> hasAppendedSinceOpen = false;
 
-	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
+	/**
+	 * True once a failed append may have left bytes past `size`. The file is refused for further
+	 * appends; the store persists `size` to the preallocated boundary marker before rotating, so the
+	 * orphaned bytes remain outside the logical file both now and after restart instead of becoming a
+	 * mid-file break with valid entries on both sides (HarperFast/rocksdb-js#748).
+	 */
+	std::atomic<bool> appendBoundaryLost = false;
+
+	/**
+	 * Last safe logical extent persisted after an uncertain append. A non-zero
+	 * value is authoritative across restarts even when the physical file still
+	 * contains orphaned bytes beyond it.
+	 */
+	std::atomic<uint32_t> retiredAppendBoundary = 0;
+
+	/** Whether this store-owned file maintains a persistent boundary marker. */
+	bool appendBoundaryMarkerEnabled = false;
+
+	/**
+	 * Suppresses repeated backup warnings for the same malformed segment. The extent remains
+	 * unresolved so each backup still verifies whether the segment has since become readable.
+	 */
+	std::atomic<bool> malformedBackupWarningEmitted = false;
+
+	TransactionLogFile(
+		const std::filesystem::path& p,
+		const uint32_t seq,
+		bool appendBoundaryMarkerEnabled = false);
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;
@@ -208,6 +297,13 @@ struct TransactionLogFile final {
 	 * Flushes any buffered data to disk.
 	 */
 	void flush();
+
+	/**
+	 * Persists the current logical size as the last safe boundary. The marker is
+	 * preallocated before the first append, so retirement overwrites a fixed extent
+	 * rather than extending it. Throws unless persistence succeeds.
+	 */
+	void persistAppendBoundaryRetirement();
 
 	/**
 	 * Gets the last write time of the log file or throws an error if the file
@@ -293,6 +389,31 @@ struct TransactionLogFile final {
 	 * @returns `true` if the file was removed, `false` if it did not exist.
 	 */
 	bool removeFile();
+
+	/**
+	 * Platform specific body of removeFile(). Precondition: the caller already
+	 * holds fileMutex (open() does, and must discard a file whose header write
+	 * failed part-way).
+	 */
+	bool removeFileLocked();
+
+	/**
+	 * Platform specific body of close(). Precondition: the caller already holds
+	 * fileMutex — open() does, and must not leave a handle (or, on Windows, the
+	 * mapping its index scan created) behind when it rejects a file.
+	 */
+	void closeLocked();
+
+	/** Durably initialize a temporary marker, then atomically publish it if absent. */
+	void ensureAppendBoundaryMarker();
+
+	/** Durably overwrite the existing marker with a non-zero logical boundary. */
+	void writeAppendBoundaryMarker(uint32_t boundary);
+
+	/**
+	 * Body of open(). Precondition: the caller already holds fileMutex.
+	 */
+	void openLocked(const double latestTimestamp);
 
 	/**
 	 * Counts the committed entry frames in this log file by reading its on-disk
@@ -409,6 +530,13 @@ struct TransactionLogFile final {
 	 * that each test starts from a known state. Test-only.
 	 */
 	static void resetAdviseColdSupportForTests();
+
+	/**
+	 * Overrides the `bytesLanded` a failed append reports, so the unknown-extent and
+	 * over-report branches — reachable only from the Windows backend in production —
+	 * can be exercised on POSIX. INT64_MIN disables the override. Test-only.
+	 */
+	static std::atomic<int64_t> forcedBytesLandedForTests;
 #endif
 
 private:
@@ -446,8 +574,14 @@ private:
 	 * POSIX advances partially-written iovecs in place; Windows writes from
 	 * local state and leaves the array untouched. Callers must treat it as
 	 * consumed in either case.
+	 *
+	 * @param bytesLanded Set to the number of bytes that reached the file, or to
+	 *   TRANSACTION_LOG_BYTES_LANDED_UNKNOWN when the platform cannot report it. On a
+	 *   hard error (return -1) those bytes may still be on disk. Any positive or
+	 *   unknown extent retires the segment so later appends cannot turn that
+	 *   trailing partial into a mid-file framing break.
 	 */
-	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
+	int64_t writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded);
 
 	/**
 	 * Platform specific function that truncates the file to `newSize` bytes and

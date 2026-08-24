@@ -730,7 +730,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			hasLog = true;
-			store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+			try {
+				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+			} catch (const std::exception& e) {
+				(*txnHandle)->state = TransactionState::Pending;
+				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
+			}
 			// free the batch after writing to avoid memory leak
 			(*txnHandle)->logEntryBatch.reset();
 		} else {

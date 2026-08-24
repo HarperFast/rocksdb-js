@@ -7,6 +7,7 @@ import {
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { withResolvers } from '../src/util.ts';
+import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
@@ -700,6 +701,27 @@ describe('Transaction Log', () => {
 				expect(statSync(join(dbPath, 'transaction_logs', 'foo', '1.txnlog')).size).toBe(totalSize);
 			}));
 
+		it('reports lazy-segment open failures as JavaScript errors', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'open-error');
+				const { sequence: lazySequence } = writeLazyTransactionLogSegments(
+					logDirectory,
+					TRANSACTION_LOG_FILE_HEADER_SIZE,
+					TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+					TRANSACTION_LOG_TOKEN
+				);
+
+				db.open();
+				const log = db.useLog('open-error');
+				await writeFile(
+					join(logDirectory, `${lazySequence}.txnlog`),
+					Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE)
+				);
+
+				expect(() => log.getLogFileSize(lazySequence)).toThrow('Invalid transaction log file');
+				expect(() => log._getMemoryMapOfFile(lazySequence)).toThrow('Invalid transaction log file');
+			}));
+
 		it('should not commit the log if the transaction is aborted', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
@@ -829,7 +851,7 @@ describe('Transaction Log', () => {
 				expect(queryResults.length).toBe(2);
 			}));
 
-		it('should continue batch in next file', () =>
+		it('should keep an oversized transaction batch in one file', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 				const value = Buffer.alloc(100, 'a');
@@ -841,26 +863,17 @@ describe('Transaction Log', () => {
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 				const logFiles = await readdir(logStorePath);
-				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
+				expect(logFiles).toEqual(['1.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
-				const log2Path = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
 				const info1 = parseTransactionLog(log1Path);
-				const info2 = parseTransactionLog(log2Path);
 
 				expect(info1.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 15
 				);
-				expect(info1.entries.length).toBe(8);
+				expect(info1.entries.length).toBe(15);
 				expect(info1.entries[0].length).toBe(100);
 				expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
-
-				expect(info2.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 7
-				);
-				expect(info2.entries.length).toBe(7);
-				expect(info2.entries[0].length).toBe(100);
-				expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 
 				const queryResults = Array.from(log.query({ start: 0 }));
 				expect(queryResults.length).toBe(15);
@@ -868,9 +881,9 @@ describe('Transaction Log', () => {
 				expect(queryResults[14].endTxn).toBe(true);
 			}));
 
-		it('should be able to rotate with entries that span a transaction', () =>
+		it('should rotate before a transaction instead of splitting its entries', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
-				let log = db.useLog('foo');
+				const log = db.useLog('foo');
 				const value = Buffer.alloc(100, 'a');
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
@@ -892,16 +905,16 @@ describe('Transaction Log', () => {
 				const info2 = parseTransactionLog(log2Path);
 
 				expect(info1.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 8
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 7
 				);
-				expect(info1.entries.length).toBe(8);
+				expect(info1.entries.length).toBe(7);
 				expect(info1.entries[0].length).toBe(100);
 				expect(info1.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 
 				expect(info2.size).toBe(
-					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 3
+					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) * 4
 				);
-				expect(info2.entries.length).toBe(3);
+				expect(info2.entries.length).toBe(4);
 				expect(info2.entries[0].length).toBe(100);
 				expect(info2.entries[0].data).toEqual(Buffer.alloc(100, 'a'));
 
@@ -2165,6 +2178,74 @@ describe('Transaction Log', () => {
 				db.open();
 				expect(db.listLogs()).toEqual(['foo']);
 				expect(existsSync(logFile)).toBe(false);
+			}));
+
+		// doPurge()'s flushed-position guard, which reads TransactionLogFile::size.
+		// A registered-but-never-opened segment reads 0 there and would be deleted
+		// with an unflushed tail (HarperFast/rocksdb-js#751); these cover the guard
+		// itself — whether a given segment is left lazy depends on directory
+		// iteration order, which a test cannot pin down.
+		it('should not purge a log file whose tail is past the flushed position', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+
+				const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+				const logFiles: string[] = [];
+				for (const sequence of [1, 2, 3]) {
+					const logFile = join(logDirectory, `${sequence}.txnlog`);
+					await writeFile(logFile, header);
+					await utimes(logFile, twoHoursAgo, twoHoursAgo);
+					logFiles.push(logFile);
+				}
+
+				// flushed position sits inside segment 1: { position: 8, sequence: 1 }
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(8, 0);
+				state.writeUInt32LE(1, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				expect(db.listLogs()).toEqual(['foo']);
+
+				expect(db.purgeLogs({ before: Date.now() - 60 * 60 * 1000 })).toEqual([]);
+				expect(existsSync(logFiles[0])).toBe(true);
+			}));
+
+		it('should purge a log file that is entirely before the flushed position', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+
+				const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+				const logFiles: string[] = [];
+				for (const sequence of [1, 2, 3]) {
+					const logFile = join(logDirectory, `${sequence}.txnlog`);
+					await writeFile(logFile, header);
+					await utimes(logFile, twoHoursAgo, twoHoursAgo);
+					logFiles.push(logFile);
+				}
+
+				// flushed position is at segment 1's end of entries — nothing unflushed
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+				state.writeUInt32LE(1, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+
+				expect(db.purgeLogs({ before: Date.now() - 60 * 60 * 1000 })).toEqual([logFiles[0]]);
+				expect(existsSync(logFiles[0])).toBe(false);
 			}));
 
 		it('should purge log files before a specific timestamp', () =>

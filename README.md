@@ -119,10 +119,9 @@ Creates a new database instance.
     modified time to be older than the retention period before it is rotated to the next sequence
     number. Value must be between `0.0` and `1.0`. A threshold of `0.0` means ignore age check.
     Defaults to `0.75`.
-  - `transactionLogMaxSize: number` The maximum size of a transaction log file. If a log file is
-    empty, the first log entry will always be added regardless if it's larger than the max size. If
-    a log file is not empty and the entry is larger than the space available, the log file is
-    rotated to the next sequence number. Defaults to 16 MB.
+  - `transactionLogMaxSize: number` The target maximum size of a transaction log file. Transactions
+    are never split across files: if the complete transaction does not fit, the log rotates before
+    writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB.
   - `transactionLogRetention: string | number` The number of minutes to retain transaction logs
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to

@@ -235,6 +235,12 @@ TransactionLogStoreValidation validateTransactionLogStore(
 		TransactionLogStoreFileValidation fileValidation;
 		fileValidation.file = filename;
 		fileValidation.sequenceNumber = static_cast<uint32_t>(sequence);
+		uint32_t retiredBoundary = 0;
+		try {
+			retiredBoundary = readTransactionLogAppendBoundaryMarker(dirEntry.path());
+		} catch (const std::exception& e) {
+			fileValidation.result.errors.push_back(e.what());
+		}
 
 		std::error_code sizeError;
 		uint64_t size = std::filesystem::file_size(dirEntry.path(), sizeError);
@@ -248,19 +254,28 @@ TransactionLogStoreValidation validateTransactionLogStore(
 				"File size " + std::to_string(size) + " exceeds the 4 GiB format limit"
 			);
 		} else {
-			fileValidation.size = size;
-			std::ifstream file(dirEntry.path(), std::ios::binary | std::ios::in);
-			// uninitialized buffer: read() overwrites it, and pre-zeroing a
-			// multi-megabyte log file would touch every byte twice
-			std::unique_ptr<char[]> image(new char[static_cast<size_t>(size)]);
-			if (size > 0) {
-				file.read(image.get(), static_cast<std::streamsize>(size));
+			uint64_t readableSize = retiredBoundary > 0 ? retiredBoundary : size;
+			fileValidation.size = readableSize;
+			if (readableSize > size) {
+				fileValidation.result.errors.push_back(
+					"Persisted append boundary " + std::to_string(readableSize) +
+					" exceeds physical file size " + std::to_string(size));
+				readableSize = 0;
 			}
-			if (!file) {
-				fileValidation.result.errors.push_back("Unable to read file");
-			} else {
-				fileValidation.result =
-					validateTransactionLogImage(image.get(), static_cast<uint32_t>(size), strict);
+			if (fileValidation.result.errors.empty()) {
+				std::ifstream file(dirEntry.path(), std::ios::binary | std::ios::in);
+				// uninitialized buffer: read() overwrites it, and pre-zeroing a
+				// multi-megabyte log file would touch every byte twice
+				std::unique_ptr<char[]> image(new char[static_cast<size_t>(readableSize)]);
+				if (readableSize > 0) {
+					file.read(image.get(), static_cast<std::streamsize>(readableSize));
+				}
+				if (readableSize == 0 || !file) {
+					fileValidation.result.errors.push_back("Unable to read file");
+				} else {
+					fileValidation.result =
+						validateTransactionLogImage(image.get(), static_cast<uint32_t>(readableSize), strict);
+				}
 			}
 		}
 
