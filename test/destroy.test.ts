@@ -14,6 +14,7 @@ const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mt
 const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts');
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
+const countDestroyRaceFixture = join(__dirname, 'fixtures', 'fork-count-destroy-race.mts');
 const nodeExecutable =
 	process.env.NODE_BINARY ??
 	(process.versions.bun || process.versions.deno
@@ -208,6 +209,14 @@ describe('Destroy', () => {
 		// for. See fork-iterator-next-race.mts.
 		await runDestroyFixture(iteratorNextRaceFixture, generateDBPath(), {
 			ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS: '250',
+		});
+	}, 15_000);
+
+	it('aborts an in-flight getCount() when a foreign destroy begins', async () => {
+		// getCount() scans the whole range under one OperationGuard, which
+		// finishClose() drains with an untimed wait. See fork-count-destroy-race.mts.
+		await runDestroyFixture(countDestroyRaceFixture, generateDBPath(), {
+			ROCKSDB_JS_COUNT_DELAY_MS: '50',
 		});
 	}, 15_000);
 

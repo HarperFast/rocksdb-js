@@ -29,6 +29,21 @@ inline std::atomic<bool>& closeFlushFailureFlag() {
 	return pending;
 }
 
+// DBIterator::Next() returns one row per call, so its seam is snapshotted here
+// rather than read per call: a getenv() scan per row is a measurable share of
+// the per-row cost for a seam that is unset in production.
+inline std::atomic<int>& iteratorNextDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+// Per-row delay for DBIteratorHandle::countRemaining(), snapshotted for the
+// same reason.
+inline std::atomic<int>& countScanDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -36,6 +51,10 @@ inline void initializeTestSeams() {
 		closeFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+		iteratorNextDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS"), std::memory_order_relaxed);
+		countScanDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_COUNT_DELAY_MS"), std::memory_order_relaxed);
 	});
 }
 

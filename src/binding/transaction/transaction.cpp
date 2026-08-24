@@ -1055,7 +1055,10 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	itOptions.values = false;
 
 	uint64_t count = 0;
-	(*txnHandle)->getCount(itOptions, count);
+	if (!(*txnHandle)->getCount(itOptions, count)) {
+		::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result));

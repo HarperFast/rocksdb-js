@@ -1,5 +1,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_descriptor.h"
+#include "core/test_seam.h"
+#include <chrono>
 #include <thread>
 
 namespace rocksdb_js {
@@ -101,6 +103,25 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 	} else {
 		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this);
 	}
+}
+
+bool DBIteratorHandle::countRemaining(uint64_t& count) {
+	const DBDescriptor* descriptor = this->dbHandle->descriptor.get();
+	// Test-only: stretch the scan so a fixture can land a foreign destroy()
+	// inside it rather than only before or after.
+	const int rowDelayMs = countScanDelayMsFlag().load(std::memory_order_relaxed);
+	count = 0;
+	while (this->iterator->Valid()) {
+		if (descriptor->isClosing()) {
+			return false;
+		}
+		if (rowDelayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(rowDelayMs));
+		}
+		++count;
+		this->iterator->Next();
+	}
+	return true;
 }
 
 void DBIteratorHandle::seek(DBIteratorOptions& options) {

@@ -1103,12 +1103,15 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		txnHandle->getCount(itOptions, count, *dbHandle);
+		if (!txnHandle->getCount(itOptions, count, *dbHandle)) {
+			::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			NAPI_RETURN_UNDEFINED();
+		}
 	} else {
 		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-		while (itHandle->iterator->Valid()) {
-			++count;
-			itHandle->iterator->Next();
+		if (!itHandle->countRemaining(count)) {
+			::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			NAPI_RETURN_UNDEFINED();
 		}
 	}
 

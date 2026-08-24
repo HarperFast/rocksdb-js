@@ -221,6 +221,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   rising edge emits); malformed/negative falls back to the default
 - `ROCKSDB_JS_DESTROY_DELAY_MS` - Test-only: delay after descriptor teardown and
   before physical database destruction (widens same-path reopen races)
+- `ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS` / `ROCKSDB_JS_COUNT_DELAY_MS` - Test-only: per-row delays in
+  `DBIterator::Next()` and `DBIteratorHandle::countRemaining()`. Both are read **once** in
+  `initializeTestSeams()` rather than per row: these are the two per-row native loops, and a
+  `getenv()` scan per row is a measurable share of their cost for a seam unset in production. Add
+  new per-row seams the same way.
 
 ## Test Structure
 
@@ -346,6 +351,21 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    force teardown because the caller requested deletion. A failed physical destroy leaves a registry
    tombstone, but `shutdown()` is deliberately non-destructive: it reports the tombstone and only an
    explicit `destroy()` retries path deletion.
+   Because `finishClose()` drains `operationsInFlight` with an **untimed** wait, any operation that can
+   run unboundedly while holding an `OperationGuard` must abort itself once `closing` is published, or
+   it blocks teardown — and, since the blocked closer holds the path gate, times out every concurrent
+   `OpenDB()` for that path. There are two such operations and they cancel differently: the whole-range
+   count scan (`DBIteratorHandle::countRemaining`, behind `getKeysCount()` on both the database and
+   transaction paths) polls `isClosing()` per row and reports the abort to its caller rather than a
+   partial count; a manual `compactRange()` cannot poll from inside RocksDB, so it gets an explicit
+   cancel token (`DBDescriptor::compactCancelRequested` → `CompactRangeOptions::canceled`).
+   Everything the four registry teardown paths do _after_ claiming a descriptor —
+   `finishClose()`, erase-or-quarantine, notify, emit `database:closeFailed` — is one helper,
+   `closeClaimedDescriptors` in `db_registry.cpp`; only the claim predicate differs per caller. Its
+   `failOnCompletedWithError` option is the one deliberate asymmetry: a close that finished native
+   teardown but reported an error (a failed close-time flush) is fatal for `shutdown()`/`PurgeAll()`
+   because dropping it silently would hide possible data loss, and non-fatal for `destroy()`, whose
+   caller asked for the data to be deleted anyway.
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.

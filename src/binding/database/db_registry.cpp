@@ -101,6 +101,76 @@ void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
 	}
 }
 
+struct ClaimedCloseOptions final {
+	// destroy() is deleting the data, so it forces teardown and does not treat a
+	// close that finished but reported an error (a failed close-time flush) as
+	// fatal. Every other caller does: dropping that error silently would hide
+	// possible data loss. The entry is erased either way, so the failure is
+	// reported once rather than wedging the path.
+	bool destroying = false;
+	bool failOnCompletedWithError = true;
+};
+
+/**
+ * Runs finishClose() over descriptors already claimed by the caller, then
+ * erases each entry or quarantines it with its close error, notifies that
+ * path's waiters, and emits `database:closeFailed`.
+ *
+ * Returns the first exception the caller should rethrow, or null. Claiming
+ * differs per caller (one path, every path, or a single unreferenced
+ * descriptor); everything after the claim is this one policy.
+ */
+std::exception_ptr closeClaimedDescriptors(
+	std::vector<ClosingDescriptor>& claimed,
+	const ClaimedCloseOptions& options,
+	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash>& databases,
+	std::mutex& databasesMutex
+) {
+	std::exception_ptr closeError;
+
+	for (auto& closing : claimed) {
+		DEBUG_LOG("DBRegistry::closeClaimedDescriptors Closing descriptor %p for \"%s\" (ref count = %ld)\n",
+			closing.descriptor.get(), closing.key.path.c_str(), closing.descriptor.use_count());
+
+		std::exception_ptr thrown;
+		try {
+			closing.descriptor->finishClose(options.destroying);
+			closing.closed = true;
+		} catch (const std::exception& error) {
+			closing.closed = closing.descriptor->isClosed();
+			closing.closeError = error.what();
+			thrown = std::current_exception();
+		} catch (...) {
+			closing.closed = closing.descriptor->isClosed();
+			closing.closeError = "unknown native close failure";
+			thrown = std::current_exception();
+		}
+
+		if (thrown && !closeError && (!closing.closed || options.failOnCompletedWithError)) {
+			closeError = thrown;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(databasesMutex);
+			auto entry = databases.find(closing.key);
+			if (entry != databases.end() && entry->second.descriptor == closing.descriptor) {
+				if (closing.closed) {
+					databases.erase(entry);
+				} else {
+					entry->second.closeError = closing.closeError;
+					entry->second.closeRetrying = false;
+					DEBUG_LOG("DBRegistry::closeClaimedDescriptors Quarantined \"%s\": %s\n",
+						closing.key.path.c_str(), closing.closeError.c_str());
+				}
+			}
+		}
+		closing.condition->notify_all();
+	}
+
+	emitCloseFailures(claimed);
+	return closeError;
+}
+
 } // namespace
 
 // Initialize the static instance
@@ -200,35 +270,17 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOn
 	if (descriptor) {
 		// We claimed the close under the lock via beginClose(); run the actual
 		// teardown now. The local copy keeps the descriptor alive throughout.
-		try {
-			descriptor->finishClose();
-		} catch (const std::exception& error) {
-			closeError = error.what();
-		} catch (...) {
-			closeError = "unknown native close failure";
-		}
-
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		auto eraseIt = instance->databases.find(key);
-		// Only erase the entry we claimed. A brand-new descriptor cannot appear
-		// because OpenDB blocks until we notify below.
-		if (eraseIt != instance->databases.end() && eraseIt->second.descriptor == descriptor) {
-			if (closeError.empty() || descriptor->isClosed()) {
-				instance->databases.erase(eraseIt);
-			} else {
-				eraseIt->second.closeError = closeError;
-				quarantined = true;
-				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Quarantined \"%s\": %s\n",
-					instance.get(), path.c_str(), closeError.c_str());
-			}
-		}
+		// Only the entry we claimed is erased -- a brand-new descriptor cannot
+		// appear because OpenDB blocks until the helper notifies.
+		std::vector<ClosingDescriptor> claimed;
+		claimed.emplace_back(key, descriptor, condition);
+		// The close error is reported through CloseResult, not thrown.
+		closeClaimedDescriptors(
+			claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+		closeError = claimed.front().closeError;
+		quarantined = !closeError.empty() && !claimed.front().closed;
 	}
 
-	// notify only waiters for this specific path
-	if (condition) {
-		condition->notify_all();
-	}
-	emitCloseFailure(path, closeError);
 	return CloseResult{closeError, quarantined};
 }
 
@@ -300,49 +352,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 
-		// Keep entries discoverable while finishClose runs: env cleanup uses the
-		// registry to remove callbacks owned by a worker that exits mid-close.
-		std::exception_ptr closeError;
-		for (auto& closing : claimed) {
-			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor %p for \"%s\" (ref count = %ld)\n",
-				instance.get(), closing.descriptor.get(), path.c_str(), closing.descriptor.use_count());
-			try {
-				closing.descriptor->finishClose(true);
-				closing.closed = true;
-			} catch (const std::exception& error) {
-				closing.closed = closing.descriptor->isClosed();
-				closing.closeError = error.what();
-				if (!closing.closed && !closeError) {
-					closeError = std::current_exception();
-				}
-			} catch (...) {
-				closing.closed = closing.descriptor->isClosed();
-				closing.closeError = "unknown native close failure";
-				if (!closing.closed && !closeError) {
-					closeError = std::current_exception();
-				}
-			}
-		}
-
-		{
-			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			for (const auto& closing : claimed) {
-				auto entry = instance->databases.find(closing.key);
-				if (entry == instance->databases.end() || entry->second.descriptor != closing.descriptor) {
-					continue;
-				}
-				if (closing.closed) {
-					instance->databases.erase(entry);
-				} else {
-					entry->second.closeError = closing.closeError;
-					entry->second.closeRetrying = false;
-				}
-			}
-		}
-		for (const auto& closing : claimed) {
-			closing.condition->notify_all();
-		}
-		emitCloseFailures(claimed);
+		// Each entry stays discoverable until its own close finishes: env cleanup
+		// uses the registry to remove callbacks owned by a worker that exits
+		// mid-close.
+		std::exception_ptr closeError = closeClaimedDescriptors(
+			claimed,
+			ClaimedCloseOptions{.destroying = true, .failOnCompletedWithError = false},
+			instance->databases,
+			instance->databasesMutex
+		);
 		if (alreadyClosing.empty()) {
 			if (closeError) std::rethrow_exception(closeError);
 			break;
@@ -713,33 +731,8 @@ void DBRegistry::PurgeAll() {
 			condition->notify_all();
 		}
 
-		for (auto& closing : descriptorsToClose) {
-			try {
-				closing.descriptor->finishClose();
-				closing.closed = true;
-			} catch (const std::exception& error) {
-				closing.closed = closing.descriptor->isClosed();
-				closing.closeError = error.what();
-				if (!closeError) closeError = std::current_exception();
-			} catch (...) {
-				closing.closed = closing.descriptor->isClosed();
-				closing.closeError = "unknown native close failure";
-				if (!closeError) closeError = std::current_exception();
-			}
-			{
-				std::lock_guard<std::mutex> lock(instance->databasesMutex);
-				auto entry = instance->databases.find(closing.key);
-				if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
-					if (closing.closed) {
-						instance->databases.erase(entry);
-					} else {
-						entry->second.closeError = closing.closeError;
-					}
-				}
-			}
-			closing.condition->notify_all();
-		}
-		emitCloseFailures(descriptorsToClose);
+		closeError = closeClaimedDescriptors(
+			descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
 		if (closeError) {
 			std::rethrow_exception(closeError);
 		}
@@ -1051,36 +1044,8 @@ void DBRegistry::Shutdown() {
 				}
 			}
 
-			std::exception_ptr closeError;
-			for (auto& closing : descriptorsToClose) {
-				DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), closing.descriptor->path.c_str());
-				try {
-					closing.descriptor->finishClose();
-					closing.closed = true;
-				} catch (const std::exception& error) {
-					closing.closed = closing.descriptor->isClosed();
-					closing.closeError = error.what();
-					if (!closeError) closeError = std::current_exception();
-				} catch (...) {
-					closing.closed = closing.descriptor->isClosed();
-					closing.closeError = "unknown native close failure";
-					if (!closeError) closeError = std::current_exception();
-				}
-				{
-					std::lock_guard<std::mutex> lock(instance->databasesMutex);
-					auto entry = instance->databases.find(closing.key);
-					if (entry != instance->databases.end() && entry->second.descriptor == closing.descriptor) {
-						if (closing.closed) {
-							instance->databases.erase(entry);
-						} else {
-							entry->second.closeError = closing.closeError;
-							entry->second.closeRetrying = false;
-						}
-					}
-				}
-				closing.condition->notify_all();
-			}
-			emitCloseFailures(descriptorsToClose);
+			std::exception_ptr closeError = closeClaimedDescriptors(
+				descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
 
 			for (const auto& closing : descriptorsToWaitFor) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);

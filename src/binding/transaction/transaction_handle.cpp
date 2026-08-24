@@ -590,7 +590,7 @@ napi_value TransactionHandle::get(
 	return returnStatus;
 }
 
-void TransactionHandle::getCount(
+bool TransactionHandle::getCount(
 	DBIteratorOptions& itOptions,
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
@@ -602,9 +602,7 @@ void TransactionHandle::getCount(
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
 		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
-	for (count = 0; itHandle->iterator->Valid(); ++count) {
-		itHandle->iterator->Next();
-	}
+	return itHandle->countRemaining(count);
 }
 
 /**

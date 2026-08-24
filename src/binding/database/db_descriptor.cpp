@@ -425,9 +425,10 @@ void DBDescriptor::finishClose(bool destroying) {
 		// Wait for all in-flight operations to complete before cleanup.
 		// The closing flag is already set, so new operations will fail with "Database is closing".
 		// Existing operations will decrement operationsInFlight and notify us when done.
-		// A long-running compactRange() holding an OperationGuard is the one
-		// in-flight op that can run unboundedly, so ask it to cancel rather
-		// than blocking this untimed wait for its full duration.
+		// Unbounded in-flight operations must abort once `closing` is published
+		// rather than block this untimed wait for their full duration. A count
+		// scan polls isClosing() itself; a manual compactRange() cannot, so it
+		// gets an explicit cancel token.
 		this->compactCancelRequested.store(true);
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		uint32_t current;

@@ -286,7 +286,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	// sweep is blocked on iteratorMutex behind this call, so a fixture can
 	// reliably position a forced close mid-Next() rather than only ever
 	// between calls.
-	const int nextDelayMs = testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS");
+	const int nextDelayMs = iteratorNextDelayMsFlag().load(std::memory_order_relaxed);
 	if (nextDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(nextDelayMs));
 	}
