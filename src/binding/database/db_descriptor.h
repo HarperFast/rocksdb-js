@@ -16,8 +16,8 @@
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
 #include "database/commit_worker.h"
-#include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/background_error.h"
 #include "core/platform.h"
 #include "napi/event_emitter.h"
 #include "napi/helpers.h"
@@ -28,6 +28,7 @@ namespace rocksdb_js {
 // forward declarations
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
+struct DBHandle;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -187,6 +188,31 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * cleared when the descriptor itself closes.
 	 */
 	EventEmitter events;
+
+	/**
+	 * The most recent background error, serialized to a JSON string
+	 * (`backgroundErrorToJson`), or empty when none has occurred. Stored as a
+	 * plain string — not any N-API value — so `OnBackgroundError` can write it
+	 * from a RocksDB background thread with no `napi_env` involved; the JS thread
+	 * reconstructs a `BackgroundError` from it on demand (`getLastError()`) and
+	 * when emitting the `'error'` event. Guarded by `lastErrorMutex`. Purely
+	 * historical: it is NOT cleared by `resume()` (see HarperFast/rocksdb-js#730).
+	 */
+	std::mutex lastErrorMutex;
+	std::string lastError;
+
+	/**
+	 * Stores the latest serialized background error AND, for a non-empty `json`,
+	 * emits the per-database `'error'` event with the reconstructed
+	 * `BackgroundError`. An empty `json` is a silent reset (no event) — the
+	 * clear path behind `db.setLastError(null)`. Safe to call from a RocksDB
+	 * background thread (store) or the JS thread; the emit is dispatched
+	 * asynchronously via the thread-safe emitter.
+	 */
+	void setLastError(std::string json);
+
+	/** Returns the latest serialized background error, or empty when none (JS thread). */
+	std::string getLastError();
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv

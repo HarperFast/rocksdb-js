@@ -5,6 +5,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/background_error.h"
 #include "napi/global_events.h"
 #include "napi/macros.h"
 #include "rocksdb/db.h"
@@ -214,6 +215,10 @@ NAPI_MODULE_INIT() {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
 		}
 	}, env));
+
+	// BackgroundError class + per-env addon data (must precede any DB open so the
+	// 'error' event and getLastError() can build instances).
+	rocksdb_js::BackgroundError::Init(env, exports);
 
 	// database
 	rocksdb_js::Database::Init(env, exports);

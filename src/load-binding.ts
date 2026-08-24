@@ -21,6 +21,71 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * The `Error` subclass passed to `'error'` event listeners and returned by
+ * `db.getLastError()` when RocksDB reports a background error (e.g. a write
+ * failing at the filesystem level). A real `Error` instance (`instanceof Error`
+ * and `instanceof BackgroundError` both hold) with the fields below. Only a
+ * hard-or-worse error (`writesDisabled`) stops writes; a soft error is
+ * auto-recoverable. When `writesDisabled` is `true` and the underlying condition
+ * has cleared, call {@link RocksDatabase.resume}. See HarperFast/rocksdb-js#730.
+ *
+ * The runtime constructor is defined natively and exported as
+ * {@link BackgroundError}; the same name is both a value (for `instanceof`) and
+ * this instance type.
+ *
+ * @example
+ * ```typescript
+ * db.on('error', (err: BackgroundError) => {
+ *   if (err.writesDisabled) console.error(`writes disabled: ${err.message}`);
+ * });
+ * ```
+ */
+export interface BackgroundError extends Error {
+	/** Always `'BackgroundError'`. */
+	name: string;
+	/** Discriminator for the error class; always `'background'` here. */
+	type: string;
+	/**
+	 * The RocksDB `Status::Severity` as a number: 1 soft, 2 hard, 3 fatal,
+	 * 4 unrecoverable.
+	 */
+	severity: number;
+	/** Human-readable severity: `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`. */
+	severityName: string;
+	/**
+	 * Whether RocksDB has disabled writes on the database in response to this
+	 * error (severity hard or worse, i.e. `severity >= 2`). Only when `true` is
+	 * {@link RocksDatabase.resume} warranted; a soft error auto-recovers and
+	 * leaves writes enabled. Distinct from opening the database in read-only
+	 * mode — this is RocksDB halting writes after a background failure.
+	 */
+	writesDisabled: boolean;
+	/**
+	 * The RocksDB `BackgroundErrorReason` as a number, present when the error
+	 * originated from a reason-bearing callback (flush, compaction, etc.).
+	 */
+	reason?: number;
+	/** Human-readable reason, e.g. `'flush'` or `'compaction'`. */
+	reasonName?: string;
+}
+
+/**
+ * The shape accepted by `db.setLastError(...)` to inject or reset a background
+ * error. `message` is required; the rest default/omit as with a real error.
+ * `type` defaults to `'background'`. Pass `null`/nothing to `setLastError` to
+ * clear instead of an object of this shape.
+ */
+export type BackgroundErrorOptions = {
+	message: string;
+	severity?: number;
+	severityName?: string;
+	writesDisabled?: boolean;
+	reason?: number;
+	reasonName?: string;
+	type?: string;
+};
+
 export type NativeTransactionOptions = {
 	/**
 	 * Whether to disable snapshots.
@@ -336,6 +401,8 @@ export type NativeDatabase = {
 	estimateCount(startKey?: Buffer, endKey?: Buffer): { count: number; confidence: number };
 	getCompression(): { algorithm: string; level?: number };
 	getCount(options?: RangeOptions, txnId?: number): number;
+	getLastError(): BackgroundError | null;
+	setLastError(error?: BackgroundErrorOptions | null): void;
 	getDBIntProperty(propertyName: string): number | undefined;
 	getDBProperty(propertyName: string): string | undefined;
 	getLogOptions(): { maxLogFileSize: number; infoLogLevel: number };
@@ -367,6 +434,7 @@ export type NativeDatabase = {
 	putSync(key: BufferWithDataView, value: any, txnId?: number): void;
 	removeListener(event: string | BufferWithDataView, callback: () => void): boolean;
 	removeSync(key: BufferWithDataView, txnId?: number): void;
+	resume(): void;
 	// Provide a buffer that is used as the default/shared buffer for keys, where functions that provide a key can do so by assigning the key to the shared buffer and providing the length.
 	// A null value will reset the buffer.
 	setDefaultKeyBuffer(buffer: Buffer | Uint8Array | null): void;
@@ -520,6 +588,22 @@ export type RegistryStatus = RegistryStatusDB[];
 const bindingPath = locateBinding();
 // console.log(`Loading binding from ${bindingPath}`);
 const binding = req(bindingPath);
+
+/**
+ * The native `BackgroundError` constructor (a real `Error` subclass). Exported
+ * as both a value — for `err instanceof BackgroundError` — and, via declaration
+ * merging with the interface above, a type. Instances are produced by the
+ * `'error'` event and `db.getLastError()`; consumers rarely construct their own.
+ * The `details` param is required and typed to the instance fields so a bare
+ * `new BackgroundError()` (which would omit `severity` / `writesDisabled` / …)
+ * is a type error.
+ */
+export const BackgroundError: new (
+	details: Pick<
+		BackgroundError,
+		'message' | 'severity' | 'severityName' | 'writesDisabled' | 'reason' | 'reasonName'
+	> & { type?: string }
+) => BackgroundError = binding.BackgroundError;
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;

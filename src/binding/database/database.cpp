@@ -9,6 +9,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/background_error.h"
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
@@ -802,6 +803,121 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
 	return returnStatus;
+}
+
+/**
+ * Returns the most recent background error as a `BackgroundError` instance, or
+ * `null` when none has occurred on this database. The value is purely historical
+ * — it is not cleared by a successful `resume()`. A background error with
+ * `writesDisabled === true` means RocksDB has stopped accepting writes; call
+ * `resume()` once the underlying condition clears. See HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * const err = db.getLastError();
+ * if (err?.writesDisabled) db.resume();
+ * ```
+ */
+napi_value Database::GetLastError(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	std::string json = (*dbHandle)->descriptor->getLastError();
+	if (json.empty()) {
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_get_null(env, &result));
+		return result;
+	}
+
+	// Returns nullptr with a pending exception on failure (propagated to JS).
+	return BackgroundError::New(env, json);
+}
+
+/**
+ * Sets or clears the last background error (mirroring the Win32
+ * `SetLastError`/`GetLastError` pair). Passing an object stores it as the last
+ * error and emits the `'error'` event with the reconstructed `BackgroundError`;
+ * passing `null`/`undefined` (or no argument) clears it, so a subsequent
+ * `getLastError()` returns `null` and no event fires. Useful to reset the error
+ * after handling/recovering it, and to inject one in tests. See
+ * HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * db.setLastError(null); // reset after recovery
+ * ```
+ */
+napi_value Database::SetLastError(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	napi_valuetype argType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &argType));
+
+	if (argType == napi_undefined || argType == napi_null) {
+		(*dbHandle)->descriptor->setLastError(""); // clear (silent)
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	if (argType != napi_object) {
+		::napi_throw_type_error(env, nullptr, "setLastError expects an object or null");
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	// Serialize the object to the same JSON form OnBackgroundError stores, so it
+	// round-trips through BackgroundError::New when read back / emitted.
+	napi_value global;
+	napi_value json;
+	napi_value stringify;
+	napi_value jsonString;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
+	NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &argv[0], &jsonString));
+
+	size_t len = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
+	std::string jsonStr(len, '\0');
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &jsonStr[0], len + 1, nullptr));
+
+	(*dbHandle)->descriptor->setLastError(std::move(jsonStr));
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Attempts to recover the database from a background error by calling RocksDB's
+ * `DB::Resume()`. When a write fails at the filesystem level (e.g. a full disk),
+ * RocksDB records a hard background error and stops accepting writes; the
+ * database emits an `'error'` event and becomes effectively read-only until
+ * recovery. Call this after the underlying condition has cleared (e.g. disk
+ * space freed): on success writes are accepted again (and RocksDB can resume the
+ * obsolete-file cleanup it was blocking); on failure the condition has not
+ * actually cleared, and this throws with the RocksDB error while the database
+ * stays read-only. A no-op on a healthy database. Runs synchronously — recovery
+ * can re-flush memtables, so it may briefly block. See HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * // after freeing disk space:
+ * db.resume();
+ * ```
+ */
+napi_value Database::Resume(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	rocksdb::Status status = (*dbHandle)->descriptor->db->Resume();
+	if (!status.ok()) {
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, "Resume failed", error);
+		::napi_throw(env, error);
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -2212,6 +2328,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setLastError", nullptr, SetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -2233,6 +2351,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "resume", nullptr, Resume, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultValueBuffer", nullptr, SetDefaultValueBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultKeyBuffer", nullptr, SetDefaultKeyBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setIteratorState", nullptr, SetIteratorState, nullptr, nullptr, nullptr, napi_default, nullptr },
