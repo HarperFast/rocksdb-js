@@ -248,11 +248,10 @@ void TransactionHandle::releaseIntent() {
 
 /**
  * The JS wrapper was garbage collected, so nothing can commit, abort, or read through this handle
- * again — release it. In-flight work is the exception: closing here would destroy the RocksDB
- * transaction under a still-running worker (`waitForAsyncWorkCompletion` is allowed to time out).
- * A commit keeps its own shared_ptr and completeCommitWork closes it; an async get is cancelled
- * so it rejects, and each get complete callback re-enters onWrapperCollected so only the last
- * in-flight get closes (waitForAsyncWorkCompletion can time out).
+ * again — release it. In-flight commit is the exception (TransactionCommitState holds a shared_ptr;
+ * completeCommitWork closes). Async gets pin the wrapper with a napi_ref so this finalizer cannot
+ * run until they finish. If async work is still registered (a get that could not take a ref),
+ * cancel it and defer close — waitForAsyncWorkCompletion can time out.
  */
 void TransactionHandle::onWrapperCollected() {
 	this->wrapperCollected.store(true);
@@ -385,6 +384,7 @@ napi_value TransactionHandle::get(
 	std::string &key,
 	napi_value resolve,
 	napi_value reject,
+	napi_value jsTransaction,
 	std::shared_ptr<DBHandle> dbHandleOverride,
 	std::atomic<uint64_t>* vtSlot,
 	uint64_t observedSlot,
@@ -502,6 +502,9 @@ napi_value TransactionHandle::get(
 	state->wantsPopulate = wantsPopulate;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+	if (jsTransaction != nullptr) {
+		NAPI_STATUS_THROWS(::napi_create_reference(env, jsTransaction, 1, &state->jsTransactionRef));
+	}
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(
 		env,       // node_env
@@ -509,12 +512,8 @@ napi_value TransactionHandle::get(
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
-			const int getDelayMs = txnGetExecuteDelayMs().load(std::memory_order_relaxed);
-			if (getDelayMs > 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
-			}
 			auto transactionGone = [](const std::shared_ptr<TransactionHandle>& handle) {
-				return !handle || handle->isCancelled() || handle->wrapperCollected.load() || !handle->txn;
+				return !handle || handle->isCancelled() || !handle->txn;
 			};
 			if (transactionGone(state->handle)) {
 				state->status = rocksdb::Status::Aborted("Transaction is closed");
@@ -546,10 +545,6 @@ napi_value TransactionHandle::get(
 
 			if (status != napi_cancelled) {
 				resolveGetResult(env, "Transaction get failed", state);
-			}
-
-			if (state->handle && state->handle->wrapperCollected.load()) {
-				state->handle->onWrapperCollected();
 			}
 
 			delete state;

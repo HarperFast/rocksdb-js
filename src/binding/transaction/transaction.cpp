@@ -870,7 +870,7 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 		if (vtSlot) vtObserved = vtSlot->load(std::memory_order_acquire);
 	}
 
-	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
+	return (*txnHandle)->get(env, key, resolve, reject, jsThis, nullptr, vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
 }
 
 /**

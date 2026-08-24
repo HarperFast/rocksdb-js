@@ -119,7 +119,7 @@ export type NativeTransaction = {
 		keyLengthOrKeyBuffer: number | Buffer,
 		resolve: (value: Buffer | number) => void,
 		reject: (err: Error) => void,
-		txnIdIgnored?: number,
+		txnIdIgnored?: number | NativeTransaction,
 		expectedVersion?: number
 	): number;
 	getCount(options?: RangeOptions): number;
@@ -395,7 +395,7 @@ export type NativeDatabase = {
 		keyLengthOrKeyBuffer: number | Buffer,
 		resolve: ResolveCallback<Buffer | number>,
 		reject: RejectCallback,
-		txnId?: number,
+		txnIdOrTransaction?: number | NativeTransaction,
 		expectedVersion?: number
 	): number;
 	estimateCount(startKey?: Buffer, endKey?: Buffer): { count: number; confidence: number };
@@ -713,13 +713,6 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
-
-/**
- * Test-only: delay the transactional async-get execute handler by `ms` so a test can GC the
- * JS wrapper first. Pass 0 to disarm. Used by the orphaned-transaction in-flight get test.
- */
-export const setTxnGetExecuteDelayMsForTesting: (ms: number) => void =
-	binding.setTxnGetExecuteDelayMsForTesting;
 
 /**
  * Creates a native file lock using the specified file path (`flock` on POSIX,

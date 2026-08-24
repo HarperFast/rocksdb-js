@@ -419,11 +419,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     work defers that close: `state == Committing` (`TransactionCommitState` holds a `shared_ptr`;
     `completeCommitWork` closes it — success always, and failure paths check `wrapperCollected`
     because a failed commit is otherwise left open for retry) and an async get still executing
-    (`AsyncGetState` holds a `shared_ptr`; `onWrapperCollected` cancels it so the get rejects,
-    and each get complete callback re-enters `onWrapperCollected` so only the last in-flight get
-    closes). Do not `close()` while `activeAsyncWorkCount > 0` — `waitForAsyncWorkCompletion` can
-    time out and would then free the RocksDB transaction under the worker. Without this a
-    transaction dropped
+    (`AsyncGetState` holds a `shared_ptr` and a `napi_ref` to the `NativeTransaction` wrapper, so
+    the finalizer cannot run until the get completes). Do not `close()` while
+    `activeAsyncWorkCount > 0` — `waitForAsyncWorkCompletion` can time out and would then free
+    the RocksDB transaction under the worker. Without this a transaction dropped
     without `commit()`/`abort()` pinned `rocksdb.oldest-snapshot-time` for the life of the
     process, so RocksDB could never discard obsolete versions for that database — restart was the
     only recovery (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on

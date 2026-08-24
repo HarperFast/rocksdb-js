@@ -430,6 +430,18 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// the completion runs after teardown may have released both, so it must not read from them.
 	VtLatestCheck vtLatest;
 	bool vtVersionSettled = false;
+
+	// Strong ref to the NativeTransaction wrapper so its finalizer cannot run
+	// (and close the handle) while this get is still using txn. Null for a
+	// plain database get.
+	napi_ref jsTransactionRef = nullptr;
+
+	~AsyncGetState() {
+		if (this->jsTransactionRef != nullptr) {
+			::napi_delete_reference(this->env, this->jsTransactionRef);
+			this->jsTransactionRef = nullptr;
+		}
+	}
 };
 
 template<typename T>

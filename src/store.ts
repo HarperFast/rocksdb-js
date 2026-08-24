@@ -825,6 +825,7 @@ export class Store {
 			flags |= POPULATE_VERSION_FLAG;
 		}
 		const txnId = this.getTxnId(options);
+		const txn = (options as DBITransactional | undefined)?.transaction;
 		const expectedVersion = options?.expectedVersion;
 		// getSync is the fast path, which can return immediately if the entry is in memory cache, but we want to fail otherwise
 		const result = context.getSync(
@@ -839,7 +840,13 @@ export class Store {
 				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
 					// We still use the same shared buffer for the key, the native side will make a copy for the async task
-					context.get(keyParam, resolve, reject, txnId, expectedVersion);
+					context.get(
+						keyParam,
+						resolve,
+						reject,
+						txn ? (txn._context as NativeTransaction) : txnId,
+						expectedVersion
+					);
 				});
 			}
 			if (result === FRESH_VERSION_FLAG) {

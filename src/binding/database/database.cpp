@@ -729,8 +729,19 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		return txnHandle->get(env, key, resolve, reject, *dbHandle,
+		return txnHandle->get(env, key, resolve, reject, nullptr, *dbHandle,
 		                      vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
+	}
+
+	if (txnIdType == napi_object) {
+		std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
+		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[3], reinterpret_cast<void**>(&txnHandle)));
+		if (!txnHandle || !(*txnHandle)) {
+			::napi_throw_error(env, nullptr, "Get failed: Transaction has already been closed");
+			return nullptr;
+		}
+		return (*txnHandle)->get(env, key, resolve, reject, argv[3], *dbHandle,
+		                         vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
 	}
 
 	rocksdb::ReadOptions readOptions;
