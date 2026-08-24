@@ -359,17 +359,24 @@ export type FlushOptions = {
 	 * condition — immutable-memtable backlog, L0 stop trigger, pending-compaction-bytes limit, an
 	 * exhausted WriteBufferManager budget — blocks the caller for as long as the condition lasts.
 	 * `flush()` runs on the libuv threadpool, so there the wait shows up as a promise that simply
-	 * never settles while the event loop stays alive.
+	 * never settles while the event loop stays alive — and it parks that whole worker, not just
+	 * the caller's promise: `UV_THREADPOOL_SIZE` defaults to 4, so a handful of concurrently
+	 * stalled flushes can exhaust the pool and stall every unrelated `fs`/`dns`/`crypto` call and
+	 * cold-cache `get()` in the process, not only this database's own operations.
 	 *
 	 * Pass `true` when the flush is a durability gate the caller is blocked on and stalling
-	 * writers is the acceptable cost of it completing. Weigh that cost database-wide, not
-	 * per-caller: a flush covers **every column family** on the database, and the descriptor is
-	 * process-global and shared across `worker_threads`, so the stall lands on every other column
-	 * family and every other handle that opened the same path — not just the one you called. It
-	 * also relocates the hang rather than removing it: a stalled `db->Write()` blocks the
-	 * database's single `CommitWorker` thread, which dispatches every `Transaction.commit()` in
-	 * order, so the stall queues up every commit behind it — including ones from callers that
-	 * never touched flush — until the stall clears.
+	 * writers is the acceptable cost of it completing — decide that up front, before issuing the
+	 * call, since there is no way to cancel an in-flight `flush()` and turn `true` into an escape
+	 * hatch after the fact. It is also not a free way out of an existing stall: forcing the
+	 * memtable switch adds another L0 file to the level whose file count may be *causing* the
+	 * stop trigger, so it can prolong the condition it is meant to clear. Weigh the cost
+	 * database-wide, not per-caller: a flush covers **every column family** on the database, and
+	 * the descriptor is process-global and shared across `worker_threads`, so the stall lands on
+	 * every other column family and every other handle that opened the same path — not just the
+	 * one you called. It also relocates the hang rather than removing it: a stalled `db->Write()`
+	 * blocks the database's single `CommitWorker` thread, which dispatches every
+	 * `Transaction.commit()` in order, so the stall queues up every commit behind it — including
+	 * ones from callers that never touched flush — until the stall clears.
 	 *
 	 * Note this is a *different* knob from the `writeBufferManagerAllowStall` config, and their
 	 * polarity is nearly opposite: that one decides whether the WriteBufferManager may stall

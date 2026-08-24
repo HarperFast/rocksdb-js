@@ -413,7 +413,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     wait is unbounded and is taken on the calling thread — a libuv worker for the async `flush()` —
     so a database in a stall condition (immutable-memtable backlog, L0 stop trigger,
     pending-compaction-bytes limit, an exhausted WriteBufferManager budget, see invariant 10) yields
-    a promise that never settles while the event loop stays alive. Do not confuse it with the
+    a promise that never settles while the event loop stays alive — and parks the whole libuv
+    worker, not just that promise: the threadpool defaults to 4 threads, so a handful of
+    concurrently stalled flushes exhausts it and stalls every unrelated `fs`/`dns`/`crypto` call and
+    cold-cache `get()` in the process. Do not confuse it with the
     `writeBufferManagerAllowStall` config: that decides whether the WriteBufferManager may stall
     writers at all, this decides whether one manual flush is willing to cause a stall rather than
     wait one out. The general trap is the same as invariant 10's — a default that encodes "wait for
@@ -431,7 +434,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     into an indefinite hang that also blocks every other backup/delete/purge on that directory
     until the process dies. Opting a flush in is also database-wide: it covers every column family
     on a process-global descriptor shared across `worker_threads`, so the stall reaches every
-    handle on that path, not just the caller's. It relocates the hang rather than removing it, too:
+    handle on that path, not just the caller's. It is not a rescue for a flush already in flight —
+    there is no cancellation — and forcing the memtable switch can itself prolong an L0 stop-trigger
+    condition rather than clear it, so opt in up front rather than reaching for it mid-hang. It
+    relocates the hang rather than removing it, too:
     a stalled `db->Write()` blocks whichever thread calls it, and for a committing transaction that
     is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit

@@ -253,8 +253,6 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 
-	// Validated before the read-only no-op and the state allocation, so a rejected buffer
-	// never leaks the allocation.
 	std::string startKey;
 	std::string endKey;
 	bool hasStart = false;
@@ -287,7 +285,6 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
-		// Read-only no-op: settle rather than return unsettled (AGENTS invariant 13).
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;
@@ -638,7 +635,6 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
-		// Read-only no-op: settle rather than return unsettled (AGENTS invariant 13).
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;

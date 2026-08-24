@@ -380,21 +380,27 @@ Flushes all in-memory data to disk asynchronously.
     its duration. Defaults to `false`, which — despite how that reads — means the flush **waits**
     until it can run without causing a stall, with no timeout: on a database stuck in a stall
     condition (immutable-memtable backlog, L0 stop trigger, an exhausted `WriteBufferManager`
-    budget), the returned promise never settles. Pass `true` when the flush is a durability gate
-    you're already blocked on and stalling writers is an acceptable cost; that cost is
-    database-wide, covering every column family on the (process-global, `worker_threads`-shared)
-    database handle, not just the caller's — and it relocates the hang rather than removing it: a
-    stalled write blocks the database's single commit thread, which dispatches every
-    `Transaction.commit()` in order, so every commit behind it queues up too, including ones from
-    callers that never touched flush. This is a different knob from `writeBufferManagerAllowStall`
-    (see [`new RocksDatabase()`](#new-rocksdatabasepath-options) options), with nearly opposite
-    polarity: that one governs whether the `WriteBufferManager` may stall writers at all, this one
-    governs whether one manual flush is willing to cause a stall rather than wait one out.
+    budget), the returned promise never settles, and since `flush()` runs on the libuv threadpool
+    (default size 4), a handful of concurrently stalled flushes can exhaust the pool and stall
+    every unrelated `fs`/`dns`/`crypto` call and cold-cache `get()` in the process, not only this
+    database's. Pass `true` up front, before issuing a flush you expect might stall, when it's a
+    durability gate you'd rather have stall writers than wait indefinitely — there's no way to
+    cancel an in-flight `flush()`, so this isn't a rescue for one already hung, and forcing the
+    memtable switch can itself prolong an existing L0 stop-trigger condition rather than clear it.
+    That cost is database-wide, covering every column family on the (process-global,
+    `worker_threads`-shared) database handle, not just the caller's — and it relocates the hang
+    rather than removing it: a stalled write blocks the database's single commit thread, which
+    dispatches every `Transaction.commit()` in order, so every commit behind it queues up too,
+    including ones from callers that never touched flush. This is a different knob from
+    `writeBufferManagerAllowStall` (see [`new RocksDatabase()`](#new-rocksdatabasepath-options)
+    options), with nearly opposite polarity: that one governs whether the `WriteBufferManager` may
+    stall writers at all, this one governs whether one manual flush is willing to cause a stall
+    rather than wait one out.
 
 ```typescript
 await db.flush();
 
-// Escape a hang instead of waiting out the stall indefinitely
+// Chosen up front, as a durability gate willing to pay the stall cost
 await db.flush({ allowWriteStall: true });
 ```
 
