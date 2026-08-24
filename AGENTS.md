@@ -415,6 +415,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
+
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
     `completeCommitWork` (`src/binding/transaction/transaction.cpp`) registers a wake callback on the
@@ -460,7 +461,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     memory-growth concern, not a correctness one) — deferred rather than risking an unreviewed change to
     `verification_table.cpp`'s concurrency invariants under this fix's scope.
 
-12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+13. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
     `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
     `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
     path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
@@ -482,7 +483,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
     map membership while mutable-field writers hold no lock.
 
-13. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+14. **A recovered active transaction-log file ends on a transaction boundary when recovery can
     prove one**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them
