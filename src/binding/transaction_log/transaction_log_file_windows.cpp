@@ -331,8 +331,12 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
-	if (offset >= 0 && ::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
-		return -1;
+	if (offset >= 0) {
+		LARGE_INTEGER distance;
+		distance.QuadPart = offset;
+		if (!::SetFilePointerEx(this->fileHandle, distance, nullptr, FILE_BEGIN)) {
+			return -1;
+		}
 	}
 
 	DWORD bytesRead;
@@ -449,13 +453,40 @@ int64_t TransactionLogFile::writeToFile(const void* buffer, uint32_t size, int64
 }
 
 bool TransactionLogFile::truncateFile(uint32_t newSize) {
-	// No-op on Windows. The Win32 backend pre-extends and zero-pads its log
-	// files, so a torn tail surfaces as a zero-padding end marker that the
-	// recovery scan reports as Clean — there is no torn-tail truncation to do.
-	// (Open-time torn-tail repair is the POSIX O_APPEND scenario.) Returning
-	// false keeps recoverTail()'s TruncateTail branch a safe no-op here.
-	(void)newSize;
-	return false;
+	if (this->fileHandle == INVALID_HANDLE_VALUE) {
+		return false;
+	}
+	if (this->memoryMap && this->memoryMap.use_count() > 1) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile Refusing to truncate %s with an outstanding memory map\n",
+			this, this->path.string().c_str());
+		return false;
+	}
+
+	this->memoryMap.reset();
+	LARGE_INTEGER boundary;
+	boundary.QuadPart = newSize;
+	if (!::SetFilePointerEx(this->fileHandle, boundary, nullptr, FILE_BEGIN) ||
+		!::SetEndOfFile(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::truncateFile Failed to truncate %s to %u bytes (error=%lu)\n",
+			this, this->path.string().c_str(), newSize, ::GetLastError());
+		return false;
+	}
+
+	if (!::FlushFileBuffers(this->fileHandle)) {
+		DWORD error = ::GetLastError();
+		DEBUG_LOG("%p TransactionLogFile::truncateFile FlushFileBuffers failed for %s (error=%lu)\n",
+			this, this->path.string().c_str(), error);
+		throw rocksdb_js::DBException(
+			"Failed to flush transaction log truncation: " + this->path.string());
+	}
+	return true;
+}
+
+bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
+	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
+		return false;
+	}
+	return this->truncateFile(newSize);
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {

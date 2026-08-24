@@ -257,7 +257,13 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_LOG_HANDLE("FindPosition");
 	double timestamp = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
-	LogPosition position = (*txnLogHandle)->findPosition(timestamp);
+	LogPosition position;
+	try {
+		position = (*txnLogHandle)->findPosition(timestamp);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
 	return result;

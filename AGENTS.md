@@ -372,6 +372,34 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
+12. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+    prove one**: only a batch's final entry
+    carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
+    entries that are a _prefix_ of a transaction. `recoverTail()` discards them
+    (`discardUnclosedTransaction`) rather than leaving them for the committed watermark to step
+    around: kept bytes are only invisible until the next commit moves the watermark past them, and
+    then that batch's flag closes the phantom group — two source transactions merged into one for
+    anything grouping on the flag. Discarding is safe because `writeBatch()` completes before
+    `Transaction::Commit()` in every commit path and both commit-thread lanes preserve dispatch
+    order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
+    never ran. Recovery walks entry headers via positional reads (never a whole-file buffer);
+    payload bytes are skipped. Discarding is gated on proof that the writer sets the flag — a
+    boundary earlier in the same file — plus a single timestamp across the trailing run. Callers can
+    assign repeated timestamps,
+    but an earlier transaction would still carry its own flag and reset the run. Without that proof
+    the bytes are kept and warned about: a batch split across a rotation has no boundary in the
+    active file, and a log written before the flag existed would otherwise be truncated wholesale.
+    Recovery reads `txn.state` before repairing the active file and never truncates below its
+    same-file flushed offset: a missing flag can be media corruption on a batch RocksDB already
+    absorbed, not proof that the commit never ran.
+    `TransactionLogStore::load()` seeds from the latest proved boundary, walking backward across
+    rotation-spanning batches until it reaches a boundary or the `txn.state` floor, so recovery never
+    hides entries already absorbed by RocksDB. Both platforms truncate; Windows first drops the cached
+    mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same
+    physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an
+    entry with a durable header and partially durable payload look complete; detecting that case needs
+    a payload checksum. Recovery runs before mappings can be handed to readers.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
