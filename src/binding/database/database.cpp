@@ -749,6 +749,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, "Get failed: Transaction has already been closed");
 			return nullptr;
 		}
+		if (!(*txnHandle)->dbHandle || (*txnHandle)->dbHandle->descriptor != (*dbHandle)->descriptor) {
+			::napi_throw_error(env, nullptr, "Get failed: Transaction belongs to a different database");
+			return nullptr;
+		}
 		return (*txnHandle)->get(env, key, resolve, reject, argv[3], *dbHandle,
 		                         vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
 	}
