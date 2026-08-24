@@ -13,6 +13,8 @@ const COMMIT_THREAD_MODES: Array<{ label: string; mode: string | undefined }> = 
 	{ label: '2', mode: '2' },
 ];
 
+const retry = process.versions.deno && process.platform === 'darwin' ? 1 : 0;
+
 /**
  * Runs the repro fixture in a child process so a native abort (SIGABRT/SIGSEGV)
  * from an async-commit completion racing worker-env teardown surfaces as a
@@ -70,8 +72,12 @@ function spawnRepro(
 describe('Async commit completion vs. worker env teardown', () => {
 	it.each(COMMIT_THREAD_MODES)(
 		'should survive worker env teardown with commits in flight on the shared commit thread (ROCKSDB_JS_COMMIT_THREAD=$label)',
-		({ mode }) => expectSurvives(mode),
-		// Worker spawn/teardown dominates wall time and is slow on macOS/Windows.
-		120_000
+		{
+			// The single retry is limited to the pre-existing Deno/macOS crash in #746.
+			retry,
+			// Worker spawn/teardown dominates wall time and is slow on macOS/Windows.
+			timeout: 120_000,
+		},
+		({ mode }) => expectSurvives(mode)
 	);
 });

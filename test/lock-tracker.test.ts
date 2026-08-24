@@ -1,10 +1,13 @@
 import { constants } from '../src/load-binding.ts';
 import { RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner } from './lib/util.ts';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
+const parkTimeoutFixturePath = join(__dirname, 'fixtures', 'fork-park-timeout.mts');
 
 // Builds a value buffer whose first 8 bytes are the big-endian float64 version,
 // matching VerificationTable::extractVersionFromValue (Harper's record format).
@@ -179,37 +182,38 @@ describe('Coordinated retry (Phase 3)', () => {
 
 // Regression coverage for #741: a park behind a leaked/abandoned holder must
 // resolve RETRY_NOW after a bounded wait instead of hanging forever
-// (harper#2001). Default ROCKSDB_JS_PARK_TIMEOUT_MS is 5000ms; the lower
-// bound below is what tells this apart from the `!parked` fast path (which
-// also resolves RETRY_NOW, just near-instantly).
+// (harper#2001). The lower bound below is what tells this apart from the
+// `!parked` fast path, which also resolves RETRY_NOW near-instantly.
 describe('Coordinated retry — bounded park timeout (#741)', () => {
 	it('a commit parked behind a never-releasing holder settles with RETRY_NOW within the deadline', () =>
-		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
-			const key = Buffer.from('park-timeout-abandoned-holder');
-			const v0 = 1.6e12;
-			await db.put(key, valueWithVersion(v0));
-			db.populateVersion(key, v0);
-			expect(db.verifyVersion(key, v0)).toBe(true);
+		dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+			const { code, signal } = await new Promise<{
+				code: number | null;
+				signal: NodeJS.Signals | null;
+			}>((resolve, reject) => {
+				const child = spawn(process.execPath, [parkTimeoutFixturePath, dbPath], {
+					env: { ...process.env, ROCKSDB_JS_PARK_TIMEOUT_MS: '1' },
+				});
+				const timer = setTimeout(() => child.kill(), 4000);
+				let stderr = '';
+				child.stderr?.on('data', (chunk) => {
+					stderr += chunk.toString();
+				});
+				child.on('close', (childCode, childSignal) => {
+					clearTimeout(timer);
+					if (childCode !== 0 || childSignal) {
+						console.error(`Park timeout child stderr:\n${stderr}`);
+					}
+					resolve({ code: childCode, signal: childSignal });
+				});
+				child.on('error', (error) => {
+					clearTimeout(timer);
+					reject(error);
+				});
+			});
 
-			// Abandoned holder: staged write, never committed or aborted.
-			const holder = new Transaction(db.store, { coordinatedRetry: true });
-			holder.putSync(key, valueWithVersion(2.1e12));
-
-			// Establish txn's snapshot before the conflicting external commit
-			// below, so RocksDB's optimistic conflict check has something to
-			// validate against.
-			const txn = new Transaction(db.store, { coordinatedRetry: true });
-			await txn.get(key);
-			await db.put(key, valueWithVersion(2.2e12));
-			txn.putSync(key, valueWithVersion(2.3e12));
-
-			const start = performance.now();
-			const result = await txn.commit();
-			const elapsed = performance.now() - start;
-
-			expect(result).toBe(RETRY_NOW);
-			expect(elapsed).toBeGreaterThanOrEqual(4500);
-			expect(elapsed).toBeLessThan(10000);
+			expect(signal).toBeNull();
+			expect(code).toBe(0);
 		}));
 
 	// Covers the wake-during-close path (the holder's intents are released from
