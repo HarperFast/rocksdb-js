@@ -164,7 +164,8 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	int64_t blockCacheSize = 0;
 	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);
-	if (status == napi_ok) {
+	const bool blockCacheSizeProvided = status == napi_ok;
+	if (blockCacheSizeProvided) {
 		if (blockCacheSize < 0) {
 			::napi_throw_range_error(env, nullptr, "Block cache size must be a positive integer or 0 to disable caching");
 			return nullptr;
@@ -179,6 +180,8 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	bool hasBlobCacheSize = false;
 	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "blobCacheSize", &hasBlobCacheSize));
+	size_t configuredBlobCacheSize = 0;
+	bool updateBlobCacheSize = false;
 	if (hasBlobCacheSize) {
 		// Distinguish absent from present-but-wrong-type: reading through
 		// getProperty's status alone would silently drop `blobCacheSize: '512MB'`
@@ -200,16 +203,22 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			);
 			return nullptr;
 		}
-		const size_t blobCacheSize = static_cast<size_t>(requested);
+		configuredBlobCacheSize = static_cast<size_t>(requested);
+		updateBlobCacheSize = true;
+	} else if (blockCacheSizeProvided) {
+		configuredBlobCacheSize = static_cast<size_t>(blockCacheSize) / 10;
+		updateBlobCacheSize = true;
+	}
 
+	if (updateBlobCacheSize) {
 		std::lock_guard<std::mutex> lock(settings.blobCacheMutex);
-		settings.blobCacheSize.store(static_cast<size_t>(blobCacheSize), std::memory_order_relaxed);
+		settings.blobCacheSize.store(configuredBlobCacheSize, std::memory_order_relaxed);
 
 		// Resizes databases that already have the cache attached. A database
 		// opened while the size was 0 has no blob_cache and is unaffected — see
 		// the note on RocksDatabaseConfig.blobCacheSize.
 		if (settings.blobCache) {
-			settings.blobCache->SetCapacity(blobCacheSize);
+			settings.blobCache->SetCapacity(configuredBlobCacheSize);
 		}
 	}
 

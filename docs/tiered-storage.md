@@ -95,7 +95,10 @@ rewrite is the entire point of blob separation), so the slow volume absorbs no c
 cost is one extra random read on the hot path of every record at or above `minSize`.
 
 Because RocksDB does **not** put blob values in the block cache, that extra read is real I/O
-unless a blob cache is configured. When blob files are on slower storage this matters a lot:
+unless a blob cache is configured. When `blockCacheSize` is configured and `blobCacheSize` is
+omitted from the same call, rocksdb-js assigns the blob cache an additional 10% of the block-cache
+capacity. An explicit value, including `0` to disable the blob cache, overrides that default. When
+blob files are on slower storage, a larger explicit cache can be useful:
 
 ```js
 RocksDatabase.config({ blobCacheSize: 512 * 1024 ** 2 });
