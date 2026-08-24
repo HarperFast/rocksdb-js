@@ -844,7 +844,7 @@ export class Store {
 						keyParam,
 						resolve,
 						reject,
-						txn ? (txn._context as NativeTransaction) : txnId,
+						txnId !== undefined && txn ? (txn._context as NativeTransaction) : txnId,
 						expectedVersion
 					);
 				});

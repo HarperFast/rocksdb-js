@@ -431,9 +431,7 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	VtLatestCheck vtLatest;
 	bool vtVersionSettled = false;
 
-	// Strong ref to the NativeTransaction wrapper so its finalizer cannot run
-	// (and close the handle) while this get is still using txn. Null for a
-	// plain database get.
+	// Null unless this get is transactional: keeps the wrapper alive until execute finishes.
 	napi_ref jsTransactionRef = nullptr;
 
 	~AsyncGetState() {

@@ -734,6 +734,15 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	if (txnIdType == napi_object) {
+		napi_value exports, txnCtor;
+		bool isTxn = false;
+		NAPI_STATUS_THROWS(::napi_get_reference_value(env, (*dbHandle)->exportsRef, &exports));
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, exports, "Transaction", &txnCtor));
+		NAPI_STATUS_THROWS(::napi_instanceof(env, argv[3], txnCtor, &isTxn));
+		if (!isTxn) {
+			::napi_throw_error(env, nullptr, "Get failed: Invalid transaction");
+			return nullptr;
+		}
 		std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
 		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[3], reinterpret_cast<void**>(&txnHandle)));
 		if (!txnHandle || !(*txnHandle)) {

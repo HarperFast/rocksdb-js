@@ -45,6 +45,14 @@ async function collectOrphans(path: string, timeoutMs = 5000) {
 	}
 }
 
+async function forceGCBriefly(durationMs = 50) {
+	const deadline = Date.now() + durationMs;
+	while (Date.now() < deadline) {
+		forceGC!();
+		await delay(5);
+	}
+}
+
 describe('orphaned transactions', () => {
 	itWithGC('should release a transaction dropped without commit or abort', () =>
 		dbRunner(async ({ db, dbPath }) => {
@@ -148,10 +156,9 @@ describe('orphaned transactions', () => {
 			})
 	);
 
-	// txn.get() / db.get({ transaction }) keep the Transaction alive via a then-callback until
-	// the promise settles. getBinary does not, so the TypeScript wrapper can be dropped while
-	// the cache-miss get is still queued. The async get holds a napi_ref on NativeTransaction,
-	// so the finalizer waits until the read completes instead of closing under the worker.
+	// getBinary does not retain the Transaction, so the wrapper can be collected while the
+	// cache-miss get is still queued. The get must keep the native wrapper alive until execute
+	// finishes, then the snapshot is released.
 	itWithGC('should complete an in-flight async get when the transaction is dropped', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			await db.put('foo', 'bar');
@@ -167,6 +174,7 @@ describe('orphaned transactions', () => {
 				pending = result;
 			})();
 
+			await forceGCBriefly();
 			await expect(pending).resolves.toBeInstanceOf(Buffer);
 			await collectOrphans(dbPath);
 
@@ -190,6 +198,7 @@ describe('orphaned transactions', () => {
 				pending = result;
 			})();
 
+			await forceGCBriefly();
 			await expect(pending).resolves.toBeInstanceOf(Buffer);
 			await collectOrphans(dbPath);
 
@@ -200,8 +209,8 @@ describe('orphaned transactions', () => {
 
 	itWithGC('should complete two in-flight async gets when the transaction is dropped', () =>
 		dbRunner(async ({ db, dbPath }) => {
-			await db.put('foo', 'bar');
-			await db.put('baz', 'qux');
+			await db.put('foo', Buffer.alloc(16 * 1024, 1));
+			await db.put('baz', Buffer.alloc(16 * 1024, 2));
 			await db.flush();
 
 			let first: Promise<unknown> | undefined;
@@ -217,6 +226,7 @@ describe('orphaned transactions', () => {
 				second = secondResult;
 			})();
 
+			await forceGCBriefly();
 			await Promise.all([
 				expect(first).resolves.toBeInstanceOf(Buffer),
 				expect(second).resolves.toBeInstanceOf(Buffer),

@@ -547,6 +547,10 @@ napi_value TransactionHandle::get(
 				resolveGetResult(env, "Transaction get failed", state);
 			}
 
+			if (state->handle && state->handle->wrapperCollected.load()) {
+				state->handle->onWrapperCollected();
+			}
+
 			delete state;
 		},
 		state,     // data
