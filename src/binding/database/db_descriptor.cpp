@@ -590,7 +590,7 @@ uint64_t ParkTimeoutRegistry::schedule(
 	if (!this->threadStarted) {
 		try {
 			this->thread = std::thread([this]() { this->runLoop(); });
-		} catch (const std::system_error&) {
+		} catch (...) {
 			// Thread creation failed (e.g. thread/resource exhaustion): leave
 			// the flag false so the next park retries, and tell the caller to
 			// resolve inline now rather than register a park nothing will

@@ -276,14 +276,47 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
+	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
 
 	TransactionCommitState(
 		napi_env env,
 		std::shared_ptr<TransactionHandle> handle
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
-		hasLog(false) {}
+		hasLog(false),
+		parkTimeouts(
+			handle && handle->coordinatedRetry && handle->dbHandle && handle->dbHandle->descriptor
+				? handle->dbHandle->descriptor->parkTimeouts
+				: std::shared_ptr<ParkTimeoutRegistry>()
+		) {}
 };
+
+static void rejectRetryNowSetupFailure(
+	napi_env env,
+	TransactionCommitState* state,
+	napi_status status
+) {
+	napi_value error = nullptr;
+	bool exceptionPending = false;
+	if (::napi_is_exception_pending(env, &exceptionPending) == napi_ok && exceptionPending) {
+		::napi_get_and_clear_last_exception(env, &error);
+	}
+	if (error == nullptr) {
+		std::string detail = "Failed to initialize coordinated retry: " +
+			getNapiExtendedError(env, status);
+		napi_value message;
+		if (::napi_create_string_utf8(env, detail.c_str(), detail.size(), &message) == napi_ok) {
+			::napi_create_error(env, nullptr, message, &error);
+		}
+	}
+	if (error == nullptr) {
+		::napi_get_and_clear_last_exception(env, &error);
+	}
+	if (error == nullptr) {
+		::napi_get_undefined(env, &error);
+	}
+	state->callReject(error);
+}
 
 /**
  * Log-lane stage of the commit: validates the handle and writes the
@@ -465,16 +498,9 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			state->handle->close();
 		}
 
-		// Transfer resolve/reject refs from state to a RetryNowContext
-		// so the TSFN finalize can clean them up.
-		auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
-		state->resolveRef = nullptr;
-		state->rejectRef = nullptr;
-
 		bool parked = false;
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-		std::shared_ptr<DBDescriptor> descriptor =
-			state->handle->dbHandle ? state->handle->dbHandle->descriptor : nullptr;
+		std::shared_ptr<ParkTimeoutRegistry> parkTimeouts = state->parkTimeouts.lock();
 		for (auto* slot : state->savedSlots) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
@@ -485,7 +511,18 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 			// Create a TSFN that calls resolve(RETRY_NOW) when fired.
 			napi_value resource_name;
-			::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
+			napi_status resourceStatus = ::napi_create_string_latin1(
+				env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name
+			);
+			if (resourceStatus != napi_ok) {
+				vt->unrefTracker(t);
+				rejectRetryNowSetupFailure(env, state, resourceStatus);
+				return;
+			}
+
+			auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
+			state->resolveRef = nullptr;
+			state->rejectRef = nullptr;
 			napi_threadsafe_function tsfn;
 			napi_status tsfnStatus = ::napi_create_threadsafe_function(
 				env, nullptr, nullptr, resource_name,
@@ -495,12 +532,14 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				&tsfn
 			);
 			if (tsfnStatus != napi_ok) {
-				// Creation failed (e.g. an already-pending exception): nothing to
-				// call+release, and ctx is not yet owned by any finalize -- fall
-				// through to the plain !parked resolve below instead of leaving
-				// a garbage tsfn handle in a park entry.
+				state->resolveRef = ctx->resolveRef;
+				state->rejectRef = ctx->rejectRef;
+				ctx->resolveRef = nullptr;
+				ctx->rejectRef = nullptr;
+				delete ctx;
 				vt->unrefTracker(t);
-				break;
+				rejectRetryNowSetupFailure(env, state, tsfnStatus);
+				return;
 			}
 			::napi_unref_threadsafe_function(env, tsfn);
 
@@ -513,8 +552,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			// when the descriptor is closing and when there is no descriptor
 			// at all (DBHandle::close() can reset it concurrently) -- either
 			// way there is no timeout thread behind this park.
-			uint64_t parkId = descriptor
-				? descriptor->parkTimeouts->schedule(env, parkTimeoutMs(), tsfn, fired)
+			uint64_t parkId = parkTimeouts
+				? parkTimeouts->schedule(env, parkTimeoutMs(), tsfn, fired)
 				: 0;
 
 			if (parkId == 0) {
@@ -539,8 +578,13 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			// `writerMutex_`, where re-entering DBRegistry can self-deadlock and
 			// where a transient descriptor ref would perturb the use_count that
 			// PurgeIfUnreferenced decides on (see the ParkTimeoutRegistry docs).
-			std::weak_ptr<ParkTimeoutRegistry> weakParks = descriptor->parkTimeouts;
-			auto fireOnce = [weakParks, parkId]() {
+			std::weak_ptr<ParkTimeoutRegistry> weakParks = parkTimeouts;
+			std::weak_ptr<std::atomic<bool>> weakFired = fired;
+			auto fireOnce = [weakParks, weakFired, parkId]() {
+				auto fired = weakFired.lock();
+				if (!fired || fired->load(std::memory_order_acquire)) {
+					return;
+				}
 				if (auto parks = weakParks.lock()) {
 					parks->fire(parkId);
 				}
@@ -560,18 +604,14 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		}
 
 		if (!parked) {
-			// No active lock found; resolve RETRY_NOW directly (we are on
-			// the JS thread in this complete callback).
-			napi_value global, resolveFn, retryVal;
-			::napi_get_global(env, &global);
-			::napi_get_reference_value(env, ctx->resolveRef, &resolveFn);
-			::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
-			::napi_call_function(env, global, resolveFn, 1, &retryVal, nullptr);
-			::napi_delete_reference(env, ctx->resolveRef);
-			::napi_delete_reference(env, ctx->rejectRef);
-			delete ctx;
+			napi_value retryVal;
+			napi_status retryStatus = ::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
+			if (retryStatus == napi_ok) {
+				state->callResolve(retryVal);
+			} else {
+				rejectRetryNowSetupFailure(env, state, retryStatus);
+			}
 		}
-		// If parked, ctx is owned by the TSFN finalize; do not free here.
 	} else {
 		// Normal error path: reset to Pending so JS can retry.
 		// Guard: keep Aborted if close() already set it (DB closing
