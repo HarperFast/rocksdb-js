@@ -20,6 +20,8 @@ export { DBI, type CountEstimate, type CountEstimateOptions, type IteratorOption
 export type { Key } from './encoding.ts';
 export type * from './stats.ts';
 export {
+	BackgroundError,
+	type BackgroundErrorOptions,
 	constants,
 	coolTransactionLogs,
 	currentThreadId,

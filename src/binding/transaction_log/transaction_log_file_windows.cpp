@@ -445,8 +445,12 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 }
 
 int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t offset) {
-	if (offset >= 0 && ::SetFilePointer(this->fileHandle, offset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
-		return -1;
+	if (offset >= 0) {
+		LARGE_INTEGER distance;
+		distance.QuadPart = offset;
+		if (!::SetFilePointerEx(this->fileHandle, distance, nullptr, FILE_BEGIN)) {
+			return -1;
+		}
 	}
 
 	DWORD bytesRead;
