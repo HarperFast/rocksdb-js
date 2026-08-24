@@ -668,19 +668,19 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
 		return;
 	}
 
-	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	std::vector<std::shared_ptr<ParkTimeoutRegistry>> registries;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		descriptors.reserve(instance->databases.size());
+		registries.reserve(instance->databases.size());
 		for (auto& [_key, entry] : instance->databases) {
 			if (entry.descriptor) {
-				descriptors.push_back(entry.descriptor);
+				registries.push_back(entry.descriptor->parkTimeouts);
 			}
 		}
 	}
 
-	for (auto& descriptor : descriptors) {
-		descriptor->parkTimeouts->releaseByEnv(env);
+	for (auto& registry : registries) {
+		registry->releaseByEnv(env);
 	}
 }
 
