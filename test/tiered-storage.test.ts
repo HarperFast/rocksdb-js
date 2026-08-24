@@ -225,15 +225,31 @@ describe('blobs', () => {
 
 	it('should accept a blob cache size', () => {
 		const dbPath = tempPath();
-		RocksDatabase.config({ blobCacheSize: 8 * 1024 * 1024 });
+		RocksDatabase.config({ blockCacheSize: 16 * 1024 * 1024, blobCacheSize: 8 * 1024 * 1024 });
 		try {
 			const db = RocksDatabase.open(dbPath, { blobs: { prepopulateCache: true } });
 			db.putSync('key', largeValue(1));
 			db.flushSync();
+			expect(db.getDBIntProperty('rocksdb.blob-cache-capacity')).toBe(8 * 1024 * 1024);
 			expect(db.getSync('key')).toBe(largeValue(1));
 			db.close();
 		} finally {
-			RocksDatabase.config({ blobCacheSize: 0 });
+			RocksDatabase.config({ blockCacheSize: 32 * 1024 * 1024, blobCacheSize: 0 });
+		}
+	});
+
+	it('should derive blob cache size from block cache size when omitted', () => {
+		const dbPath = tempPath();
+		let db: ReturnType<typeof RocksDatabase.open> | undefined;
+		try {
+			RocksDatabase.config({ blobCacheSize: 8 * 1024 * 1024 });
+			RocksDatabase.config({ blockCacheSize: 10 * 1024 * 1024 });
+			RocksDatabase.config({ compactOnClose: false });
+			db = RocksDatabase.open(dbPath, { blobs: { prepopulateCache: true } });
+			expect(db.getDBIntProperty('rocksdb.blob-cache-capacity')).toBe(1024 * 1024);
+		} finally {
+			db?.close();
+			RocksDatabase.config({ blockCacheSize: 32 * 1024 * 1024, blobCacheSize: 0 });
 		}
 	});
 
