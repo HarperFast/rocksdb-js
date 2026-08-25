@@ -6,10 +6,13 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <string>
+#include <utility>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/exception.h"
 #include "core/platform.h"
+#include "transaction_log/transaction_log_recovery.h"
 
 #ifdef _WIN32
 	#define PLATFORM_WINDOWS
@@ -40,16 +43,77 @@
 #include <sys/stat.h>
 
 #define TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY 1
+/**
+ * `bytesLanded` value meaning the platform could not tell us how much of a failed append reached
+ * the file. The caller must then retire the file rather than erase a range it cannot bound.
+ */
+#define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
+
+namespace rocksdb_js {
+
+/**
+ * Path of the fixed-size append-boundary marker paired with a transaction-log
+ * segment. Markers live outside the store directory so existing directory
+ * listings and backup enumeration continue to contain only log data.
+ */
+std::filesystem::path transactionLogAppendBoundaryMarkerPath(
+	const std::filesystem::path& logPath);
+
+/**
+ * Reads a persisted append boundary. Returns 0 when no marker exists or the
+ * marker records a clean segment; throws when an existing marker is malformed.
+ */
+uint32_t readTransactionLogAppendBoundaryMarker(
+	const std::filesystem::path& logPath);
+
+class TransactionLogFormatException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogFormatException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/** A marker failure makes the safe logical end unknowable and must fail load. */
+class TransactionLogAppendBoundaryException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogAppendBoundaryException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/**
+ * How much of a failed append reached the file, derived from where the file
+ * pointer ended up relative to the offset the batch started writing at.
+ *
+ * A pointer BEHIND the origin is not "nothing landed" — it is nonsense for a
+ * write, and reporting 0 would tell the caller there is nothing to erase and
+ * nothing to retire, leaving the file appendable over a partial entry. Report
+ * it as unknown so the caller retires the file instead.
+ *
+ * Used by the Windows append path (`WriteFile` does not promise to set
+ * `lpNumberOfBytesWritten` on failure); defined here, unconditionally, so it
+ * is testable off Windows.
+ */
+inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t writeOrigin) {
+	int64_t landed = pointerAfterWrite - writeOrigin;
+	return landed >= 0 ? landed : TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
+}
+
+} // namespace rocksdb_js
+
 #define TRANSACTION_LOG_TOKEN 0x574f4f46
 #define TRANSACTION_LOG_FILE_TIMESTAMP_POSITION 5
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
+#define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
+#define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 // Forward declaration so that the friend designation inside namespace
 // rocksdb_js can refer to the global-scope test accessor.
 struct WriteBatchToFileTestAccessor;
+struct EraseTailTestAccessor;
 #endif
 
 namespace rocksdb_js {
@@ -101,6 +165,17 @@ struct TransactionLogFile final {
 	 * The size of the file at the last flush operation.
 	 */
 	uint32_t lastFlushedSize = 0;
+
+	/**
+	 * Offset just past the last entry that closed a transaction (carried
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`), as observed by the open-time recovery
+	 * scan; 0 if this file holds no complete transaction or was never scanned.
+	 * Only written by recoverTail() / scanForLastCompleteTransactionEnd() before
+	 * the store is published, and read by TransactionLogStore::load() to seed the
+	 * committed watermark — see scanForLastCompleteTransactionEnd() for files that
+	 * skip recovery.
+	 */
+	std::atomic<uint32_t> lastCompleteTransactionEnd = 0;
 
 	/**
 	 * The time of the last write to this file, kept in-memory to avoid a
@@ -178,7 +253,34 @@ struct TransactionLogFile final {
 	 */
 	std::atomic<bool> hasAppendedSinceOpen = false;
 
-	TransactionLogFile(const std::filesystem::path& p, const uint32_t seq);
+	/**
+	 * True once a failed append may have left bytes past `size`. The file is refused for further
+	 * appends; the store persists `size` to the preallocated boundary marker before rotating, so the
+	 * orphaned bytes remain outside the logical file both now and after restart instead of becoming a
+	 * mid-file break with valid entries on both sides (HarperFast/rocksdb-js#748).
+	 */
+	std::atomic<bool> appendBoundaryLost = false;
+
+	/**
+	 * Last safe logical extent persisted after an uncertain append. A non-zero
+	 * value is authoritative across restarts even when the physical file still
+	 * contains orphaned bytes beyond it.
+	 */
+	std::atomic<uint32_t> retiredAppendBoundary = 0;
+
+	/** Whether this store-owned file maintains a persistent boundary marker. */
+	bool appendBoundaryMarkerEnabled = false;
+
+	/**
+	 * Suppresses repeated backup warnings for the same malformed segment. The extent remains
+	 * unresolved so each backup still verifies whether the segment has since become readable.
+	 */
+	std::atomic<bool> malformedBackupWarningEmitted = false;
+
+	TransactionLogFile(
+		const std::filesystem::path& p,
+		const uint32_t seq,
+		bool appendBoundaryMarkerEnabled = false);
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;
@@ -195,6 +297,13 @@ struct TransactionLogFile final {
 	 * Flushes any buffered data to disk.
 	 */
 	void flush();
+
+	/**
+	 * Persists the current logical size as the last safe boundary. The marker is
+	 * preallocated before the first append, so retirement overwrites a fixed extent
+	 * rather than extending it. Throws unless persistence succeeds.
+	 */
+	void persistAppendBoundaryRetirement();
 
 	/**
 	 * Gets the last write time of the log file or throws an error if the file
@@ -220,16 +329,59 @@ struct TransactionLogFile final {
 
 	/**
 	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
-	 * if a torn/partial entry is found at the tail (e.g. an O_APPEND short write
-	 * interrupted by a crash), truncates the file back to the last valid entry
-	 * boundary and flushes. If a framing break is found mid-file with valid
+	 * if a torn/partial entry is detectable at the tail (e.g. an O_APPEND short
+	 * write interrupted by a crash), truncates the file back to the last valid
+	 * entry boundary and flushes. A Windows file is pre-extended with zeros, so a
+	 * durable entry header whose payload was only partly written is indistinguishable
+	 * from a complete payload ending in zeros and is not detectable without a checksum.
+	 * If a framing break is found mid-file with valid
 	 * entries still following it, the file is left intact — truncating would
 	 * discard committed/replicated entries — and the break is logged so the
-	 * reader's per-entry guards can surface it. Must be called after open() and
-	 * before the file receives any appends; only meaningful for the active
-	 * (current) log file.
+	 * reader's per-entry guards can surface it. Then, via
+	 * discardUnclosedTransaction(), drops any whole entries left over from a batch
+	 * that never closed. Must be called after open() and before the file receives
+	 * any appends; only meaningful for the active (current) log file. Bytes before
+	 * protectedPosition are retained because txn.state proves RocksDB flushed them.
 	 */
-	void recoverTail();
+	void recoverTail(uint32_t protectedPosition = 0);
+
+	/**
+	 * Open-time framing scan via positional header reads. Precondition: the caller
+	 * holds fileMutex. Throws DBException if a read fails or is short of the
+	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
+	 * this->size (append-owned written extent), not the mapped/pre-extended size.
+	 */
+	RecoveryScan scanRecoveryLocked();
+
+	/**
+	 * Drops the trailing entries of a transaction that never closed, so the file
+	 * ends on a transaction boundary. Unlike the torn-tail truncation these are
+	 * whole, well-framed entries — only the batch's final entry carries
+	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves valid framing
+	 * around an incomplete transaction. Keeping them would let the *next* batch's
+	 * flag close the phantom group once the committed watermark moves past them.
+	 *
+	 * No-op unless the scan proves the run is exactly one interrupted batch of a
+	 * flag-setting writer (see `RecoveryScan::unclosedTailIsOneTransaction` and
+	 * `lastCompleteTransactionEnd`); ambiguous tails are kept and warned about.
+	 * Called by recoverTail() with fileMutex held.
+	 *
+	 * @param scan       The scan recoverTail() already ran on this file.
+	 * @param entriesEnd End of the entries after any torn-tail truncation.
+	 * @param protectedPosition Earliest offset that recovery may erase.
+	 */
+	void discardUnclosedTransaction(
+		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
+	void resetTimestampIndex();
+
+	/**
+	 * Returns the offset just past this file's last complete transaction (0 if it
+	 * holds none). recoverTail() already computes this for the active file; this
+	 * is for the older, rotated files the store walks back through when the active
+	 * one ends mid-transaction. Throws DBException on I/O failure; load() catches
+	 * that and falls back toward txn.state.
+	 */
+	uint32_t scanForLastCompleteTransactionEnd();
 
 	/**
 	 * Closes the log file and removes it.
@@ -237,6 +389,31 @@ struct TransactionLogFile final {
 	 * @returns `true` if the file was removed, `false` if it did not exist.
 	 */
 	bool removeFile();
+
+	/**
+	 * Platform specific body of removeFile(). Precondition: the caller already
+	 * holds fileMutex (open() does, and must discard a file whose header write
+	 * failed part-way).
+	 */
+	bool removeFileLocked();
+
+	/**
+	 * Platform specific body of close(). Precondition: the caller already holds
+	 * fileMutex — open() does, and must not leave a handle (or, on Windows, the
+	 * mapping its index scan created) behind when it rejects a file.
+	 */
+	void closeLocked();
+
+	/** Durably initialize a temporary marker, then atomically publish it if absent. */
+	void ensureAppendBoundaryMarker();
+
+	/** Durably overwrite the existing marker with a non-zero logical boundary. */
+	void writeAppendBoundaryMarker(uint32_t boundary);
+
+	/**
+	 * Body of open(). Precondition: the caller already holds fileMutex.
+	 */
+	void openLocked(const double latestTimestamp);
 
 	/**
 	 * Counts the committed entry frames in this log file by reading its on-disk
@@ -346,12 +523,20 @@ struct TransactionLogFile final {
 	// Expose writeBatchToFile to the gtest test accessor without pulling
 	// gtest headers into the production build.
 	friend struct ::WriteBatchToFileTestAccessor;
+	friend struct ::EraseTailTestAccessor;
 
 	/**
 	 * Resets the process-global MADV_COLD-unsupported latch (see adviseCold) so
 	 * that each test starts from a known state. Test-only.
 	 */
 	static void resetAdviseColdSupportForTests();
+
+	/**
+	 * Overrides the `bytesLanded` a failed append reports, so the unknown-extent and
+	 * over-report branches — reachable only from the Windows backend in production —
+	 * can be exercised on POSIX. INT64_MIN disables the override. Test-only.
+	 */
+	static std::atomic<int64_t> forcedBytesLandedForTests;
 #endif
 
 private:
@@ -373,6 +558,12 @@ private:
 	int64_t readFromFile(void* buffer, uint32_t size, int64_t offset = -1);
 
 	/**
+	 * Reads `n` bytes at `offset` via readFromFile, retrying short reads and EINTR.
+	 * Precondition: caller holds fileMutex. Returns false on error or unexpected EOF.
+	 */
+	bool readBytes(uint32_t offset, void* dest, uint32_t n);
+
+	/**
 	 * Platform specific function that writes multiple buffers to the log file.
 	 *
 	 * NOTE: `iovecs` is non-const and may be mutated on partial writes (the
@@ -383,17 +574,34 @@ private:
 	 * POSIX advances partially-written iovecs in place; Windows writes from
 	 * local state and leaves the array untouched. Callers must treat it as
 	 * consumed in either case.
+	 *
+	 * @param bytesLanded Set to the number of bytes that reached the file, or to
+	 *   TRANSACTION_LOG_BYTES_LANDED_UNKNOWN when the platform cannot report it. On a
+	 *   hard error (return -1) those bytes may still be on disk. Any positive or
+	 *   unknown extent retires the segment so later appends cannot turn that
+	 *   trailing partial into a mid-file framing break.
 	 */
-	int64_t writeBatchToFile(iovec* iovecs, int iovcnt);
+	int64_t writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded);
 
 	/**
 	 * Platform specific function that truncates the file to `newSize` bytes and
 	 * flushes the change to disk so a subsequent crash cannot resurrect the
-	 * dropped bytes. Returns `true` on success. POSIX-only effect; a no-op
-	 * returning `false` on Windows, which pre-extends and zero-pads its log
-	 * files (torn tails are handled there by the zero-padding end marker).
+	 * dropped bytes. Returns `true` on success. Caller holds fileMutex. On
+	 * Windows, recovery must run before any mapping is handed to another owner.
 	 */
 	bool truncateFile(uint32_t newSize);
+
+	/**
+	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`
+	 * disappear from every reader and frees the range for the next append. Unlike
+	 * truncateFile() this must work on Windows too: the bytes are real entries, not
+	 * a partial tail that the framing scan detected. Both platforms
+	 * truncate; Windows first drops the cached read-only mapping because mapped
+	 * ranges prevent SetEndOfFile from shrinking the file. Returns `true` on
+	 * success. Caller holds fileMutex, guarantees no outstanding mapping owner,
+	 * and must update `size` itself.
+	 */
+	bool eraseTail(uint32_t newSize, uint32_t entriesEnd);
 
 	/**
 	 * Writes a batch of transaction log entries to the log file using version 1

@@ -5,6 +5,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/background_error.h"
 #include "napi/global_events.h"
 #include "napi/macros.h"
 #include "rocksdb/db.h"
@@ -206,6 +207,11 @@ NAPI_MODULE_INIT() {
 		// tsfns, so the shared commit thread stops marshalling into a torn-down
 		// env (mirrors the listener cleanup above).
 		rocksdb_js::DBRegistry::ReleaseCommitCompletionsByEnv(dyingEnv);
+		// Same reasoning for a coordinated-retry commit parked on a VT lock:
+		// cancel this env's pending park timeouts before Node frees their
+		// tsfns, so the descriptor's park-timeout thread never fires into a
+		// torn-down env.
+		rocksdb_js::DBRegistry::ReleaseParkTimeoutsByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
@@ -220,6 +226,10 @@ NAPI_MODULE_INIT() {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
 		}
 	}, env));
+
+	// BackgroundError class + per-env addon data (must precede any DB open so the
+	// 'error' event and getLastError() can build instances).
+	rocksdb_js::BackgroundError::Init(env, exports);
 
 	// database
 	rocksdb_js::Database::Init(env, exports);
@@ -291,6 +301,7 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)
 	EXPORT_CONSTANT(constants, POPULATE_VERSION_FLAG)
 	EXPORT_CONSTANT(constants, FRESH_VERSION_FLAG)
+	EXPORT_CONSTANT(constants, VERSION_NOT_UNIQUE_FLAG)
 	EXPORT_CONSTANT(constants, RETRY_NOW_VALUE)
 	EXPORT_CONSTANT(constants, ITERATOR_REVERSE_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_INCLUSIVE_END_FLAG)

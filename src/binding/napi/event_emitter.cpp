@@ -1,4 +1,5 @@
 #include "napi/event_emitter.h"
+#include "napi/background_error.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -75,6 +76,11 @@ static void releaseListenerResources(ListenerCallback& listener) {
 static void callListenerCallback(napi_env env, napi_value jsCallback, void* unusedContext, void* data) {
 	(void)unusedContext;
 	if (env == nullptr || jsCallback == nullptr) {
+		// Node-API invokes the trampoline with a null env/callback for calls still
+		// queued when the tsfn is torn down, purely so we can release the per-call
+		// data. Returning without freeing it leaks the ListenerData (and its
+		// payload string). `delete nullptr` is safe when there was no data.
+		delete static_cast<ListenerData*>(data);
 		return;
 	}
 
@@ -88,8 +94,21 @@ static void callListenerCallback(napi_env env, napi_value jsCallback, void* unus
 	if (listenerData != nullptr) {
 		DEBUG_LOG("callListenerCallback deserializing listenerData (listenerData=%p)\n", listenerData);
 
-		// only deserialize the emitted data if it exists and is not empty
-		if (!listenerData->args.empty()) {
+		if (listenerData->asError) {
+			// `args` is a background error's JSON string; reconstruct the real
+			// BackgroundError instance and pass it as the listener's single arg —
+			// the same instance db.getLastError() returns. New() leaves a pending
+			// exception on failure, so bail the same way the macro would.
+			napi_value error = BackgroundError::New(env, listenerData->args);
+			if (error == nullptr) {
+				delete listenerData;
+				return;
+			}
+			argc = 1;
+			argv = new napi_value[1];
+			argv[0] = error;
+		} else if (!listenerData->args.empty()) {
+			// only deserialize the emitted data if it exists and is not empty
 			napi_value json;
 			napi_value parse;
 			napi_value jsonString;
@@ -163,7 +182,7 @@ ListenerData* serializeListenerArgs(napi_env env, napi_value value) {
 	return data;
 }
 
-napi_ref EventEmitter::addListener(
+std::shared_ptr<ListenerCallback> EventEmitter::addListener(
 	napi_env env,
 	const std::string& key,
 	napi_value callback,
@@ -265,7 +284,7 @@ napi_ref EventEmitter::addListener(
 	DEBUG_LOG_KEY(key);
 	DEBUG_LOG_MSG(" (listeners=%zu)\n", it->second.size());
 
-	return callbackRef;
+	return listenerCallback;
 }
 
 bool EventEmitter::notify(const std::string& key, ListenerData* data) {
@@ -441,6 +460,35 @@ napi_value EventEmitter::removeListener(napi_env env, const std::string& key, na
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, found, &result));
 	return result;
+}
+
+void EventEmitter::removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target) {
+	if (!target) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(this->mutex);
+	auto it = this->callbacks.find(key);
+	if (it == this->callbacks.end()) {
+		return;
+	}
+
+	auto& listeners = it->second;
+	auto listener = std::find(listeners.begin(), listeners.end(), target);
+	if (listener != listeners.end()) {
+		// Release the tsfn first (queues napi_ref deletion on the JS thread via
+		// the tsfn finalizer), then erase. No napi_ref is dereferenced here, so
+		// this is safe from a finalizer during teardown.
+		releaseListenerResources(**listener);
+		listeners.erase(listener);
+		this->listenerCount.fetch_sub(1, std::memory_order_relaxed);
+		DEBUG_LOG("%p EventEmitter::removeListener (by identity) removed listener for key:", this);
+		DEBUG_LOG_KEY_LN(key);
+	}
+
+	if (listeners.empty()) {
+		this->callbacks.erase(it);
+	}
 }
 
 void EventEmitter::removeListenersByOwner(void* owner) {

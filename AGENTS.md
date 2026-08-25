@@ -191,6 +191,19 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
+  it reads (exercises orphan cleanup past the async-work wait timeout)
+- `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
+  coordinated-retry commit parked on a conflicting holder's VT lock resolves
+  RETRY_NOW unconditionally, in case the holder never releases (see
+  "Coordinated retry" note below). Read once per process (a function-local
+  `static`, like the other two above — `::getenv` is not safe against a
+  concurrent `::setenv` from a `process.env` write, and a park runs on whichever
+  env's JS thread owns the transaction), so it must be set in the environment a
+  process is started with. Values below `50` are clamped up to it, and `0` (an
+  ambiguous "disable the bound") falls back to the default like any malformed
+  value. There is no opt-out: a deployment that would rather wait than fail a
+  legitimately slow holder raises the value instead
 
 ## Test Structure
 
@@ -218,6 +231,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
     `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
     from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
+- **GC is not exposed to Deno's test workers** (#770): tests that force collection run in Vitest's
+  worker, not the process you launched. Node's `threads` pool inherits `--expose-gc` through
+  `execArgv`, and Bun exposes `Bun.gc()`, but Deno uses the `forks` pool and
+  `--v8-flags=--expose-gc` applies only to the CLI process it was passed to — so `globalThis.gc` is
+  undefined in every Deno worker and each `skipIf(!globalThis.gc)` test silently skips there. Guard
+  GC-dependent tests with `skipIf`, never with a throw. `DENO_V8_FLAGS=--expose-gc` is the fix (the
+  environment is inherited by children) but cannot land until #771 is fixed: the restored coverage
+  makes `test/lock.test.ts` and one macOS `verification-table.test.ts` case fail.
 
 ## Important Implementation Notes
 
@@ -232,7 +253,37 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    append). Read/index paths (e.g. `findPositionByTimestamp`) must never truncate it — a zero
    timestamp seen mid-index during concurrent appends is a not-yet-visible memory-map artifact, not
    EOF. Reads during writes are bounded by the committed position, not `size` (see
-   `hasAppendedSinceOpen`; HarperFast/harper#1148).
+   `hasAppendedSinceOpen`; HarperFast/harper#1148). The other half of that contract is that
+   an append that fails part-way (ENOSPC, a short write on a full volume) retires the segment
+   without truncating it: `writeBatchToFile` reports the landed extent, `writeEntriesV1` marks
+   any positive or unknown extent unappendable, and `TransactionLogStore::writeBatch` rotates
+   it before propagating the error. The rotation is allowed only after the last safe logical
+   extent has been written and synced to that segment's preallocated marker under
+   `transaction_logs/.append-boundaries/<store>/`; retirement overwrites that fixed extent rather
+   than extending it, and a filesystem that still cannot persist the overwrite fails closed instead
+   of rotating. Initial creation writes and syncs a temporary marker before atomically publishing the
+   final name, so neither a crash nor a concurrent opener can observe a short initialization. The
+   marker carries a token and complemented boundary so a torn/corrupt marker fails load closed. On
+   restart, registered files, readers, purge counting, backup snapshots, and strict validation all
+   use the marked logical prefix and never expose the orphaned physical tail. The marker is not copied
+   into backups: the copied prefix is already a clean canonical `.txnlog`.
+   A known-zero-byte failure leaves the segment and its zero marker reusable.
+   **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
+   so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
+   append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
+   will not repair, so every entry after it is unreachable (HarperFast/rocksdb-js#748). On
+   Windows `size` is the logical end of entries only — an active segment is pre-extended to
+   `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
+   size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
+   found by the zero-timestamp convention instead. Windows appends seek to `size` first, so an
+   orphan is overwritten rather than skipped past — but a _shorter_ next batch would leave the
+   orphan's stale bytes past its own end, reading as an entry instead of the marker, so retirement
+   is the rule on both platforms. Transactions are never split across segments: a batch that does
+   not fit rotates before writing, while one batch may exceed `transactionLogMaxSize` in an empty
+   segment. This keeps a failed append from stranding an unflagged transaction prefix in an earlier
+   file. Initialization owes the same discipline:
+   a header write that lands short removes the file, since a size in `(0, HEADER_SIZE)` fails
+   `open()`'s validity check on every future open and freeing disk space would not heal it.
 6. **Shared DBDescriptor teardown is cross-env**: a `DBDescriptor` is process-global and shared by
    every env that opens the same path (`worker_threads` workers included), so multiple threads can
    reach `DBRegistry::CloseDB` for one descriptor at the same time — e.g. several worker envs tearing
@@ -372,12 +423,131 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
-12. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
+    commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
+    `completeCommitWork` (`src/binding/transaction/transaction.cpp`) registers a wake callback on the
+    conflicting VT slot's `LockTracker` (via `addWakeCallback`) and resolves `RETRY_NOW` only when
+    that lock's last holder releases (`VerificationTable::releaseWriteIntent` → `LockTracker::wake`).
+    A holder that never releases — a leaked/abandoned transaction, or a wake lost to a bug elsewhere —
+    would otherwise park forever (harper#2001: a worker's write path disabled for 5+ hours until
+    restart). `ParkTimeoutRegistry` (`db_descriptor.{h,cpp}`) bounds this with
+    `ROCKSDB_JS_PARK_TIMEOUT_MS` (default `5000` — the top of this fix's requested 2-5s range, to
+    leave maximum headroom for a holder that is merely slow rather than abandoned, since a timeout
+    consumes a `coordinatedRetry` attempt exactly like a real wake does and `maxRetries` is finite):
+    one registry, and one lazily-started timeout thread, **per descriptor** — joined at
+    `finishClose()` (and again, idempotently, from the destructor as a safety net, matching
+    `commitWorker`) — tracks every outstanding deadline instead of spawning a thread per park (the
+    contention path is exactly where an abandoned holder makes parks dense, so per-park threads would
+    be a resource cliff, not a fix). Deliberately a plain `std::thread`, not a `uv_timer_t`: this addon
+    ships one prebuilt binary across Node ABI versions via N-API, and libuv's struct layout is not part
+    of that stable surface.
+
+    **A `LockTracker` wake callback runs under the process-global VT `writerMutex_`, so it must not
+    block and must not re-enter the VT or `DBRegistry`.** `LockTracker::wake()` invokes its callbacks
+    inline and both callers (`releaseWriteIntent`, `cancelForDB`) hold that mutex across the whole
+    function. Re-entering the registry from there self-deadlocks: `DBRegistry::PurgeIfUnreferenced`
+    can claim the purge and call `finishClose()` → `cancelForDB()` → a second lock of the same
+    non-recursive `writerMutex_`, wedging every database's write-intent path process-wide — the exact
+    symptom this note exists to fix. It is also an AB-BA against `finishClose`'s `txnsMutex` →
+    `writerMutex_` order, and it would run a flush, a manual compaction, `WaitForCompact` and thread
+    joins under the global VT lock. That is why `ParkTimeoutRegistry` is a standalone object owned by
+    the descriptor through a `shared_ptr` rather than state on the descriptor itself: the wake closure
+    captures a **`std::weak_ptr<ParkTimeoutRegistry>`** and calls only `fire(id)`, which touches one
+    mutex and one map. Weak, not raw, because a park can end up registered on a tracker installed by a
+    _different_ database on a colliding VT slot (`VerificationTable::lockSlotForWrite` joins an existing
+    tracker without retagging its `dbId`), so that lock's eventual release wakes a park whose own
+    database may already have closed — `cancelForDB()` only wakes trackers tagged with _its own_
+    `vtEpoch`, so it cannot be relied on to have resolved a foreign-`dbId` park first. Weak **to the
+    registry and not to the descriptor** because a `weak_ptr<DBDescriptor>::lock()` is a transient extra
+    reference, and `PurgeIfUnreferenced` decides on `use_count() <= 1`: a racing close would see the
+    inflated count, skip the purge, and leak the registry entry plus the open RocksDB — the
+    HarperFast/rocksdb-js#672 hazard, which the wake path cannot repair by retrying the purge (that is
+    the re-entrancy above). `.lock()` failing is the expected outcome once the owning database closes:
+    `ParkTimeoutRegistry::shutdown()` (called from `finishClose()` right after `cancelForDB`, before
+    the descriptor can be destroyed) unconditionally resolves every park it still holds regardless of
+    whether the real holder ever wakes it, so by the time the weak reference can fail, the park has
+    already settled.
+
+    Each park is identified by a monotonic `uint64_t id`, not its entry's address: `LockTracker::wakeCallbacks`
+    has no removal API (see the gap noted below), so a stale closure can outlive its entry, and an
+    address-keyed lookup risks resolving a _different_, later park that reused the same freed heap
+    address. The timeout thread and the LockTracker wake callback race through one heap-allocated
+    `std::atomic<bool>` per park (independent of the per-park `RetryNowContext`, whose refs/TSFN the
+    winning side's release eventually frees) — whichever fires first calls+releases the TSFN under the
+    registry's `mutex` and erases the entry; the loser finds it already gone and touches nothing. That
+    same mutex is what a dying env's `releaseByEnv` (wired into the module env-cleanup
+    hook next to `ReleaseCommitCompletionsByEnv`) takes to cancel — release without calling — that
+    env's pending parks before Node frees their tsfns; `retryNowCallJs` also guards `env == nullptr`
+    like `commitCompletionCallJs` does, for the same tsfn-queue-drained-during-teardown reason. Parks
+    are indexed twice, by id and by deadline (`std::multimap`): `fire()` needs an O(1) lookup because it
+    runs under the global VT mutex, and the timeout thread needs the earliest deadline on every wakeup
+    without an O(N) scan on that same lock. Known gap: `LockTracker::wakeCallbacks`
+    itself has no removal API. Before this change an abandoned holder accrued one inert callback per
+    waiter and then everything hung; now each waiter re-parks (and re-registers) every
+    `ROCKSDB_JS_PARK_TIMEOUT_MS` up to `maxRetries`, so registrations accumulate per _retry_ rather than
+    per incident for as long as it lasts (each is inert once its own park resolves, so this is a
+    memory-growth concern, not a correctness one) — deferred rather than risking an unreviewed change to
+    `verification_table.cpp`'s concurrency invariants under this fix's scope.
+
+13. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+    `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
+    `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
+    path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
+    `onWrapperCollected()` before dropping its reference: once V8 has collected the wrapper, no JS
+    code can commit, abort, retry, or read through that handle again, so it is closed. The one
+    exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
+    closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
+    always closes, and the failure paths (which deliberately leave the handle open for a caller that
+    may retry) check `wrapperCollected`, because there is no caller left. Other dependents defer the
+    orphan close without blocking the V8 finalizer: a cold-cache async get owns a
+    `shared_ptr<TransactionHandle>` and retries after its async registration is released, while a
+    transaction-backed `DBIteratorHandle` owns the handle and keeps `activeIteratorCount` nonzero
+    until the RocksDB iterator is reset. The last dependent closes the orphan. Without this a dropped
+    transaction either pinned `rocksdb.oldest-snapshot-time` for the life of the process or, after
+    orphan cleanup was added, could be destroyed under an async read/live iterator
+    (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on any redesign
+    here: the registry reference cannot simply be made weak, because dependents need the coordinated
+    cancellation and transaction-destruction path in `close()`; and `registryStatus()` may only report
+    handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
+    map membership while mutable-field writers hold no lock.
+
+14. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+    prove one**: only a batch's final entry
+    carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
+    entries that are a _prefix_ of a transaction. `recoverTail()` discards them
+    (`discardUnclosedTransaction`) rather than leaving them for the committed watermark to step
+    around: kept bytes are only invisible until the next commit moves the watermark past them, and
+    then that batch's flag closes the phantom group — two source transactions merged into one for
+    anything grouping on the flag. Discarding is safe because `writeBatch()` completes before
+    `Transaction::Commit()` in every commit path and both commit-thread lanes preserve dispatch
+    order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
+    never ran. Recovery walks entry headers via positional reads (never a whole-file buffer);
+    payload bytes are skipped. Discarding is gated on proof that the writer sets the flag — a
+    boundary earlier in the same file — plus a single timestamp across the trailing run. Callers can
+    assign repeated timestamps,
+    but an earlier transaction would still carry its own flag and reset the run. Without that proof
+    the bytes are kept and warned about: a legacy batch split across a rotation has no boundary in
+    the active file, and a log written before the flag existed would otherwise be truncated wholesale.
+    Recovery reads `txn.state` before repairing the active file and never truncates below its
+    same-file flushed offset: a missing flag can be media corruption on a batch RocksDB already
+    absorbed, not proof that the commit never ran.
+    `TransactionLogStore::load()` seeds from the latest proved boundary, walking backward across
+    legacy rotation-spanning batches until it reaches a boundary or the `txn.state` floor, so recovery never
+    hides entries already absorbed by RocksDB. Both platforms truncate; Windows first drops the cached
+    mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same
+    physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an
+    entry with a durable header and partially durable payload look complete; detecting that case needs
+    a payload checksum. Recovery runs before mappings can be handed to readers.
+
+15. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
-    `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer just
-    drops the JS-side ref). A worker env that exited with a transaction still pending therefore
-    leaked that handle — holding a live RocksDB transaction + snapshot — into the shared
-    descriptor, with its `env` left dangling once the worker died. The last env's
+    `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
+    the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
+    _wrapper_ was GC'd while its env is still alive). That finalizer path does not cover the
+    distinct case this invariant addresses: a worker **env that exits with a transaction still
+    pending** — the wrapper was never collected, the env is dying. Such a handle — holding a live
+    RocksDB transaction + snapshot, with its owning `DBHandle`'s `env` about to dangle — leaked
+    into the shared descriptor, and the last env's
     `DBRegistry::Shutdown → finishClose → close()` then walked those corpses and corrupted the
     glibc heap (production signatures: `corrupted size vs. prev_size`,
     `corrupted double-linked list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 —
@@ -385,7 +555,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     the fix). The reap is
     `DBRegistry::CloseTransactionsByEnv` → `DBDescriptor::closeTransactionsByEnv`, wired into the
     module's per-env cleanup hook (binding.cpp) so it runs on the dying env's own thread while the
-    env is still valid.
+    env is still valid. Both reap paths funnel through the same idempotent `close()`
+    (`closed` gate) + idempotent `transactionRemove`, so a handle reachable by both the finalizer
+    and this hook is closed exactly once.
 
     **Do not "simplify" this into `DBHandle::close()`.** A user-called `db.close()` runs with live
     microtasks: `db.transaction()` awaits its callback before committing, so a legitimate commit

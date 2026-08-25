@@ -31,7 +31,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * handle here. Defaults to the transaction's own column family.
 	 */
 	DBIteratorHandle(
-		TransactionHandle* txnHandle,
+		std::shared_ptr<TransactionHandle> txnHandle,
 		DBIteratorOptions& options,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
@@ -53,6 +53,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	void init(DBIteratorOptions& options);
 
 	std::shared_ptr<DBHandle> dbHandle;
+	std::shared_ptr<TransactionHandle> txnHandle;
 	bool exclusiveStart;
 	bool inclusiveEnd;
 	bool reverse;

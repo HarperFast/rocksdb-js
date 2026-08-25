@@ -1,3 +1,4 @@
+#include <cassert>
 #include <chrono>
 #include <sstream>
 #include <thread>
@@ -90,6 +91,7 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+	this->createdAt = std::chrono::steady_clock::now();
 }
 
 void TransactionHandle::resetTransaction(){
@@ -235,6 +237,57 @@ void TransactionHandle::releaseIntent() {
 
 	lockedVTSlots.clear();
 	heldTrackers.clear();
+}
+
+/**
+ * The JS wrapper was garbage collected, so nothing can commit, abort, or read through this handle
+ * again — request its release. A commit in flight is the exception: TransactionCommitState holds
+ * its own shared_ptr and closing here would cancel it mid-flight, so completeCommitWork closes it
+ * instead when it settles. Other published dependents retry the close when they release.
+ */
+void TransactionHandle::onWrapperCollected() {
+	this->wrapperCollected.store(true);
+	this->closeOrphanIfUnused();
+}
+
+void TransactionHandle::registerIterator() {
+	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TransactionHandle::unregisterIterator() {
+	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
+	assert(previous > 0 && "Transaction iterator count underflow");
+	if (previous == 1) {
+		this->closeOrphanIfUnused();
+	}
+}
+
+void TransactionHandle::closeOrphanIfUnused() {
+	if (!this->wrapperCollected.load() || this->closed.load()) {
+		return;
+	}
+
+	if (this->state == TransactionState::Committing) {
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%u)\n", this, this->id);
+		return;
+	}
+
+	this->cancelAllAsyncWork();
+	const int32_t activeAsyncWork = this->activeAsyncWorkCount.load();
+	const uint32_t activeIterators = this->activeIteratorCount.load(std::memory_order_relaxed);
+	if (activeAsyncWork > 0 || activeIterators > 0) {
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Deferring close (txnId=%u, async=%d, iterators=%u)\n",
+			this, this->id, activeAsyncWork, activeIterators);
+		return;
+	}
+
+	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%u, state=%d)\n",
+		this, this->id, static_cast<int>(this->state));
+	// transactionRemove() can drop the registry's last reference. Keep this
+	// object alive until close() returns even when the final dependent releases
+	// on a worker thread.
+	auto keepAlive = this->shared_from_this();
+	this->close();
 }
 
 /**
@@ -413,21 +466,33 @@ napi_value TransactionHandle::get(
 		// transaction's snapshot value) and gates on the single-version invariant,
 		// so a transactional read seeds the cache only when settled and can never
 		// publish a stale snapshot value.
-		if (vtSlot && status.ok()) {
-			rocksdb::Slice valueSlice(value.data(), value.size());
+		rocksdb::Slice valueSlice(value.data(), value.size());
+		if (vtSlot && status.ok() && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
-			if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
-				napi_value global, freshResult;
-				::napi_get_global(env, &global);
-				::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
-				::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-				return returnStatus;
-			}
-			if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-				vtPopulateIfSettled(dbHandle, vtSlot, rocksdb::Slice(key.data(), key.size()), extracted, readSnapshot, observedSlot);
+			const rocksdb::Slice keySlice(key.data(), key.size());
+			// The caller's column family, not the handle's: this read may be routed to another one.
+			const VtLatestCheck latest = vtCheckLatest(
+				dbHandle->descriptor->db.get(),
+				readColumnDescriptor->column.get(),
+				keySlice,
+				readSnapshot
+			);
+			if (!latest.notUnique) {
+				const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
+				const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
+				if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
+					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
+					napi_value global, freshResult;
+					::napi_get_global(env, &global);
+					::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
+					::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
+					NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
+					return returnStatus;
+				}
+				if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
+					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
+				}
 			}
 		}
 		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
@@ -442,7 +507,12 @@ napi_value TransactionHandle::get(
 	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	auto state = new AsyncGetState<std::shared_ptr<TransactionHandle>>(
+		env,
+		this->shared_from_this(),
+		readOptions,
+		std::move(key)
+	);
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
 	state->completed.store(true);
@@ -464,7 +534,11 @@ napi_value TransactionHandle::get(
 		nullptr,   // async_resource
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
-			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
+			const int getDelayMs = testDelayMs("ROCKSDB_JS_TXN_GET_DELAY_MS");
+			if (getDelayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
+			}
 			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
 			} else {
@@ -474,13 +548,23 @@ napi_value TransactionHandle::get(
 					state->key,
 					&state->value
 				);
+				// While the database and the caller's column family are still pinned — the completion
+				// runs after teardown may have released both.
+				if (state->status.ok() && state->vtSlot) {
+					vtCheckAsyncGet(
+						state,
+						state->handle->dbHandle->descriptor->db.get(),
+						state->readColumnDescriptor->column.get()
+					);
+				}
 			}
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
+			state->handle->closeOrphanIfUnused();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
@@ -517,7 +601,7 @@ void TransactionHandle::getCount(
 	}
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
-		std::make_unique<DBIteratorHandle>(this, itOptions, dbHandleOverride);
+		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
 	for (count = 0; itHandle->iterator->Valid(); ++count) {
 		itHandle->iterator->Next();
 	}

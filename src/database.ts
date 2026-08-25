@@ -1,6 +1,12 @@
 import type { BackupStreamOptions } from './backup-stream.ts';
 import type { BackupOptions } from './backup.ts';
-import { DBI, type DBITransactional } from './dbi.ts';
+import { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
+import {
+	DBI,
+	type CountEstimate,
+	type CountEstimateOptions,
+	type DBITransactional,
+} from './dbi.ts';
 import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encoding.ts';
 import {
 	addGlobalListener,
@@ -8,6 +14,8 @@ import {
 	globalListenerCount,
 	globalNotify,
 	removeGlobalListener,
+	type BackgroundError,
+	type BackgroundErrorOptions,
 	type PurgedLog,
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
@@ -67,6 +75,13 @@ export interface TransactionOptions extends NativeTransactionOptions {
 
 export type RocksDBStat = StatsValue;
 export type RocksDBStats = StatsDefault | StatsAll;
+
+// Mirrors the native `backgroundErrorSeverityName` (core/background_error) so
+// setLastError can derive a severityName from a bare severity.
+const BACKGROUND_ERROR_SEVERITY_NAMES = ['none', 'soft', 'hard', 'fatal', 'unrecoverable'];
+function backgroundErrorSeverityName(severity: number): string {
+	return BACKGROUND_ERROR_SEVERITY_NAMES[severity] ?? 'unknown';
+}
 
 /**
  * The main class for interacting with a RocksDB database.
@@ -418,6 +433,91 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		return this.store.db.flushSync();
 	}
 
+	/**
+	 * Returns the most recent {@link BackgroundError} observed on this database, or
+	 * `null` when none has occurred. The `'error'` event is the push counterpart;
+	 * this is the pull equivalent for on-demand checks (e.g. a health probe) and
+	 * for catching an error that fired after open but before a listener was
+	 * attached. (A background error that occurs *during* the initial open is a
+	 * narrow startup window not yet captured, addressed separately.)
+	 *
+	 * Purely historical — it is not cleared by a successful {@link RocksDatabase.resume}.
+	 * When the returned error's `writesDisabled` is `true`, writes are stopped
+	 * until recovery.
+	 *
+	 * @example
+	 * ```typescript
+	 * const err = db.getLastError();
+	 * if (err?.writesDisabled) {
+	 *   // ...free disk space...
+	 *   db.resume();
+	 * }
+	 * ```
+	 */
+	getLastError(): BackgroundError | null {
+		return this.store.db.getLastError();
+	}
+
+	/**
+	 * Sets or clears the last background error, mirroring the Win32
+	 * `SetLastError`/`GetLastError` pair. Pass `null` (or no argument) to **reset**
+	 * it — {@link RocksDatabase.getLastError} then returns `null` and no event
+	 * fires; this is the intended way to clear the error after handling or
+	 * recovering it (e.g. after {@link RocksDatabase.resume}). Pass an object to
+	 * set it: it is stored and the `'error'` event fires with the reconstructed
+	 * {@link BackgroundError}. `type` defaults to `'background'`.
+	 *
+	 * @example
+	 * ```typescript
+	 * db.resume();
+	 * db.setLastError(null); // recovered — clear the historical error
+	 * ```
+	 */
+	setLastError(error?: BackgroundErrorOptions | null): void {
+		if (error == null) {
+			return this.store.db.setLastError(null);
+		}
+		// Fill the fields the BackgroundError type declares as required so a partial
+		// input (e.g. just `{ message }`) never yields an error with `undefined`
+		// severity/severityName/writesDisabled. severityName and writesDisabled
+		// derive from severity unless the caller supplied them explicitly.
+		const severity = error.severity ?? 0;
+		return this.store.db.setLastError({
+			...error,
+			type: error.type ?? 'background',
+			severity,
+			severityName: error.severityName ?? backgroundErrorSeverityName(severity),
+			writesDisabled: error.writesDisabled ?? severity >= 2,
+		});
+	}
+
+	/**
+	 * Attempts to recover the database from a background error by calling
+	 * RocksDB's `DB::Resume()`. When a write fails at the filesystem level (e.g. a
+	 * full disk), RocksDB stops accepting writes and this database emits an
+	 * {@link BackgroundError} via the `'error'` event. Call `resume()` after the
+	 * underlying condition has cleared — e.g. once disk space has been freed. On
+	 * success writes are accepted again; on failure (the condition has not
+	 * actually cleared) it throws and the database stays read-only. A no-op on a
+	 * healthy database.
+	 *
+	 * Runs synchronously and may briefly block, since recovery can re-flush
+	 * memtables.
+	 *
+	 * @example
+	 * ```typescript
+	 * db.on('error', (err) => {
+	 *   if (err.writesDisabled) {
+	 *     // ...free disk space...
+	 *     db.resume();
+	 *   }
+	 * });
+	 * ```
+	 */
+	resume(): void {
+		return this.store.db.resume();
+	}
+
 	// flushed
 
 	/**
@@ -455,7 +555,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Retrieves the estimated number of keys in the database.
+	 * Retrieves the estimated number of keys in the database. This is an alias
+	 * for `db.estimateCount().count`; use `estimateCount()` for range support
+	 * and a confidence indicator.
 	 *
 	 * @example
 	 * ```typescript
@@ -466,6 +568,60 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	getEstimatedKeyCount(): number {
 		return this.getDBIntProperty('rocksdb.estimate-num-keys') ?? 0;
+	}
+
+	/**
+	 * Estimates the number of keys in the database, or within a key range,
+	 * returning `{ count, confidence }`. Unlike `getKeysCount()`, this never
+	 * iterates: the estimate is derived from RocksDB statistics (memtable
+	 * stats plus approximate SST sizes converted through the entry density of
+	 * the SSTs overlapping the range), so its cost scales with the number of
+	 * SSTs overlapping the range rather than the number of keys — though
+	 * reading table properties for cold files can do I/O through the table
+	 * cache, and a start-only range does the work of its complement below
+	 * `start`. Accuracy improves with range size. Resolution is bounded by SST
+	 * data-block granularity, so tiny ranges may over-report or report zero for
+	 * present keys; low `confidence` is the signal. Recently deleted or
+	 * overwritten entries may be counted until compaction. An inverted range
+	 * (`start` >= `end`) returns `{ count: 0, confidence: 1 }`.
+	 *
+	 * `confidence` is a heuristic 0–1 trust indicator (1 only when exact) —
+	 * see `CountEstimate`. Estimates always reflect committed state; writes
+	 * pending in a transaction are not included.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
+	 * ```
+	 */
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
+		return this.store.estimateCount(options);
+	}
+
+	/**
+	 * Creates a `CountEstimator` for progressively refining a range count
+	 * estimate while iterating the range: report progress with
+	 * `advance(lastKey, count)` (e.g. once per page of results) and
+	 * `estimate()` returns the exact traversed count plus a calibrated
+	 * estimate of the remainder, converging toward the exact total. Call
+	 * `finish()` when traversal completes to make `estimate()` exact.
+	 *
+	 * @example
+	 * ```typescript
+	 * const estimator = db.createCountEstimator({ start: 'a', end: 'z' });
+	 * let lastKey;
+	 * let pageSize = 0;
+	 * for (const { key } of db.getRange({ start: 'a', end: 'z', limit: 25 })) {
+	 *   lastKey = key;
+	 *   pageSize++;
+	 * }
+	 * estimator.advance(lastKey, pageSize);
+	 * const { count, confidence } = estimator.estimate();
+	 * ```
+	 */
+	createCountEstimator(options?: CountEstimatorOptions): CountEstimator {
+		return new CountEstimator(this.store, options);
 	}
 
 	/**

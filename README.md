@@ -11,6 +11,8 @@ A Node.js binding for the RocksDB library.
 - Custom stores provide ability to override default database interactions
 - Efficient binary key and value encoding
 - Configurable block/blob compression (LZ4, Zstd, Zlib, and more)
+- Observable background errors via the `'error'` event or `db.getLastError()`, with in-process
+  recovery (`db.resume()`)
 - Access to internal RocksDB statistics
 - Designed for Node.js and Bun on Linux, macOS, and Windows
 
@@ -117,10 +119,9 @@ Creates a new database instance.
     modified time to be older than the retention period before it is rotated to the next sequence
     number. Value must be between `0.0` and `1.0`. A threshold of `0.0` means ignore age check.
     Defaults to `0.75`.
-  - `transactionLogMaxSize: number` The maximum size of a transaction log file. If a log file is
-    empty, the first log entry will always be added regardless if it's larger than the max size. If
-    a log file is not empty and the entry is larger than the space available, the log file is
-    rotated to the next sequence number. Defaults to 16 MB.
+  - `transactionLogMaxSize: number` The target maximum size of a transaction log file. Transactions
+    are never split across files: if the complete transaction does not fit, the log rotates before
+    writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB.
   - `transactionLogRetention: string | number` The number of minutes to retain transaction logs
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
@@ -170,18 +171,6 @@ const db = RocksDatabase.open('path/to/db', {
 console.log(db.compression); // { algorithm: 'zstd', level: 3 }
 ```
 
-### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
-
-Returns the informational-log settings currently in effect for this database, read live from
-RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
-per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
-verbosity. The database must be open.
-
-```typescript
-const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
-console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
-```
-
 ### `db.config(options)`
 
 Sets global database settings.
@@ -225,6 +214,18 @@ Returns `true` if the database is open, otherwise false.
 
 ```typescript
 console.log(db.isOpen()); // true or false
+```
+
+### `db.logOptions: { maxLogFileSize: number, infoLogLevel: number }`
+
+Returns the informational-log settings currently in effect for this database, read live from
+RocksDB. These are database-wide settings (not per-column-family). `maxLogFileSize` is the
+per-file size cap for informational log files (`LOG` / `LOG.old.*`); `infoLogLevel` is the logging
+verbosity. The database must be open.
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { maxLogFileSize: 4 * 1024 * 1024 });
+console.log(db.logOptions); // { maxLogFileSize: 4194304, infoLogLevel: 1 }
 ```
 
 ### `db.name: string`
@@ -432,11 +433,73 @@ the `expectedVersion` option is used.
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
-`db.getDBIntProperty('rocksdb.estimate-num-keys')`.
+`db.getDBIntProperty('rocksdb.estimate-num-keys')`; use `estimateCount()` for range support and a
+confidence indicator.
 
 ```typescript
 const estimated = db.getEstimatedKeyCount();
 console.log(estimated);
+```
+
+### `db.estimateCount(options?: CountEstimateOptions): CountEstimate`
+
+Estimates the number of keys in the database, or within a key range, returning
+`{ count, confidence }`. Unlike `getKeysCount()`, this never iterates: the estimate is derived
+from RocksDB statistics (memtable stats plus approximate SST sizes converted through the entry
+density of the SSTs overlapping the range), so its cost scales with the number of SSTs overlapping
+the range rather than the number of keys. Reading cold table properties can do I/O through the
+table cache, so narrow ranges are preferable. A start-only range is computed as the
+whole-database estimate minus the complement, so it does the work of the range _below_ `start`.
+Accuracy improves with range size. Resolution is bounded by SST data-block granularity, so a range
+narrower than a block is unreliable in either direction: it may over-report or report 0 for present
+keys, and its low `confidence` is the signal. Recently deleted or overwritten entries may be counted
+until compaction.
+Estimates always reflect committed state; writes pending in a transaction are not included. Set
+`reverse: true` to use `getRange()`'s reverse convention (`start` is the upper bound and `end` is
+the lower bound). An inverted range (`start` ≥ `end`) returns
+`{ count: 0, confidence: 1 }`.
+
+`confidence` is a heuristic 0–1 indicator of how trustworthy `count` is — exactly 1 only when the
+count is exact. It is derived from the estimate's resolution (data-block/memtable-sampling
+granularity relative to the count), the tombstone fraction of the overlapping SSTs, and — for
+start-only ranges — the error compounded by complement subtraction. Treat it as an ordering
+signal (e.g. when to trust an estimate for query planning vs fall back to a heuristic), not a
+statistical bound.
+
+```typescript
+const { count, confidence } = db.estimateCount({ start: 'a', end: 'z' });
+```
+
+### `db.createCountEstimator(options?: CountEstimatorOptions): CountEstimator`
+
+Creates an estimator that progressively refines a range count estimate while the range is being
+iterated — useful for reporting a total alongside a page of results without scanning the full
+range. Before any traversal, `estimate()` returns the pure statistical estimate (same as
+`estimateCount(range)`). As the caller reports progress with `advance(lastKey, count)` (e.g. once
+per page), `estimate()` returns the exact traversed count plus a statistical estimate of the
+remainder, calibrated by the observed ratio of actual-to-estimated entries over the portion
+already traversed — so the count converges toward the exact total. `confidence` is the
+exactness-weighted blend of the traversed portion and the remainder's confidence, so it approaches 1
+as the exact portion grows, although a checkpoint may decrease when calibration makes a large
+correction.
+Each checkpoint reads committed state, so a traversal performed against a transaction snapshot may
+be calibrated against data committed after that snapshot.
+When traversal completes, call `finish()` and `estimate()` returns the exact count with
+confidence 1. Reverse ranges follow `getRange`: set `start` to the upper bound and `end` to the
+lower bound, then set `reverse: true`. The caller owns the progress contract: cursors must move
+monotonically through the range and each entry must be reported exactly once.
+
+```typescript
+const range = { start: 'a', end: 'z' };
+const estimator = db.createCountEstimator(range);
+let lastKey;
+let pageSize = 0;
+for (const { key } of db.getRange({ ...range, limit: 25 })) {
+	lastKey = key;
+	pageSize++;
+}
+estimator.advance(lastKey, pageSize);
+const { count, confidence } = estimator.estimate();
 ```
 
 ### `db.getKeys(options?: IteratorOptions): ExtendedIterable`
@@ -716,6 +779,15 @@ not committed after the configured number of coordinated retries, the transactio
 an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column family to be opened with
 `verificationTable: true`.
 
+That wait is bounded so a conflicting transaction that is never committed or aborted cannot block
+the commit forever: if the write intent has not been released after `ROCKSDB_JS_PARK_TIMEOUT_MS`
+(default `5000`), the commit resolves anyway and consumes a retry attempt exactly as a real release
+would. A conflicting transaction held for longer than roughly `maxRetries` times that timeout
+therefore ends in `ERR_TRANSACTION_ABANDONED` rather than waiting indefinitely. Deployments where
+waiting is preferable to failing should raise the timeout; there is no way to disable the bound.
+In particular `0` does not disable it: `0`, negative, and unparseable values all fall back to the
+`5000` default, and a value between `1` and `49` is clamped up to `50`.
+
 ### Class: `Transaction`
 
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
@@ -792,6 +864,73 @@ await db.transaction(async (txn) => {
 });
 ```
 
+## Error Handling
+
+### `db.getLastError(): BackgroundError | null`
+
+Returns the most recent [`BackgroundError`](#event-error) observed on this database, or `null` when
+none has occurred. This is the **pull** counterpart to the `'error'` [event](#event-error): use it
+for an on-demand check (e.g. a health probe) or to catch an error that fired before a listener was
+attached. The value is historical — it is **not** cleared by a successful
+[`db.resume()`](#dbresume-void); reset it explicitly with
+[`db.setLastError(null)`](#dbsetlasterrorerror-void). When the returned error's `writesDisabled` is
+`true`, writes are stopped until recovery.
+
+```typescript
+const err = db.getLastError();
+if (err?.writesDisabled) {
+	// ...free disk space, then...
+	db.resume();
+}
+```
+
+### `db.setLastError(error?): void`
+
+Sets or clears the last background error, mirroring the Win32 `SetLastError` / `GetLastError` pair.
+
+- **Clear** — pass `null` (or no argument). [`db.getLastError()`](#dbgetlasterror-backgrounderror--null)
+  then returns `null` and no event fires. This is how you reset the error after handling or
+  recovering it (e.g. after [`db.resume()`](#dbresume-void)) — the equivalent of
+  `SetLastError(ERROR_SUCCESS)`.
+- **Set** — pass an object (`{ message, severity?, severityName?, writesDisabled?, reason?, reasonName? }`;
+  `type` defaults to `'background'`). It is stored and the `'error'` [event](#event-error) fires with
+  the reconstructed [`BackgroundError`](#event-error). Useful for surfacing an application-level
+  "this database is unusable" state, and for deterministically exercising the error path in tests.
+
+```typescript
+// reset after recovery
+db.resume();
+db.setLastError(null);
+
+// inject (e.g. in a test)
+db.on('error', (err) => console.error(err.message));
+db.setLastError({
+	message: 'disk quota exceeded',
+	severity: 2,
+	severityName: 'hard',
+	writesDisabled: true,
+});
+```
+
+### `db.resume(): void`
+
+Attempts to recover the database from a background error (see the `'error'` [event](#event-error))
+by calling RocksDB's `DB::Resume()`. Call this after the underlying condition has cleared — e.g.
+once disk space has been freed. On success writes are accepted again (and RocksDB can resume the
+obsolete-file cleanup it was blocking); on failure — the condition has not actually cleared — it
+throws with the RocksDB error and the database stays read-only. A no-op on a healthy database.
+
+Runs synchronously and may briefly block, since recovery can re-flush memtables.
+
+```typescript
+db.on('error', (err) => {
+	if (err.writesDisabled) {
+		// ...free disk space, then...
+		db.resume();
+	}
+});
+```
+
 ## Events
 
 ### Event: `'aftercommit'`
@@ -817,6 +956,57 @@ The `'begin-transaction'` event is emitted right before the transaction function
 The `'committed'` event is emitted after the transaction has been written. When this event is
 emitted, the transaction is still cleaning up. If you need to know when the transaction is fully
 complete, use the `'aftercommit'` event.
+
+### Event: `'error'`
+
+When a write fails at the filesystem level — a full disk, an exhausted quota — RocksDB records a
+background error and, for a hard-or-worse severity, stops accepting writes. The database emits an
+`'error'` event carrying a `BackgroundError` so a consumer can observe it and recover in-process
+instead of restarting. When `writesDisabled` is `true`, call
+[`db.resume()`](#dbresume-void) after the underlying condition clears. Register the listener with
+`db.on('error', ...)` before the database is put under load — or use the pull-based
+[`db.getLastError()`](#dbgetlasterror-backgrounderror--null) to catch an error that fired earlier.
+
+`BackgroundError` is a real `Error` subclass, exported from the package, so both
+`err instanceof Error` and `err instanceof BackgroundError` hold. It extends `Error` with:
+
+- `message: string` — the RocksDB error string.
+- `name: string` — always `'BackgroundError'`.
+- `type: string` — the error-class discriminator; always `'background'`.
+- `severity: number` — the RocksDB `Status::Severity`: `1` soft, `2` hard, `3` fatal,
+  `4` unrecoverable.
+- `severityName: string` — `'soft'`, `'hard'`, `'fatal'`, or `'unrecoverable'`.
+- `writesDisabled: boolean` — whether RocksDB has disabled writes on the database (`severity >= 2`).
+  Only then is `resume()` warranted; a soft error is auto-recoverable and leaves writes enabled.
+  Distinct from opening the database in read-only mode.
+- `reason?: number` / `reasonName?: string` — the originating `BackgroundErrorReason`
+  (e.g. `'flush'`, `'compaction'`), present when the error came from a reason-bearing callback.
+
+```typescript
+import { BackgroundError } from '@harperfast/rocksdb-js';
+
+db.on('error', (err) => {
+	if (err instanceof BackgroundError && err.writesDisabled) {
+		console.error(`writes disabled (${err.severityName}): ${err.message}`);
+	}
+});
+```
+
+```typescript
+db.on('error', (err) => {
+	if (err.writesDisabled) {
+		// Hard-or-worse: RocksDB has disabled writes on this database. They stay
+		// disabled until you clear the underlying condition and call db.resume().
+		console.error(`database writes disabled (${err.severityName}): ${err.message}`);
+	} else {
+		// Soft error: writes are NOT disabled and RocksDB will auto-recover. This
+		// is typically a transient background hiccup (e.g. a retryable I/O error
+		// during flush or compaction), surfaced for visibility only — no action
+		// is required.
+		console.warn(`recoverable background error (${err.severityName}): ${err.message}`);
+	}
+});
+```
 
 ## Event API
 
@@ -1729,7 +1919,7 @@ snapshots of a database. A backup covers the **entire database** — every colum
 manifest, and (by default) the write-ahead log — so it is not scoped to an individual `Store`.
 
 A backup can be written to a local **directory** (incremental, with a management API) or streamed to
-a **`WritableStream`** as a tar archive with no intermediate copy on disk. See
+a `WritableStream` as a tar archive with no intermediate copy on disk. See
 [docs/backups.md](docs/backups.md) for a full guide covering both modes, restore, checkpoints, and
 caveats.
 
@@ -1805,10 +1995,10 @@ required bytes — before any files are copied, so a full destination fails fast
 through (a mid-copy failure can leave zero usable backups). The required size is estimated
 conservatively as a full copy of the database's live files, plus the transaction-log snapshot when
 `transactionLogs` is set; since a backup only ever copies files, this can never under-estimate.
-Incremental backups to a right-sized volume may therefore be over-rejected — set `checkDiskSpace:
-false` to skip the check. It also self-disables when free space can't be determined (e.g. some
-network filesystems report `0`), so it never blocks a backup on an untrustworthy number. Only
-directory-target backups are checked; the streaming backup path is unaffected.
+Incremental backups to a right-sized volume may therefore be over-rejected — set
+`checkDiskSpace: false` to skip the check. It also self-disables when free space can't be determined
+(e.g. some network filesystems report `0`), so it never blocks a backup on an untrustworthy number.
+Only directory-target backups are checked; the streaming backup path is unaffected.
 
 ### `db.backup(stream: WritableStream<Uint8Array>, options?: BackupStreamOptions): Promise<void>`
 

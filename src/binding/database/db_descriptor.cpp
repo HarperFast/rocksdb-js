@@ -1,13 +1,16 @@
+#include "core/background_error.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "napi/helpers.h"
+#include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
 #include <memory>
+#include <system_error>
 #include <unordered_map>
 
 namespace rocksdb_js {
@@ -150,23 +153,84 @@ struct JobTracker final {
 };
 
 /**
+ * Shared state between the RocksDB `EventListener` and the `DBDescriptor`,
+ * created BEFORE `DB::Open` so background callbacks fired during open have a
+ * valid, race-free target even though the descriptor does not exist yet
+ * (HarperFast/rocksdb-js#754). The descriptor pointer is published under
+ * `mutex_` once construction succeeds, and every read takes the same lock — so
+ * there is no data race on the `weak_ptr`. (The previous design bound a shared
+ * `weak_ptr` object after open while background threads called `lock()` on that
+ * same object concurrently, which is undefined behavior.)
+ *
+ * A background error that latches before the descriptor is attached is stashed
+ * as `pendingError_` (the same JSON form `setLastError` stores) and transferred
+ * to the descriptor on publish, so an error during open still reaches
+ * `getLastError()` / the `'error'` event instead of being silently dropped.
+ */
+struct DBEventListenerState final {
+	// Flush callbacks: the attached descriptor, or null before attach / after close.
+	std::shared_ptr<DBDescriptor> lockDescriptor() {
+		std::lock_guard<std::mutex> lock(this->mutex_);
+		return this->descriptor_.lock();
+	}
+
+	// OnBackgroundError: route the serialized error to the descriptor when it is
+	// attached, else stash it for transfer on publish. Touches no N-API and never
+	// blocks, so it is safe on a RocksDB background thread.
+	void recordBackgroundError(std::string json) {
+		std::shared_ptr<DBDescriptor> desc;
+		{
+			std::lock_guard<std::mutex> lock(this->mutex_);
+			desc = this->descriptor_.lock();
+			if (!desc) {
+				this->pendingError_ = std::move(json);
+				return;
+			}
+		}
+		// setLastError stores + emits; call it outside our lock.
+		desc->setLastError(std::move(json));
+	}
+
+	// Publish the descriptor once open succeeds and flush any error captured
+	// during open. A concurrent recordBackgroundError therefore either stashes
+	// (observed before publish, drained here) or routes straight to the
+	// descriptor (after) — never lost.
+	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor) {
+		std::string pending;
+		{
+			std::lock_guard<std::mutex> lock(this->mutex_);
+			this->descriptor_ = descriptor;
+			pending.swap(this->pendingError_);
+		}
+		if (!pending.empty()) {
+			descriptor->setLastError(std::move(pending));
+		}
+	}
+
+private:
+	std::mutex mutex_;
+	std::weak_ptr<DBDescriptor> descriptor_;
+	std::string pendingError_;
+};
+
+/**
  * Custom event listener that handles flush completion events and notifies
  * transaction log stores to track what has been flushed to the database.
  */
 class TransactionLogEventListener : public rocksdb::EventListener {
 public:
-	TransactionLogEventListener(std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr)
-		: descriptorPtr(descriptorPtr) {}
+	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state)
+		: state(std::move(state)) {}
 
 	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-
-		auto desc = descriptorPtr->lock();
+		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
 		}
+		// RocksDB can run flushes concurrently across background threads, so guard
+		// the shared jobTrackers map — concurrent std::unordered_map access is a
+		// data race.
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id, so we can determine when all the flushes have completed for
 		// With atomic flushes, there will be multiple flush events for each column family in the database
 		// We we want to flush at the beginning of the flush job (for first time job_id appears)
@@ -195,11 +259,7 @@ public:
 	}
 
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (!descriptorPtr) {
-			return;
-		}
-
-		auto desc = descriptorPtr->lock();
+		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
 		}
@@ -208,6 +268,8 @@ public:
 		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted cf name=%s job id=%u flushedSequence=%llu\n",
 			desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
 
+		// Guard the shared jobTrackers map — see OnFlushBegin.
+		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
 		// Track flush job by job_id
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
@@ -235,8 +297,36 @@ public:
 		}
 	}
 
+	// Surfaces a RocksDB background error to JS (HarperFast/rocksdb-js#730).
+	// Serializes it to a JSON string and hands it to `setLastError`, which stores
+	// it (readable on demand via `db.getLastError()`) and emits the `'error'`
+	// event — both reconstruct the same `BackgroundError` from this string on the
+	// JS thread, so nothing N-API/env-bound is touched here. We do NOT suppress
+	// the error (leaving *bgError untouched) — the point is to surface it, not
+	// hide it. Runs on flush/compaction/write threads; storing a string and the
+	// thread-safe, asynchronous emit keep this cheap and non-blocking.
+	void OnBackgroundError(rocksdb::BackgroundErrorReason reason, rocksdb::Status* bgError) override {
+		if (bgError == nullptr) {
+			return;
+		}
+		// Route through the shared state (NOT the descriptor directly): an error
+		// latched during DB::Open, before the descriptor is attached, is stashed
+		// and transferred on publish rather than dropped (#754).
+		int severity = static_cast<int>(bgError->severity());
+		int reasonInt = static_cast<int>(reason);
+		this->state->recordBackgroundError(backgroundErrorToJson(
+			bgError->ToString(),
+			severity,
+			backgroundErrorSeverityName(severity),
+			backgroundErrorDisablesWrites(severity),
+			reasonInt,
+			backgroundErrorReasonName(reasonInt)
+		));
+	}
+
 private:
-	std::shared_ptr<std::weak_ptr<DBDescriptor>> descriptorPtr;
+	std::shared_ptr<DBEventListenerState> state;
+	std::mutex jobTrackersMutex;
 	std::unordered_map<int, JobTracker> jobTrackers;
 };
 
@@ -269,6 +359,9 @@ DBDescriptor::DBDescriptor(
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
 	this->close();
+	// Idempotent safety net, matching commitWorker/logWorker's own
+	// destructor shutdown.
+	this->parkTimeouts->shutdown();
 }
 
 /**
@@ -386,6 +479,12 @@ void DBDescriptor::finishClose() {
 		}
 	}
 
+	// A park can be registered on a foreign-dbId tracker (colliding VT slot;
+	// see the ParkTimeout header comment), so cancelForDB() above cannot be
+	// relied on to have woken everything this descriptor is waiting on.
+	// ParkTimeoutRegistry::shutdown() resolves whatever is left regardless.
+	this->parkTimeouts->shutdown();
+
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
 	TransactionLogStoreRegistry::Unregister(this->path);
@@ -474,6 +573,178 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 		}
 		this->commitCompletions.erase(it);
 	}
+}
+
+uint64_t ParkTimeoutRegistry::schedule(
+	napi_env env,
+	unsigned timeoutMs,
+	napi_threadsafe_function tsfn,
+	std::shared_ptr<std::atomic<bool>> fired
+) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	if (this->stopped) {
+		// Descriptor already closing: the caller must resolve inline without
+		// registering with the LockTracker at all (see the header comment).
+		return 0;
+	}
+	if (!this->threadStarted) {
+		try {
+			this->thread = std::thread([this]() { this->runLoop(); });
+		} catch (...) {
+			// Thread creation failed (e.g. thread/resource exhaustion): leave
+			// the flag false so the next park retries, and tell the caller to
+			// resolve inline now rather than register a park nothing will
+			// ever time out.
+			return 0;
+		}
+		this->threadStarted = true;
+	}
+	auto entry = std::make_unique<ParkTimeout>();
+	entry->id = this->nextId++;
+	entry->env = env;
+	entry->tsfn = tsfn;
+	entry->fired = std::move(fired);
+	uint64_t id = entry->id;
+	auto deadlineIt = this->deadlines.emplace(
+		std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs),
+		id
+	);
+	entry->deadlineIt = deadlineIt;
+	this->parks.emplace(id, std::move(entry));
+	if (deadlineIt == this->deadlines.begin()) {
+		// Only the new earliest deadline needs the loop re-armed (this also
+		// covers waking it out of the indefinite wait when `deadlines` was
+		// empty); any later one already fires within a wait it will take.
+		this->cv.notify_all();
+	}
+	return id;
+}
+
+std::unique_ptr<ParkTimeoutRegistry::ParkTimeout> ParkTimeoutRegistry::take(uint64_t id) {
+	auto it = this->parks.find(id);
+	if (it == this->parks.end()) {
+		return nullptr;
+	}
+	std::unique_ptr<ParkTimeout> owned = std::move(it->second);
+	this->deadlines.erase(owned->deadlineIt);
+	this->parks.erase(it);
+	return owned;
+}
+
+void ParkTimeoutRegistry::resolve(ParkTimeout& park) {
+	bool expected = false;
+	if (park.fired->compare_exchange_strong(expected, true)) {
+		// A closing tsfn (env teardown racing this resolve) must not be
+		// touched again -- napi_closing means Node may already be freeing it.
+		napi_status status = ::napi_call_threadsafe_function(park.tsfn, nullptr, napi_tsfn_nonblocking);
+		if (status == napi_ok) {
+			::napi_release_threadsafe_function(park.tsfn, napi_tsfn_release);
+		}
+	}
+}
+
+void ParkTimeoutRegistry::runLoop() {
+	setThreadName("rocksdb-park-timeout");
+	std::unique_lock<std::mutex> lock(this->mutex);
+	for (;;) {
+		if (this->stopped) {
+			return;
+		}
+		if (this->deadlines.empty()) {
+			this->cv.wait(lock);
+			continue;
+		}
+		auto now = std::chrono::steady_clock::now();
+		// Copy the deadline: wait_until releases the lock while parked, during
+		// which this entry can be erased (a real wake racing the timeout) and
+		// the map node freed -- a bound reference into it would be a read of
+		// freed memory once the wait re-checks time.
+		std::chrono::steady_clock::time_point earliest = this->deadlines.begin()->first;
+		if (earliest > now) {
+			this->cv.wait_until(lock, earliest);
+			continue;
+		}
+		// Fire while still holding the mutex, like dispatchCommitCompletion.
+		while (!this->deadlines.empty() && this->deadlines.begin()->first <= now) {
+			auto deadlineIt = this->deadlines.begin();
+			auto parkIt = this->parks.find(deadlineIt->second);
+			this->deadlines.erase(deadlineIt);
+			if (parkIt == this->parks.end()) {
+				continue;
+			}
+			std::unique_ptr<ParkTimeout> due = std::move(parkIt->second);
+			this->parks.erase(parkIt);
+			ParkTimeoutRegistry::resolve(*due);
+		}
+	}
+}
+
+void ParkTimeoutRegistry::fire(uint64_t id) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	std::unique_ptr<ParkTimeout> owned = this->take(id);
+	if (!owned) {
+		// Already claimed by the timeout thread, releaseByEnv, or shutdown.
+		return;
+	}
+	ParkTimeoutRegistry::resolve(*owned);
+}
+
+void ParkTimeoutRegistry::releaseByEnv(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	for (auto it = this->parks.begin(); it != this->parks.end();) {
+		if (it->second->env != env) {
+			++it;
+			continue;
+		}
+		// Mark fired first so neither the timeout thread nor a later real
+		// wake ever calls into the tsfn we're about to release -- the
+		// promise's env is gone, nothing is listening for the resolve.
+		bool expected = false;
+		it->second->fired->compare_exchange_strong(expected, true);
+		if (!expected) {
+			::napi_release_threadsafe_function(it->second->tsfn, napi_tsfn_release);
+		}
+		this->deadlines.erase(it->second->deadlineIt);
+		it = this->parks.erase(it);
+	}
+}
+
+void ParkTimeoutRegistry::shutdown() {
+	std::thread toJoin;
+	{
+		std::lock_guard<std::mutex> lock(this->mutex);
+		if (this->stopped && !this->threadStarted) {
+			// Already fully shut down (e.g. finishClose() already ran; this is
+			// the destructor's belt-and-suspenders call) -- nothing left to do.
+			return;
+		}
+		this->stopped = true;
+		if (this->threadStarted) {
+			toJoin = std::move(this->thread);
+			this->threadStarted = false;
+		}
+		// Resolve every park still pending, under the same mutex the other
+		// three methods serialize their tsfn calls on -- draining outside the
+		// lock would let a concurrent releaseByEnv for a dying env observe
+		// "nothing to cancel" while this is mid-call on that same env's tsfn,
+		// racing Node freeing it.
+		for (auto& entry : this->parks) {
+			ParkTimeoutRegistry::resolve(*entry.second);
+		}
+		this->parks.clear();
+		this->deadlines.clear();
+	}
+	// Notify + join outside the lock: the loop's cv.wait_until needs to
+	// re-acquire the mutex to observe `stopped` and return, so joining while
+	// still holding it would deadlock.
+	this->cv.notify_all();
+	if (toJoin.joinable()) {
+		toJoin.join();
+	}
+}
+
+ParkTimeoutRegistry::~ParkTimeoutRegistry() {
+	this->shutdown();
 }
 
 /**
@@ -958,9 +1229,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// below so opening one family cannot restamp another's algorithm.
 	auto cfOptions = buildColumnFamilyOptions(options);
 
-	// create a shared pointer to hold the weak descriptor reference for the event listener
-	auto descriptorWeakPtr = std::make_shared<std::weak_ptr<DBDescriptor>>();
-	auto eventListener = std::make_shared<TransactionLogEventListener>(descriptorWeakPtr);
+	// Shared listener state, created BEFORE DB::Open so a background error fired
+	// during open has a valid, race-free target (the descriptor does not exist
+	// yet). The descriptor is published into it once constructed, transferring any
+	// error captured mid-open (HarperFast/rocksdb-js#754).
+	auto listenerState = std::make_shared<DBEventListenerState>();
+	auto eventListener = std::make_shared<TransactionLogEventListener>(listenerState);
 	dbOptions.listeners.push_back(eventListener);
 
 	// prepare the column family stuff - first check if database exists
@@ -1090,8 +1364,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 
-	// set the weak pointer for the event listener
-	*descriptorWeakPtr = descriptor;
+	// Publish the descriptor into the shared listener state (guarded), so flush
+	// callbacks can reach it and any background error captured during open is
+	// transferred to it now.
+	listenerState->publishDescriptor(descriptor);
 
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;
@@ -1602,19 +1878,16 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 
 	if (auto dbHandle = finalizeData->dbHandle.lock()) {
 		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle=%p\n", dbHandle.get());
-		if (finalizeData->callbackRef) {
-			napi_value callback;
-			if (::napi_get_reference_value(env, finalizeData->callbackRef, &callback) == napi_ok) {
+		// Remove this buffer's listener by identity, never by its napi_ref: the
+		// ref is owned by the listener's tsfn (see UserSharedBufferFinalizeData),
+		// so re-resolving it here was the shutdown UAF in #790. removeListener is
+		// a no-op if the listener is already gone (close / env teardown).
+		if (auto listener = finalizeData->listener.lock()) {
+			if (dbHandle->descriptor) {
 				DEBUG_LOG("%p userSharedBufferFinalize removing listener for key:", dbHandle.get());
 				DEBUG_LOG_KEY_LN(finalizeData->key);
-				if (dbHandle->descriptor) {
-					DEBUG_LOG("%p userSharedBufferFinalize descriptor is still alive %p", dbHandle.get(), dbHandle->descriptor.get());
-					dbHandle->descriptor->removeListener(env, finalizeData->key, callback);
-				} else {
-					DEBUG_LOG("%p userSharedBufferFinalize descriptor is not alive %p", dbHandle.get(), dbHandle->descriptor.get());
-				}
+				dbHandle->descriptor->removeListener(finalizeData->key, listener);
 			}
-			finalizeData->callbackRef = nullptr;
 		}
 	} else {
 		DEBUG_LOG("userSharedBufferFinalize GC'd dbHandle was already destroyed for key:");
@@ -1644,7 +1917,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	std::string& key,
 	std::shared_ptr<DBHandle> dbHandle,
 	napi_value defaultBuffer,
-	napi_ref callbackRef
+	std::shared_ptr<ListenerCallback> listener
 ) {
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
@@ -1688,7 +1961,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		std::weak_ptr<DBHandle>(dbHandle),
 		std::weak_ptr<ColumnFamilyDescriptor>(dbHandle->columnDescriptor),
 		userSharedBuffer,
-		callbackRef
+		std::weak_ptr<ListenerCallback>(listener)
 	);
 
 	napi_value result;
@@ -1706,7 +1979,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 /**
  * Adds an event listener to this descriptor's event emitter.
  */
-napi_ref DBDescriptor::addListener(
+std::shared_ptr<ListenerCallback> DBDescriptor::addListener(
 	napi_env env,
 	std::string& key,
 	napi_value callback,
@@ -1733,6 +2006,10 @@ napi_value DBDescriptor::listeners(napi_env env, std::string& key) {
 
 napi_value DBDescriptor::removeListener(napi_env env, std::string& key, napi_value callback) {
 	return this->events.removeListener(env, key, callback);
+}
+
+void DBDescriptor::removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target) {
+	this->events.removeListener(key, target);
 }
 
 void DBDescriptor::removeListenersByOwner(DBHandle* owner) {
@@ -1767,6 +2044,31 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
 	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
+}
+
+void DBDescriptor::setLastError(std::string json) {
+	// Store, then (for a real error) emit — a single place so "stored" and
+	// "emitted" never drift apart, whether the source is OnBackgroundError on a
+	// RocksDB background thread or db.setLastError() on the JS thread.
+	const bool hasError = !json.empty();
+	{
+		std::lock_guard<std::mutex> lock(this->lastErrorMutex);
+		this->lastError = json;
+	}
+	// Emit OUTSIDE lastErrorMutex: notify takes the emitter's own lock and
+	// dispatches asynchronously. Clearing (empty json) is a silent reset — no
+	// event — mirroring Win32 SetLastError(0).
+	if (hasError && this->events.hasListeners()) {
+		this->events.notify("error", ListenerData::backgroundError(json));
+	}
+}
+
+/**
+ * Returns a copy of the last error that occurred on this database.
+ */
+std::string DBDescriptor::getLastError() {
+	std::lock_guard<std::mutex> lock(this->lastErrorMutex);
+	return this->lastError;
 }
 
 rocksdb::Status DBDescriptor::flush() {

@@ -55,7 +55,7 @@ struct TransactionLogStoreFileValidation final {
 	std::string file;
 	/** Sequence number parsed from the file name. */
 	uint32_t sequenceNumber = 0;
-	/** On-disk file size in bytes. */
+	/** Validated logical size (the persisted safe boundary for a retired file). */
 	uint64_t size = 0;
 	TransactionLogFileValidation result;
 };
@@ -65,8 +65,9 @@ struct TransactionLogStoreFileValidation final {
  *
  * Store-level `errors`/`warnings` cover directory-shape problems (unreadable
  * files, malformed file names, sequence gaps, a corrupt `txn.state`); per-file
- * results carry each log file's own validation. `valid` is true only when
- * there are no store-level errors and every file is valid.
+ * results carry each log file's own validation. A persisted append-boundary
+ * marker limits validation to the safe logical prefix of a retired segment.
+ * `valid` is true only when there are no store-level errors and every file is valid.
  */
 struct TransactionLogStoreValidation final {
 	std::string path;

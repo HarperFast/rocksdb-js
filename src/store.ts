@@ -1,7 +1,13 @@
 import { type BackupStreamOptions, backupToStream } from './backup-stream.ts';
 import { assertBackupDirOutsideDatabase, type BackupOptions } from './backup.ts';
 import { DBIterator, type DBIteratorValue } from './dbi-iterator.ts';
-import type { DBITransactional, IteratorOptions, RangeOptions } from './dbi.ts';
+import type {
+	CountEstimate,
+	CountEstimateOptions,
+	DBITransactional,
+	IteratorOptions,
+	RangeOptions,
+} from './dbi.ts';
 import {
 	type BufferWithDataView,
 	createFixedBuffer,
@@ -526,8 +532,8 @@ export class Store {
 	transactionLogMaxAgeThreshold?: number;
 
 	/**
-	 * The maximum size of a transaction log before it is rotated to the next
-	 * sequence number.
+	 * The target maximum size of a transaction log before rotation. Transactions
+	 * are never split across files, so one transaction may exceed this target.
 	 */
 	transactionLogMaxSize?: number;
 
@@ -844,6 +850,36 @@ export class Store {
 			return VALUE_BUFFER;
 		} // else it is undefined or it is a new buffer
 		return result;
+	}
+
+	/**
+	 * Estimates the number of keys in a range from RocksDB statistics
+	 * (memtable stats + approximate SST sizes with range-local entry density)
+	 * without iterating. Estimates always reflect committed state, so there is
+	 * no transactional variant.
+	 */
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
+		let startBuffer: Buffer | undefined;
+		let endBuffer: Buffer | undefined;
+		const reverse = options?.reverse ?? false;
+		const start = reverse ? options?.end : options?.start;
+		const end = reverse ? options?.start : options?.end;
+		const exclusiveStart = options?.exclusiveStart ?? reverse;
+		const inclusiveEnd = options?.inclusiveEnd ?? reverse;
+
+		if (start !== undefined) {
+			const encodedStart = this.encodeKey(start);
+			// A zero byte appended to a key is its bytewise successor, turning an
+			// inclusive bound into an exclusive one (and vice versa for the end).
+			startBuffer = copyEncodedKey(encodedStart, exclusiveStart);
+		}
+
+		if (end !== undefined) {
+			const encodedEnd = this.encodeKey(end);
+			endBuffer = copyEncodedKey(encodedEnd, inclusiveEnd);
+		}
+
+		return this.db.estimateCount(startBuffer, endBuffer);
 	}
 
 	getCount(context: StoreContext, options?: StoreRangeOptions): number {
@@ -1236,6 +1272,21 @@ export class Store {
 
 		return this.db.withLock(this.encodeKey(key), callback);
 	}
+}
+
+/**
+ * Copies an encoded key out of the shared key buffer (which the next
+ * `encodeKey` call would clobber), optionally appending a zero byte to
+ * produce the key's bytewise successor.
+ */
+function copyEncodedKey(encoded: BufferWithDataView, appendSuccessorByte: boolean): Buffer {
+	const length = encoded.end - encoded.start;
+	const copy = Buffer.allocUnsafe(length + (appendSuccessorByte ? 1 : 0));
+	copy.set(encoded.subarray(encoded.start, encoded.end));
+	if (appendSuccessorByte) {
+		copy[length] = 0;
+	}
+	return copy;
 }
 
 /**

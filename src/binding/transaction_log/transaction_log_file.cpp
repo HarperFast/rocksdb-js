@@ -1,7 +1,9 @@
+#include <cerrno>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <string>
 #include <system_error>
 #include <vector>
 #include "napi/global_events.h"
@@ -18,11 +20,54 @@
 
 namespace rocksdb_js {
 
+std::filesystem::path transactionLogAppendBoundaryMarkerPath(
+	const std::filesystem::path& logPath) {
+	auto storePath = logPath.parent_path();
+	auto markerRoot = storePath.parent_path() / ".append-boundaries" / storePath.filename();
+	return markerRoot / (logPath.filename().string() + ".boundary");
+}
+
+uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& logPath) {
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(logPath);
+	std::error_code existsError;
+	if (!std::filesystem::exists(markerPath, existsError)) {
+		if (existsError) {
+			throw rocksdb_js::TransactionLogAppendBoundaryException(
+				"Failed to inspect transaction log append-boundary marker: " + markerPath.string());
+		}
+		return 0;
+	}
+
+	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
+	std::ifstream marker(markerPath, std::ios::binary | std::ios::in);
+	marker.read(bytes, sizeof(bytes));
+	if (!marker || marker.peek() != std::ifstream::traits_type::eof()) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Invalid transaction log append-boundary marker: " + markerPath.string());
+	}
+	uint32_t token = readUint32BE(bytes);
+	uint32_t boundary = readUint32BE(bytes + 4);
+	uint32_t boundaryComplement = readUint32BE(bytes + 8);
+	if (token != TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN ||
+		boundaryComplement != ~boundary) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Corrupt transaction log append-boundary marker: " + markerPath.string());
+	}
+	if (boundary != 0 && boundary < TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Invalid transaction log append boundary " + std::to_string(boundary) +
+			" for " + logPath.string());
+	}
+	return boundary;
+}
+
 std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
 
 std::atomic<int64_t> MemoryMap::liveCount{0};
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
+std::atomic<int64_t> TransactionLogFile::forcedBytesLandedForTests{INT64_MIN};
+
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
 }
@@ -30,6 +75,11 @@ void TransactionLogFile::resetAdviseColdSupportForTests() {
 
 TransactionLogFile::~TransactionLogFile() {
 	this->close();
+}
+
+bool TransactionLogFile::removeFile() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	return this->removeFileLocked();
 }
 
 void TransactionLogFile::downgradeMapToFrozen() {
@@ -80,7 +130,29 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 
 void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	try {
+		this->openLocked(latestTimestamp);
+	} catch (...) {
+		// A rejected file must not keep its handle — or, on Windows, the mapping
+		// openFile()'s index scan created — or retain an unvalidated extent that a
+		// later caller could mistake for a successfully opened segment.
+		this->closeLocked();
+		this->size.store(0, std::memory_order_relaxed);
+		throw;
+	}
+}
+
+void TransactionLogFile::openLocked(const double latestTimestamp) {
+	if (this->appendBoundaryMarkerEnabled) {
+		this->ensureAppendBoundaryMarker();
+	}
 	this->openFile();
+	uint32_t physicalExtent = this->size.load(std::memory_order_relaxed);
+	uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
+	if (retiredBoundary > physicalExtent) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Transaction log append boundary exceeds physical extent: " + this->path.string());
+	}
 
 	// Cache the file's effective last-write time now, once, so writeBatch can
 	// check the maxAgeThreshold without a stat() syscall on every commit.
@@ -100,16 +172,24 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		// file is empty, initialize it
 		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s (timestamp=%f)\n", this, this->path.string().c_str(), latestTimestamp);
 		writeUint32BE(buffer, TRANSACTION_LOG_TOKEN);
-		this->writeToFile(buffer, 4);
-		writeUint8(buffer, this->version);
-		this->writeToFile(buffer, 1);
+		writeUint8(buffer + 4, this->version);
 		this->timestamp = latestTimestamp;
-		writeDoubleBE(buffer, this->timestamp);
-		this->writeToFile(buffer, 8);
+		writeDoubleBE(buffer + TRANSACTION_LOG_FILE_TIMESTAMP_POSITION, this->timestamp);
+
+		// A header that lands short leaves a size in (0, HEADER_SIZE), which fails
+		// the "too small" check below on every future open — freeing disk space
+		// would not heal it — so discard the file instead.
+		int64_t headerBytes = this->writeToFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE);
+		if (headerBytes != static_cast<int64_t>(TRANSACTION_LOG_FILE_HEADER_SIZE)) {
+			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to write file header: %s (wrote=%lld)\n",
+				this, this->path.string().c_str(), static_cast<long long>(headerBytes));
+			this->removeFileLocked();
+			throw rocksdb_js::DBException("Failed to write transaction log file header: " + this->path.string());
+		}
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
-		throw rocksdb_js::DBException("File is too small to be a valid transaction log file: " + this->path.string());
+		throw rocksdb_js::TransactionLogFormatException("File is too small to be a valid transaction log file: " + this->path.string());
 	} else {
 		// try to read the token and version from the log file
 		int64_t result = this->readFromFile(buffer, TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
@@ -122,7 +202,7 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		uint32_t token = readUint32BE(buffer);
 		if (token != TRANSACTION_LOG_TOKEN) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Invalid transaction log file: %s\n", this, this->path.string().c_str());
-			throw rocksdb_js::DBException("Invalid transaction log file: " + this->path.string());
+			throw rocksdb_js::TransactionLogFormatException("Invalid transaction log file: " + this->path.string());
 		}
 
 		// version
@@ -135,7 +215,7 @@ void TransactionLogFile::open(const double latestTimestamp) {
 
 		if (this->version != 1) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
-			throw rocksdb_js::DBException("Unsupported transaction log file version: " + std::to_string(this->version));
+			throw rocksdb_js::TransactionLogFormatException("Unsupported transaction log file version: " + std::to_string(this->version));
 		}
 
 		// file timestamp
@@ -149,9 +229,90 @@ void TransactionLogFile::open(const double latestTimestamp) {
 		DEBUG_LOG("%p TransactionLogFile::open Opened file %s (size=%zu, version=%u, timestamp=%f)\n",
 			this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed), this->version, this->timestamp);
 	}
+
+	if (retiredBoundary > 0) {
+		this->size.store(retiredBoundary, std::memory_order_relaxed);
+		this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+	}
 }
 
-void TransactionLogFile::recoverTail() {
+void TransactionLogFile::persistAppendBoundaryRetirement() {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	if (!this->appendBoundaryMarkerEnabled) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Cannot persist append-boundary retirement for unmanaged transaction log: " +
+			this->path.string());
+	}
+	uint32_t boundary = this->size.load(std::memory_order_relaxed);
+	if (boundary < TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Cannot persist invalid transaction log append boundary for: " + this->path.string());
+	}
+	this->writeAppendBoundaryMarker(boundary);
+	this->retiredAppendBoundary.store(boundary, std::memory_order_relaxed);
+}
+
+bool TransactionLogFile::readBytes(uint32_t offset, void* dest, uint32_t n) {
+	auto* out = static_cast<char*>(dest);
+	uint32_t remaining = n;
+	uint32_t at = offset;
+	while (remaining > 0) {
+#ifdef PLATFORM_POSIX
+		errno = 0;
+#endif
+		int64_t got = this->readFromFile(out, remaining, static_cast<int64_t>(at));
+		if (got < 0) {
+#ifdef PLATFORM_POSIX
+			if (errno == EINTR) {
+				continue;
+			}
+#endif
+			return false;
+		}
+		if (got == 0) {
+			return false;
+		}
+		out += got;
+		at += static_cast<uint32_t>(got);
+		remaining -= static_cast<uint32_t>(got);
+	}
+	return true;
+}
+
+RecoveryScan TransactionLogFile::scanRecoveryLocked() {
+	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
+	return scanTransactionLogForRecovery(
+		fileSize,
+		[](void* context, uint32_t offset, void* dest, uint32_t n) {
+			return static_cast<TransactionLogFile*>(context)->readBytes(offset, dest, n);
+		},
+		this
+	);
+}
+
+uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+
+	if (this->version != 1) {
+		return 0;
+	}
+
+	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return 0; // header-only or empty: no transactions at all
+	}
+
+	RecoveryScan scan;
+	try {
+		scan = this->scanRecoveryLocked();
+	} catch (const DBException& error) {
+		throw DBException(std::string(error.what()) + ": " + this->path.string());
+	}
+	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
+	return scan.lastCompleteTransactionEnd;
+}
+
+void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
 	if (this->version != 1) {
@@ -163,19 +324,18 @@ void TransactionLogFile::recoverTail() {
 		return; // header-only or empty: nothing to recover
 	}
 
-	// Read the whole file image for the framing scan. This runs once, at open
-	// time, on the active log file only — never on a hot path.
-	std::vector<char> buffer(fileSize);
-	int64_t bytesRead = this->readFromFile(buffer.data(), fileSize, 0);
-	if (bytesRead < 0 || static_cast<uint32_t>(bytesRead) != fileSize) {
-		DEBUG_LOG("%p TransactionLogFile::recoverTail Failed to read file for recovery scan: %s (read=%lld, size=%u)\n",
-			this, this->path.string().c_str(), static_cast<long long>(bytesRead), fileSize);
-		return;
+	RecoveryScan scan;
+	try {
+		scan = this->scanRecoveryLocked();
+	} catch (const DBException& error) {
+		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
-
-	RecoveryScan scan = scanTransactionLogForRecovery(buffer.data(), fileSize);
+	// Publish the complete-transaction boundary from this same scan so the store can
+	// seed its committed watermark without re-reading the file.
+	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
+			this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
 			return;
 
 		case RecoveryScan::Kind::MidFileCorruption: {
@@ -202,6 +362,15 @@ void TransactionLogFile::recoverTail() {
 			if (scan.validEnd >= fileSize) {
 				return;
 			}
+			if (scan.validEnd < protectedPosition) {
+				std::ostringstream msg;
+				msg << "Transaction log " << this->path.string()
+					<< " has a torn tail before the flushed position " << protectedPosition
+					<< "; leaving it intact to preserve durable log history.";
+				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				return;
+			}
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Torn tail in %s: truncating %u -> %u bytes\n",
 				this, this->path.string().c_str(), fileSize, scan.validEnd);
 			if (this->truncateFile(scan.validEnd)) {
@@ -209,6 +378,7 @@ void TransactionLogFile::recoverTail() {
 				if (this->lastFlushedSize > scan.validEnd) {
 					this->lastFlushedSize = scan.validEnd;
 				}
+				this->resetTimestampIndex();
 
 				std::ostringstream msg;
 				msg << "Transaction log " << this->path.string()
@@ -216,12 +386,90 @@ void TransactionLogFile::recoverTail() {
 					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ").";
 				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
 				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+
+				// The partial bytes are gone; whole entries of the same interrupted
+				// batch can still precede them.
+				this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
 			} else {
 				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
 					this, this->path.string().c_str());
 			}
 			return;
 	}
+}
+
+void TransactionLogFile::discardUnclosedTransaction(
+	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition) {
+	uint32_t boundary = scan.lastCompleteTransactionEnd;
+	if (entriesEnd <= boundary) {
+		return; // the file ends on a transaction boundary
+	}
+	if (boundary < protectedPosition) {
+		std::ostringstream msg;
+		msg << "Transaction log " << this->path.string()
+			<< " has an unclosed transaction crossing the flushed position " << protectedPosition
+			<< "; leaving it intact to preserve durable log history.";
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n",
+			this, msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		return;
+	}
+
+	// A zero boundary means no entry in this file closed a transaction. Either the
+	// whole file is the tail of a batch that began in an earlier one, or it predates
+	// the last-entry flag entirely — neither is safe to discard from here, so leave
+	// the bytes and let the store fall back to seeding its watermark from an older
+	// file. A non-zero boundary is the proof that this writer sets the flag.
+	if (boundary == 0) {
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction No closed transaction in %s; leaving %u trailing entries intact\n",
+			this, this->path.string().c_str(), scan.unclosedTailEntries);
+		return;
+	}
+
+	if (!scan.unclosedTailIsOneTransaction) {
+		std::ostringstream msg;
+		msg << "Transaction log " << this->path.string() << " ends with " << scan.unclosedTailEntries
+			<< " unflagged entries spanning more than one timestamp after offset " << boundary
+			<< "; leaving them intact rather than discarding what may be complete transactions "
+			   "written before the last-entry flag existed.";
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		return;
+	}
+
+	// The trailing run is one transaction whose final entry never reached disk, so
+	// its RocksDB commit never ran either: writeBatch() completes before
+	// Transaction::Commit() in every commit path, and both lanes of the commit
+	// thread preserve dispatch order, so an interrupted log write is always the
+	// newest thing in the log and nothing durable depends on it. Dropping it is what
+	// keeps the "a log never holds an unclosed transaction" invariant enforceable
+	// rather than merely observed by the watermark: the bytes cannot later be
+	// swallowed into the next batch's group by that batch's flag.
+	if (!this->eraseTail(boundary, entriesEnd)) {
+		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction Erase failed (or unsupported on this platform) for %s\n",
+			this, this->path.string().c_str());
+		return;
+	}
+
+	this->size.store(boundary, std::memory_order_relaxed);
+	if (this->lastFlushedSize > boundary) {
+		this->lastFlushedSize = boundary;
+	}
+	this->resetTimestampIndex();
+
+	std::ostringstream msg;
+	msg << "Transaction log " << this->path.string() << " ended mid-transaction; dropped "
+		<< scan.unclosedTailEntries << " entry(s) (" << (entriesEnd - boundary)
+		<< " bytes) of a transaction that never closed, back to the last complete transaction (new size="
+		<< boundary << ").";
+	DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
+	emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+}
+
+void TransactionLogFile::resetTimestampIndex() {
+	std::lock_guard<std::mutex> indexLock(this->indexMutex);
+	this->positionByTimestampIndex.clear();
+	this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 }
 
 uint32_t TransactionLogFile::countEntries() const {
@@ -242,6 +490,10 @@ uint32_t TransactionLogFile::countEntries() const {
 		}
 
 		auto fileSize = static_cast<uint32_t>(onDiskSize);
+		uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
+		if (retiredBoundary > 0) {
+			fileSize = std::min(fileSize, retiredBoundary);
+		}
 		std::vector<char> buffer(fileSize);
 
 		// Read through a fresh handle rather than this->fd: old purgeable files are
@@ -295,51 +547,42 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 
 void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-	uint32_t numEntriesToWrite = 0;
-	uint32_t totalSizeToWrite = 0;
 
-	// check if the file is at or over the max size
-	if (maxFileSize > 0) {
-		if (this->size >= maxFileSize) {
-			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 File already at max size (%u >= %u), deferring to next file\n",
-				this, this->size.load(std::memory_order_relaxed), maxFileSize);
-			return;
-		}
-
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Calculating how many entries we can fit (size=%u, maxFileSize=%u)\n", this, this->size.load(std::memory_order_relaxed), maxFileSize);
-
-		// calculate how many entries we can fit
-		auto availableSpace = maxFileSize - this->size;
-		for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
-			auto& entry = batch.entries[i];
-			auto spaceNeeded = totalSizeToWrite + entry->size;
-			// always write the first entry
-			if ((this->size > TRANSACTION_LOG_FILE_HEADER_SIZE || i > batch.currentEntryIndex) && spaceNeeded > availableSpace) {
-				// entry won't fit
-				DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u won't fit (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace);
-				break;
-			}
-			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Entry %u fits (need=%u, available=%u)\n", this, i, spaceNeeded, availableSpace);
-			++numEntriesToWrite;
-			totalSizeToWrite += entry->size;
-		}
-	} else {
-		// unlimited space, write all entries
-		numEntriesToWrite = batch.entries.size() - batch.currentEntryIndex;
+	if (this->appendBoundaryLost.load(std::memory_order_relaxed)) {
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Append boundary lost, refusing write: %s\n",
+			this, this->path.string().c_str());
+		throw rocksdb_js::DBException(
+			"Transaction log segment has a retired append boundary: " + this->path.string());
 	}
 
-	if (numEntriesToWrite == 0) {
+	uint64_t totalSizeToWrite = 0;
+	for (size_t i = batch.currentEntryIndex; i < batch.entries.size(); ++i) {
+		totalSizeToWrite += batch.entries[i]->size;
+	}
+	uint32_t numEntriesToWrite = static_cast<uint32_t>(batch.entries.size() - batch.currentEntryIndex);
+	uint32_t currentSize = this->size.load(std::memory_order_relaxed);
+	if (totalSizeToWrite > std::numeric_limits<uint32_t>::max() - currentSize) {
+		throw rocksdb_js::DBException("Transaction log batch exceeds the maximum supported file size: " + this->path.string());
+	}
+
+	if (numEntriesToWrite == 0 ||
+		(maxFileSize > 0 && currentSize > TRANSACTION_LOG_FILE_HEADER_SIZE &&
+			(currentSize >= maxFileSize ||
+				totalSizeToWrite > static_cast<uint64_t>(maxFileSize - currentSize)))) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this);
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%u bytes)\n", this, numEntriesToWrite, totalSizeToWrite);
+	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%llu bytes)\n",
+		this, numEntriesToWrite, static_cast<unsigned long long>(totalSizeToWrite));
 
 	// Use a stack buffer for small batches to avoid a heap alloc per commit.
 	iovec stackIovecs[8];
 	auto heapIovecs = numEntriesToWrite > 8 ? std::make_unique<iovec[]>(numEntriesToWrite) : nullptr;
 	iovec* iovecs = heapIovecs ? heapIovecs.get() : stackIovecs;
 	size_t iovecsIndex = 0;
+	uint32_t startEntryIndex = batch.currentEntryIndex;
+	uint64_t attemptedBytes = 0;
 
 	// write the transaction headers and entry data to the iovecs
 	for (uint32_t i = 0; i < numEntriesToWrite; ++i) {
@@ -358,13 +601,51 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 
 		// add the entry data to the iovecs
 		iovecs[iovecsIndex++] = {data, entry->size};
+		attemptedBytes += entry->size;
 
 		++batch.currentEntryIndex;
 	}
 
-	int64_t bytesWritten = this->writeBatchToFile(iovecs, static_cast<int>(iovecsIndex));
+	int64_t bytesLanded = 0;
+	int64_t bytesWritten = this->writeBatchToFile(iovecs, static_cast<int>(iovecsIndex), bytesLanded);
 	if (bytesWritten < 0) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s\n", this, this->path.string().c_str());
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+		int64_t forcedBytesLanded = forcedBytesLandedForTests.load(std::memory_order_relaxed);
+		if (forcedBytesLanded != INT64_MIN) {
+			bytesLanded = forcedBytesLanded;
+		}
+#endif
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 ERROR: Failed to write transaction log entries to file: %s (%lld byte(s) landed)\n",
+			this, this->path.string().c_str(), static_cast<long long>(bytesLanded));
+
+		// Restore before warning construction or delivery can throw: the batch must
+		// never claim entries that did not reach a complete append.
+		batch.currentEntryIndex = startEntryIndex;
+
+		// Nothing can have landed beyond what we handed the OS, so a larger figure
+		// means the platform mis-reported and the extent is as good as unknown.
+		bool extentUnknown = bytesLanded < 0 || bytesLanded > static_cast<int64_t>(attemptedBytes);
+
+		// A positive or unknown landed extent makes the append boundary unsafe. Never
+		// truncate here: a reader may own a mapping that spans the old extent. Retire
+		// the segment so the store rotates it and the orphan remains a trailing partial.
+		if (extentUnknown || bytesLanded > 0) {
+			uint32_t committedSize = this->size.load(std::memory_order_relaxed);
+			this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+
+			std::ostringstream msg;
+			msg << "Transaction log " << this->path.string() << " kept ";
+			if (extentUnknown) {
+				msg << "an unknown number of";
+			} else {
+				msg << bytesLanded;
+			}
+			msg << " orphaned byte(s) from a failed append at offset " << committedSize
+				<< "; this segment is retired and no further entries will be written to it.";
+			DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 WARNING: %s\n", this, msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		}
+
 		throw rocksdb_js::DBException("Failed to write transaction log entries to file: " + this->path.string());
 	}
 
@@ -434,6 +715,18 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	bool stoppedAtUnindexedTail = false;
 	while (this->lastIndexedPosition < this->size) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
+		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
+		// zero there (e.g. an unset/epoch file timestamp) must not be mistaken for the
+		// zero-padding end-of-data marker below — that heuristic only applies once we're
+		// scanning actual entries past the header. Record it and advance to the first entry
+		// unconditionally, before the end-of-data check gets a chance to truncate this->size
+		// back into the header itself.
+		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
+			// specifically record the log file timestamp as the first entry with a position of zero
+			positionByTimestampIndex.insert({entryTimestamp, 0});
+			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
+			continue;
+		}
 		if (entryTimestamp == 0) {
 			// A zero timestamp marks the end of the written data. Only correct this->size down to the
 			// true written extent when no entries have been appended since (re)open — i.e. during
@@ -452,16 +745,10 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			}
 			break;
 		}
-		// for the first iteration, we insert the log file timestamp at the beginning of the index
-		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
-			// specifically record the log file timestamp as the first entry with a position of zero
-			positionByTimestampIndex.insert({entryTimestamp, 0});
-			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
-			continue;
-			// else check that the timestamp is greater than any previously indexed timestamp,
-			// otherwise we don't record it, because we want to start at the first position with a timestamp that
-			// is greater than the requested timestamp:
-		} else if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+		// check that the timestamp is greater than any previously indexed timestamp,
+		// otherwise we don't record it, because we want to start at the first position with a timestamp that
+		// is greater than the requested timestamp:
+		if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
 			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
 		}

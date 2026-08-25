@@ -4,11 +4,16 @@
 #include <memory>
 #include <node_api.h>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <functional>
+#include <vector>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -16,8 +21,8 @@
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
 #include "database/commit_worker.h"
-#include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/background_error.h"
 #include "core/platform.h"
 #include "napi/event_emitter.h"
 #include "napi/helpers.h"
@@ -28,6 +33,7 @@ namespace rocksdb_js {
 // forward declarations
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
+struct DBHandle;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -56,6 +62,117 @@ struct DBDeleter {
 			DEBUG_LOG("DBDeleter::operator() Deleted database\n");
 		}
 	}
+};
+
+/**
+ * Bounded waits for coordinated-retry commits parked on a conflicting holder's
+ * VT lock, so a holder that never releases resolves RETRY_NOW instead of
+ * parking forever (harper#2001, see AGENTS.md note 12). One instance per
+ * `DBDescriptor`, with one lazily-started thread tracking every outstanding
+ * deadline.
+ *
+ * Deliberately standalone — it holds no reference back to its descriptor, and
+ * nothing reachable from `fire()` touches the descriptor or `DBRegistry`.
+ * `fire()` is called from a `LockTracker` wake callback, which
+ * `LockTracker::wake()` invokes inline while the *process-global* VT
+ * `writerMutex_` is held (`VerificationTable::releaseWriteIntent` and
+ * `cancelForDB` both wake under it), so the standing invariant on that path is:
+ * do not block, and do not re-enter the VT or the registry. A
+ * `DBRegistry::PurgeIfUnreferenced` from there can claim the purge and run
+ * `finishClose()` -> `cancelForDB()` -> a second lock of that same
+ * non-recursive `writerMutex_`, wedging every database's write-intent path.
+ * Holding the wake closure's `weak_ptr` on this object rather than on the
+ * descriptor is also what keeps its transient `.lock()` out of the
+ * descriptor's `use_count`, which `PurgeIfUnreferenced` keys its "no handles
+ * left" decision on — so there is no purge-skip window to retry in the first
+ * place (the HarperFast/rocksdb-js#672 hazard).
+ *
+ * Parks are keyed by a monotonic `id`, not the entry's address:
+ * `LockTracker::wakeCallbacks` has no removal API, so a stale closure can
+ * outlive its entry and an address-keyed lookup could resolve a later,
+ * unrelated park that reused the freed address. `fired` is the exactly-once
+ * gate shared with that park's wake callback — whichever side wins the CAS
+ * calls+releases `tsfn`, always under `mutex` so a concurrent `releaseByEnv()`
+ * for a dying env cannot observe "nothing to cancel" while the other side is
+ * mid-call on that env's tsfn.
+ */
+class ParkTimeoutRegistry final {
+public:
+	~ParkTimeoutRegistry();
+
+	/**
+	 * JS thread (`completeCommitWork`). Registers a bounded wait, lazily
+	 * starting the single timeout thread. Returns the new park's id, or 0 if
+	 * the registry is shut down or thread creation failed -- either way the
+	 * caller resolves inline instead of parking with no timeout behind it.
+	 */
+	uint64_t schedule(
+		napi_env env,
+		unsigned timeoutMs,
+		napi_threadsafe_function tsfn,
+		std::shared_ptr<std::atomic<bool>> fired
+	);
+
+	/**
+	 * Resolves a specific park early because its VT lock's holder released
+	 * (LockTracker wake callback, any thread, VT `writerMutex_` held). A no-op
+	 * if the id is already gone -- claimed by the timeout thread, by
+	 * `releaseByEnv`, or drained by `shutdown`.
+	 */
+	void fire(uint64_t id);
+
+	/**
+	 * Module env-cleanup hook. Cancels every pending park registered for a
+	 * dying env -- released, never called, so neither the timeout thread nor a
+	 * later real wake can fire into a tsfn Node is about to free.
+	 */
+	void releaseByEnv(napi_env env);
+
+	/**
+	 * Descriptor close: stop and join the timeout thread, then resolve
+	 * (call+release) every park still pending. `cancelForDB`, called just
+	 * before this, cannot be relied on to have woken everything -- a park can
+	 * be registered on a foreign-`dbId` tracker (colliding VT slot) that only
+	 * wakes a different database. Idempotent (called from both `finishClose()`
+	 * and the descriptor's destructor, matching `commitWorker`).
+	 */
+	void shutdown();
+
+private:
+	using DeadlineIndex = std::multimap<std::chrono::steady_clock::time_point, uint64_t>;
+
+	struct ParkTimeout {
+		uint64_t id;
+		napi_env env;
+		napi_threadsafe_function tsfn;
+		std::shared_ptr<std::atomic<bool>> fired;
+		DeadlineIndex::iterator deadlineIt;
+	};
+
+	/** Detaches `id` from both indexes; null if already claimed. Holds `mutex`. */
+	std::unique_ptr<ParkTimeout> take(uint64_t id);
+
+	/**
+	 * Calls+releases a claimed park's tsfn, unless another side already won the
+	 * exactly-once gate. Every caller holds `mutex`.
+	 */
+	static void resolve(ParkTimeout& park);
+
+	/** Runs on `thread` until `shutdown()` stops it. */
+	void runLoop();
+
+	std::mutex mutex;
+	std::condition_variable cv;
+	std::unordered_map<uint64_t, std::unique_ptr<ParkTimeout>> parks;
+	// Deadline-ordered view of `parks`: the timeout thread needs the earliest
+	// deadline on every wakeup, and scanning for it under `mutex` would put an
+	// O(N) loop on the same lock `fire()` must take while holding the global VT
+	// `writerMutex_`.
+	DeadlineIndex deadlines;
+	uint64_t nextId = 1;
+	std::thread thread;
+	bool threadStarted = false;
+	bool stopped = false;
 };
 
 /**
@@ -189,6 +306,31 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	EventEmitter events;
 
 	/**
+	 * The most recent background error, serialized to a JSON string
+	 * (`backgroundErrorToJson`), or empty when none has occurred. Stored as a
+	 * plain string — not any N-API value — so `OnBackgroundError` can write it
+	 * from a RocksDB background thread with no `napi_env` involved; the JS thread
+	 * reconstructs a `BackgroundError` from it on demand (`getLastError()`) and
+	 * when emitting the `'error'` event. Guarded by `lastErrorMutex`. Purely
+	 * historical: it is NOT cleared by `resume()` (see HarperFast/rocksdb-js#730).
+	 */
+	std::mutex lastErrorMutex;
+	std::string lastError;
+
+	/**
+	 * Stores the latest serialized background error AND, for a non-empty `json`,
+	 * emits the per-database `'error'` event with the reconstructed
+	 * `BackgroundError`. An empty `json` is a silent reset (no event) — the
+	 * clear path behind `db.setLastError(null)`. Safe to call from a RocksDB
+	 * background thread (store) or the JS thread; the emit is dispatched
+	 * asynchronously via the thread-safe emitter.
+	 */
+	void setLastError(std::string json);
+
+	/** Returns the latest serialized background error, or empty when none (JS thread). */
+	std::string getLastError();
+
+	/**
 	 * Commit lanes executing async transaction commits off the libuv
 	 * threadpool, shared by all envs/handles on this database. In the default
 	 * single-lane mode only commitWorker runs: each commit executes its log
@@ -266,6 +408,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * tsfn so the commit thread stops marshalling into a torn-down env.
 	 */
 	void releaseCommitCompletionsByEnv(napi_env env);
+
+	/**
+	 * Bounded waits for this database's parked coordinated-retry commits.
+	 * Never null; owned by shared_ptr so a LockTracker wake callback can hold
+	 * a weak reference to it without referencing the descriptor (see
+	 * `ParkTimeoutRegistry`). Drained and joined by `finishClose()`.
+	 */
+	const std::shared_ptr<ParkTimeoutRegistry> parkTimeouts =
+		std::make_shared<ParkTimeoutRegistry>();
 
 private:
 	DBDescriptor(
@@ -388,21 +539,22 @@ public:
 	 * @param key The key of the user shared buffer.
 	 * @param defaultBuffer The default buffer to use if the user shared buffer does
 	 * not exist.
-	 * @param callbackRef An optional callback reference to remove the listener when
-	 * the user shared buffer is garbage collected.
+	 * @param listener An optional listener (from addListener) to remove when the
+	 * user shared buffer is garbage collected.
 	 */
 	napi_value getUserSharedBuffer(
 		napi_env env,
 		std::string& key,
 		std::shared_ptr<DBHandle> dbHandle,
 		napi_value defaultBuffer,
-		napi_ref callbackRef = nullptr
+		std::shared_ptr<ListenerCallback> listener = nullptr
 	);
 
-	napi_ref addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
+	std::shared_ptr<ListenerCallback> addListener(napi_env env, std::string& key, napi_value callback, std::weak_ptr<DBHandle> owner);
 	bool notify(std::string key, ListenerData* data);
 	napi_value listeners(napi_env env, std::string& key);
 	napi_value removeListener(napi_env env, std::string& key, napi_value callback);
+	void removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target);
 	void removeListenersByOwner(DBHandle* owner);
 	void removeListenersByEnv(napi_env env);
 
@@ -546,21 +698,27 @@ struct UserSharedBufferData final {
  * until JS releases every retained ArrayBuffer for the key. The weak pointers
  * to `DBHandle` / `ColumnFamilyDescriptor` are used for opportunistic cleanup
  * (removing listeners, erasing map entries) when those are still alive.
+ *
+ * The listener is held as a `weak_ptr` (not the raw `napi_ref`): the ref's
+ * ownership belongs to the listener's threadsafe function, which deletes it
+ * once the listener is torn down. A `weak_ptr` lets the finalizer remove the
+ * listener by identity only while it is still live, without ever dereferencing
+ * a ref it does not own (HarperFast/rocksdb-js#790).
  */
 struct UserSharedBufferFinalizeData final {
 	std::string key;
 	std::weak_ptr<DBHandle> dbHandle;
 	std::weak_ptr<ColumnFamilyDescriptor> columnDescriptor;
 	std::shared_ptr<UserSharedBufferData> sharedData;
-	napi_ref callbackRef;
+	std::weak_ptr<ListenerCallback> listener;
 
 	UserSharedBufferFinalizeData(
 		const std::string& k,
 		std::weak_ptr<DBHandle> d,
 		std::weak_ptr<ColumnFamilyDescriptor> c,
 		std::shared_ptr<UserSharedBufferData> data,
-		napi_ref callbackRef = nullptr
-	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), callbackRef(callbackRef) {}
+		std::weak_ptr<ListenerCallback> listener = {}
+	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), listener(std::move(listener)) {}
 };
 
 /**

@@ -20,9 +20,15 @@ namespace rocksdb_js {
 struct ListenerData final {
 	std::string args;
 
+	// When true, `args` is a JSON *object* (not the usual args array) of error
+	// fields, and the trampoline materializes it into a JS `Error` passed as the
+	// listener's single argument. Used by the per-database `'error'` event so a
+	// background error reaches JS as a real `Error` (HarperFast/rocksdb-js#730).
+	bool asError = false;
+
 	ListenerData() = default;
 	ListenerData(size_t size) : args(size, '\0') {}
-	ListenerData(const ListenerData& other) : args(other.args) {}
+	ListenerData(const ListenerData& other) : args(other.args), asError(other.asError) {}
 
 	/**
 	 * Builds a ListenerData payload from one or more pre-stringified args,
@@ -60,6 +66,22 @@ struct ListenerData final {
 
 		auto* data = new ListenerData();
 		data->args = std::move(payload);
+		return data;
+	}
+
+	/**
+	 * Builds an `asError` payload from a background error's JSON string form
+	 * (`backgroundErrorToJson`). The trampoline (`callListenerCallback`)
+	 * reconstructs a `BackgroundError` instance from it on the delivering env's
+	 * thread. Safe to call off the JS thread (no N-API).
+	 *
+	 * Returns a heap-allocated ListenerData; ownership transfers to
+	 * `EventEmitter::notify`.
+	 */
+	static ListenerData* backgroundError(const std::string& json) {
+		auto* data = new ListenerData();
+		data->args = json;
+		data->asError = true;
 		return data;
 	}
 };
@@ -158,9 +180,12 @@ public:
 	 * @param callback The JS function to invoke when the event is emitted.
 	 * @param owner Optional weak reference to the owning object. Defaults to
 	 *              an empty weak_ptr for ownerless listeners (global emitter).
-	 * @returns The napi_ref backing the callback, suitable for later removal.
+	 * @returns The registered listener, or nullptr on failure. Callers that need
+	 *          a lifetime-safe removal handle (e.g. the user-shared-buffer
+	 *          finalizer) hold a std::weak_ptr to it; the backing napi_ref is
+	 *          reachable via `->callbackRef` while the listener is live.
 	 */
-	napi_ref addListener(
+	std::shared_ptr<ListenerCallback> addListener(
 		napi_env env,
 		const std::string& key,
 		napi_value callback,
@@ -204,6 +229,16 @@ public:
 	 * found and removed.
 	 */
 	napi_value removeListener(napi_env env, const std::string& key, napi_value callback);
+
+	/**
+	 * Removes a specific listener by identity (the shared_ptr returned from
+	 * addListener) for the given key. Env-free and does not touch the listener's
+	 * napi_ref, so it is safe to call from a finalizer during env/process
+	 * teardown -- the tsfn (and, through it, the napi_ref) is released here, but
+	 * the ref itself is deleted later on the JS thread by the tsfn finalizer.
+	 * A no-op if `target` is null or no longer registered.
+	 */
+	void removeListener(const std::string& key, const std::shared_ptr<ListenerCallback>& target);
 
 	/**
 	 * Removes all listeners owned by the given raw pointer. The pointer must

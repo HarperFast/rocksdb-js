@@ -15,23 +15,31 @@
 
 namespace rocksdb_js {
 
-std::vector<NamedTransactionLogBackupEntry> collectTransactionLogBackupEntries(DBDescriptor* descriptor) {
-	std::vector<NamedTransactionLogBackupEntry> entries;
+rocksdb::Status collectTransactionLogBackupEntries(
+	DBDescriptor* descriptor,
+	std::vector<NamedTransactionLogBackupEntry>& entries
+) {
 	if (descriptor == nullptr) {
-		return entries;
+		return rocksdb::Status::OK();
 	}
 
-	auto stores = TransactionLogStoreRegistry::GetStores(descriptor->path);
-	for (const auto& store : stores) {
-		if (!store) {
-			continue;
+	try {
+		auto stores = TransactionLogStoreRegistry::GetStores(descriptor->path);
+		for (const auto& store : stores) {
+			if (!store) {
+				continue;
+			}
+			const std::string& storeName = store->name;
+			for (auto& file : store->snapshotForBackup()) {
+				entries.push_back({ storeName, std::move(file) });
+			}
 		}
-		const std::string& storeName = store->name;
-		for (auto& file : store->snapshotForBackup()) {
-			entries.push_back({ storeName, std::move(file) });
-		}
+	} catch (const std::exception& e) {
+		return rocksdb::Status::IOError("Failed to snapshot transaction log metadata", e.what());
+	} catch (...) {
+		return rocksdb::Status::IOError("Failed to snapshot transaction log metadata", "unknown error");
 	}
-	return entries;
+	return rocksdb::Status::OK();
 }
 
 /**
@@ -306,7 +314,11 @@ rocksdb::Status backupTransactionLogsToDir(
 	const std::filesystem::path& destBaseDir,
 	bool sync
 ) {
-	auto entries = collectTransactionLogBackupEntries(descriptor);
+	std::vector<NamedTransactionLogBackupEntry> entries;
+	rocksdb::Status status = collectTransactionLogBackupEntries(descriptor, entries);
+	if (!status.ok()) {
+		return status;
+	}
 	if (entries.empty()) {
 		// No logs to snapshot: leave no directory at all — restore treats an
 		// absent `<backupId>` subtree as "this backup captured no logs".
@@ -323,7 +335,7 @@ rocksdb::Status backupTransactionLogsToDir(
 	std::filesystem::path stagingDir =
 		destBaseDir.parent_path() / (TRANSACTION_LOG_STAGING_PREFIX + destBaseDir.filename().string());
 
-	rocksdb::Status status = copySnapshotEntries(stagingDir, entries, sync);
+	status = copySnapshotEntries(stagingDir, entries, sync);
 
 	if (status.ok()) {
 		std::error_code ec;

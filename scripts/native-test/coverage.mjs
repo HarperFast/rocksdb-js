@@ -80,7 +80,7 @@ run('lcov', [
 // coverage/native/html/. --dark-mode picks the dark CSS theme.
 run('genhtml', [
 	'--ignore-errors',
-	'category,category',
+	'category,category,unsupported,unsupported,inconsistent,inconsistent,corrupt,corrupt',
 	'--dark-mode',
 	infoFile,
 	'--output-directory',

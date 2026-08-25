@@ -181,8 +181,9 @@ struct TransactionLogStoreStats {
  * bytes land). `mtime` is the source's on-disk modified time and MUST be
  * preserved on the destination: the store derives file age (rotation/retention)
  * from mtime, so a restored file with a fresh mtime would break retention.
- * `immutable` is true for rotated log files, which are never rewritten and so
- * can be hard-linked instead of copied.
+ * `immutable` is true for clean rotated log files, which are never rewritten
+ * and so can be hard-linked instead of copied. Retired files are false even
+ * after rotation because their physical inode extends past `byteLimit`.
  *
  * `inlineContents`, when non-empty, holds the file's bytes captured at snapshot
  * time; consumers write these instead of re-reading `sourcePath`. This is used
@@ -436,8 +437,9 @@ struct TransactionLogStore final {
 	/**
 	 * Advances currentSequenceNumber to the next sequence, first downgrading the
 	 * memory map of the file being rotated away from to a weak reference (so a
-	 * reader that mapped it while current no longer pins it). Must be called on
-	 * the write path (under writeMutex).
+	 * reader that mapped it while current no longer pins it), then resets
+	 * nextLogPosition to the beginning of the new sequence. Must be called on the
+	 * write path (under writeMutex).
 	 */
 	void rotateToNextSequence(const std::shared_ptr<TransactionLogFile>& oldFile);
 
@@ -467,7 +469,11 @@ struct TransactionLogStore final {
 	 * backup. Enumerates the sequence files under `dataSetsMutex` (holding
 	 * shared_ptrs so they outlive the lock), capturing each file's current `size`
 	 * as the byte limit and its on-disk mtime, plus the `txn.state` side file if
-	 * present. Rotated files (sequence < current) are marked `immutable`.
+	 * present. Rotated files (sequence < current) are marked `immutable`. A malformed
+	 * header is excluded with a once-per-file warning because it has no readable
+	 * entries. Environmental open/read failures propagate so callers cannot publish
+	 * a silently incomplete backup; `collectTransactionLogBackupEntries()` converts
+	 * them to a `rocksdb::Status` before control returns to a backup worker.
 	 */
 	std::vector<TransactionLogBackupEntry> snapshotForBackup();
 
@@ -535,6 +541,35 @@ private:
 	 * @returns The log file.
 	 */
 	std::shared_ptr<TransactionLogFile> getLogFile(const uint32_t sequenceNumber);
+
+	/**
+	 * Resolves `file->size` — the written extent — for a file that was
+	 * registered but never opened, by borrowing its handle briefly.
+	 *
+	 * registerLogFile() opens the current file eagerly but leaves older ones
+	 * lazy, and a lazy file reads `size == 0`, which is indistinguishable from
+	 * "empty" to every consumer of the field. Two of them act on that: the
+	 * backup snapshot would omit the segment, and doPurge()'s flushed-position
+	 * guard would delete a segment whose tail never reached RocksDB. Anything
+	 * that makes a decision from `size` must call this first.
+	 *
+	 * A bare stat is not equivalent: on Windows an active segment is
+	 * pre-extended to maxFileSize, so only openFile()'s index scan finds the
+	 * real end of entries (see AGENTS.md invariant 5).
+	 *
+	 * Borrows the handle only — a file that was closed is closed again, so this
+	 * costs its syscalls once per process rather than accumulating fds (or, on
+	 * Windows, mappings) for its lifetime. A file that fails to open releases
+	 * its handle in open() itself.
+	 *
+	 * Never touches the active segment: its handle belongs to the write path.
+	 *
+	 * Important! Must be called with `dataSetsMutex` held, which is also what
+	 * makes the exists() check meaningful: outside it the file could be
+	 * unlinked between the check and open(), whose O_CREAT / OPEN_ALWAYS would
+	 * resurrect a header-only ghost segment.
+	 */
+	void ensureExtent(const std::shared_ptr<TransactionLogFile>& file);
 
 	void doPurge(
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,

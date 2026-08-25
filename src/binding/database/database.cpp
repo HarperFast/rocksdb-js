@@ -9,6 +9,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "napi/background_error.h"
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
@@ -765,6 +766,13 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 					state->key,
 					&state->value
 				);
+				if (state->status.ok() && state->vtSlot) {
+					vtCheckAsyncGet(
+						state,
+						state->handle->descriptor->db.get(),
+						state->handle->getColumnFamilyHandle()
+					);
+				}
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -795,6 +803,121 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
 	return returnStatus;
+}
+
+/**
+ * Returns the most recent background error as a `BackgroundError` instance, or
+ * `null` when none has occurred on this database. The value is purely historical
+ * — it is not cleared by a successful `resume()`. A background error with
+ * `writesDisabled === true` means RocksDB has stopped accepting writes; call
+ * `resume()` once the underlying condition clears. See HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * const err = db.getLastError();
+ * if (err?.writesDisabled) db.resume();
+ * ```
+ */
+napi_value Database::GetLastError(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	std::string json = (*dbHandle)->descriptor->getLastError();
+	if (json.empty()) {
+		napi_value result;
+		NAPI_STATUS_THROWS(::napi_get_null(env, &result));
+		return result;
+	}
+
+	// Returns nullptr with a pending exception on failure (propagated to JS).
+	return BackgroundError::New(env, json);
+}
+
+/**
+ * Sets or clears the last background error (mirroring the Win32
+ * `SetLastError`/`GetLastError` pair). Passing an object stores it as the last
+ * error and emits the `'error'` event with the reconstructed `BackgroundError`;
+ * passing `null`/`undefined` (or no argument) clears it, so a subsequent
+ * `getLastError()` returns `null` and no event fires. Useful to reset the error
+ * after handling/recovering it, and to inject one in tests. See
+ * HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * db.setLastError(null); // reset after recovery
+ * ```
+ */
+napi_value Database::SetLastError(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	napi_valuetype argType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &argType));
+
+	if (argType == napi_undefined || argType == napi_null) {
+		(*dbHandle)->descriptor->setLastError(""); // clear (silent)
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	if (argType != napi_object) {
+		::napi_throw_type_error(env, nullptr, "setLastError expects an object or null");
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	// Serialize the object to the same JSON form OnBackgroundError stores, so it
+	// round-trips through BackgroundError::New when read back / emitted.
+	napi_value global;
+	napi_value json;
+	napi_value stringify;
+	napi_value jsonString;
+	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, global, "JSON", &json));
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, json, "stringify", &stringify));
+	NAPI_STATUS_THROWS(::napi_call_function(env, json, stringify, 1, &argv[0], &jsonString));
+
+	size_t len = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, nullptr, 0, &len));
+	std::string jsonStr(len, '\0');
+	NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, jsonString, &jsonStr[0], len + 1, nullptr));
+
+	(*dbHandle)->descriptor->setLastError(std::move(jsonStr));
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Attempts to recover the database from a background error by calling RocksDB's
+ * `DB::Resume()`. When a write fails at the filesystem level (e.g. a full disk),
+ * RocksDB records a hard background error and stops accepting writes; the
+ * database emits an `'error'` event and becomes effectively read-only until
+ * recovery. Call this after the underlying condition has cleared (e.g. disk
+ * space freed): on success writes are accepted again (and RocksDB can resume the
+ * obsolete-file cleanup it was blocking); on failure the condition has not
+ * actually cleared, and this throws with the RocksDB error while the database
+ * stays read-only. A no-op on a healthy database. Runs synchronously — recovery
+ * can re-flush memtables, so it may briefly block. See HarperFast/rocksdb-js#730.
+ *
+ * @example
+ * ```typescript
+ * // after freeing disk space:
+ * db.resume();
+ * ```
+ */
+napi_value Database::Resume(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	rocksdb::Status status = (*dbHandle)->descriptor->db->Resume();
+	if (!status.ok()) {
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, "Resume failed", error);
+		::napi_throw(env, error);
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -919,6 +1042,205 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, count, &result));
+	return result;
+}
+
+struct RangeEstimate {
+	double count = 0;
+	double memtableCount = 0;
+	double sstCount = 0;
+	double entriesPerBlock = 0;
+	double liveFraction = 1;
+	bool degraded = false;
+};
+
+/**
+ * Estimates the number of live keys in `[start, end)` from RocksDB statistics
+ * alone — no iteration:
+ *
+ * - memtable portion: `GetApproximateMemTableStats` returns an entry count
+ *   directly (it counts all memtable entries, including tombstones and
+ *   overwrites, so it can over-report a recently-deleted range).
+ * - SST portion: the approximate file bytes covered by the range
+ *   (`GetApproximateSizes`) converted to entries using the live-entry density
+ *   of only the SSTs overlapping the range (`GetPropertiesOfTablesInRange`:
+ *   `(num_entries - num_deletions) / file bytes`). Using range-local table
+ *   properties keeps the density honest when entry sizes vary across the
+ *   keyspace, and needs no cache/invalidation.
+ *
+ * Overlapping versions of a key in multiple levels are counted once per
+ * level, so the estimate skews high on heavily-overwritten ranges until
+ * compaction; resolution is bounded by SST data-block granularity, so tiny
+ * ranges can over-report or report zero for present keys.
+ */
+static RangeEstimate estimateRangeCount(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cf, const rocksdb::Slice& start, const rocksdb::Slice& end) {
+	rocksdb::Range range(start, end);
+	RangeEstimate result;
+
+	uint64_t memtableCount = 0;
+	uint64_t memtableSize = 0;
+	db->GetApproximateMemTableStats(cf, range, &memtableCount, &memtableSize);
+	result.memtableCount = static_cast<double>(memtableCount);
+	result.count = result.memtableCount;
+
+	rocksdb::SizeApproximationOptions sizeOptions;
+	sizeOptions.include_memtables = false;
+	sizeOptions.files_size_error_margin = 0.1;
+	uint64_t sstBytes = 0;
+	rocksdb::Status status = db->GetApproximateSizes(sizeOptions, cf, &range, 1, &sstBytes);
+	if (!status.ok()) {
+		result.degraded = true;
+		return result;
+	}
+
+	rocksdb::TablePropertiesCollection props;
+	status = db->GetPropertiesOfTablesInRange(cf, &range, 1, &props);
+	uint64_t entries = 0;
+	uint64_t deletions = 0;
+	uint64_t fileBytes = 0;
+	uint64_t dataBlocks = 0;
+	if (status.ok()) {
+		for (const auto& prop : props) {
+			if (!prop.second) {
+				result.degraded = true;
+				continue;
+			}
+			const rocksdb::TableProperties& p = *prop.second;
+			entries += p.num_entries;
+			deletions += p.num_deletions;
+			// Approximate the on-disk file size covered by table properties;
+			// GetApproximateSizes offsets span data + index + filter blocks,
+			// so the density denominator must too.
+			fileBytes += p.data_size + p.index_size + p.filter_size;
+			dataBlocks += p.num_data_blocks;
+		}
+	} else {
+		result.degraded = true;
+	}
+	if (entries <= deletions || fileBytes == 0) {
+		// A nonzero byte estimate without density leaves the SST portion unknown.
+		result.degraded = result.degraded || sstBytes != 0;
+		return result;
+	}
+	if (sstBytes == 0) {
+		result.degraded = true;
+		return result;
+	}
+
+	double density = static_cast<double>(entries - deletions) / static_cast<double>(fileBytes);
+	result.sstCount = static_cast<double>(sstBytes) * density;
+	result.count += result.sstCount;
+	result.entriesPerBlock = dataBlocks > 0
+		? static_cast<double>(entries - deletions) / static_cast<double>(dataBlocks)
+		: 0;
+	result.liveFraction = static_cast<double>(entries - deletions) / static_cast<double>(entries);
+	return result;
+}
+
+/**
+ * Heuristic [0, 1] trust indicator for a range estimate — 1 only when exact.
+ * Combines the estimate's resolution (SST portion is quantized to data-block
+ * granularity, memtable counts to skip-list sampling granularity) with the
+ * tombstone fraction of the overlapping SSTs (a proxy for overwrite/delete
+ * skew the estimate cannot see).
+ */
+static double estimateConfidence(const RangeEstimate& est) {
+	if (est.degraded) {
+		return 0.1;
+	}
+	if (est.count <= 0) {
+		return 0.95;
+	}
+	double sstResolution = std::max(est.entriesPerBlock, 1.0);
+	double memtableResolution = 8;
+	double resolution = (est.sstCount * sstResolution + est.memtableCount * memtableResolution) / est.count;
+	double granularity = est.count / (est.count + resolution);
+	return granularity * (0.5 + 0.5 * est.liveFraction);
+}
+
+/**
+ * Estimates the number of keys within a range without iterating, returning
+ * `{ count, confidence }`. Both keys are optional buffers; an open-ended side
+ * is handled by subtracting the complementary range from the
+ * whole-column-family `estimate-num-keys` (an empty slice is the *smallest*
+ * key, so it must never be passed as an upper bound).
+ *
+ * @example
+ * ```typescript
+ * const db = NativeDatabase.open('path/to/db');
+ * const { count, confidence } = db.estimateCount(startBuffer, endBuffer);
+ * ```
+ */
+napi_value Database::EstimateCount(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	rocksdb::DB* db = (*dbHandle)->descriptor->db.get();
+	rocksdb::ColumnFamilyHandle* cf = (*dbHandle)->getColumnFamilyHandle();
+
+	// N-API may return a null data pointer for a zero-length buffer.
+	void* startData = nullptr;
+	size_t startLength = 0;
+	napi_valuetype startType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &startType));
+	bool hasStart = startType != napi_undefined && startType != napi_null;
+	if (hasStart) {
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &startData, &startLength));
+	}
+
+	void* endData = nullptr;
+	size_t endLength = 0;
+	napi_valuetype endType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &endType));
+	bool hasEnd = endType != napi_undefined && endType != napi_null;
+	if (hasEnd) {
+		NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[1], &endData, &endLength));
+	}
+
+	rocksdb::Slice startSlice(startLength ? static_cast<const char*>(startData) : "", startLength);
+	rocksdb::Slice endSlice(endLength ? static_cast<const char*>(endData) : "", endLength);
+
+	double estimate = 0;
+	double confidence = 0;
+	if (!hasEnd) {
+		uint64_t totalKeys = 0;
+		bool totalOk = db->GetIntProperty(cf, rocksdb::DB::Properties::kEstimateNumKeys, &totalKeys);
+		double total = static_cast<double>(totalKeys);
+		if (!totalOk) {
+			estimate = 0;
+			confidence = 0;
+		} else if (!hasStart || startLength == 0 || totalKeys == 0) {
+			estimate = total;
+			confidence = totalKeys == 0 ? 0.95 : 0.9;
+		} else {
+			// No upper bound: estimate [start, ∞) as total minus [min, start).
+			RangeEstimate complement = estimateRangeCount(db, cf, rocksdb::Slice(), startSlice);
+			estimate = std::max(0.0, total - complement.count);
+			double share = estimate / std::max(estimate + complement.count, 1.0);
+			confidence = std::min(0.9, estimateConfidence(complement)) * share;
+		}
+	} else if (endLength == 0 || startSlice.compare(endSlice) >= 0) {
+		// Empty end bound (below every key) or inverted/empty range:
+		// GetApproximateSizes would underflow (end offset minus start offset
+		// in uint64). Comparator is always bytewise (db_descriptor.cpp), so
+		// Slice::compare matches key order. Empty by construction, so exact.
+		estimate = 0;
+		confidence = 1.0;
+	} else {
+		RangeEstimate rangeEstimate = estimateRangeCount(db, cf, startSlice, endSlice);
+		estimate = rangeEstimate.count;
+		confidence = estimateConfidence(rangeEstimate);
+	}
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	napi_value countValue;
+	NAPI_STATUS_THROWS(::napi_create_double(env, std::round(estimate), &countValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "count", countValue));
+	napi_value confidenceValue;
+	NAPI_STATUS_THROWS(::napi_create_double(env, confidence, &confidenceValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "confidence", confidenceValue));
 	return result;
 }
 
@@ -1202,17 +1524,31 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// version is the single accessible value (see vtPopulateIfSettled). Passing
 	// the value just read plus the read's snapshot lets the gate skip a redundant
 	// latest-read when that value is provably the latest committed version.
-	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion)) {
+	// A value whose version the producer marked non-unique is neither answered FRESH nor published
+	// (VERSION_NOT_UNIQUE_FLAG); the caller gets the value it read instead.
+	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
-		if (hasExpectedVersion && extracted == expectedVersion) {
-			// Soft VT miss confirmed fresh: the value still carries the caller's
-			// expected version, so the cached value is valid for this read.
-			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
-			napi_value freshResult;
-			NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
-			return freshResult;
+		const VtLatestCheck latest = vtCheckLatest(
+			(*dbHandle)->descriptor->db.get(),
+			(*dbHandle)->getColumnFamilyHandle(),
+			keySlice,
+			readSnapshot
+		);
+		if (!latest.notUnique) {
+			// A latest read already resolved the version, so hand vtPopulateIfSettled that version as
+			// the provably-latest one rather than have it repeat the Get.
+			const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
+			const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
+			if (hasExpectedVersion && extracted == expectedVersion) {
+				// Soft VT miss confirmed fresh: the value still carries the caller's
+				// expected version, so the cached value is valid for this read.
+				vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+				napi_value freshResult;
+				NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
+				return freshResult;
+			}
+			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 		}
-		vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, extracted, readSnapshot, vtObserved);
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
@@ -1394,21 +1730,21 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	// if we have a callback, add it as a listener
-	napi_ref callbackRef = nullptr;
+	std::shared_ptr<ListenerCallback> listener;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &type));
 	if (type != napi_undefined) {
 		if (type == napi_function) {
 			DEBUG_LOG("Database::GetUserSharedBuffer key start=%u end=%u:", keyStart, keyEnd);
 			DEBUG_LOG_KEY_LN(keyStr);
-			callbackRef = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
+			listener = (*dbHandle)->descriptor->addListener(env, keyStr, argv[2], *dbHandle);
 		} else {
 			::napi_throw_error(env, nullptr, "Callback must be a function");
 			return nullptr;
 		}
 	}
 
-	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, *dbHandle, argv[1], callbackRef);
+	return (*dbHandle)->descriptor->getUserSharedBuffer(env, keyStr, *dbHandle, argv[1], std::move(listener));
 }
 
 /**
@@ -1987,10 +2323,13 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "estimateCount", nullptr, EstimateCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setLastError", nullptr, SetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -2012,6 +2351,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeListener", nullptr, RemoveListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "resume", nullptr, Resume, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultValueBuffer", nullptr, SetDefaultValueBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setDefaultKeyBuffer", nullptr, SetDefaultKeyBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setIteratorState", nullptr, SetIteratorState, nullptr, nullptr, nullptr, napi_default, nullptr },

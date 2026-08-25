@@ -1,9 +1,13 @@
 import { constants } from '../src/load-binding.ts';
 import { RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner } from './lib/util.ts';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
+const parkTimeoutFixturePath = join(__dirname, 'fixtures', 'fork-park-timeout.mts');
 
 // Builds a value buffer whose first 8 bytes are the big-endian float64 version,
 // matching VerificationTable::extractVersionFromValue (Harper's record format).
@@ -119,6 +123,7 @@ describe('Coordinated retry (Phase 3)', () => {
 			// Force IsBusy by running concurrent transactions writing the same key
 			// under coordinatedRetry: true. database.ts handles RETRY_NOW internally
 			// via immediate retry; callers never see it as a return value.
+			const start = performance.now();
 			const results = await Promise.allSettled(
 				Array.from({ length: 4 }, async (_, i) => {
 					const v = Buffer.alloc(16);
@@ -131,6 +136,7 @@ describe('Coordinated retry (Phase 3)', () => {
 					);
 				})
 			);
+			const elapsed = performance.now() - start;
 
 			// All transactions should eventually succeed (coordinatedRetry retries
 			// without error) or fail gracefully; none should throw unexpectedly.
@@ -140,6 +146,12 @@ describe('Coordinated retry (Phase 3)', () => {
 					expect((r.reason as Error).message).toContain('commit');
 				}
 			}
+
+			// A conflict here resolves via LockTracker's real wake (the other
+			// commit finishing), not the #741 park timeout (default 5000ms) --
+			// bound the wall clock well under that so a broken wake path can't
+			// hide behind the timeout and still pass.
+			expect(elapsed).toBeLessThan(3000);
 
 			// Slot should be 0 (released) after all transactions settle.
 			const newV = 2.5e12;
@@ -165,6 +177,89 @@ describe('Coordinated retry (Phase 3)', () => {
 			);
 
 			expect(attempts).toBeGreaterThanOrEqual(1);
+		}));
+});
+
+// Regression coverage for #741: a park behind a leaked/abandoned holder must
+// resolve RETRY_NOW after a bounded wait instead of hanging forever
+// (harper#2001). The lower bound below is what tells this apart from the
+// `!parked` fast path, which also resolves RETRY_NOW near-instantly.
+describe('Coordinated retry — bounded park timeout (#741)', () => {
+	it('a commit parked behind a never-releasing holder settles with RETRY_NOW within the deadline', () =>
+		dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+			const { code, signal } = await new Promise<{
+				code: number | null;
+				signal: NodeJS.Signals | null;
+			}>((resolve, reject) => {
+				const child = spawn(process.execPath, [parkTimeoutFixturePath, dbPath], {
+					env: { ...process.env, ROCKSDB_JS_PARK_TIMEOUT_MS: '1' },
+				});
+				// Hang backstop only — the child's own `elapsed` assertion is the
+				// deadline check, and this also has to cover node boot and addon
+				// load, so a budget near the child's would report a slow runner as
+				// a regression. Under vitest's 30s testTimeout so the kill still
+				// dumps stderr.
+				const timer = setTimeout(() => child.kill(), 20_000);
+				let stderr = '';
+				child.stderr?.on('data', (chunk) => {
+					stderr += chunk.toString();
+				});
+				child.on('close', (childCode, childSignal) => {
+					clearTimeout(timer);
+					if (childCode !== 0 || childSignal) {
+						console.error(`Park timeout child stderr:\n${stderr}`);
+					}
+					resolve({ code: childCode, signal: childSignal });
+				});
+				child.on('error', (error) => {
+					clearTimeout(timer);
+					reject(error);
+				});
+			});
+
+			expect(signal).toBeNull();
+			expect(code).toBe(0);
+		}));
+
+	// Catches a hang on the wake-during-close path: the holder's intents are
+	// released from inside finishClose(), so the park's LockTracker callback
+	// runs while the close is in progress. The assertion is a deadline, so it
+	// cannot see either of the other two close-path behaviours — shutdown()
+	// resolves pending parks under its mutex before joining the timeout thread,
+	// so a detached thread settles this just as fast (its cost is a freed-
+	// registry touch, an ASan-shaped failure), and the drain of still-pending
+	// parks needs the holder on another database's colliding VT slot, which is
+	// hash-dependent and not arrangeable from here.
+	it('a commit parked at db.close() settles instead of hanging', () =>
+		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
+			const key = Buffer.from('park-timeout-close-drain');
+			const v0 = 1.6e12;
+			await db.put(key, valueWithVersion(v0));
+			db.populateVersion(key, v0);
+
+			const holder = new Transaction(db.store, { coordinatedRetry: true });
+			holder.putSync(key, valueWithVersion(2.1e12));
+
+			const txn = new Transaction(db.store, { coordinatedRetry: true });
+			await txn.get(key);
+			await db.put(key, valueWithVersion(2.2e12));
+			txn.putSync(key, valueWithVersion(2.3e12));
+
+			const commit = txn.commit();
+			// Long enough for the park to be registered with the timeout thread,
+			// short enough to stay far from its 5000ms deadline.
+			await delay(250);
+
+			const start = performance.now();
+			db.close();
+			// Settled, not resolved: `commit()`'s `aftercommit` notify rejects
+			// once the database is closed, whatever the native result was.
+			const [settled] = await Promise.allSettled([commit]);
+			const elapsed = performance.now() - start;
+
+			expect(settled.status).toBe('rejected');
+			// Under the deadline, so this can only have come from the close.
+			expect(elapsed).toBeLessThan(4000);
 		}));
 });
 
