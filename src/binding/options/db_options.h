@@ -59,11 +59,14 @@ struct BlobOptions final {
 	// the directory recorded in the database's OPTIONS file. Nothing is moved on
 	// the caller's behalf; this only records where they went.
 	//
-	// DATABASE-WIDE, unlike every other field here: a relocation moves the whole
-	// closed database's blob files at once (a flat backup restore does the same),
-	// so `dir` is applied to every column family rather than the one this open
-	// names. Scoped to the target, the rest would keep pointing at the old
-	// location — after a restore, at the SOURCE database's live blob directory.
+	// Reaches past the open's target family, unlike every other field here: blob
+	// files sitting in one directory move together, so the families that shared
+	// the target's old directory are re-pointed with it. A family whose blobs
+	// were somewhere else keeps its own — re-pointing it would strand files that
+	// never moved. An empty `dir` means the whole database was flattened into its
+	// own directory (what restoring a backup produces), so every family goes
+	// flat. One open therefore describes one move; a database with several
+	// distinct blob directories needs one per directory.
 	bool allowDirChange = false;
 	// enable_blob_garbage_collection (default true).
 	std::optional<bool> garbageCollection;

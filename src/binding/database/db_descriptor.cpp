@@ -1582,6 +1582,16 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				"\": " + persistedStatus.ToString()
 			);
 		}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		// Where the open's target family kept its blob files before this open.
+		// Disengaged when the target is not on disk yet, in which case nothing
+		// moved out from under it and no other family can be said to have moved
+		// with it.
+		std::optional<std::string> targetPersistedBlobDir;
+		if (auto targetIt = persisted.find(name); targetIt != persisted.end()) {
+			targetPersistedBlobDir = targetIt->second.blobDir;
+		}
+#endif
 		for (const auto& cfName : columnFamilyNames) {
 			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str());
 			rocksdb::ColumnFamilyOptions cfo = cfOptions;
@@ -1601,24 +1611,31 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				applyExplicitBlobOptions(cfo, options.blobs);
 			}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-			// `allowDirChange` acknowledges a relocation that has ALREADY happened
-			// on disk, and a relocation is database-wide: moving the blob files
-			// while the database is closed, or restoring a backup flat, moves every
-			// family's blobs at once. So the acknowledged directory is applied to
-			// every family, not just the one this open names.
+			// `allowDirChange` states where blob files that ALREADY moved now live,
+			// and a move is not per-family: the files sitting in one directory move
+			// together. So it reaches past the family this open names — but only as
+			// far as the move actually went.
 			//
-			// Scoping it to the target was the bug. The other families kept their
-			// persisted directory, which after a restore is the SOURCE database's
-			// live blob directory: two databases then mint colliding `NNNNNN.blob`
-			// numbers there and each one's obsolete-file scan deletes the other's
-			// live files. It also made the documented multi-table migration
-			// impossible — one family could be relocated per cold open, and the
-			// second open in the same process is a warm one that this cannot reach.
+			// Omitting `dir` says the whole database was flattened into its own
+			// directory, which is what restoring a backup produces, so every family
+			// goes flat. With a `dir`, only the families that shared the target's
+			// old directory moved with it; one whose blobs were somewhere else
+			// keeps its own, because re-pointing it would strand files that never
+			// moved. A database with several distinct blob directories therefore
+			// needs one open per directory — the option names a single destination,
+			// so it cannot describe more than one move.
 			//
-			// Only `dir` is widened. The rest of `blobs.*` stays per-family
-			// (invariant 14), because none of it describes where files already are.
+			// Only `dir` reaches other families. The rest of `blobs.*` stays
+			// per-family (invariant 14): none of it describes where files already
+			// are.
 			if (!isTarget && options.blobs.allowDirChange) {
-				cfo.blob_dir = options.blobs.dir;
+				if (options.blobs.dir.empty()) {
+					cfo.blob_dir.clear();
+				} else if (targetPersistedBlobDir && it != persisted.end() &&
+					it->second.blobDir == *targetPersistedBlobDir
+				) {
+					cfo.blob_dir = options.blobs.dir;
+				}
 			}
 			// A blob file's directory is derived from blob_dir every time it is
 			// opened — unlike an SST's path index, it is not recorded per file.

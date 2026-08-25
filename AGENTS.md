@@ -612,7 +612,19 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     unreadable. `DBDescriptor::open` enforces the blob half by comparing the request against the
     `blob_dir` persisted in the OPTIONS file (`loadPersistedCFOptions`), which is why that struct
     carries more than compression; `blobs.allowDirChange` is the acknowledgement for a completed
-    offline relocation. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
+    offline relocation, and it is the **one blob setting that reaches past the open's target family**:
+    blob files sitting in one directory move together, so every family that shared the target's
+    persisted directory is repointed with it; an omitted `dir` (the whole database flattened, as a
+    backup restore produces) repoints every family. Scoped to the target, untargeted families keep
+    the source database's `blob_dir` after a restore; independent file-number allocation then lets
+    each database's obsolete-file scan delete the other's live blobs, and a multi-table migration is
+    unreachable because the second family opens warm and cannot move a live directory. Applying the
+    change to every family unconditionally strands families whose files did not move — the usual
+    layout is heterogeneous (`default` flat and a named table on its own volume). A restored copy
+    opened without acknowledgement whose target family has no external blob directory remains a
+    documented procedure: OPTIONS cannot distinguish copy from original. A missing persisted
+    `blob_dir` is caught at open for every family, rather than when a flush makes the whole database
+    read-only. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
     sit in RocksDB's "not yet supported" serialization block, so there is nothing persisted to
     compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition
     (and removing `paths`, which produces the same corruption message) is caught because it is
