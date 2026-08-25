@@ -120,18 +120,18 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 
 	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr;
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
-	TransactionHandle* txnHandlePtr = nullptr;
+	std::shared_ptr<TransactionHandle> txnHandle;
 
 	if (isTransaction) {
-		std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
-		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&txnHandle)));
-		if (txnHandle == nullptr || *txnHandle == nullptr) {
+		std::shared_ptr<TransactionHandle>* wrappedTxnHandle = nullptr;
+		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&wrappedTxnHandle)));
+		if (wrappedTxnHandle == nullptr || *wrappedTxnHandle == nullptr) {
 			::napi_throw_error(env, nullptr, "Invalid transaction handle");
 			return nullptr;
 		}
-		txnHandlePtr = (*txnHandle).get();
-		dbHandle = &txnHandlePtr->dbHandle;
-		DEBUG_LOG("DBIterator::Constructor txnHandle=%p dbHandle=%p\n", txnHandlePtr, dbHandle->get());
+		txnHandle = *wrappedTxnHandle;
+		dbHandle = &txnHandle->dbHandle;
+		DEBUG_LOG("DBIterator::Constructor txnHandle=%p dbHandle=%p\n", txnHandle.get(), dbHandle->get());
 	} else {
 		NAPI_STATUS_THROWS(::napi_unwrap(env, argv[0], reinterpret_cast<void**>(&dbHandle)));
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) {
@@ -163,8 +163,8 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	}
 
 	try {
-		if (txnHandlePtr) {
-			itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>(txnHandlePtr, itOptions));
+		if (txnHandle) {
+			itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>(txnHandle, itOptions));
 		} else {
 			itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>(*dbHandle, itOptions));
 		}

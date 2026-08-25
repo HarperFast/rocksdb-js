@@ -494,7 +494,12 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 	// captured size; each entry carries its real mtime (tar restores it on
 	// extract) so the restored store's age-based rotation/retention stays correct.
 	if (state->backupTransactionLogs) {
-		for (const auto& named : collectTransactionLogBackupEntries(state->descriptor.get())) {
+		std::vector<NamedTransactionLogBackupEntry> entries;
+		s = collectTransactionLogBackupEntries(state->descriptor.get(), entries);
+		if (!s.ok()) {
+			return s;
+		}
+		for (const auto& named : entries) {
 			std::string tarPath = "transaction_logs/" + named.storeName + "/" + named.file.relativeName;
 
 			if (!named.file.inlineContents.empty()) {

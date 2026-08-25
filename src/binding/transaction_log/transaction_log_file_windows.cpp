@@ -12,15 +12,124 @@
 namespace rocksdb_js {
 
 std::string getWindowsErrorMessage(DWORD errorCode);
+static std::atomic<uint64_t> appendBoundaryTempSequence{0};
 
-TransactionLogFile::TransactionLogFile(const std::filesystem::path& p, const uint32_t seq) :
+TransactionLogFile::TransactionLogFile(
+	const std::filesystem::path& p,
+	const uint32_t seq,
+	bool appendBoundaryMarkerEnabled) :
 	path(p),
-	sequenceNumber(seq)
+	sequenceNumber(seq),
+	appendBoundaryMarkerEnabled(appendBoundaryMarkerEnabled)
 {}
+
+void TransactionLogFile::ensureAppendBoundaryMarker() {
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	std::error_code existsError;
+	if (std::filesystem::exists(markerPath, existsError)) {
+		try {
+			uint32_t boundary = readTransactionLogAppendBoundaryMarker(this->path);
+			if (boundary == 0 || std::filesystem::exists(this->path)) {
+				this->retiredAppendBoundary.store(boundary, std::memory_order_relaxed);
+				return;
+			}
+		} catch (const TransactionLogAppendBoundaryException&) {
+			if (std::filesystem::exists(this->path)) {
+				throw;
+			}
+		}
+		std::error_code removeError;
+		if (!std::filesystem::remove(markerPath, removeError) || removeError) {
+			throw rocksdb_js::TransactionLogAppendBoundaryException(
+				"Failed to remove stale transaction log append-boundary marker: " +
+				markerPath.string());
+		}
+	}
+	if (existsError) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to inspect transaction log append-boundary marker: " + markerPath.string());
+	}
+
+	rocksdb_js::tryCreateDirectory(markerPath.parent_path());
+	auto tempMarkerPath = markerPath;
+	std::wstring tempSuffix = L".tmp-" + std::to_wstring(::GetCurrentProcessId()) + L"-" +
+		std::to_wstring(appendBoundaryTempSequence.fetch_add(1, std::memory_order_relaxed));
+	tempMarkerPath += tempSuffix;
+	HANDLE marker = ::CreateFileW(
+		tempMarkerPath.wstring().c_str(),
+		GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		CREATE_NEW,
+		FILE_ATTRIBUTE_HIDDEN,
+		nullptr);
+	if (marker == INVALID_HANDLE_VALUE) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to create temporary transaction log append-boundary marker: " +
+			tempMarkerPath.string());
+	}
+
+	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
+	writeUint32BE(bytes, TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN);
+	writeUint32BE(bytes + 4, 0);
+	writeUint32BE(bytes + 8, UINT32_MAX);
+	DWORD written = 0;
+	bool success = ::WriteFile(marker, bytes, sizeof(bytes), &written, nullptr) &&
+		written == static_cast<DWORD>(sizeof(bytes)) && ::FlushFileBuffers(marker);
+	::CloseHandle(marker);
+	if (!success) {
+		std::filesystem::remove(tempMarkerPath);
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to initialize transaction log append-boundary marker: " + markerPath.string());
+	}
+	if (!::MoveFileExW(
+			tempMarkerPath.wstring().c_str(), markerPath.wstring().c_str(), MOVEFILE_WRITE_THROUGH)) {
+		DWORD publishError = ::GetLastError();
+		std::filesystem::remove(tempMarkerPath);
+		if (publishError == ERROR_FILE_EXISTS || publishError == ERROR_ALREADY_EXISTS) {
+			this->retiredAppendBoundary.store(
+				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+			return;
+		}
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to publish transaction log append-boundary marker: " + markerPath.string());
+	}
+}
+
+void TransactionLogFile::writeAppendBoundaryMarker(uint32_t boundary) {
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	HANDLE marker = ::CreateFileW(
+		markerPath.wstring().c_str(),
+		GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_HIDDEN,
+		nullptr);
+	if (marker == INVALID_HANDLE_VALUE) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to open transaction log append-boundary marker: " + markerPath.string());
+	}
+	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
+	writeUint32BE(bytes, TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN);
+	writeUint32BE(bytes + 4, boundary);
+	writeUint32BE(bytes + 8, ~boundary);
+	DWORD written = 0;
+	bool success = ::WriteFile(marker, bytes, sizeof(bytes), &written, nullptr) &&
+		written == static_cast<DWORD>(sizeof(bytes)) && ::FlushFileBuffers(marker);
+	::CloseHandle(marker);
+	if (!success) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Failed to persist transaction log append boundary: " + markerPath.string());
+	}
+}
 
 void TransactionLogFile::close() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
+	this->closeLocked();
+}
 
+void TransactionLogFile::closeLocked() {
 	// Explicitly remove our reference to the memory map.
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing memory map for: %s (ref count=%ld)\n",
@@ -189,14 +298,19 @@ void TransactionLogFile::openFile() {
 		throw rocksdb_js::DBException("Failed to get file size: " + this->path.string());
 	}
 	auto size = static_cast<size_t>(fileSize.QuadPart);
-	this->size = size;
+	uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
+	if (retiredBoundary > size) {
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Transaction log append boundary exceeds physical extent: " + this->path.string());
+	}
+	this->size = retiredBoundary > 0 ? retiredBoundary : size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %zu file path: %s\n",
 		this, size, this->path.string().c_str());
 	// On Windows, we have to create the full file size for memory maps, and it is zero-padded, so the act of indexing allows us to find
 	// the end, and adjust the real size accordingly.
 	// TODO: Future optimization is to only do this if the file is a multiple of the page size, and ensure
 	// files that are expanded to a memory page are memory page aligned, with (this->size & 0xFFF) == 0
-	if (size > 0) {
+	if (size > 0 && retiredBoundary == 0) {
 		// openFile() runs under fileMutex (held by open()); pass fileMutexHeld so
 		// findPositionByTimestamp() -> getMemoryMapLocked() does not re-lock it
 		// (std::mutex is not recursive — re-locking would self-deadlock/terminate).
@@ -344,9 +458,7 @@ int64_t TransactionLogFile::readFromFile(void* buffer, uint32_t size, int64_t of
 	return success ? static_cast<int64_t>(bytesRead) : -1;
 }
 
-bool TransactionLogFile::removeFile() {
-	std::unique_lock<std::mutex> lock(this->fileMutex);
-
+bool TransactionLogFile::removeFileLocked() {
 	if (this->memoryMap) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Releasing memory map before removing file: %s\n",
 			this, this->path.string().c_str());
@@ -375,10 +487,17 @@ bool TransactionLogFile::removeFile() {
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removed file %s\n",
 		this, this->path.string().c_str());
+	std::error_code markerError;
+	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	std::filesystem::remove(markerPath, markerError);
+	std::filesystem::remove(markerPath.parent_path(), markerError);
+	std::filesystem::remove(markerPath.parent_path().parent_path(), markerError);
 	return true;
 }
 
-int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
+int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t& bytesLanded) {
+	bytesLanded = 0;
+
 	if (iovcnt <= 0) {
 		return 0;
 	}
@@ -416,6 +535,20 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 				std::string errorMessage = getWindowsErrorMessage(error);
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile failed (error=%lu: %s, iovec %d/%d)\n",
 					this, error, errorMessage.c_str(), i, iovcnt);
+				// The batch seeks to `size` before writing, so the distance from there
+				// to the file pointer is what reached the file. WriteFile does not
+				// promise to set lpNumberOfBytesWritten on failure. If the pointer
+				// cannot be read either, report the extent as unknown so the caller
+				// retires the segment instead of treating it as untouched.
+				LARGE_INTEGER zero, current;
+				zero.QuadPart = 0;
+				if (::SetFilePointerEx(this->fileHandle, zero, &current, FILE_CURRENT)) {
+					bytesLanded = landedBytesFromFilePointer(
+						current.QuadPart,
+						static_cast<int64_t>(this->size.load(std::memory_order_relaxed)));
+				} else {
+					bytesLanded = TRANSACTION_LOG_BYTES_LANDED_UNKNOWN;
+				}
 				return -1;
 			}
 
@@ -423,6 +556,7 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt) {
 				// shouldn't happen; bail to avoid an infinite loop
 				DEBUG_LOG("%p TransactionLogFile::writeBatchToFile WriteFile returned 0 bytes (iovec %d/%d, %zu remaining)\n",
 					this, i, iovcnt, remaining);
+				bytesLanded = totalBytesWritten;
 				return -1;
 			}
 

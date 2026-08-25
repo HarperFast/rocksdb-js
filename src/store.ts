@@ -536,8 +536,8 @@ export class Store {
 	transactionLogMaxAgeThreshold?: number;
 
 	/**
-	 * The maximum size of a transaction log before it is rotated to the next
-	 * sequence number.
+	 * The target maximum size of a transaction log before rotation. Transactions
+	 * are never split across files, so one transaction may exceed this target.
 	 */
 	transactionLogMaxSize?: number;
 

@@ -9,7 +9,8 @@
 // production where the env var is unset.
 //
 // Pass the env var name to testDelayMs() at the call site; see
-// EventEmitter::notify and TransactionHandle::close for usage.
+// EventEmitter::notify, TransactionHandle::close, and TransactionHandle::get
+// for usage.
 inline int testDelayMs(const char* envName) {
 	const char* value = ::getenv(envName);
 	return value ? ::atoi(value) : 0;

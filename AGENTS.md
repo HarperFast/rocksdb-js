@@ -191,6 +191,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
+  it reads (exercises orphan cleanup past the async-work wait timeout)
 
 ## Test Structure
 
@@ -218,6 +220,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
     `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
     from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
+- **GC is not exposed to Deno's test workers** (#770): tests that force collection run in Vitest's
+  worker, not the process you launched. Node's `threads` pool inherits `--expose-gc` through
+  `execArgv`, and Bun exposes `Bun.gc()`, but Deno uses the `forks` pool and
+  `--v8-flags=--expose-gc` applies only to the CLI process it was passed to — so `globalThis.gc` is
+  undefined in every Deno worker and each `skipIf(!globalThis.gc)` test silently skips there. Guard
+  GC-dependent tests with `skipIf`, never with a throw. `DENO_V8_FLAGS=--expose-gc` is the fix (the
+  environment is inherited by children) but cannot land until #771 is fixed: the restored coverage
+  makes `test/lock.test.ts` and one macOS `verification-table.test.ts` case fail.
 
 ## Important Implementation Notes
 
@@ -232,7 +242,37 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    append). Read/index paths (e.g. `findPositionByTimestamp`) must never truncate it — a zero
    timestamp seen mid-index during concurrent appends is a not-yet-visible memory-map artifact, not
    EOF. Reads during writes are bounded by the committed position, not `size` (see
-   `hasAppendedSinceOpen`; HarperFast/harper#1148).
+   `hasAppendedSinceOpen`; HarperFast/harper#1148). The other half of that contract is that
+   an append that fails part-way (ENOSPC, a short write on a full volume) retires the segment
+   without truncating it: `writeBatchToFile` reports the landed extent, `writeEntriesV1` marks
+   any positive or unknown extent unappendable, and `TransactionLogStore::writeBatch` rotates
+   it before propagating the error. The rotation is allowed only after the last safe logical
+   extent has been written and synced to that segment's preallocated marker under
+   `transaction_logs/.append-boundaries/<store>/`; retirement overwrites that fixed extent rather
+   than extending it, and a filesystem that still cannot persist the overwrite fails closed instead
+   of rotating. Initial creation writes and syncs a temporary marker before atomically publishing the
+   final name, so neither a crash nor a concurrent opener can observe a short initialization. The
+   marker carries a token and complemented boundary so a torn/corrupt marker fails load closed. On
+   restart, registered files, readers, purge counting, backup snapshots, and strict validation all
+   use the marked logical prefix and never expose the orphaned physical tail. The marker is not copied
+   into backups: the copied prefix is already a clean canonical `.txnlog`.
+   A known-zero-byte failure leaves the segment and its zero marker reusable.
+   **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
+   so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
+   append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
+   will not repair, so every entry after it is unreachable (HarperFast/rocksdb-js#748). On
+   Windows `size` is the logical end of entries only — an active segment is pre-extended to
+   `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
+   size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
+   found by the zero-timestamp convention instead. Windows appends seek to `size` first, so an
+   orphan is overwritten rather than skipped past — but a _shorter_ next batch would leave the
+   orphan's stale bytes past its own end, reading as an entry instead of the marker, so retirement
+   is the rule on both platforms. Transactions are never split across segments: a batch that does
+   not fit rotates before writing, while one batch may exceed `transactionLogMaxSize` in an empty
+   segment. This keeps a failed append from stranding an unflagged transaction prefix in an earlier
+   file. Initialization owes the same discipline:
+   a header write that lands short removes the file, since a size in `(0, HEADER_SIZE)` fails
+   `open()`'s validity check on every future open and freeing disk space would not heal it.
 6. **Shared DBDescriptor teardown is cross-env**: a `DBDescriptor` is process-global and shared by
    every env that opens the same path (`worker_threads` workers included), so multiple threads can
    reach `DBRegistry::CloseDB` for one descriptor at the same time — e.g. several worker envs tearing
@@ -372,7 +412,29 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
-12. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+    `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
+    `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
+    path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
+    `onWrapperCollected()` before dropping its reference: once V8 has collected the wrapper, no JS
+    code can commit, abort, retry, or read through that handle again, so it is closed. The one
+    exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
+    closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
+    always closes, and the failure paths (which deliberately leave the handle open for a caller that
+    may retry) check `wrapperCollected`, because there is no caller left. Other dependents defer the
+    orphan close without blocking the V8 finalizer: a cold-cache async get owns a
+    `shared_ptr<TransactionHandle>` and retries after its async registration is released, while a
+    transaction-backed `DBIteratorHandle` owns the handle and keeps `activeIteratorCount` nonzero
+    until the RocksDB iterator is reset. The last dependent closes the orphan. Without this a dropped
+    transaction either pinned `rocksdb.oldest-snapshot-time` for the life of the process or, after
+    orphan cleanup was added, could be destroyed under an async read/live iterator
+    (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on any redesign
+    here: the registry reference cannot simply be made weak, because dependents need the coordinated
+    cancellation and transaction-destruction path in `close()`; and `registryStatus()` may only report
+    handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
+    map membership while mutable-field writers hold no lock.
+
+13. **A recovered active transaction-log file ends on a transaction boundary when recovery can
     prove one**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them
@@ -387,13 +449,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     boundary earlier in the same file — plus a single timestamp across the trailing run. Callers can
     assign repeated timestamps,
     but an earlier transaction would still carry its own flag and reset the run. Without that proof
-    the bytes are kept and warned about: a batch split across a rotation has no boundary in the
-    active file, and a log written before the flag existed would otherwise be truncated wholesale.
+    the bytes are kept and warned about: a legacy batch split across a rotation has no boundary in
+    the active file, and a log written before the flag existed would otherwise be truncated wholesale.
     Recovery reads `txn.state` before repairing the active file and never truncates below its
     same-file flushed offset: a missing flag can be media corruption on a batch RocksDB already
     absorbed, not proof that the commit never ran.
     `TransactionLogStore::load()` seeds from the latest proved boundary, walking backward across
-    rotation-spanning batches until it reaches a boundary or the `txn.state` floor, so recovery never
+    legacy rotation-spanning batches until it reaches a boundary or the `txn.state` floor, so recovery never
     hides entries already absorbed by RocksDB. Both platforms truncate; Windows first drops the cached
     mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same
     physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an

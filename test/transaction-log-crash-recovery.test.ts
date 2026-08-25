@@ -3,7 +3,7 @@ import { constants } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -247,7 +247,7 @@ describe('Transaction log crash recovery', () => {
 			}
 		}));
 
-	it('finds a committed boundary before a transaction spanning multiple rotations', () =>
+	it('finds a committed boundary before an oversized transaction', () =>
 		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
 			let database = db;
 			try {
@@ -262,7 +262,11 @@ describe('Transaction log crash recovery', () => {
 				});
 
 				const logDir = join(dbPath, 'transaction_logs', 'foo');
-				const activeLogPath = join(logDir, '4.txnlog');
+				const activeLogName = readdirSync(logDir)
+					.filter((name) => name.endsWith('.txnlog'))
+					.sort((left, right) => Number.parseInt(left) - Number.parseInt(right))
+					.at(-1)!;
+				const activeLogPath = join(logDir, activeLogName);
 				database.close();
 				rmSync(join(logDir, 'txn.state'), { force: true });
 

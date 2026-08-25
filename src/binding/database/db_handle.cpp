@@ -269,6 +269,7 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 	SET_INTERNAL_STAT(result, "rocksdb.num-live-versions");
 	SET_INTERNAL_STAT(result, "rocksdb.current-super-version-number");
 	SET_INTERNAL_STAT(result, "rocksdb.oldest-snapshot-time");
+	SET_INTERNAL_STAT(result, "rocksdb.num-snapshots");
 
 	// blobs
 	SET_INTERNAL_STAT(result, "rocksdb.num-blob-files");

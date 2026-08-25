@@ -111,6 +111,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 					data, txnHandle->use_count());
 				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
+					// Must run before the reset: the registry's own strong reference means
+					// resetting alone cannot destroy the handle.
+					(*txnHandle)->onWrapperCollected();
 					(*txnHandle).reset();
 				}
 				delete txnHandle;
@@ -402,6 +405,11 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			state->handle->state = TransactionState::Pending;
 		}
 
+		// Nobody is left to act on RETRY_NOW — the resolve below fires into a dropped promise chain.
+		if (state->handle->wrapperCollected.load()) {
+			state->handle->close();
+		}
+
 		// Transfer resolve/reject refs from state to a RetryNowContext
 		// so the TSFN finalize can clean them up.
 		auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
@@ -468,6 +476,11 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		// on a null txn.
 		if (state->handle && state->handle->state == TransactionState::Committing) {
 			state->handle->state = TransactionState::Pending;
+		}
+		// A failed commit is deliberately left open for the caller to retry or abort; there is no
+		// caller left, so release it here rather than leaving it registered forever.
+		if (state->handle && state->handle->wrapperCollected.load()) {
+			state->handle->close();
 		}
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
@@ -730,7 +743,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			hasLog = true;
-			store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+			try {
+				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+			} catch (const std::exception& e) {
+				(*txnHandle)->state = TransactionState::Pending;
+				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
+			}
 			// free the batch after writing to avoid memory leak
 			(*txnHandle)->logEntryBatch.reset();
 		} else {
