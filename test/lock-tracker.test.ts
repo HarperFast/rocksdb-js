@@ -123,7 +123,7 @@ describe('Coordinated retry (Phase 3)', () => {
 			// Force IsBusy by running concurrent transactions writing the same key
 			// under coordinatedRetry: true. database.ts handles RETRY_NOW internally
 			// via immediate retry; callers never see it as a return value.
-			const start = Date.now();
+			const start = performance.now();
 			const results = await Promise.allSettled(
 				Array.from({ length: 4 }, async (_, i) => {
 					const v = Buffer.alloc(16);
@@ -136,7 +136,7 @@ describe('Coordinated retry (Phase 3)', () => {
 					);
 				})
 			);
-			const elapsed = Date.now() - start;
+			const elapsed = performance.now() - start;
 
 			// All transactions should eventually succeed (coordinatedRetry retries
 			// without error) or fail gracefully; none should throw unexpectedly.
