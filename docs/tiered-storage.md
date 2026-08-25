@@ -110,15 +110,33 @@ everything is under the database directory.
 re-scattering them across `paths` or back into a `blobs.dir`, so a restored database is flat:
 every SST that had a path index above 0, and every blob file, lands in the database directory.
 
+`db.createCheckpoint()` has the same hazard.
+
 Reopening that database with the original `paths` fails to find the SSTs. For blobs it is quieter
-and worse — the backup carries the `OPTIONS` file, so the persisted `blobs.dir` still matches the
+and worse — the copy carries the `OPTIONS` file, so the persisted `blobs.dir` still matches the
 request, the mismatch check passes, and reads of large values fail with "No such file or
 directory".
 
-Until restore learns to relocate, treat a tiered database as needing manual placement after a
-restore: restore it flat, then either open it without `paths`/`blobs.dir`, or move the `.sst` and
-`.blob` files back to the volumes they belong on before reopening (`blobs.allowDirChange` covers
-the blob half).
+Until restore learns to relocate, treat a tiered database as needing manual placement afterwards.
+Either put the files back where the configuration expects them:
+
+```js
+// database closed; move the .sst files back onto their volumes and the .blob
+// files back into blobs.dir, then open with the original configuration.
+```
+
+…or open the flat copy as a flat database. Dropping `paths` is enough for the SSTs, but the blob
+half needs an acknowledgement, because the restored `OPTIONS` still names the old directory while
+the request now resolves to "beside the SST files" — the mismatch guard rejects a plain open:
+
+```js
+// For EACH column family that had a blobs.dir, once — the open records the new
+// (empty) directory, so later plain opens need nothing.
+const db = RocksDatabase.open('/nvme/restored', {
+	name: 'table1',
+	blobs: { allowDirChange: true },
+});
+```
 
 ## `blobs.dir` — putting large values on their own volume
 

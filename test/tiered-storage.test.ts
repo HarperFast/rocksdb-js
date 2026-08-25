@@ -1,6 +1,6 @@
 import { RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import { mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative as relativePath } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -238,6 +238,31 @@ describe('paths', () => {
 		expect(db.getSync('key-199')).toBe('value-199');
 	});
 
+	it('should refuse to add paths when only some SST files are reachable', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+
+		const db = openDb(dbPath);
+		for (let batch = 0; batch < 2; batch++) {
+			for (let i = 0; i < 100; i++) {
+				db.putSync(`key-${batch}-${i}`, `value-${i}`);
+			}
+			db.flushSync();
+		}
+		db.close();
+
+		const ssts = filesWithExt(dbPath, '.sst');
+		expect(ssts.length).toBeGreaterThan(1);
+		// A half-finished manual copy, or a colliding file number under a paths[0]
+		// shared with another database: one reachable file must not vouch for the
+		// rest.
+		copyFileSync(join(dbPath, ssts[0]!), join(fast, ssts[0]!));
+
+		expect(() =>
+			RocksDatabase.open(dbPath, { paths: [{ path: fast, targetSize: 1 << 30 }] })
+		).toThrow(/already has SST files in its own directory/);
+	});
+
 	it('should delete tiered SST files on destroy()', () => {
 		const dbPath = tempPath();
 		const fast = tempDir();
@@ -347,6 +372,24 @@ describe('blobs', () => {
 		}
 		reopened.flushSync();
 		expect(filesWithExt(dbPath, '.blob')).toHaveLength(0);
+	});
+
+	it("should not stamp a named family's blob settings onto the default family", () => {
+		const dbPath = tempPath();
+
+		// Creating the database through a named family also creates `default` on
+		// the way. It must be created with the blob defaults, not with t1's
+		// request — otherwise whichever table created the database decides
+		// `default`'s settings forever.
+		const first = openDb(dbPath, { name: 't1', blobs: { minSize: 1 << 20 } });
+		first.close();
+
+		const db = openDb(dbPath);
+		for (let i = 0; i < 20; i++) {
+			db.putSync(`key-${i}`, largeValue(i));
+		}
+		db.flushSync();
+		expect(filesWithExt(dbPath, '.blob').length).toBeGreaterThan(0);
 	});
 
 	it('should reject a warm reopen that asks for different blob settings', () => {

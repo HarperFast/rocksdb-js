@@ -37,17 +37,13 @@ struct StoragePath final {
  * open, so — exactly like compression — every field is `std::optional` and an
  * omitted field means "leave this column family's persisted value alone". Plain
  * defaults would restamp every other family in the database with the settings of
- * whichever family happened to open it (HarperFast/rocksdb-js#767 review). The
- * default in each comment applies only to a column family being CREATED.
+ * whichever family happened to open it. The default named in each comment
+ * applies only to a column family being CREATED.
  */
 struct BlobOptions final {
-	// enable_blob_files (default true). When false, values are stored inline in
-	// SST files regardless of size. Existing blob files stay readable either way;
-	// with `garbageCollection` on, compaction gradually pulls their values back
-	// inline (see CompactionIterator::GarbageCollectBlobIfNeeded).
+	// enable_blob_files (default true).
 	std::optional<bool> enabled;
-	// min_blob_size (default 2048): smallest value stored in a blob file instead
-	// of inline.
+	// min_blob_size (default 2048).
 	std::optional<uint64_t> minSize;
 	// blob_dir: the directory blob files live in. Empty = alongside the SST
 	// files (`cf_paths.front()`), which is RocksDB's stock behavior. Requires a
@@ -66,21 +62,14 @@ struct BlobOptions final {
 	// the directory recorded in the database's OPTIONS file. Nothing is moved on
 	// the caller's behalf; this only suppresses the check.
 	bool allowDirChange = false;
-	// enable_blob_garbage_collection (default true): relocate live values out of
-	// the oldest blob files during compaction so those files can be deleted.
+	// enable_blob_garbage_collection (default true).
 	std::optional<bool> garbageCollection;
-	// blob_garbage_collection_age_cutoff: fraction of the oldest blob files
-	// eligible for relocation (0..1). The RocksDB default of 0.25 means three
-	// quarters of the blob files are never revisited by a given compaction.
+	// blob_garbage_collection_age_cutoff (0..1, default 0.25).
 	std::optional<double> garbageCollectionAgeCutoff;
-	// blob_garbage_collection_force_threshold: garbage ratio (0..1) above which
-	// RocksDB schedules targeted compactions to reclaim the oldest blob files.
-	// The RocksDB default of 1.0 never forces one.
+	// blob_garbage_collection_force_threshold (0..1, default 1.0 = never forced).
 	std::optional<double> garbageCollectionForceThreshold;
-	// prepopulate_blob_cache (default false): when true, values written by a
-	// flush are inserted into the blob cache instead of waiting to be read back.
-	// Only meaningful when a blob cache is configured
-	// (`RocksDatabase.config({ blobCacheSize })`).
+	// prepopulate_blob_cache (default false). Only meaningful when a blob cache
+	// is configured (`RocksDatabase.config({ blobCacheSize })`).
 	std::optional<bool> prepopulateCache;
 };
 

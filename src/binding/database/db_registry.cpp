@@ -8,6 +8,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/table.h"
+#include "rocksdb/utilities/options_util.h"
 
 namespace rocksdb_js {
 
@@ -166,6 +167,28 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// secondary's workspace `.secondary.lock` is only released by
 	// finishClose(), so a leaked secondary wedges its workspace permanently).
 	std::vector<std::pair<std::shared_ptr<DBDescriptor>, std::shared_ptr<std::condition_variable>>> claimed;
+	rocksdb::Options destroyOptions;
+	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
+	auto captureDestroyLayout = [&](const std::shared_ptr<DBDescriptor>& descriptor) {
+		if (!descriptor->db) {
+			return false;
+		}
+		destroyOptions.db_paths = descriptor->db->GetDBOptions().db_paths;
+		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
+		for (const auto& [cfName, column] : descriptor->columns) {
+			rocksdb::ColumnFamilyOptions cfOptions;
+			if (column && column->column) {
+				rocksdb::Options current = descriptor->db->GetOptions(column->column.get());
+				cfOptions.cf_paths = current.cf_paths;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+				cfOptions.blob_dir = current.blob_dir;
+#endif
+			}
+			destroyColumnFamilies.emplace_back(cfName, cfOptions);
+		}
+		return true;
+	};
+	bool capturedLayout = false;
 
 	// Claim the descriptors under the lock but leave the entries in the map
 	// until the closes complete (same discipline as CloseDB): the entry is how
@@ -177,6 +200,19 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// instead of re-opening the path while its files are being destroyed.
 	{
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
+		// Capture before waiting for another close. Once that close completes,
+		// db_paths can no longer be recovered from RocksDB's persisted options.
+		for (int pass = 0; pass < 2 && !capturedLayout; pass++) {
+			for (const auto& [key, entry] : instance->databases) {
+				if (key.path != identityPath || !entry.descriptor || !entry.descriptor->db ||
+					(pass == 0 ? entry.descriptor->readOnly : !entry.descriptor->readOnly)
+				) {
+					continue;
+				}
+				capturedLayout = captureDestroyLayout(entry.descriptor);
+				break;
+			}
+		}
 		// A normal close may already own one descriptor for this path. Wait for
 		// every such close to remove its entry before claiming the survivors; a
 		// read-only/secondary descriptor has no database LOCK to stop deletion
@@ -220,40 +256,39 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	};
 
-	// A default Options instance describes only the database directory. Preserve
-	// the live layout before closing it so DestroyDB also removes SST paths and
-	// per-column-family blob directories on other volumes.
-	rocksdb::Options destroyOptions;
-	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
-	auto captureDestroyLayout = [&](const std::shared_ptr<DBDescriptor>& descriptor) {
-		if (!descriptor->db) {
-			return;
-		}
-		destroyOptions.db_paths = descriptor->db->GetDBOptions().db_paths;
-		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
-		for (const auto& [cfName, column] : descriptor->columns) {
-			rocksdb::ColumnFamilyOptions cfOptions;
-			if (column && column->column) {
-				rocksdb::Options current = descriptor->db->GetOptions(column->column.get());
-				cfOptions.cf_paths = current.cf_paths;
-#ifdef ROCKSDB_HAS_CF_BLOB_DIR
-				cfOptions.blob_dir = current.blob_dir;
-#endif
+	if (!capturedLayout) {
+		for (const auto& [descriptor, condition] : claimed) {
+			if (!descriptor->readOnly) {
+				capturedLayout = captureDestroyLayout(descriptor);
+				break;
 			}
-			destroyColumnFamilies.emplace_back(cfName, cfOptions);
-		}
-	};
-	for (const auto& [descriptor, condition] : claimed) {
-		if (!descriptor->readOnly) {
-			captureDestroyLayout(descriptor);
-			break;
 		}
 	}
-	if (destroyColumnFamilies.empty()) {
+	if (!capturedLayout) {
 		for (const auto& [descriptor, condition] : claimed) {
-			captureDestroyLayout(descriptor);
-			if (!destroyColumnFamilies.empty()) {
+			capturedLayout = captureDestroyLayout(descriptor);
+			if (capturedLayout) {
 				break;
+			}
+		}
+	}
+	if (!capturedLayout) {
+		rocksdb::ConfigOptions configOptions;
+		configOptions.ignore_unknown_options = true;
+		configOptions.ignore_unsupported_options = true;
+		rocksdb::DBOptions loadedDbOptions;
+		std::vector<rocksdb::ColumnFamilyDescriptor> loadedCfDescriptors;
+		if (rocksdb::LoadLatestOptions(
+				configOptions, identityPath, &loadedDbOptions, &loadedCfDescriptors
+			).ok()
+		) {
+			for (const auto& loaded : loadedCfDescriptors) {
+				rocksdb::ColumnFamilyOptions cfOptions;
+				cfOptions.cf_paths = loaded.options.cf_paths;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+				cfOptions.blob_dir = loaded.options.blob_dir;
+#endif
+				destroyColumnFamilies.emplace_back(loaded.name, cfOptions);
 			}
 		}
 	}
