@@ -571,8 +571,13 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				vt->unrefTracker(t);
 				bool expected = false;
 				if (fired->compare_exchange_strong(expected, true)) {
-					::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+					// A closing tsfn (env teardown racing this resolve) must
+					// not be touched again -- see the matching guard in
+					// ParkTimeoutRegistry::resolve.
+					napi_status callStatus = ::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+					if (callStatus == napi_ok) {
+						::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+					}
 				}
 				parked = true;
 				break;

@@ -634,8 +634,12 @@ std::unique_ptr<ParkTimeoutRegistry::ParkTimeout> ParkTimeoutRegistry::take(uint
 void ParkTimeoutRegistry::resolve(ParkTimeout& park) {
 	bool expected = false;
 	if (park.fired->compare_exchange_strong(expected, true)) {
-		::napi_call_threadsafe_function(park.tsfn, nullptr, napi_tsfn_nonblocking);
-		::napi_release_threadsafe_function(park.tsfn, napi_tsfn_release);
+		// A closing tsfn (env teardown racing this resolve) must not be
+		// touched again -- napi_closing means Node may already be freeing it.
+		napi_status status = ::napi_call_threadsafe_function(park.tsfn, nullptr, napi_tsfn_nonblocking);
+		if (status == napi_ok) {
+			::napi_release_threadsafe_function(park.tsfn, napi_tsfn_release);
+		}
 	}
 }
 
