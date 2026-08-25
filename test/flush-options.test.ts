@@ -2,7 +2,7 @@ import { dbRunner } from './lib/util.js';
 import { describe, expect, it } from 'vitest';
 
 /**
- * `flush()` / `flushSync()` options and the settle-exactly-once contract (AGENTS invariant 13).
+ * `flush()` / `flushSync()` options and the settle-exactly-once contract (AGENTS invariant 14).
  * The behavioral half of `allowWriteStall` is not covered anywhere — see
  * `write-buffer-manager-stall.test.ts`.
  */

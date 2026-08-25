@@ -421,7 +421,7 @@ public:
 	/**
 	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
 	 * makes this WAIT, unbounded, on the calling thread — see the `FlushOptions` JSDoc in
-	 * `src/load-binding.ts` and AGENTS invariant 14.
+	 * `src/load-binding.ts` and AGENTS invariant 15.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
 
