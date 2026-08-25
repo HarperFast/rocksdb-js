@@ -20,6 +20,7 @@ namespace {
 constexpr const char* kDb = "/data/db";
 constexpr const char* kOld = "/mnt/old";
 constexpr const char* kNew = "/mnt/new";
+constexpr const char* kTier0 = "/mnt/tier0";
 
 /** A fake filesystem: which directories exist, and which hold `.blob` files. */
 struct FakeDirs {
@@ -331,4 +332,112 @@ TEST(BlobRelocation, FlatFamilyRespelledAsTheDatabaseDirectoryIsStillRefused) {
 	BlobRelocationDecision decision = decide(input, allMovedOut());
 	EXPECT_NE(decision.error.find("Cannot reopen"), std::string::npos);
 	EXPECT_NE(decision.error.find("its blob files were written to \"\""), std::string::npos);
+}
+
+// A tiered database's flat blob files are not in the database directory: with
+// `paths` set, RocksDB derives them from `cf_paths.front()`, which falls back to
+// `db_paths.front()` = `paths[0]`. Checking the database directory instead finds
+// nothing, accepts an acknowledgement nobody honored, and opens a database whose
+// large values are all unreadable — the exact failure the check exists to stop.
+TEST(BlobRelocation, TieredFlatFamilyIsCheckedAgainstTheFirstStoragePath) {
+	BlobRelocationInput input = family("t1", true);
+	input.defaultBlobDir = kTier0;
+	input.persistedBlobDir = "";
+	input.targetPersistedBlobDir = "";
+	input.requestedDir = kNew;
+	input.allowDirChange = true;
+	input.currentBlobDir = kNew;
+
+	FakeDirs dirs{ { kDb, kTier0, kNew }, { kTier0 } };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_NE(decision.error.find("still has blob files"), std::string::npos);
+	EXPECT_NE(decision.error.find(kTier0), std::string::npos);
+}
+
+TEST(BlobRelocation, TieredFlatFamilyMovesOutOnceTheStoragePathIsClear) {
+	BlobRelocationInput input = family("t1", true);
+	input.defaultBlobDir = kTier0;
+	input.persistedBlobDir = "";
+	input.targetPersistedBlobDir = "";
+	input.requestedDir = kNew;
+	input.allowDirChange = true;
+	input.currentBlobDir = kNew;
+
+	FakeDirs dirs{ { kDb, kTier0, kNew }, {} };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_EQ(decision.error, "");
+	EXPECT_EQ(decision.blobDir, kNew);
+}
+
+// The database directory is not the tiered default, so blob files left there by
+// something else must not be read as this family's.
+TEST(BlobRelocation, TieredFlatFamilyIgnoresTheDatabaseDirectory) {
+	BlobRelocationInput input = family("t1", true);
+	input.defaultBlobDir = kTier0;
+	input.persistedBlobDir = "";
+	input.targetPersistedBlobDir = "";
+	input.requestedDir = kNew;
+	input.allowDirChange = true;
+	input.currentBlobDir = kNew;
+
+	FakeDirs dirs{ { kDb, kTier0, kNew }, { kDb } };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_EQ(decision.error, "");
+	EXPECT_EQ(decision.blobDir, kNew);
+}
+
+// Flattening a tiered database sends its blob files back to `paths[0]`, so that
+// is where the flatten claim is checked and where the family ends up pointed.
+TEST(BlobRelocation, FlattenOnATieredDatabaseIsCheckedAgainstTheFirstStoragePath) {
+	BlobRelocationInput input = family("t2", false);
+	input.defaultBlobDir = kTier0;
+	input.persistedBlobDir = kOld;
+	input.targetPersistedBlobDir = kOld;
+	input.requestedDir = "";
+	input.allowDirChange = true;
+	input.currentBlobDir = kOld;
+
+	FakeDirs dirs{ { kDb, kTier0, kOld }, { kOld } };
+	BlobRelocationDecision refused = decide(input, dirs);
+	EXPECT_NE(refused.error.find("still has blob files"), std::string::npos);
+	EXPECT_NE(refused.error.find(kOld), std::string::npos);
+
+	FakeDirs moved{ { kDb, kTier0, kOld }, {} };
+	BlobRelocationDecision decision = decide(input, moved);
+	EXPECT_EQ(decision.error, "");
+	EXPECT_EQ(decision.blobDir, "");
+}
+
+// An unset `defaultBlobDir` is an untiered database, where the two are the same
+// directory — so the existing rules keep deciding against `dbPath`.
+TEST(BlobRelocation, UnsetDefaultBlobDirStillMeansTheDatabaseDirectory) {
+	BlobRelocationInput input = family("t1", true);
+	input.persistedBlobDir = "";
+	input.targetPersistedBlobDir = "";
+	input.requestedDir = kNew;
+	input.allowDirChange = true;
+	input.currentBlobDir = kNew;
+
+	FakeDirs dirs{ { kDb, kNew }, { kDb } };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_NE(decision.error.find("still has blob files"), std::string::npos);
+	EXPECT_NE(decision.error.find(kDb), std::string::npos);
+}
+
+// `paths[0]` spelled out and an omitted `dir` are the same directory on a tiered
+// database, so an acknowledgement across them is not a move and must not be
+// checked as one — the files are exactly where both spellings point.
+TEST(BlobRelocation, TieredFamilyRespelledAsTheFirstStoragePathIsNotAMove) {
+	BlobRelocationInput input = family("t1", true);
+	input.defaultBlobDir = kTier0;
+	input.persistedBlobDir = kTier0;
+	input.targetPersistedBlobDir = kTier0;
+	input.requestedDir = "";
+	input.allowDirChange = true;
+	input.currentBlobDir = "";
+
+	FakeDirs dirs{ { kDb, kTier0 }, { kTier0 } };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_EQ(decision.error, "");
+	EXPECT_EQ(decision.blobDir, "");
 }

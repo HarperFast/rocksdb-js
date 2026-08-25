@@ -77,7 +77,8 @@ Creates a new database instance.
     - `minSize: number` The smallest value stored in a blob file rather than inline. Defaults to
       `2048`.
     - `dir: string` The directory blob files are written to and read from. Defaults to alongside
-      the SST files. This is the only way to place large values on a different volume than the LSM
+      the SST files — the database directory, or `paths[0]` when `paths` is set. This is the only
+      way to place large values on a different volume than the LSM
       tree — `paths` does not affect blob files. Requires a native build carrying the `blob_dir`
       patch, and cannot be changed once blob files exist (`open()` rejects a mismatch rather than
       stranding them — see `allowDirChange`).

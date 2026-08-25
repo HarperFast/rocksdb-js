@@ -7,9 +7,13 @@ BlobRelocationDecision decideBlobRelocation(
 	const std::function<bool(const std::string&)>& holdsBlobFiles,
 	const std::function<bool(const std::string&)>& directoryExists
 ) {
-	// An empty `blob_dir` is not "no directory", it is the database directory.
-	auto resolveBlobDir = [&input](const std::string& dir) -> const std::string& {
-		return dir.empty() ? input.dbPath : dir;
+	// An empty `blob_dir` is not "no directory", it is wherever RocksDB puts
+	// blob files without one: `paths[0]` on a tiered database, the database
+	// directory otherwise.
+	const std::string& defaultBlobDir =
+		input.defaultBlobDir.empty() ? input.dbPath : input.defaultBlobDir;
+	auto resolveBlobDir = [&defaultBlobDir](const std::string& dir) -> const std::string& {
+		return dir.empty() ? defaultBlobDir : dir;
 	};
 
 	BlobRelocationDecision decision;

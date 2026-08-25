@@ -227,6 +227,11 @@ whatever it persisted.
 "whatever this family had", so **every** open of a family with an external blob directory must keep
 supplying the same `dir`. Dropping it from a configuration is what the guard rejects.
 
+"Alongside the SST files" is `paths[0]` when the database also sets `paths`, not the database
+directory: RocksDB derives a blob file's path from `cf_paths.front()`, which falls back to
+`db_paths.front()`. So a tiered database keeps its blob files on its first storage volume unless
+`dir` moves them, and that is the directory the relocation checks below read.
+
 To migrate, move the `.blob` files while the database is closed, then reopen with
 `allowDirChange` to acknowledge it:
 
