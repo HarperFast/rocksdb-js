@@ -33,6 +33,12 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm lint` - Code linting with oxlint
 - `pnpm type-check` - TypeScript type checking only
 
+**Run `pnpm fmt` before every commit** (or `pnpm check` to also type-check and lint) — CI runs
+`pnpm fmt:check` and fails the build on unformatted code. Note the scope: oxfmt formats **TS/JS/JSON
+only**. It does **not** touch C++ or Markdown, so changes to `src/binding/**` and to docs like this
+file (`AGENTS.md`) are not auto-formatted and must be checked by hand — a mis-numbered invariant or a
+stray C++ indent will pass `fmt:check` untouched.
+
 ### Development Workflow
 
 - `pnpm clean` - Clean native build artifacts
@@ -581,6 +587,47 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
+
+17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+    `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
+    `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
+    the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
+    _wrapper_ was GC'd while its env is still alive). That finalizer path does not cover the
+    distinct case this invariant addresses: a worker **env that exits with a transaction still
+    pending** — the wrapper was never collected, the env is dying. Such a handle — holding a live
+    RocksDB transaction + snapshot, with its owning `DBHandle`'s `env` about to dangle — leaked
+    into the shared descriptor, and the last env's
+    `DBRegistry::Shutdown → finishClose → close()` then walked those corpses and corrupted the
+    glibc heap (production signatures: `corrupted size vs. prev_size`,
+    `corrupted double-linked list`, `free(): invalid pointer`; HarperFast/rocksdb-js#741 —
+    reproduced 10/10 on Linux/glibc by `test/lingering-txn-shutdown.test.ts`, 10/10 clean with
+    the fix). The reap is
+    `DBRegistry::CloseTransactionsByEnv` → `DBDescriptor::closeTransactionsByEnv`, wired into the
+    module's per-env cleanup hook (binding.cpp) so it runs on the dying env's own thread while the
+    env is still valid. Both reap paths funnel through the same idempotent `close()`
+    (`closed` gate) + idempotent `transactionRemove`, so a handle reachable by both the finalizer
+    and this hook is closed exactly once.
+
+    **Do not "simplify" this into `DBHandle::close()`.** A user-called `db.close()` runs with live
+    microtasks: `db.transaction()` awaits its callback before committing, so a legitimate commit
+    is routinely one microtask behind the close and must still reach the native layer (that
+    close-then-commit overlap is exactly what `test/txn-close-commit-uaf.test.ts` exercises).
+    Reaping at handle close rejects those commits with "Database not open" — and under Deno's
+    scheduling it stranded the caller's commit promise entirely (CI hang on all three Deno
+    platforms). At env teardown no such continuation can exist, so the hook is the only safe reap
+    point. Between a user `db.close()` and env death, an open transaction's handle intentionally
+    lingers (bounded, cleaned at env exit).
+
+    Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
+    no `napi_env`/`napi_ref` fields (the JS database is passed to `UseLog` per-call; its former
+    weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
+    thread-identity guard was the Linux corrupting write:
+    `napi_delete_reference(dead env, dead ref)` from Shutdown). Close is therefore safe from any
+    thread and any teardown phase; do not
+    reintroduce napi calls into close paths. Known macOS-only artifact: under Guard Malloc the
+    leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
+    never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
+    repo's other teardown repros, gated to Node).
 
 ## Debugging native heap corruption
 

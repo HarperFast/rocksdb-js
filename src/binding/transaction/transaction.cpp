@@ -87,12 +87,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	bool coordinatedRetry = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
 
-	napi_ref jsDatabaseRef;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, argv[0], 0, &jsDatabaseRef));
-
 	// create shared_ptr on heap so it persists after function returns
 	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
-		std::make_shared<TransactionHandle>(*dbHandle, env, jsDatabaseRef, disableSnapshot)
+		std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
 	);
 	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
@@ -406,6 +403,16 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
+				// Test seam: stall immediately before the RocksDB commit, with the
+				// async work still registered and `txn` about to be dereferenced.
+				// This is the window TransactionHandle::close()'s bounded drain is
+				// supposed to protect: if close() gives up and destroys `txn`, this
+				// thread then commits through a destroyed transaction. Distinct from
+				// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
+				// therefore cannot exercise the drain at all. Noop in production.
+				if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+				}
 				state->status = txnHandle->txn->Commit();
 			}
 
@@ -1304,11 +1311,52 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 
 /**
  * Creates a new transaction log instance bound to this transaction.
+ *
+ * The JS database object is passed per-call by the TS layer instead of being
+ * held as a napi_ref on the TransactionHandle: a weak ref still alive at
+ * worker-env teardown crashes Node's second-pass finalizer drain
+ * (HarperFast/rocksdb-js#741), and this is the ref's only consumer.
  */
 napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	NAPI_GET_STRING(argv[0], name, "Name is required");
 	UNWRAP_TRANSACTION_HANDLE("UseLog");
+
+	// A closed transaction has txn/dbHandle reset, and a transaction whose
+	// database handle was closed (db.close() with the txn still open) keeps
+	// dbHandle but loses its descriptor — every path below dereferences one
+	// of these, so guard them all rather than crash.
+	if (!(*txnHandle)->txn || !(*txnHandle)->dbHandle || !(*txnHandle)->dbHandle->descriptor) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+
+	// The caller supplies the JS database (the transaction deliberately holds no
+	// napi_ref to it). Validate it is THIS transaction's database before any
+	// state changes: transaction ids are descriptor-local and collide freely
+	// across databases, so binding through a foreign database would hand the
+	// TransactionLog a database whose descriptor resolves the id to an
+	// unrelated transaction — addEntry() would then silently attach entries to
+	// it. Checked before the bind below so a mismatch cannot leave
+	// pendingTransactionCount incremented.
+	napi_value exports;
+	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports), "Failed to get 'exports' reference");
+
+	napi_value databaseCtor;
+	bool isDatabase = false;
+	NAPI_STATUS_THROWS_ERROR(::napi_get_named_property(env, exports, "Database", &databaseCtor), "Failed to get 'Database' constructor");
+	NAPI_STATUS_THROWS_ERROR(::napi_instanceof(env, argv[1], databaseCtor, &isDatabase), "Failed to check 'database' argument");
+	if (!isDatabase) {
+		::napi_throw_error(env, nullptr, "Invalid argument, expected Database instance");
+		return nullptr;
+	}
+
+	std::shared_ptr<DBHandle>* jsDbHandle = nullptr;
+	NAPI_STATUS_THROWS_ERROR(::napi_unwrap(env, argv[1], reinterpret_cast<void**>(&jsDbHandle)), "Failed to unwrap 'database' argument");
+	if (jsDbHandle == nullptr || (*jsDbHandle).get() != (*txnHandle)->dbHandle.get()) {
+		::napi_throw_error(env, nullptr, "Database does not own this transaction");
+		return nullptr;
+	}
 
 	// check if transaction is already bound to a different log store
 	auto boundStore = (*txnHandle)->boundLogStore.lock();
@@ -1344,17 +1392,11 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 
 	// this needs to create a new TransactionLog instance that is not tracked by
 	// the DBHandle and is bound to this transaction
-	napi_value exports;
-	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports), "Failed to get 'exports' reference");
-
 	napi_value transactionLogCtor;
 	NAPI_STATUS_THROWS_ERROR(::napi_get_named_property(env, exports, "TransactionLog", &transactionLogCtor), "Failed to get 'TransactionLog' constructor");
 
-	napi_value jsDatabase;
-	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->jsDatabaseRef, &jsDatabase), "Failed to get 'jsDatabase' reference");
-
 	napi_value args[3];
-	args[0] = jsDatabase;
+	args[0] = argv[1];
 
 	NAPI_STATUS_THROWS_ERROR(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]), "Invalid log name");
 	NAPI_STATUS_THROWS_ERROR(::napi_create_uint32(env, (*txnHandle)->id, &args[2]), "Failed to create transaction id argument");

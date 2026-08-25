@@ -597,6 +597,36 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Close each descriptor's transactions owned by handles created on the given
+ * env. Called from the module env-cleanup hook, on the dying env's own thread,
+ * before Node frees the env — so a worker that exits with a pending
+ * transaction does not leak it into the process-global descriptor for a later
+ * Shutdown to walk with a dangling env (HarperFast/rocksdb-js#741). Mirrors
+ * RemoveListenersByEnv: snapshot descriptors under databasesMutex, close
+ * outside the lock.
+ */
+void DBRegistry::CloseTransactionsByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->closeTransactionsByEnv(env);
+	}
+}
+
+/**
  * Scrub per-descriptor event listeners owned by the given env. Called from the
  * env-cleanup hook so a worker thread exiting does not leave threadsafe-fn
  * pointers in shared descriptors that the main thread (or a surviving worker)

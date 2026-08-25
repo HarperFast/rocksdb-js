@@ -50,6 +50,37 @@ describe('Transaction Log', () => {
 				expect(db.listLogs()).toEqual(['bar', 'foo']);
 			}));
 
+		it('should throw instead of crash when the transaction is closed', () =>
+			dbRunner(async ({ db }) => {
+				db.open();
+
+				// Aborting closes the native handle (txn/dbHandle reset); useLog
+				// used to null-deref dbHandle->descriptor/exportsRef here.
+				const txn = new Transaction(db.store);
+				await txn.put('key', 'value');
+				txn.abort();
+				expect(() => txn.useLog('foo')).toThrow(new Error('Transaction is closed'));
+			}));
+
+		it('should reject binding a log through a foreign database', () =>
+			dbRunner(async ({ db }) => {
+				db.open();
+
+				await dbRunner(async ({ db: otherDb }) => {
+					otherDb.open();
+
+					// Transaction ids are descriptor-local and collide across
+					// databases, so binding through a foreign database would let
+					// addEntry() attach entries to an unrelated transaction.
+					const txn = new Transaction(db.store);
+					await txn.put('key', 'value');
+					expect(() => otherDb.store.useLog(txn._context, 'foo')).toThrow(
+						new Error('Database does not own this transaction')
+					);
+					txn.abort();
+				});
+			}));
+
 		it('should support numeric log names', () =>
 			dbRunner(async ({ db }) => {
 				db.open();

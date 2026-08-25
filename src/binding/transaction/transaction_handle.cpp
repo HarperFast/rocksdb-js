@@ -80,20 +80,12 @@ struct PendingAsyncState {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(
-	std::shared_ptr<DBHandle> dbHandle,
-	napi_env env,
-	napi_ref jsDatabaseRef,
-	bool disableSnapshot
-) :
+TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
-	env(env),
-	jsDatabaseRef(jsDatabaseRef),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
-	envThreadId(std::this_thread::get_id()),
 	committedPosition(0, 0) {
 	this->resetTransaction();
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
@@ -319,16 +311,14 @@ void TransactionHandle::close() {
 		return;
 	}
 
-	// update state to aborted if not already committed
-	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
-		this->state = TransactionState::Aborted;
-	}
-
 	// cancel all active async work before closing
 	this->cancelAllAsyncWork();
 
-	// wait for all async work to complete before closing
-	this->waitForAsyncWorkCompletion();
+	// Drain BEFORE touching anything the in-flight work owns. Nothing below is
+	// safe while a commit is still executing: `state` feeds the commitAborted()
+	// decision, releaseIntent() mutates VT state the commit is using, and
+	// `delete txn` hands RocksDB a dangling transaction.
+	const bool drained = this->waitForAsyncWorkCompletion();
 
 	// Test seam: widen the PATH A vs PATH B race window (see txnCloseTestDelayMs).
 	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
@@ -337,6 +327,25 @@ void TransactionHandle::close() {
 	const int closeDelayMs = testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS");
 	if (closeDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
+	}
+
+	if (!drained) {
+		// The drain timed out with work still executing against `txn` (e.g. a
+		// worker env torn down during a slow commit). Destroying now would free
+		// a transaction RocksDB is still using and could mark the log aborted
+		// while the data commit goes on to succeed — so deliberately leak
+		// instead. The in-flight commit owns its own cleanup (it releases VT
+		// intents and resolves the log position on completion); this close must
+		// not steal it. A leaked transaction is recoverable; a use-after-free
+		// and a log/data disagreement are not. The complete admission-and-drain
+		// contract that removes this window is HarperFast/rocksdb-js#784.
+		DEBUG_LOG("%p TransactionHandle::close async work still in flight after drain timeout; leaking txn rather than freeing it\n", this);
+		return;
+	}
+
+	// Only now that no native work can be running: settle the final state.
+	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
+		this->state = TransactionState::Aborted;
 	}
 
 	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
@@ -375,22 +384,11 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 
-	if (this->jsDatabaseRef != nullptr) {
-		if (std::this_thread::get_id() == this->envThreadId) {
-			// On the owning JS thread — safe to call napi_delete_reference.
-			DEBUG_LOG("%p TransactionHandle::close Cleaning up reference to database\n", this);
-			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->jsDatabaseRef), "Failed to delete reference to database");
-			DEBUG_LOG("%p TransactionHandle::close Reference to database deleted successfully\n", this);
-		} else {
-			// Wrong thread (close() called from a different env's JS thread, e.g.
-			// DBDescriptor::close() PATH A). napi_delete_reference is not thread-safe
-			// across envs; skip and let Node clean up the weak ref on env teardown.
-			DEBUG_LOG("%p TransactionHandle::close Skipping napi_delete_reference (wrong thread)\n", this);
-		}
-		this->jsDatabaseRef = nullptr;
-	} else {
-		DEBUG_LOG("%p TransactionHandle::close jsDatabaseRef is already null\n", this);
-	}
+	// Note: close() is deliberately napi-free. The transaction holds no napi
+	// refs (the JS database is passed to UseLog by the TS layer per-call), so
+	// close is safe from any thread and any teardown phase — a weak napi_ref
+	// held here and still alive at worker-env teardown crashes Node's
+	// second-pass finalizer drain (HarperFast/rocksdb-js#741).
 
 	// the transaction should already be removed from the registry when
 	// committing/aborting  so we don't need to call transactionRemove here to

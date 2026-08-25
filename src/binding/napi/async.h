@@ -159,7 +159,12 @@ struct AsyncWorkHandle {
 		this->cancelled.store(true);
 	}
 
-	void waitForAsyncWorkCompletion(
+	/**
+	 * Waits for in-flight async work to finish. Returns true when the count
+	 * actually reached zero, false when the timeout expired with work still
+	 * running — callers that destroy state the work is using MUST check it.
+	 */
+	bool waitForAsyncWorkCompletion(
 		std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)
 	) {
 		auto start = std::chrono::steady_clock::now();
@@ -169,14 +174,14 @@ struct AsyncWorkHandle {
 
 		if (activeAsyncWorkCount == 0) {
 			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion no async work to wait for\n", this);
-			return;
+			return true;
 		}
 
 		while (activeAsyncWorkCount > 0) {
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 			if (elapsed >= timeout) {
 				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, activeAsyncWorkCount);
-				return;
+				return false;
 			}
 
 			auto remainingTime = timeout - elapsed;
@@ -190,9 +195,13 @@ struct AsyncWorkHandle {
 
 			if (completed) {
 				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion all async work execution completed\n", this);
-				return;
+				return true;
 			}
+
+			activeAsyncWorkCount = this->activeAsyncWorkCount.load();
 		}
+
+		return true;
 	}
 
 	bool isCancelled() const {

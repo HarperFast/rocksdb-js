@@ -195,6 +195,12 @@ NAPI_MODULE_INIT() {
 	// when this was the last env.
 	NAPI_STATUS_THROWS(::napi_add_env_cleanup_hook(env, [](void* data) {
 		napi_env dyingEnv = static_cast<napi_env>(data);
+		// Close transactions owned by this env's handles before anything else:
+		// a pending transaction left open when a worker exits must not outlive
+		// its env in the shared descriptor (HarperFast/rocksdb-js#741). Runs on
+		// the dying env's own thread while the env is still valid.
+		rocksdb_js::DBRegistry::CloseTransactionsByEnv(dyingEnv);
+
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
 		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
 		// Release this env's commit-completion tsfns before Node frees the env's

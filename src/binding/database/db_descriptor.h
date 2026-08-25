@@ -504,6 +504,24 @@ public:
 	uint32_t transactionGetNextId();
 
 	/**
+	 * Closes every registered transaction whose owning DBHandle was created by
+	 * `env`, from that env's module cleanup hook. Pending transactions are only
+	 * removed from the registry by commit/abort, so a worker env that dies with
+	 * one still open leaks the TransactionHandle — holding a live RocksDB
+	 * transaction/snapshot — into this process-global descriptor, and the last
+	 * env's Shutdown later walks it with a dangling env
+	 * (HarperFast/rocksdb-js#741).
+	 *
+	 * Deliberately env-scoped, NOT part of DBHandle::close(): a user-called
+	 * db.close() runs with live microtasks — db.transaction() awaits its
+	 * callback, so a legitimate commit can be one microtask behind the close
+	 * and must still run (reaping there rejects it with "Database not open"
+	 * and, on Deno, strands the caller). At env teardown no such continuation
+	 * can exist.
+	 */
+	void closeTransactionsByEnv(napi_env env);
+
+	/**
 	 * Removes a dropped column family from the columns map (under
 	 * `columnsMutex`) so a later open-by-name creates a fresh column family
 	 * instead of reusing the dangling dropped handle. DBHandles still holding
