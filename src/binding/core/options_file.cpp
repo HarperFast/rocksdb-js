@@ -31,6 +31,15 @@ std::optional<std::string> findPersistedBlobDir(const std::string& optionsFileCo
 			valueStart,
 			valueEnd == std::string::npos ? std::string::npos : valueEnd - valueStart
 		);
+		// Surrounding whitespace is not part of a directory name, and an unset
+		// field padded with any would otherwise read as a configured one — which
+		// makes an unpatched build refuse an untiered database.
+		const size_t first = value.find_first_not_of(" \t\r");
+		if (first != std::string::npos) {
+			value = value.substr(first, value.find_last_not_of(" \t\r") - first + 1);
+		} else {
+			value.clear();
+		}
 		// An unset field is written as `blob_dir=`; keep looking, since a later
 		// column family may have one.
 		if (!value.empty()) {

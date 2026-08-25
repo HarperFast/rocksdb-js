@@ -89,8 +89,10 @@ private:
 	 *
 	 * Keyed by path rather than by handle, so a handle closed before a later
 	 * open appended a storage path cannot destroy from its own older copy.
-	 * Erased on `destroy()` and by `PurgeAll`; otherwise one small record per
-	 * path opened, which is the price of `destroy()` after `close()` working.
+	 * Erased only by `destroy()`, deliberately: `PurgeAll` is reached from the
+	 * public `shutdown()`, and a handle retained across it can still be
+	 * destroyed. One small record per path opened is the price of `destroy()`
+	 * after `close()` working at all.
 	 *
 	 * Its own mutex, deliberately a leaf: `DestroyDB` reaches a descriptor's
 	 * `layoutMutex` while holding `databasesMutex`, so anything recording a

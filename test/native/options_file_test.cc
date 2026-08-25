@@ -31,6 +31,23 @@ TEST(OptionsFile, UnsetBlobDirIsNotAValue) {
 	);
 }
 
+// A padded unset field is still unset. Reading the whitespace as a directory
+// name refuses an untiered database on an unpatched build, naming a directory
+// nothing was ever configured with.
+TEST(OptionsFile, UnsetBlobDirPaddedWithWhitespaceIsNotAValue) {
+	EXPECT_FALSE(
+		findPersistedBlobDir("[CFOptions \"default\"]\n  blob_dir=   \n  min_blob_size=2048\n")
+			.has_value()
+	);
+	EXPECT_FALSE(findPersistedBlobDir("[CFOptions \"t1\"]\n  blob_dir= \t\r\n").has_value());
+}
+
+TEST(OptionsFile, TrimsWhitespaceAroundAValue) {
+	auto found = findPersistedBlobDir("[CFOptions \"t1\"]\n  blob_dir= /mnt/blobs \n");
+	ASSERT_TRUE(found.has_value());
+	EXPECT_EQ(*found, "/mnt/blobs");
+}
+
 TEST(OptionsFile, FindsAValue) {
 	auto found = findPersistedBlobDir("[CFOptions \"default\"]\n  blob_dir=/mnt/blobs\n");
 	ASSERT_TRUE(found.has_value());
