@@ -135,6 +135,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<bool> wrapperCollected{false};
 
 	/**
+	 * Transaction-backed iterators whose RocksDB iterator still depends on txn.
+	 * Orphan cleanup waits for this to reach zero before destroying txn.
+	 */
+	std::atomic<uint32_t> activeIteratorCount{0};
+
+	/**
 	 * The thread ID of the JS thread that owns `env` (set at construction time).
 	 * Used in close() to guard napi_delete_reference: calling it from a thread
 	 * other than the owning JS thread is undefined behaviour and will crash.
@@ -217,6 +223,19 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * obsolete version behind it — until the process exits.
 	 */
 	void onWrapperCollected();
+
+	/**
+	 * Registers/releases a transaction-backed iterator dependency. The final
+	 * release retries a deferred orphan close.
+	 */
+	void registerIterator();
+	void unregisterIterator();
+
+	/**
+	 * Closes a collected wrapper once no async work or iterator still depends
+	 * on its RocksDB transaction.
+	 */
+	void closeOrphanIfUnused();
 
 	napi_value get(
 		napi_env env,

@@ -1,8 +1,13 @@
 import { registryStatus } from '../src/index.js';
 import { Transaction } from '../src/transaction.js';
 import { dbRunner } from './lib/util.js';
+import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
+
+const dependentFixturePath = join(__dirname, 'fixtures', 'transaction-orphan-dependents.mts');
 
 /**
  * A transaction dropped without commit()/abort() used to live forever: the JS wrapper's finalizer
@@ -31,6 +36,40 @@ const forceGC: (() => void) | undefined =
 			: undefined;
 
 const itWithGC = it.skipIf(!forceGC);
+const itWithNodeGC = it.skipIf(Boolean(process.versions.bun || process.versions.deno));
+
+function runDependentFixture(
+	mode: 'async-get' | 'iterator',
+	dbPath: string
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, ['--expose-gc', dependentFixturePath, mode, dbPath], {
+			env: {
+				...process.env,
+				ROCKSDB_JS_TXN_GET_DELAY_MS: mode === 'async-get' ? '5250' : undefined,
+			},
+		});
+		let stderr = '';
+		child.stderr.on('data', (chunk) => {
+			stderr += chunk.toString();
+		});
+		child.on('close', (code, signal) => resolve({ code, signal, stderr }));
+		child.on('error', reject);
+	});
+}
+
+async function expectDependentFixtureSurvives(mode: 'async-get' | 'iterator'): Promise<void> {
+	const dbPath = join(process.cwd(), `.transaction-orphan-${mode}-${process.pid}-${Date.now()}`);
+	try {
+		const { code, signal, stderr } = await runDependentFixture(mode, dbPath);
+		expect(signal, stderr).toBeNull();
+		expect(code, stderr).toBe(0);
+	} finally {
+		if (!process.env.KEEP_FILES) {
+			rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+		}
+	}
+}
 
 /**
  * V8 collects the dropped wrapper on its own schedule, and the finalizer runs after the GC pass, so
@@ -46,6 +85,18 @@ async function collectOrphans(path: string, timeoutMs = 5000) {
 }
 
 describe('orphaned transactions', () => {
+	itWithNodeGC(
+		'should defer orphan cleanup past the async-work wait timeout',
+		() => expectDependentFixtureSurvives('async-get'),
+		15_000
+	);
+
+	itWithNodeGC(
+		'should keep a transaction alive until its iterator closes',
+		() => expectDependentFixtureSurvives('iterator'),
+		15_000
+	);
+
 	itWithGC('should release a transaction dropped without commit or abort', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			await db.put('foo', 'bar');

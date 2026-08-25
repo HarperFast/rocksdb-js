@@ -191,6 +191,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
+  it reads (exercises orphan cleanup past the async-work wait timeout)
 
 ## Test Structure
 
@@ -419,17 +421,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
     closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
     always closes, and the failure paths (which deliberately leave the handle open for a caller that
-    may retry) check `wrapperCollected`, because there is no caller left. Without this a transaction
-    dropped without `commit()`/`abort()` pinned `rocksdb.oldest-snapshot-time` for the life of the
-    process, so RocksDB could never discard obsolete versions for that database — restart was the
-    only recovery (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on
-    any redesign here: the registry reference cannot simply be made weak, because an async `get`
-    holds a raw `TransactionHandle*` (`AsyncGetState<TransactionHandle*>`) and relies on `close()`'s
-    `cancelAllAsyncWork()`/`waitForAsyncWorkCompletion()`, which a plain destructor race would skip;
-    and `registryStatus()` may only report handle fields that are fixed before the handle is
-    published to the registry (`id`, `createdAt`), because `txnsMutex` covers the map's membership
-    while the mutable fields' writers — the owning thread's read paths, the commit-completion
-    callback — hold no lock at all.
+    may retry) check `wrapperCollected`, because there is no caller left. Other dependents defer the
+    orphan close without blocking the V8 finalizer: a cold-cache async get owns a
+    `shared_ptr<TransactionHandle>` and retries after its async registration is released, while a
+    transaction-backed `DBIteratorHandle` owns the handle and keeps `activeIteratorCount` nonzero
+    until the RocksDB iterator is reset. The last dependent closes the orphan. Without this a dropped
+    transaction either pinned `rocksdb.oldest-snapshot-time` for the life of the process or, after
+    orphan cleanup was added, could be destroyed under an async read/live iterator
+    (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on any redesign
+    here: the registry reference cannot simply be made weak, because dependents need the coordinated
+    cancellation and transaction-destruction path in `close()`; and `registryStatus()` may only report
+    handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
+    map membership while mutable-field writers hold no lock.
 
 12. **A recovered active transaction-log file ends on a transaction boundary when recovery can
     prove one**: only a batch's final entry
