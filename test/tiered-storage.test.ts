@@ -1,6 +1,15 @@
 import { backups, RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
-import { copyFileSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+} from 'node:fs';
 import { isAbsolute, join, relative as relativePath } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -15,6 +24,20 @@ function tempPath(): string {
 
 function tempDir(): string {
 	const p = tempPath();
+	mkdirSync(p, { recursive: true });
+	return p;
+}
+
+/**
+ * A temp directory under the process working directory rather than `os.tmpdir()`.
+ * The two can be on different drives on Windows, where `path.relative` between
+ * them returns an ABSOLUTE path — so the case these callers test, "a relative
+ * path is resolved against the process working directory", cannot be expressed
+ * from a tmpdir at all.
+ */
+function cwdTempDir(): string {
+	const p = join(process.cwd(), `rocksdb-js-cwd-${randomBytes(8).toString('hex')}`);
+	tempPaths.push(p);
 	mkdirSync(p, { recursive: true });
 	return p;
 }
@@ -38,6 +61,28 @@ function filesWithExt(dir: string, ext: string): string[] {
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * The `[CFOptions "<name>"]` section of the database's newest OPTIONS file.
+ * RocksDB rewrites it on open and on every column-family creation, so this is
+ * what a later open of that family will actually restore — which is what makes
+ * an option leaking between families outlive the process.
+ */
+function persistedCFOptions(dbPath: string, name: string): Record<string, string> {
+	const optionsFiles = readdirSync(dbPath)
+		.filter((file) => file.startsWith('OPTIONS-'))
+		.sort();
+	const text = readFileSync(join(dbPath, optionsFiles.at(-1)!), 'utf8');
+	const section = text.split(`[CFOptions "${name}"]`)[1]?.split('\n[')[0] ?? '';
+	const result: Record<string, string> = {};
+	for (const line of section.split('\n')) {
+		const eq = line.indexOf('=');
+		if (eq > 0) {
+			result[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+		}
+	}
+	return result;
 }
 
 /** A value large enough to land in a blob file at the default 2 KB threshold. */
@@ -203,7 +248,7 @@ describe('paths', () => {
 
 	it('should resolve a relative path against the process working directory', () => {
 		const dbPath = tempPath();
-		const fast = tempDir();
+		const fast = cwdTempDir();
 		const relative = relativePath(process.cwd(), fast);
 		expect(isAbsolute(relative)).toBe(false);
 
@@ -312,6 +357,69 @@ describe('paths', () => {
 		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
 	});
 
+	it('should name paths when a removed or reordered list breaks the open', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+		const slow = tempDir();
+
+		let db = openDb(dbPath, {
+			paths: [
+				{ path: fast, targetSize: 0 },
+				{ path: slow, targetSize: 1 << 30 },
+			],
+		});
+		for (let i = 0; i < 200; i++) {
+			db.putSync(`key-${i}`, `value-${i}`);
+		}
+		db.flushSync();
+		db.close();
+		expect(filesWithExt(dbPath, '.sst')).toHaveLength(0);
+
+		// Nothing on disk records which list the MANIFEST's path indexes were
+		// written against, so neither of these is detectable up front the way the
+		// zero-to-one transition is. RocksDB reports the MANIFEST as corrupt,
+		// which reads as data loss; both are recoverable by putting the list back.
+		expect(() => RocksDatabase.open(dbPath)).toThrow(/opened with `paths`, that same list/);
+		expect(() =>
+			RocksDatabase.open(dbPath, {
+				paths: [
+					{ path: slow, targetSize: 0 },
+					{ path: fast, targetSize: 1 << 30 },
+				],
+			})
+		).toThrow(/opened with `paths`, that same list/);
+
+		db = openDb(dbPath, {
+			paths: [
+				{ path: fast, targetSize: 0 },
+				{ path: slow, targetSize: 1 << 30 },
+			],
+		});
+		expect(db.getSync('key-0')).toBe('value-0');
+	});
+
+	it('should delete tiered SST files when destroy() follows close()', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+
+		const db = openDb(dbPath, { paths: [{ path: fast, targetSize: 1 << 30 }] });
+		for (let i = 0; i < 200; i++) {
+			db.putSync(`key-${i}`, `value-${i}`);
+		}
+		db.flushSync();
+		expect(filesWithExt(fast, '.sst').length).toBeGreaterThan(0);
+
+		// destroy() accepts a closed handle, and closing the last one takes the
+		// descriptor and its registry entry with it. `db_paths` is never written
+		// to the OPTIONS file, so nothing on disk can put it back: without the
+		// handle's own layout snapshot the database directory goes and every
+		// tiered SST file stays, with destroy() reporting success.
+		db.close();
+		db.destroy();
+		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
+		expect(existsSync(dbPath)).toBe(false);
+	});
+
 	it('should reject more storage paths than it will hold', () => {
 		const dbPath = tempPath();
 		// The native parser reserves against whatever length JS reports, and a
@@ -395,8 +503,22 @@ describe('blobs', () => {
 	it('should keep each column family on its own blob settings', () => {
 		const dbPath = tempPath();
 
+		// t2 has to be IN the OPTIONS file before t1's cold open, or that open
+		// creates it fresh and there is nothing for the restamping to act on —
+		// the test would then pass with the restore removed.
+		openDb(dbPath, { name: 't2' }).close();
+
 		// Cold-open t1 with a threshold far above the 8 KB values written below.
+		// RocksDB opens every family at once, so this open is what would carry
+		// t1's threshold onto t2 and persist it.
 		const first = openDb(dbPath, { name: 't1', blobs: { minSize: 1 << 20 } });
+
+		// Asserted against the OPTIONS file rather than only through behavior:
+		// the restamp is what gets PERSISTED here, and a later plain open of t2
+		// asks for the 2 KB default anyway, so it writes the right value back and
+		// hides the damage until something reopens t2 through t1 again.
+		expect(persistedCFOptions(dbPath, 't1').min_blob_size).toBe(String(1 << 20));
+		expect(persistedCFOptions(dbPath, 't2').min_blob_size).toBe('2048');
 		first.close();
 
 		// A cold open of t1 must not restamp t2 with t1's threshold: in Harper
@@ -409,6 +531,30 @@ describe('blobs', () => {
 		}
 		second.flushSync();
 		expect(filesWithExt(dbPath, '.blob').length).toBeGreaterThan(0);
+	});
+
+	it("should keep a warm-created family off the first opener's blob settings", () => {
+		const dbPath = tempPath();
+
+		// A family created on an already-open database builds its options on the
+		// descriptor's own retained base, so any field not assigned in BOTH
+		// directions rides along from whichever handle opened the database first.
+		// `prepopulate_blob_cache` was the one such field, and it is persisted, so
+		// the inheritance survived restarts. In the Harper shape — every table a
+		// column family — a table that never opted in warmed the shared blob cache
+		// on every flush.
+		const first = openDb(dbPath, {
+			name: 't1',
+			blobs: { prepopulateCache: true, minSize: 1 << 20 },
+		});
+		openDb(dbPath, { name: 't2' });
+
+		expect(persistedCFOptions(dbPath, 't1').prepopulate_blob_cache).toBe('kFlushOnly');
+		expect(persistedCFOptions(dbPath, 't2').prepopulate_blob_cache).toBe('kDisable');
+		// A field that was already assigned unconditionally, as the control: t2
+		// gets the creation default rather than t1's request either way.
+		expect(persistedCFOptions(dbPath, 't2').min_blob_size).toBe('2048');
+		first.close();
 	});
 
 	it("should inherit a column family's persisted blob settings on a plain reopen", () => {
@@ -698,7 +844,7 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 
 	it('should resolve a relative blob directory', () => {
 		const dbPath = tempPath();
-		const blobDir = tempDir();
+		const blobDir = cwdTempDir();
 		const relative = relativePath(process.cwd(), blobDir);
 		expect(isAbsolute(relative)).toBe(false);
 

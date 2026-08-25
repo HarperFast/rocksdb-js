@@ -151,6 +151,10 @@ void DBHandle::close() {
 		// DBRegistry::CloseTransactionsByEnv from the env cleanup hook
 		// (HarperFast/rocksdb-js#741).
 
+		// Take the file layout with us: a later destroy() on this handle may be
+		// the only thing that still knows where the files are. See DBHandle::layout.
+		this->layout = std::make_unique<DBFileLayout>(this->descriptor->captureLayout());
+
 		// release our reference to the descriptor
 		this->descriptor.reset();
 	}

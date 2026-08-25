@@ -143,8 +143,10 @@ void DBRegistry::DebugLogDescriptorRefs() {
  * Destroy a RocksDB database.
  *
  * @param path - The path to the database to destroy.
+ * @param knownLayout - Where the caller last saw this database's files, used
+ *   when no descriptor for the path is left in the registry to read it from.
  */
-void DBRegistry::DestroyDB(const std::string& path) {
+void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLayout) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
 		return;
@@ -165,6 +167,20 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
 
+	auto applyLayout = [&](const DBFileLayout& layout) {
+		destroyOptions.db_paths = layout.dbPaths;
+		for (const auto& [cfName, blobDir] : layout.blobDirs) {
+			rocksdb::ColumnFamilyOptions cfOptions;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			cfOptions.blob_dir = blobDir;
+#else
+			(void)blobDir;
+#endif
+			destroyColumnFamilies.emplace_back(cfName, cfOptions);
+		}
+		capturedLayout = true;
+	};
+
 	// Claim the descriptor under the lock but leave the entry in the map until
 	// the close completes (same discipline as CloseDB): the entry is how the
 	// env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
@@ -184,20 +200,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path == path && entry.descriptor) {
-				{
-					std::lock_guard<std::mutex> layoutLock(entry.descriptor->layoutMutex);
-					destroyOptions.db_paths = entry.descriptor->layoutDbPaths;
-					for (const auto& [cfName, blobDir] : entry.descriptor->layoutBlobDirs) {
-						rocksdb::ColumnFamilyOptions cfOptions;
-#ifdef ROCKSDB_HAS_CF_BLOB_DIR
-						cfOptions.blob_dir = blobDir;
-#else
-						(void)blobDir;
-#endif
-						destroyColumnFamilies.emplace_back(cfName, cfOptions);
-					}
-					capturedLayout = true;
-				}
+				applyLayout(entry.descriptor->captureLayout());
 				if (entry.descriptor->beginClose()) {
 					descriptor = entry.descriptor;
 					condition = entry.condition;
@@ -209,12 +212,22 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
-	// Nothing live to read the layout from. `blob_dir` is persisted per column
-	// family, so it can still be recovered; `db_paths` is not written to the
-	// OPTIONS file at all (RocksDB serializes it in its "not yet supported"
-	// block), so a `paths` database that is not open in this process cannot have
-	// its tiered SST files removed. `Database::Destroy` requires an open handle,
-	// so that is not reachable from the public API.
+	// No descriptor left in the registry — which `destroy()` on a closed handle
+	// reaches whenever that handle was the last one open. The caller's own
+	// snapshot is the only remaining record of `db_paths`: it is not written to
+	// the OPTIONS file at all (RocksDB serializes it in its "not yet supported"
+	// block), so without this the tiered SST files outlive the destroy while the
+	// database directory is removed, and the call reports success.
+	if (!capturedLayout && knownLayout) {
+		applyLayout(*knownLayout);
+	}
+
+	// Nothing live and nothing remembered — a path handed in from outside any
+	// handle. `blob_dir` is per-column-family and persisted, so it can still be
+	// recovered from the OPTIONS file; `db_paths` cannot be recovered from
+	// anywhere, so a `paths` database reached this way keeps its tiered SST
+	// files. `Database::Destroy` always passes a layout, so that is not
+	// reachable from the public API.
 	if (!capturedLayout) {
 		rocksdb::ConfigOptions configOptions;
 		configOptions.ignore_unknown_options = true;

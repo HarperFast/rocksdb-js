@@ -46,6 +46,16 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 );
 
 /**
+ * Where a database keeps its files: the `db_paths` it was opened with and each
+ * column family's `blob_dir`. A copy rather than a reference so it can outlive
+ * the descriptor it was taken from — see `DBHandle::layout`.
+ */
+struct DBFileLayout {
+	std::vector<rocksdb::DbPath> dbPaths;
+	std::unordered_map<std::string, std::string> blobDirs;
+};
+
+/**
  * Creates a column family's blob directory if it does not exist, throwing a
  * `DBException` naming the option when it cannot be created.
  *
@@ -264,6 +274,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir) {
 		std::lock_guard<std::mutex> lock(this->layoutMutex);
 		this->layoutBlobDirs[name] = blobDir;
+	}
+
+	DBFileLayout captureLayout() {
+		std::lock_guard<std::mutex> lock(this->layoutMutex);
+		return DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
 	}
 
 	/**

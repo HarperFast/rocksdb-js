@@ -205,11 +205,13 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	// `noBlockCache` means "this database does not use the process-wide caches",
 	// so it opts out of the blob cache too — otherwise a scratch/bulk-load
 	// database would evict the serving database's cached blob values.
-	if (!options.noBlockCache) {
-		if (auto blobCache = DBSettings::getInstance().getBlobCache()) {
-			cfOptions.blob_cache = blobCache;
-		}
-	}
+	// Resolved in both directions for the same reason as prepopulate_blob_cache
+	// below: `cfOptions` is the descriptor's own base on the warm path, so
+	// leaving it untouched would attach the database's shared blob cache to a
+	// family created with `noBlockCache` — the eviction the opt-out exists to
+	// prevent.
+	cfOptions.blob_cache =
+		options.noBlockCache ? nullptr : DBSettings::getInstance().getBlobCache();
 	// The blob defaults belong to a column family being CREATED. A cold open of
 	// an EXISTING family overwrites these from its OPTIONS file
 	// (restorePersistedBlobOptions) and then re-applies only what the caller
@@ -223,9 +225,15 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.blob_garbage_collection_force_threshold =
 		options.blobs.garbageCollectionForceThreshold.value_or(
 			kDefaultBlobGarbageCollectionForceThreshold);
-	if (options.blobs.prepopulateCache.value_or(kDefaultBlobPrepopulateCache)) {
-		cfOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kFlushOnly;
-	}
+	// Assigned in both directions, like every other field here. `base` is the
+	// descriptor's own `cfOptions` on the warm path (db_registry.cpp), so a
+	// one-sided assignment would let the database's FIRST opener's
+	// prepopulation setting ride along into every family created later — and it
+	// is persisted, so it survives restarts.
+	cfOptions.prepopulate_blob_cache =
+		options.blobs.prepopulateCache.value_or(kDefaultBlobPrepopulateCache)
+			? rocksdb::PrepopulateBlobCache::kFlushOnly
+			: rocksdb::PrepopulateBlobCache::kDisable;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 	cfOptions.blob_dir = options.blobs.dir;
 #endif
@@ -1437,6 +1445,35 @@ static void assertStoragePathsUsable(
 	}
 }
 
+/**
+ * Names `paths` as a suspect on the open failure a `paths` change produces.
+ *
+ * `assertStoragePathsUsable` above catches the zero-to-one transition up front
+ * because it is decidable from the files. Removing an entry, or reordering one,
+ * is not: the MANIFEST records a path INDEX, the list it indexes into is
+ * supplied at open and stored nowhere, and the files are exactly where they were
+ * left. RocksDB looks on the wrong volume and reports
+ * `Corruption: ... MANIFEST-NNNNNN may be corrupted`, which reads as data loss —
+ * so an operator goes to backup restore instead of to the config line they
+ * changed. It is recoverable by putting the list back, and this is what says so.
+ *
+ * The note is appended rather than substituted, and phrased conditionally,
+ * because a genuinely corrupt database produces the same status: this cannot
+ * tell them apart, only make sure the cheap explanation is not missed.
+ */
+static std::string explainOpenFailure(const rocksdb::Status& status) {
+	std::string message = status.ToString();
+	if (!status.IsCorruption() || message.find(".sst") == std::string::npos) {
+		return message;
+	}
+	return message +
+		"\n\nIf this database has ever been opened with `paths`, that same list must be "
+		"supplied again: RocksDB stores each SST file's location as an index into the list "
+		"given at open and does not record the list itself, so removing or reordering an "
+		"entry points it at the wrong volume for files that are still where they were left. "
+		"Entries may only be appended. Otherwise the files named above are genuinely missing.";
+}
+
 #ifndef ROCKSDB_HAS_CF_BLOB_DIR
 /**
  * Refuses to open a database whose blob files this build cannot find.
@@ -1745,7 +1782,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				DEBUG_LOG("DBDescriptor::open IOError: %s\n", status.ToString().c_str());
 				throw rocksdb_js::DBException("Database does not exist");
 			}
-			throw rocksdb_js::DBException(status.ToString());
+			throw rocksdb_js::DBException(explainOpenFailure(status));
 		}
 		DEBUG_LOG("DBDescriptor::open Opened readonly db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb.release(), DBDeleter{});
@@ -1759,7 +1796,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
-			throw rocksdb_js::DBException(status.ToString());
+			throw rocksdb_js::DBException(explainOpenFailure(status));
 		}
 		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
@@ -1769,7 +1806,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
-			throw rocksdb_js::DBException(status.ToString());
+			throw rocksdb_js::DBException(explainOpenFailure(status));
 		}
 		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});

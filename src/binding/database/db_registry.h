@@ -89,7 +89,7 @@ public:
 #ifdef DEBUG
 	static void DebugLogDescriptorRefs();
 #endif
-	static void DestroyDB(const std::string& path);
+	static void DestroyDB(const std::string& path, const DBFileLayout* knownLayout = nullptr);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();

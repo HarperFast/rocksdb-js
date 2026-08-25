@@ -629,8 +629,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `blob_dir` is caught at open for every family, rather than when a flush makes the whole database
     read-only. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
     sit in RocksDB's "not yet supported" serialization block, so there is nothing persisted to
-    compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition
-    (and removing `paths`, which produces the same corruption message) is caught because it is
+    compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition is
+    caught before open because it is detectable from the files themselves. Removing or reordering
+    an entry cannot be detected up front; `explainOpenFailure` conditionally appends guidance to a
+    `Corruption` naming an `.sst` file because genuine corruption reports the same status. With no
     detectable from the files themselves: with no `db_paths`, RocksDB sanitizes it to `[{dbname,
     ...}]`, so existing SST files sit at index 0 = the database directory, and supplying `paths`
     redefines that index. `assertStoragePathsUsable` rejects it by asking whether the database
@@ -645,8 +647,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `Status::NotSupported` whenever `db_paths`/`cf_paths` is non-empty, so a tiered database has no
     in-process copy path, only a volume snapshot. `destroy()` has to receive the real layout
     (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means
-    "everything under the database directory", which orphans exactly the files tiering moved away. See
-    [docs/tiered-storage.md](docs/tiered-storage.md).
+    "everything under the database directory", which orphans exactly the files tiering moved away.
+    The layout must survive the descriptor: `destroy()` accepts a closed handle, and closing the last
+    one purges the registry entry, so `DBHandle::close` copies a `DBFileLayout` onto the handle and
+    `Database::Destroy` passes it down. `blob_dir` can be recovered from OPTIONS; `db_paths` cannot.
+    See [docs/tiered-storage.md](docs/tiered-storage.md).
 18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
     are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,
     reached from both the cold path and `DBRegistry::OpenDB`'s warm reuse. Both must pass options
@@ -670,6 +675,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     unused. `prepopulate_blob_cache` was gated on an attached blob cache and therefore turned itself
     off permanently when a CLI tool or `noBlockCache` script opened the database. Restore persisted
     fields unconditionally; gate on the live resource only where the field is used.
+
+    Every field the builder sets must also be assigned in both directions, never only when requested
+    is truthy. On `DBRegistry::OpenDB`'s warm path its base is the descriptor's retained
+    `cfOptions`, so a one-sided assignment leaves the first opener's value in later families and then
+    persists it. `value_or(default)` with an explicit else branch prevents this leak; test persisted
+    OPTIONS rather than behavior after a reopen, which otherwise rewrites the correct default.
 
 19. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
