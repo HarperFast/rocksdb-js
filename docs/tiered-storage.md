@@ -28,6 +28,10 @@ RocksDB walks the list in order, assigning levels to a path until the running to
 level's estimated size exceeds the path's `targetSize`, then moving to the next. The last path is
 the fallback and absorbs everything that doesn't fit earlier.
 
+`path` and `blobs.dir` are resolved to absolute paths (against the process working directory) when
+the database is opened, so the same configuration cannot silently resolve to a different volume in
+a process started from somewhere else.
+
 Three things about this are easy to get wrong:
 
 **Placement is static.** `GetPathId()` is a pure function of the target sizes,
@@ -40,13 +44,46 @@ file lands on `paths[0]` regardless of its target size. Only compaction output i
 same is true of a manual `compact()`/`compactSync()`, whose `target_path_id` is 0.
 
 **Entries may only be appended.** A file's _path index_ is what gets recorded in the MANIFEST, not
-its directory. Appending a path to grow onto a new volume is safe — existing files keep index 0 and
-stay put. Reordering or removing an entry makes RocksDB look for existing files in the wrong
-directory.
+its directory. Appending a path to grow onto a new volume is safe — existing files keep their index
+and stay put. Reordering or removing an entry makes RocksDB look for existing files in the wrong
+directory, and nothing on disk records which index a file came from, so that one is not checked for
+you.
 
 Also note that supplying more than one path disables `level_compaction_dynamic_level_bytes`
 (RocksDB's `SanitizeCfOptions` logs a warning and turns it off), so level sizing becomes static and
 `max_bytes_for_level_base` has to be sized by hand.
+
+### Adding `paths` to a database that does not have it
+
+This is the migration people actually attempt, and the naive form of it breaks the database.
+
+With no `paths`, RocksDB sanitizes `db_paths` to `[{ <database directory>, ... }]`, so every SST
+file the database has ever written carries path index 0 meaning _the database directory_. Supplying
+`paths` for the first time redefines index 0 as `paths[0]`, and RocksDB then looks for all of those
+files on the wrong volume:
+
+```
+Corruption: IO error: No such file or directory: /nvme/mydb-sst/000009.sst
+The file /nvme/mydb/MANIFEST-000005 may be corrupted.
+```
+
+Nothing is actually corrupt — reverting the config line opens it again — but the error names the
+MANIFEST, which is how an operator ends up reaching for a backup restore instead.
+
+The supported form is to list the database directory itself as the first entry, so index 0 keeps
+meaning what it already meant:
+
+```js
+const db = RocksDatabase.open('/nvme/mydb', {
+	paths: [
+		{ path: '/nvme/mydb', targetSize: 200 * 1024 ** 3 },
+		{ path: '/mnt/attached/mydb-sst', targetSize: 4 * 1024 ** 4 },
+	],
+});
+```
+
+`open()` rejects the naive form with a message naming the real cause: it checks whether the
+database directory holds SST files that are not reachable under `paths[0]`.
 
 ## Directories must not be shared between databases
 
@@ -60,6 +97,12 @@ error at open. Give every database its own subdirectory.
 
 Column families of the _same_ database are fine: they share one counter, so one `blobs.dir` for all
 of a database's tables is the intended arrangement.
+
+## `destroy()` follows the layout
+
+`db.destroy()` deletes the tiered SST files and the blob files along with the database directory,
+using the live database's actual `db_paths` and per-column-family `blob_dir` rather than assuming
+everything is under the database directory.
 
 ## Backups do not preserve the layout
 
@@ -95,11 +138,12 @@ rewrite is the entire point of blob separation), so the slow volume absorbs no c
 cost is one extra random read on the hot path of every record at or above `minSize`.
 
 Because RocksDB does **not** put blob values in the block cache, that extra read is real I/O
-unless a blob cache is configured. When `blockCacheSize` is configured and `blobCacheSize` is
-omitted from the same call, rocksdb-js assigns the blob cache an additional 10% of the block-cache
-capacity. An explicit value, including `0` to disable the blob cache, overrides that default. When
-a later call supplies only `blockCacheSize`, the derived blob-cache capacity is recalculated. When
-blob files are on slower storage, a larger explicit cache can be useful:
+unless a blob cache is configured. When `blockCacheSize` is configured and `blobCacheSize` has
+never been set explicitly, rocksdb-js assigns the blob cache an additional 10% of the block-cache
+capacity — so an existing `config({ blockCacheSize })` call raises this process's memory ceiling by
+10% with no code change. Set `blobCacheSize` explicitly (`0` disables it) to state the budget
+yourself; once you have, later calls that supply only `blockCacheSize` leave it alone. When blob
+files are on slower storage, a larger explicit cache can be useful:
 
 ```js
 RocksDatabase.config({ blobCacheSize: 512 * 1024 ** 2 });
@@ -120,7 +164,10 @@ unreadable.
 
 `open()` rejects that: it compares the requested directory against the one recorded in the
 database's `OPTIONS` file and throws rather than opening a database whose large values have gone
-missing.
+missing. The check — and the request — apply to the column family being opened, not to the whole
+database: `blobs` is a per-column-family option, and opening one family never restamps another's
+settings (the same rule `compression` follows). A family whose `blobs` you omit entirely keeps
+whatever it persisted.
 
 To migrate, move the `.blob` files while the database is closed, then reopen with
 `allowDirChange` to acknowledge it:

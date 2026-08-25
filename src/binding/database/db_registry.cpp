@@ -220,6 +220,44 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	};
 
+	// A default Options instance describes only the database directory. Preserve
+	// the live layout before closing it so DestroyDB also removes SST paths and
+	// per-column-family blob directories on other volumes.
+	rocksdb::Options destroyOptions;
+	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
+	auto captureDestroyLayout = [&](const std::shared_ptr<DBDescriptor>& descriptor) {
+		if (!descriptor->db) {
+			return;
+		}
+		destroyOptions.db_paths = descriptor->db->GetDBOptions().db_paths;
+		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
+		for (const auto& [cfName, column] : descriptor->columns) {
+			rocksdb::ColumnFamilyOptions cfOptions;
+			if (column && column->column) {
+				rocksdb::Options current = descriptor->db->GetOptions(column->column.get());
+				cfOptions.cf_paths = current.cf_paths;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+				cfOptions.blob_dir = current.blob_dir;
+#endif
+			}
+			destroyColumnFamilies.emplace_back(cfName, cfOptions);
+		}
+	};
+	for (const auto& [descriptor, condition] : claimed) {
+		if (!descriptor->readOnly) {
+			captureDestroyLayout(descriptor);
+			break;
+		}
+	}
+	if (destroyColumnFamilies.empty()) {
+		for (const auto& [descriptor, condition] : claimed) {
+			captureDestroyLayout(descriptor);
+			if (!destroyColumnFamilies.empty()) {
+				break;
+			}
+		}
+	}
+
 	if (!claimed.empty()) {
 		// Close all closables (iterators, transactions, handles) attached to
 		// each descriptor; this should release all DBHandle references. A throw
@@ -273,7 +311,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		try {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
-			rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
+			rocksdb::Status status = rocksdb::DestroyDB(
+				identityPath, destroyOptions, destroyColumnFamilies
+			);
 			if (!status.ok()) {
 				throw rocksdb_js::DBException(status.ToString());
 			}
@@ -611,22 +651,79 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			}
 		}
 
-#ifdef ROCKSDB_HAS_CF_BLOB_DIR
-		// Same reasoning as the compression check above, for blob placement: the
-		// live column family already has a blob_dir and this open cannot change
-		// it, so silently accepting a different one would leave the caller
-		// believing large values are on another volume until the next restart.
-		if (columns.count(name)) {
+		// Same reasoning as the compression check above, for the blob settings:
+		// they are fixed on the live column family and this open cannot change
+		// them, so silently accepting a different request would leave the caller
+		// believing large values are extracted at another threshold — or living on
+		// another volume — until the next restart. Only fields the caller actually
+		// supplied are compared; a plain reopen inherits the live settings.
+		if (columnExists) {
 			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
 			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
 			if (current.blob_dir != options.blobs.dir) {
 				throw rocksdb_js::DBException(
 					"Column family \"" + name + "\" is already open with blobs.dir \"" +
 					current.blob_dir + "\"; cannot reopen it with \"" + options.blobs.dir + "\""
 				);
 			}
-		}
 #endif
+
+			auto boolText = [](bool value) { return value ? "true" : "false"; };
+			std::vector<std::string> conflicts;
+			if (options.blobs.enabled && current.enable_blob_files != *options.blobs.enabled) {
+				conflicts.push_back(
+					std::string("enabled ") + boolText(current.enable_blob_files) + " -> " +
+					boolText(*options.blobs.enabled)
+				);
+			}
+			if (options.blobs.minSize && current.min_blob_size != *options.blobs.minSize) {
+				conflicts.push_back(
+					"minSize " + std::to_string(current.min_blob_size) + " -> " +
+					std::to_string(*options.blobs.minSize)
+				);
+			}
+			if (options.blobs.garbageCollection &&
+				current.enable_blob_garbage_collection != *options.blobs.garbageCollection
+			) {
+				conflicts.push_back(
+					std::string("garbageCollection ") + boolText(current.enable_blob_garbage_collection) +
+					" -> " + boolText(*options.blobs.garbageCollection)
+				);
+			}
+			if (options.blobs.garbageCollectionAgeCutoff &&
+				current.blob_garbage_collection_age_cutoff != *options.blobs.garbageCollectionAgeCutoff
+			) {
+				conflicts.push_back(
+					"garbageCollectionAgeCutoff " +
+					std::to_string(current.blob_garbage_collection_age_cutoff) + " -> " +
+					std::to_string(*options.blobs.garbageCollectionAgeCutoff)
+				);
+			}
+			if (options.blobs.garbageCollectionForceThreshold &&
+				current.blob_garbage_collection_force_threshold !=
+					*options.blobs.garbageCollectionForceThreshold
+			) {
+				conflicts.push_back(
+					"garbageCollectionForceThreshold " +
+					std::to_string(current.blob_garbage_collection_force_threshold) + " -> " +
+					std::to_string(*options.blobs.garbageCollectionForceThreshold)
+				);
+			}
+			if (!conflicts.empty()) {
+				std::string message =
+					"Column family \"" + name + "\" is already open with different blob settings; "
+					"cannot reopen it with the requested ones (";
+				for (size_t i = 0; i < conflicts.size(); i++) {
+					if (i > 0) {
+						message += ", ";
+					}
+					message += conflicts[i];
+				}
+				throw rocksdb_js::DBException(message + ")");
+			}
+		}
 	} else {
 		try {
 			entry.descriptor = DBDescriptor::open(path, identityPath, options);
