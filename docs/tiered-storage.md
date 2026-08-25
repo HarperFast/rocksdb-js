@@ -51,10 +51,22 @@ you.
 
 That includes **deleting the option entirely**, which is the natural thing to try when tiering turns
 out to be a mistake. `db_paths` is sanitized back to `[{ <database directory> }]`, index 0 stops
-meaning the fast volume, and the open fails with `Corruption: ... MANIFEST-NNNNNN may be corrupted` —
-the same misleading message, and the same reach-for-backup-restore reflex, as the zero-to-one
-migration below. It is the same guard's blind spot in the other direction: `db_paths` is not
-persisted, so there is nothing to compare a shrinking list against. To undo tiering, keep the
+meaning the fast volume, and the open fails. Neither case can be caught before the open the way the
+zero-to-one migration below is — `db_paths` is not persisted, so there is nothing to compare a
+shrinking or reordered list against — but the failure is annotated with what to do about it:
+
+```
+Corruption: IO error: No such file or directory: /var/lib/mydb/000009.sst ...
+MANIFEST-000012 may be corrupted
+
+If this database has ever been opened with `paths`, that same list must be supplied
+again: RocksDB stores each SST file's location as an index into the list given at open
+and does not record the list itself, so removing or reordering an entry points it at the
+wrong volume for files that are still where they were left. Entries may only be
+appended. Otherwise the files named above are genuinely missing.
+```
+
+Nothing is lost: putting the list back opens the database. To undo tiering for real, keep the
 `paths` list intact and move the data with a compaction to path 0, or rebuild the database from a
 snapshot taken before tiering.
 
@@ -110,8 +122,12 @@ of a database's tables is the intended arrangement.
 ## `destroy()` follows the layout
 
 `db.destroy()` deletes the tiered SST files and the blob files along with the database directory,
-using the live database's actual `db_paths` and per-column-family `blob_dir` rather than assuming
+using the database's actual `db_paths` and per-column-family `blob_dir` rather than assuming
 everything is under the database directory.
+
+That holds for `close()` followed by `destroy()` too, which is the call order most likely to lose
+the layout: closing the last handle takes the descriptor with it, and `db_paths` is not written to
+the OPTIONS file, so the handle keeps its own copy for exactly this.
 
 ## Backups and checkpoints
 

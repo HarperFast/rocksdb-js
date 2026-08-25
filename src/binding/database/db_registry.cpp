@@ -143,7 +143,7 @@ void DBRegistry::DebugLogDescriptorRefs() {
  *
  * @param path - The path to the database to destroy.
  */
-void DBRegistry::DestroyDB(const std::string& path) {
+void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLayout) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
 		return;
@@ -169,10 +169,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<std::pair<std::shared_ptr<DBDescriptor>, std::shared_ptr<std::condition_variable>>> claimed;
 	rocksdb::Options destroyOptions;
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
-	auto captureDestroyLayout = [&](const std::shared_ptr<DBDescriptor>& descriptor) {
-		std::lock_guard<std::mutex> lock(descriptor->layoutMutex);
-		destroyOptions.db_paths = descriptor->layoutDbPaths;
-		for (const auto& [cfName, blobDir] : descriptor->layoutBlobDirs) {
+	auto applyLayout = [&](const DBFileLayout& layout) {
+		destroyOptions.db_paths = layout.dbPaths;
+		for (const auto& [cfName, blobDir] : layout.blobDirs) {
 			rocksdb::ColumnFamilyOptions cfOptions;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 			cfOptions.blob_dir = blobDir;
@@ -181,6 +180,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 #endif
 			destroyColumnFamilies.emplace_back(cfName, cfOptions);
 		}
+	};
+	auto captureDestroyLayout = [&](const std::shared_ptr<DBDescriptor>& descriptor) {
+		applyLayout(descriptor->captureLayout());
 		return true;
 	};
 	bool capturedLayout = false;
@@ -266,6 +268,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
 				break;
 			}
 		}
+	}
+	if (!capturedLayout && knownLayout) {
+		applyLayout(*knownLayout);
+		capturedLayout = true;
 	}
 	if (!capturedLayout) {
 		rocksdb::ConfigOptions configOptions;
