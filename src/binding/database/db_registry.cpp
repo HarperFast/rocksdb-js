@@ -143,7 +143,7 @@ void DBRegistry::DebugLogDescriptorRefs() {
  *
  * @param path - The path to the database to destroy.
  */
-void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLayout) {
+void DBRegistry::DestroyDB(const std::string& path) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
 		return;
@@ -269,9 +269,12 @@ void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLay
 			}
 		}
 	}
-	if (!capturedLayout && knownLayout) {
-		applyLayout(*knownLayout);
-		capturedLayout = true;
+	if (!capturedLayout) {
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		if (auto it = instance->knownLayouts.find(identityPath); it != instance->knownLayouts.end()) {
+			applyLayout(it->second);
+			capturedLayout = true;
+		}
 	}
 	if (!capturedLayout) {
 		rocksdb::ConfigOptions configOptions;
@@ -366,6 +369,10 @@ void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLay
 	if (destroyError) {
 		std::rethrow_exception(destroyError);
 	}
+	{
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		instance->knownLayouts.erase(identityPath);
+	}
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), identityPath.c_str());
 }
@@ -414,6 +421,14 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 	columnFamilies = collectedColumnFamilies;
 	maxWriteBufferSizeToMaintain = std::move(collectedMaxWriteBufferSizeToMaintain);
 	return true;
+}
+
+void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	instance->knownLayouts[path] = std::move(layout);
 }
 
 /**

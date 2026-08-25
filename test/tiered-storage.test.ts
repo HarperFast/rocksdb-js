@@ -420,6 +420,84 @@ describe('paths', () => {
 		expect(existsSync(dbPath)).toBe(false);
 	});
 
+	it('should delete tiered SST files a later open added, not the first handle’s list', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+		const slow = tempDir();
+
+		const first = openDb(dbPath, { paths: [{ path: fast, targetSize: 1 << 30 }] });
+		first.putSync('key', 'value');
+		first.flushSync();
+		first.close();
+
+		// Appending a path is the supported migration, so the second open's list
+		// is the current one. A layout remembered per HANDLE would be a prefix of
+		// it, and the destroy below — issued on the older handle — would leave
+		// everything on the appended volume behind.
+		const second = openDb(dbPath, {
+			paths: [
+				{ path: fast, targetSize: 0 },
+				{ path: slow, targetSize: 1 << 30 },
+			],
+			writeBufferSize: 64 * 1024,
+		});
+		for (let batch = 0; batch < 8; batch++) {
+			for (let i = 0; i < 200; i++) {
+				second.putSync(`key-${batch}-${i}`, `value-${i}`.padEnd(512, 'x'));
+			}
+			second.flushSync();
+		}
+		second.compactSync();
+		second.close();
+		expect(filesWithExt(fast, '.sst').length + filesWithExt(slow, '.sst').length).toBeGreaterThan(
+			0
+		);
+
+		first.destroy();
+		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
+		expect(filesWithExt(slow, '.sst')).toHaveLength(0);
+		expect(existsSync(dbPath)).toBe(false);
+	});
+
+	it('should refuse to add paths while the database is already open untiered', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+
+		// Harper's shape: a plain open at startup, then a table opening with the
+		// zero-to-one migration form. `db_paths` is fixed for the life of an open
+		// database, so this cannot take effect — and the message has to say that
+		// rather than describe a mismatch between two requested lists, because
+		// RocksDB reports an untiered database's `db_paths` as `[{dbname}]`, not
+		// as empty.
+		const plain = openDb(dbPath);
+		expect(() =>
+			RocksDatabase.open(dbPath, {
+				name: 'table1',
+				paths: [
+					{ path: dbPath, targetSize: 1 << 30 },
+					{ path: fast, targetSize: 1 << 30 },
+				],
+			})
+		).toThrow(/already open in this process without storage paths/);
+
+		// A second handle asking for the SAME list the database is open with is
+		// not a conflict.
+		plain.close();
+		const tiered = openDb(dbPath, { paths: [{ path: dbPath, targetSize: 1 << 30 }] });
+		const alongside = openDb(dbPath, {
+			name: 'table1',
+			paths: [{ path: dbPath, targetSize: 1 << 30 }],
+		});
+		expect(() =>
+			RocksDatabase.open(dbPath, {
+				name: 'table2',
+				paths: [{ path: fast, targetSize: 1 << 30 }],
+			})
+		).toThrow(/already open with a different set of storage paths/);
+		alongside.close();
+		tiered.close();
+	});
+
 	it('should reject more storage paths than it will hold', () => {
 		const dbPath = tempPath();
 		// The native parser reserves against whatever length JS reports, and a
@@ -1057,6 +1135,41 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		expect(moved.getSync('key')).toBe(largeValue(11));
 		expect(moved.getSync('key2')).toBe(largeValue(12));
 		moved.close();
+	});
+
+	it('should refuse to relocate a flat family before its blob files have moved', () => {
+		const dbPath = tempPath();
+		const movedDir = tempDir();
+
+		// The only move an untiered database can make, and the one the docs lead
+		// with. Its persisted `blob_dir` is empty — which means the database
+		// directory, not "no directory" — so comparing the recorded string
+		// against the request exempted exactly this case from the check that
+		// every other form of the acknowledgement gets.
+		const db = openDb(dbPath, { name: 'table1' });
+		const plain = openDb(dbPath);
+		db.putSync('key', largeValue(11));
+		db.flushSync();
+		db.close();
+		plain.close();
+		expect(filesWithExt(dbPath, '.blob').length).toBeGreaterThan(0);
+
+		expect(() =>
+			RocksDatabase.open(dbPath, {
+				name: 'table1',
+				blobs: { dir: movedDir, allowDirChange: true },
+			})
+		).toThrow(/still has blob files in/);
+
+		for (const name of filesWithExt(dbPath, '.blob')) {
+			renameSync(join(dbPath, name), join(movedDir, name));
+		}
+		const relocated = openDb(dbPath, {
+			name: 'table1',
+			blobs: { dir: movedDir, allowDirChange: true },
+		});
+		expect(relocated.getSync('key')).toBe(largeValue(11));
+		relocated.close();
 	});
 
 	it('should refuse to flatten a database whose blob files have not moved', () => {
