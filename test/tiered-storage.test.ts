@@ -735,6 +735,15 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		expect(filesWithExt(restoreDir, '.blob').length).toBeGreaterThan(0);
 		expect(() => RocksDatabase.open(restoreDir)).toThrow(/blob files were written to/);
 
+		// And the acknowledgement is refused while the SOURCE's blob directory is
+		// still populated: from inside the process the copy is indistinguishable
+		// from the original, so this is what keeps the two databases off one
+		// directory. Restore where the source's directory is not reachable.
+		expect(() => RocksDatabase.open(restoreDir, { blobs: { allowDirChange: true } })).toThrow(
+			/still has blob files in/
+		);
+
+		rmSync(blobDir, { recursive: true, force: true });
 		const restored = openDb(restoreDir, { blobs: { allowDirChange: true } });
 		for (let i = 0; i < 20; i++) {
 			expect(restored.getSync(`key-${i}`)).toBe(largeValue(i));
@@ -921,14 +930,14 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		// directory while its blob files are still in it, so the claim is checked:
 		// the recorded directory still holds blob files, so nothing was flattened.
 		expect(() => RocksDatabase.open(dbPath, { blobs: { allowDirChange: true } })).toThrow(
-			/has not been flattened/
+			/still has blob files in/
 		);
 		// Also when the tiered family is the one named. The claim is checked
 		// against what each family PERSISTED, because the target's own request has
 		// already been applied to it by then.
 		expect(() =>
 			RocksDatabase.open(dbPath, { name: 'table1', blobs: { allowDirChange: true } })
-		).toThrow(/has not been flattened/);
+		).toThrow(/still has blob files in/);
 	});
 
 	it('should read a restored named column family from its own flattened copy', async () => {
@@ -951,10 +960,21 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		await backups.restore(backupDir, restoreDir);
 		expect(filesWithExt(restoreDir, '.blob').length).toBeGreaterThan(0);
 
-		// The source stays open throughout: if the restored table1 kept the
-		// persisted directory, the two databases would allocate blob file numbers
-		// independently in it and each one's obsolete-file scan would delete the
-		// other's live files.
+		// The source is still open, and its blob directory is exactly where the
+		// restored table1 would point if the acknowledgement were taken on trust —
+		// the two databases would then allocate blob file numbers there
+		// independently and each one's obsolete-file scan would delete the other's
+		// live files. Refused, which is the whole reason the claim is checked. The
+		// target here is `default`, which carries no mismatch of its own, so this
+		// is caught only through the family the open does not name.
+		expect(() => RocksDatabase.open(restoreDir, { blobs: { allowDirChange: true } })).toThrow(
+			/still has blob files in/
+		);
+		table.close();
+		plain.close();
+
+		// Once the source's directory is out of reach the copy stands alone.
+		rmSync(blobDir, { recursive: true, force: true });
 		const restoredPlain = openDb(restoreDir, { blobs: { allowDirChange: true } });
 		const restoredTable = openDb(restoreDir, { name: 'table1' });
 		for (let i = 0; i < 20; i++) {
@@ -964,13 +984,10 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		restoredTable.flushSync();
 		// Everything the restored database writes stays in its own directory.
 		expect(filesWithExt(restoreDir, '.blob').length).toBeGreaterThan(0);
-		expect(filesWithExt(blobDir, '.blob').length).toBeGreaterThan(0);
 		expect(restoredTable.getSync('added')).toBe(largeValue(99));
 
 		restoredTable.close();
 		restoredPlain.close();
-		table.close();
-		plain.close();
 	});
 
 	it('should delete blob files on destroy()', () => {
