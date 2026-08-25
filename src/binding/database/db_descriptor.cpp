@@ -428,16 +428,15 @@ void DBDescriptor::finishClose(bool destroying) {
 		// Unbounded in-flight operations must abort once `closing` is published
 		// rather than block this untimed wait for their full duration. A count
 		// scan polls isClosing() itself; a manual compactRange() cannot, so it
-		// gets an explicit cancel token.
+		// gets an explicit cancel token. The token stays armed past this drain:
+		// an async compact() released its OperationGuard at setup handoff, so it
+		// is still running here and is not awaited until the closables sweep.
 		this->compactCancelRequested.store(true);
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {
 			this->operationsInFlight.wait(current);
 		}
-		// Clear it before any further compaction runs below (compact-on-close),
-		// which must not be cancelled -- nothing external is waiting on it.
-		this->compactCancelRequested.store(false);
 		DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
 		// Drain the commit pipeline before flushing so its data is included in
@@ -504,7 +503,7 @@ void DBDescriptor::finishClose(bool destroying) {
 		}
 		for (const auto& columnDesc : pinnedColumns) {
 			if (columnDesc && columnDesc->column) {
-				this->compactRange(columnDesc->column.get(), nullptr, nullptr);
+				this->compactRange(columnDesc->column.get(), nullptr, nullptr, false, false);
 			}
 		}
 	}
@@ -2256,14 +2255,17 @@ rocksdb::Status DBDescriptor::compactRange(
 	rocksdb::ColumnFamilyHandle* column,
 	const rocksdb::Slice* start,
 	const rocksdb::Slice* end,
-	bool bottommost
+	bool bottommost,
+	bool cancellable
 ) {
 	std::lock_guard<std::mutex> lock(this->compactMutex);
 	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
 	rocksdb::CompactRangeOptions options;
 	// Let a concurrent finishClose() interrupt this compaction rather than
 	// wait out its full, unbounded duration; see compactCancelRequested.
-	options.canceled = &this->compactCancelRequested;
+	if (cancellable) {
+		options.canceled = &this->compactCancelRequested;
+	}
 	if (bottommost) {
 		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
 		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting

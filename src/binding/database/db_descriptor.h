@@ -294,12 +294,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	bool transactionLogsUnregistered = false;
 
 	/**
-	 * Set by finishClose() only while it is draining operationsInFlight, so an
-	 * OperationGuard-holding compactRange() in progress on another thread can
-	 * cancel its manual compaction and release the guard promptly instead of
-	 * blocking the untimed drain wait for the compaction's full duration.
-	 * Cleared once the drain completes so the close-time "compact on close"
-	 * pass below always runs to completion.
+	 * Armed by finishClose() for its whole duration so an in-progress manual
+	 * compactRange() on another thread aborts instead of making teardown wait
+	 * out its full, unbounded duration. It covers both shapes: compactSync()
+	 * holds an OperationGuard and so blocks the drain, while an async compact()
+	 * released its guard at setup handoff and is not awaited until the closables
+	 * sweep -- clearing the token after the drain left that second one able to
+	 * stall teardown (and every concurrent open on the path) indefinitely.
+	 * Close-initiated compaction passes `cancellable = false` rather than
+	 * clearing this, since nothing external is waiting on it.
 	 */
 	std::atomic<bool> compactCancelRequested{false};
 
@@ -621,7 +624,10 @@ public:
 		rocksdb::ColumnFamilyHandle* column,
 		const rocksdb::Slice* start,
 		const rocksdb::Slice* end,
-		bool bottommost = false
+		bool bottommost = false,
+		// Close-initiated compaction opts out: nothing external is waiting on it,
+		// and `compactCancelRequested` stays armed for the whole of finishClose().
+		bool cancellable = true
 	);
 };
 

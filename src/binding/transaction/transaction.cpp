@@ -1050,6 +1050,20 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_TRANSACTION_HANDLE("GetCount");
 
+	// Without this claim finishClose()'s drain returns immediately and its
+	// closables sweep rolls back the transaction while the scan is parked
+	// between rows, leaving the iterator reading freed memory.
+	auto& txnDbHandle = (*txnHandle)->dbHandle;
+	if (!txnDbHandle || !txnDbHandle->descriptor) {
+		::napi_throw_error(env, nullptr, "Get count failed: Database not open");
+		NAPI_RETURN_UNDEFINED();
+	}
+	OperationGuard operationGuard(txnDbHandle->descriptor);
+	if (txnDbHandle->descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	DBIteratorOptions itOptions;
 	itOptions.initFromNapiObject(env, argv[0]);
 	itOptions.values = false;
