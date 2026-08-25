@@ -479,7 +479,8 @@ export class Store {
 	name: string;
 
 	/**
-	 * Whether to disable the block cache.
+	 * Whether to disable the process-wide caches for this database — both the
+	 * block cache and the blob cache.
 	 */
 	noBlockCache?: boolean;
 
@@ -495,14 +496,8 @@ export class Store {
 	 */
 	path: string;
 
-	/**
-	 * Volumes SST files may be placed on. See {@link NativeStoragePath}.
-	 */
 	paths?: NativeStoragePath[];
 
-	/**
-	 * Blob-file (large value) settings. See {@link NativeBlobOptions}.
-	 */
 	blobs?: NativeBlobOptions;
 
 	/**

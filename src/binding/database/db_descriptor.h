@@ -233,6 +233,29 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	/**
+	 * Where this database's files actually live: the `db_paths` it was opened
+	 * with and each column family's `blob_dir`.
+	 *
+	 * `destroy()` needs this to delete the files a default `rocksdb::Options`
+	 * would miss, and it cannot get it from either of the obvious places:
+	 * `db_paths` is never written to the OPTIONS file (RocksDB serializes it in
+	 * its "not yet supported" block), and reading it back off the live `DB` races
+	 * a concurrent close that is resetting `db` and clearing `columns`. So it is
+	 * recorded once here, guarded by its own mutex, and never cleared by close.
+	 */
+	std::vector<rocksdb::DbPath> layoutDbPaths;
+	std::unordered_map<std::string, std::string> layoutBlobDirs;
+	std::mutex layoutMutex;
+
+	/**
+	 * Records a column family's blob directory in the layout snapshot above.
+	 */
+	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir) {
+		std::lock_guard<std::mutex> lock(this->layoutMutex);
+		this->layoutBlobDirs[name] = blobDir;
+	}
+
+	/**
 	 * Mutex to protect the columns map. Column families can be unregistered on
 	 * drop (see `unregisterColumnFamily`) while other threads iterate the map:
 	 * the JS thread via the `columns` getter or `DBRegistry::OpenDB`, libuv

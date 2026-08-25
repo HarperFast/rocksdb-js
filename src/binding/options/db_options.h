@@ -19,10 +19,7 @@ enum class DBMode {
 	Pessimistic,
 };
 
-/**
- * One volume RocksDB may place SST files on, with the number of bytes it should
- * try to hold. Maps to `rocksdb::DbPath`.
- */
+// Maps to `rocksdb::DbPath`.
 struct StoragePath final {
 	std::string path;
 	uint64_t targetSize = 0;

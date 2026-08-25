@@ -99,6 +99,25 @@ describe('Blob Cache', () => {
 		expect(db.getDBIntProperty('rocksdb.blob-cache-capacity')).toBeUndefined();
 	});
 
+	it('should reopen a column family that asked to prepopulate a cache that does not exist', () => {
+		RocksDatabase.config({ blobCacheSize: 0 });
+		const path = generateDBPath();
+		dbPaths.push(path);
+
+		const first = RocksDatabase.open(path, { name: 't1', blobs: { prepopulateCache: true } });
+		openDatabases.push(first);
+		// With no cache attached there is nothing to prepopulate, so the open drops
+		// the request and the live family stays disabled. The warm-reopen conflict
+		// check must not then read an identical second open as a conflict — every
+		// table is opened repeatedly across worker envs, so that would be a startup
+		// failure on an unchanged configuration.
+		expect(() => {
+			openDatabases.push(
+				RocksDatabase.open(path, { name: 't1', blobs: { prepopulateCache: true } })
+			);
+		}).not.toThrow();
+	});
+
 	it('should reject a negative blob cache size', () => {
 		expect(() => RocksDatabase.config({ blobCacheSize: -1 })).toThrow(/Blob cache size/);
 	});

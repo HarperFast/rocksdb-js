@@ -1485,6 +1485,22 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	// RocksDB creates its own `db_paths` directories (Directories::SetDirectories)
+	// but nothing creates the blob directory, and a missing one does not fail the
+	// open: writes are acknowledged into the memtable and the FIRST FLUSH fails,
+	// flipping the database read-only on a background error with nothing pointing
+	// at the config line.
+	if (!options.blobs.dir.empty()) {
+		rocksdb::Status status = dbOptions.env->CreateDirIfMissing(options.blobs.dir);
+		if (!status.ok()) {
+			throw rocksdb_js::DBException(
+				"Cannot use blobs.dir \"" + options.blobs.dir + "\": " + status.ToString()
+			);
+		}
+	}
+#endif
+
 	// Spread SST files across volumes. Left on `db_paths` rather than `cf_paths`
 	// so one tiering policy covers every column family in the database (RocksDB
 	// falls back to db_paths when cf_paths is empty). A file's path index is
@@ -1680,6 +1696,16 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			columnExists = true;
 		}
 	}
+	// Where every column family's blob files went, for `destroy()` — captured
+	// from the options each family was actually opened/created with rather than
+	// read back off the live DB later, which races a concurrent close.
+	std::unordered_map<std::string, std::string> layoutBlobDirs;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	for (const auto& cfDescriptor : cfDescriptors) {
+		layoutBlobDirs[cfDescriptor.name] = cfDescriptor.options.blob_dir;
+	}
+#endif
+
 	if (!columnExists) {
 		auto cfo = cfOptions;
 		if (options.compression) {
@@ -1688,10 +1714,15 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		layoutBlobDirs[options.name] = cfo.blob_dir;
+#endif
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	descriptor->layoutDbPaths = dbOptions.db_paths;
+	descriptor->layoutBlobDirs = std::move(layoutBlobDirs);
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is

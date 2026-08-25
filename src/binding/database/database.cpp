@@ -1859,7 +1859,7 @@ static bool isAbsolutePath(const std::string& path) {
 }
 
 // Absent leaves `result` disengaged: an omitted blob setting inherits the column
-// family's persisted value rather than restamping it with a default.
+// family's persisted value.
 static bool getRatioProperty(
 	napi_env env,
 	napi_value obj,
@@ -1948,9 +1948,7 @@ static bool getByteSizeProperty(
 	return true;
 }
 
-/**
- * Returns false with a pending JS exception on malformed input.
- */
+// Returns false with a pending JS exception on malformed input.
 static bool parseStoragePaths(napi_env env, napi_value options, std::vector<StoragePath>& result) {
 	bool has = false;
 	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "paths", &has), false);
@@ -2021,9 +2019,7 @@ static bool parseStoragePaths(napi_env env, napi_value options, std::vector<Stor
 	return true;
 }
 
-/**
- * Returns false with a pending JS exception on malformed input.
- */
+// Returns false with a pending JS exception on malformed input.
 static bool parseBlobOptions(napi_env env, napi_value options, BlobOptions& result) {
 	bool has = false;
 	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "blobs", &has), false);

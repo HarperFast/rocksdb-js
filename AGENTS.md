@@ -624,7 +624,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `path_id` 0 (`FlushJob`), and manual `CompactRange` defaults to `target_path_id` 0, so only
     _automatic_ compaction distributes across paths. `blobs.dir` needs a RocksDB carrying the
     downstream `blob_dir` patch (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); every
-    use must stay compilable without it. `destroy()` has to receive the real layout (`db_paths` from
+    use must stay compilable without it. Setting `paths` at all disables `db.backup()` and
+    `db.createCheckpoint()`: `GetLiveFilesStorageInfo`, which both use, returns
+    `Status::NotSupported` whenever `db_paths`/`cf_paths` is non-empty, so a tiered database has no
+    in-process copy path, only a volume snapshot. `destroy()` has to receive the real layout
+    (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means
     the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means "everything under the
     database directory", which orphans exactly the files tiering moved away. See
     [docs/tiered-storage.md](docs/tiered-storage.md).

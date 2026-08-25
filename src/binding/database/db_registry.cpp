@@ -174,26 +174,26 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// It also keeps a concurrent OpenDB waiting on the entry's condition
 	// instead of re-opening the path while its files are being destroyed.
 	//
-	// The layout is captured here too, and deliberately NOT gated on winning the
+	// The layout is read here too, and deliberately NOT gated on winning the
 	// claim: losing to a concurrent close would otherwise leave the destroy
-	// running against default options and orphaning the external files.
+	// running against default options and orphaning the external files. It comes
+	// from the descriptor's own snapshot rather than the live `DB` precisely
+	// because we may have lost that claim — the winner can be inside
+	// `finishClose()` resetting `db` and clearing `columns`.
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path == path && entry.descriptor) {
-				if (entry.descriptor->db) {
-					destroyOptions.db_paths = entry.descriptor->db->GetDBOptions().db_paths;
-					std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
-					for (const auto& [cfName, column] : entry.descriptor->columns) {
+				{
+					std::lock_guard<std::mutex> layoutLock(entry.descriptor->layoutMutex);
+					destroyOptions.db_paths = entry.descriptor->layoutDbPaths;
+					for (const auto& [cfName, blobDir] : entry.descriptor->layoutBlobDirs) {
 						rocksdb::ColumnFamilyOptions cfOptions;
-						if (column && column->column) {
-							rocksdb::Options current =
-								entry.descriptor->db->GetOptions(column->column.get());
-							cfOptions.cf_paths = current.cf_paths;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-							cfOptions.blob_dir = current.blob_dir;
+						cfOptions.blob_dir = blobDir;
+#else
+						(void)blobDir;
 #endif
-						}
 						destroyColumnFamilies.emplace_back(cfName, cfOptions);
 					}
 					capturedLayout = true;
@@ -461,6 +461,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			entry.descriptor->recordColumnFamilyLayout(name, cfOptions.blob_dir);
+#endif
 		} else if (options.compressionExplicit && options.compression) {
 			// The column family is already open in this process (the DBDescriptor
 			// is process-global and shared across handles/envs). Compression is
@@ -560,7 +563,12 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					std::to_string(*options.blobs.garbageCollectionForceThreshold)
 				);
 			}
-			if (options.blobs.prepopulateCache) {
+			// Only when a cache is actually attached: the cold path drops the
+			// request otherwise (there is nothing to prepopulate), so comparing it
+			// would reject a second open with the SAME options in any process that
+			// has no blob cache — which is every process that never called
+			// `config({ blockCacheSize })`, and every `noBlockCache` database.
+			if (options.blobs.prepopulateCache && current.blob_cache) {
 				const bool currentPrepopulate =
 					current.prepopulate_blob_cache != rocksdb::PrepopulateBlobCache::kDisable;
 				if (currentPrepopulate != *options.blobs.prepopulateCache) {
