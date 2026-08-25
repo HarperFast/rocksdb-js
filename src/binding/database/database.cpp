@@ -1858,8 +1858,6 @@ static bool isAbsolutePath(const std::string& path) {
 #endif
 }
 
-// Absent leaves `result` disengaged: an omitted blob setting inherits the column
-// family's persisted value.
 static bool getRatioProperty(
 	napi_env env,
 	napi_value obj,
@@ -1913,7 +1911,6 @@ static bool getByteSizeProperty(
 	return true;
 }
 
-// Same validation as above; absent leaves `result` disengaged.
 static bool getByteSizeProperty(
 	napi_env env,
 	napi_value obj,
@@ -1948,7 +1945,12 @@ static bool getByteSizeProperty(
 	return true;
 }
 
-// Returns false with a pending JS exception on malformed input.
+// Upper bound on `paths` entries. RocksDB records a path index per SST file in
+// the MANIFEST and the list may only ever be appended to, so a real tiering
+// policy is a few volumes; the bound exists to keep a hostile array length from
+// reaching `reserve`.
+constexpr uint32_t kMaxStoragePaths = 64;
+
 static bool parseStoragePaths(napi_env env, napi_value options, std::vector<StoragePath>& result) {
 	bool has = false;
 	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "paths", &has), false);
@@ -1973,6 +1975,20 @@ static bool parseStoragePaths(napi_env env, napi_value options, std::vector<Stor
 
 	uint32_t length = 0;
 	NAPI_STATUS_THROWS_RVAL(::napi_get_array_length(env, pathsValue, &length), false);
+	// The length is whatever JS says it is, and a sparse `new Array(2**32 - 1)`
+	// costs the caller nothing. Reserving against it allocates hundreds of
+	// gigabytes and throws `std::bad_alloc`/`std::length_error` out of this
+	// N-API callback, which is `std::terminate` rather than a JS error. Bound it
+	// first: a tiering policy is a handful of volumes, never thousands.
+	if (length > kMaxStoragePaths) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			("paths must have no more than " + std::to_string(kMaxStoragePaths) +
+				" entries").c_str()
+		);
+		return false;
+	}
 	result.reserve(length);
 
 	for (uint32_t i = 0; i < length; i++) {
@@ -2019,7 +2035,6 @@ static bool parseStoragePaths(napi_env env, napi_value options, std::vector<Stor
 	return true;
 }
 
-// Returns false with a pending JS exception on malformed input.
 static bool parseBlobOptions(napi_env env, napi_value options, BlobOptions& result) {
 	bool has = false;
 	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "blobs", &has), false);

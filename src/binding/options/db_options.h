@@ -57,7 +57,13 @@ struct BlobOptions final {
 	// Acknowledges that the existing blob files have been relocated to `dir`,
 	// permitting an open that would otherwise be rejected as a mismatch against
 	// the directory recorded in the database's OPTIONS file. Nothing is moved on
-	// the caller's behalf; this only suppresses the check.
+	// the caller's behalf; this only records where they went.
+	//
+	// DATABASE-WIDE, unlike every other field here: a relocation moves the whole
+	// closed database's blob files at once (a flat backup restore does the same),
+	// so `dir` is applied to every column family rather than the one this open
+	// names. Scoped to the target, the rest would keep pointing at the old
+	// location — after a restore, at the SOURCE database's live blob directory.
 	bool allowDirChange = false;
 	// enable_blob_garbage_collection (default true).
 	std::optional<bool> garbageCollection;
@@ -65,8 +71,10 @@ struct BlobOptions final {
 	std::optional<double> garbageCollectionAgeCutoff;
 	// blob_garbage_collection_force_threshold (0..1, default 1.0 = never forced).
 	std::optional<double> garbageCollectionForceThreshold;
-	// prepopulate_blob_cache (default false). Only meaningful when a blob cache
-	// is configured (`RocksDatabase.config({ blobCacheSize })`).
+	// prepopulate_blob_cache (default false). Inert without a blob cache
+	// (`RocksDatabase.config({ blobCacheSize })`), but still recorded: RocksDB
+	// rewrites the OPTIONS file on every open, so a cache-less process that
+	// dropped it would persist "off" over the serving process's request.
 	std::optional<bool> prepopulateCache;
 };
 

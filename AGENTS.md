@@ -614,22 +614,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     carries more than compression; `blobs.allowDirChange` is the acknowledgement for a completed
     offline relocation. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
     sit in RocksDB's "not yet supported" serialization block, so there is nothing persisted to
-    compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition is
+    compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition
+    (and removing `paths`, which produces the same corruption message) is caught because it is
     detectable from the files themselves: with no `db_paths`, RocksDB sanitizes it to `[{dbname,
     ...}]`, so existing SST files sit at index 0 = the database directory, and supplying `paths`
-    redefines that index. `assertStoragePathsUsable` rejects this transition by asking whether the
-    database directory's SST files are reachable under `paths[0]`, rather than comparing directory
-    strings, so RocksDB does not report the MANIFEST as corrupt and send an operator to backup
-    restore. Two RocksDB behaviours routinely surprise people here: flush output is hardcoded to
-    `path_id` 0 (`FlushJob`), and manual `CompactRange` defaults to `target_path_id` 0, so only
-    _automatic_ compaction distributes across paths. `blobs.dir` needs a RocksDB carrying the
-    downstream `blob_dir` patch (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); every
-    use must stay compilable without it. Setting `paths` at all disables `db.backup()` and
+    redefines that index. `assertStoragePathsUsable` rejects it by asking whether the database
+    directory's SST files are reachable under `paths[0]`, rather than comparing directory strings,
+    so RocksDB does not report the MANIFEST as corrupt and send an operator to backup restore. Two
+    RocksDB behaviours routinely surprise people here: flush output is hardcoded to `path_id` 0
+    (`FlushJob`), and manual `CompactRange` defaults to `target_path_id` 0, so only _automatic_
+    compaction distributes across paths. `blobs.dir` needs a RocksDB carrying the downstream
+    `blob_dir` patch (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); every use must
+    stay compilable without it. Setting `paths` at all disables `db.backup()` and
     `db.createCheckpoint()`: `GetLiveFilesStorageInfo`, which both use, returns
     `Status::NotSupported` whenever `db_paths`/`cf_paths` is non-empty, so a tiered database has no
     in-process copy path, only a volume snapshot. `destroy()` has to receive the real layout
-    (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means
-    the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means "everything under the
+    (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means "everything under the
     database directory", which orphans exactly the files tiering moved away. See
     [docs/tiered-storage.md](docs/tiered-storage.md).
 18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
@@ -640,7 +640,23 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     rather than an edge. A test for a per-CF option must therefore cover a named family, not just
     `default`.
 
-17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+    Reaching every family is only half of it: a per-CF option must also NOT reach families this open
+    is not targeting. RocksDB requires opening all of them at once and restores none of their per-CF
+    options, so whatever `buildColumnFamilyOptions` puts on the base options restamps every family
+    unless the cold-open loop restores the persisted value (`loadPersistedCFOptions` →
+    `restorePersistedBlobOptions`, alongside the compression fields). `BlobOptions` is a struct of
+    `std::optional`s so an omitted field means "leave this family alone"; only supplied fields apply
+    to `options.name` (`applyExplicitBlobOptions`). Add a per-CF option in the builder's create-time
+    default, persisted struct, and explicit-apply, or whichever table opens first silently decides it
+    for all tables on restart.
+
+    A field inert in the current process is still unsafe to drop on restore. RocksDB rewrites the
+    OPTIONS file on every open, so a value `restorePersistedBlobOptions` skips is erased, not merely
+    unused. `prepopulate_blob_cache` was gated on an attached blob cache and therefore turned itself
+    off permanently when a CLI tool or `noBlockCache` script opened the database. Restore persisted
+    fields unconditionally; gate on the live resource only where the field is used.
+
+19. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
     `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
     the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
@@ -681,7 +697,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
-18. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
+20. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
     origin timestamp for replication or replay only while the transaction is pending and before any
     database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
     first `addLogEntry`; `committedPosition` survives coordinated-retry resets, so a batch already

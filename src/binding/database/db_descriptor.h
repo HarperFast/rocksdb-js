@@ -46,6 +46,20 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 );
 
 /**
+ * Creates a column family's blob directory if it does not exist, throwing a
+ * `DBException` naming the option when it cannot be created.
+ *
+ * RocksDB creates its own `db_paths` directories (`Directories::SetDirectories`)
+ * but never the blob directory, and a missing one does not fail anything
+ * synchronously: writes are acknowledged into the memtable and the FIRST FLUSH
+ * fails, flipping the whole database read-only on a background error with
+ * nothing pointing at the config line. Both the cold open and warm column-family
+ * creation must call this — a family created on an already-open database reaches
+ * RocksDB through `createRocksDBColumnFamily`, not `DB::Open`.
+ */
+void ensureBlobDirExists(rocksdb::Env* env, const std::string& blobDir);
+
+/**
  * Custom deleter for RocksDB that waits for any background compaction to
  * complete before destroying the database instance. Compaction is triggered
  * by DBDescriptor::close() before this deleter runs.
@@ -247,9 +261,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<std::string, std::string> layoutBlobDirs;
 	std::mutex layoutMutex;
 
-	/**
-	 * Records a column family's blob directory in the layout snapshot above.
-	 */
 	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir) {
 		std::lock_guard<std::mutex> lock(this->layoutMutex);
 		this->layoutBlobDirs[name] = blobDir;

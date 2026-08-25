@@ -83,12 +83,12 @@ static void restorePersistedBlobOptions(
 	cfOptions.enable_blob_garbage_collection = persisted.enableBlobGarbageCollection;
 	cfOptions.blob_garbage_collection_age_cutoff = persisted.blobGarbageCollectionAgeCutoff;
 	cfOptions.blob_garbage_collection_force_threshold = persisted.blobGarbageCollectionForceThreshold;
-	// prepopulate_blob_cache is only meaningful with a cache attached, and
-	// buildColumnFamilyOptions only attaches one when the process has configured
-	// a blob cache size.
-	if (cfOptions.blob_cache) {
-		cfOptions.prepopulate_blob_cache = persisted.prepopulateBlobCache;
-	}
+	// Restored whether or not THIS process has a blob cache. The setting is inert
+	// without one, but RocksDB rewrites the OPTIONS file on open, so dropping it
+	// here would let any cache-less opener (a CLI tool, a `noBlockCache`
+	// maintenance script) persist kDisable over the serving process's request and
+	// silently turn prepopulation off at its next restart.
+	cfOptions.prepopulate_blob_cache = persisted.prepopulateBlobCache;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 	cfOptions.blob_dir = persisted.blobDir;
 #endif
@@ -117,7 +117,7 @@ static void applyExplicitBlobOptions(
 	if (blobs.garbageCollectionForceThreshold) {
 		cfOptions.blob_garbage_collection_force_threshold = *blobs.garbageCollectionForceThreshold;
 	}
-	if (blobs.prepopulateCache && cfOptions.blob_cache) {
+	if (blobs.prepopulateCache) {
 		cfOptions.prepopulate_blob_cache = *blobs.prepopulateCache
 			? rocksdb::PrepopulateBlobCache::kFlushOnly
 			: rocksdb::PrepopulateBlobCache::kDisable;
@@ -222,9 +222,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.blob_garbage_collection_force_threshold =
 		options.blobs.garbageCollectionForceThreshold.value_or(
 			kDefaultBlobGarbageCollectionForceThreshold);
-	if (cfOptions.blob_cache &&
-		options.blobs.prepopulateCache.value_or(kDefaultBlobPrepopulateCache)
-	) {
+	if (options.blobs.prepopulateCache.value_or(kDefaultBlobPrepopulateCache)) {
 		cfOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kFlushOnly;
 	}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
@@ -235,6 +233,23 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
+}
+
+void ensureBlobDirExists(rocksdb::Env* env, const std::string& blobDir) {
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	if (blobDir.empty()) {
+		return;
+	}
+	rocksdb::Status status = env->CreateDirIfMissing(blobDir);
+	if (!status.ok()) {
+		throw rocksdb_js::DBException(
+			"Cannot use blobs.dir \"" + blobDir + "\": " + status.ToString()
+		);
+	}
+#else
+	(void)env;
+	(void)blobDir;
+#endif
 }
 
 // Reads each existing column family's persisted per-CF options (compression and
@@ -1486,19 +1501,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-	// RocksDB creates its own `db_paths` directories (Directories::SetDirectories)
-	// but nothing creates the blob directory, and a missing one does not fail the
-	// open: writes are acknowledged into the memtable and the FIRST FLUSH fails,
-	// flipping the database read-only on a background error with nothing pointing
-	// at the config line.
-	if (!options.blobs.dir.empty()) {
-		rocksdb::Status status = dbOptions.env->CreateDirIfMissing(options.blobs.dir);
-		if (!status.ok()) {
-			throw rocksdb_js::DBException(
-				"Cannot use blobs.dir \"" + options.blobs.dir + "\": " + status.ToString()
-			);
-		}
-	}
+	ensureBlobDirExists(dbOptions.env, options.blobs.dir);
 #endif
 
 	// Spread SST files across volumes. Left on `db_paths` rather than `cf_paths`
@@ -1598,15 +1601,32 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				applyExplicitBlobOptions(cfo, options.blobs);
 			}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			// `allowDirChange` acknowledges a relocation that has ALREADY happened
+			// on disk, and a relocation is database-wide: moving the blob files
+			// while the database is closed, or restoring a backup flat, moves every
+			// family's blobs at once. So the acknowledged directory is applied to
+			// every family, not just the one this open names.
+			//
+			// Scoping it to the target was the bug. The other families kept their
+			// persisted directory, which after a restore is the SOURCE database's
+			// live blob directory: two databases then mint colliding `NNNNNN.blob`
+			// numbers there and each one's obsolete-file scan deletes the other's
+			// live files. It also made the documented multi-table migration
+			// impossible — one family could be relocated per cold open, and the
+			// second open in the same process is a warm one that this cannot reach.
+			//
+			// Only `dir` is widened. The rest of `blobs.*` stays per-family
+			// (invariant 14), because none of it describes where files already are.
+			if (!isTarget && options.blobs.allowDirChange) {
+				cfo.blob_dir = options.blobs.dir;
+			}
 			// A blob file's directory is derived from blob_dir every time it is
 			// opened — unlike an SST's path index, it is not recorded per file.
 			// Reopening with a different directory therefore does not move the
 			// existing blob files, it strands them: reads of every value >=
 			// min_blob_size fail with "No such file or directory". Refuse rather
 			// than open a database whose large values have silently gone missing,
-			// unless the caller says they have already moved the files. Only the
-			// target family can be stranded — the others just kept their persisted
-			// directory above.
+			// unless the caller says they have already moved the files.
 			if (isTarget && !options.blobs.allowDirChange && it != persisted.end() &&
 				it->second.blobDir != cfo.blob_dir
 			) {
@@ -1616,6 +1636,21 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 					it->second.blobDir + "\". Move the blob files to the new directory while the "
 					"database is closed and reopen with blobs.allowDirChange, or reopen with the "
 					"original blobs.dir."
+				);
+			}
+			// A directory that is gone is not a soft failure: every read of a value
+			// >= min_blob_size fails and the first flush errors the whole database
+			// read-only, long after the open that could have named the cause. The
+			// target family's directory was created above if it was missing, so in
+			// practice this catches the families this open never named — including
+			// a restored database still pointing at a source volume that is not
+			// mounted here.
+			if (!cfo.blob_dir.empty() && !dbOptions.env->FileExists(cfo.blob_dir).ok()) {
+				throw rocksdb_js::DBException(
+					"Cannot open \"" + path + "\": column family \"" + cfName +
+					"\" keeps its blob files in \"" + cfo.blob_dir + "\", which does not exist. "
+					"Mount or restore that directory, or move the blob files and reopen with "
+					"blobs.dir set to their new location plus blobs.allowDirChange."
 				);
 			}
 #endif

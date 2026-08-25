@@ -311,6 +311,19 @@ describe('paths', () => {
 		db.destroy();
 		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
 	});
+
+	it('should reject more storage paths than it will hold', () => {
+		const dbPath = tempPath();
+		// The native parser reserves against whatever length JS reports, and a
+		// sparse array makes an enormous one free — the reserve then throws a C++
+		// allocation exception out of the N-API callback, which terminates the
+		// process rather than rejecting the open. Bounding the count first is what
+		// keeps that a JS error. Driven with a merely-too-long array: at a length
+		// near 2**32 the `paths.map()` in store.ts walks every index and takes
+		// minutes, so the astronomical case never reaches native to begin with.
+		const paths = Array.from({ length: 65 }, () => ({ path: dbPath, targetSize: 1 << 30 }));
+		expect(() => RocksDatabase.open(dbPath, { paths })).toThrow(/no more than 64 entries/);
+	});
 });
 
 describe('blobs', () => {
@@ -717,6 +730,130 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		for (let i = 0; i < 20; i++) {
 			expect(restored.getSync(`key-${i}`)).toBe(largeValue(i));
 		}
+	});
+
+	it('should create a blob directory for a column family added to an open database', () => {
+		const dbPath = tempPath();
+		// Deliberately NOT created up front: nothing in RocksDB creates it, and a
+		// missing one does not fail anything synchronously — writes are
+		// acknowledged and the FIRST FLUSH errors the whole database read-only.
+		// The cold open creates it; a family added to an already-open database
+		// goes through CreateColumnFamily instead and used to skip that.
+		const blobDir = tempPath();
+
+		const plain = openDb(dbPath);
+		const table = openDb(dbPath, { name: 'table1', blobs: { dir: blobDir } });
+		for (let i = 0; i < 20; i++) {
+			table.putSync(`key-${i}`, largeValue(i));
+		}
+		table.flushSync();
+
+		expect(filesWithExt(blobDir, '.blob').length).toBeGreaterThan(0);
+		expect(table.getSync('key-0')).toBe(largeValue(0));
+		// A background error would have flipped every family read-only, not just
+		// the one that wrote the blobs.
+		plain.putSync('still-writable', 'yes');
+		expect(plain.getSync('still-writable')).toBe('yes');
+		table.close();
+		plain.close();
+	});
+
+	it("should refuse to open when a column family's blob directory is gone", () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+
+		const db = openDb(dbPath, { name: 'table1', blobs: { dir: blobDir } });
+		db.putSync('key', largeValue(6));
+		db.flushSync();
+		db.close();
+
+		rmSync(blobDir, { recursive: true, force: true });
+
+		// Opening a family this call never names still has to notice: its reads
+		// would fail and its first flush would error the database read-only, long
+		// after the open that could have named the volume.
+		expect(() => RocksDatabase.open(dbPath)).toThrow(/which does not exist/);
+	});
+
+	it('should relocate every column family when the change is acknowledged', () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+		const movedDir = tempDir();
+
+		let first = openDb(dbPath, { name: 'table1', blobs: { dir: blobDir } });
+		let second = openDb(dbPath, { name: 'table2', blobs: { dir: blobDir } });
+		first.putSync('a', largeValue(1));
+		second.putSync('b', largeValue(2));
+		first.flushSync();
+		second.flushSync();
+		second.close();
+		first.close();
+
+		for (const name of filesWithExt(blobDir, '.blob')) {
+			renameSync(join(blobDir, name), join(movedDir, name));
+		}
+
+		// Moving blob files is a database-wide act — a closed database's files all
+		// move together — so the acknowledgement has to reach every family. Scoped
+		// to the named one, table2 would still point at the now-empty old
+		// directory, and it could not be repaired in this process: the second open
+		// is a warm one, which cannot change a live family's directory.
+		first = openDb(dbPath, {
+			name: 'table1',
+			blobs: { dir: movedDir, allowDirChange: true },
+		});
+		second = openDb(dbPath, { name: 'table2', blobs: { dir: movedDir } });
+		expect(first.getSync('a')).toBe(largeValue(1));
+		expect(second.getSync('b')).toBe(largeValue(2));
+		second.close();
+		first.close();
+
+		// And it is persisted, so the next plain open needs no acknowledgement.
+		second = openDb(dbPath, { name: 'table2', blobs: { dir: movedDir } });
+		expect(second.getSync('b')).toBe(largeValue(2));
+		second.close();
+	});
+
+	it('should read a restored named column family from its own flattened copy', async () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+		const backupDir = tempDir();
+		const restoreDir = tempPath();
+
+		// `default` has no blob directory and `table1` does, so the restored copy's
+		// target family carries no mismatch of its own — the source directory can
+		// only be noticed through the families this open does not name.
+		const plain = openDb(dbPath);
+		const table = openDb(dbPath, { name: 'table1', blobs: { dir: blobDir } });
+		for (let i = 0; i < 20; i++) {
+			table.putSync(`key-${i}`, largeValue(i));
+		}
+		table.flushSync();
+		await plain.backup(backupDir);
+
+		await backups.restore(backupDir, restoreDir);
+		expect(filesWithExt(restoreDir, '.blob').length).toBeGreaterThan(0);
+
+		// The source stays open throughout: if the restored table1 kept the
+		// persisted directory, the two databases would allocate blob file numbers
+		// independently in it and each one's obsolete-file scan would delete the
+		// other's live files.
+		const restoredPlain = openDb(restoreDir, { blobs: { allowDirChange: true } });
+		const restoredTable = openDb(restoreDir, { name: 'table1' });
+		for (let i = 0; i < 20; i++) {
+			expect(restoredTable.getSync(`key-${i}`)).toBe(largeValue(i));
+		}
+		restoredTable.putSync('added', largeValue(99));
+		restoredTable.flushSync();
+		// Everything the restored database writes stays in its own directory.
+		expect(filesWithExt(restoreDir, '.blob').length).toBeGreaterThan(0);
+		expect(filesWithExt(blobDir, '.blob').length).toBeGreaterThan(0);
+		expect(restoredTable.getSync('added')).toBe(largeValue(99));
+
+		restoredTable.close();
+		restoredPlain.close();
+		table.close();
+		plain.close();
 	});
 
 	it('should delete blob files on destroy()', () => {
