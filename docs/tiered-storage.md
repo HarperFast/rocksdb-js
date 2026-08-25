@@ -235,9 +235,15 @@ one, which cannot change a live family's directory, so it would take one process
 with the database broken in between.
 
 A database using several distinct blob directories therefore needs one open per directory — `dir`
-names a single destination, so a single open cannot describe more than one move. Omitting `dir`
-entirely is the exception: it says the whole database was flattened into its own directory, and
-re-points every family.
+names a single destination, so a single open cannot describe more than one move. Families are
+grouped by the directory string they persisted, so **spell one directory identically across every
+family that uses it**: `/mnt/blobs` and a symlinked `/data/blobs` are two groups, and an
+acknowledged move naming one spelling leaves the other family behind.
+
+Omitting `dir` entirely is the exception: it says the whole database was flattened into its own
+directory, and re-points every family. That claim is checked rather than trusted — if a family's
+recorded directory still holds `.blob` files, the open is refused naming that family, because
+nothing was flattened (or, for a restored copy, those files belong to the source database).
 
 A directory that has gone missing entirely — an unmounted volume, a restore that never brought it —
 fails the open naming the family and the directory, rather than being discovered when the first
