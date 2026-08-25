@@ -863,6 +863,33 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		table.close();
 	});
 
+	it('should refuse to relocate before the blob files have moved', () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+		const movedDir = tempDir();
+
+		const db = openDb(dbPath, { blobs: { dir: blobDir } });
+		db.putSync('key', largeValue(11));
+		db.flushSync();
+		db.close();
+
+		// Acknowledging a move that has not happened yet — the open runs before the
+		// `mv`, or against the wrong destination. Persisting the new directory here
+		// makes every large value read as missing until a compaction turns it into
+		// a background error. The destination existing is not a signal: the open
+		// creates it.
+		expect(() =>
+			RocksDatabase.open(dbPath, { blobs: { dir: movedDir, allowDirChange: true } })
+		).toThrow(/still has its blob files in/);
+
+		for (const name of filesWithExt(blobDir, '.blob')) {
+			renameSync(join(blobDir, name), join(movedDir, name));
+		}
+		const moved = openDb(dbPath, { blobs: { dir: movedDir, allowDirChange: true } });
+		expect(moved.getSync('key')).toBe(largeValue(11));
+		moved.close();
+	});
+
 	it('should refuse to flatten a database whose blob files have not moved', () => {
 		const dbPath = tempPath();
 		const blobDir = tempDir();
