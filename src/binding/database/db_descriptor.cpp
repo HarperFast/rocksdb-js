@@ -1399,7 +1399,9 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  * open would break. An already-tiered database has no SST files in its own
  * directory, and one that lists its own directory as `paths[0]` finds them
  * there, so both pass — including when the two spellings differ (trailing
- * separator, symlink).
+ * separator, symlink). Identical spellings are the exception, and only as a
+ * shortcut: they cannot fail, and the supported form of the migration produces
+ * them on a database whose own directory is where all the SST files are.
  *
  * This does NOT catch reordering or removing an entry of an existing list; the
  * files are elsewhere and nothing on disk records which index they came from.
@@ -1410,7 +1412,10 @@ static void assertStoragePathsUsable(
 	const std::string& path,
 	const std::vector<StoragePath>& paths
 ) {
-	if (paths.empty()) {
+	if (paths.empty() || paths[0].path == path) {
+		// The supported form of the migration, and then every file listed below
+		// would be stat'ed at the directory it was just listed from — one syscall
+		// per SST file of an arbitrarily large database, on every open.
 		return;
 	}
 
@@ -1665,6 +1670,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// integration test of these rules skips on every build that exists.
 			rocksdb_js::BlobRelocationInput relocation;
 			relocation.dbPath = path;
+			relocation.defaultBlobDir =
+				dbOptions.db_paths.empty() ? path : dbOptions.db_paths.front().path;
 			relocation.cfName = cfName;
 			relocation.isTarget = isTarget;
 			if (it != persisted.end()) {

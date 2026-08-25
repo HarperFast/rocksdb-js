@@ -609,7 +609,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     appended — reordering or removing one points existing files at the wrong directory. `blobs.dir`
     records nothing: a blob file's directory is re-derived from the option on every open, delete, and
     report, so changing it strands the existing blob files and makes every value >= `min_blob_size`
-    unreadable. `DBDescriptor::open` enforces the blob half by comparing the request against the
+    unreadable. An unset `blob_dir` is not the database directory, it is `cf_paths.front()` falling
+    back to `db_paths.front()` — so on a database that also sets `paths` the flat blob files sit on
+    `paths[0]`, and every rule that resolves "no directory" to a real one
+    (`BlobRelocationInput::defaultBlobDir`) has to resolve it there or check a directory the files
+    were never in. `DBDescriptor::open` enforces the blob half by comparing the request against the
     `blob_dir` persisted in the OPTIONS file (`loadPersistedCFOptions`), which is why that struct
     carries more than compression; `blobs.allowDirChange` is the acknowledgement for a completed
     offline relocation, and it is the **one blob setting that reaches past the open's target family**:
