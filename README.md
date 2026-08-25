@@ -65,9 +65,12 @@ Creates a new database instance.
     [`writeBufferManagerSize`](#dbconfigoptions) config option. Database-wide, so it binds when the
     path is first opened in this process: a later open of the same path — including from another
     worker thread — keeps the first opener's value rather than overriding or rejecting it.
-  - `blobs: object` Blob-file (large value) settings. Values at or above `blobs.minSize` are stored
-    in separate blob files rather than inline in SST files, so compaction does not rewrite them at
-    every level. See [Tiered Storage](docs/tiered-storage.md).
+  - `blobs: object` Blob-file (large value) settings, applied to the column family being opened.
+    Values at or above `blobs.minSize` are stored in separate blob files rather than inline in SST
+    files, so compaction does not rewrite them at every level. Like `compression`, these are
+    per-column-family: opening one family never changes another's, and a setting you omit keeps
+    whatever that family persisted rather than reverting to the default below (the defaults apply
+    to a family being created). See [Tiered Storage](docs/tiered-storage.md).
     - `enabled: boolean` Whether large values are written to blob files. Defaults to `true`.
     - `minSize: number` The smallest value stored in a blob file rather than inline. Defaults to
       `2048`.
@@ -132,7 +135,10 @@ Creates a new database instance.
     a path's `targetSize` is exhausted; the last entry is the fallback. Defaults to everything
     under the database directory. Entries may only ever be **appended** across reopens — a file's
     path _index_ is what is recorded in the MANIFEST — and supplying more than one disables
-    `level_compaction_dynamic_level_bytes`. Blob files do not follow these paths; see
+    `level_compaction_dynamic_level_bytes`. Adding `paths` to a database that does not already
+    have it requires listing the database directory itself as the first entry, since its existing
+    files are recorded at index 0; `open()` rejects the alternative rather than letting RocksDB
+    report the MANIFEST as corrupt. Blob files do not follow these paths; see
     [Tiered Storage](docs/tiered-storage.md).
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
@@ -213,15 +219,16 @@ Sets global database settings.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
   - `blobCacheSize: number` The amount of memory in bytes to cache blob (large value) contents.
-    When omitted from a call that supplies `blockCacheSize`, defaults to
-    `Math.floor(blockCacheSize / 10)`; otherwise its initial default is `0` (disabled), matching
-    RocksDB. This capacity is additional to the block-cache capacity, and an explicit value,
-    including `0`, wins in the same call. A later call that supplies only `blockCacheSize`
-    recalculates the derived blob-cache capacity. RocksDB does **not** put blob values in the block
-    cache, so with the cache disabled every blob read is real I/O — which matters most when blob
-    files live on slower storage than the SST files (see [`blobs.dir`](docs/tiered-storage.md)).
-    Kept separate from the block cache so large values cannot evict index/filter/data blocks. Must
-    be set before a database is opened to affect it — the cache is attached to a column family at
+    Its initial default is `0` (disabled), matching RocksDB, but while it has never been set
+    explicitly a call that supplies `blockCacheSize` derives `Math.floor(blockCacheSize / 10)` for
+    it. That capacity is **additional** to the block-cache capacity, so an existing
+    `config({ blockCacheSize })` call raises this process's memory ceiling by 10% with no code
+    change. Setting it explicitly (including to `0`) latches: later calls that supply only
+    `blockCacheSize` then leave it alone. RocksDB does **not** put blob values in the block cache,
+    so with the cache disabled every blob read is real I/O — which matters most when blob files
+    live on slower storage than the SST files (see [`blobs.dir`](docs/tiered-storage.md)). Kept
+    separate from the block cache so large values cannot evict index/filter/data blocks. Must be
+    set before a database is opened to affect it — the cache is attached to a column family at
     open — after which changing it resizes the cache for databases that already have it. Negative
     values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.

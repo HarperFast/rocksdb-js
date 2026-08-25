@@ -293,9 +293,10 @@ export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
  */
 export type NativeStoragePath = {
 	/**
-	 * Directory SST files may be written to. Resolved by RocksDB the same way
-	 * the database path is, so prefer an absolute path — a relative one is
-	 * interpreted against the process working directory at open time.
+	 * Directory SST files may be written to. Resolved to an absolute path
+	 * against the process working directory when the database is opened, so the
+	 * stored value cannot resolve to a different volume in a process started
+	 * from somewhere else.
 	 */
 	path: string;
 	/**
@@ -307,6 +308,15 @@ export type NativeStoragePath = {
 	targetSize: number;
 };
 
+/**
+ * Blob-file settings for ONE column family.
+ *
+ * These are per-column-family in RocksDB and it does not restore them on open,
+ * so — exactly like `compression` — they are applied to the family being opened
+ * and to no other, and a field left out keeps whatever that family persisted
+ * rather than reverting to the documented default. The defaults below describe a
+ * family being CREATED.
+ */
 export type NativeBlobOptions = {
 	/**
 	 * Whether values at or above `minSize` are written to blob files.
@@ -327,7 +337,14 @@ export type NativeBlobOptions = {
 	minSize?: number;
 	/**
 	 * Directory blob files are written to and read from. When unset they live
-	 * alongside the SST files in the first entry of `paths`.
+	 * alongside the SST files in the first entry of `paths`. Resolved to an
+	 * absolute path against the process working directory when the database is
+	 * opened.
+	 *
+	 * Unlike the other fields here, omitting this means "alongside the SST
+	 * files" rather than "inherit": dropping it from a configuration is rejected
+	 * at open rather than silently continuing to read blob files from a
+	 * directory the configuration no longer mentions.
 	 *
 	 * Setting this decouples blob placement from SST placement, which is the
 	 * only way to put large values on a different volume than the LSM tree
@@ -645,18 +662,20 @@ export type RocksDatabaseConfig = {
 	 * (see `blobs.dir`).
 	 *
 	 * Kept separate from the block cache so large values cannot evict
-	 * index/filter/data blocks. When `blockCacheSize` is supplied in the same
-	 * `config()` call and this property is omitted, the blob cache defaults to
-	 * `Math.floor(blockCacheSize / 10)`. This capacity is additional to the
-	 * configured block-cache capacity. An explicit value, including `0`, wins
-	 * in the same call; a later block-cache-only call recalculates the default.
+	 * index/filter/data blocks. While this has never been set explicitly, a
+	 * `config()` call that supplies `blockCacheSize` derives
+	 * `Math.floor(blockCacheSize / 10)` for it — capacity that is **additional**
+	 * to the block-cache capacity, so an existing `config({ blockCacheSize })`
+	 * call raises the process memory ceiling by 10% with no code change. Setting
+	 * this explicitly (including to `0`) latches: later calls that supply only
+	 * `blockCacheSize` leave it alone.
 	 *
 	 * Must be set **before** a database is opened to affect it: the cache is
 	 * attached to a column family at open, so a database opened while this was
 	 * `0` keeps uncached blob reads for its lifetime. Changing it later resizes
 	 * the cache for databases that already have it attached.
 	 *
-	 * @default 0, or 10% of `blockCacheSize` when configured in the same call
+	 * @default 0, or 10% of `blockCacheSize` until set explicitly
 	 */
 	blobCacheSize?: number;
 	/**

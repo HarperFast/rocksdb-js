@@ -32,6 +32,11 @@ private:
 	std::atomic<size_t> blobCacheSize;
 	std::shared_ptr<rocksdb::Cache> blobCache;
 	std::mutex blobCacheMutex;
+	// Whether `blobCacheSize` has ever been supplied explicitly. Latched, and
+	// never cleared: it is what stops a later `config({ blockCacheSize })` — a
+	// call that says nothing about blobs — from discarding a budget the caller
+	// stated and replacing it with the 10% default.
+	std::atomic<bool> blobCacheSizeExplicit;
 
 	// Total memory limit (bytes) shared across all databases for active and
 	// immutable memtables. 0 disables the manager (each database uses its own

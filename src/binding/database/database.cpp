@@ -1,5 +1,6 @@
 #include <node_api.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -1832,19 +1833,55 @@ napi_value Database::ListLogs(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Leaves `result` untouched when the property is absent.
+ * Whether a storage path is absolute, without going through
+ * `std::filesystem::path`. On Windows that type is `wchar_t`-based and
+ * constructing it from a UTF-8 `std::string` re-encodes through the active code
+ * page, so a path with non-ASCII characters comes back corrupted. Every path
+ * that reaches here is already resolved by the JavaScript layer (`store.ts`
+ * calls `node:path`'s `resolve()`), so this is a boundary check rather than a
+ * conversion.
  */
-static bool getRatioProperty(napi_env env, napi_value obj, const char* prop, double& result) {
-	double value = result;
+static bool isAbsolutePath(const std::string& path) {
+#ifdef _WIN32
+	// UNC ("\\server\share", "\\?\C:\...") or a drive-qualified root ("C:\x").
+	// A drive-relative root ("\x") is deliberately not absolute: it resolves
+	// against the current drive.
+	if (path.size() >= 2 && (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/')) {
+		return true;
+	}
+	return path.size() >= 3 &&
+		std::isalpha(static_cast<unsigned char>(path[0])) != 0 &&
+		path[1] == ':' &&
+		(path[2] == '\\' || path[2] == '/');
+#else
+	return !path.empty() && path[0] == '/';
+#endif
+}
+
+/**
+ * Leaves `result` disengaged when the property is absent, so a caller that omits
+ * a blob setting inherits the column family's persisted value instead of
+ * restamping it with a default.
+ */
+static bool getRatioProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	std::optional<double>& result
+) {
+	std::optional<double> value;
 	if (rocksdb_js::getProperty(env, obj, prop, value) != napi_ok) {
 		::napi_throw_error(env, nullptr, (std::string(prop) + " must be a number").c_str());
 		return false;
 	}
-	if (std::isnan(value) || value < 0.0 || value > 1.0) {
+	if (!value) {
+		return true;
+	}
+	if (std::isnan(*value) || *value < 0.0 || *value > 1.0) {
 		::napi_throw_error(env, nullptr, (std::string(prop) + " must be between 0.0 and 1.0").c_str());
 		return false;
 	}
-	result = value;
+	result = *value;
 	return true;
 }
 
@@ -1876,6 +1913,44 @@ static bool getByteSizeProperty(
 		return false;
 	}
 	result = static_cast<uint64_t>(value);
+	return true;
+}
+
+/**
+ * Same validation as above, but leaves `result` disengaged when the property is
+ * absent — see the note on `getRatioProperty`.
+ */
+static bool getByteSizeProperty(
+	napi_env env,
+	napi_value obj,
+	const char* prop,
+	std::optional<uint64_t>& result
+) {
+	std::optional<double> value;
+	if (rocksdb_js::getProperty(env, obj, prop, value) != napi_ok) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			(std::string(prop) +
+				" must be a non-negative integer no larger than Number.MAX_SAFE_INTEGER").c_str()
+		);
+		return false;
+	}
+	if (!value) {
+		return true;
+	}
+	if (!std::isfinite(*value) || *value != std::trunc(*value) || *value < 0.0 ||
+		*value > 9007199254740991.0
+	) {
+		::napi_throw_error(
+			env,
+			nullptr,
+			(std::string(prop) +
+				" must be a non-negative integer no larger than Number.MAX_SAFE_INTEGER").c_str()
+		);
+		return false;
+	}
+	result = static_cast<uint64_t>(*value);
 	return true;
 }
 
@@ -1932,10 +2007,20 @@ static bool parseStoragePaths(napi_env env, napi_value options, std::vector<Stor
 		) {
 			return false;
 		}
-		// Resolve now: RocksDB interprets a relative path against the process
-		// working directory at open time, so storing it raw would let the same
-		// string resolve to a different volume on a later open.
-		storagePath.path = std::filesystem::absolute(storagePath.path).lexically_normal().string();
+		// RocksDB interprets a relative path against the process working
+		// directory at open time, so the same string could resolve to a different
+		// volume on a later open. `store.ts` resolves it before we get here;
+		// reject rather than resolve it natively, because doing that on Windows
+		// means round-tripping the UTF-8 string through `std::filesystem::path`
+		// and the active code page.
+		if (!isAbsolutePath(storagePath.path)) {
+			::napi_throw_error(
+				env,
+				nullptr,
+				("paths[" + std::to_string(i) + "].path must be an absolute path").c_str()
+			);
+			return false;
+		}
 		result.push_back(std::move(storagePath));
 	}
 
@@ -1969,11 +2054,12 @@ static bool parseBlobOptions(napi_env env, napi_value options, BlobOptions& resu
 		return false;
 	}
 	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "dir", result.dir), false);
-	if (!result.dir.empty()) {
-		// Same reason as paths[].path: the persisted value is compared as a
-		// string on reopen, so a relative directory would compare equal while
-		// resolving somewhere else.
-		result.dir = std::filesystem::absolute(result.dir).lexically_normal().string();
+	// Same reason as paths[].path: the value is compared as a string against the
+	// directory persisted in the OPTIONS file on reopen, so a relative directory
+	// would compare equal while resolving somewhere else.
+	if (!result.dir.empty() && !isAbsolutePath(result.dir)) {
+		::napi_throw_error(env, nullptr, "blobs.dir must be an absolute path");
+		return false;
 	}
 	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "allowDirChange", result.allowDirChange), false);
 	NAPI_STATUS_THROWS_RVAL(rocksdb_js::getProperty(env, blobs, "garbageCollection", result.garbageCollection), false);

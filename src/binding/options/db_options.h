@@ -32,43 +32,66 @@ struct StoragePath final {
  * Blob-file (large value) settings. Values at or above `minSize` are stored in
  * separate blob files rather than inline in SST files, which keeps compaction
  * from rewriting them at every level.
+ *
+ * These are PER-COLUMN-FAMILY options, and RocksDB does not restore them on
+ * open, so — exactly like compression — every field is `std::optional` and an
+ * omitted field means "leave this column family's persisted value alone". Plain
+ * defaults would restamp every other family in the database with the settings of
+ * whichever family happened to open it (HarperFast/rocksdb-js#767 review). The
+ * default in each comment applies only to a column family being CREATED.
  */
 struct BlobOptions final {
-	// enable_blob_files. When false, values are stored inline in SST files
-	// regardless of size. Existing blob files stay readable either way; with
-	// `garbageCollection` on, compaction gradually pulls their values back
+	// enable_blob_files (default true). When false, values are stored inline in
+	// SST files regardless of size. Existing blob files stay readable either way;
+	// with `garbageCollection` on, compaction gradually pulls their values back
 	// inline (see CompactionIterator::GarbageCollectBlobIfNeeded).
-	bool enabled = true;
-	// min_blob_size: smallest value stored in a blob file instead of inline.
-	uint64_t minSize = 2048;
+	std::optional<bool> enabled;
+	// min_blob_size (default 2048): smallest value stored in a blob file instead
+	// of inline.
+	std::optional<uint64_t> minSize;
 	// blob_dir: the directory blob files live in. Empty = alongside the SST
 	// files (`cf_paths.front()`), which is RocksDB's stock behavior. Requires a
 	// RocksDB built with the downstream blob_dir patch — see
 	// ROCKSDB_HAS_CF_BLOB_DIR. Changing it on an existing database orphans the
 	// blob files already written, so a mismatch on reopen is rejected unless
 	// `allowDirChange` says the files have been moved.
+	//
+	// Deliberately NOT optional: unlike the other fields, "omitted" here has to
+	// mean "alongside the SST files" rather than "inherit", so that dropping the
+	// option from a config is rejected instead of silently continuing to read
+	// blob files from a directory the configuration no longer mentions.
 	std::string dir;
 	// Acknowledges that the existing blob files have been relocated to `dir`,
 	// permitting an open that would otherwise be rejected as a mismatch against
 	// the directory recorded in the database's OPTIONS file. Nothing is moved on
 	// the caller's behalf; this only suppresses the check.
 	bool allowDirChange = false;
-	// enable_blob_garbage_collection: relocate live values out of the oldest
-	// blob files during compaction so those files can be deleted.
-	bool garbageCollection = true;
+	// enable_blob_garbage_collection (default true): relocate live values out of
+	// the oldest blob files during compaction so those files can be deleted.
+	std::optional<bool> garbageCollection;
 	// blob_garbage_collection_age_cutoff: fraction of the oldest blob files
 	// eligible for relocation (0..1). The RocksDB default of 0.25 means three
 	// quarters of the blob files are never revisited by a given compaction.
-	double garbageCollectionAgeCutoff = 0.25;
+	std::optional<double> garbageCollectionAgeCutoff;
 	// blob_garbage_collection_force_threshold: garbage ratio (0..1) above which
 	// RocksDB schedules targeted compactions to reclaim the oldest blob files.
 	// The RocksDB default of 1.0 never forces one.
-	double garbageCollectionForceThreshold = 1.0;
-	// prepopulate_blob_cache: when true, values written by a flush are inserted
-	// into the blob cache instead of waiting to be read back. Only meaningful
-	// when a blob cache is configured (`RocksDatabase.config({ blobCacheSize })`).
-	bool prepopulateCache = false;
+	std::optional<double> garbageCollectionForceThreshold;
+	// prepopulate_blob_cache (default false): when true, values written by a
+	// flush are inserted into the blob cache instead of waiting to be read back.
+	// Only meaningful when a blob cache is configured
+	// (`RocksDatabase.config({ blobCacheSize })`).
+	std::optional<bool> prepopulateCache;
 };
+
+// Defaults applied to a column family that is being CREATED. An EXISTING family
+// keeps whatever it persisted for any field the caller omitted.
+inline constexpr bool kDefaultBlobEnabled = true;
+inline constexpr uint64_t kDefaultBlobMinSize = 2048;
+inline constexpr bool kDefaultBlobGarbageCollection = true;
+inline constexpr double kDefaultBlobGarbageCollectionAgeCutoff = 0.25;
+inline constexpr double kDefaultBlobGarbageCollectionForceThreshold = 1.0;
+inline constexpr bool kDefaultBlobPrepopulateCache = false;
 
 /**
  * Options for opening a RocksDB database. It holds the processed napi argument

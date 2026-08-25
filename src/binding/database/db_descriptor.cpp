@@ -31,18 +31,86 @@ static uint64_t nextVtEpoch() {
 	return vtEpochCounter.fetch_add(1, std::memory_order_relaxed);
 }
 
-// A column family's persisted compression, recovered from the on-disk OPTIONS
-// file so a cold open of one CF does not clobber the others (compression is
-// per-CF).
+// A column family's persisted per-CF options, recovered from the on-disk OPTIONS
+// file so a cold open of one CF does not clobber the others. Compression and the
+// blob settings are both per-CF, and RocksDB restores neither on open.
 struct PersistedCFOptions {
 	rocksdb::CompressionType compression;
 	rocksdb::CompressionType blobCompression;
 	rocksdb::CompressionOptions compressionOpts;
+	bool enableBlobFiles;
+	uint64_t minBlobSize;
+	bool enableBlobGarbageCollection;
+	double blobGarbageCollectionAgeCutoff;
+	double blobGarbageCollectionForceThreshold;
+	rocksdb::PrepopulateBlobCache prepopulateBlobCache;
 	// Where this column family's blob files were last written. Compared against
 	// the requested `blobs.dir` so a reopen cannot strand them. Always empty when
 	// built against a RocksDB without the blob_dir patch.
 	std::string blobDir;
 };
+
+// Restores a column family's persisted blob settings over the base options. Used
+// for every column family on a cold open, before the caller's request is applied
+// to the target one: blob settings are per-CF and RocksDB does not restore them,
+// so without this, opening one family restamps every other family in the
+// database with the opener's settings — and in Harper, where every table is a
+// named column family, whichever table opened first would decide
+// `min_blob_size`/`enable_blob_files` for all of them.
+static void restorePersistedBlobOptions(
+	rocksdb::ColumnFamilyOptions& cfOptions,
+	const PersistedCFOptions& persisted
+) {
+	cfOptions.enable_blob_files = persisted.enableBlobFiles;
+	cfOptions.min_blob_size = persisted.minBlobSize;
+	cfOptions.enable_blob_garbage_collection = persisted.enableBlobGarbageCollection;
+	cfOptions.blob_garbage_collection_age_cutoff = persisted.blobGarbageCollectionAgeCutoff;
+	cfOptions.blob_garbage_collection_force_threshold = persisted.blobGarbageCollectionForceThreshold;
+	// prepopulate_blob_cache is only meaningful with a cache attached, and
+	// buildColumnFamilyOptions only attaches one when the process has configured
+	// a blob cache size.
+	if (cfOptions.blob_cache) {
+		cfOptions.prepopulate_blob_cache = persisted.prepopulateBlobCache;
+	}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	cfOptions.blob_dir = persisted.blobDir;
+#endif
+}
+
+// Applies only the blob settings the caller actually supplied. Fields left out
+// keep whatever is already on `cfOptions` — the family's persisted value on a
+// reopen — which is the same "a plain reopen inherits the live value" rule
+// compression follows.
+static void applyExplicitBlobOptions(
+	rocksdb::ColumnFamilyOptions& cfOptions,
+	const BlobOptions& blobs
+) {
+	if (blobs.enabled) {
+		cfOptions.enable_blob_files = *blobs.enabled;
+	}
+	if (blobs.minSize) {
+		cfOptions.min_blob_size = *blobs.minSize;
+	}
+	if (blobs.garbageCollection) {
+		cfOptions.enable_blob_garbage_collection = *blobs.garbageCollection;
+	}
+	if (blobs.garbageCollectionAgeCutoff) {
+		cfOptions.blob_garbage_collection_age_cutoff = *blobs.garbageCollectionAgeCutoff;
+	}
+	if (blobs.garbageCollectionForceThreshold) {
+		cfOptions.blob_garbage_collection_force_threshold = *blobs.garbageCollectionForceThreshold;
+	}
+	if (blobs.prepopulateCache && cfOptions.blob_cache) {
+		cfOptions.prepopulate_blob_cache = *blobs.prepopulateCache
+			? rocksdb::PrepopulateBlobCache::kFlushOnly
+			: rocksdb::PrepopulateBlobCache::kDisable;
+	}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	// Unlike the fields above, `dir` is not optional: an omitted directory means
+	// "alongside the SST files", so it is always applied.
+	cfOptions.blob_dir = blobs.dir;
+#endif
+}
 
 // Applies a compression algorithm (and optional level) to both the SST block
 // compression and the blob-file compression of the given column family options.
@@ -113,19 +181,27 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 		tableOptions.block_cache = DBSettings::getInstance().getBlockCache();
 	}
 
-	cfOptions.enable_blob_files = options.blobs.enabled;
-	cfOptions.min_blob_size = options.blobs.minSize;
-	cfOptions.enable_blob_garbage_collection = options.blobs.garbageCollection;
-	cfOptions.blob_garbage_collection_age_cutoff = options.blobs.garbageCollectionAgeCutoff;
-	cfOptions.blob_garbage_collection_force_threshold = options.blobs.garbageCollectionForceThreshold;
 	// RocksDB does not put blob values in the block cache, so without this every
 	// blob read is real I/O — which dominates once blob files are on slower
 	// storage than the SSTs.
-	if (auto blobCache = DBSettings::getInstance().getBlobCache()) {
-		cfOptions.blob_cache = blobCache;
-		if (options.blobs.prepopulateCache) {
-			cfOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kFlushOnly;
-		}
+	cfOptions.blob_cache = DBSettings::getInstance().getBlobCache();
+	// The blob defaults belong to a column family being CREATED. A cold open of
+	// an EXISTING family overwrites these from its OPTIONS file
+	// (restorePersistedBlobOptions) and then re-applies only what the caller
+	// explicitly asked for, to the target family alone.
+	cfOptions.enable_blob_files = options.blobs.enabled.value_or(kDefaultBlobEnabled);
+	cfOptions.min_blob_size = options.blobs.minSize.value_or(kDefaultBlobMinSize);
+	cfOptions.enable_blob_garbage_collection =
+		options.blobs.garbageCollection.value_or(kDefaultBlobGarbageCollection);
+	cfOptions.blob_garbage_collection_age_cutoff =
+		options.blobs.garbageCollectionAgeCutoff.value_or(kDefaultBlobGarbageCollectionAgeCutoff);
+	cfOptions.blob_garbage_collection_force_threshold =
+		options.blobs.garbageCollectionForceThreshold.value_or(
+			kDefaultBlobGarbageCollectionForceThreshold);
+	if (cfOptions.blob_cache &&
+		options.blobs.prepopulateCache.value_or(kDefaultBlobPrepopulateCache)
+	) {
+		cfOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kFlushOnly;
 	}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 	cfOptions.blob_dir = options.blobs.dir;
@@ -137,20 +213,20 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	return cfOptions;
 }
 
-// Reads each existing column family's persisted compression from the database's
-// latest OPTIONS file into `result`, returning the RocksDB status. The OPTIONS
-// file is the ONLY authoritative source for a CF's stored compression (RocksDB
-// does not restore per-CF options on open), so callers must treat a non-OK
-// status as fatal for an existing DB rather than falling back to defaults —
-// doing so would open the non-target CFs with the base default and silently
-// restamp their compression on the next OPTIONS write.
+// Reads each existing column family's persisted per-CF options (compression and
+// blob settings) from the database's latest OPTIONS file into `result`,
+// returning the RocksDB status. The OPTIONS file is the ONLY authoritative
+// source for these (RocksDB does not restore per-CF options on open), so callers
+// must treat a non-OK status as fatal for an existing DB rather than falling
+// back to defaults — doing so would open the non-target CFs with the base
+// defaults and silently restamp them on the next OPTIONS write.
 static rocksdb::Status loadPersistedCFOptions(
 	const std::string& path,
 	std::unordered_map<std::string, PersistedCFOptions>& result
 ) {
 	rocksdb::ConfigOptions configOptions;
-	// Be permissive: we only read compression fields, so unknown/unsupported
-	// options in the persisted file must not fail the load.
+	// Be permissive: we only read a handful of known fields, so
+	// unknown/unsupported options in the persisted file must not fail the load.
 	configOptions.ignore_unknown_options = true;
 	configOptions.ignore_unsupported_options = true;
 	rocksdb::DBOptions loadedDbOptions;
@@ -163,6 +239,12 @@ static rocksdb::Status loadPersistedCFOptions(
 				descriptor.options.compression,
 				descriptor.options.blob_compression_type,
 				descriptor.options.compression_opts,
+				descriptor.options.enable_blob_files,
+				descriptor.options.min_blob_size,
+				descriptor.options.enable_blob_garbage_collection,
+				descriptor.options.blob_garbage_collection_age_cutoff,
+				descriptor.options.blob_garbage_collection_force_threshold,
+				descriptor.options.prepopulate_blob_cache,
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 				descriptor.options.blob_dir,
 #else
@@ -1235,6 +1317,66 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 }
 
 /**
+ * Rejects the one `paths` change that turns a healthy database into an
+ * unopenable one.
+ *
+ * With an empty `db_paths` RocksDB sanitizes it to `[{dbname, ...}]`, so every
+ * SST file an untiered database ever wrote carries path index 0 meaning THE
+ * DATABASE DIRECTORY. Supplying `paths` for the first time redefines index 0 as
+ * `paths[0]`, RocksDB looks for those files on the wrong volume, and the open
+ * fails with `Corruption: ... MANIFEST-NNNNNN may be corrupted` — which sends an
+ * operator to backup restore rather than to the one config line they changed.
+ * That zero-to-one transition is the migration people actually attempt, and the
+ * supported form of it is to list the database directory itself as `paths[0]`.
+ *
+ * Decided by file existence, not by comparing directory strings: if the database
+ * directory holds SST files and they are not reachable under `paths[0]`, this
+ * open would break. An already-tiered database has no SST files in its own
+ * directory, and one that lists its own directory as `paths[0]` finds them
+ * there, so both pass — including when the two spellings differ (trailing
+ * separator, symlink).
+ *
+ * This does NOT catch reordering or removing an entry of an existing list; the
+ * files are elsewhere and nothing on disk records which index they came from.
+ * That stays a documented append-only rule (see `DBOptions::paths`).
+ */
+static void assertStoragePathsUsable(
+	rocksdb::Env* env,
+	const std::string& path,
+	const std::vector<StoragePath>& paths
+) {
+	if (paths.empty()) {
+		return;
+	}
+
+	std::vector<std::string> children;
+	// Listing through rocksdb::Env rather than std::filesystem: Env does its own
+	// UTF-8 conversion on Windows, where std::filesystem::path would re-encode
+	// through the active code page.
+	if (!env->GetChildren(path, &children).ok()) {
+		return;
+	}
+
+	for (const auto& child : children) {
+		if (child.size() < 4 || child.compare(child.size() - 4, 4, ".sst") != 0) {
+			continue;
+		}
+		if (env->FileExists(paths[0].path + "/" + child).ok()) {
+			// paths[0] is the database directory (however it is spelled).
+			return;
+		}
+		throw rocksdb_js::DBException(
+			"Cannot open \"" + path + "\" with paths[0] \"" + paths[0].path +
+			"\": the database already has SST files in its own directory, which RocksDB records "
+			"as path index 0. Adding paths now redefines index 0 as \"" + paths[0].path +
+			"\", so those files would be looked for on the wrong volume. Add the database "
+			"directory itself as the first entry instead: paths: [{ path: \"" + path +
+			"\", targetSize: ... }, { path: \"" + paths[0].path + "\", ... }]."
+		);
+	}
+}
+
+/**
  * Creates a new DBDescriptor.
  */
 std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
@@ -1310,6 +1452,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
+		assertStoragePathsUsable(dbOptions.env, path, options.paths);
+
 		// Database exists. Compression is per-CF: opening one column family must
 		// not change another's algorithm, and RocksDB requires opening every CF
 		// at once with the options we supply (it does not restore persisted
@@ -1322,6 +1466,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// the explicit request is applied to every family instead, which is how a
 		// caller expresses "this database uses one codec" for families it never
 		// names (see db_options.h).
+		//
+		// The blob settings (`blobs.*`) are per-CF for exactly the same reason and
+		// get exactly the same treatment, with no all-families opt-out: each
+		// family's persisted values are restored and only the fields the caller
+		// explicitly supplied are applied, to the target family alone.
 		std::unordered_map<std::string, PersistedCFOptions> persisted;
 		rocksdb::Status persistedStatus = loadPersistedCFOptions(path, persisted);
 		if (!persistedStatus.ok()) {
@@ -1342,11 +1491,15 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				cfo.compression = it->second.compression;
 				cfo.blob_compression_type = it->second.blobCompression;
 				cfo.compression_opts = it->second.compressionOpts;
+				restorePersistedBlobOptions(cfo, it->second);
 			}
 			const bool isTarget = cfName == name;
 			if ((isTarget || options.compressionForAllColumnFamilies) && options.compression &&
 				options.compressionExplicit) {
 				applyCompression(cfo, *options.compression, options.compressionLevel);
+			}
+			if (isTarget) {
+				applyExplicitBlobOptions(cfo, options.blobs);
 			}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 			// A blob file's directory is derived from blob_dir every time it is
@@ -1355,8 +1508,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// existing blob files, it strands them: reads of every value >=
 			// min_blob_size fail with "No such file or directory". Refuse rather
 			// than open a database whose large values have silently gone missing,
-			// unless the caller says they have already moved the files.
-			if (!options.blobs.allowDirChange && it != persisted.end() &&
+			// unless the caller says they have already moved the files. Only the
+			// target family can be stranded — the others just kept their persisted
+			// directory above.
+			if (isTarget && !options.blobs.allowDirChange && it != persisted.end() &&
 				it->second.blobDir != cfo.blob_dir
 			) {
 				throw rocksdb_js::DBException(

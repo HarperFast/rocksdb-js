@@ -28,6 +28,7 @@ DBSettings::DBSettings():
 	blockCache(nullptr),
 	blobCacheSize(0), // disabled by default (RocksDB default)
 	blobCache(nullptr),
+	blobCacheSizeExplicit(false),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -165,24 +166,34 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	int64_t blockCacheSize = 0;
 	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);
 	const bool blockCacheSizeProvided = status == napi_ok;
-	if (blockCacheSizeProvided) {
-		if (blockCacheSize < 0) {
-			::napi_throw_range_error(env, nullptr, "Block cache size must be a positive integer or 0 to disable caching");
-			return nullptr;
-		}
+	if (blockCacheSizeProvided && blockCacheSize < 0) {
+		::napi_throw_range_error(env, nullptr, "Block cache size must be a positive integer or 0 to disable caching");
+		return nullptr;
+	}
 
-		settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
-
-		if (settings.blockCache) {
-			settings.blockCache->SetCapacity(blockCacheSize);
+	// "Provided" has to mean present AND not undefined/null: `{ blobCacheSize:
+	// undefined }` is how an optional config object spells "not set", and
+	// treating it as present rejected the whole call. Everything here is parsed
+	// and validated BEFORE either cache is resized, so a rejected call leaves the
+	// settings exactly as it found them rather than half-applied.
+	bool blobCacheSizeProvided = false;
+	{
+		bool hasBlobCacheSize = false;
+		NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "blobCacheSize", &hasBlobCacheSize));
+		if (hasBlobCacheSize) {
+			napi_value blobCacheSizeValue;
+			NAPI_STATUS_THROWS(
+				::napi_get_named_property(env, params, "blobCacheSize", &blobCacheSizeValue));
+			napi_valuetype blobCacheSizeType;
+			NAPI_STATUS_THROWS(::napi_typeof(env, blobCacheSizeValue, &blobCacheSizeType));
+			blobCacheSizeProvided =
+				blobCacheSizeType != napi_undefined && blobCacheSizeType != napi_null;
 		}
 	}
 
-	bool hasBlobCacheSize = false;
-	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "blobCacheSize", &hasBlobCacheSize));
 	size_t configuredBlobCacheSize = 0;
 	bool updateBlobCacheSize = false;
-	if (hasBlobCacheSize) {
+	if (blobCacheSizeProvided) {
 		// Distinguish absent from present-but-wrong-type: reading through
 		// getProperty's status alone would silently drop `blobCacheSize: '512MB'`
 		// and leave the cache disabled with no error.
@@ -205,14 +216,30 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 		configuredBlobCacheSize = static_cast<size_t>(requested);
 		updateBlobCacheSize = true;
-	} else if (blockCacheSizeProvided) {
+	} else if (blockCacheSizeProvided &&
+		!settings.blobCacheSizeExplicit.load(std::memory_order_relaxed)
+	) {
+		// Derive a blob cache only while the caller has never stated one. Once
+		// they have, an unrelated later `config({ blockCacheSize })` must not
+		// discard it — that call says nothing about blobs.
 		configuredBlobCacheSize = static_cast<size_t>(blockCacheSize) / 10;
 		updateBlobCacheSize = true;
+	}
+
+	if (blockCacheSizeProvided) {
+		settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
+
+		if (settings.blockCache) {
+			settings.blockCache->SetCapacity(blockCacheSize);
+		}
 	}
 
 	if (updateBlobCacheSize) {
 		std::lock_guard<std::mutex> lock(settings.blobCacheMutex);
 		settings.blobCacheSize.store(configuredBlobCacheSize, std::memory_order_relaxed);
+		if (blobCacheSizeProvided) {
+			settings.blobCacheSizeExplicit.store(true, std::memory_order_relaxed);
+		}
 
 		// Resizes databases that already have the cache attached. A database
 		// opened while the size was 0 has no blob_cache and is unaffected — see

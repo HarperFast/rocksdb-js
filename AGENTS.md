@@ -614,12 +614,20 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     carries more than compression; `blobs.allowDirChange` is the acknowledgement for a completed
     offline relocation. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
     sit in RocksDB's "not yet supported" serialization block, so there is nothing persisted to
-    compare against without inventing a rocksdb-js-owned marker file. Two RocksDB behaviours
-    routinely surprise people here: flush output is hardcoded to `path_id` 0 (`FlushJob`), and manual
-    `CompactRange` defaults to `target_path_id` 0, so only _automatic_ compaction distributes across
-    paths. `blobs.dir` needs a RocksDB carrying the downstream `blob_dir` patch
-    (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); everything behind that macro must
-    stay compilable without it. See [docs/tiered-storage.md](docs/tiered-storage.md).
+    compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition is
+    detectable from the files themselves: with no `db_paths`, RocksDB sanitizes it to `[{dbname,
+    ...}]`, so existing SST files sit at index 0 = the database directory, and supplying `paths`
+    redefines that index. `assertStoragePathsUsable` rejects this transition by asking whether the
+    database directory's SST files are reachable under `paths[0]`, rather than comparing directory
+    strings, so RocksDB does not report the MANIFEST as corrupt and send an operator to backup
+    restore. Two RocksDB behaviours routinely surprise people here: flush output is hardcoded to
+    `path_id` 0 (`FlushJob`), and manual `CompactRange` defaults to `target_path_id` 0, so only
+    _automatic_ compaction distributes across paths. `blobs.dir` needs a RocksDB carrying the
+    downstream `blob_dir` patch (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); every
+    use must stay compilable without it. `destroy()` has to receive the real layout (`db_paths` from
+    the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means "everything under the
+    database directory", which orphans exactly the files tiering moved away. See
+    [docs/tiered-storage.md](docs/tiered-storage.md).
 18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
     are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,
     reached from both the cold path and `DBRegistry::OpenDB`'s warm reuse. Both must pass options
