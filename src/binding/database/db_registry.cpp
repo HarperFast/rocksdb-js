@@ -8,6 +8,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/table.h"
+#include "rocksdb/utilities/options_util.h"
 
 namespace rocksdb_js {
 
@@ -154,6 +155,16 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 
+	// The layout a default `rocksdb::Options` describes is "everything under
+	// `path`", which stopped being true once SST files can live on `paths`
+	// volumes and blob files in `blobs.dir`. Without the real layout, `destroy()`
+	// removes the database directory and silently orphans every tiered SST and
+	// every blob file — exactly the bulk of the data, on exactly the volume it
+	// was moved to because it was large.
+	rocksdb::Options destroyOptions;
+	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
+	bool capturedLayout = false;
+
 	// Claim the descriptor under the lock but leave the entry in the map until
 	// the close completes (same discipline as CloseDB): the entry is how the
 	// env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
@@ -162,10 +173,31 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// descriptor — the close's own release pass would then touch freed tsfns.
 	// It also keeps a concurrent OpenDB waiting on the entry's condition
 	// instead of re-opening the path while its files are being destroyed.
+	//
+	// The layout is captured here too, and deliberately NOT gated on winning the
+	// claim: losing to a concurrent close would otherwise leave the destroy
+	// running against default options and orphaning the external files.
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path == path && entry.descriptor) {
+				if (entry.descriptor->db) {
+					destroyOptions.db_paths = entry.descriptor->db->GetDBOptions().db_paths;
+					std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
+					for (const auto& [cfName, column] : entry.descriptor->columns) {
+						rocksdb::ColumnFamilyOptions cfOptions;
+						if (column && column->column) {
+							rocksdb::Options current =
+								entry.descriptor->db->GetOptions(column->column.get());
+							cfOptions.cf_paths = current.cf_paths;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+							cfOptions.blob_dir = current.blob_dir;
+#endif
+						}
+						destroyColumnFamilies.emplace_back(cfName, cfOptions);
+					}
+					capturedLayout = true;
+				}
 				if (entry.descriptor->beginClose()) {
 					descriptor = entry.descriptor;
 					condition = entry.condition;
@@ -177,35 +209,33 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
-	// The layout a default `rocksdb::Options` describes is "everything under
-	// `path`", which stopped being true once SST files can live on `paths`
-	// volumes and blob files in `blobs.dir`. Neither is recoverable after the
-	// close — `db_paths` is not written to the OPTIONS file at all (RocksDB
-	// serializes it in its "not yet supported" block) — so capture the real
-	// layout from the live descriptor here and hand it to DestroyDB below.
-	// Without this, `destroy()` removes the database directory and silently
-	// orphans every tiered SST and every blob file: exactly the bulk of the data,
-	// on exactly the volume it was moved to because it was large.
-	rocksdb::Options destroyOptions;
-	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
-
-	if (descriptor) {
-		if (descriptor->db) {
-			destroyOptions.db_paths = descriptor->db->GetDBOptions().db_paths;
-			std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
-			for (const auto& [cfName, column] : descriptor->columns) {
+	// Nothing live to read the layout from. `blob_dir` is persisted per column
+	// family, so it can still be recovered; `db_paths` is not written to the
+	// OPTIONS file at all (RocksDB serializes it in its "not yet supported"
+	// block), so a `paths` database that is not open in this process cannot have
+	// its tiered SST files removed. `Database::Destroy` requires an open handle,
+	// so that is not reachable from the public API.
+	if (!capturedLayout) {
+		rocksdb::ConfigOptions configOptions;
+		configOptions.ignore_unknown_options = true;
+		configOptions.ignore_unsupported_options = true;
+		rocksdb::DBOptions loadedDbOptions;
+		std::vector<rocksdb::ColumnFamilyDescriptor> loadedCfDescriptors;
+		if (rocksdb::LoadLatestOptions(configOptions, path, &loadedDbOptions, &loadedCfDescriptors)
+				.ok()
+		) {
+			for (const auto& loaded : loadedCfDescriptors) {
 				rocksdb::ColumnFamilyOptions cfOptions;
-				if (column && column->column) {
-					rocksdb::Options current = descriptor->db->GetOptions(column->column.get());
-					cfOptions.cf_paths = current.cf_paths;
+				cfOptions.cf_paths = loaded.options.cf_paths;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-					cfOptions.blob_dir = current.blob_dir;
+				cfOptions.blob_dir = loaded.options.blob_dir;
 #endif
-				}
-				destroyColumnFamilies.emplace_back(cfName, cfOptions);
+				destroyColumnFamilies.emplace_back(loaded.name, cfOptions);
 			}
 		}
+	}
 
+	if (descriptor) {
 		// Close all closables (iterators, transactions, handles) attached to this descriptor
 		// This should release all DBHandle references
 		DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
@@ -529,6 +559,16 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					std::to_string(current.blob_garbage_collection_force_threshold) + " -> " +
 					std::to_string(*options.blobs.garbageCollectionForceThreshold)
 				);
+			}
+			if (options.blobs.prepopulateCache) {
+				const bool currentPrepopulate =
+					current.prepopulate_blob_cache != rocksdb::PrepopulateBlobCache::kDisable;
+				if (currentPrepopulate != *options.blobs.prepopulateCache) {
+					conflicts.push_back(
+						std::string("prepopulateCache ") + boolText(currentPrepopulate) + " -> " +
+						boolText(*options.blobs.prepopulateCache)
+					);
+				}
 			}
 			if (!conflicts.empty()) {
 				std::string message =

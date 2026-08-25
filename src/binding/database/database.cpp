@@ -1858,11 +1858,8 @@ static bool isAbsolutePath(const std::string& path) {
 #endif
 }
 
-/**
- * Leaves `result` disengaged when the property is absent, so a caller that omits
- * a blob setting inherits the column family's persisted value instead of
- * restamping it with a default.
- */
+// Absent leaves `result` disengaged: an omitted blob setting inherits the column
+// family's persisted value rather than restamping it with a default.
 static bool getRatioProperty(
 	napi_env env,
 	napi_value obj,
@@ -1916,10 +1913,7 @@ static bool getByteSizeProperty(
 	return true;
 }
 
-/**
- * Same validation as above, but leaves `result` disengaged when the property is
- * absent — see the note on `getRatioProperty`.
- */
+// Same validation as above; absent leaves `result` disengaged.
 static bool getByteSizeProperty(
 	napi_env env,
 	napi_value obj,

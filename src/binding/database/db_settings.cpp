@@ -191,8 +191,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	size_t configuredBlobCacheSize = 0;
-	bool updateBlobCacheSize = false;
+	size_t requestedBlobCacheSize = 0;
 	if (blobCacheSizeProvided) {
 		// Distinguish absent from present-but-wrong-type: reading through
 		// getProperty's status alone would silently drop `blobCacheSize: '512MB'`
@@ -214,16 +213,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			);
 			return nullptr;
 		}
-		configuredBlobCacheSize = static_cast<size_t>(requested);
-		updateBlobCacheSize = true;
-	} else if (blockCacheSizeProvided &&
-		!settings.blobCacheSizeExplicit.load(std::memory_order_relaxed)
-	) {
-		// Derive a blob cache only while the caller has never stated one. Once
-		// they have, an unrelated later `config({ blockCacheSize })` must not
-		// discard it — that call says nothing about blobs.
-		configuredBlobCacheSize = static_cast<size_t>(blockCacheSize) / 10;
-		updateBlobCacheSize = true;
+		requestedBlobCacheSize = static_cast<size_t>(requested);
 	}
 
 	if (blockCacheSizeProvided) {
@@ -234,18 +224,33 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	if (updateBlobCacheSize) {
+	if (blobCacheSizeProvided || blockCacheSizeProvided) {
+		// The latch is read and written under the same lock as the size it
+		// guards: `config()` runs on every env's JS thread, so reading it outside
+		// would let a derived update from one thread land after — and overwrite —
+		// an explicit budget committed by another.
 		std::lock_guard<std::mutex> lock(settings.blobCacheMutex);
-		settings.blobCacheSize.store(configuredBlobCacheSize, std::memory_order_relaxed);
+		bool update = blobCacheSizeProvided;
+		size_t configuredBlobCacheSize = requestedBlobCacheSize;
 		if (blobCacheSizeProvided) {
 			settings.blobCacheSizeExplicit.store(true, std::memory_order_relaxed);
+		} else if (!settings.blobCacheSizeExplicit.load(std::memory_order_relaxed)) {
+			// Derive only while the caller has never stated a budget: an unrelated
+			// later `config({ blockCacheSize })` says nothing about blobs and must
+			// not discard one.
+			configuredBlobCacheSize = static_cast<size_t>(blockCacheSize) / 10;
+			update = true;
 		}
 
-		// Resizes databases that already have the cache attached. A database
-		// opened while the size was 0 has no blob_cache and is unaffected — see
-		// the note on RocksDatabaseConfig.blobCacheSize.
-		if (settings.blobCache) {
-			settings.blobCache->SetCapacity(configuredBlobCacheSize);
+		if (update) {
+			settings.blobCacheSize.store(configuredBlobCacheSize, std::memory_order_relaxed);
+
+			// Resizes databases that already have the cache attached. A database
+			// opened while the size was 0 has no blob_cache and is unaffected — see
+			// the note on RocksDatabaseConfig.blobCacheSize.
+			if (settings.blobCache) {
+				settings.blobCache->SetCapacity(configuredBlobCacheSize);
+			}
 		}
 	}
 

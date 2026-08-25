@@ -91,6 +91,14 @@ describe('Blob Cache', () => {
 		expect(db.getDBIntProperty('rocksdb.blob-cache-capacity')).toBe(2 * 1024 * 1024);
 	});
 
+	it('should not attach the blob cache to a noBlockCache database', () => {
+		RocksDatabase.config({ blockCacheSize: 16 * 1024 * 1024, blobCacheSize: 4 * 1024 * 1024 });
+		// noBlockCache means "this database does not use the process-wide caches",
+		// so a scratch database cannot evict the serving database's blob values.
+		const db = open({ noBlockCache: true });
+		expect(db.getDBIntProperty('rocksdb.blob-cache-capacity')).toBeUndefined();
+	});
+
 	it('should reject a negative blob cache size', () => {
 		expect(() => RocksDatabase.config({ blobCacheSize: -1 })).toThrow(/Blob cache size/);
 	});

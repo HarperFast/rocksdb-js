@@ -50,6 +50,23 @@ struct PersistedCFOptions {
 	std::string blobDir;
 };
 
+// Puts the blob settings of a column family being created back to the documented
+// creation defaults. The base options carry the opening handle's request, which
+// belongs to the family it named — the `default` family a fresh database creates
+// on the way to a named one must not persist it (invariant 14).
+static void applyBlobCreationDefaults(rocksdb::ColumnFamilyOptions& cfOptions) {
+	cfOptions.enable_blob_files = kDefaultBlobEnabled;
+	cfOptions.min_blob_size = kDefaultBlobMinSize;
+	cfOptions.enable_blob_garbage_collection = kDefaultBlobGarbageCollection;
+	cfOptions.blob_garbage_collection_age_cutoff = kDefaultBlobGarbageCollectionAgeCutoff;
+	cfOptions.blob_garbage_collection_force_threshold =
+		kDefaultBlobGarbageCollectionForceThreshold;
+	cfOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kDisable;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	cfOptions.blob_dir.clear();
+#endif
+}
+
 // Restores a column family's persisted blob settings over the base options. Used
 // for every column family on a cold open, before the caller's request is applied
 // to the target one: blob settings are per-CF and RocksDB does not restore them,
@@ -184,7 +201,14 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	// RocksDB does not put blob values in the block cache, so without this every
 	// blob read is real I/O — which dominates once blob files are on slower
 	// storage than the SSTs.
-	cfOptions.blob_cache = DBSettings::getInstance().getBlobCache();
+	// `noBlockCache` means "this database does not use the process-wide caches",
+	// so it opts out of the blob cache too — otherwise a scratch/bulk-load
+	// database would evict the serving database's cached blob values.
+	if (!options.noBlockCache) {
+		if (auto blobCache = DBSettings::getInstance().getBlobCache()) {
+			cfOptions.blob_cache = blobCache;
+		}
+	}
 	// The blob defaults belong to a column family being CREATED. A cold open of
 	// an EXISTING family overwrites these from its OPTIONS file
 	// (restorePersistedBlobOptions) and then re-applies only what the caller
@@ -1361,9 +1385,11 @@ static void assertStoragePathsUsable(
 		if (child.size() < 4 || child.compare(child.size() - 4, 4, ".sst") != 0) {
 			continue;
 		}
+		// Every one of them, not just the first: a colliding file number under a
+		// shared paths[0], or a half-finished manual copy, would otherwise let one
+		// reachable file vouch for a set that is not.
 		if (env->FileExists(paths[0].path + "/" + child).ok()) {
-			// paths[0] is the database directory (however it is spelled).
-			return;
+			continue;
 		}
 		throw rocksdb_js::DBException(
 			"Cannot open \"" + path + "\" with paths[0] \"" + paths[0].path +
@@ -1375,6 +1401,57 @@ static void assertStoragePathsUsable(
 		);
 	}
 }
+
+#ifndef ROCKSDB_HAS_CF_BLOB_DIR
+/**
+ * Refuses to open a database whose blob files this build cannot find.
+ *
+ * `blob_dir` does not exist as a field here, and `loadPersistedCFOptions` is
+ * deliberately permissive about unknown options, so a database written by a
+ * patched build with its blob files on another volume would otherwise open
+ * cleanly and look for them beside the SST files — every value at or above
+ * `min_blob_size` failing with "No such file or directory" on read, with nothing
+ * at open to say why. The parsed options cannot show it, so the OPTIONS file is
+ * scanned as text.
+ */
+static void assertNoPersistedBlobDir(rocksdb::Env* env, const std::string& path) {
+	std::string optionsFileName;
+	if (!rocksdb::GetLatestOptionsFileName(path, env, &optionsFileName).ok()) {
+		return;
+	}
+
+	std::string contents;
+	if (!rocksdb::ReadFileToString(env, path + "/" + optionsFileName, &contents).ok()) {
+		return;
+	}
+
+	static const std::string key = "blob_dir=";
+	for (size_t pos = contents.find(key); pos != std::string::npos;
+		pos = contents.find(key, pos + key.size())
+	) {
+		// Must be a whole key, not the tail of a longer one.
+		if (pos > 0 && contents[pos - 1] != '\n' && contents[pos - 1] != ' ' &&
+			contents[pos - 1] != '\t'
+		) {
+			continue;
+		}
+		const size_t valueStart = pos + key.size();
+		if (valueStart >= contents.size() || contents[valueStart] == '\n' ||
+			contents[valueStart] == '\r'
+		) {
+			continue; // unset
+		}
+		const size_t valueEnd = contents.find_first_of("\r\n", valueStart);
+		throw rocksdb_js::DBException(
+			"Cannot open \"" + path + "\": its blob files were written to \"" +
+			contents.substr(valueStart, valueEnd - valueStart) +
+			"\", but this build of rocksdb-js is linked against a RocksDB without the blob_dir "
+			"patch and would look for them beside the SST files. Use a build with the patch "
+			"(ROCKSDB_HAS_CF_BLOB_DIR)."
+		);
+	}
+}
+#endif
 
 /**
  * Creates a new DBDescriptor.
@@ -1453,6 +1530,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
 		assertStoragePathsUsable(dbOptions.env, path, options.paths);
+#ifndef ROCKSDB_HAS_CF_BLOB_DIR
+		assertNoPersistedBlobDir(dbOptions.env, path);
+#endif
 
 		// Database exists. Compression is per-CF: opening one column family must
 		// not change another's algorithm, and RocksDB requires opening every CF
@@ -1531,8 +1611,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// target (a freshly-created CF gets the request — default or explicit).
 		DEBUG_LOG("DBDescriptor::open Database doesn't exist or no column families found, using default\n");
 		rocksdb::ColumnFamilyOptions cfo = cfOptions;
-		if (options.compression && name == rocksdb::kDefaultColumnFamilyName) {
-			applyCompression(cfo, *options.compression, options.compressionLevel);
+		if (name == rocksdb::kDefaultColumnFamilyName) {
+			if (options.compression) {
+				applyCompression(cfo, *options.compression, options.compressionLevel);
+			}
+		} else {
+			// `default` is created on the way to the named family the caller asked
+			// for, so it must not inherit that family's blob settings — a database
+			// created by opening table t1 with a blobs.dir would otherwise persist
+			// that directory on `default` too, and a later plain
+			// `RocksDatabase.open(path)` could not open it at all.
+			applyBlobCreationDefaults(cfo);
 		}
 		cfDescriptors = { rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfo) };
 	}
