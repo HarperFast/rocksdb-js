@@ -869,7 +869,10 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		const movedDir = tempDir();
 
 		const db = openDb(dbPath, { blobs: { dir: blobDir } });
+		// Two flushes so there is more than one blob file to leave half-copied.
 		db.putSync('key', largeValue(11));
+		db.flushSync();
+		db.putSync('key2', largeValue(12));
 		db.flushSync();
 		db.close();
 
@@ -880,13 +883,24 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		// creates it.
 		expect(() =>
 			RocksDatabase.open(dbPath, { blobs: { dir: movedDir, allowDirChange: true } })
-		).toThrow(/still has its blob files in/);
+		).toThrow(/still has blob files in/);
 
-		for (const name of filesWithExt(blobDir, '.blob')) {
+		const names = filesWithExt(blobDir, '.blob');
+		expect(names.length).toBeGreaterThan(1);
+		// A half-finished copy is refused too. The destination holding some files
+		// is not evidence the move completed, and persisting it strands every value
+		// still behind — which is the state an interrupted `rsync` leaves.
+		copyFileSync(join(blobDir, names[0]), join(movedDir, names[0]));
+		expect(() =>
+			RocksDatabase.open(dbPath, { blobs: { dir: movedDir, allowDirChange: true } })
+		).toThrow(/still has blob files in/);
+
+		for (const name of names) {
 			renameSync(join(blobDir, name), join(movedDir, name));
 		}
 		const moved = openDb(dbPath, { blobs: { dir: movedDir, allowDirChange: true } });
 		expect(moved.getSync('key')).toBe(largeValue(11));
+		expect(moved.getSync('key2')).toBe(largeValue(12));
 		moved.close();
 	});
 
