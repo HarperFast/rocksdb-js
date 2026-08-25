@@ -141,11 +141,12 @@ acknowledge the new (empty) directory once:
 const db = RocksDatabase.open('/nvme/restored', { blobs: { allowDirChange: true } });
 ```
 
-`allowDirChange` is database-wide, so that one open re-points **every** column family, not just the
-one it names. That is deliberate and it is what makes restoring beside a live source safe: scoped to
-the named family, the others would keep the `blob_dir` in the restored `OPTIONS` file — the _source_
-database's live directory — and the two databases would then mint colliding `NNNNNN.blob` numbers
-there while each one's obsolete-file scan deleted the other's live files.
+Note the omitted `dir`. That is what says "the whole database is flat now", and it re-points
+**every** column family, not just the one the open names. It is what makes restoring beside a live
+source safe: scoped to the named family, the others would keep the `blob_dir` in the restored
+`OPTIONS` file — the _source_ database's live directory — and the two databases would then mint
+colliding `NNNNNN.blob` numbers there while each one's obsolete-file scan deleted the other's live
+files.
 
 That open records the flat layout, so later opens of the restored database need nothing. The
 alternative is to move the `.blob` files back to the original directory before opening with the
@@ -225,11 +226,18 @@ _without_ relocating them is exactly the failure the check exists to prevent. It
 the open that performs the switch: that open records the new directory, so later opens can drop
 `allowDirChange` — but they still have to supply the same `dir`.
 
-One open relocates the whole database. `allowDirChange` applies `dir` to every column family, not
-just the one it names, because the `mv` above moved every family's blob files. (Per-family
-relocation is not offered: a second open in the same process is a _warm_ one, which cannot change a
-live family's directory, so it would take one process restart per table with the database broken in
-between.)
+One open relocates one directory's worth of files. The `mv` above moved every blob file that was in
+`/old/blobs`, so `allowDirChange` re-points every column family whose blobs were in `/old/blobs` —
+not just the one the open names, and not families whose blobs were somewhere else (`default`, in the
+common Harper layout, keeps its blobs beside the SSTs and is left alone). Reaching the other
+families matters because it cannot be done afterwards: a second open in the same process is a _warm_
+one, which cannot change a live family's directory, so it would take one process restart per table
+with the database broken in between.
+
+A database using several distinct blob directories therefore needs one open per directory — `dir`
+names a single destination, so a single open cannot describe more than one move. Omitting `dir`
+entirely is the exception: it says the whole database was flattened into its own directory, and
+re-points every family.
 
 A directory that has gone missing entirely — an unmounted volume, a restore that never brought it —
 fails the open naming the family and the directory, rather than being discovered when the first

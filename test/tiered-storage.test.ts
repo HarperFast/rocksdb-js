@@ -814,6 +814,46 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		second.close();
 	});
 
+	it('should leave a column family alone whose blob files did not move', () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+		const movedDir = tempDir();
+
+		// The normal Harper shape: `default` keeps its blobs alongside the SSTs and
+		// a named table has its own volume. Only table1's files are relocated.
+		let plain = openDb(dbPath);
+		let table = openDb(dbPath, { name: 'table1', blobs: { dir: blobDir } });
+		plain.putSync('flat', largeValue(1));
+		table.putSync('tiered', largeValue(2));
+		plain.flushSync();
+		table.flushSync();
+		table.close();
+		plain.close();
+
+		expect(filesWithExt(dbPath, '.blob').length).toBeGreaterThan(0);
+		for (const name of filesWithExt(blobDir, '.blob')) {
+			renameSync(join(blobDir, name), join(movedDir, name));
+		}
+
+		// The acknowledgement reaches other families, but only as far as the move
+		// went: `default`'s blobs never left the database directory, so re-pointing
+		// it at movedDir would strand every one of its large values.
+		table = openDb(dbPath, {
+			name: 'table1',
+			blobs: { dir: movedDir, allowDirChange: true },
+		});
+		plain = openDb(dbPath);
+		expect(table.getSync('tiered')).toBe(largeValue(2));
+		expect(plain.getSync('flat')).toBe(largeValue(1));
+
+		// And `default` keeps writing where its files already are.
+		plain.putSync('more', largeValue(3));
+		plain.flushSync();
+		expect(plain.getSync('more')).toBe(largeValue(3));
+		plain.close();
+		table.close();
+	});
+
 	it('should read a restored named column family from its own flattened copy', async () => {
 		const dbPath = tempPath();
 		const blobDir = tempDir();

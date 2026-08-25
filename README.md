@@ -83,9 +83,10 @@ Creates a new database instance.
       stranding them — see `allowDirChange`).
     - `allowDirChange: boolean` Acknowledges that the existing blob files have already been moved
       to `dir`, permitting an open that would otherwise be rejected. Nothing is moved for you.
-      Database-wide, unlike the other blob settings: `dir` is applied to every column family, since
-      a relocation (or a flat backup restore) moves the whole database's blob files at once.
-      Defaults to `false`.
+      Reaches past the column family the open names, unlike the other blob settings: every family
+      that shared the target's old directory is re-pointed with it, since blob files in one
+      directory move together. Omitting `dir` means the whole database was flattened (what a backup
+      restore produces) and re-points every family. Defaults to `false`.
     - `garbageCollection: boolean` Whether compaction relocates live values out of the oldest blob
       files so those files can be deleted. Defaults to `true`.
     - `garbageCollectionAgeCutoff: number` The fraction (`0.0`–`1.0`) of the oldest blob files
