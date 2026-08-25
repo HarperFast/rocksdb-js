@@ -1,3 +1,4 @@
+#include <cassert>
 #include <chrono>
 #include <sstream>
 #include <thread>
@@ -98,6 +99,7 @@ TransactionHandle::TransactionHandle(
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+	this->createdAt = std::chrono::steady_clock::now();
 }
 
 void TransactionHandle::resetTransaction(){
@@ -243,6 +245,57 @@ void TransactionHandle::releaseIntent() {
 
 	lockedVTSlots.clear();
 	heldTrackers.clear();
+}
+
+/**
+ * The JS wrapper was garbage collected, so nothing can commit, abort, or read through this handle
+ * again — request its release. A commit in flight is the exception: TransactionCommitState holds
+ * its own shared_ptr and closing here would cancel it mid-flight, so completeCommitWork closes it
+ * instead when it settles. Other published dependents retry the close when they release.
+ */
+void TransactionHandle::onWrapperCollected() {
+	this->wrapperCollected.store(true);
+	this->closeOrphanIfUnused();
+}
+
+void TransactionHandle::registerIterator() {
+	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TransactionHandle::unregisterIterator() {
+	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
+	assert(previous > 0 && "Transaction iterator count underflow");
+	if (previous == 1) {
+		this->closeOrphanIfUnused();
+	}
+}
+
+void TransactionHandle::closeOrphanIfUnused() {
+	if (!this->wrapperCollected.load() || this->closed.load()) {
+		return;
+	}
+
+	if (this->state == TransactionState::Committing) {
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%u)\n", this, this->id);
+		return;
+	}
+
+	this->cancelAllAsyncWork();
+	const int32_t activeAsyncWork = this->activeAsyncWorkCount.load();
+	const uint32_t activeIterators = this->activeIteratorCount.load(std::memory_order_relaxed);
+	if (activeAsyncWork > 0 || activeIterators > 0) {
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Deferring close (txnId=%u, async=%d, iterators=%u)\n",
+			this, this->id, activeAsyncWork, activeIterators);
+		return;
+	}
+
+	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%u, state=%d)\n",
+		this, this->id, static_cast<int>(this->state));
+	// transactionRemove() can drop the registry's last reference. Keep this
+	// object alive until close() returns even when the final dependent releases
+	// on a worker thread.
+	auto keepAlive = this->shared_from_this();
+	this->close();
 }
 
 /**
@@ -456,7 +509,12 @@ napi_value TransactionHandle::get(
 	));
 
 	readOptions.read_tier = rocksdb::kReadAllTier;
-	auto state = new AsyncGetState<TransactionHandle*>(env, this, readOptions, std::move(key));
+	auto state = new AsyncGetState<std::shared_ptr<TransactionHandle>>(
+		env,
+		this->shared_from_this(),
+		readOptions,
+		std::move(key)
+	);
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
 	state->completed.store(true);
@@ -478,7 +536,11 @@ napi_value TransactionHandle::get(
 		nullptr,   // async_resource
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
-			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
+			const int getDelayMs = testDelayMs("ROCKSDB_JS_TXN_GET_DELAY_MS");
+			if (getDelayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
+			}
 			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
 			} else {
@@ -501,9 +563,10 @@ napi_value TransactionHandle::get(
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
+			state->handle->closeOrphanIfUnused();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<AsyncGetState<TransactionHandle*>*>(data);
+			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
@@ -540,7 +603,7 @@ void TransactionHandle::getCount(
 	}
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
-		std::make_unique<DBIteratorHandle>(this, itOptions, dbHandleOverride);
+		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
 	for (count = 0; itHandle->iterator->Valid(); ++count) {
 		itHandle->iterator->Next();
 	}
