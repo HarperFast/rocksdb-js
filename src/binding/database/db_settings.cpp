@@ -171,11 +171,10 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// "Provided" has to mean present AND not undefined/null: `{ blobCacheSize:
-	// undefined }` is how an optional config object spells "not set", and
-	// treating it as present rejected the whole call. Everything here is parsed
-	// and validated BEFORE either cache is resized, so a rejected call leaves the
-	// settings exactly as it found them rather than half-applied.
+	// "Provided" means present AND not undefined/null: `{ blobCacheSize:
+	// undefined }` is how an optional config object spells "not set". Everything
+	// is parsed and validated BEFORE either cache is resized, so a rejected call
+	// leaves the settings as it found them rather than half-applied.
 	bool blobCacheSizeProvided = false;
 	{
 		bool hasBlobCacheSize = false;

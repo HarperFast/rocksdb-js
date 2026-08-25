@@ -2,6 +2,7 @@
 #include "core/options_file.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
+#include "database/db_registry.h"
 #include "database/db_settings.h"
 #include "napi/helpers.h"
 #include "transaction/transaction_handle.h"
@@ -245,7 +246,6 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 }
 
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-// An unreadable or missing directory holds nothing.
 static bool holdsBlobFiles(rocksdb::Env* env, const std::string& dir) {
 	std::vector<std::string> children;
 	if (!env->GetChildren(dir, &children).ok()) {
@@ -1634,6 +1634,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		if (auto targetIt = persisted.find(name); targetIt != persisted.end()) {
 			targetPersistedBlobDir = targetIt->second.blobDir;
 		}
+		// An empty `blob_dir` is not "no directory", it is the database directory.
+		auto resolveBlobDir = [&path](const std::string& dir) -> const std::string& {
+			return dir.empty() ? path : dir;
+		};
 #endif
 		for (const auto& cfName : columnFamilyNames) {
 			DEBUG_LOG("DBDescriptor::open Opening column family \"%s\"\n", cfName.c_str());
@@ -1673,9 +1677,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// are.
 			const bool sharesTargetBlobDir = targetPersistedBlobDir && it != persisted.end() &&
 				it->second.blobDir == *targetPersistedBlobDir;
-			// Which families this acknowledgement re-points: flattening covers the
-			// whole database, a move covers the target and the families that shared
-			// its directory.
 			const bool acknowledged = options.blobs.allowDirChange &&
 				(options.blobs.dir.empty() || isTarget || sharesTargetBlobDir);
 			// The acknowledgement is a claim about files on disk, so it is checked
@@ -1686,23 +1687,32 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// nothing is actually changing so a flag left in a config file does not
 			// start refusing every open.
 			//
+			// Both sides resolve an empty directory to the database directory,
+			// which is what an empty `blob_dir` means. Comparing the raw strings
+			// exempted every family that never had an external directory — so the
+			// flat-to-external move, the migration the docs lead with and the only
+			// one an untiered database can make, was the one form of the
+			// acknowledgement taken on trust.
+			//
 			// Deliberately strict about a HALF-finished move (an interrupted copy,
 			// or the open racing the `mv`): the destination holding some files is
 			// not evidence, and persisting it strands every value still behind. The
 			// destination being empty is not evidence either — `ensureBlobDirExists`
 			// creates it.
-			if (acknowledged && it != persisted.end() && !it->second.blobDir.empty() &&
-				it->second.blobDir != options.blobs.dir &&
-				holdsBlobFiles(dbOptions.env, it->second.blobDir)
-			) {
-				throw rocksdb_js::DBException(
-					"Cannot open \"" + path + "\" with blobs.allowDirChange: column family \"" +
-					cfName + "\" still has blob files in \"" + it->second.blobDir +
-					"\", the directory it recorded them in. Nothing is moved for you — finish "
-					"moving them out of that directory before reopening. If this is a restored "
-					"copy, that directory belongs to the database it was restored from and sharing "
-					"it would corrupt both: restore where it is not reachable."
-				);
+			if (acknowledged && it != persisted.end()) {
+				const std::string& from = resolveBlobDir(it->second.blobDir);
+				if (from != resolveBlobDir(options.blobs.dir) &&
+					holdsBlobFiles(dbOptions.env, from)
+				) {
+					throw rocksdb_js::DBException(
+						"Cannot open \"" + path + "\" with blobs.allowDirChange: column family \"" +
+						cfName + "\" still has blob files in \"" + from +
+						"\", the directory it recorded them in. Nothing is moved for you — finish "
+						"moving them out of that directory before reopening. If this is a restored "
+						"copy, that directory belongs to the database it was restored from and "
+						"sharing it would corrupt both: restore where it is not reachable."
+					);
+				}
 			}
 			if (!isTarget && options.blobs.allowDirChange) {
 				if (options.blobs.dir.empty()) {
@@ -1849,6 +1859,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 	descriptor->layoutDbPaths = dbOptions.db_paths;
 	descriptor->layoutBlobDirs = std::move(layoutBlobDirs);
+	DBRegistry::RecordLayout(path, descriptor->captureLayout());
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -2691,6 +2702,26 @@ rocksdb::Status DBDescriptor::compactRange(
 		start,
 		end
 	);
+}
+
+/**
+ * Records where a column family created after the open keeps its blob files,
+ * and mirrors the whole layout into the registry so it survives this
+ * descriptor. Defined out of line because it reaches DBRegistry.
+ *
+ * `layoutMutex` is released before that call: `DBRegistry::DestroyDB` takes it
+ * while holding `databasesMutex`, so recording must not reach back for a
+ * registry lock from under it. `knownLayoutsMutex` is a leaf for the same
+ * reason.
+ */
+void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::string& blobDir) {
+	DBFileLayout layout;
+	{
+		std::lock_guard<std::mutex> lock(this->layoutMutex);
+		this->layoutBlobDirs[name] = blobDir;
+		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
+	}
+	DBRegistry::RecordLayout(this->path, std::move(layout));
 }
 
 } // namespace rocksdb_js

@@ -443,19 +443,7 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 
 	if (*dbHandle) {
 		try {
-			// Hand the registry this handle's view of where the files are. It
-			// prefers a live descriptor, but destroy() accepts a CLOSED handle and
-			// the last handle to close takes the descriptor and its registry entry
-			// with it — leaving this snapshot as the only record of `db_paths`.
-			DBFileLayout layout;
-			const DBFileLayout* knownLayout = nullptr;
-			if ((*dbHandle)->descriptor) {
-				layout = (*dbHandle)->descriptor->captureLayout();
-				knownLayout = &layout;
-			} else if ((*dbHandle)->layout) {
-				knownLayout = (*dbHandle)->layout.get();
-			}
-			DBRegistry::DestroyDB((*dbHandle)->path, knownLayout);
+			DBRegistry::DestroyDB((*dbHandle)->path);
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
 			::napi_throw_error(env, nullptr, e.what());

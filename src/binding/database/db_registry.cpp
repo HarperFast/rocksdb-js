@@ -1,3 +1,4 @@
+#include <limits>
 #include <chrono>
 #include <vector>
 #include "database/db_registry.h"
@@ -143,10 +144,8 @@ void DBRegistry::DebugLogDescriptorRefs() {
  * Destroy a RocksDB database.
  *
  * @param path - The path to the database to destroy.
- * @param knownLayout - Where the caller last saw this database's files, used
- *   when no descriptor for the path is left in the registry to read it from.
  */
-void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLayout) {
+void DBRegistry::DestroyDB(const std::string& path) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
 		return;
@@ -213,21 +212,21 @@ void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLay
 	}
 
 	// No descriptor left in the registry — which `destroy()` on a closed handle
-	// reaches whenever that handle was the last one open. The caller's own
-	// snapshot is the only remaining record of `db_paths`: it is not written to
-	// the OPTIONS file at all (RocksDB serializes it in its "not yet supported"
-	// block), so without this the tiered SST files outlive the destroy while the
-	// database directory is removed, and the call reports success.
-	if (!capturedLayout && knownLayout) {
-		applyLayout(*knownLayout);
+	// reaches whenever that handle was the last one open. `knownLayouts` kept
+	// the last open's record of where the files are; see its declaration.
+	if (!capturedLayout) {
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		if (auto it = instance->knownLayouts.find(path); it != instance->knownLayouts.end()) {
+			applyLayout(it->second);
+		}
 	}
 
-	// Nothing live and nothing remembered — a path handed in from outside any
-	// handle. `blob_dir` is per-column-family and persisted, so it can still be
+	// Nothing live and nothing remembered — a path this process never opened.
+	// `blob_dir` is per-column-family and persisted, so it can still be
 	// recovered from the OPTIONS file; `db_paths` cannot be recovered from
-	// anywhere, so a `paths` database reached this way keeps its tiered SST
-	// files. `Database::Destroy` always passes a layout, so that is not
-	// reachable from the public API.
+	// anywhere, so a `paths` database reached this way would keep its tiered SST
+	// files. `Database::Destroy` needs a handle, and opening one records a
+	// layout, so that is not reachable from the public API.
 	if (!capturedLayout) {
 		rocksdb::ConfigOptions configOptions;
 		configOptions.ignore_unknown_options = true;
@@ -308,7 +307,24 @@ void DBRegistry::DestroyDB(const std::string& path, const DBFileLayout* knownLay
 	// remove the database directory including transaction logs
 	std::filesystem::remove_all(path);
 
+	{
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		instance->knownLayouts.erase(path);
+	}
+
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
+}
+
+/**
+ * Records where a database's files live, so `destroy()` can still find them
+ * after the descriptor is gone. See `DBRegistry::knownLayouts`.
+ */
+void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	instance->knownLayouts[path] = std::move(layout);
 }
 
 /**
@@ -423,11 +439,27 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		// asking for different volumes cannot take effect on the reused handle.
 		// Reject rather than let the caller believe SST files are being tiered.
 		if (!options.paths.empty()) {
-			const auto& currentPaths = entry.descriptor->db->GetDBOptions().db_paths;
+			const rocksdb::DBOptions currentOptions = entry.descriptor->db->GetDBOptions();
+			const auto& currentPaths = currentOptions.db_paths;
+			// An untiered database does not report an EMPTY list: SanitizeOptions
+			// rewrites it to `[{dbname, UINT64_MAX}]`. So "already open untiered"
+			// arrives here looking like an ordinary mismatch, and it is the case
+			// worth naming — it is what Harper does when a plain startup open
+			// precedes the table open that carries the migration.
+			const bool currentIsUntiered = currentPaths.size() == 1 &&
+				currentPaths[0].path == path &&
+				currentPaths[0].target_size == std::numeric_limits<uint64_t>::max();
 			bool differs = currentPaths.size() != options.paths.size();
 			for (size_t i = 0; !differs && i < currentPaths.size(); i++) {
 				differs = currentPaths[i].path != options.paths[i].path ||
 					currentPaths[i].target_size != options.paths[i].targetSize;
+			}
+			if (differs && currentIsUntiered) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open in this process without storage "
+					"paths, and db_paths is fixed for the life of an open database; cannot add "
+					"paths to it now. Close every handle to it first — the change needs a cold open."
+				);
 			}
 			if (differs) {
 				throw rocksdb_js::DBException(

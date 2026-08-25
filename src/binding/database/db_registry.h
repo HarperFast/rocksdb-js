@@ -80,6 +80,32 @@ private:
 	std::mutex databasesMutex;
 
 	/**
+	 * The last known file layout of every database this process has opened,
+	 * kept after its descriptor is purged.
+	 *
+	 * `destroy()` accepts a CLOSED handle, and closing the last handle to a
+	 * path takes the descriptor — and the registry entry the layout would be
+	 * read from — with it. `blob_dir` could be recovered from the OPTIONS file;
+	 * `db_paths` is written nowhere (RocksDB serializes it in its "not yet
+	 * supported" block), so without this the destroy runs against a default
+	 * `rocksdb::Options`, whose layout is "everything under the database
+	 * directory": the directory goes, every tiered SST file stays, and the call
+	 * reports success.
+	 *
+	 * Keyed by path and not by handle, so a handle closed before a later open
+	 * appended a storage path cannot destroy from its own older copy. Entries
+	 * are erased when the path is destroyed; a process that opens and closes
+	 * many distinct databases retains one small record per path, which is the
+	 * price of `destroy()` after `close()` working at all.
+	 *
+	 * Its own mutex, deliberately a leaf: `DestroyDB` reaches a descriptor's
+	 * `layoutMutex` while holding `databasesMutex`, so anything recording a
+	 * layout from under `layoutMutex` must not reach back for `databasesMutex`.
+	 */
+	std::unordered_map<std::string, DBFileLayout> knownLayouts;
+	std::mutex knownLayoutsMutex;
+
+	/**
 	 * The singleton instance of the registry.
 	 */
 	static std::unique_ptr<DBRegistry> instance;
@@ -89,7 +115,8 @@ public:
 #ifdef DEBUG
 	static void DebugLogDescriptorRefs();
 #endif
-	static void DestroyDB(const std::string& path, const DBFileLayout* knownLayout = nullptr);
+	static void DestroyDB(const std::string& path);
+	static void RecordLayout(const std::string& path, DBFileLayout layout);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();

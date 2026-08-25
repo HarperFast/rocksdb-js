@@ -48,7 +48,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 /**
  * Where a database keeps its files: the `db_paths` it was opened with and each
  * column family's `blob_dir`. A copy rather than a reference so it can outlive
- * the descriptor it was taken from — see `DBHandle::layout`.
+ * the descriptor it was taken from — see `DBRegistry::knownLayouts`.
  */
 struct DBFileLayout {
 	std::vector<rocksdb::DbPath> dbPaths;
@@ -261,20 +261,16 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * with and each column family's `blob_dir`.
 	 *
 	 * `destroy()` needs this to delete the files a default `rocksdb::Options`
-	 * would miss, and it cannot get it from either of the obvious places:
-	 * `db_paths` is never written to the OPTIONS file (RocksDB serializes it in
-	 * its "not yet supported" block), and reading it back off the live `DB` races
-	 * a concurrent close that is resetting `db` and clearing `columns`. So it is
-	 * recorded once here, guarded by its own mutex, and never cleared by close.
+	 * would miss, and it cannot read it back off the live `DB`: that races a
+	 * concurrent close resetting `db` and clearing `columns`. Recorded here under
+	 * its own mutex, never cleared by close, and mirrored into
+	 * `DBRegistry::knownLayouts` so it outlives the descriptor.
 	 */
 	std::vector<rocksdb::DbPath> layoutDbPaths;
 	std::unordered_map<std::string, std::string> layoutBlobDirs;
 	std::mutex layoutMutex;
 
-	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir) {
-		std::lock_guard<std::mutex> lock(this->layoutMutex);
-		this->layoutBlobDirs[name] = blobDir;
-	}
+	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir);
 
 	DBFileLayout captureLayout() {
 		std::lock_guard<std::mutex> lock(this->layoutMutex);

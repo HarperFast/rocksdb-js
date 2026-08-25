@@ -45,21 +45,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::string path;
 
 	/**
-	 * Where this database's files live, copied off the descriptor as this handle
-	 * closes.
-	 *
-	 * `destroy()` accepts a closed handle (`test/destroy.test.ts`), and by then
-	 * the descriptor and its registry entry can both be gone — the last handle to
-	 * close takes them with it. `DBRegistry::DestroyDB` would then run against a
-	 * default `rocksdb::Options`, whose layout is "everything under the database
-	 * directory": the database directory is removed and every tiered SST file
-	 * survives on its own volume, with `destroy()` reporting success. `blob_dir`
-	 * is recoverable from the OPTIONS file, `db_paths` is not persisted at all,
-	 * so the layout has to outlive the descriptor here.
-	 */
-	std::unique_ptr<DBFileLayout> layout;
-
-	/**
 	 * Whether to disable WAL.
 	 */
 	bool disableWAL = false;

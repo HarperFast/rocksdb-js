@@ -261,7 +261,9 @@ directory, and re-points every family.
 
 Either form's claim is checked rather than trusted, because it is a claim about files on disk. One
 rule covers both: a family whose recorded directory still holds `.blob` files has not moved, and the
-open is refused naming that family. So finish the move — a half-copied directory is refused, and so
+open is refused naming that family. That includes a family whose blobs are still beside its SST
+files — moving a flat database's blobs out to a volume for the first time is the migration most
+people make, and "the database directory" is a recorded directory like any other. So finish the move — a half-copied directory is refused, and so
 is running the open before the `mv`. For a restored copy the same rule says the source's directory
 is still in use and must not be shared. Neither the destination existing nor its holding some files
 is evidence: the open creates it, and a partial copy leaves both populated.

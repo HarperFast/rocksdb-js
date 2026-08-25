@@ -633,7 +633,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     caught before open because it is detectable from the files themselves. Removing or reordering
     an entry cannot be detected up front; `explainOpenFailure` conditionally appends guidance to a
     `Corruption` naming an `.sst` file because genuine corruption reports the same status. With no
-    detectable from the files themselves: with no `db_paths`, RocksDB sanitizes it to `[{dbname,
+    `db_paths`, RocksDB sanitizes it to `[{dbname,
     ...}]`, so existing SST files sit at index 0 = the database directory, and supplying `paths`
     redefines that index. `assertStoragePathsUsable` rejects it by asking whether the database
     directory's SST files are reachable under `paths[0]`, rather than comparing directory strings,
