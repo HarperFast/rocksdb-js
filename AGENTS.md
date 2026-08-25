@@ -33,6 +33,12 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm lint` - Code linting with oxlint
 - `pnpm type-check` - TypeScript type checking only
 
+**Run `pnpm fmt` before every commit** (or `pnpm check` to also type-check and lint) — CI runs
+`pnpm fmt:check` and fails the build on unformatted code. Note the scope: oxfmt formats **TS/JS/JSON
+only**. It does **not** touch C++ or Markdown, so changes to `src/binding/**` and to docs like this
+file (`AGENTS.md`) are not auto-formatted and must be checked by hand — a mis-numbered invariant or a
+stray C++ indent will pass `fmt:check` untouched.
+
 ### Development Workflow
 
 - `pnpm clean` - Clean native build artifacts
@@ -582,7 +588,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
 
-15. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
     `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
     the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
