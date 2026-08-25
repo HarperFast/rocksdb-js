@@ -784,7 +784,9 @@ the commit forever: if the write intent has not been released after `ROCKSDB_JS_
 (default `5000`), the commit resolves anyway and consumes a retry attempt exactly as a real release
 would. A conflicting transaction held for longer than roughly `maxRetries` times that timeout
 therefore ends in `ERR_TRANSACTION_ABANDONED` rather than waiting indefinitely. Deployments where
-waiting is preferable to failing should raise the timeout; it has no opt-out.
+waiting is preferable to failing should raise the timeout; there is no way to disable the bound.
+In particular `0` does not disable it: `0`, negative, and unparseable values all fall back to the
+`5000` default, and a value between `1` and `49` is clamped up to `50`.
 
 ### Class: `Transaction`
 
