@@ -53,6 +53,7 @@
 			'sources': [
 				'src/binding/binding.cpp',
 				'src/binding/core/background_error.cpp',
+				'src/binding/core/blob_relocation.cpp',
 				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/options_file.cpp',
@@ -231,6 +232,7 @@
 			],
 			'sources': [
 				'src/binding/core/background_error.cpp',
+				'src/binding/core/blob_relocation.cpp',
 				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/options_file.cpp',
@@ -246,6 +248,7 @@
 				'test/native/rocksdb_version_test.cc',
 				'test/native/backup_disk_space_test.cc',
 				'test/native/background_error_test.cc',
+				'test/native/blob_relocation_test.cc',
 				'test/native/compression_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',

@@ -1,4 +1,5 @@
 #include "core/background_error.h"
+#include "core/blob_relocation.h"
 #include "core/options_file.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
@@ -16,7 +17,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
-#include <system_error>
 #include <unordered_map>
 
 namespace rocksdb_js {
@@ -55,7 +55,7 @@ struct PersistedCFOptions {
 // Puts the blob settings of a column family being created back to the documented
 // creation defaults. The base options carry the opening handle's request, which
 // belongs to the family it named — the `default` family a fresh database creates
-// on the way to a named one must not persist it (invariant 14).
+// on the way to a named one must not persist it (invariant 15).
 static void applyBlobCreationDefaults(rocksdb::ColumnFamilyOptions& cfOptions) {
 	cfOptions.enable_blob_files = kDefaultBlobEnabled;
 	cfOptions.min_blob_size = kDefaultBlobMinSize;
@@ -561,9 +561,6 @@ DBDescriptor::DBDescriptor(
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
 	this->close();
-	// Idempotent safety net, matching commitWorker/logWorker's own
-	// destructor shutdown.
-	this->parkTimeouts->shutdown();
 }
 
 /**
@@ -621,8 +618,7 @@ void DBDescriptor::finishClose() {
 		this->commitCompletionsClosed = true;
 	}
 
-	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
-	// purpose: flushing immediately here races transaction-log-store teardown (AGENTS invariant 15).
+	// We want to ensure that all in-memory data is written to disk
 	this->flush();
 
 	// Trigger manual compaction on all column families to reclaim space from
@@ -681,12 +677,6 @@ void DBDescriptor::finishClose() {
 			vt->cancelForDB(this->vtEpoch);
 		}
 	}
-
-	// A park can be registered on a foreign-dbId tracker (colliding VT slot;
-	// see the ParkTimeout header comment), so cancelForDB() above cannot be
-	// relied on to have woken everything this descriptor is waiting on.
-	// ParkTimeoutRegistry::shutdown() resolves whatever is left regardless.
-	this->parkTimeouts->shutdown();
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
@@ -776,178 +766,6 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 		}
 		this->commitCompletions.erase(it);
 	}
-}
-
-uint64_t ParkTimeoutRegistry::schedule(
-	napi_env env,
-	unsigned timeoutMs,
-	napi_threadsafe_function tsfn,
-	std::shared_ptr<std::atomic<bool>> fired
-) {
-	std::lock_guard<std::mutex> lock(this->mutex);
-	if (this->stopped) {
-		// Descriptor already closing: the caller must resolve inline without
-		// registering with the LockTracker at all (see the header comment).
-		return 0;
-	}
-	if (!this->threadStarted) {
-		try {
-			this->thread = std::thread([this]() { this->runLoop(); });
-		} catch (...) {
-			// Thread creation failed (e.g. thread/resource exhaustion): leave
-			// the flag false so the next park retries, and tell the caller to
-			// resolve inline now rather than register a park nothing will
-			// ever time out.
-			return 0;
-		}
-		this->threadStarted = true;
-	}
-	auto entry = std::make_unique<ParkTimeout>();
-	entry->id = this->nextId++;
-	entry->env = env;
-	entry->tsfn = tsfn;
-	entry->fired = std::move(fired);
-	uint64_t id = entry->id;
-	auto deadlineIt = this->deadlines.emplace(
-		std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs),
-		id
-	);
-	entry->deadlineIt = deadlineIt;
-	this->parks.emplace(id, std::move(entry));
-	if (deadlineIt == this->deadlines.begin()) {
-		// Only the new earliest deadline needs the loop re-armed (this also
-		// covers waking it out of the indefinite wait when `deadlines` was
-		// empty); any later one already fires within a wait it will take.
-		this->cv.notify_all();
-	}
-	return id;
-}
-
-std::unique_ptr<ParkTimeoutRegistry::ParkTimeout> ParkTimeoutRegistry::take(uint64_t id) {
-	auto it = this->parks.find(id);
-	if (it == this->parks.end()) {
-		return nullptr;
-	}
-	std::unique_ptr<ParkTimeout> owned = std::move(it->second);
-	this->deadlines.erase(owned->deadlineIt);
-	this->parks.erase(it);
-	return owned;
-}
-
-void ParkTimeoutRegistry::resolve(ParkTimeout& park) {
-	bool expected = false;
-	if (park.fired->compare_exchange_strong(expected, true)) {
-		// A closing tsfn (env teardown racing this resolve) must not be
-		// touched again -- napi_closing means Node may already be freeing it.
-		napi_status status = ::napi_call_threadsafe_function(park.tsfn, nullptr, napi_tsfn_nonblocking);
-		if (status == napi_ok) {
-			::napi_release_threadsafe_function(park.tsfn, napi_tsfn_release);
-		}
-	}
-}
-
-void ParkTimeoutRegistry::runLoop() {
-	setThreadName("rocksdb-park-timeout");
-	std::unique_lock<std::mutex> lock(this->mutex);
-	for (;;) {
-		if (this->stopped) {
-			return;
-		}
-		if (this->deadlines.empty()) {
-			this->cv.wait(lock);
-			continue;
-		}
-		auto now = std::chrono::steady_clock::now();
-		// Copy the deadline: wait_until releases the lock while parked, during
-		// which this entry can be erased (a real wake racing the timeout) and
-		// the map node freed -- a bound reference into it would be a read of
-		// freed memory once the wait re-checks time.
-		std::chrono::steady_clock::time_point earliest = this->deadlines.begin()->first;
-		if (earliest > now) {
-			this->cv.wait_until(lock, earliest);
-			continue;
-		}
-		// Fire while still holding the mutex, like dispatchCommitCompletion.
-		while (!this->deadlines.empty() && this->deadlines.begin()->first <= now) {
-			auto deadlineIt = this->deadlines.begin();
-			auto parkIt = this->parks.find(deadlineIt->second);
-			this->deadlines.erase(deadlineIt);
-			if (parkIt == this->parks.end()) {
-				continue;
-			}
-			std::unique_ptr<ParkTimeout> due = std::move(parkIt->second);
-			this->parks.erase(parkIt);
-			ParkTimeoutRegistry::resolve(*due);
-		}
-	}
-}
-
-void ParkTimeoutRegistry::fire(uint64_t id) {
-	std::lock_guard<std::mutex> lock(this->mutex);
-	std::unique_ptr<ParkTimeout> owned = this->take(id);
-	if (!owned) {
-		// Already claimed by the timeout thread, releaseByEnv, or shutdown.
-		return;
-	}
-	ParkTimeoutRegistry::resolve(*owned);
-}
-
-void ParkTimeoutRegistry::releaseByEnv(napi_env env) {
-	std::lock_guard<std::mutex> lock(this->mutex);
-	for (auto it = this->parks.begin(); it != this->parks.end();) {
-		if (it->second->env != env) {
-			++it;
-			continue;
-		}
-		// Mark fired first so neither the timeout thread nor a later real
-		// wake ever calls into the tsfn we're about to release -- the
-		// promise's env is gone, nothing is listening for the resolve.
-		bool expected = false;
-		it->second->fired->compare_exchange_strong(expected, true);
-		if (!expected) {
-			::napi_release_threadsafe_function(it->second->tsfn, napi_tsfn_release);
-		}
-		this->deadlines.erase(it->second->deadlineIt);
-		it = this->parks.erase(it);
-	}
-}
-
-void ParkTimeoutRegistry::shutdown() {
-	std::thread toJoin;
-	{
-		std::lock_guard<std::mutex> lock(this->mutex);
-		if (this->stopped && !this->threadStarted) {
-			// Already fully shut down (e.g. finishClose() already ran; this is
-			// the destructor's belt-and-suspenders call) -- nothing left to do.
-			return;
-		}
-		this->stopped = true;
-		if (this->threadStarted) {
-			toJoin = std::move(this->thread);
-			this->threadStarted = false;
-		}
-		// Resolve every park still pending, under the same mutex the other
-		// three methods serialize their tsfn calls on -- draining outside the
-		// lock would let a concurrent releaseByEnv for a dying env observe
-		// "nothing to cancel" while this is mid-call on that same env's tsfn,
-		// racing Node freeing it.
-		for (auto& entry : this->parks) {
-			ParkTimeoutRegistry::resolve(*entry.second);
-		}
-		this->parks.clear();
-		this->deadlines.clear();
-	}
-	// Notify + join outside the lock: the loop's cv.wait_until needs to
-	// re-acquire the mutex to observe `stopped` and return, so joining while
-	// still holding it would deadlock.
-	this->cv.notify_all();
-	if (toJoin.joinable()) {
-		toJoin.join();
-	}
-}
-
-ParkTimeoutRegistry::~ParkTimeoutRegistry() {
-	this->shutdown();
 }
 
 /**
@@ -1631,9 +1449,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		if (auto targetIt = persisted.find(name); targetIt != persisted.end()) {
 			targetPersistedBlobDir = targetIt->second.blobDir;
 		}
-		// An empty `blob_dir` is not "no directory", it is the database directory.
-		auto resolveBlobDir = [&path](const std::string& dir) -> const std::string& {
-			return dir.empty() ? path : dir;
+		auto holdsBlobFilesHere = [&dbOptions](const std::string& dir) {
+			return holdsBlobFiles(dbOptions.env, dir);
+		};
+		auto blobDirExists = [&dbOptions](const std::string& dir) {
+			return dbOptions.env->FileExists(dir).ok();
 		};
 #endif
 		for (const auto& cfName : columnFamilyNames) {
@@ -1655,96 +1475,29 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				applyExplicitBlobOptions(cfo, options.blobs);
 			}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-			// `allowDirChange` states where blob files that ALREADY moved now live,
-			// and a move is not per-family: the files sitting in one directory move
-			// together. So it reaches past the family this open names — but only as
-			// far as the move actually went.
-			//
-			// Omitting `dir` says the whole database was flattened into its own
-			// directory, which is what restoring a backup produces, so every family
-			// goes flat. With a `dir`, only the families that shared the target's
-			// old directory moved with it; one whose blobs were somewhere else
-			// keeps its own, because re-pointing it would strand files that never
-			// moved. A database with several distinct blob directories therefore
-			// needs one open per directory — the option names a single destination,
-			// so it cannot describe more than one move.
-			//
-			// Only `dir` reaches other families. The rest of `blobs.*` stays
-			// per-family (invariant 14): none of it describes where files already
-			// are.
-			const bool sharesTargetBlobDir = targetPersistedBlobDir && it != persisted.end() &&
-				it->second.blobDir == *targetPersistedBlobDir;
-			const bool acknowledged = options.blobs.allowDirChange &&
-				(options.blobs.dir.empty() || isTarget || sharesTargetBlobDir);
-			// The acknowledgement is a claim about files on disk, so it is checked
-			// against them rather than trusted, and one rule covers both forms: a
-			// family whose recorded directory still holds `.blob` files has not
-			// moved. Compared against the PERSISTED directory, because the target's
-			// `cfo.blob_dir` already carries the request by now, and skipped when
-			// nothing is actually changing so a flag left in a config file does not
-			// start refusing every open.
-			//
-			// Both sides resolve an empty directory: an empty `blob_dir` means the
-			// database directory, not "no directory".
-			//
-			// Deliberately strict about a HALF-finished move: the destination
-			// holding some files is not evidence, and neither is its being empty —
-			// `ensureBlobDirExists` creates it.
-			if (acknowledged && it != persisted.end()) {
-				const std::string& from = resolveBlobDir(it->second.blobDir);
-				if (from != resolveBlobDir(options.blobs.dir) &&
-					holdsBlobFiles(dbOptions.env, from)
-				) {
-					throw rocksdb_js::DBException(
-						"Cannot open \"" + path + "\" with blobs.allowDirChange: column family \"" +
-						cfName + "\" still has blob files in \"" + from +
-						"\", the directory it recorded them in. Nothing is moved for you — finish "
-						"moving them out of that directory before reopening. If this is a restored "
-						"copy, that directory belongs to the database it was restored from and "
-						"sharing it would corrupt both: restore where it is not reachable."
-					);
-				}
+			// Which directory this family opens with, and whether it may open at
+			// all. The rules live in Node-free `core/blob_relocation.cpp` so a
+			// GoogleTest can cover them: this call site compiles only into a
+			// patched build, and no prebuild carries the patch yet, so every
+			// integration test of these rules skips on every build that exists.
+			rocksdb_js::BlobRelocationInput relocation;
+			relocation.dbPath = path;
+			relocation.cfName = cfName;
+			relocation.isTarget = isTarget;
+			if (it != persisted.end()) {
+				relocation.persistedBlobDir = it->second.blobDir;
 			}
-			if (!isTarget && options.blobs.allowDirChange) {
-				if (options.blobs.dir.empty()) {
-					cfo.blob_dir.clear();
-				} else if (sharesTargetBlobDir) {
-					cfo.blob_dir = options.blobs.dir;
-				}
+			relocation.targetPersistedBlobDir = targetPersistedBlobDir;
+			relocation.requestedDir = options.blobs.dir;
+			relocation.allowDirChange = options.blobs.allowDirChange;
+			relocation.currentBlobDir = cfo.blob_dir;
+
+			rocksdb_js::BlobRelocationDecision decision =
+				rocksdb_js::decideBlobRelocation(relocation, holdsBlobFilesHere, blobDirExists);
+			if (!decision.error.empty()) {
+				throw rocksdb_js::DBException(decision.error);
 			}
-			// A blob file's directory is derived from blob_dir every time it is
-			// opened — unlike an SST's path index, it is not recorded per file.
-			// Reopening with a different directory therefore does not move the
-			// existing blob files, it strands them: reads of every value >=
-			// min_blob_size fail with "No such file or directory". Refuse rather
-			// than open a database whose large values have silently gone missing,
-			// unless the caller says they have already moved the files.
-			if (isTarget && !options.blobs.allowDirChange && it != persisted.end() &&
-				it->second.blobDir != cfo.blob_dir
-			) {
-				throw rocksdb_js::DBException(
-					"Cannot reopen \"" + path + "\" column family \"" + cfName +
-					"\" with blobs.dir \"" + cfo.blob_dir + "\": its blob files were written to \"" +
-					it->second.blobDir + "\". Move the blob files to the new directory while the "
-					"database is closed and reopen with blobs.allowDirChange, or reopen with the "
-					"original blobs.dir."
-				);
-			}
-			// A directory that is gone is not a soft failure: every read of a value
-			// >= min_blob_size fails and the first flush errors the whole database
-			// read-only, long after the open that could have named the cause. The
-			// target family's directory was created above if it was missing, so in
-			// practice this catches the families this open never named — including
-			// a restored database still pointing at a source volume that is not
-			// mounted here.
-			if (!cfo.blob_dir.empty() && !dbOptions.env->FileExists(cfo.blob_dir).ok()) {
-				throw rocksdb_js::DBException(
-					"Cannot open \"" + path + "\": column family \"" + cfName +
-					"\" keeps its blob files in \"" + cfo.blob_dir + "\", which does not exist. "
-					"Mount or restore that directory, or move the blob files and reopen with "
-					"blobs.dir set to their new location plus blobs.allowDirChange."
-				);
-			}
+			cfo.blob_dir = decision.blobDir;
 #endif
 			cfDescriptors.emplace_back(cfName, cfo);
 		}
@@ -2632,7 +2385,7 @@ std::string DBDescriptor::getLastError() {
 	return this->lastError;
 }
 
-rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
+rocksdb::Status DBDescriptor::flush() {
 	if (this->readOnly) {
 		DEBUG_LOG("%p DBDescriptor::flush Skipping flush for readonly database\n", this);
 		return rocksdb::Status::OK();
@@ -2657,7 +2410,6 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 	}
 	// Perform flush
 	rocksdb::FlushOptions flushOptions;
-	flushOptions.allow_write_stall = allowWriteStall;
 	return this->db->Flush(
 		flushOptions,
 		columnHandles
