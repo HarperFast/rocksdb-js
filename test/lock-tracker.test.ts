@@ -216,23 +216,15 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 			expect(code).toBe(0);
 		}));
 
-	// Drives a close with a park live, so a hang anywhere on the wake-during-
-	// close path (the holder's intents are released from inside finishClose(),
-	// so the park's LockTracker callback runs while the close is in progress)
-	// shows up as a timing failure here. Be precise about what that does NOT
-	// cover, since the assertion is a deadline:
-	//   - Not the shutdown() join. shutdown() resolves every pending park under
-	//     its mutex BEFORE joining, so the promise settles on time whether the
-	//     thread is joined or detached (mutation-tested: join -> detach stays
-	//     green). What a detached runLoop() costs is touching a freed registry —
-	//     a teardown/ASan-shaped failure, invisible to a stopwatch.
-	//   - Not ParkTimeoutRegistry::shutdown()'s drain of still-pending parks:
-	//     that needs the holder to belong to a different database on a colliding
-	//     VT slot, which is hash-dependent and not arrangeable from here
-	//     (verified by disabling the drain — this stays green).
-	// It also passes at the merge base, so it is close-path smoke coverage
-	// rather than a regression test for this change; the fork-based test above
-	// is the one that goes red without the park timeout.
+	// Catches a hang on the wake-during-close path: the holder's intents are
+	// released from inside finishClose(), so the park's LockTracker callback
+	// runs while the close is in progress. The assertion is a deadline, so it
+	// cannot see either of the other two close-path behaviours — shutdown()
+	// resolves pending parks under its mutex before joining the timeout thread,
+	// so a detached thread settles this just as fast (its cost is a freed-
+	// registry touch, an ASan-shaped failure), and the drain of still-pending
+	// parks needs the holder on another database's colliding VT slot, which is
+	// hash-dependent and not arrangeable from here.
 	it('a commit parked at db.close() settles instead of hanging', () =>
 		dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 			const key = Buffer.from('park-timeout-close-drain');

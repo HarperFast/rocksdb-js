@@ -237,15 +237,12 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
  * holder before maxRetries exhausts -- a deployment that would rather wait
  * than fail raises this, it cannot disable the bound.
  *
- * Read once per process behind a function-local static, like commitThreadMode()
- * and commitDelayMs() below: ::getenv is not safe against a concurrent
- * ::setenv, and a park runs on whichever env's JS thread owns the transaction
- * while `process.env` writes on the main thread go through uv_os_setenv ->
- * setenv(3), which may reallocate `environ`. Per-park reads bought no test
- * flexibility to pay for that -- worker-thread `process.env` writes never reach
- * ::getenv at all (see core/test_seam.h), so the only way to vary this is a
- * child process started with the value already set, which the #741 regression
- * fixture does.
+ * Read once per process, like commitThreadMode()/commitDelayMs() below: a park
+ * runs on whichever env's JS thread owns the transaction, and ::getenv is not
+ * safe against a `process.env` write on another thread (uv_os_setenv ->
+ * setenv(3) may reallocate `environ`). Varying it therefore means starting a
+ * process with the value already set -- worker-thread `process.env` writes
+ * never reach ::getenv at all (core/test_seam.h).
  *
  * Malformed input falls back to the default rather than producing a
  * degenerate effective timeout; a positive value below kMinimum is clamped up
