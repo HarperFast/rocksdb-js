@@ -250,39 +250,54 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
-
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 
-	auto state = new AsyncCompactState(env, *dbHandle);
+	std::string startKey;
+	std::string endKey;
+	bool hasStart = false;
+	bool hasEnd = false;
+	bool bottommost = false;
 
 	// Check for optional start key (argv[2])
 	napi_valuetype startType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &startType));
 	if (startType != napi_undefined && startType != napi_null) {
-		NAPI_GET_BUFFER(argv[2], startKey, "Start key must be a buffer");
-		state->startKey = std::string(startKey, startKeyLength);
-		state->hasStart = true;
+		NAPI_GET_BUFFER(argv[2], startKeyBuf, "Start key must be a buffer");
+		startKey = std::string(startKeyBuf, startKeyBufLength);
+		hasStart = true;
 	}
 
 	// Check for optional end key (argv[3])
 	napi_valuetype endType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &endType));
 	if (endType != napi_undefined && endType != napi_null) {
-		NAPI_GET_BUFFER(argv[3], endKey, "End key must be a buffer");
-		state->endKey = std::string(endKey, endKeyLength);
-		state->hasEnd = true;
+		NAPI_GET_BUFFER(argv[3], endKeyBuf, "End key must be a buffer");
+		endKey = std::string(endKeyBuf, endKeyBufLength);
+		hasEnd = true;
 	}
 
 	// Check for optional bottommost flag (argv[4])
 	napi_valuetype bottommostType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &bottommostType));
 	if (bottommostType == napi_boolean) {
-		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &state->bottommost));
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &bottommost));
 	}
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		napi_value recv;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
+		napi_value ignored;
+		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	auto state = new AsyncCompactState(env, *dbHandle);
+	state->startKey = std::move(startKey);
+	state->endKey = std::move(endKey);
+	state->hasStart = hasStart;
+	state->hasEnd = hasEnd;
+	state->bottommost = bottommost;
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -367,10 +382,6 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
-
 	rocksdb::Slice startSlice;
 	rocksdb::Slice* startPtr = nullptr;
 	napi_valuetype startType;
@@ -396,6 +407,10 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &bottommostType));
 	if (bottommostType == napi_boolean) {
 		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[2], &bottommost));
+	}
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		NAPI_RETURN_UNDEFINED();
 	}
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
@@ -562,6 +577,10 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
+static napi_status getFlushOptions(napi_env env, napi_value options, bool& allowWriteStall) {
+	return rocksdb_js::getProperty(env, options, "allowWriteStall", allowWriteStall);
+}
+
 /**
  * Flushes the RocksDB database memtable to disk synchronously.
  *
@@ -569,18 +588,25 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
  * ```typescript
  * const db = new NativeDatabase();
  * db.flushSync();
+ * db.flushSync({ allowWriteStall: true });
  * ```
  */
 napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
-	NAPI_METHOD();
+	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
+
+	bool allowWriteStall = false;
+	if (getFlushOptions(env, argv[0], allowWriteStall) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
+		return nullptr;
+	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(), "Flush failed");
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->flush(allowWriteStall), "Flush failed");
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -592,18 +618,29 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
  * ```typescript
  * const db = new NativeDatabase();
  * await db.flush();
+ * await db.flush({ allowWriteStall: true });
  * ```
  */
 napi_value Database::Flush(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(2);
+	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-
-	if ((*dbHandle)->descriptor->readOnly) {
-		NAPI_RETURN_UNDEFINED();
-	}
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
+
+	bool allowWriteStall = false;
+	if (getFlushOptions(env, argv[2], allowWriteStall) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "Flush options must be an object with an optional boolean allowWriteStall");
+		return nullptr;
+	}
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		napi_value recv;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
+		napi_value ignored;
+		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -613,7 +650,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new AsyncFlushState(env, *dbHandle);
+	auto state = new AsyncFlushState(env, *dbHandle, allowWriteStall);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -627,7 +664,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
 			} else {
-				state->status = state->handle->descriptor->flush();
+				state->status = state->handle->descriptor->flush(state->allowWriteStall);
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();

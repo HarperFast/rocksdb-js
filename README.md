@@ -108,7 +108,10 @@ Creates a new database instance.
     until commit. Defaults to `false`.
   - `readOnly: boolean` When `true`, the database is opened in read-only mode. Read operations are
     permitted. Write operations will throw an error with code `ERR_DATABASE_READONLY`. Transactions
-    are a no-op in read-only mode.
+    are a no-op in read-only mode. [`flush()`](#dbflushoptions-promisevoid),
+    [`flushSync()`](#dbflushsyncoptions-void), [`compact()`](#dbcompactoptions-promisevoid) and
+    [`compactSync()`](#dbcompactsyncoptions-void) are the exception: they have nothing to do when
+    there are no writes, so they succeed as no-ops rather than throwing.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
     overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
@@ -327,9 +330,13 @@ await db.compact({ start: 'a', end: 'z' });
 await db.compact({ bottommost: true });
 ```
 
+On a [read-only](#new-rocksdatabasepath-options) database this is a no-op: arguments are still
+validated, but the returned promise resolves without compacting rather than rejecting.
+
 ### `db.compactSync(options?): void`
 
-Synchronous version of `compact()`.
+Synchronous version of `compact()`. On a [read-only](#new-rocksdatabasepath-options) database it
+validates its arguments and then returns without compacting, rather than throwing.
 
 ```typescript
 db.compactSync();
@@ -370,22 +377,62 @@ db.dropSync();
 db.close();
 ```
 
-### `db.flush(): Promise<void>`
+### `db.flush(options?): Promise<void>`
 
 Flushes all in-memory data to disk asynchronously.
 
+- `options: object`
+  - `allowWriteStall?: boolean` Whether the flush may proceed even though it will stall writes for
+    its duration. Defaults to `false`, which — despite how that reads — means the flush **waits**
+    until it can run without causing a stall, with no timeout: on a database stuck in a stall
+    condition (immutable-memtable backlog, L0 stop trigger, an exhausted `WriteBufferManager`
+    budget), the returned promise never settles, and since `flush()` runs on the libuv threadpool
+    (default size 4), a handful of concurrently stalled flushes can exhaust the pool and stall
+    every unrelated `fs`/`dns`/`crypto` call and cold-cache `get()` in the process, not only this
+    database's. Pass `true` up front, before issuing a flush you expect might stall, when it's a
+    durability gate you'd rather have stall writers than wait indefinitely — there's no way to
+    cancel an in-flight `flush()`, so this isn't a rescue for one already hung, and forcing the
+    memtable switch can itself prolong an existing L0 stop-trigger condition rather than clear it.
+    That cost is database-wide, covering every column family on the (process-global,
+    `worker_threads`-shared) database handle, not just the caller's — and it relocates the hang
+    rather than removing it: a stalled write blocks the database's single commit thread, which
+    dispatches every `Transaction.commit()` in order, so every commit behind it queues up too,
+    including ones from callers that never touched flush. This is a different knob from
+    `writeBufferManagerAllowStall` (see [`new RocksDatabase()`](#new-rocksdatabasepath-options)
+    options), with nearly opposite polarity: that one governs whether the `WriteBufferManager` may
+    stall writers at all, this one governs whether one manual flush is willing to cause a stall
+    rather than wait one out.
+
 ```typescript
 await db.flush();
+
+// Chosen up front, as a durability gate willing to pay the stall cost
+await db.flush({ allowWriteStall: true });
 ```
 
-### `db.flushSync(): void`
+On a [read-only](#new-rocksdatabasepath-options) database this is a no-op: the options bag is still
+validated, but the returned promise resolves without flushing rather than rejecting.
+
+### `db.flushSync(options?): void`
 
 Flushes all in-memory data to disk synchronously. Note that this can be an expensive operation, so
 it is recommended to use `flush()` if you want to keep the event loop free.
 
+- `options: object` Same as [`flush()`](#dbflushoptions-promisevoid). The default
+  `allowWriteStall: false` wait is taken on the calling thread, which here is the JS thread — so
+  the hazard described there is strictly larger on this entry point, not smaller: instead of
+  parking one libuv pool worker it freezes the event loop outright, and it holds the in-flight
+  operation claim that `close()` waits on, so the database cannot be closed out from under it
+  either. Prefer `flush()` if there is any chance the database is in a stall condition.
+
 ```typescript
 db.flushSync();
+
+db.flushSync({ allowWriteStall: true });
 ```
+
+On a [read-only](#new-rocksdatabasepath-options) database it validates its options and then returns
+without flushing, rather than throwing.
 
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
