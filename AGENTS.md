@@ -196,10 +196,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
   coordinated-retry commit parked on a conflicting holder's VT lock resolves
   RETRY_NOW unconditionally, in case the holder never releases (see
-  "Coordinated retry" note below). Read per park; values below `50` are clamped
-  up to it, and `0` (an ambiguous "disable the bound") falls back to the default
-  like any malformed value. There is no opt-out: a deployment that would rather
-  wait than fail a legitimately slow holder raises the value instead
+  "Coordinated retry" note below). Read once per process (a function-local
+  `static`, like the other two above — `::getenv` is not safe against a
+  concurrent `::setenv` from a `process.env` write, and a park runs on whichever
+  env's JS thread owns the transaction), so it must be set in the environment a
+  process is started with. Values below `50` are clamped up to it, and `0` (an
+  ambiguous "disable the bound") falls back to the default like any malformed
+  value. There is no opt-out: a deployment that would rather wait than fail a
+  legitimately slow holder raises the value instead
 
 ## Test Structure
 

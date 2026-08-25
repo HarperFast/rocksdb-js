@@ -235,38 +235,50 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
  * consumes a coordinatedRetry attempt like a genuine wake would, so a
  * higher default leaves more headroom for a merely-slow (not abandoned)
  * holder before maxRetries exhausts -- a deployment that would rather wait
- * than fail raises this, it cannot disable the bound. Read per park (this is
- * the conflict path, not a hot path) so a process can be started with a small
- * value for tests without depending on which park happens to run first.
+ * than fail raises this, it cannot disable the bound.
+ *
+ * Read once per process behind a function-local static, like commitThreadMode()
+ * and commitDelayMs() below: ::getenv is not safe against a concurrent
+ * ::setenv, and a park runs on whichever env's JS thread owns the transaction
+ * while `process.env` writes on the main thread go through uv_os_setenv ->
+ * setenv(3), which may reallocate `environ`. Per-park reads bought no test
+ * flexibility to pay for that -- worker-thread `process.env` writes never reach
+ * ::getenv at all (see core/test_seam.h), so the only way to vary this is a
+ * child process started with the value already set, which the #741 regression
+ * fixture does.
+ *
  * Malformed input falls back to the default rather than producing a
  * degenerate effective timeout; a positive value below kMinimum is clamped up
  * to it instead, since the intent there is unambiguous.
  */
 static unsigned parkTimeoutMs() {
-	constexpr unsigned kDefault = 5000;
-	constexpr unsigned kMinimum = 50;
-	const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
-	if (v == nullptr) {
-		return kDefault;
-	}
-	const char* firstNonSpace = v;
-	while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
-		++firstNonSpace;
-	}
-	if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
-		return kDefault;
-	}
-	char* end = nullptr;
-	errno = 0;
-	unsigned long parsed = ::strtoul(v, &end, 10);
-	// parsed == 0 is the one ambiguous input: a literal "0" reads as "disable
-	// the bound", which is exactly the unbounded park this exists to prevent,
-	// so it falls back to the default like malformed input rather than being
-	// honored as an opt-out or clamped up to kMinimum.
-	if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
-		return kDefault;
-	}
-	return std::max(kMinimum, static_cast<unsigned>(parsed));
+	static const unsigned ms = []() -> unsigned {
+		constexpr unsigned kDefault = 5000;
+		constexpr unsigned kMinimum = 50;
+		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
+		if (v == nullptr) {
+			return kDefault;
+		}
+		const char* firstNonSpace = v;
+		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+			++firstNonSpace;
+		}
+		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
+			return kDefault;
+		}
+		char* end = nullptr;
+		errno = 0;
+		unsigned long parsed = ::strtoul(v, &end, 10);
+		// parsed == 0 is the one ambiguous input: a literal "0" reads as "disable
+		// the bound", which is exactly the unbounded park this exists to prevent,
+		// so it falls back to the default like malformed input rather than being
+		// honored as an opt-out or clamped up to kMinimum.
+		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
+			return kDefault;
+		}
+		return std::max(kMinimum, static_cast<unsigned>(parsed));
+	}();
+	return ms;
 }
 
 /**
