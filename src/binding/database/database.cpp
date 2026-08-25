@@ -1995,6 +1995,20 @@ static bool parseStoragePaths(napi_env env, napi_value options, std::vector<Stor
 		napi_value entry;
 		NAPI_STATUS_THROWS_RVAL(::napi_get_element(env, pathsValue, i, &entry), false);
 
+		// Checked before reading a property off it: `getProperty` on a non-object
+		// leaves N-API's own "Cannot convert null to object" pending, which then
+		// swallows the specific message below.
+		napi_valuetype entryType;
+		NAPI_STATUS_THROWS_RVAL(::napi_typeof(env, entry, &entryType), false);
+		if (entryType != napi_object) {
+			::napi_throw_error(
+				env,
+				nullptr,
+				("paths[" + std::to_string(i) + "] must be a { path, targetSize } object").c_str()
+			);
+			return false;
+		}
+
 		StoragePath storagePath;
 		if (rocksdb_js::getProperty(env, entry, "path", storagePath.path, true) != napi_ok ||
 			storagePath.path.empty()

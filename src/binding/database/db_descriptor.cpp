@@ -1,4 +1,5 @@
 #include "core/background_error.h"
+#include "core/options_file.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -234,6 +235,28 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
+
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+// Whether a directory still holds blob files. Used to check the claim
+// `blobs.allowDirChange` with no `blobs.dir` makes — "this database's blob files
+// are all in its own directory now" — against the directory a column family
+// says its files were in. An unreadable or missing directory holds nothing.
+static bool holdsBlobFiles(rocksdb::Env* env, const std::string& dir) {
+	std::vector<std::string> children;
+	if (!env->GetChildren(dir, &children).ok()) {
+		return false;
+	}
+	static const std::string suffix = ".blob";
+	for (const auto& child : children) {
+		if (child.size() > suffix.size() &&
+			child.compare(child.size() - suffix.size(), suffix.size(), suffix) == 0
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+#endif
 
 void ensureBlobDirExists(rocksdb::Env* env, const std::string& blobDir) {
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
@@ -1440,26 +1463,12 @@ static void assertNoPersistedBlobDir(rocksdb::Env* env, const std::string& path)
 		return;
 	}
 
-	static const std::string key = "blob_dir=";
-	for (size_t pos = contents.find(key); pos != std::string::npos;
-		pos = contents.find(key, pos + key.size())
-	) {
-		// Must be a whole key, not the tail of a longer one.
-		if (pos > 0 && contents[pos - 1] != '\n' && contents[pos - 1] != ' ' &&
-			contents[pos - 1] != '\t'
-		) {
-			continue;
-		}
-		const size_t valueStart = pos + key.size();
-		if (valueStart >= contents.size() || contents[valueStart] == '\n' ||
-			contents[valueStart] == '\r'
-		) {
-			continue; // unset
-		}
-		const size_t valueEnd = contents.find_first_of("\r\n", valueStart);
+	// The scan itself is Node-free and lives in core/ so a GoogleTest can cover
+	// it: this whole function is compiled only into an UNPATCHED build, where no
+	// test can produce a database carrying a blob_dir to trip it.
+	if (auto blobDir = rocksdb_js::findPersistedBlobDir(contents)) {
 		throw rocksdb_js::DBException(
-			"Cannot open \"" + path + "\": its blob files were written to \"" +
-			contents.substr(valueStart, valueEnd - valueStart) +
+			"Cannot open \"" + path + "\": its blob files were written to \"" + *blobDir +
 			"\", but this build of rocksdb-js is linked against a RocksDB without the blob_dir "
 			"patch and would look for them beside the SST files. Use a build with the patch "
 			"(ROCKSDB_HAS_CF_BLOB_DIR)."
@@ -1630,6 +1639,25 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// are.
 			if (!isTarget && options.blobs.allowDirChange) {
 				if (options.blobs.dir.empty()) {
+					// "The whole database is flat now" is checkable rather than
+					// assumed, and it has to be checked: this same call is what the
+					// restore procedure tells operators to type, so a wrong path
+					// argument aims it at the live original, where taking the claim
+					// on trust strands every tiered family. If the directory this
+					// family recorded still holds blob files, the claim is false for
+					// it — either nothing moved, or those files belong to the source
+					// database this copy was restored from and must not be shared.
+					if (!cfo.blob_dir.empty() && holdsBlobFiles(dbOptions.env, cfo.blob_dir)) {
+						throw rocksdb_js::DBException(
+							"Cannot open \"" + path + "\" with blobs.allowDirChange and no blobs.dir: "
+							"column family \"" + cfName + "\" recorded its blob files in \"" +
+							cfo.blob_dir + "\", which still holds blob files, so this database has "
+							"not been flattened. If it is a restored copy, that directory belongs to "
+							"the database it was restored from and sharing it would corrupt both — "
+							"restore where that directory is not reachable. Otherwise move the blob "
+							"files and reopen with blobs.dir naming where they are."
+						);
+					}
 					cfo.blob_dir.clear();
 				} else if (targetPersistedBlobDir && it != persisted.end() &&
 					it->second.blobDir == *targetPersistedBlobDir

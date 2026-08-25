@@ -620,8 +620,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     each database's obsolete-file scan delete the other's live blobs, and a multi-table migration is
     unreachable because the second family opens warm and cannot move a live directory. Applying the
     change to every family unconditionally strands families whose files did not move — the usual
-    layout is heterogeneous (`default` flat and a named table on its own volume). A restored copy
-    opened without acknowledgement whose target family has no external blob directory remains a
+    layout is heterogeneous (`default` flat and a named table on its own volume). Flattening
+    (`allowDirChange` with no `dir`) is checked rather than trusted: a family whose recorded
+    directory still holds `.blob` files refuses the open, avoiding an erroneous path that targets
+    the live original. Grouping is by persisted directory string, so two spellings form two groups.
+    A restored copy opened without acknowledgement whose target family has no external blob directory remains a
     documented procedure: OPTIONS cannot distinguish copy from original. A missing persisted
     `blob_dir` is caught at open for every family, rather than when a flush makes the whole database
     read-only. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
@@ -641,8 +644,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `db.createCheckpoint()`: `GetLiveFilesStorageInfo`, which both use, returns
     `Status::NotSupported` whenever `db_paths`/`cf_paths` is non-empty, so a tiered database has no
     in-process copy path, only a volume snapshot. `destroy()` has to receive the real layout
-    (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means "everything under the
-    database directory", which orphans exactly the files tiering moved away. See
+    (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means
+    "everything under the database directory", which orphans exactly the files tiering moved away. See
     [docs/tiered-storage.md](docs/tiered-storage.md).
 18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
     are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,

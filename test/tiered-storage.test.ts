@@ -324,6 +324,15 @@ describe('paths', () => {
 		const paths = Array.from({ length: 65 }, () => ({ path: dbPath, targetSize: 1 << 30 }));
 		expect(() => RocksDatabase.open(dbPath, { paths })).toThrow(/no more than 64 entries/);
 	});
+
+	it('should name the offending entry when it is not an object', () => {
+		const dbPath = tempPath();
+		// Reading a property off null leaves N-API's own "Cannot convert null to
+		// object" pending, which would swallow the specific message.
+		expect(() => RocksDatabase.open(dbPath, { paths: [null] as any })).toThrow(
+			/paths\[0\] must be a \{ path, targetSize \} object/
+		);
+	});
 });
 
 describe('blobs', () => {
@@ -852,6 +861,27 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		expect(plain.getSync('more')).toBe(largeValue(3));
 		plain.close();
 		table.close();
+	});
+
+	it('should refuse to flatten a database whose blob files have not moved', () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+
+		const plain = openDb(dbPath);
+		const table = openDb(dbPath, { name: 'table1', blobs: { dir: blobDir } });
+		table.putSync('key', largeValue(8));
+		table.flushSync();
+		table.close();
+		plain.close();
+
+		// `{ blobs: { allowDirChange: true } }` is character-for-character what the
+		// restore procedure tells operators to type. Aimed at the live original by
+		// a wrong path argument, taking the claim on trust would clear table1's
+		// directory while its blob files are still in it, so the claim is checked:
+		// the recorded directory still holds blob files, so nothing was flattened.
+		expect(() => RocksDatabase.open(dbPath, { blobs: { allowDirChange: true } })).toThrow(
+			/has not been flattened/
+		);
 	});
 
 	it('should read a restored named column family from its own flattened copy', async () => {
