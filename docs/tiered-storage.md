@@ -104,39 +104,40 @@ of a database's tables is the intended arrangement.
 using the live database's actual `db_paths` and per-column-family `blob_dir` rather than assuming
 everything is under the database directory.
 
-## Backups do not preserve the layout
+## Backups and checkpoints
 
-`db.backup()` and `backups.restore` copy files into a single directory. RocksDB has no notion of
-re-scattering them across `paths` or back into a `blobs.dir`, so a restored database is flat:
-every SST that had a path index above 0, and every blob file, lands in the database directory.
+**`paths` disables both.** RocksDB's `GetLiveFilesStorageInfo` — which `BackupEngine` and
+`Checkpoint` both go through — refuses when `db_paths` is set, so `db.backup()` and
+`db.createCheckpoint()` fail with:
 
-`db.createCheckpoint()` has the same hazard.
-
-Reopening that database with the original `paths` fails to find the SSTs. For blobs it is quieter
-and worse — the copy carries the `OPTIONS` file, so the persisted `blobs.dir` still matches the
-request, the mismatch check passes, and reads of large values fail with "No such file or
-directory".
-
-Until restore learns to relocate, treat a tiered database as needing manual placement afterwards.
-Either put the files back where the configuration expects them:
-
-```js
-// database closed; move the .sst files back onto their volumes and the .blob
-// files back into blobs.dir, then open with the original configuration.
+```
+Not implemented: db_paths / cf_paths not supported for Checkpoint nor BackupEngine
 ```
 
-…or open the flat copy as a flat database. Dropping `paths` is enough for the SSTs, but the blob
-half needs an acknowledgement, because the restored `OPTIONS` still names the old directory while
-the request now resolves to "beside the SST files" — the mismatch guard rejects a plain open:
+This is not "the copy comes out flat" — there is no copy. It applies to **any** non-empty `paths`,
+including the one-entry `[{ path: <the database directory> }]` form the migration section above
+recommends. A database using `paths` has to be backed up some other way (a filesystem/volume
+snapshot covering every path, taken with the database closed or quiesced).
+
+**`blobs.dir` copies, but flattens.** Blob placement is not `db_paths`, so a backup or checkpoint
+succeeds — but everything lands in one directory, and RocksDB has no notion of re-scattering it on
+restore. The copy carries the `OPTIONS` file, so the persisted `blobs.dir` still names the old
+directory while the files are now beside the SSTs.
+
+A plain open of that copy is rejected (the mismatch guard fires), which is the good case — it
+rejects instead of reading large values that are not there. To open the copy as a flat database,
+acknowledge the new (empty) directory once per affected column family:
 
 ```js
-// For EACH column family that had a blobs.dir, once — the open records the new
-// (empty) directory, so later plain opens need nothing.
 const db = RocksDatabase.open('/nvme/restored', {
 	name: 'table1',
 	blobs: { allowDirChange: true },
 });
 ```
+
+That open records the flat layout, so later opens of the restored database need nothing. The
+alternative is to move the `.blob` files back to the original directory before opening with the
+original configuration.
 
 ## `blobs.dir` — putting large values on their own volume
 
@@ -187,6 +188,10 @@ database: `blobs` is a per-column-family option, and opening one family never re
 settings (the same rule `compression` follows). A family whose `blobs` you omit entirely keeps
 whatever it persisted.
 
+`dir` is the one exception to that inheritance: omitting it means "alongside the SST files", not
+"whatever this family had", so **every** open of a family with an external blob directory must keep
+supplying the same `dir`. Dropping it from a configuration is what the guard rejects.
+
 To migrate, move the `.blob` files while the database is closed, then reopen with
 `allowDirChange` to acknowledge it:
 
@@ -199,8 +204,8 @@ const db = RocksDatabase.open('/nvme/mydb', {
 
 Nothing is moved for you — `allowDirChange` only suppresses the check, so setting it _without_
 relocating the files is exactly the failure the check exists to prevent. It is only needed for the
-open that performs the switch: that open records the new directory, so subsequent plain opens
-succeed on their own.
+open that performs the switch: that open records the new directory, so later opens can drop
+`allowDirChange` — but they still have to supply the same `dir`.
 
 ## Turning blob files off
 

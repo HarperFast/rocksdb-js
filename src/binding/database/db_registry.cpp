@@ -170,20 +170,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	rocksdb::Options destroyOptions;
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	auto captureDestroyLayout = [&](const std::shared_ptr<DBDescriptor>& descriptor) {
-		if (!descriptor->db) {
-			return false;
-		}
-		destroyOptions.db_paths = descriptor->db->GetDBOptions().db_paths;
-		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
-		for (const auto& [cfName, column] : descriptor->columns) {
+		std::lock_guard<std::mutex> lock(descriptor->layoutMutex);
+		destroyOptions.db_paths = descriptor->layoutDbPaths;
+		for (const auto& [cfName, blobDir] : descriptor->layoutBlobDirs) {
 			rocksdb::ColumnFamilyOptions cfOptions;
-			if (column && column->column) {
-				rocksdb::Options current = descriptor->db->GetOptions(column->column.get());
-				cfOptions.cf_paths = current.cf_paths;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-				cfOptions.blob_dir = current.blob_dir;
+			cfOptions.blob_dir = blobDir;
+#else
+			(void)blobDir;
 #endif
-			}
 			destroyColumnFamilies.emplace_back(cfName, cfOptions);
 		}
 		return true;
@@ -204,7 +199,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// db_paths can no longer be recovered from RocksDB's persisted options.
 		for (int pass = 0; pass < 2 && !capturedLayout; pass++) {
 			for (const auto& [key, entry] : instance->databases) {
-				if (key.path != identityPath || !entry.descriptor || !entry.descriptor->db ||
+				if (key.path != identityPath || !entry.descriptor ||
 					(pass == 0 ? entry.descriptor->readOnly : !entry.descriptor->readOnly)
 				) {
 					continue;
@@ -647,6 +642,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			entry.descriptor->recordColumnFamilyLayout(name, cfOptions.blob_dir);
+#endif
 		} else if (options.compressionExplicit && options.compression) {
 			// The column family is already open in this process (the DBDescriptor
 			// is process-global and shared across handles/envs). Compression is
@@ -745,6 +743,16 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					std::to_string(current.blob_garbage_collection_force_threshold) + " -> " +
 					std::to_string(*options.blobs.garbageCollectionForceThreshold)
 				);
+			}
+			if (options.blobs.prepopulateCache && current.blob_cache) {
+				const bool currentPrepopulate =
+					current.prepopulate_blob_cache != rocksdb::PrepopulateBlobCache::kDisable;
+				if (currentPrepopulate != *options.blobs.prepopulateCache) {
+					conflicts.push_back(
+						std::string("prepopulateCache ") + boolText(currentPrepopulate) + " -> " +
+						boolText(*options.blobs.prepopulateCache)
+					);
+				}
 			}
 			if (!conflicts.empty()) {
 				std::string message =

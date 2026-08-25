@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../src/index.js';
+import { backups, RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
 import { copyFileSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative as relativePath } from 'node:path';
@@ -63,6 +63,8 @@ afterEach(() => {
  * Whether the linked RocksDB carries the downstream blob_dir patch. Without it
  * the option is rejected at open, so those tests are skipped rather than failed.
  */
+const requireBlobDir = process.env.ROCKSDB_JS_REQUIRE_BLOB_DIR === '1';
+
 const blobDirSupported = (() => {
 	const probeDb = generateDBPath();
 	const probeBlobDir = `${probeDb}-blobs`;
@@ -74,6 +76,14 @@ const blobDirSupported = (() => {
 		// Only the build gate means "unsupported". Swallowing every error would
 		// let a real regression in open() silently skip the whole suite.
 		if (/requires a RocksDB build with the blob_dir patch/.test(err?.message ?? '')) {
+			// A prebuild that lost the patch on one platform would otherwise turn
+			// the whole suite green by skipping it. The release job sets this so
+			// the packaged artifact has to carry the feature it advertises.
+			if (requireBlobDir) {
+				throw new Error(
+					'ROCKSDB_JS_REQUIRE_BLOB_DIR=1 but the linked RocksDB has no blob_dir patch'
+				);
+			}
 			return false;
 		}
 		throw err;
@@ -263,6 +273,27 @@ describe('paths', () => {
 		).toThrow(/already has SST files in its own directory/);
 	});
 
+	it('should reject backup and checkpoint while paths is configured', async () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+
+		// RocksDB's GetLiveFilesStorageInfo — which both BackupEngine and
+		// Checkpoint go through — refuses outright when db_paths is set. It is not
+		// that the copy comes out flat: there is no copy at all, for ANY non-empty
+		// `paths`, including the one-entry `[{ path: <database directory> }]` form
+		// the migration section recommends.
+		const db = openDb(dbPath, { paths: [{ path: fast, targetSize: 1 << 30 }] });
+		db.putSync('key', 'value');
+		db.flushSync();
+
+		await expect(db.backup(tempDir())).rejects.toThrow(
+			/db_paths \/ cf_paths not supported for Checkpoint nor BackupEngine/
+		);
+		await expect(db.createCheckpoint(tempPath())).rejects.toThrow(
+			/db_paths \/ cf_paths not supported for Checkpoint nor BackupEngine/
+		);
+	});
+
 	it('should delete tiered SST files on destroy()', () => {
 		const dbPath = tempPath();
 		const fast = tempDir();
@@ -392,6 +423,36 @@ describe('blobs', () => {
 		expect(filesWithExt(dbPath, '.blob').length).toBeGreaterThan(0);
 	});
 
+	it('should round-trip the garbage collection settings through a cold reopen', () => {
+		const dbPath = tempPath();
+		const settings = {
+			garbageCollection: true,
+			garbageCollectionAgeCutoff: 0.5,
+			garbageCollectionForceThreshold: 0.75,
+		};
+
+		const first = openDb(dbPath, { name: 't1', blobs: settings });
+		first.close();
+
+		// Cold-opening a DIFFERENT family reopens t1 from its OPTIONS file. These
+		// fields are hand-copied through three sites (creation defaults, persisted
+		// restore, explicit apply), so a dropped or transposed one survives every
+		// on-disk assertion — but not the warm conflict check below, which
+		// compares the live column family against the same request.
+		const second = openDb(dbPath, { name: 't2' });
+		expect(second.getSync('missing')).toBeUndefined();
+
+		expect(() => openDb(dbPath, { name: 't1', blobs: settings })).not.toThrow();
+		// ...and a genuinely different value still conflicts, so the check above is
+		// not passing for the wrong reason.
+		expect(() =>
+			RocksDatabase.open(dbPath, {
+				name: 't1',
+				blobs: { ...settings, garbageCollectionAgeCutoff: 0.9 },
+			})
+		).toThrow(/garbageCollectionAgeCutoff/);
+	});
+
 	it('should reject a warm reopen that asks for different blob settings', () => {
 		const dbPath = tempPath();
 		const db = openDb(dbPath, { name: 't1', blobs: { minSize: 4096 } });
@@ -519,10 +580,7 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 	});
 
 	// Harper maps every table to a named column family, so a named CF is the
-	// normal path rather than an edge. The first version of this feature only
-	// applied blob options to the families listed on disk, which left a named
-	// family on the hardcoded defaults and then made the database refuse to
-	// reopen with the options it was created with.
+	// normal path rather than an edge.
 	it('should apply the blob directory to a newly created named column family', () => {
 		const dbPath = tempPath();
 		const blobDir = tempDir();
@@ -632,6 +690,33 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		// the same directory reopens cleanly rather than reading as a mismatch.
 		db = openDb(dbPath, { blobs: { dir: relative } });
 		expect(db.getSync('key')).toBe(largeValue(4));
+	});
+
+	it('should recover large values from a flat backup with allowDirChange', async () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+		const backupDir = tempDir();
+		const restoreDir = tempPath();
+
+		const db = openDb(dbPath, { blobs: { dir: blobDir } });
+		for (let i = 0; i < 20; i++) {
+			db.putSync(`key-${i}`, largeValue(i));
+		}
+		db.flushSync();
+		await db.backup(backupDir);
+		db.close();
+
+		await backups.restore(backupDir, restoreDir);
+		// The copy is flat, but its OPTIONS still names the old directory, so a
+		// plain open is rejected rather than reading large values that are not
+		// there. This is the procedure docs/tiered-storage.md documents.
+		expect(filesWithExt(restoreDir, '.blob').length).toBeGreaterThan(0);
+		expect(() => RocksDatabase.open(restoreDir)).toThrow(/blob files were written to/);
+
+		const restored = openDb(restoreDir, { blobs: { allowDirChange: true } });
+		for (let i = 0; i < 20; i++) {
+			expect(restored.getSync(`key-${i}`)).toBe(largeValue(i));
+		}
 	});
 
 	it('should delete blob files on destroy()', () => {

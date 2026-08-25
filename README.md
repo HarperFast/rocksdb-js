@@ -70,7 +70,9 @@ Creates a new database instance.
     files, so compaction does not rewrite them at every level. Like `compression`, these are
     per-column-family: opening one family never changes another's, and a setting you omit keeps
     whatever that family persisted rather than reverting to the default below (the defaults apply
-    to a family being created). See [Tiered Storage](docs/tiered-storage.md).
+    to a family being created). `dir` is the exception — omitting it means "alongside the SST
+    files", so a family with an external blob directory must keep supplying it on every open. See
+    [Tiered Storage](docs/tiered-storage.md).
     - `enabled: boolean` Whether large values are written to blob files. Defaults to `true`.
     - `minSize: number` The smallest value stored in a blob file rather than inline. Defaults to
       `2048`.
@@ -126,8 +128,10 @@ Creates a new database instance.
     `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
     value is always honored as-is.
   - `name: string` The column family name. Defaults to `"default"`.
-  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
-    default and the cache is shared across all database instances.
+  - `noBlockCache: boolean` When `true`, disables both process-wide caches for this database — the
+    block cache and the blob cache (see [`blobCacheSize`](#dbconfigoptions)) — so it cannot evict
+    another database's cached data, and reads of its own blocks and large values are always disk
+    I/O. Both caches are enabled by default and shared across all database instances.
   - `parallelismThreads: number` The number of background threads to use for flush and compaction.
     Defaults to `1`.
   - `paths: { path: string, targetSize: number }[]` The volumes SST files may be placed on, mapped
@@ -138,8 +142,9 @@ Creates a new database instance.
     `level_compaction_dynamic_level_bytes`. Adding `paths` to a database that does not already
     have it requires listing the database directory itself as the first entry, since its existing
     files are recorded at index 0; `open()` rejects the alternative rather than letting RocksDB
-    report the MANIFEST as corrupt. Blob files do not follow these paths; see
-    [Tiered Storage](docs/tiered-storage.md).
+    report the MANIFEST as corrupt. **Setting this disables `db.backup()` and
+    `db.createCheckpoint()`** — RocksDB does not support either with `db_paths` set. Blob files do
+    not follow these paths; see [Tiered Storage](docs/tiered-storage.md).
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
   - `readOnly: boolean` When `true`, the database is opened in read-only mode. Read operations are
