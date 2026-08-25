@@ -434,7 +434,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
     map membership while mutable-field writers hold no lock.
 
-12. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+13. **A recovered active transaction-log file ends on a transaction boundary when recovery can
     prove one**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them
