@@ -372,9 +372,17 @@ export type NativeBlobOptions = {
 	 * `dir`, permitting an open that would otherwise be rejected as a mismatch
 	 * against the directory recorded in the database's `OPTIONS` file.
 	 *
-	 * Nothing is moved for you — this only suppresses the check, so opening with
-	 * it set before actually relocating the `.blob` files makes every value at
-	 * or above `minSize` unreadable.
+	 * Nothing is moved for you — this only records where they went, so opening
+	 * with it set before actually relocating the `.blob` files makes every value
+	 * at or above `minSize` unreadable.
+	 *
+	 * Unlike every other blob setting, this one is **database-wide**: `dir` is
+	 * applied to every column family, not just the one this open names. A
+	 * relocation moves the whole closed database's blob files at once, and a
+	 * flat backup restore does the same. Scoped to the named family, the others
+	 * would keep the directory persisted in the `OPTIONS` file — which for a
+	 * restored copy is the source database's live blob directory, where the two
+	 * databases would then allocate colliding blob file numbers.
 	 *
 	 * @default false
 	 */

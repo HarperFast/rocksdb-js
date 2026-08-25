@@ -633,6 +633,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					? *options.compressionLevel
 					: rocksdb::CompressionOptions::kDefaultCompressionLevel;
 			}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			// The cold open creates this directory; a family created on an
+			// already-open database never goes through DB::Open, so without this
+			// the first flush of the new family errors the whole database
+			// read-only. Harper reaches it on the normal path: a plain open at
+			// startup, then a table opened with its own blobs.dir.
+			ensureBlobDirExists(entry.descriptor->db->GetEnv(), cfOptions.blob_dir);
+#endif
 			auto column = rocksdb_js::createRocksDBColumnFamily(
 				entry.descriptor->db, name, cfOptions
 			);
@@ -744,7 +752,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					std::to_string(*options.blobs.garbageCollectionForceThreshold)
 				);
 			}
-			if (options.blobs.prepopulateCache && current.blob_cache) {
+			if (options.blobs.prepopulateCache) {
 				const bool currentPrepopulate =
 					current.prepopulate_blob_cache != rocksdb::PrepopulateBlobCache::kDisable;
 				if (currentPrepopulate != *options.blobs.prepopulateCache) {

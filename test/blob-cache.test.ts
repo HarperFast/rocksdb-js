@@ -106,16 +106,39 @@ describe('Blob Cache', () => {
 
 		const first = RocksDatabase.open(path, { name: 't1', blobs: { prepopulateCache: true } });
 		openDatabases.push(first);
-		// With no cache attached there is nothing to prepopulate, so the open drops
-		// the request and the live family stays disabled. The warm-reopen conflict
-		// check must not then read an identical second open as a conflict — every
-		// table is opened repeatedly across worker envs, so that would be a startup
-		// failure on an unchanged configuration.
+		// The request is recorded on the family even with no cache to prepopulate
+		// (it is inert, not invalid), so an identical second open must not read as
+		// a conflict — every table is opened repeatedly across worker envs, and a
+		// mismatch here would be a startup failure on an unchanged configuration.
 		expect(() => {
 			openDatabases.push(
 				RocksDatabase.open(path, { name: 't1', blobs: { prepopulateCache: true } })
 			);
 		}).not.toThrow();
+	});
+
+	it('should keep a persisted prepopulateCache across a cold open with no blob cache', () => {
+		const path = generateDBPath();
+		dbPaths.push(path);
+
+		return new Promise<void>((resolve, reject) => {
+			// A child process, because every other suite in this process may have
+			// configured a blob cache — see the fixture.
+			const child = spawn(
+				process.execPath,
+				[join(fixtureDir, 'blob-prepopulate-persistence.mts'), path],
+				{ stdio: ['ignore', 'ignore', 'inherit'] }
+			);
+			child.on('close', (code) => {
+				try {
+					expect(code).toBe(0);
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			});
+			child.on('error', reject);
+		});
 	});
 
 	it('should reject a negative blob cache size', () => {

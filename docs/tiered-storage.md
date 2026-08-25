@@ -49,6 +49,15 @@ and stay put. Reordering or removing an entry makes RocksDB look for existing fi
 directory, and nothing on disk records which index a file came from, so that one is not checked for
 you.
 
+That includes **deleting the option entirely**, which is the natural thing to try when tiering turns
+out to be a mistake. `db_paths` is sanitized back to `[{ <database directory> }]`, index 0 stops
+meaning the fast volume, and the open fails with `Corruption: ... MANIFEST-NNNNNN may be corrupted` —
+the same misleading message, and the same reach-for-backup-restore reflex, as the zero-to-one
+migration below. It is the same guard's blind spot in the other direction: `db_paths` is not
+persisted, so there is nothing to compare a shrinking list against. To undo tiering, keep the
+`paths` list intact and move the data with a compaction to path 0, or rebuild the database from a
+snapshot taken before tiering.
+
 Also note that supplying more than one path disables `level_compaction_dynamic_level_bytes`
 (RocksDB's `SanitizeCfOptions` logs a warning and turns it off), so level sizing becomes static and
 `max_bytes_for_level_base` has to be sized by hand.
@@ -126,18 +135,27 @@ directory while the files are now beside the SSTs.
 
 A plain open of that copy is rejected (the mismatch guard fires), which is the good case — it
 rejects instead of reading large values that are not there. To open the copy as a flat database,
-acknowledge the new (empty) directory once per affected column family:
+acknowledge the new (empty) directory once:
 
 ```js
-const db = RocksDatabase.open('/nvme/restored', {
-	name: 'table1',
-	blobs: { allowDirChange: true },
-});
+const db = RocksDatabase.open('/nvme/restored', { blobs: { allowDirChange: true } });
 ```
+
+`allowDirChange` is database-wide, so that one open re-points **every** column family, not just the
+one it names. That is deliberate and it is what makes restoring beside a live source safe: scoped to
+the named family, the others would keep the `blob_dir` in the restored `OPTIONS` file — the _source_
+database's live directory — and the two databases would then mint colliding `NNNNNN.blob` numbers
+there while each one's obsolete-file scan deleted the other's live files.
 
 That open records the flat layout, so later opens of the restored database need nothing. The
 alternative is to move the `.blob` files back to the original directory before opening with the
 original configuration.
+
+> **Open a restored copy with `allowDirChange` before anything else touches it.** The guard can only
+> fire on the family an open names, so a restored database whose _first_ family happens to have no
+> external blob directory of its own (`default`, typically) opens cleanly while its other families
+> still point at the source. Nothing in the `OPTIONS` file distinguishes a restored copy from the
+> original, so this one is a procedure, not a check.
 
 ## `blobs.dir` — putting large values on their own volume
 
@@ -202,10 +220,20 @@ const db = RocksDatabase.open('/nvme/mydb', {
 });
 ```
 
-Nothing is moved for you — `allowDirChange` only suppresses the check, so setting it _without_
-relocating the files is exactly the failure the check exists to prevent. It is only needed for the
-open that performs the switch: that open records the new directory, so later opens can drop
+Nothing is moved for you — `allowDirChange` only records where the files went, so setting it
+_without_ relocating them is exactly the failure the check exists to prevent. It is only needed for
+the open that performs the switch: that open records the new directory, so later opens can drop
 `allowDirChange` — but they still have to supply the same `dir`.
+
+One open relocates the whole database. `allowDirChange` applies `dir` to every column family, not
+just the one it names, because the `mv` above moved every family's blob files. (Per-family
+relocation is not offered: a second open in the same process is a _warm_ one, which cannot change a
+live family's directory, so it would take one process restart per table with the database broken in
+between.)
+
+A directory that has gone missing entirely — an unmounted volume, a restore that never brought it —
+fails the open naming the family and the directory, rather than being discovered when the first
+read returns nothing and the first flush errors the database read-only.
 
 ## Turning blob files off
 
