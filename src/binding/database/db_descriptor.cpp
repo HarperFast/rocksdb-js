@@ -237,10 +237,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 }
 
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-// Whether a directory still holds blob files. Used to check the claim
-// `blobs.allowDirChange` with no `blobs.dir` makes — "this database's blob files
-// are all in its own directory now" — against the directory a column family
-// says its files were in. An unreadable or missing directory holds nothing.
+// An unreadable or missing directory holds nothing.
 static bool holdsBlobFiles(rocksdb::Env* env, const std::string& dir) {
 	std::vector<std::string> children;
 	if (!env->GetChildren(dir, &children).ok()) {
@@ -1637,27 +1634,26 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// Only `dir` reaches other families. The rest of `blobs.*` stays
 			// per-family (invariant 14): none of it describes where files already
 			// are.
+			// "The whole database is flat now" is checkable, so it is checked
+			// rather than trusted. Against the PERSISTED directory and for every
+			// family including the target, whose `cfo.blob_dir` was already
+			// emptied above.
+			if (options.blobs.allowDirChange && options.blobs.dir.empty() &&
+				it != persisted.end() && !it->second.blobDir.empty() &&
+				holdsBlobFiles(dbOptions.env, it->second.blobDir)
+			) {
+				throw rocksdb_js::DBException(
+					"Cannot open \"" + path + "\" with blobs.allowDirChange and no blobs.dir: "
+					"column family \"" + cfName + "\" recorded its blob files in \"" +
+					it->second.blobDir + "\", which still holds blob files, so this database has "
+					"not been flattened. If it is a restored copy, that directory belongs to the "
+					"database it was restored from and sharing it would corrupt both — restore "
+					"where that directory is not reachable. Otherwise move the blob files and "
+					"reopen with blobs.dir naming where they are."
+				);
+			}
 			if (!isTarget && options.blobs.allowDirChange) {
 				if (options.blobs.dir.empty()) {
-					// "The whole database is flat now" is checkable rather than
-					// assumed, and it has to be checked: this same call is what the
-					// restore procedure tells operators to type, so a wrong path
-					// argument aims it at the live original, where taking the claim
-					// on trust strands every tiered family. If the directory this
-					// family recorded still holds blob files, the claim is false for
-					// it — either nothing moved, or those files belong to the source
-					// database this copy was restored from and must not be shared.
-					if (!cfo.blob_dir.empty() && holdsBlobFiles(dbOptions.env, cfo.blob_dir)) {
-						throw rocksdb_js::DBException(
-							"Cannot open \"" + path + "\" with blobs.allowDirChange and no blobs.dir: "
-							"column family \"" + cfName + "\" recorded its blob files in \"" +
-							cfo.blob_dir + "\", which still holds blob files, so this database has "
-							"not been flattened. If it is a restored copy, that directory belongs to "
-							"the database it was restored from and sharing it would corrupt both — "
-							"restore where that directory is not reachable. Otherwise move the blob "
-							"files and reopen with blobs.dir naming where they are."
-						);
-					}
 					cfo.blob_dir.clear();
 				} else if (targetPersistedBlobDir && it != persisted.end() &&
 					it->second.blobDir == *targetPersistedBlobDir

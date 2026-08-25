@@ -882,6 +882,12 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		expect(() => RocksDatabase.open(dbPath, { blobs: { allowDirChange: true } })).toThrow(
 			/has not been flattened/
 		);
+		// Also when the tiered family is the one named. The claim is checked
+		// against what each family PERSISTED, because the target's own request has
+		// already been applied to it by then.
+		expect(() =>
+			RocksDatabase.open(dbPath, { name: 'table1', blobs: { allowDirChange: true } })
+		).toThrow(/has not been flattened/);
 	});
 
 	it('should read a restored named column family from its own flattened copy', async () => {
