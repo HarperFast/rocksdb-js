@@ -567,10 +567,10 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 			if (parkId == 0) {
 				// No timeout thread behind this park -- resolve now rather
-				// than register with the LockTracker unbounded. Every path that
-				// returns 0 does so before `schedule` publishes `fired`, and the
-				// wake callback below is not built yet, so this side owns the
-				// park outright and needs no exactly-once gate.
+				// than register with the LockTracker unbounded. No exactly-once
+				// gate: `schedule` returns 0 only before it publishes `fired`,
+				// and the wake callback below is not built yet, so this side
+				// owns the park outright.
 				vt->unrefTracker(t);
 				// A closing tsfn (env teardown racing this resolve) must not be
 				// touched again -- see the matching guard in

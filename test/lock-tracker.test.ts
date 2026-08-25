@@ -194,13 +194,11 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 				const child = spawn(process.execPath, [parkTimeoutFixturePath, dbPath], {
 					env: { ...process.env, ROCKSDB_JS_PARK_TIMEOUT_MS: '1' },
 				});
-				// Backstop against a true hang only — the child's own `elapsed`
-				// assertion is the deadline check. This timer additionally covers
-				// node boot, type-stripping, addon load and the seed writes, so a
-				// budget near the child's would make a slow runner (SIGTERM, the
-				// fixture's diagnostic never thrown) indistinguishable from a
-				// regression. Kept under vitest's 30s testTimeout so the kill path
-				// still dumps the child's stderr.
+				// Hang backstop only — the child's own `elapsed` assertion is the
+				// deadline check, and this also has to cover node boot and addon
+				// load, so a budget near the child's would report a slow runner as
+				// a regression. Under vitest's 30s testTimeout so the kill still
+				// dumps stderr.
 				const timer = setTimeout(() => child.kill(), 20_000);
 				let stderr = '';
 				child.stderr?.on('data', (chunk) => {
