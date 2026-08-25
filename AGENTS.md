@@ -193,6 +193,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   each completion callback (widens teardown race windows)
 - `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
   it reads (exercises orphan cleanup past the async-work wait timeout)
+- `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
+  coordinated-retry commit parked on a conflicting holder's VT lock resolves
+  RETRY_NOW unconditionally, in case the holder never releases (see
+  "Coordinated retry" note below). Read once per process (a function-local
+  `static`, like the other two above — `::getenv` is not safe against a
+  concurrent `::setenv` from a `process.env` write, and a park runs on whichever
+  env's JS thread owns the transaction), so it must be set in the environment a
+  process is started with. Values below `50` are clamped up to it, and `0` (an
+  ambiguous "disable the bound") falls back to the default like any malformed
+  value. There is no opt-out: a deployment that would rather wait than fail a
+  legitimately slow holder raises the value instead
 
 ## Test Structure
 
@@ -412,7 +423,73 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
-12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
+    commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
+    `completeCommitWork` (`src/binding/transaction/transaction.cpp`) registers a wake callback on the
+    conflicting VT slot's `LockTracker` (via `addWakeCallback`) and resolves `RETRY_NOW` only when
+    that lock's last holder releases (`VerificationTable::releaseWriteIntent` → `LockTracker::wake`).
+    A holder that never releases — a leaked/abandoned transaction, or a wake lost to a bug elsewhere —
+    would otherwise park forever (harper#2001: a worker's write path disabled for 5+ hours until
+    restart). `ParkTimeoutRegistry` (`db_descriptor.{h,cpp}`) bounds this with
+    `ROCKSDB_JS_PARK_TIMEOUT_MS` (default `5000` — the top of this fix's requested 2-5s range, to
+    leave maximum headroom for a holder that is merely slow rather than abandoned, since a timeout
+    consumes a `coordinatedRetry` attempt exactly like a real wake does and `maxRetries` is finite):
+    one registry, and one lazily-started timeout thread, **per descriptor** — joined at
+    `finishClose()` (and again, idempotently, from the destructor as a safety net, matching
+    `commitWorker`) — tracks every outstanding deadline instead of spawning a thread per park (the
+    contention path is exactly where an abandoned holder makes parks dense, so per-park threads would
+    be a resource cliff, not a fix). Deliberately a plain `std::thread`, not a `uv_timer_t`: this addon
+    ships one prebuilt binary across Node ABI versions via N-API, and libuv's struct layout is not part
+    of that stable surface.
+
+    **A `LockTracker` wake callback runs under the process-global VT `writerMutex_`, so it must not
+    block and must not re-enter the VT or `DBRegistry`.** `LockTracker::wake()` invokes its callbacks
+    inline and both callers (`releaseWriteIntent`, `cancelForDB`) hold that mutex across the whole
+    function. Re-entering the registry from there self-deadlocks: `DBRegistry::PurgeIfUnreferenced`
+    can claim the purge and call `finishClose()` → `cancelForDB()` → a second lock of the same
+    non-recursive `writerMutex_`, wedging every database's write-intent path process-wide — the exact
+    symptom this note exists to fix. It is also an AB-BA against `finishClose`'s `txnsMutex` →
+    `writerMutex_` order, and it would run a flush, a manual compaction, `WaitForCompact` and thread
+    joins under the global VT lock. That is why `ParkTimeoutRegistry` is a standalone object owned by
+    the descriptor through a `shared_ptr` rather than state on the descriptor itself: the wake closure
+    captures a **`std::weak_ptr<ParkTimeoutRegistry>`** and calls only `fire(id)`, which touches one
+    mutex and one map. Weak, not raw, because a park can end up registered on a tracker installed by a
+    _different_ database on a colliding VT slot (`VerificationTable::lockSlotForWrite` joins an existing
+    tracker without retagging its `dbId`), so that lock's eventual release wakes a park whose own
+    database may already have closed — `cancelForDB()` only wakes trackers tagged with _its own_
+    `vtEpoch`, so it cannot be relied on to have resolved a foreign-`dbId` park first. Weak **to the
+    registry and not to the descriptor** because a `weak_ptr<DBDescriptor>::lock()` is a transient extra
+    reference, and `PurgeIfUnreferenced` decides on `use_count() <= 1`: a racing close would see the
+    inflated count, skip the purge, and leak the registry entry plus the open RocksDB — the
+    HarperFast/rocksdb-js#672 hazard, which the wake path cannot repair by retrying the purge (that is
+    the re-entrancy above). `.lock()` failing is the expected outcome once the owning database closes:
+    `ParkTimeoutRegistry::shutdown()` (called from `finishClose()` right after `cancelForDB`, before
+    the descriptor can be destroyed) unconditionally resolves every park it still holds regardless of
+    whether the real holder ever wakes it, so by the time the weak reference can fail, the park has
+    already settled.
+
+    Each park is identified by a monotonic `uint64_t id`, not its entry's address: `LockTracker::wakeCallbacks`
+    has no removal API (see the gap noted below), so a stale closure can outlive its entry, and an
+    address-keyed lookup risks resolving a _different_, later park that reused the same freed heap
+    address. The timeout thread and the LockTracker wake callback race through one heap-allocated
+    `std::atomic<bool>` per park (independent of the per-park `RetryNowContext`, whose refs/TSFN the
+    winning side's release eventually frees) — whichever fires first calls+releases the TSFN under the
+    registry's `mutex` and erases the entry; the loser finds it already gone and touches nothing. That
+    same mutex is what a dying env's `releaseByEnv` (wired into the module env-cleanup
+    hook next to `ReleaseCommitCompletionsByEnv`) takes to cancel — release without calling — that
+    env's pending parks before Node frees their tsfns; `retryNowCallJs` also guards `env == nullptr`
+    like `commitCompletionCallJs` does, for the same tsfn-queue-drained-during-teardown reason. Parks
+    are indexed twice, by id and by deadline (`std::multimap`): `fire()` needs an O(1) lookup because it
+    runs under the global VT mutex, and the timeout thread needs the earliest deadline on every wakeup
+    without an O(N) scan on that same lock. Known gap: `LockTracker::wakeCallbacks`
+    itself has no removal API. Before this change an abandoned holder accrued one inert callback per
+    waiter and then everything hung; now each waiter re-parks (and re-registers) every
+    `ROCKSDB_JS_PARK_TIMEOUT_MS` up to `maxRetries`, so registrations accumulate per _retry_ rather than
+    per incident for as long as it lasts (each is inert once its own park resolves, so this is a
+    memory-growth concern, not a correctness one) — deferred rather than risking an unreviewed change to
+    `verification_table.cpp`'s concurrency invariants under this fix's scope.
+
+13. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
     `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
     `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
     path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
@@ -434,7 +511,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
     map membership while mutable-field writers hold no lock.
 
-13. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+14. **A recovered active transaction-log file ends on a transaction boundary when recovery can
     prove one**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them

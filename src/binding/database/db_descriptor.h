@@ -4,11 +4,16 @@
 #include <memory>
 #include <node_api.h>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <functional>
+#include <vector>
 #include "rocksdb/db.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -57,6 +62,117 @@ struct DBDeleter {
 			DEBUG_LOG("DBDeleter::operator() Deleted database\n");
 		}
 	}
+};
+
+/**
+ * Bounded waits for coordinated-retry commits parked on a conflicting holder's
+ * VT lock, so a holder that never releases resolves RETRY_NOW instead of
+ * parking forever (harper#2001, see AGENTS.md note 12). One instance per
+ * `DBDescriptor`, with one lazily-started thread tracking every outstanding
+ * deadline.
+ *
+ * Deliberately standalone — it holds no reference back to its descriptor, and
+ * nothing reachable from `fire()` touches the descriptor or `DBRegistry`.
+ * `fire()` is called from a `LockTracker` wake callback, which
+ * `LockTracker::wake()` invokes inline while the *process-global* VT
+ * `writerMutex_` is held (`VerificationTable::releaseWriteIntent` and
+ * `cancelForDB` both wake under it), so the standing invariant on that path is:
+ * do not block, and do not re-enter the VT or the registry. A
+ * `DBRegistry::PurgeIfUnreferenced` from there can claim the purge and run
+ * `finishClose()` -> `cancelForDB()` -> a second lock of that same
+ * non-recursive `writerMutex_`, wedging every database's write-intent path.
+ * Holding the wake closure's `weak_ptr` on this object rather than on the
+ * descriptor is also what keeps its transient `.lock()` out of the
+ * descriptor's `use_count`, which `PurgeIfUnreferenced` keys its "no handles
+ * left" decision on — so there is no purge-skip window to retry in the first
+ * place (the HarperFast/rocksdb-js#672 hazard).
+ *
+ * Parks are keyed by a monotonic `id`, not the entry's address:
+ * `LockTracker::wakeCallbacks` has no removal API, so a stale closure can
+ * outlive its entry and an address-keyed lookup could resolve a later,
+ * unrelated park that reused the freed address. `fired` is the exactly-once
+ * gate shared with that park's wake callback — whichever side wins the CAS
+ * calls+releases `tsfn`, always under `mutex` so a concurrent `releaseByEnv()`
+ * for a dying env cannot observe "nothing to cancel" while the other side is
+ * mid-call on that env's tsfn.
+ */
+class ParkTimeoutRegistry final {
+public:
+	~ParkTimeoutRegistry();
+
+	/**
+	 * JS thread (`completeCommitWork`). Registers a bounded wait, lazily
+	 * starting the single timeout thread. Returns the new park's id, or 0 if
+	 * the registry is shut down or thread creation failed -- either way the
+	 * caller resolves inline instead of parking with no timeout behind it.
+	 */
+	uint64_t schedule(
+		napi_env env,
+		unsigned timeoutMs,
+		napi_threadsafe_function tsfn,
+		std::shared_ptr<std::atomic<bool>> fired
+	);
+
+	/**
+	 * Resolves a specific park early because its VT lock's holder released
+	 * (LockTracker wake callback, any thread, VT `writerMutex_` held). A no-op
+	 * if the id is already gone -- claimed by the timeout thread, by
+	 * `releaseByEnv`, or drained by `shutdown`.
+	 */
+	void fire(uint64_t id);
+
+	/**
+	 * Module env-cleanup hook. Cancels every pending park registered for a
+	 * dying env -- released, never called, so neither the timeout thread nor a
+	 * later real wake can fire into a tsfn Node is about to free.
+	 */
+	void releaseByEnv(napi_env env);
+
+	/**
+	 * Descriptor close: stop and join the timeout thread, then resolve
+	 * (call+release) every park still pending. `cancelForDB`, called just
+	 * before this, cannot be relied on to have woken everything -- a park can
+	 * be registered on a foreign-`dbId` tracker (colliding VT slot) that only
+	 * wakes a different database. Idempotent (called from both `finishClose()`
+	 * and the descriptor's destructor, matching `commitWorker`).
+	 */
+	void shutdown();
+
+private:
+	using DeadlineIndex = std::multimap<std::chrono::steady_clock::time_point, uint64_t>;
+
+	struct ParkTimeout {
+		uint64_t id;
+		napi_env env;
+		napi_threadsafe_function tsfn;
+		std::shared_ptr<std::atomic<bool>> fired;
+		DeadlineIndex::iterator deadlineIt;
+	};
+
+	/** Detaches `id` from both indexes; null if already claimed. Holds `mutex`. */
+	std::unique_ptr<ParkTimeout> take(uint64_t id);
+
+	/**
+	 * Calls+releases a claimed park's tsfn, unless another side already won the
+	 * exactly-once gate. Every caller holds `mutex`.
+	 */
+	static void resolve(ParkTimeout& park);
+
+	/** Runs on `thread` until `shutdown()` stops it. */
+	void runLoop();
+
+	std::mutex mutex;
+	std::condition_variable cv;
+	std::unordered_map<uint64_t, std::unique_ptr<ParkTimeout>> parks;
+	// Deadline-ordered view of `parks`: the timeout thread needs the earliest
+	// deadline on every wakeup, and scanning for it under `mutex` would put an
+	// O(N) loop on the same lock `fire()` must take while holding the global VT
+	// `writerMutex_`.
+	DeadlineIndex deadlines;
+	uint64_t nextId = 1;
+	std::thread thread;
+	bool threadStarted = false;
+	bool stopped = false;
 };
 
 /**
@@ -292,6 +408,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * tsfn so the commit thread stops marshalling into a torn-down env.
 	 */
 	void releaseCommitCompletionsByEnv(napi_env env);
+
+	/**
+	 * Bounded waits for this database's parked coordinated-retry commits.
+	 * Never null; owned by shared_ptr so a LockTracker wake callback can hold
+	 * a weak reference to it without referencing the descriptor (see
+	 * `ParkTimeoutRegistry`). Drained and joined by `finishClose()`.
+	 */
+	const std::shared_ptr<ParkTimeoutRegistry> parkTimeouts =
+		std::make_shared<ParkTimeoutRegistry>();
 
 private:
 	DBDescriptor(

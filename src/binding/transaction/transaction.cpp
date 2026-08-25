@@ -1,10 +1,17 @@
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
+#include "database/db_registry.h"
 #include "iterator/db_iterator.h"
 #include "database/db_settings.h"
 #include "napi/macros.h"
@@ -199,6 +206,13 @@ struct RetryNowContext {
 };
 
 static void retryNowCallJs(napi_env env, napi_value /*func*/, void* context, void* /*data*/) {
+	// env is nullptr when the env is tearing down and this tsfn's queue is
+	// being drained as part of that (same as commitCompletionCallJs above) —
+	// nothing left to resolve into; retryNowFinalize still runs afterward to
+	// free ctx.
+	if (env == nullptr) {
+		return;
+	}
 	auto* ctx = reinterpret_cast<RetryNowContext*>(context);
 	napi_value global, resolveFn, retryVal;
 	::napi_get_global(env, &global);
@@ -215,20 +229,103 @@ static void retryNowFinalize(napi_env env, void* finalizeData, void* /*hint*/) {
 }
 
 /**
+ * Bounded wait (ms) for a coordinated-retry commit parked on a conflicting
+ * holder's VT lock, selected by ROCKSDB_JS_PARK_TIMEOUT_MS (harper#2001).
+ * Default is the top of the 2-5s range this was scoped to: a timeout
+ * consumes a coordinatedRetry attempt like a genuine wake would, so a
+ * higher default leaves more headroom for a merely-slow (not abandoned)
+ * holder before maxRetries exhausts -- a deployment that would rather wait
+ * than fail raises this, it cannot disable the bound.
+ *
+ * Read once per process, like commitThreadMode()/commitDelayMs() below: a park
+ * runs on whichever env's JS thread owns the transaction, and ::getenv is not
+ * safe against a `process.env` write on another thread (uv_os_setenv ->
+ * setenv(3) may reallocate `environ`). Varying it therefore means starting a
+ * process with the value already set -- worker-thread `process.env` writes
+ * never reach ::getenv at all (core/test_seam.h).
+ *
+ * Malformed input falls back to the default rather than producing a
+ * degenerate effective timeout; a positive value below kMinimum is clamped up
+ * to it instead, since the intent there is unambiguous.
+ */
+static unsigned parkTimeoutMs() {
+	static const unsigned ms = []() -> unsigned {
+		constexpr unsigned kDefault = 5000;
+		constexpr unsigned kMinimum = 50;
+		const char* v = ::getenv("ROCKSDB_JS_PARK_TIMEOUT_MS");
+		if (v == nullptr) {
+			return kDefault;
+		}
+		const char* firstNonSpace = v;
+		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+			++firstNonSpace;
+		}
+		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
+			return kDefault;
+		}
+		char* end = nullptr;
+		errno = 0;
+		unsigned long parsed = ::strtoul(v, &end, 10);
+		// parsed == 0 is the one ambiguous input: a literal "0" reads as "disable
+		// the bound", which is exactly the unbounded park this exists to prevent,
+		// so it falls back to the default like malformed input rather than being
+		// honored as an opt-out or clamped up to kMinimum.
+		if (end == v || *end != '\0' || errno == ERANGE || parsed > UINT32_MAX || parsed == 0) {
+			return kDefault;
+		}
+		return std::max(kMinimum, static_cast<unsigned>(parsed));
+	}();
+	return ms;
+}
+
+/**
  * State for the `Commit` async work.
  */
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
+	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
 
 	TransactionCommitState(
 		napi_env env,
 		std::shared_ptr<TransactionHandle> handle
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
-		hasLog(false) {}
+		hasLog(false),
+		parkTimeouts(
+			handle && handle->coordinatedRetry && handle->dbHandle && handle->dbHandle->descriptor
+				? handle->dbHandle->descriptor->parkTimeouts
+				: std::shared_ptr<ParkTimeoutRegistry>()
+		) {}
 };
+
+static void rejectRetryNowSetupFailure(
+	napi_env env,
+	TransactionCommitState* state,
+	napi_status status
+) {
+	napi_value error = nullptr;
+	bool exceptionPending = false;
+	if (::napi_is_exception_pending(env, &exceptionPending) == napi_ok && exceptionPending) {
+		::napi_get_and_clear_last_exception(env, &error);
+	}
+	if (error == nullptr) {
+		std::string detail = "Failed to initialize coordinated retry: " +
+			getNapiExtendedError(env, status);
+		napi_value message;
+		if (::napi_create_string_utf8(env, detail.c_str(), detail.size(), &message) == napi_ok) {
+			::napi_create_error(env, nullptr, message, &error);
+		}
+	}
+	if (error == nullptr) {
+		::napi_get_and_clear_last_exception(env, &error);
+	}
+	if (error == nullptr) {
+		::napi_get_undefined(env, &error);
+	}
+	state->callReject(error);
+}
 
 /**
  * Log-lane stage of the commit: validates the handle and writes the
@@ -410,14 +507,9 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			state->handle->close();
 		}
 
-		// Transfer resolve/reject refs from state to a RetryNowContext
-		// so the TSFN finalize can clean them up.
-		auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
-		state->resolveRef = nullptr;
-		state->rejectRef = nullptr;
-
 		bool parked = false;
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		std::shared_ptr<ParkTimeoutRegistry> parkTimeouts = state->parkTimeouts.lock();
 		for (auto* slot : state->savedSlots) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
@@ -428,27 +520,95 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 			// Create a TSFN that calls resolve(RETRY_NOW) when fired.
 			napi_value resource_name;
-			::napi_create_string_latin1(env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name);
+			napi_status resourceStatus = ::napi_create_string_latin1(
+				env, "transaction.retry", NAPI_AUTO_LENGTH, &resource_name
+			);
+			if (resourceStatus != napi_ok) {
+				vt->unrefTracker(t);
+				rejectRetryNowSetupFailure(env, state, resourceStatus);
+				return;
+			}
+
+			auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
+			state->resolveRef = nullptr;
+			state->rejectRef = nullptr;
 			napi_threadsafe_function tsfn;
-			::napi_create_threadsafe_function(
+			napi_status tsfnStatus = ::napi_create_threadsafe_function(
 				env, nullptr, nullptr, resource_name,
 				0, 1,
 				ctx, retryNowFinalize,
 				ctx, retryNowCallJs,
 				&tsfn
 			);
+			if (tsfnStatus != napi_ok) {
+				state->resolveRef = ctx->resolveRef;
+				state->rejectRef = ctx->rejectRef;
+				ctx->resolveRef = nullptr;
+				ctx->rejectRef = nullptr;
+				delete ctx;
+				vt->unrefTracker(t);
+				rejectRetryNowSetupFailure(env, state, tsfnStatus);
+				return;
+			}
 			::napi_unref_threadsafe_function(env, tsfn);
+
+			// Exactly-once gate: independent of `ctx` so a loser arriving after
+			// the winner's ctx/tsfn are already gone just loses the CAS.
+			auto fired = std::make_shared<std::atomic<bool>>(false);
+
+			// #741 bound (harper#2001): resolves RETRY_NOW after
+			// ROCKSDB_JS_PARK_TIMEOUT_MS if the holder never releases. 0 both
+			// when the descriptor is closing and when there is no descriptor
+			// at all (DBHandle::close() can reset it concurrently) -- either
+			// way there is no timeout thread behind this park.
+			uint64_t parkId = parkTimeouts
+				? parkTimeouts->schedule(env, parkTimeoutMs(), tsfn, fired)
+				: 0;
+
+			if (parkId == 0) {
+				// No timeout thread behind this park -- resolve now rather
+				// than register with the LockTracker unbounded. No exactly-once
+				// gate: `schedule` returns 0 only before it publishes `fired`,
+				// and the wake callback below is not built yet, so this side
+				// owns the park outright.
+				vt->unrefTracker(t);
+				// A closing tsfn (env teardown racing this resolve) must not be
+				// touched again -- see the matching guard in
+				// ParkTimeoutRegistry::resolve.
+				if (::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking) == napi_ok) {
+					::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				}
+				parked = true;
+				break;
+			}
+
+			// weak_ptr, not raw: LockTracker::wakeCallbacks has no removal API,
+			// so this closure can outlive the park registry (e.g. a foreign-dbId
+			// tracker from a colliding VT slot). `.lock()` failing means
+			// ParkTimeoutRegistry::shutdown already resolved this park at close.
+			// The weak reference is deliberately to the registry and not to the
+			// descriptor: this runs inline under the process-global VT
+			// `writerMutex_`, where re-entering DBRegistry can self-deadlock and
+			// where a transient descriptor ref would perturb the use_count that
+			// PurgeIfUnreferenced decides on (see the ParkTimeoutRegistry docs).
+			std::weak_ptr<ParkTimeoutRegistry> weakParks = parkTimeouts;
+			std::weak_ptr<std::atomic<bool>> weakFired = fired;
+			auto fireOnce = [weakParks, weakFired, parkId]() {
+				auto fired = weakFired.lock();
+				if (!fired || fired->load(std::memory_order_acquire)) {
+					return;
+				}
+				if (auto parks = weakParks.lock()) {
+					parks->fire(parkId);
+				}
+			};
 
 			// Register wake callback; if the tracker already fired wake()
 			// before we got here, addWakeCallback returns false and we
 			// call+release the TSFN immediately (async on the JS thread).
-			bool registered = t->addWakeCallback([tsfn]() {
-				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
-			});
+			bool registered = t->addWakeCallback(fireOnce);
 			if (!registered) {
-				::napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
-				::napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+				fireOnce();
 			}
 
 			vt->unrefTracker(t);
@@ -457,18 +617,14 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		}
 
 		if (!parked) {
-			// No active lock found; resolve RETRY_NOW directly (we are on
-			// the JS thread in this complete callback).
-			napi_value global, resolveFn, retryVal;
-			::napi_get_global(env, &global);
-			::napi_get_reference_value(env, ctx->resolveRef, &resolveFn);
-			::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
-			::napi_call_function(env, global, resolveFn, 1, &retryVal, nullptr);
-			::napi_delete_reference(env, ctx->resolveRef);
-			::napi_delete_reference(env, ctx->rejectRef);
-			delete ctx;
+			napi_value retryVal;
+			napi_status retryStatus = ::napi_create_int32(env, RETRY_NOW_VALUE, &retryVal);
+			if (retryStatus == napi_ok) {
+				state->callResolve(retryVal);
+			} else {
+				rejectRetryNowSetupFailure(env, state, retryStatus);
+			}
 		}
-		// If parked, ctx is owned by the TSFN finalize; do not free here.
 	} else {
 		// Normal error path: reset to Pending so JS can retry.
 		// Guard: keep Aborted if close() already set it (DB closing
