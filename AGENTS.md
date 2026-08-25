@@ -538,7 +538,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an
     entry with a durable header and partially durable payload look complete; detecting that case needs
     a payload checksum. Recovery runs before mappings can be handed to readers.
-14. **A callback-style native method owes its caller exactly one settled callback on every path**:
+15. **A callback-style native method owes its caller exactly one settled callback on every path**:
     `Flush` and `Compact` take `resolve`/`reject` and used to `return` on a read-only database
     without invoking either, so `await db.flush()` there never resumed (#774). The sync siblings can
     early-return — for a promise, "return" is not a no-op, it is a permanent hang with no error, no
@@ -546,7 +546,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     work) added ahead of the `napi_create_async_work` call must settle first. The `napi_cancelled`
     branch in each `complete` callback is the same shape and is only unreachable because nothing
     calls `napi_cancel_async_work`.
-15. **`FlushOptions::allow_write_stall` defaults to the waiting behavior, and the name reads
+16. **`FlushOptions::allow_write_stall` defaults to the waiting behavior, and the name reads
     backwards**: false (the RocksDB default, and what `flush()`/`flushSync()` still use unless a
     caller opts out) means the flush _waits_ until it can run without causing a write stall. The
     wait is unbounded and is taken on the calling thread — a libuv worker for the async `flush()` —
