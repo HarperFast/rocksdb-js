@@ -206,11 +206,9 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	// `noBlockCache` means "this database does not use the process-wide caches",
 	// so it opts out of the blob cache too — otherwise a scratch/bulk-load
 	// database would evict the serving database's cached blob values.
-	// Resolved in both directions for the same reason as prepopulate_blob_cache
-	// below: `cfOptions` is the descriptor's own base on the warm path, so
-	// leaving it untouched would attach the database's shared blob cache to a
-	// family created with `noBlockCache` — the eviction the opt-out exists to
-	// prevent.
+	// Both directions for the same reason as prepopulate_blob_cache below:
+	// leaving it untouched attaches the shared blob cache to a family created
+	// with `noBlockCache`, which is the eviction that opt-out exists to prevent.
 	cfOptions.blob_cache =
 		options.noBlockCache ? nullptr : DBSettings::getInstance().getBlobCache();
 	// The blob defaults belong to a column family being CREATED. A cold open of
@@ -226,11 +224,10 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.blob_garbage_collection_force_threshold =
 		options.blobs.garbageCollectionForceThreshold.value_or(
 			kDefaultBlobGarbageCollectionForceThreshold);
-	// Assigned in both directions, like every other field here. `base` is the
-	// descriptor's own `cfOptions` on the warm path (db_registry.cpp), so a
-	// one-sided assignment would let the database's FIRST opener's
-	// prepopulation setting ride along into every family created later — and it
-	// is persisted, so it survives restarts.
+	// Assigned in both directions, like every other field here: the warm path
+	// builds on the descriptor's own `cfOptions`, so a one-sided assignment lets
+	// the database's FIRST opener's setting ride along into every family created
+	// later, persisted.
 	cfOptions.prepopulate_blob_cache =
 		options.blobs.prepopulateCache.value_or(kDefaultBlobPrepopulateCache)
 			? rocksdb::PrepopulateBlobCache::kFlushOnly
