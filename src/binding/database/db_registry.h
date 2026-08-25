@@ -80,27 +80,21 @@ private:
 	std::mutex databasesMutex;
 
 	/**
-	 * The last known file layout of every database this process has opened,
-	 * kept after its descriptor is purged.
+	 * The last known file layout of every database this process has opened.
 	 *
 	 * `destroy()` accepts a CLOSED handle, and closing the last handle to a
 	 * path takes the descriptor — and the registry entry the layout would be
-	 * read from — with it. `blob_dir` could be recovered from the OPTIONS file;
-	 * `db_paths` is written nowhere (RocksDB serializes it in its "not yet
-	 * supported" block), so without this the destroy runs against a default
-	 * `rocksdb::Options`, whose layout is "everything under the database
-	 * directory": the directory goes, every tiered SST file stays, and the call
-	 * reports success.
+	 * read from — with it. `db_paths` is written nowhere (RocksDB serializes it
+	 * in its "not yet supported" block), so nothing on disk can put it back.
 	 *
-	 * Keyed by path and not by handle, so a handle closed before a later open
-	 * appended a storage path cannot destroy from its own older copy. Entries
-	 * are erased when the path is destroyed; a process that opens and closes
-	 * many distinct databases retains one small record per path, which is the
-	 * price of `destroy()` after `close()` working at all.
+	 * Keyed by path rather than by handle, so a handle closed before a later
+	 * open appended a storage path cannot destroy from its own older copy.
+	 * Erased on `destroy()` and by `PurgeAll`; otherwise one small record per
+	 * path opened, which is the price of `destroy()` after `close()` working.
 	 *
 	 * Its own mutex, deliberately a leaf: `DestroyDB` reaches a descriptor's
 	 * `layoutMutex` while holding `databasesMutex`, so anything recording a
-	 * layout from under `layoutMutex` must not reach back for `databasesMutex`.
+	 * layout from under `layoutMutex` must not reach back for a registry lock.
 	 */
 	std::unordered_map<std::string, DBFileLayout> knownLayouts;
 	std::mutex knownLayoutsMutex;

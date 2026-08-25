@@ -1687,18 +1687,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// nothing is actually changing so a flag left in a config file does not
 			// start refusing every open.
 			//
-			// Both sides resolve an empty directory to the database directory,
-			// which is what an empty `blob_dir` means. Comparing the raw strings
-			// exempted every family that never had an external directory — so the
-			// flat-to-external move, the migration the docs lead with and the only
-			// one an untiered database can make, was the one form of the
-			// acknowledgement taken on trust.
+			// Both sides resolve an empty directory: an empty `blob_dir` means the
+			// database directory, not "no directory".
 			//
-			// Deliberately strict about a HALF-finished move (an interrupted copy,
-			// or the open racing the `mv`): the destination holding some files is
-			// not evidence, and persisting it strands every value still behind. The
-			// destination being empty is not evidence either — `ensureBlobDirExists`
-			// creates it.
+			// Deliberately strict about a HALF-finished move: the destination
+			// holding some files is not evidence, and neither is its being empty —
+			// `ensureBlobDirExists` creates it.
 			if (acknowledged && it != persisted.end()) {
 				const std::string& from = resolveBlobDir(it->second.blobDir);
 				if (from != resolveBlobDir(options.blobs.dir) &&
@@ -2706,13 +2700,11 @@ rocksdb::Status DBDescriptor::compactRange(
 
 /**
  * Records where a column family created after the open keeps its blob files,
- * and mirrors the whole layout into the registry so it survives this
- * descriptor. Defined out of line because it reaches DBRegistry.
+ * and mirrors the layout into the registry so it survives this descriptor.
  *
  * `layoutMutex` is released before that call: `DBRegistry::DestroyDB` takes it
  * while holding `databasesMutex`, so recording must not reach back for a
- * registry lock from under it. `knownLayoutsMutex` is a leaf for the same
- * reason.
+ * registry lock from under it.
  */
 void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::string& blobDir) {
 	DBFileLayout layout;

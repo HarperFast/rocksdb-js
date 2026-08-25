@@ -156,12 +156,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 
-	// The layout a default `rocksdb::Options` describes is "everything under
-	// `path`", which stopped being true once SST files can live on `paths`
-	// volumes and blob files in `blobs.dir`. Without the real layout, `destroy()`
-	// removes the database directory and silently orphans every tiered SST and
-	// every blob file — exactly the bulk of the data, on exactly the volume it
-	// was moved to because it was large.
+	// A default `rocksdb::Options` describes "everything under `path`", which
+	// orphans every tiered SST and blob file. See DBRegistry::knownLayouts.
 	rocksdb::Options destroyOptions;
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
@@ -211,9 +207,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
-	// No descriptor left in the registry — which `destroy()` on a closed handle
-	// reaches whenever that handle was the last one open. `knownLayouts` kept
-	// the last open's record of where the files are; see its declaration.
+	// No descriptor left in the registry — `destroy()` on a closed handle that
+	// was the last one open. See DBRegistry::knownLayouts.
 	if (!capturedLayout) {
 		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 		if (auto it = instance->knownLayouts.find(path); it != instance->knownLayouts.end()) {
@@ -702,6 +697,11 @@ void DBRegistry::PurgeAll() {
 			currentSize
 		);
 #endif
+	}
+
+	if (instance) {
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		instance->knownLayouts.clear();
 	}
 }
 
