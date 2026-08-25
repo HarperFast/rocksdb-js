@@ -282,7 +282,9 @@ export interface StoreOptions extends Omit<
 
 	/**
 	 * When `true`, the database is opened in read-only mode. Write operations
-	 * will throw an error with code `ERR_DATABASE_READONLY`.
+	 * will throw an error with code `ERR_DATABASE_READONLY`, except for
+	 * `flush()`/`flushSync()`/`compact()`/`compactSync()`, which succeed as
+	 * no-ops.
 	 */
 	readOnly?: boolean;
 
@@ -499,7 +501,9 @@ export class Store {
 
 	/**
 	 * Whether the database is open in readonly mode. When `true`, write
-	 * operations will throw an error with code `ERR_DATABASE_READONLY`.
+	 * operations will throw an error with code `ERR_DATABASE_READONLY`, except
+	 * for `flush()`/`flushSync()`/`compact()`/`compactSync()`, which succeed as
+	 * no-ops.
 	 */
 	readOnly: boolean;
 

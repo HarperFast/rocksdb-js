@@ -349,6 +349,48 @@ export type PurgeLogsOptions = {
  */
 export type PurgedLog = { path: string; entries: number };
 
+export type FlushOptions = {
+	/**
+	 * Whether the flush may proceed even though it will stall writes for its duration.
+	 *
+	 * Maps to `rocksdb::FlushOptions::allow_write_stall`. RocksDB's default is `false`, which
+	 * means the opposite of what the name suggests on first read: the flush **waits** until it
+	 * can run without causing a stall. That wait has no timeout, so a database sitting in a stall
+	 * condition — immutable-memtable backlog, L0 stop trigger, pending-compaction-bytes limit, an
+	 * exhausted WriteBufferManager budget — blocks the caller for as long as the condition lasts.
+	 * `flush()` runs on the libuv threadpool, so there the wait shows up as a promise that simply
+	 * never settles while the event loop stays alive — and it parks that whole worker, not just
+	 * the caller's promise: `UV_THREADPOOL_SIZE` defaults to 4, so a handful of concurrently
+	 * stalled flushes can exhaust the pool and stall every unrelated `fs`/`dns`/`crypto` call and
+	 * cold-cache `get()` in the process, not only this database's own operations. `flushSync()`
+	 * takes the same wait on the JS thread, so it is the worse of the two here rather than the
+	 * safer one: it freezes the event loop outright instead of parking a pool worker, and it holds
+	 * the in-flight operation claim that `close()` waits on for the duration.
+	 *
+	 * Pass `true` when the flush is a durability gate the caller is blocked on and stalling
+	 * writers is the acceptable cost of it completing — decide that up front, before issuing the
+	 * call, since there is no way to cancel an in-flight `flush()` and turn `true` into an escape
+	 * hatch after the fact. It is also not a free way out of an existing stall: forcing the
+	 * memtable switch adds another L0 file to the level whose file count may be *causing* the
+	 * stop trigger, so it can prolong the condition it is meant to clear. Weigh the cost
+	 * database-wide, not per-caller: a flush covers **every column family** on the database, and
+	 * the descriptor is process-global and shared across `worker_threads`, so the stall lands on
+	 * every other column family and every other handle that opened the same path — not just the
+	 * one you called. It also relocates the hang rather than removing it: a stalled `db->Write()`
+	 * blocks the database's single `CommitWorker` thread, which dispatches every
+	 * `Transaction.commit()` in order, so the stall queues up every commit behind it — including
+	 * ones from callers that never touched flush — until the stall clears.
+	 *
+	 * Note this is a *different* knob from the `writeBufferManagerAllowStall` config, and their
+	 * polarity is nearly opposite: that one decides whether the WriteBufferManager may stall
+	 * writers at all, this one decides whether a manual flush is willing to cause a stall rather
+	 * than wait one out.
+	 *
+	 * @default false
+	 */
+	allowWriteStall?: boolean;
+};
+
 export type NativeDatabase = {
 	new (): NativeDatabase;
 	addListener(event: string, callback: (...args: any[]) => void): void;
@@ -387,8 +429,8 @@ export type NativeDatabase = {
 	destroy(): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
-	flush(resolve: ResolveCallback<void>, reject: RejectCallback): void;
-	flushSync(): void;
+	flush(resolve: ResolveCallback<void>, reject: RejectCallback, options?: FlushOptions): void;
+	flushSync(options?: FlushOptions): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(
