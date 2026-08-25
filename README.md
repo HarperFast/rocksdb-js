@@ -779,6 +779,13 @@ not committed after the configured number of coordinated retries, the transactio
 an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column family to be opened with
 `verificationTable: true`.
 
+That wait is bounded so a conflicting transaction that is never committed or aborted cannot block
+the commit forever: if the write intent has not been released after `ROCKSDB_JS_PARK_TIMEOUT_MS`
+(default `5000`), the commit resolves anyway and consumes a retry attempt exactly as a real release
+would. A conflicting transaction held for longer than roughly `maxRetries` times that timeout
+therefore ends in `ERR_TRANSACTION_ABANDONED` rather than waiting indefinitely. Deployments where
+waiting is preferable to failing should raise the timeout; it has no opt-out.
+
 ### Class: `Transaction`
 
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
