@@ -572,11 +572,24 @@ function locateBinding(): string {
 	throw new Error('Unable to locate rocksdb-js native binding');
 }
 
+export type RegistryStatusTransaction = {
+	/** The transaction id assigned by the database descriptor. */
+	id: number;
+	/** Milliseconds since the transaction handle was created. */
+	ageMs: number;
+};
+
 export type RegistryStatusDB = {
 	path: string;
 	refCount: number;
 	columnFamilies: string[];
 	transactions: number;
+	/**
+	 * One entry per live transaction handle. An `ageMs` beyond any plausible request lifetime,
+	 * against a nonzero `rocksdb.num-snapshots`, identifies a handle holding back reclamation for
+	 * its whole database.
+	 */
+	transactionDetails: RegistryStatusTransaction[];
 	closables: number;
 	locks: number;
 	userSharedBuffers: number;

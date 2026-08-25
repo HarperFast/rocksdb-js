@@ -191,6 +191,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
+  it reads (exercises orphan cleanup past the async-work wait timeout)
 
 ## Test Structure
 
@@ -218,6 +220,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   - **Fixture helpers must be `src`-free** only where they'd otherwise pull a heavier graph — e.g.
     `createWorkerBootstrapScript` lives in `test/lib/worker-bootstrap.ts` (no `src` import), separate
     from `test/lib/util.ts` (which imports `src`); every call site imports it directly.
+- **GC is not exposed to Deno's test workers** (#770): tests that force collection run in Vitest's
+  worker, not the process you launched. Node's `threads` pool inherits `--expose-gc` through
+  `execArgv`, and Bun exposes `Bun.gc()`, but Deno uses the `forks` pool and
+  `--v8-flags=--expose-gc` applies only to the CLI process it was passed to — so `globalThis.gc` is
+  undefined in every Deno worker and each `skipIf(!globalThis.gc)` test silently skips there. Guard
+  GC-dependent tests with `skipIf`, never with a throw. `DENO_V8_FLAGS=--expose-gc` is the fix (the
+  environment is inherited by children) but cannot land until #771 is fixed: the restored coverage
+  makes `test/lock.test.ts` and one macOS `verification-table.test.ts` case fail.
 
 ## Important Implementation Notes
 
@@ -402,7 +412,29 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
     a per-frame call would tax every healthy read.
 
-12. **A recovered active transaction-log file ends on a transaction boundary when recovery can
+12. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
+    `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a
+    `TransactionHandle` alive and `~TransactionHandle` — hence `close()`, the only `ClearSnapshot()`
+    path — is unreachable while it is registered. The `NativeTransaction` finalizer therefore calls
+    `onWrapperCollected()` before dropping its reference: once V8 has collected the wrapper, no JS
+    code can commit, abort, retry, or read through that handle again, so it is closed. The one
+    exception is `state == Committing`, where `TransactionCommitState` still owns the handle and
+    closing would cancel a commit mid-flight; the commit-completion paths close it instead — success
+    always closes, and the failure paths (which deliberately leave the handle open for a caller that
+    may retry) check `wrapperCollected`, because there is no caller left. Other dependents defer the
+    orphan close without blocking the V8 finalizer: a cold-cache async get owns a
+    `shared_ptr<TransactionHandle>` and retries after its async registration is released, while a
+    transaction-backed `DBIteratorHandle` owns the handle and keeps `activeIteratorCount` nonzero
+    until the RocksDB iterator is reset. The last dependent closes the orphan. Without this a dropped
+    transaction either pinned `rocksdb.oldest-snapshot-time` for the life of the process or, after
+    orphan cleanup was added, could be destroyed under an async read/live iterator
+    (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on any redesign
+    here: the registry reference cannot simply be made weak, because dependents need the coordinated
+    cancellation and transaction-destruction path in `close()`; and `registryStatus()` may only report
+    handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
+    map membership while mutable-field writers hold no lock.
+
+13. **A recovered active transaction-log file ends on a transaction boundary when recovery can
     prove one**: only a batch's final entry
     carries `TRANSACTION_LOG_ENTRY_LAST_FLAG`, so a crash mid-batch leaves whole, well-framed
     entries that are a _prefix_ of a transaction. `recoverTail()` discards them

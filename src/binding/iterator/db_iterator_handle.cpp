@@ -29,28 +29,30 @@ DBIteratorHandle::DBIteratorHandle(
 }
 
 DBIteratorHandle::DBIteratorHandle(
-	TransactionHandle* txnHandle,
+	std::shared_ptr<TransactionHandle> txnHandle,
 	DBIteratorOptions& options,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) :
 	dbHandle(dbHandleOverride ? dbHandleOverride : txnHandle->dbHandle),
+	txnHandle(std::move(txnHandle)),
 	exclusiveStart(options.exclusiveStart),
 	inclusiveEnd(options.inclusiveEnd),
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer)
 {
-	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", txnHandle, dbHandle->descriptor.get());
+	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", this->txnHandle.get(), dbHandle->descriptor.get());
 	this->init(options);
 
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
-		txnHandle->txn->GetIterator(
+		this->txnHandle->txn->GetIterator(
 			options.readOptions,
 			this->dbHandle->getColumnFamilyHandle()
 		)
 	);
 
 	this->seek(options);
+	this->txnHandle->registerIterator();
 }
 
 DBIteratorHandle::~DBIteratorHandle() {
@@ -62,6 +64,10 @@ void DBIteratorHandle::close() {
 	if (this->iterator) {
 		this->iterator->Reset();
 		this->iterator.reset();
+	}
+	if (this->txnHandle) {
+		auto txnHandle = std::move(this->txnHandle);
+		txnHandle->unregisterIterator();
 	}
 }
 
