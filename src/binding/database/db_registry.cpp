@@ -859,11 +859,6 @@ void DBRegistry::PurgeAll() {
 		);
 #endif
 	}
-
-	if (instance) {
-		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
-		instance->knownLayouts.clear();
-	}
 }
 
 /**
