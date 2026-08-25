@@ -7,12 +7,22 @@ std::optional<std::string> findPersistedBlobDir(const std::string& optionsFileCo
 	for (size_t pos = optionsFileContents.find(key); pos != std::string::npos;
 		pos = optionsFileContents.find(key, pos + key.size())
 	) {
-		// Must be a whole key rather than the tail of a longer one, or a future
-		// `wal_blob_dir=` would be read as this field.
-		if (pos > 0 && optionsFileContents[pos - 1] != '\n' &&
-			optionsFileContents[pos - 1] != '\r' && optionsFileContents[pos - 1] != ' ' &&
-			optionsFileContents[pos - 1] != '\t'
-		) {
+		// Only whitespace may precede it on its line: anything else means this is
+		// the tail of a longer key (a future `wal_blob_dir=`) or a commented-out
+		// line. RocksDB never writes comments, but a hand-edited file would
+		// otherwise make an unpatched build refuse an untiered database, naming a
+		// directory nothing was ever configured with.
+		size_t lineStart = optionsFileContents.rfind('\n', pos);
+		lineStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+		bool indentOnly = true;
+		for (size_t i = lineStart; i < pos; i++) {
+			const char c = optionsFileContents[i];
+			if (c != ' ' && c != '\t' && c != '\r') {
+				indentOnly = false;
+				break;
+			}
+		}
+		if (!indentOnly) {
 			continue;
 		}
 		const size_t valueStart = pos + key.size();

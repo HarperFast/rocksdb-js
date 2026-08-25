@@ -77,6 +77,22 @@ TEST(OptionsFile, FindsARealKeyAfterALongerOne) {
 	EXPECT_EQ(*found, "/mnt/blobs");
 }
 
+// RocksDB never writes comments, but a hand-edited file must not make an
+// unpatched build refuse an untiered database over a directory nothing uses.
+TEST(OptionsFile, IgnoresACommentedOutKey) {
+	EXPECT_FALSE(
+		findPersistedBlobDir("[CFOptions \"default\"]\n  # blob_dir=/mnt/old\n").has_value()
+	);
+}
+
+TEST(OptionsFile, FindsARealKeyAfterACommentedOutOne) {
+	auto found = findPersistedBlobDir(
+		"[CFOptions \"default\"]\n  # blob_dir=/mnt/old\n  blob_dir=/mnt/blobs\n"
+	);
+	ASSERT_TRUE(found.has_value());
+	EXPECT_EQ(*found, "/mnt/blobs");
+}
+
 TEST(OptionsFile, AcceptsATabIndentedKey) {
 	auto found = findPersistedBlobDir("[CFOptions \"t1\"]\n\tblob_dir=/mnt/blobs\n");
 	ASSERT_TRUE(found.has_value());
