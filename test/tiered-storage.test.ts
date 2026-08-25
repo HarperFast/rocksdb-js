@@ -420,7 +420,7 @@ describe('paths', () => {
 		expect(existsSync(dbPath)).toBe(false);
 	});
 
-	it('should delete tiered SST files a later open added, not the first handle’s list', () => {
+	it('should delete tiered SST files a later open added, not the first handle’s list', async () => {
 		const dbPath = tempPath();
 		const fast = tempDir();
 		const slow = tempDir();
@@ -447,11 +447,17 @@ describe('paths', () => {
 			}
 			second.flushSync();
 		}
-		second.compactSync();
+
+		// Waited for rather than forced: only AUTOMATIC compaction distributes
+		// across paths, so a manual compactSync() would put everything back on
+		// path 0 and the appended volume this test exists to cover could be
+		// empty at the destroy.
+		const deadline = Date.now() + 30_000;
+		while (filesWithExt(slow, '.sst').length === 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		expect(filesWithExt(slow, '.sst').length).toBeGreaterThan(0);
 		second.close();
-		expect(filesWithExt(fast, '.sst').length + filesWithExt(slow, '.sst').length).toBeGreaterThan(
-			0
-		);
 
 		first.destroy();
 		expect(filesWithExt(fast, '.sst')).toHaveLength(0);

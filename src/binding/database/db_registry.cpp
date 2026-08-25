@@ -252,7 +252,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 	};
-
 	if (!capturedLayout) {
 		for (const auto& [descriptor, condition] : claimed) {
 			if (!descriptor->readOnly) {
@@ -859,6 +858,11 @@ void DBRegistry::PurgeAll() {
 			currentSize
 		);
 #endif
+	}
+
+	if (instance) {
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		instance->knownLayouts.clear();
 	}
 }
 
