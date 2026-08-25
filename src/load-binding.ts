@@ -362,7 +362,10 @@ export type FlushOptions = {
 	 * never settles while the event loop stays alive — and it parks that whole worker, not just
 	 * the caller's promise: `UV_THREADPOOL_SIZE` defaults to 4, so a handful of concurrently
 	 * stalled flushes can exhaust the pool and stall every unrelated `fs`/`dns`/`crypto` call and
-	 * cold-cache `get()` in the process, not only this database's own operations.
+	 * cold-cache `get()` in the process, not only this database's own operations. `flushSync()`
+	 * takes the same wait on the JS thread, so it is the worse of the two here rather than the
+	 * safer one: it freezes the event loop outright instead of parking a pool worker, and it holds
+	 * the in-flight operation claim that `close()` waits on for the duration.
 	 *
 	 * Pass `true` when the flush is a durability gate the caller is blocked on and stalling
 	 * writers is the acceptable cost of it completing — decide that up front, before issuing the

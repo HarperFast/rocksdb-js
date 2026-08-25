@@ -82,6 +82,7 @@ describe('flush options', () => {
 						readOnlyDb.open();
 
 						await expect(readOnlyDb.compact()).resolves.toBeUndefined();
+						expect(() => readOnlyDb.compactSync()).not.toThrow();
 
 						// `RocksDatabase.compact` always materializes real Buffers, so the native
 						// method is the only place a malformed key is reachable; both modes must

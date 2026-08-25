@@ -173,6 +173,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * Compacts the entire key range of the database asynchronously.
 	 * This triggers manual compaction which removes tombstones and reclaims space.
 	 *
+	 * On a read-only database this is a no-op: arguments are still validated, but
+	 * the returned promise resolves without compacting rather than rejecting.
+	 *
 	 * @example
 	 * ```typescript
 	 * const db = RocksDatabase.open('/path/to/database');
@@ -268,6 +271,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * Compacts the entire key range of the database synchronously.
 	 * This triggers manual compaction which removes tombstones and reclaims space.
+	 *
+	 * On a read-only database this validates its arguments and then returns
+	 * without compacting, rather than throwing.
 	 *
 	 * @example
 	 * ```typescript
@@ -419,6 +425,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * Flushes the underlying database by performing a commit or clearing any buffered operations.
 	 *
+	 * On a read-only database this is a no-op: the options bag is still validated, but the
+	 * returned promise resolves without flushing rather than rejecting.
+	 *
 	 * @param options - Flush options; see {@link FlushOptions.allowWriteStall} before relying on
 	 * this resolving promptly under write pressure.
 	 * @return {void} Does not return a value.
@@ -429,6 +438,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	/**
 	 * Synchronously flushes the underlying database by performing a commit or clearing any buffered operations.
+	 *
+	 * The default `allowWriteStall: false` wait is taken on the JS thread here, so it freezes the
+	 * event loop rather than parking a libuv worker — a larger blast radius than {@link flush}, not
+	 * a smaller one.
+	 *
+	 * On a read-only database this validates its options and then returns without flushing, rather
+	 * than throwing.
 	 *
 	 * @param options - Flush options; see {@link FlushOptions.allowWriteStall}.
 	 * @return {void} Does not return a value.
