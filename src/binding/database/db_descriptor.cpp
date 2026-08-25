@@ -1636,42 +1636,36 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			// are.
 			const bool sharesTargetBlobDir = targetPersistedBlobDir && it != persisted.end() &&
 				it->second.blobDir == *targetPersistedBlobDir;
-			// The claim is about files on disk, so it is checked against them
-			// rather than trusted — and against the PERSISTED directory, because
-			// the target's `cfo.blob_dir` already carries the request by now.
-			if (options.blobs.allowDirChange && it != persisted.end() &&
-				!it->second.blobDir.empty()
+			// Which families this acknowledgement re-points: flattening covers the
+			// whole database, a move covers the target and the families that shared
+			// its directory.
+			const bool acknowledged = options.blobs.allowDirChange &&
+				(options.blobs.dir.empty() || isTarget || sharesTargetBlobDir);
+			// The acknowledgement is a claim about files on disk, so it is checked
+			// against them rather than trusted, and one rule covers both forms: a
+			// family whose recorded directory still holds `.blob` files has not
+			// moved. Compared against the PERSISTED directory, because the target's
+			// `cfo.blob_dir` already carries the request by now, and skipped when
+			// nothing is actually changing so a flag left in a config file does not
+			// start refusing every open.
+			//
+			// Deliberately strict about a HALF-finished move (an interrupted copy,
+			// or the open racing the `mv`): the destination holding some files is
+			// not evidence, and persisting it strands every value still behind. The
+			// destination being empty is not evidence either — `ensureBlobDirExists`
+			// creates it.
+			if (acknowledged && it != persisted.end() && !it->second.blobDir.empty() &&
+				it->second.blobDir != options.blobs.dir &&
+				holdsBlobFiles(dbOptions.env, it->second.blobDir)
 			) {
-				const std::string& oldDir = it->second.blobDir;
-				if (options.blobs.dir.empty()) {
-					if (holdsBlobFiles(dbOptions.env, oldDir)) {
-						throw rocksdb_js::DBException(
-							"Cannot open \"" + path + "\" with blobs.allowDirChange and no blobs.dir: "
-							"column family \"" + cfName + "\" recorded its blob files in \"" + oldDir +
-							"\", which still holds blob files, so this database has not been "
-							"flattened. If it is a restored copy, that directory belongs to the "
-							"database it was restored from and sharing it would corrupt both — "
-							"restore where that directory is not reachable. Otherwise move the blob "
-							"files and reopen with blobs.dir naming where they are."
-						);
-					}
-				} else if ((isTarget || sharesTargetBlobDir) && oldDir != options.blobs.dir &&
-					holdsBlobFiles(dbOptions.env, oldDir) &&
-					!holdsBlobFiles(dbOptions.env, options.blobs.dir)
-				) {
-					// The move has not happened: the files are all still where they
-					// were and none are where the caller says they now are. Opening
-					// anyway persists the new directory and every value at or above
-					// min_blob_size reads as missing until a compaction turns it into
-					// a background error. `ensureBlobDirExists` has already created
-					// the destination, so an empty one is not itself a signal.
-					throw rocksdb_js::DBException(
-						"Cannot open \"" + path + "\" with blobs.allowDirChange: column family \"" +
-						cfName + "\" still has its blob files in \"" + oldDir + "\", and \"" +
-						options.blobs.dir + "\" has none. Move them before reopening — nothing is "
-						"moved for you."
-					);
-				}
+				throw rocksdb_js::DBException(
+					"Cannot open \"" + path + "\" with blobs.allowDirChange: column family \"" +
+					cfName + "\" still has blob files in \"" + it->second.blobDir +
+					"\", the directory it recorded them in. Nothing is moved for you — finish "
+					"moving them out of that directory before reopening. If this is a restored "
+					"copy, that directory belongs to the database it was restored from and sharing "
+					"it would corrupt both: restore where it is not reachable."
+				);
 			}
 			if (!isTarget && options.blobs.allowDirChange) {
 				if (options.blobs.dir.empty()) {

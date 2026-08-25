@@ -243,12 +243,12 @@ acknowledged move naming one spelling leaves the other family behind.
 Omitting `dir` entirely is the exception: it says the whole database was flattened into its own
 directory, and re-points every family.
 
-Either form's claim is checked rather than trusted, because it is a claim about files on disk.
-Flattening is refused, naming the family, when its recorded directory still holds `.blob` files —
-nothing was flattened, or (for a restored copy) those files belong to the source database. Moving to
-a `dir` is refused when the recorded directory still holds every `.blob` file and the destination
-holds none: the `mv` has not happened, or it went somewhere else. The destination existing is not a
-signal either way, since the open creates it.
+Either form's claim is checked rather than trusted, because it is a claim about files on disk. One
+rule covers both: a family whose recorded directory still holds `.blob` files has not moved, and the
+open is refused naming that family. So finish the move — a half-copied directory is refused, and so
+is running the open before the `mv`. For a restored copy the same rule says the source's directory
+is still in use and must not be shared. Neither the destination existing nor its holding some files
+is evidence: the open creates it, and a partial copy leaves both populated.
 
 A directory that has gone missing entirely — an unmounted volume, a restore that never brought it —
 fails the open naming the family and the directory, rather than being discovered when the first
