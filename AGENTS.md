@@ -633,7 +633,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     retention purges remove eligible `.txnlog` segments but keep the live store directory and
     `txn.state`; startup age-based retention goes through the same persisted-flush gate. Destructive
     teardown belongs to `TransactionLogStoreRegistry::PurgeStores()`'s
-    `destroy` path, which closes and unregisters the store before removing its directory. Flush
+    `destroy` path, which closes the store and holds the per-database store-registry lock across
+    unregistering and directory removal so a same-name replacement cannot be deleted. Flush
     callbacks write `txn.state` through its current pathname rather than a cached file handle, so
     replacing or removing the path cannot strand later updates in an unlinked inode. When a restart
     finds a retained watermark but no segments, `load()` continues at the next sequence; reusing

@@ -217,11 +217,14 @@ export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
+	_getNextLogSequenceNumber(sequenceId: number): number;
+	_getPurgeGeneration(): number;
+	_purgeGeneration?: number;
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_currentLogBuffer: LogBuffer;
+	_currentLogBuffer?: LogBuffer;
 	_findPosition(timestamp: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_getLastFlushed(): number;

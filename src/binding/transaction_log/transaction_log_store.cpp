@@ -1,5 +1,6 @@
 #include <chrono>
 #include <exception>
+#include <limits>
 #include <sstream>
 #include <vector>
 #include "transaction_log_store.h"
@@ -10,6 +11,8 @@
 #include "fstream"
 
 namespace rocksdb_js {
+
+static std::atomic<uint64_t> nextTransactionLogStoreGeneration = 1;
 
 // Helper function to extract exception message from exception_ptr
 static std::string getExceptionMessage(std::exception_ptr eptr) {
@@ -43,6 +46,7 @@ TransactionLogStore::TransactionLogStore(
 	maxAgeThreshold(maxAgeThreshold)
 {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
+	this->purgeGeneration.store(nextTransactionLogStoreGeneration.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
 	lastCommittedPosition = std::make_shared<LogPosition>();
 	uncommittedTransactionPositions.reserve(16);
 	for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) { // initialize recent commits to not match until values are entered
@@ -274,6 +278,16 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 		size += logFile->size;
 	}
 	return size;
+}
+
+uint32_t TransactionLogStore::getNextLogSequenceNumber(uint32_t logSequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	auto it = this->sequenceFiles.upper_bound(logSequenceNumber);
+	return it == this->sequenceFiles.end() ? 0 : it->first;
+}
+
+uint64_t TransactionLogStore::getPurgeGeneration() const {
+	return this->purgeGeneration.load(std::memory_order_relaxed);
 }
 
 std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
@@ -763,6 +777,9 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		}
 		this->sequenceFiles.erase(sequenceNumber);
 	}
+	if (!sequenceNumbersToRemove.empty()) {
+		this->purgeGeneration.store(nextTransactionLogStoreGeneration.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
+	}
 }
 
 void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
@@ -1178,7 +1195,13 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	if (flushedPosition.logSequenceNumber > discoveredCurrentSequence ||
 		(!hasCurrentSegment && flushedPosition.logSequenceNumber == discoveredCurrentSequence &&
 			flushedPosition.logSequenceNumber > 0)) {
+		if (flushedPosition.logSequenceNumber == std::numeric_limits<uint32_t>::max()) {
+			throw std::runtime_error("Transaction log flush watermark sequence is out of range");
+		}
 		uint32_t nextWritableSequence = flushedPosition.logSequenceNumber + 1;
+		if (nextWritableSequence == std::numeric_limits<uint32_t>::max()) {
+			throw std::runtime_error("Transaction log sequence space is exhausted");
+		}
 		store->currentSequenceNumber.store(nextWritableSequence, std::memory_order_relaxed);
 		store->nextSequenceNumber = nextWritableSequence + 1;
 		store->nextLogPosition = { 0, nextWritableSequence };

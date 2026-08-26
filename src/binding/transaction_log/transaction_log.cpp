@@ -183,6 +183,24 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	return result;
 }
 
+napi_value TransactionLog::GetNextLogSequenceNumber(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetNextLogSequenceNumber");
+	uint32_t sequenceNumber;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, (*txnLogHandle)->getNextLogSequenceNumber(sequenceNumber), &result));
+	return result;
+}
+
+napi_value TransactionLog::GetPurgeGeneration(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeGeneration");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>((*txnLogHandle)->getPurgeGeneration()), &result));
+	return result;
+}
+
 struct PositionHandle {
 	std::shared_ptr<LogPosition> position;
 };
@@ -440,6 +458,8 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getNextLogSequenceNumber", nullptr, GetNextLogSequenceNumber, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_getPurgeGeneration", nullptr, GetPurgeGeneration, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastFlushed", nullptr, GetLastFlushed, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 

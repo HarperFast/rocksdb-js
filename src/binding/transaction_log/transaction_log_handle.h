@@ -36,6 +36,7 @@ struct TransactionLogHandle final : Closable {
 	 * The transaction id.
 	 */
 	uint32_t transactionId;
+	uint64_t lastKnownPurgeGeneration = 0;
 
 	/**
 	 * Creates a new transaction log handle.
@@ -64,6 +65,8 @@ struct TransactionLogHandle final : Closable {
 	LogPosition findPosition(double timestamp);
 	LogPosition getLastFlushed();
 	uint64_t getLogFileSize(uint32_t sequenceNumber);
+	uint32_t getNextLogSequenceNumber(uint32_t sequenceNumber);
+	uint64_t getPurgeGeneration();
 	std::weak_ptr<LogPosition> getLastCommittedPosition();
 
 	/**

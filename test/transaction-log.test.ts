@@ -2165,6 +2165,44 @@ describe('Transaction Log', () => {
 				expect(existsSync(stateFile)).toBe(false);
 			}));
 
+		it('does not reuse a mapped log file after a live purge', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('purged'), txn.id);
+					db.putSync('key', 'value', { transaction: txn });
+				});
+				db.flushSync();
+				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
+					'purged',
+				]);
+
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toHaveLength(1);
+				expect(Array.from(log.query({ start: 0 }))).toEqual([]);
+			}));
+
+		it('does not reuse a mapped log file after destroying and recreating its store', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('old'), txn.id);
+					db.putSync('old', 'value', { transaction: txn });
+				});
+				db.flushSync();
+				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
+					'old',
+				]);
+				expect(db.purgeLogs({ destroy: true, name: 'foo' })).toHaveLength(1);
+
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('replacement'), txn.id);
+					db.putSync('replacement', 'value', { transaction: txn });
+				});
+				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
+					'replacement',
+				]);
+			}));
+
 		it('continues after a retained watermark when reopening an empty store', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				let database = db;
@@ -2240,6 +2278,49 @@ describe('Transaction Log', () => {
 				expect(
 					Array.from(log.query({ start: firstTimestamp + 0.5 }), (entry) => entry.data.toString())
 				).toEqual(['third']);
+				expect(
+					Array.from(log.query({ startFromLastFlushed: true }), (entry) => entry.data.toString())
+				).toEqual(['third']);
+			}));
+
+		it('does not enumerate absent sequence numbers after a retained watermark', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+				state.writeUInt32LE(10_000, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				const log = db.useLog('foo');
+				const realGetMemoryMap = log._getMemoryMapOfFile.bind(log);
+				let probes = 0;
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value(sequenceNumber) {
+						probes++;
+						return realGetMemoryMap(sequenceNumber);
+					},
+					configurable: true,
+				});
+				try {
+					expect(Array.from(log.query({ startFromLastFlushed: true }))).toEqual([]);
+					expect(probes).toBe(1);
+				} finally {
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+				}
+			}));
+
+		it('rejects a flush watermark that cannot advance to a writable sequence', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+				state.writeUInt32LE(0xffffffff, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				expect(() => db.open()).toThrow('Transaction log flush watermark sequence is out of range');
 			}));
 
 		it('leaves a destroyed store absent after a concurrent flush request', () =>

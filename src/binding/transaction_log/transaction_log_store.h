@@ -362,6 +362,7 @@ struct TransactionLogStore final {
 	std::atomic<uint64_t> filesPurged = 0;
 	std::atomic<uint64_t> bytesPurged = 0;
 	std::atomic<uint64_t> purgeRuns = 0;
+	std::atomic<uint64_t> purgeGeneration = 0;
 	std::atomic<uint64_t> databaseFlushes = 0;
 	std::atomic<uint64_t> writeFailures = 0;
 	std::atomic<double> lastPurgeMs = 0;
@@ -441,6 +442,13 @@ struct TransactionLogStore final {
 	* Get the log file size.
 	**/
 	uint64_t getLogFileSize(uint32_t logSequenceNumber);
+
+	/**
+	 * Get the first registered log sequence strictly after the supplied sequence,
+	 * or zero when no later segment exists.
+	 */
+	uint32_t getNextLogSequenceNumber(uint32_t logSequenceNumber);
+	uint64_t getPurgeGeneration() const;
 
 	/**
 	 * Get the shared represention object representing the last committed position.

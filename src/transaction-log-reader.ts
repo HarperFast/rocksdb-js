@@ -214,6 +214,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
+		const purgeGeneration = this._getPurgeGeneration();
+		if (this._purgeGeneration !== undefined && purgeGeneration !== this._purgeGeneration) {
+			this._logBuffers?.clear();
+			this._currentLogBuffer = undefined;
+			logBuffer = undefined;
+		}
+		this._purgeGeneration = purgeGeneration;
+
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(this, logId);
@@ -228,7 +236,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			if (logBuffer === undefined) {
 				// create a fake log buffer if we don't have any log buffer yet
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
-				logBuffer.logId = 0;
+				logBuffer.logId = logId;
 				logBuffer.size = 0;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
 				// the outer size variable was set from loadLastPosition() above, but if we
@@ -265,7 +273,21 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						!!readUncommitted
 					);
 					size = latestSize;
-					if (latestLogId > logBuffer!.logId) {
+					if (logBuffer!.length === 0) {
+						const nextLogBuffer = getNextLogMemoryMap(
+							transactionLog,
+							Math.max(0, logBuffer!.logId - 1),
+							latestLogId
+						);
+						if (!nextLogBuffer) return { done: true, value: undefined };
+						logBuffer = nextLogBuffer;
+						dataView = logBuffer.dataView;
+						position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+						size =
+							latestLogId === logBuffer.logId
+								? latestSize
+								: (logBuffer.size ??= transactionLog.getLogFileSize(logBuffer.logId));
+					} else if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
 						size =
 							logBuffer!.size ??
@@ -464,10 +486,21 @@ function getNextLogMemoryMap(
 	logId: number,
 	latestLogId: number
 ): LogBuffer | undefined {
-	while (++logId <= latestLogId) {
-		const logBuffer = getLogMemoryMap(transactionLog, logId);
-		if (logBuffer) return logBuffer;
+	let nextLogId = transactionLog._getNextLogSequenceNumber(logId);
+	if (nextLogId === 0) {
+		for (const [cachedLogId, reference] of transactionLog._logBuffers!) {
+			if (
+				cachedLogId > logId &&
+				cachedLogId <= latestLogId &&
+				reference.deref() &&
+				(nextLogId === 0 || cachedLogId < nextLogId)
+			) {
+				nextLogId = cachedLogId;
+			}
+		}
 	}
+	if (nextLogId === 0 || nextLogId > latestLogId) return;
+	return getLogMemoryMap(transactionLog, nextLogId);
 }
 
 function loadLastPosition(

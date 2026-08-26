@@ -360,8 +360,8 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 		}
 	}
 
-	// Phase 3: Remove closed stores from the registry while holding the lock
-	std::vector<std::shared_ptr<TransactionLogStore>> storesActuallyRemoved;
+	// Phase 3: Remove closed stores and their directories while holding the lock so
+	// ResolveStore cannot publish a replacement at the same path before deletion finishes.
 	if (destroy) {
 		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
 		for (auto& store : storesToPurge) {
@@ -371,21 +371,16 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 			auto storeIt = entry->stores.find(store->name);
 			if (storeIt != entry->stores.end() && storeIt->second.get() == store.get()) {
 				entry->stores.erase(storeIt);
-				storesActuallyRemoved.push_back(store);
+				try {
+					std::filesystem::remove_all(store->path);
+				} catch (const std::filesystem::filesystem_error& e) {
+					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",
+						instance.get(), store->path.string().c_str(), e.what());
+				} catch (...) {
+					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Unknown error removing log directory %s\n",
+						instance.get(), store->path.string().c_str());
+				}
 			}
-		}
-	}
-
-	// Phase 4: Delete directories outside the lock
-	for (auto& store : storesActuallyRemoved) {
-		try {
-			std::filesystem::remove_all(store->path);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",
-				instance.get(), store->path.string().c_str(), e.what());
-		} catch (...) {
-			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Unknown error removing log directory %s\n",
-				instance.get(), store->path.string().c_str());
 		}
 	}
 
