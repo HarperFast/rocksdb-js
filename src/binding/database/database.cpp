@@ -129,7 +129,9 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue clear work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -372,7 +374,9 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue compact work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -733,7 +737,9 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue flush work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -880,7 +886,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		return returnStatus;
 	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue get work")) {
+		napi_value returnStatus;
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
+		return returnStatus;
+	}
 
 	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));

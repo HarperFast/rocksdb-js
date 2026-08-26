@@ -256,6 +256,59 @@ bool admitAsyncWorkOrReject(napi_env env, AsyncWorkHandle* handle, State* state,
 	return false;
 }
 
+/**
+ * Queues `state`'s async work after a successful `admitAsyncWorkOrReject()`.
+ * On success, returns true and the caller returns its normal pending value.
+ * On the rare `napi_queue_async_work()` failure, the admission above already
+ * incremented the target's active-work count with nothing left to run it
+ * down — a bare `NAPI_STATUS_THROWS` here would return without releasing
+ * that claim, leaking `state` and leaving the count permanently off by one.
+ * Since a bounded `waitForAsyncWorkCompletion()` no longer exists to paper
+ * over a stuck count (see the note on that method), a single stranded claim
+ * blocks that handle's close forever, which in turn blocks every later
+ * `OpenDB()` for its path. This releases the claim via
+ * `signalExecuteCompleted()` (unlike `admitAsyncWorkOrReject()`'s refusal
+ * path, this one actually decrements — the claim was real), deletes the
+ * async work object and `state`, rejects the promise with `message`, and
+ * returns false.
+ *
+ * `admitted` must be false when the caller skipped `admitAsyncWorkOrReject()`
+ * for this `state` (e.g. backup.cpp's `queueBackupWork(..., registerWork)`
+ * with `registerWork` false) — otherwise `signalExecuteCompleted()` would
+ * unregister a claim that was never taken, underflowing the count.
+ */
+template<typename State>
+bool queueAsyncWorkOrReject(napi_env env, State* state, const char* message, bool admitted = true) {
+	if (::napi_queue_async_work(env, state->asyncWork) == napi_ok) {
+		return true;
+	}
+
+	if (admitted) {
+		state->signalExecuteCompleted();
+	} else {
+		state->completed.store(true);
+	}
+
+	if (state->asyncWork) {
+		if (::napi_delete_async_work(env, state->asyncWork) == napi_ok) {
+			state->asyncWork = nullptr;
+		}
+	}
+
+	napi_value error = nullptr;
+	napi_value messageValue;
+	if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) == napi_ok) {
+		::napi_create_error(env, nullptr, messageValue, &error);
+	}
+	if (error == nullptr) {
+		::napi_get_undefined(env, &error);
+	}
+	state->callReject(error);
+
+	delete state;
+	return false;
+}
+
 } // namespace rocksdb_js
 
 #endif

@@ -718,19 +718,61 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	// This state is refcounted (not a plain `delete`), shared with the tsfn
+	// above, so queueAsyncWorkOrReject()'s generic `delete state` would
+	// double-free against tsfnFinalize()'s later release(). Mirror
+	// backupStreamComplete()'s cleanup by hand instead for both failure exits
+	// below, since execute/complete never run to do it themselves: delete the
+	// async work object, release the tsfn (tsfnFinalize drops its ref), drop
+	// the descriptor pin, reject, and release the constructor's own ref.
+	// `admitted` selects how the AsyncWorkHandle claim is released: a queue
+	// failure must decrement a real registration (signalExecuteCompleted()),
+	// while a refused registration never incremented anything and must only
+	// be marked completed -- decrementing there would underflow the count.
+	auto rejectAndCleanup = [&](bool admitted, const char* message) {
+		if (admitted) {
+			state->signalExecuteCompleted();
+		} else {
+			state->completed.store(true);
+		}
+		state->deleteAsyncWork();
+		if (state->tsfn != nullptr) {
+			::napi_release_threadsafe_function(state->tsfn, napi_tsfn_release);
+			state->tsfn = nullptr;
+		}
+		state->releaseDescriptor();
+
+		napi_value error = nullptr;
+		napi_value messageValue;
+		if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) == napi_ok) {
+			::napi_create_error(env, nullptr, messageValue, &error);
+		}
+		if (error == nullptr) {
+			::napi_get_undefined(env, &error);
+		}
+		state->callReject(error);
+		state->release();
+	};
+
 	// The operationsInFlight claim taken above is held for the whole stream
 	// (released at the end of backupStreamExecute, not here), so it already
 	// rules out a concurrent cancelAllAsyncWork() racing this registration —
 	// finishClose()'s first (unbounded) wait cannot reach the closables sweep
 	// that would call it until this claim releases. Admission is therefore
-	// guaranteed to succeed; discard the result rather than threading the
-	// tsfn's ownership through the same reject path as the simpler async ops.
-	(void)(*dbHandle)->registerAsyncWork();
+	// expected to always succeed, but unlike the simpler async ops this state
+	// can't route refusal through admitAsyncWorkOrReject() (its `delete state`
+	// would double-free here) -- so on the vanishingly unlikely chance a future
+	// change adds another cancelAllAsyncWork() path for this handle, reject
+	// properly instead of silently proceeding with an unregistered stream.
+	if (!(*dbHandle)->registerAsyncWork()) {
+		rejectAndCleanup(false, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
 
-	// On a queue failure the claim rolls the counter back (execute never runs).
-	// The state/tsfn leak on this rare N-API failure path matches the existing
-	// async methods (e.g. Database::Backup).
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (::napi_queue_async_work(env, state->asyncWork) != napi_ok) {
+		rejectAndCleanup(true, "Failed to queue backup stream work");
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	// The worker now owns the in-flight decrement (end of execute).
 	handedOff = true;

@@ -891,7 +891,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue commit work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }

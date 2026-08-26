@@ -198,10 +198,9 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// On a queue failure the claim above rolls the counter back (execute never
-	// runs); the state leak on this rare N-API failure path matches the existing
-	// async methods (e.g. Database::Backup).
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue checkpoint work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	// The worker now owns the in-flight decrement (end of execute); stop the
 	// claim from releasing it here.
