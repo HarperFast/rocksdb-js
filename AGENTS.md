@@ -646,6 +646,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
+17. **Async-work admission and cancellation share one mutex; the drain that follows must never time
+    out**: `AsyncWorkHandle` (`napi/async.h`) tracks in-flight async work per `DBHandle`/
+    `TransactionHandle`. `registerAsyncWork()` and `cancelAllAsyncWork()` both take `waitMutex`, so a
+    registration that races a close either lands (and is counted) before cancellation publishes, or
+    is refused — there is no window where it is admitted after `waitForAsyncWorkCompletion()` has
+    already observed the count at zero. Refusal returns `false`; every call site (the shared
+    `admitAsyncWorkOrReject()` helper, or `ScopedAsyncWorkRegistration::ok()` for the RAII
+    cross-handle case in `transaction_handle.cpp`) must fail the operation — reject the
+    already-constructed promise and touch no native state — rather than proceed with work nothing is
+    tracking anymore. `waitForAsyncWorkCompletion()` itself has no timeout: `DBHandle::close()` /
+    `TransactionHandle::close()` call it immediately before releasing the `rocksdb::DB`, column
+    family, or transaction that admitted work may still be using, and a flush legitimately waiting
+    out a write stall (invariant 16) can run far longer than any fixed bound. A bounded wait that
+    gives up anyway — the previous 5-second default — let `finishClose()` reach `this->db.reset()`
+    while a flush was still executing against it, a genuine use-after-free. `database.cpp`'s
+    `Flush`/`Compact`/`Clear`/async `Get` rely entirely on this drain for safety: their
+    `OperationGuard` from `ACQUIRE_OPERATIONS_LOCK()` covers only the synchronous setup, not the
+    queued execute callback. Backup/checkpoint/backup-stream additionally hold the descriptor's
+    `operationsInFlight` claim through their whole async execution (the pinning pattern from
+    invariant 9), so for those this drain is defense in depth rather than the only thing preventing
+    a use-after-free.
 
 17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global

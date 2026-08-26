@@ -187,9 +187,12 @@ Sets global database settings.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
-  - `lifecycleWaitSeconds: number` Total maximum time a synchronous open, destroy, or shutdown waits for
-    another lifecycle operation before throwing a retryable timeout error. Defaults to `30` seconds
-    and must be a positive integer.
+  - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
+    _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
+    close) before throwing a retryable timeout error. It does not bound the separate, intentionally
+    unbounded wait that `destroy()`/`shutdown()` make for in-flight backups, checkpoints, or other
+    async work still using the database — see [`db.destroy()`](#dbdestroy-void). Defaults to `30`
+    seconds and must be a positive integer.
   - `verificationTableEntries: number` The number of slots in the process-global
     [Verification Table](#verification-table). Each slot is 8 bytes, so the default of `131072`
     (128K) slots is 1 MB. Set to `0` to disable the verification table. This must be configured

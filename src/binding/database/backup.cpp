@@ -165,7 +165,9 @@ static napi_value queueBackupWork(
 	NAPI_STATUS_THROWS(::napi_create_async_work(env, nullptr, name, execute, complete, state, &state->asyncWork));
 
 	if (registerWork && state->handle) {
-		state->handle->registerAsyncWork();
+		if (!admitAsyncWorkOrReject(env, state->handle.get(), state, "Database is closing")) {
+			NAPI_RETURN_UNDEFINED();
+		}
 	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));

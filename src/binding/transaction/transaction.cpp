@@ -789,8 +789,24 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		// below rather than re-creating a tsfn the close will never release.
 		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed));
 		if (!completionsClosed) {
-			// register the commit with the transaction handle so close() can wait
-			(*txnHandle)->registerAsyncWork();
+			// Register the commit with the transaction handle so close() can wait.
+			// Refusal means a concurrent close() already published cancellation (and,
+			// by the same happens-before edge, already forced state to Aborted) —
+			// undo the completion registration just above and reject rather than
+			// dispatching into a transaction that is being torn down.
+			if (!(*txnHandle)->registerAsyncWork()) {
+				descriptor->finishCommitCompletion(env);
+				// Nothing was incremented on the handle, so mark completed before
+				// the destructor's signalExecuteCompleted() runs — otherwise it
+				// would call unregisterAsyncWork() for a registration that never
+				// succeeded.
+				state->completed.store(true);
+				napi_value error;
+				rocksdb_js::createJSError(env, "ERR_TRANSACTION_CLOSING", "Transaction is closing", error);
+				state->callReject(error);
+				delete state;
+				NAPI_RETURN_UNDEFINED();
+			}
 
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
@@ -871,7 +887,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	));
 
 	// register the async work with the transaction handle
-	(*txnHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*txnHandle).get(), state, "Transaction is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 

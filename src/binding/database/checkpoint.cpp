@@ -194,7 +194,9 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	// On a queue failure the claim above rolls the counter back (execute never
 	// runs); the state leak on this rare N-API failure path matches the existing

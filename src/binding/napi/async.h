@@ -141,67 +141,69 @@ struct AsyncWorkHandle {
 	std::mutex waitMutex;
 	std::condition_variable asyncWorkComplete;
 
-	void registerAsyncWork() {
+	/**
+	 * Admits one unit of async work. Returns false, without incrementing the
+	 * count, once cancellation has been published — the caller must not queue
+	 * the async work or otherwise touch native state in that case. Admission
+	 * and `cancelAllAsyncWork()` share `waitMutex` so the two can never
+	 * interleave: either this call is fully visible to the wait below before
+	 * cancellation publishes, or it is refused. Without that, a registration
+	 * racing a close's cancel+wait could land after the wait already observed
+	 * zero, letting new work run concurrently with (or after) the native
+	 * state that close() goes on to release.
+	 */
+	[[nodiscard]] bool registerAsyncWork() {
+		std::lock_guard<std::mutex> lock(this->waitMutex);
+		if (this->cancelled.load()) {
+			return false;
+		}
 		++this->activeAsyncWorkCount;
+		return true;
 	}
 
 	void unregisterAsyncWork() {
+		std::lock_guard<std::mutex> lock(this->waitMutex);
 		auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
 		if (activeAsyncWorkCount > 0) {
 			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount);
 		} else if (activeAsyncWorkCount == 0) {
 			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
-			this->asyncWorkComplete.notify_one();
+			this->asyncWorkComplete.notify_all();
 		}
 	}
 
 	void cancelAllAsyncWork() {
+		std::lock_guard<std::mutex> lock(this->waitMutex);
 		this->cancelled.store(true);
 	}
 
 	/**
-	 * Waits for in-flight async work to finish. Returns true when the count
-	 * actually reached zero, false when the timeout expired with work still
-	 * running — callers that destroy state the work is using MUST check it.
+	 * Blocks until every admitted unit of async work has completed. This must
+	 * not time out: the caller is about to release native state (a
+	 * `rocksdb::DB`, a column family, a transaction) that admitted work may
+	 * still be using. A flush legitimately waiting out a write stall (see
+	 * AGENTS.md invariant 16) can run far longer than any fixed bound, and a
+	 * bounded wait that gives up anyway turns into a use-after-free once the
+	 * caller proceeds to tear down that state.
+	 *
+	 * Supersedes the bounded, bool-returning version this replaced (a 5s
+	 * timeout with a "leak instead of free" fallback in
+	 * `TransactionHandle::close()`) — that was a deliberate stopgap tracked as
+	 * HarperFast/rocksdb-js#784, this unbounded wait *is* #784. Every caller
+	 * can now assume the drain always completes; there is no timed-out case
+	 * left to handle.
 	 */
-	bool waitForAsyncWorkCompletion(
-		std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)
-	) {
-		auto start = std::chrono::steady_clock::now();
-		const auto pollInterval = std::chrono::milliseconds(10);
+	void waitForAsyncWorkCompletion() {
 		std::unique_lock<std::mutex> lock(this->waitMutex);
-		auto activeAsyncWorkCount = this->activeAsyncWorkCount.load();
-
-		if (activeAsyncWorkCount == 0) {
+		if (this->activeAsyncWorkCount.load() == 0) {
 			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion no async work to wait for\n", this);
-			return true;
+			return;
 		}
-
-		while (activeAsyncWorkCount > 0) {
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
-			if (elapsed >= timeout) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion timeout waiting for async work completion, %u items remaining\n", this, activeAsyncWorkCount);
-				return false;
-			}
-
-			auto remainingTime = timeout - elapsed;
-			auto waitTime = std::min(pollInterval, remainingTime);
-
-			DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for %u active work items\n", this, activeAsyncWorkCount);
-
-			bool completed = this->asyncWorkComplete.wait_for(lock, waitTime, [this] {
-				return this->activeAsyncWorkCount.load() == 0;
-			});
-
-			if (completed) {
-				DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion all async work execution completed\n", this);
-				return true;
-			}
-
-			activeAsyncWorkCount = this->activeAsyncWorkCount.load();
-		}
-
-		return true;
+		DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion waiting for active work items\n", this);
+		this->asyncWorkComplete.wait(lock, [this] {
+			return this->activeAsyncWorkCount.load() == 0;
+		});
+		DEBUG_LOG("%p AsyncWorkHandle::waitForAsyncWorkCompletion all async work execution completed\n", this);
 	}
 
 	bool isCancelled() const {
@@ -209,9 +211,50 @@ struct AsyncWorkHandle {
 	}
 
 	void resetCancelled() {
+		std::lock_guard<std::mutex> lock(this->waitMutex);
 		this->cancelled.store(false);
 	}
 };
+
+/**
+ * Admits `state`'s async work onto `handle`. On success, returns true and the
+ * caller proceeds to `napi_queue_async_work()` as usual. On refusal
+ * (cancellation already published by a concurrent close), tears down the
+ * async work object created for `state` (if any) and the promise references
+ * already captured on it, rejects the promise with `message`, deletes
+ * `state`, and returns false — the caller must return to JS immediately
+ * without dereferencing any native state `state` was set up to use.
+ */
+template<typename State>
+bool admitAsyncWorkOrReject(napi_env env, AsyncWorkHandle* handle, State* state, const char* message) {
+	if (handle->registerAsyncWork()) {
+		return true;
+	}
+
+	// Nothing was incremented, so mark completed before the destructor's
+	// signalExecuteCompleted() runs — otherwise it would call
+	// unregisterAsyncWork() for a registration that never succeeded.
+	state->completed.store(true);
+
+	if (state->asyncWork) {
+		if (::napi_delete_async_work(env, state->asyncWork) == napi_ok) {
+			state->asyncWork = nullptr;
+		}
+	}
+
+	napi_value error = nullptr;
+	napi_value messageValue;
+	if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) == napi_ok) {
+		::napi_create_error(env, nullptr, messageValue, &error);
+	}
+	if (error == nullptr) {
+		::napi_get_undefined(env, &error);
+	}
+	state->callReject(error);
+
+	delete state;
+	return false;
+}
 
 } // namespace rocksdb_js
 

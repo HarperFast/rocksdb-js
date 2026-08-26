@@ -125,7 +125,9 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 	));
 
 	// Register the async work with the database handle
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 
@@ -366,7 +368,9 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 
@@ -725,7 +729,9 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 
@@ -868,7 +874,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	// performs at the end of the execute handler. Without it the count goes negative,
 	// so close() does not wait for this read and the worker dereferences a descriptor
 	// that close() has already reset.
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		napi_value returnStatus;
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
+		return returnStatus;
+	}
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 

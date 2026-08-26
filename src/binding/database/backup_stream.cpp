@@ -718,7 +718,14 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	// The operationsInFlight claim taken above is held for the whole stream
+	// (released at the end of backupStreamExecute, not here), so it already
+	// rules out a concurrent cancelAllAsyncWork() racing this registration —
+	// finishClose()'s first (unbounded) wait cannot reach the closables sweep
+	// that would call it until this claim releases. Admission is therefore
+	// guaranteed to succeed; discard the result rather than threading the
+	// tsfn's ownership through the same reject path as the simpler async ops.
+	(void)(*dbHandle)->registerAsyncWork();
 
 	// On a queue failure the claim rolls the counter back (execute never runs).
 	// The state/tsfn leak on this rare N-API failure path matches the existing
