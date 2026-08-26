@@ -366,9 +366,10 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	}
 
 	// Never borrow the active segment's handle. Its lifecycle belongs to the
-	// write path — registerLogFile()/getLogFile() open it before the first
-	// append — so the only way it reads size 0 and closed is the window between
-	// getLogFile() creating it and the first append, where 0 is the truth. A
+	// write path — load()'s post-discovery activation and getLogFile() open it
+	// before the first append — so the only way it reads size 0 and closed is the
+	// window between getLogFile() creating it and the first append, where 0 is
+	// the truth. A
 	// close() here would drop a handle (and, on Windows, the mapping) the next
 	// append expects to still hold.
 	if (file->sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
@@ -845,12 +846,16 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	if (retiredBoundary == 0 &&
 		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
-		logFile->appendBoundaryMarkerEnabled = true;
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
-		}
+		// Do NOT open (or marker-enable) the file here. Directory iteration order is
+		// unspecified, so any segment can hold the highest-seen sequence for a moment
+		// and then be superseded; opening on that transient promotion left every
+		// superseded segment open for the life of the store and wrote an
+		// append-boundary marker for a file that is never appended to. On Windows an
+		// open handle also makes the segment undeletable by anything outside this
+		// process. load() activates whichever file is still current once discovery
+		// has finished.
 		this->currentSequenceNumber.store(sequenceNumber, std::memory_order_relaxed);
-		this->nextLogPosition = { logFile->size, sequenceNumber };
+		this->nextLogPosition = { 0, sequenceNumber };
 	} else if (retiredBoundary > 0 &&
 		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		uint32_t nextWritableSequence = sequenceNumber + 1;
@@ -1221,14 +1226,43 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		auto currentIt = store->sequenceFiles.find(storeCurrentSeq);
 		if (currentIt != store->sequenceFiles.end()) {
 			auto& currentFile = currentIt->second;
-			if (!currentFile->isOpen()) {
-				currentFile->open(store->latestTimestamp);
+			// Discovery deliberately leaves every file closed; the surviving current
+			// file is the only one that owns an append-boundary marker and an open
+			// handle.
+			currentFile->appendBoundaryMarkerEnabled = true;
+			bool activated = true;
+			try {
+				if (!currentFile->isOpen()) {
+					currentFile->open(store->latestTimestamp);
+				}
+			} catch (const TransactionLogAppendBoundaryException&) {
+				// The marker is authoritative; a segment we cannot reconcile with it
+				// must fail the load rather than expose orphaned bytes.
+				throw;
+			} catch (const std::exception& e) {
+				// A newest segment we cannot open is not fatal: leave it registered
+				// (readers still see whatever a later ensureExtent() can resolve) and
+				// start appending at a fresh sequence instead of failing the open.
+				DEBUG_LOG("%p TransactionLogStore::load Failed to open current log file %s: %s\n",
+					store.get(), currentFile->path.string().c_str(), e.what());
+				currentFile->appendBoundaryMarkerEnabled = false;
+				activated = false;
 			}
-			uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
-				? flushedPosition.positionInLogFile
-				: 0;
-			currentFile->recoverTail(protectedPosition);
-			store->nextLogPosition = { currentFile->size, storeCurrentSeq };
+			if (activated) {
+				uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
+					? flushedPosition.positionInLogFile
+					: 0;
+				currentFile->recoverTail(protectedPosition);
+				store->nextLogPosition = { currentFile->size, storeCurrentSeq };
+			} else {
+				uint32_t nextWritableSequence = storeCurrentSeq + 1;
+				store->currentSequenceNumber.store(nextWritableSequence, std::memory_order_relaxed);
+				store->nextLogPosition = { 0, nextWritableSequence };
+				if (store->nextSequenceNumber <= nextWritableSequence) {
+					store->nextSequenceNumber = nextWritableSequence + 1;
+				}
+				storeCurrentSeq = nextWritableSequence;
+			}
 		}
 	}
 

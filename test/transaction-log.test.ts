@@ -2392,6 +2392,26 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFiles[2])).toBe(true);
 			}));
 
+		// Directory iteration order is unspecified, so startup discovery used to open
+		// (and write an append-boundary marker for) every segment that briefly held the
+		// highest sequence. On Windows the leaked handle also made a superseded segment
+		// undeletable from outside the process — the EBUSY that broke the detach test above.
+		it('should activate only the surviving current segment during discovery', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				for (const sequence of [1, 2, 3]) {
+					await writeFile(join(logDirectory, `${sequence}.txnlog`), buildLogFile(1));
+				}
+
+				db.open();
+				db.useLog('foo');
+
+				const markerDirectory = join(dbPath, 'transaction_logs', '.append-boundaries', 'foo');
+				expect((await readdir(markerDirectory)).sort()).toEqual(['3.txnlog.boundary']);
+			}));
+
 		it('should retain the flushed-position segment for startFromLastFlushed readers', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

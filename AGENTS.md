@@ -274,6 +274,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    use the marked logical prefix and never expose the orphaned physical tail. The marker is not copied
    into backups: the copied prefix is already a clean canonical `.txnlog`.
    A known-zero-byte failure leaves the segment and its zero marker reusable.
+   Only the **active** segment owns a marker and an open handle, and startup discovery cannot know
+   which segment that is until the whole directory has been scanned — directory iteration order is
+   unspecified, so any segment can briefly hold the highest sequence. `registerLogFile()` therefore
+   registers without opening, and `load()` marker-enables and opens the surviving current file after
+   discovery. Promoting eagerly wrote a marker for a segment that is never appended to and, on
+   Windows (where the handle is opened without `FILE_SHARE_DELETE`), left every superseded segment
+   undeletable by anything outside the process for the life of the store.
    **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
    so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
    append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
