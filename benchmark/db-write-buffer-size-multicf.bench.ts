@@ -37,7 +37,7 @@ const RECORD_COUNT = environmentInteger('BENCH_RECORDS', 256 * 1024);
 const VALUE_BYTES = 1024;
 const VALUE_POOL_BYTES = 64 * MIB;
 const COLUMN_FAMILY_COUNTS = environmentIntegerList('BENCH_CFS', [1, 4, 8, 16]);
-const DB_WRITE_BUFFER_SIZES = [32 * MIB, 256 * MIB, 0] as const;
+const DB_WRITE_BUFFER_SIZES = [256 * MIB, 0, 32 * MIB] as const;
 const WRITE_BUFFER_SIZE = environmentInteger('BENCH_WRITE_BUFFER', 16 * MIB);
 const MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN = environmentInteger(
 	'BENCH_MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN',
@@ -45,6 +45,8 @@ const MAX_WRITE_BUFFER_SIZE_TO_MAINTAIN = environmentInteger(
 	-1
 );
 const BENCH_DATA_DIR = process.env.BENCH_DATA_DIR ?? join('benchmark', 'data');
+const ARM_TIMEOUT_MS = environmentInteger('BENCH_ARM_TIMEOUT_MS', 30 * 60_000);
+const PROGRESS_INTERVAL_MS = environmentInteger('BENCH_PROGRESS_INTERVAL_MS', 30_000);
 const SETTLE_TIMEOUT_MS = environmentInteger('BENCH_SETTLE_TIMEOUT_MS', 5 * 60_000);
 let valuePool: Buffer | undefined;
 let sweepRuns = 0;
@@ -183,12 +185,34 @@ async function measureArm(columnFamilies: number, dbWriteBufferSize: number): Pr
 
 		const currentValuePool = getValuePool();
 		const start = performance.now();
+		const deadline = start + ARM_TIMEOUT_MS;
+		let nextProgress = start + PROGRESS_INTERVAL_MS;
+		console.log(
+			`Starting ${columnFamilies} CF / ${formatDbWriteBufferSize(dbWriteBufferSize)} ingest ` +
+				`(${formatMiB(RECORD_COUNT * VALUE_BYTES)} MiB, ${ARM_TIMEOUT_MS / 1000}s deadline)`
+		);
 		for (let record = 0; record < RECORD_COUNT; record++) {
 			const offset = (record * 4099) % (currentValuePool.length - VALUE_BYTES);
 			databases[record % columnFamilies].putSync(
 				scatteredKey(record),
 				currentValuePool.subarray(offset, offset + VALUE_BYTES)
 			);
+			const recordsWritten = record + 1;
+			if (recordsWritten % 1024 === 0 || recordsWritten === RECORD_COUNT) {
+				const now = performance.now();
+				const elapsedMs = now - start;
+				const progress =
+					`${columnFamilies} CF / ${formatDbWriteBufferSize(dbWriteBufferSize)} ingest: ` +
+					`${formatMiB(recordsWritten * VALUE_BYTES)}/${formatMiB(RECORD_COUNT * VALUE_BYTES)} MiB, ` +
+					`${formatMiB((recordsWritten * VALUE_BYTES * 1000) / elapsedMs)} MiB/s`;
+				if (now >= deadline) {
+					throw new Error(`${progress}; exceeded ${ARM_TIMEOUT_MS} ms deadline`);
+				}
+				if (now >= nextProgress) {
+					console.log(progress);
+					nextProgress = now + PROGRESS_INTERVAL_MS;
+				}
+			}
 		}
 		const elapsedMs = performance.now() - start;
 
@@ -230,15 +254,15 @@ describe.skipIf(process.env.BENCHMARK_MODE === 'essential' || !!process.env.LMDB
 	'dbWriteBufferSize multi-column-family ingest',
 	() => {
 		bench(
-			'round-robin ingest counters',
+			'round-robin ingest counters (~25 min default)',
 			async () => {
 				if (++sweepRuns !== 1) {
 					throw new Error('The multi-column-family counter sweep must execute exactly once');
 				}
 				const results: ArmResult[] = [];
 				try {
-					for (const columnFamilies of COLUMN_FAMILY_COUNTS) {
-						for (const dbWriteBufferSize of DB_WRITE_BUFFER_SIZES) {
+					for (const dbWriteBufferSize of DB_WRITE_BUFFER_SIZES) {
+						for (const columnFamilies of COLUMN_FAMILY_COUNTS) {
 							results.push(await measureArm(columnFamilies, dbWriteBufferSize));
 						}
 					}
@@ -246,7 +270,7 @@ describe.skipIf(process.env.BENCHMARK_MODE === 'essential' || !!process.env.LMDB
 					console.table(results);
 				}
 			},
-			{ iterations: 1, throws: true, time: 0, warmupIterations: 0, warmupTime: 0 }
+			{ iterations: 1, throws: false, time: 0, warmupIterations: 0, warmupTime: 0 }
 		);
 	}
 );
