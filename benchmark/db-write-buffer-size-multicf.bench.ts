@@ -200,15 +200,15 @@ async function measureArm(columnFamilies: number, dbWriteBufferSize: number): Pr
 			const recordsWritten = record + 1;
 			if (recordsWritten % 1024 === 0 || recordsWritten === RECORD_COUNT) {
 				const now = performance.now();
-				const elapsedMs = now - start;
-				const progress =
-					`${columnFamilies} CF / ${formatDbWriteBufferSize(dbWriteBufferSize)} ingest: ` +
-					`${formatMiB(recordsWritten * VALUE_BYTES)}/${formatMiB(RECORD_COUNT * VALUE_BYTES)} MiB, ` +
-					`${formatMiB((recordsWritten * VALUE_BYTES * 1000) / elapsedMs)} MiB/s`;
-				if (now >= deadline) {
-					throw new Error(`${progress}; exceeded ${ARM_TIMEOUT_MS} ms deadline`);
-				}
-				if (now >= nextProgress) {
+				if (now >= deadline || now >= nextProgress) {
+					const elapsedMs = now - start;
+					const progress =
+						`${columnFamilies} CF / ${formatDbWriteBufferSize(dbWriteBufferSize)} ingest: ` +
+						`${formatMiB(recordsWritten * VALUE_BYTES)}/${formatMiB(RECORD_COUNT * VALUE_BYTES)} MiB, ` +
+						`${formatMiB((recordsWritten * VALUE_BYTES * 1000) / elapsedMs)} MiB/s`;
+					if (now >= deadline) {
+						throw new Error(`${progress}; exceeded ${ARM_TIMEOUT_MS} ms deadline`);
+					}
 					console.log(progress);
 					nextProgress = now + PROGRESS_INTERVAL_MS;
 				}
@@ -254,7 +254,7 @@ describe.skipIf(process.env.BENCHMARK_MODE === 'essential' || !!process.env.LMDB
 	'dbWriteBufferSize multi-column-family ingest',
 	() => {
 		bench(
-			'round-robin ingest counters (~25 min default)',
+			'round-robin ingest counters (~25 min observed default)',
 			async () => {
 				if (++sweepRuns !== 1) {
 					throw new Error('The multi-column-family counter sweep must execute exactly once');
