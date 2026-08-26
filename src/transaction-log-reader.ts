@@ -173,7 +173,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			if (!lastCommittedPosition) {
 				return [][Symbol.iterator]() as IterableIterator<TransactionEntry>;
 			}
-			this._logBuffers?.clear();
+			this._logBuffers = new Map<number, WeakRef<LogBuffer>>();
 			this._currentLogBuffer = undefined;
 			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
 		}

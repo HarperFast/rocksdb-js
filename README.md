@@ -1621,7 +1621,8 @@ const names = db.listLogs();
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
 Startup and runtime retention remove only segments proven flushed, and retain the live log store
-and its flush watermark; use `destroy: true` to close and remove a store completely.
+and its flush watermark; use `destroy: true` to close and remove the current store. A later
+`useLog()` call or query through a retained handle creates a new empty store with the same name.
 
 - `options: object`
   - `before?: number` Remove all transaction log files older than the specified timestamp.

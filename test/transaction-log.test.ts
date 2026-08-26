@@ -12,7 +12,7 @@ import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
-import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -2369,6 +2369,23 @@ describe('Transaction Log', () => {
 				await flush;
 				await delay(10);
 				expect(existsSync(join(dbPath, 'transaction_logs', 'foo'))).toBe(false);
+			}));
+
+		it('keeps a store registered when its deletion staging directory is unavailable', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('value'), txn.id);
+					db.putSync('key', 'value', { transaction: txn });
+				});
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const deletionRoot = join(dbPath, 'transaction_logs.deleting');
+				await rm(deletionRoot, { recursive: true, force: true });
+				await writeFile(deletionRoot, 'not a directory');
+
+				expect(db.purgeLogs({ destroy: true, name: 'foo' })).toEqual([]);
+				expect(db.listLogs()).toContain('foo');
+				expect(existsSync(logDirectory)).toBe(true);
 			}));
 
 		it('should return entry counts when includeEntryCounts is true', () =>

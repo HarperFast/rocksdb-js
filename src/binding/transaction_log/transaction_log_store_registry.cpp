@@ -156,17 +156,21 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 		return;
 	}
 
-	// A process can exit after atomically detaching a destroyed store but before
-	// its files are removed. These paths are outside the discovery directory.
-	auto deletionRoot = std::filesystem::path(transactionLogsPath);
-	deletionRoot += ".deleting";
-	std::error_code cleanupError;
-	std::filesystem::remove_all(deletionRoot, cleanupError);
-
 	if (!std::filesystem::exists(transactionLogsPath)) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores No transaction logs path or directory does not exist for \"%s\"\n",
 			instance.get(), dbPath.c_str());
 		return;
+	}
+
+	// A process can exit after atomically detaching a destroyed store but before
+	// its files are removed. Keep the root itself so concurrent detaches remain valid.
+	auto deletionRoot = std::filesystem::path(transactionLogsPath);
+	deletionRoot += ".deleting";
+	rocksdb_js::tryCreateDirectory(deletionRoot);
+	std::error_code cleanupError;
+	for (std::filesystem::directory_iterator it(deletionRoot, cleanupError), end; !cleanupError && it != end; it.increment(cleanupError)) {
+		std::error_code removeError;
+		std::filesystem::remove_all(it->path(), removeError);
 	}
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -338,6 +342,19 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 		entry = it->second;
 	}
 
+	std::filesystem::path deletionRoot;
+	if (destroy) {
+		deletionRoot = std::filesystem::path(entry->config.transactionLogsPath);
+		deletionRoot += ".deleting";
+		rocksdb_js::tryCreateDirectory(deletionRoot);
+		std::error_code rootError;
+		if (!std::filesystem::is_directory(deletionRoot, rootError)) {
+			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Cannot create deletion directory %s: %s\n",
+				instance.get(), deletionRoot.string().c_str(), rootError.message().c_str());
+			return removed;
+		}
+	}
+
 	size_t i = 0;
 	std::vector<std::shared_ptr<TransactionLogStore>> storesToPurge;
 
@@ -379,9 +396,6 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 	// Phase 3: Atomically detach closed store directories while holding the registry
 	// lock, then remove them without blocking flush callbacks or store resolution.
 	if (destroy) {
-		auto deletionRoot = std::filesystem::path(entry->config.transactionLogsPath);
-		deletionRoot += ".deleting";
-		rocksdb_js::tryCreateDirectory(deletionRoot);
 		std::vector<std::filesystem::path> pathsToRemove;
 		{
 			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -398,7 +412,14 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 					(store->name + "-" + std::to_string(nextDeletionId.fetch_add(1, std::memory_order_relaxed)));
 				std::error_code renameError;
 				std::filesystem::rename(store->path, deletionPath, renameError);
-				if (renameError && renameError != std::errc::no_such_file_or_directory) {
+				if (renameError == std::errc::no_such_file_or_directory) {
+					std::error_code sourceError;
+					if (std::filesystem::exists(store->path, sourceError) || sourceError) {
+						DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to detach log directory %s: %s\n",
+							instance.get(), store->path.string().c_str(), renameError.message().c_str());
+						continue;
+					}
+				} else if (renameError) {
 					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to detach log directory %s: %s\n",
 						instance.get(), store->path.string().c_str(), renameError.message().c_str());
 					continue;
@@ -417,8 +438,6 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 					instance.get(), deletionPath.string().c_str(), removeError.message().c_str());
 			}
 		}
-		std::error_code removeRootError;
-		std::filesystem::remove(deletionRoot, removeRootError);
 	}
 
 	return removed;
