@@ -688,16 +688,17 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 					sequenceNumbersToRemove.push_back(sequenceNumber);
 					continue;
 				}
-				throw;
+				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
+				break;
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
-				throw;
+				break;
 			} catch (...) {
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::purge Unknown error getting last write time for file %s: %s\n",
 					this, logFile->path.string().c_str(), errorMsg.c_str());
-				throw;
+				break;
 			}
 		}
 
