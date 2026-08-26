@@ -738,6 +738,19 @@ describe('Transaction Log', () => {
 						...Array.from({ length: 8 }, (_, i) => String(i).padStart(100, '0')),
 						...Array.from({ length: 4 }, (_, i) => String(i + 16).padStart(100, '0')),
 					]);
+
+					database.close();
+					unlinkSync(join(dbPath, 'transaction_logs', 'foo', '1.txnlog'));
+					const state = Buffer.alloc(8);
+					state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+					state.writeUInt32LE(1, 4);
+					await writeFile(join(dbPath, 'transaction_logs', 'foo', 'txn.state'), state);
+
+					database = RocksDatabase.open(dbPath, { transactionLogMaxSize: 1000 });
+					log = database.useLog('foo');
+					expect(
+						Array.from(log.query({ startFromLastFlushed: true }), (entry) => entry.data.toString())
+					).toEqual(Array.from({ length: 4 }, (_, i) => String(i + 16).padStart(100, '0')));
 				} finally {
 					database.close();
 				}
@@ -2182,25 +2195,32 @@ describe('Transaction Log', () => {
 			}));
 
 		it('does not reuse a mapped log file after destroying and recreating its store', () =>
-			dbRunner(async ({ db }) => {
+			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
+				let readerDatabase;
 				await db.transaction(async (txn) => {
 					log.addEntry(Buffer.from('old'), txn.id);
 					db.putSync('old', 'value', { transaction: txn });
 				});
 				db.flushSync();
-				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
-					'old',
-				]);
-				expect(db.purgeLogs({ destroy: true, name: 'foo' })).toHaveLength(1);
+				try {
+					readerDatabase = RocksDatabase.open(dbPath);
+					const readerLog = readerDatabase.useLog('foo') as TransactionLog;
+					expect(
+						Array.from(readerLog.query({ start: 0 }), (entry) => entry.data.toString())
+					).toEqual(['old']);
+					expect(db.purgeLogs({ destroy: true, name: 'foo' })).toHaveLength(1);
 
-				await db.transaction(async (txn) => {
-					log.addEntry(Buffer.from('replacement'), txn.id);
-					db.putSync('replacement', 'value', { transaction: txn });
-				});
-				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
-					'replacement',
-				]);
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.from('replacement'), txn.id);
+						db.putSync('replacement', 'value', { transaction: txn });
+					});
+					expect(
+						Array.from(readerLog.query({ start: 0 }), (entry) => entry.data.toString())
+					).toEqual(['replacement']);
+				} finally {
+					readerDatabase?.close();
+				}
 			}));
 
 		it('continues after a retained watermark when reopening an empty store', () =>

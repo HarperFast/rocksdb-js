@@ -86,6 +86,13 @@ uint32_t TransactionLogHandle::getNextLogSequenceNumber(uint32_t sequenceNumber)
 
 uint64_t TransactionLogHandle::getPurgeGeneration() {
 	auto store = this->store.lock();
+	if (!store) {
+		auto dbHandle = this->dbHandle.lock();
+		if (dbHandle && dbHandle->opened()) {
+			store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+			this->store = store;
+		}
+	}
 	if (store) this->lastKnownPurgeGeneration = store->getPurgeGeneration();
 	return this->lastKnownPurgeGeneration;
 }

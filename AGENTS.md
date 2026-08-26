@@ -638,7 +638,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     callbacks write `txn.state` through its current pathname rather than a cached file handle, so
     replacing or removing the path cannot strand later updates in an unlinked inode. When a restart
     finds a retained watermark but no segments, `load()` continues at the next sequence; reusing
-    an earlier sequence would make the old watermark falsely prove new entries durable. Readers
+    an earlier sequence would make the old watermark falsely prove new entries durable, and an
+    exhausted sequence space fails the database open with the affected store path. Readers
     traverse the ordered segment set rather than assuming retained sequence numbers are contiguous.
 
 ## Debugging native heap corruption

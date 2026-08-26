@@ -229,7 +229,7 @@ export type TransactionLog = {
 	_getLastCommittedPosition(): Buffer;
 	_getLastFlushed(): number;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
-	_lastCommittedPosition: Float64Array;
+	_lastCommittedPosition?: Float64Array;
 	_logBuffers: Map<number, WeakRef<LogBuffer>>;
 };
 
