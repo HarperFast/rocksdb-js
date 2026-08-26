@@ -177,6 +177,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
+			if (!lastCommittedPosition) {
+				return [][Symbol.iterator]() as IterableIterator<TransactionEntry>;
+			}
 			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
 			this._logBuffers = new Map<number, WeakRef<LogBuffer>>();
 		}

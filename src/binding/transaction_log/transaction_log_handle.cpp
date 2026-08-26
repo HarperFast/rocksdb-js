@@ -89,6 +89,8 @@ uint64_t TransactionLogHandle::getPurgeGeneration() {
 	if (!store) {
 		auto dbHandle = this->dbHandle.lock();
 		if (dbHandle && dbHandle->opened()) {
+			// A live query revives a destroyed log like useLog() and collectStats(); the
+			// new store generation makes JS discard every mapping from the old store.
 			store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
 			this->store = store;
 		}

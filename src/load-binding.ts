@@ -226,7 +226,7 @@ export type TransactionLog = {
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
 	_currentLogBuffer?: LogBuffer;
 	_findPosition(timestamp: number): number;
-	_getLastCommittedPosition(): Buffer;
+	_getLastCommittedPosition(): Buffer | undefined;
 	_getLastFlushed(): number;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
 	_lastCommittedPosition?: Float64Array;

@@ -265,7 +265,7 @@ describe('Transaction Log', () => {
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 				});
-				const positionBuffer = log._getLastCommittedPosition();
+				const positionBuffer = log._getLastCommittedPosition()!;
 				const dataView = new DataView(positionBuffer.buffer);
 				expect(dataView.getUint32(0)).toBeGreaterThan(10);
 				const sequenceNumber = dataView.getUint32(1);
@@ -2191,6 +2191,19 @@ describe('Transaction Log', () => {
 				]);
 
 				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toHaveLength(1);
+				const lastPositionDescriptor = Object.getOwnPropertyDescriptor(
+					Object.getPrototypeOf(log),
+					'_getLastCommittedPosition'
+				)!;
+				Object.defineProperty(log, '_getLastCommittedPosition', {
+					value: () => undefined,
+					configurable: true,
+				});
+				try {
+					expect(Array.from(log.query({ start: 0 }))).toEqual([]);
+				} finally {
+					Object.defineProperty(log, '_getLastCommittedPosition', lastPositionDescriptor);
+				}
 				expect(Array.from(log.query({ start: 0 }))).toEqual([]);
 			}));
 
@@ -2241,7 +2254,7 @@ describe('Transaction Log', () => {
 
 					database = RocksDatabase.open(dbPath);
 					log = database.useLog('foo');
-					const lastCommittedBuffer = log._getLastCommittedPosition();
+					const lastCommittedBuffer = log._getLastCommittedPosition()!;
 					const lastCommitted = new Uint32Array(
 						lastCommittedBuffer.buffer,
 						lastCommittedBuffer.byteOffset,
@@ -2280,7 +2293,7 @@ describe('Transaction Log', () => {
 
 				db.open();
 				log = db.useLog('foo');
-				const lastCommittedBuffer = log._getLastCommittedPosition();
+				const lastCommittedBuffer = log._getLastCommittedPosition()!;
 				const lastCommitted = new Uint32Array(
 					lastCommittedBuffer.buffer,
 					lastCommittedBuffer.byteOffset,
@@ -2611,7 +2624,7 @@ describe('Transaction Log', () => {
 				const log = db.useLog('foo');
 
 				// Get initial lastCommittedPosition - should be valid even though no commits yet
-				let lastCommittedBuffer = log._getLastCommittedPosition();
+				let lastCommittedBuffer = log._getLastCommittedPosition()!;
 				let lastCommittedPosUint32 = new Uint32Array(lastCommittedBuffer.buffer, 0, 2);
 				expect(lastCommittedPosUint32[1]).toBeGreaterThanOrEqual(1);
 				expect(lastCommittedPosUint32[0]).toBeGreaterThanOrEqual(10);
@@ -2643,7 +2656,7 @@ describe('Transaction Log', () => {
 				const log2 = db.useLog('foo');
 
 				// After reopening, lastCommittedPosition should be valid and point to log file 2
-				lastCommittedBuffer = log2._getLastCommittedPosition();
+				lastCommittedBuffer = log2._getLastCommittedPosition()!;
 				lastCommittedPosUint32 = new Uint32Array(lastCommittedBuffer.buffer, 0, 2);
 				expect(lastCommittedPosUint32[1]).toBeGreaterThanOrEqual(2);
 				expect(lastCommittedPosUint32[0]).toBeGreaterThanOrEqual(10);
