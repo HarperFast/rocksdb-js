@@ -4,6 +4,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <atomic>
 #include <filesystem>
 #include <vector>
 
@@ -11,6 +12,10 @@ namespace rocksdb_js {
 
 // Initialize the static instance
 std::unique_ptr<TransactionLogStoreRegistry> TransactionLogStoreRegistry::instance;
+
+namespace {
+std::atomic<uint64_t> nextDeletionId { 0 };
+}
 
 /**
  * Initializes the singleton instance.
@@ -147,7 +152,18 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 		config = &entry->config;
 	}
 
-	if (transactionLogsPath.empty() || !std::filesystem::exists(transactionLogsPath)) {
+	if (transactionLogsPath.empty()) {
+		return;
+	}
+
+	// A process can exit after atomically detaching a destroyed store but before
+	// its files are removed. These paths are outside the discovery directory.
+	auto deletionRoot = std::filesystem::path(transactionLogsPath);
+	deletionRoot += ".deleting";
+	std::error_code cleanupError;
+	std::filesystem::remove_all(deletionRoot, cleanupError);
+
+	if (!std::filesystem::exists(transactionLogsPath)) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores No transaction logs path or directory does not exist for \"%s\"\n",
 			instance.get(), dbPath.c_str());
 		return;
@@ -360,28 +376,49 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 		}
 	}
 
-	// Phase 3: Remove closed stores and their directories while holding the lock so
-	// ResolveStore cannot publish a replacement at the same path before deletion finishes.
+	// Phase 3: Atomically detach closed store directories while holding the registry
+	// lock, then remove them without blocking flush callbacks or store resolution.
 	if (destroy) {
-		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
-		for (auto& store : storesToPurge) {
-			if (!store->isClosing.load(std::memory_order_relaxed)) {
-				continue;
-			}
-			auto storeIt = entry->stores.find(store->name);
-			if (storeIt != entry->stores.end() && storeIt->second.get() == store.get()) {
+		auto deletionRoot = std::filesystem::path(entry->config.transactionLogsPath);
+		deletionRoot += ".deleting";
+		rocksdb_js::tryCreateDirectory(deletionRoot);
+		std::vector<std::filesystem::path> pathsToRemove;
+		{
+			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+			for (auto& store : storesToPurge) {
+				if (!store->isClosing.load(std::memory_order_relaxed)) {
+					continue;
+				}
+				auto storeIt = entry->stores.find(store->name);
+				if (storeIt == entry->stores.end() || storeIt->second.get() != store.get()) {
+					continue;
+				}
+
+				auto deletionPath = deletionRoot /
+					(store->name + "-" + std::to_string(nextDeletionId.fetch_add(1, std::memory_order_relaxed)));
+				std::error_code renameError;
+				std::filesystem::rename(store->path, deletionPath, renameError);
+				if (renameError && renameError != std::errc::no_such_file_or_directory) {
+					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to detach log directory %s: %s\n",
+						instance.get(), store->path.string().c_str(), renameError.message().c_str());
+					continue;
+				}
 				entry->stores.erase(storeIt);
-				try {
-					std::filesystem::remove_all(store->path);
-				} catch (const std::filesystem::filesystem_error& e) {
-					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",
-						instance.get(), store->path.string().c_str(), e.what());
-				} catch (...) {
-					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Unknown error removing log directory %s\n",
-						instance.get(), store->path.string().c_str());
+				if (!renameError) {
+					pathsToRemove.push_back(std::move(deletionPath));
 				}
 			}
 		}
+		for (const auto& deletionPath : pathsToRemove) {
+			std::error_code removeError;
+			std::filesystem::remove_all(deletionPath, removeError);
+			if (removeError) {
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove detached log directory %s: %s\n",
+					instance.get(), deletionPath.string().c_str(), removeError.message().c_str());
+			}
+		}
+		std::error_code removeRootError;
+		std::filesystem::remove(deletionRoot, removeRootError);
 	}
 
 	return removed;

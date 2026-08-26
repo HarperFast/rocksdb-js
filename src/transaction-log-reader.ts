@@ -169,9 +169,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 	): IterableIterator<TransactionEntry> {
 		const purgeGeneration = this._getPurgeGeneration();
 		if (this._purgeGeneration !== undefined && purgeGeneration !== this._purgeGeneration) {
+			const lastCommittedPosition = this._getLastCommittedPosition();
+			if (!lastCommittedPosition) {
+				return [][Symbol.iterator]() as IterableIterator<TransactionEntry>;
+			}
 			this._logBuffers?.clear();
 			this._currentLogBuffer = undefined;
-			this._lastCommittedPosition = undefined;
+			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
 		}
 		this._purgeGeneration = purgeGeneration;
 		if (!this._lastCommittedPosition) {

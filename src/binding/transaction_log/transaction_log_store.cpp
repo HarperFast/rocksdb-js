@@ -1196,11 +1196,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		(!hasCurrentSegment && flushedPosition.logSequenceNumber == discoveredCurrentSequence &&
 			flushedPosition.logSequenceNumber > 0)) {
 		if (flushedPosition.logSequenceNumber == std::numeric_limits<uint32_t>::max()) {
-			throw std::runtime_error("Transaction log flush watermark sequence is out of range for " + path.string());
+			throw rocksdb_js::DBException("Transaction log flush watermark sequence is out of range for " + path.string());
 		}
 		uint32_t nextWritableSequence = flushedPosition.logSequenceNumber + 1;
 		if (nextWritableSequence == std::numeric_limits<uint32_t>::max()) {
-			throw std::runtime_error("Transaction log sequence space is exhausted for " + path.string());
+			throw rocksdb_js::DBException("Transaction log sequence space is exhausted for " + path.string());
 		}
 		store->currentSequenceNumber.store(nextWritableSequence, std::memory_order_relaxed);
 		store->nextSequenceNumber = nextWritableSequence + 1;

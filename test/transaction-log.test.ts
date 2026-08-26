@@ -2186,9 +2186,8 @@ describe('Transaction Log', () => {
 					db.putSync('key', 'value', { transaction: txn });
 				});
 				db.flushSync();
-				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
-					'purged',
-				]);
+				const existingIterator = log.query({ start: 0 });
+				expect(existingIterator.next().value.data.toString()).toBe('purged');
 
 				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toHaveLength(1);
 				const lastPositionDescriptor = Object.getOwnPropertyDescriptor(
@@ -2201,6 +2200,7 @@ describe('Transaction Log', () => {
 				});
 				try {
 					expect(Array.from(log.query({ start: 0 }))).toEqual([]);
+					expect(existingIterator.next()).toEqual({ done: true, value: undefined });
 				} finally {
 					Object.defineProperty(log, '_getLastCommittedPosition', lastPositionDescriptor);
 				}
