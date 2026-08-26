@@ -1623,6 +1623,8 @@ Deletes transaction log files older than the `transactionLogRetention` (defaults
 Startup and runtime retention remove only segments proven flushed, and retain the live log store
 and its flush watermark; use `destroy: true` to close and remove the current store. A later
 `useLog()` call or query through a retained handle creates a new empty store with the same name.
+If no flush watermark has been recorded yet, retention conservatively keeps eligible segments;
+`log.getStats().purge.retainedUnflushedFiles` reports how many are waiting for a durable flush.
 
 - `options: object`
   - `before?: number` Remove all transaction log files older than the specified timestamp.

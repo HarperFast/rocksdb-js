@@ -166,7 +166,6 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 	// its files are removed. Keep the root itself so concurrent detaches remain valid.
 	auto deletionRoot = std::filesystem::path(transactionLogsPath);
 	deletionRoot += ".deleting";
-	rocksdb_js::tryCreateDirectory(deletionRoot);
 	std::error_code cleanupError;
 	for (std::filesystem::directory_iterator it(deletionRoot, cleanupError), end; !cleanupError && it != end; it.increment(cleanupError)) {
 		std::error_code removeError;
