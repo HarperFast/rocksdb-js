@@ -1620,6 +1620,8 @@ const names = db.listLogs();
 ### `db.purgeLogs({ includeEntryCounts: true, ...options }): { path: string; entries: number }[]`
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
+Startup and runtime retention remove only segments proven flushed, and retain the live log store
+and its flush watermark; use `destroy: true` to close and remove a store completely.
 
 - `options: object`
   - `before?: number` Remove all transaction log files older than the specified timestamp.

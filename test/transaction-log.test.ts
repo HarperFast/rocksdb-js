@@ -11,7 +11,7 @@ import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
@@ -2094,6 +2094,139 @@ describe('Transaction Log', () => {
 			return Buffer.concat(parts);
 		};
 
+		it('preserves the live flush watermark across repeated complete purges', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const stateFile = join(logDirectory, 'txn.state');
+
+				for (let cycle = 1; cycle <= 2; cycle++) {
+					await db.transaction(async (txn) => {
+						const value = Buffer.from(`value-${cycle}`);
+						log.addEntry(value, txn.id);
+						db.putSync(`key-${cycle}`, value, { transaction: txn });
+					});
+					db.flushSync();
+
+					const state = readFileSync(stateFile);
+					const flushed = new Uint32Array(state.buffer, state.byteOffset, 2);
+					expect(flushed[1]).toBe(cycle);
+					expect(flushed[0]).toBeGreaterThan(TRANSACTION_LOG_FILE_HEADER_SIZE);
+
+					const logFile = join(logDirectory, `${cycle}.txnlog`);
+					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([logFile]);
+					expect(existsSync(stateFile)).toBe(true);
+					if (cycle === 1) unlinkSync(stateFile);
+				}
+			}));
+
+		it('does not recreate a missing state file for an unchanged flush position', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('value'), txn.id);
+					db.putSync('key', 'value', { transaction: txn });
+				});
+				db.flushSync();
+
+				const stateFile = join(dbPath, 'transaction_logs', 'foo', 'txn.state');
+				unlinkSync(stateFile);
+				db.flushSync();
+				expect(existsSync(stateFile)).toBe(false);
+			}));
+
+		it('continues after a retained watermark when reopening an empty store', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				let database = db;
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				try {
+					let log = database.useLog('foo');
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.from('first'), txn.id);
+						database.putSync('first', 'value', { transaction: txn });
+					});
+					database.flushSync();
+					expect(database.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
+						join(logDirectory, '1.txnlog'),
+					]);
+					database.close();
+
+					database = RocksDatabase.open(dbPath);
+					log = database.useLog('foo');
+					const lastCommittedBuffer = log._getLastCommittedPosition();
+					const lastCommitted = new Uint32Array(
+						lastCommittedBuffer.buffer,
+						lastCommittedBuffer.byteOffset,
+						2
+					);
+					expect(Array.from(lastCommitted)).toEqual([0, 2]);
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.from('second'), txn.id);
+						database.putSync('second', 'value', { transaction: txn });
+					});
+
+					const logFiles = (await readdir(logDirectory)).filter((name) => name.endsWith('.txnlog'));
+					expect(logFiles).toEqual(['2.txnlog']);
+					expect(database.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([]);
+					expect(existsSync(join(logDirectory, '2.txnlog'))).toBe(true);
+				} finally {
+					database.close();
+				}
+			}));
+
+		it('continues past the watermark when only lower sequence files survive', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				db.open();
+				let log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('first'), txn.id);
+				});
+				const firstTimestamp = Array.from(log.query({ start: 0 }))[0].timestamp;
+				db.close();
+
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+				state.writeUInt32LE(2, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				log = db.useLog('foo');
+				const lastCommittedBuffer = log._getLastCommittedPosition();
+				const lastCommitted = new Uint32Array(
+					lastCommittedBuffer.buffer,
+					lastCommittedBuffer.byteOffset,
+					2
+				);
+				expect(Array.from(lastCommitted)).toEqual([0, 3]);
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('third'), txn.id);
+				});
+				expect(existsSync(join(logDirectory, '3.txnlog'))).toBe(true);
+				expect(Array.from(log.query({ start: 0 }), (entry) => entry.data.toString())).toEqual([
+					'first',
+					'third',
+				]);
+				expect(
+					Array.from(log.query({ start: firstTimestamp + 0.5 }), (entry) => entry.data.toString())
+				).toEqual(['third']);
+			}));
+
+		it('leaves a destroyed store absent after a concurrent flush request', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('value'), txn.id);
+					db.putSync('key', 'value', { transaction: txn });
+				});
+
+				const flush = db.flush();
+				db.purgeLogs({ destroy: true, name: 'foo' });
+				await flush;
+				await delay(10);
+				expect(existsSync(join(dbPath, 'transaction_logs', 'foo'))).toBe(false);
+			}));
+
 		it('should return entry counts when includeEntryCounts is true', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
@@ -2205,10 +2338,33 @@ describe('Transaction Log', () => {
 
 				const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 				await utimes(logFile, oneWeekAgo, oneWeekAgo);
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
+				state.writeUInt32LE(1, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
 
 				db.open();
 				expect(db.listLogs()).toEqual(['foo']);
 				expect(existsSync(logFile)).toBe(false);
+			}));
+
+		it('should retain an aged, unflushed log file on load', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await mkdir(logDirectory, { recursive: true });
+
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(1, 4);
+				header.writeDoubleBE(0, 5);
+				await writeFile(logFile, header);
+
+				const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+				await utimes(logFile, oneWeekAgo, oneWeekAgo);
+
+				db.open();
+				expect(existsSync(logFile)).toBe(true);
 			}));
 
 		// doPurge()'s flushed-position guard, which reads TransactionLogFile::size.

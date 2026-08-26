@@ -271,8 +271,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							logBuffer!.size ??
 							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
 						if (position >= size) {
-							// we can't read any further in this block, go to the next block
-							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							const nextLogBuffer = getNextLogMemoryMap(
+								transactionLog,
+								logBuffer!.logId,
+								latestLogId
+							);
 							if (nextLogBuffer) {
 								dataView = nextLogBuffer.dataView;
 								logBuffer = nextLogBuffer;
@@ -395,7 +398,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1);
+							const nextLogBuffer = getNextLogMemoryMap(
+								transactionLog,
+								logBuffer!.logId,
+								latestLogId
+							);
 							if (!nextLogBuffer) {
 								// the next log file can't be mapped (purged, mid-rotation,
 								// 0-byte at mmap time, FS race); stop cleanly rather than
@@ -452,6 +459,17 @@ function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuff
 		}
 	}
 	return logBuffer;
+}
+
+function getNextLogMemoryMap(
+	transactionLog: TransactionLog,
+	logId: number,
+	latestLogId: number
+): LogBuffer | undefined {
+	while (++logId <= latestLogId) {
+		const logBuffer = getLogMemoryMap(transactionLog, logId);
+		if (logBuffer) return logBuffer;
+	}
 }
 
 function loadLastPosition(

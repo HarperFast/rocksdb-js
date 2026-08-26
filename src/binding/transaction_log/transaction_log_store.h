@@ -3,7 +3,6 @@
 
 #include <string>
 #include <filesystem>
-#include <fstream>
 #include <algorithm>
 #include <map>
 #include <vector>
@@ -322,8 +321,8 @@ struct TransactionLogStore final {
 	unsigned int nextSequencePositionsCount = 0;
 
 	/**
-	 * Protects flushedStateFile, lastWrittenFlushedPosition, and all I/O on
-	 * "txn.state". This is a separate, lightweight lock so that
+	 * Protects lastWrittenFlushedPosition and all I/O on "txn.state".
+	 * This is a separate, lightweight lock so that
 	 * getLastFlushedPosition() — which is called from doPurge() while
 	 * dataSetsMutex is already held — never needs to acquire dataSetsMutex,
 	 * eliminating that deadlock path.
@@ -332,11 +331,6 @@ struct TransactionLogStore final {
 	 * Never acquire dataSetsMutex while already holding flushedStateMutex.
 	 */
 	std::mutex flushedStateMutex;
-
-	/**
-	 * This file stream is used to track how much of the transaction log has been flushed to the database.
-	 */
-	std::ofstream flushedStateFile;
 
 	/**
 	 * The last flushed position that was written to the state file.
