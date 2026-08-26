@@ -15,8 +15,6 @@ struct TransactionLog final {
 	static napi_value GetLastCommittedPosition(napi_env env, napi_callback_info info);
 	static napi_value GetLastFlushed(napi_env env, napi_callback_info info);
 	static napi_value GetLogFileSize(napi_env env, napi_callback_info info);
-	static napi_value GetNextLogSequenceNumber(napi_env env, napi_callback_info info);
-	static napi_value GetPurgeGeneration(napi_env env, napi_callback_info info);
 	static napi_value GetMemoryMapOfFile(napi_env env, napi_callback_info info);
 	static napi_value GetName(napi_env env, napi_callback_info info);
 	static napi_value GetPath(napi_env env, napi_callback_info info);

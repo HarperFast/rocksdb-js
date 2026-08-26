@@ -167,23 +167,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			exclusiveStart,
 		}: TransactionLogQueryOptions = {}
 	): IterableIterator<TransactionEntry> {
-		const purgeGeneration = this._getPurgeGeneration();
-		if (this._purgeGeneration !== undefined && purgeGeneration !== this._purgeGeneration) {
-			const lastCommittedPosition = this._getLastCommittedPosition();
-			if (!lastCommittedPosition) {
-				return [][Symbol.iterator]() as IterableIterator<TransactionEntry>;
-			}
-			this._logBuffers = new Map<number, WeakRef<LogBuffer>>();
-			this._currentLogBuffer = undefined;
-			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
-		}
-		this._purgeGeneration = purgeGeneration;
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
-			if (!lastCommittedPosition) {
-				return [][Symbol.iterator]() as IterableIterator<TransactionEntry>;
-			}
 			this._lastCommittedPosition = new Float64Array(lastCommittedPosition.buffer);
 			this._logBuffers = new Map<number, WeakRef<LogBuffer>>();
 		}
@@ -242,7 +228,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			if (logBuffer === undefined) {
 				// create a fake log buffer if we don't have any log buffer yet
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
-				logBuffer.logId = logId;
+				logBuffer.logId = 0;
 				logBuffer.size = 0;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
 				// the outer size variable was set from loadLastPosition() above, but if we
@@ -279,43 +265,27 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						!!readUncommitted
 					);
 					size = latestSize;
-					if (logBuffer!.length === 0) {
-						let searchAfter = Math.max(0, logBuffer!.logId - 1);
-						do {
-							const nextLogBuffer = getNextLogMemoryMap(transactionLog, searchAfter, latestLogId);
-							if (!nextLogBuffer) return { done: true, value: undefined };
-							logBuffer = nextLogBuffer;
-							searchAfter = logBuffer.logId;
-							dataView = logBuffer.dataView;
-							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
-							size =
-								latestLogId === logBuffer.logId
-									? latestSize
-									: (logBuffer.size ??= transactionLog.getLogFileSize(logBuffer.logId));
-						} while (position >= size);
-					} else if (latestLogId > logBuffer!.logId) {
+					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
 						size =
 							logBuffer!.size ??
 							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
-						while (position >= size && latestLogId > logBuffer!.logId) {
-							const nextLogBuffer = getNextLogMemoryMap(
-								transactionLog,
-								logBuffer!.logId,
-								latestLogId
-							);
-							if (!nextLogBuffer) break;
-							dataView = nextLogBuffer.dataView;
-							logBuffer = nextLogBuffer;
-							if (latestLogId > logBuffer!.logId) {
-								// it is non-current log file, we can safely use or cache the size
-								size =
-									logBuffer!.size ??
-									(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
-							} else {
-								size = latestSize; // use the latest position from loadLastPosition
+						if (position >= size) {
+							// we can't read any further in this block, go to the next block
+							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							if (nextLogBuffer) {
+								dataView = nextLogBuffer.dataView;
+								logBuffer = nextLogBuffer;
+								if (latestLogId > logBuffer!.logId) {
+									// it is non-current log file, we can safely use or cache the size
+									size =
+										logBuffer!.size ??
+										(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+								} else {
+									size = latestSize; // use the latest position from loadLastPosition
+								}
+								position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 							}
-							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
 					}
 				}
@@ -417,35 +387,32 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							},
 						};
 					}
-					while (position >= size) {
+					if (position >= size) {
 						// move to the next log file
 						const { logId: latestLogId, size: latestSize } = loadLastPosition(
 							transactionLog,
 							!!readUncommitted
 						);
 						size = latestSize;
-						if (latestLogId <= logBuffer!.logId) break;
-						const nextLogBuffer = getNextLogMemoryMap(
-							transactionLog,
-							logBuffer!.logId,
-							latestLogId
-						);
-						if (!nextLogBuffer) {
-							// the next log file can't be mapped (purged, mid-rotation,
-							// 0-byte at mmap time, FS race); stop cleanly rather than
-							// dereferencing an undefined buffer
-							return { done: true, value: undefined };
-						}
-						logBuffer = nextLogBuffer;
-						dataView = logBuffer.dataView;
-						size = logBuffer.size;
-						if (size == undefined) {
-							size = transactionLog.getLogFileSize(logBuffer.logId);
-							if (!readUncommitted) {
-								logBuffer.size = size;
+						if (latestLogId > logBuffer!.logId) {
+							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1);
+							if (!nextLogBuffer) {
+								// the next log file can't be mapped (purged, mid-rotation,
+								// 0-byte at mmap time, FS race); stop cleanly rather than
+								// dereferencing an undefined buffer
+								return { done: true, value: undefined };
 							}
+							logBuffer = nextLogBuffer;
+							dataView = logBuffer.dataView;
+							size = logBuffer.size;
+							if (size == undefined) {
+								size = transactionLog.getLogFileSize(logBuffer.logId);
+								if (!readUncommitted) {
+									logBuffer.size = size;
+								}
+							}
+							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
-						position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 					}
 				}
 				return { done: true, value: undefined };
@@ -485,32 +452,6 @@ function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuff
 		}
 	}
 	return logBuffer;
-}
-
-function getNextLogMemoryMap(
-	transactionLog: TransactionLog,
-	logId: number,
-	latestLogId: number
-): LogBuffer | undefined {
-	while (logId < latestLogId) {
-		let nextLogId = transactionLog._getNextLogSequenceNumber(logId);
-		if (nextLogId === 0) {
-			for (const [cachedLogId, reference] of transactionLog._logBuffers!) {
-				if (
-					cachedLogId > logId &&
-					cachedLogId <= latestLogId &&
-					reference.deref() &&
-					(nextLogId === 0 || cachedLogId < nextLogId)
-				) {
-					nextLogId = cachedLogId;
-				}
-			}
-		}
-		if (nextLogId === 0 || nextLogId > latestLogId) return;
-		const logBuffer = getLogMemoryMap(transactionLog, nextLogId);
-		if (logBuffer) return logBuffer;
-		logId = nextLogId;
-	}
 }
 
 function loadLastPosition(

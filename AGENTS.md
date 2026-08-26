@@ -629,19 +629,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
-18. **Only a closed transaction-log store may lose its directory or flush watermark**: ordinary
-    retention purges remove eligible `.txnlog` segments but keep the live store directory and
-    `txn.state`; startup age-based retention goes through the same persisted-flush gate. Destructive
-    teardown belongs to `TransactionLogStoreRegistry::PurgeStores()`'s
-    `destroy` path, which closes the store and holds the per-database store-registry lock across
-    unregistering and atomically detaching its directory; recursive removal happens after the lock
-    is released so a same-name replacement cannot be deleted or block flush callbacks. Flush
-    callbacks write `txn.state` through its current pathname rather than a cached file handle, so
-    replacing or removing the path cannot strand later updates in an unlinked inode. When a restart
-    finds a retained watermark but no segments, `load()` continues at the next sequence; reusing
-    an earlier sequence would make the old watermark falsely prove new entries durable, and an
-    exhausted sequence space fails the database open with the affected store path. Readers
-    traverse the ordered segment set rather than assuming retained sequence numbers are contiguous.
+18. **Ordinary transaction-log retention removes only a contiguous oldest prefix**: it never
+    removes the highest sequence file or the live store directory. Stop the scan when an older
+    file is ineligible or cannot be removed; continuing could create a sequence gap. Destructive
+    store removal is the separate `destroy` path.
 
 ## Debugging native heap corruption
 

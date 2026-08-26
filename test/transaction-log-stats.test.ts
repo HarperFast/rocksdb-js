@@ -114,6 +114,24 @@ describe('Transaction Log Stats', () => {
 				}
 			));
 
+		it('should not report the flushed current file as purgeable', () =>
+			dbRunner(
+				{ dbOptions: [{ path: generateDBPath(), transactionLogRetention: 500 }] },
+				async ({ db }) => {
+					const log = db.useLog('retain-current');
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(100, 'a'), txn.id);
+						db.putSync('key', 'value', { transaction: txn });
+					});
+					db.flushSync();
+					await delay(1200);
+
+					const stats = log.getStats();
+					expect(stats.purge.purgeableFiles).toBe(0);
+					expect(stats.purge.retainedUnflushedFiles).toBe(0);
+				}
+			));
+
 		it('should increment purgeRuns when logs are purged', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('purge');

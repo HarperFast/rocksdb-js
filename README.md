@@ -1620,11 +1620,11 @@ const names = db.listLogs();
 ### `db.purgeLogs({ includeEntryCounts: true, ...options }): { path: string; entries: number }[]`
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
-Startup and runtime retention remove only segments proven flushed, and retain the live log store
-and its flush watermark; use `destroy: true` to close and remove the current store. A later
-`useLog()` call or query through a retained handle creates a new empty store with the same name.
-If no flush watermark has been recorded yet, retention conservatively keeps eligible segments;
-`log.getStats().purge.retainedUnflushedFiles` reports how many are waiting for a durable flush.
+Ordinary retention keeps the highest sequence file as the live store's durable floor and removes
+only an eligible contiguous prefix of older files. An idle store can therefore retain one file
+past the cutoff until a later write rotates it; disk retained past the cutoff is bounded by that
+store's `transactionLogMaxSize` (except when a single transaction exceeds the target). Use
+`destroy: true` only to remove the store itself.
 
 - `options: object`
   - `before?: number` Remove all transaction log files older than the specified timestamp.
@@ -1801,7 +1801,8 @@ stats.totals.transactionsWritten; // lifetime count of transactions written
 
 The `purge.retainedUnflushedFiles` gauge is useful for diagnosing why logs are not being cleaned
 up: a file can be older than the retention period but still retained because its transactions have
-not yet been flushed to RocksDB (purging it would be unsafe for crash recovery).
+not yet been flushed to RocksDB (purging it would be unsafe for crash recovery). The highest
+sequence file is not counted as purgeable even when it is old and fully flushed.
 
 ### Transaction Log Initialization
 

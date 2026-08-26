@@ -15,9 +15,6 @@ TransactionLogHandle::TransactionLogHandle(
 ): dbHandle(dbHandle), logName(logName), readOnly(readOnly), transactionId(0) {
 	DEBUG_LOG("%p TransactionLogHandle::TransactionLogHandle Creating TransactionLogHandle \"%s\"\n", this, logName.c_str());
 	this->store = dbHandle->descriptor->resolveTransactionLogStore(logName);
-	if (auto store = this->store.lock()) {
-		this->lastKnownPurgeGeneration = store->getPurgeGeneration();
-	}
 }
 
 TransactionLogHandle::~TransactionLogHandle() {
@@ -76,26 +73,6 @@ uint64_t TransactionLogHandle::getLogFileSize(uint32_t sequenceNumber) {
 	auto store = this->store.lock();
 	if (store) return store->getLogFileSize(sequenceNumber);
 	return 0;
-}
-
-uint32_t TransactionLogHandle::getNextLogSequenceNumber(uint32_t sequenceNumber) {
-	auto store = this->store.lock();
-	if (store) return store->getNextLogSequenceNumber(sequenceNumber);
-	return 0;
-}
-
-uint64_t TransactionLogHandle::getPurgeGeneration() {
-	auto store = this->store.lock();
-	if (!store) {
-		auto dbHandle = this->dbHandle.lock();
-		if (dbHandle && dbHandle->opened()) {
-			// The new store generation makes JS discard every mapping from the old store.
-			store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
-			this->store = store;
-		}
-	}
-	if (store) this->lastKnownPurgeGeneration = store->getPurgeGeneration();
-	return this->lastKnownPurgeGeneration;
 }
 
 std::shared_ptr<MemoryMap> TransactionLogHandle::getMemoryMap(uint32_t sequenceNumber) {
