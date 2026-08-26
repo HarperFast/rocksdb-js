@@ -713,6 +713,36 @@ describe('Transaction Log', () => {
 				}
 			}));
 
+		it('continues through an empty segment to later committed entries', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, async ({ db, dbPath }) => {
+				let database = db;
+				try {
+					let log = database.useLog('foo');
+					for (let i = 0; i < 20; i++) {
+						await database.transaction(async (txn) => {
+							log.addEntry(Buffer.from(String(i).padStart(100, '0')), txn.id);
+						});
+					}
+					database.close();
+
+					const middlePath = join(dbPath, 'transaction_logs', 'foo', '2.txnlog');
+					await writeFile(
+						middlePath,
+						readFileSync(middlePath).subarray(0, TRANSACTION_LOG_FILE_HEADER_SIZE)
+					);
+
+					database = RocksDatabase.open(dbPath, { transactionLogMaxSize: 1000 });
+					log = database.useLog('foo');
+					const values = Array.from(log.query({ start: 0 }), (entry) => entry.data.toString());
+					expect(values).toEqual([
+						...Array.from({ length: 8 }, (_, i) => String(i).padStart(100, '0')),
+						...Array.from({ length: 4 }, (_, i) => String(i + 16).padStart(100, '0')),
+					]);
+				} finally {
+					database.close();
+				}
+			}));
+
 		it('should allow unlimited transaction log size', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
