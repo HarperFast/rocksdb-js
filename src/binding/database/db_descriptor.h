@@ -294,13 +294,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	bool transactionLogsUnregistered = false;
 
 	/**
-	 * Armed by finishClose() for its whole duration so an in-progress manual
-	 * compactRange() on another thread aborts instead of making teardown wait
-	 * out its full, unbounded duration. It covers both shapes: compactSync()
-	 * holds an OperationGuard and so blocks the drain, while an async compact()
-	 * released its guard at setup handoff and is not awaited until the closables
-	 * sweep -- clearing the token after the drain left that second one able to
-	 * stall teardown (and every concurrent open on the path) indefinitely.
+	 * Armed when close is claimed so an in-progress manual
+	 * compactRange() on another thread aborts before DBHandle::close() waits for
+	 * its async work to drain. It covers both shapes: compactSync() holds an
+	 * OperationGuard and so blocks the drain, while an async compact() released
+	 * its guard at setup handoff and is not awaited until the closables sweep.
 	 * Close-initiated compaction passes `cancellable = false` rather than
 	 * clearing this, since nothing external is waiting on it.
 	 */
@@ -488,7 +486,13 @@ public:
 	 * under the same lock) waits instead of handing the descriptor to a new
 	 * handle that would then be closed out from under it.
 	 */
-	bool beginClose() { return !this->closing.exchange(true); }
+	bool beginClose() {
+		if (this->closing.exchange(true)) {
+			return false;
+		}
+		this->compactCancelRequested.store(true);
+		return true;
+	}
 
 	/**
 	 * Performs the actual close work (flush, close handles, release resources).

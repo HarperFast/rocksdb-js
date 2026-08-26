@@ -427,11 +427,8 @@ void DBDescriptor::finishClose(bool destroying) {
 		// Existing operations will decrement operationsInFlight and notify us when done.
 		// Unbounded in-flight operations must abort once `closing` is published
 		// rather than block this untimed wait for their full duration. A count
-		// scan polls isClosing() itself; a manual compactRange() cannot, so it
-		// gets an explicit cancel token. The token stays armed past this drain:
-		// an async compact() released its OperationGuard at setup handoff, so it
-		// is still running here and is not awaited until the closables sweep.
-		this->compactCancelRequested.store(true);
+		// scan polls isClosing() itself; a manual compactRange() uses the cancel
+		// token armed by beginClose(), before DBHandle::close() starts its drain.
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {
