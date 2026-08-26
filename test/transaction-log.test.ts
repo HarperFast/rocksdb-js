@@ -11,7 +11,7 @@ import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
@@ -2073,6 +2073,20 @@ describe('Transaction Log', () => {
 	});
 
 	describe('purgeLogs', () => {
+		// Which `.txnlog` files under `logDirectory` this process currently holds
+		// open, via procfs. Linux only; callers guard on the platform.
+		const openLogDescriptors = (logDirectory: string): string[] =>
+			readdirSync('/proc/self/fd')
+				.map((fd) => {
+					try {
+						return readlinkSync(`/proc/self/fd/${fd}`);
+					} catch {
+						return '';
+					}
+				})
+				.filter((target) => target.startsWith(logDirectory) && target.endsWith('.txnlog'))
+				.sort();
+
 		// Build a transaction log file image with a valid header followed by
 		// `entryCount` well-formed v1 entry frames so the native counter has real
 		// framing to walk.
@@ -2392,24 +2406,30 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFiles[2])).toBe(true);
 			}));
 
-		// Directory iteration order is unspecified, so startup discovery used to open
-		// (and write an append-boundary marker for) every segment that briefly held the
-		// highest sequence. On Windows the leaked handle also made a superseded segment
-		// undeletable from outside the process — the EBUSY that broke the detach test above.
+		// Only the segment that is still current after the whole directory has been
+		// scanned may be opened or marker-enabled. A segment that is merely the
+		// highest seen so far must not be, and directory iteration order decides
+		// which those are. The open-descriptor assertion is the order-independent
+		// half — on a filesystem that enumerates in sorted order the marker
+		// assertion catches it too, but a hash-ordered one can yield the highest
+		// sequence first and leave nothing behind.
 		it('should activate only the surviving current segment during discovery', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				await mkdir(logDirectory, { recursive: true });
 
-				for (const sequence of [1, 2, 3]) {
+				for (const sequence of [1, 2, 3, 4, 5, 6]) {
 					await writeFile(join(logDirectory, `${sequence}.txnlog`), buildLogFile(1));
 				}
 
 				db.open();
 				db.useLog('foo');
 
+				if (process.platform === 'linux') {
+					expect(openLogDescriptors(logDirectory)).toEqual([join(logDirectory, '6.txnlog')]);
+				}
 				const markerDirectory = join(dbPath, 'transaction_logs', '.append-boundaries', 'foo');
-				expect((await readdir(markerDirectory)).sort()).toEqual(['3.txnlog.boundary']);
+				expect(await readdir(markerDirectory)).toEqual(['6.txnlog.boundary']);
 			}));
 
 		it('should retain the flushed-position segment for startFromLastFlushed readers', () =>
