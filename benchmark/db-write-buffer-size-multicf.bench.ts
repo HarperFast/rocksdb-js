@@ -216,6 +216,9 @@ async function measureArm(columnFamilies: number, dbWriteBufferSize: number): Pr
 		}
 		const elapsedMs = performance.now() - start;
 
+		console.log(
+			`Settling ${columnFamilies} CF / ${formatDbWriteBufferSize(dbWriteBufferSize)} after ingest`
+		);
 		databases[0].flushSync();
 		await waitForBackgroundWork(databases);
 
