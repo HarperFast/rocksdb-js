@@ -198,9 +198,9 @@ await db.transaction((txn) => {
 - Log files are automatically rotated when either the index or data file reaches their configured
   maximum sizes
 - Rotation happens on the next write after the size limit is exceeded
-- Old log files can be automatically purged based on retention policy. The highest sequence file is
-  retained as the live store's durable floor, so an idle store can keep one bounded file past the
-  cutoff until a later write rotates it.
+- Old log files can be automatically purged based on retention policy. The sequence file named by
+  `txn.state` and every newer file form the live store's durable floor, so an idle store can keep
+  one bounded file past the cutoff until a later write rotates and flushes it.
 
 ### Error Handling
 

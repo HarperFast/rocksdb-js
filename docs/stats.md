@@ -477,7 +477,7 @@ const stats: TransactionLogStats = log.getStats();
   - `offset: number` The byte offset within that file.
 - `purge: object`
   - `oldestFileAgeMs: number` Age in milliseconds of the oldest file on disk.
-  - `purgeableFiles: number` Number of files below the durable highest-sequence floor that are
+  - `purgeableFiles: number` Number of files below the durable `txn.state` sequence floor that are
     eligible for purge under the retention policy.
   - `retainedUnflushedFiles: number` Number of files past the retention threshold but retained
     because they are unflushed.

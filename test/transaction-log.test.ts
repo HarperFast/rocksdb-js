@@ -12,7 +12,7 @@ import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -2267,10 +2267,10 @@ describe('Transaction Log', () => {
 					logFiles.push(logFile);
 				}
 
-				// flushed position is at segment 1's end of entries — nothing unflushed
+				// flushed position is at segment 2's end, so segment 1 is below the floor
 				const state = Buffer.alloc(8);
 				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
-				state.writeUInt32LE(1, 4);
+				state.writeUInt32LE(2, 4);
 				await writeFile(join(logDirectory, 'txn.state'), state);
 
 				db.open();
@@ -2336,6 +2336,83 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFiles[1])).toBe(false);
 				expect(existsSync(logFiles[2])).toBe(true);
 				expect(existsSync(stateFile)).toBe(true);
+			}));
+
+		it('should purge an eligible prefix during startup', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogRetention: 500 }] },
+				async ({ db, dbPath }) => {
+					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+					await mkdir(logDirectory, { recursive: true });
+
+					const old = new Date(Date.now() - 60 * 1000);
+					const logFiles: string[] = [];
+					for (const sequence of [1, 2, 3]) {
+						const logFile = join(logDirectory, `${sequence}.txnlog`);
+						await writeFile(logFile, buildLogFile(1));
+						await utimes(logFile, old, old);
+						logFiles.push(logFile);
+					}
+
+					const state = Buffer.alloc(8);
+					state.writeUInt32LE(statSync(logFiles[2]).size, 0);
+					state.writeUInt32LE(3, 4);
+					const stateFile = join(logDirectory, 'txn.state');
+					await writeFile(stateFile, state);
+
+					db.open();
+					expect(existsSync(logFiles[0])).toBe(false);
+					expect(existsSync(logFiles[1])).toBe(false);
+					expect(existsSync(logFiles[2])).toBe(true);
+					expect(existsSync(stateFile)).toBe(true);
+				}
+			));
+
+		it('should detach an already-missing prefix entry without wedging retention', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				const logFiles: string[] = [];
+				for (const sequence of [1, 2, 3]) {
+					const logFile = join(logDirectory, `${sequence}.txnlog`);
+					await writeFile(logFile, buildLogFile(1));
+					logFiles.push(logFile);
+				}
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(statSync(logFiles[2]).size, 0);
+				state.writeUInt32LE(3, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				const log = db.useLog('foo');
+				await unlink(logFiles[0]);
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([logFiles[1]]);
+				expect(log.getStats().fileCount).toBe(1);
+				expect(existsSync(logFiles[2])).toBe(true);
+			}));
+
+		it('should retain the flushed-position segment for startFromLastFlushed readers', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+
+				const logFiles: string[] = [];
+				for (const sequence of [1, 2, 3]) {
+					const logFile = join(logDirectory, `${sequence}.txnlog`);
+					await writeFile(logFile, buildLogFile(1));
+					logFiles.push(logFile);
+				}
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(statSync(logFiles[1]).size, 0);
+				state.writeUInt32LE(2, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				const log = db.useLog('foo');
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([logFiles[0]]);
+				expect(existsSync(logFiles[1])).toBe(true);
+				expect(Array.from(log.query({ startFromLastFlushed: true }))).toHaveLength(1);
 			}));
 
 		it('should keep repeated flush and retention purges bounded to the current file', () =>

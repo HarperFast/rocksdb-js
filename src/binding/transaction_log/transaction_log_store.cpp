@@ -556,9 +556,12 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	}
 
 	const bool retentionEnabled = this->retentionMs.count() > 0;
-	const uint32_t durableFloorSequence = this->sequenceFiles.empty()
+	uint32_t durableFloorSequence = this->sequenceFiles.empty()
 		? 0
 		: this->sequenceFiles.rbegin()->first;
+	if (this->sequenceFiles.find(flushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
+		durableFloorSequence = flushedPosition.logSequenceNumber;
+	}
 
 	for (const auto& [seq, logFile] : this->sequenceFiles) {
 		// A registered-but-never-opened older file still reads 0 here (see
@@ -652,7 +655,11 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
-	const uint32_t durableFloorSequence = this->sequenceFiles.rbegin()->first;
+	auto lastFlushedPosition = this->getLastFlushedPosition();
+	uint32_t durableFloorSequence = this->sequenceFiles.rbegin()->first;
+	if (this->sequenceFiles.find(lastFlushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
+		durableFloorSequence = lastFlushedPosition.logSequenceNumber;
+	}
 
 	for (const auto& entry : this->sequenceFiles) {
 		auto& sequenceNumber = entry.first;
@@ -676,18 +683,21 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 					shouldPurge = fileAgeMs > this->retentionMs;
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
-				// file was deleted or doesn't exist
-				DEBUG_LOG("%p TransactionLogStore::purge File no longer exists: %s\n", this, logFile->path.string().c_str());
-				break;
+				if (e.code() == std::errc::no_such_file_or_directory) {
+					DEBUG_LOG("%p TransactionLogStore::purge Forgetting missing file: %s\n", this, logFile->path.string().c_str());
+					sequenceNumbersToRemove.push_back(sequenceNumber);
+					continue;
+				}
+				throw;
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
-				break;
+				throw;
 			} catch (...) {
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::purge Unknown error getting last write time for file %s: %s\n",
 					this, logFile->path.string().c_str(), errorMsg.c_str());
-				break;
+				throw;
 			}
 		}
 
@@ -697,7 +707,6 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 		// only purge files that are entirely before the last flushed position,
 		// guaranteeing all their transactions have been committed to RocksDB
-		auto lastFlushedPosition = this->getLastFlushedPosition();
 		if (sequenceNumber > lastFlushedPosition.logSequenceNumber) {
 			if (all) {
 				continue;

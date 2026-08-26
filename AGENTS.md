@@ -629,11 +629,6 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
-18. **Ordinary transaction-log retention removes only a contiguous oldest prefix**: it never
-    removes the highest sequence file or the live store directory. Stop the scan when an older
-    file is ineligible or cannot be removed; continuing could create a sequence gap. Destructive
-    store removal is the separate `destroy` path.
-
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
