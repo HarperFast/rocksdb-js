@@ -345,6 +345,26 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	);
 
 	/**
+	 * Per-column-family debounce state for the `'writeStall'` event. RocksDB flips
+	 * a CF's stall condition many times per second under the `dbWriteBufferSize`
+	 * -oversubscription pathology, and its very first callback per CF is a spurious
+	 * `stopped -> normal`; a naive per-transition emit both floods an unbounded
+	 * threadsafe-function queue (while the JS thread is blocked in the write that
+	 * caused the stall) and, sampled arbitrarily, mostly reports `normal` — the
+	 * opposite of the alert a consumer wants. Instead we track whether each CF is
+	 * currently reported as stalled and emit edge-triggered: the rising edge
+	 * (entering delayed/stopped) fires promptly; the falling edge (back to normal)
+	 * is debounced so oscillation dips don't flap. Guarded by
+	 * `writeStallDebounceMutex`; bounded by the column-family count.
+	 */
+	struct WriteStallDebounceEntry {
+		bool stalledReported = false;
+		std::chrono::steady_clock::time_point lastEmit{};
+	};
+	std::mutex writeStallDebounceMutex;
+	std::unordered_map<std::string, WriteStallDebounceEntry> writeStallDebounce;
+
+	/**
 	 * Commit lanes executing async transaction commits off the libuv
 	 * threadpool, shared by all envs/handles on this database. In the default
 	 * single-lane mode only commitWorker runs: each commit executes its log

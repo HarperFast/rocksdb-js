@@ -9,6 +9,10 @@
 #include "rocksdb/listener.h"
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <system_error>
 #include <unordered_map>
@@ -324,12 +328,12 @@ public:
 		));
 	}
 
-	// POC (HarperFast/rocksdb-js): surface RocksDB write-stall transitions to JS.
-	// Fires when a column family crosses between kNormal/kDelayed/kStopped — the
-	// earliest push signal that writes are being throttled (kDelayed) or blocked
-	// (kStopped), e.g. the dbWriteBufferSize-oversubscription thrash. Runs on a
-	// RocksDB background thread; emitWriteStall touches no napi (async emit), so
-	// this is cheap and non-blocking, same discipline as OnBackgroundError.
+	// Surface RocksDB write-stall transitions to JS. Fires when a column family
+	// crosses between kNormal/kDelayed/kStopped — the earliest push signal that
+	// writes are being throttled (kDelayed) or blocked (kStopped), e.g. the
+	// dbWriteBufferSize-oversubscription thrash. Runs on a RocksDB background
+	// thread; emitWriteStall touches no napi (async emit) and debounces, so this
+	// is cheap and non-blocking, same discipline as OnBackgroundError.
 	void OnStallConditionsChanged(const rocksdb::WriteStallInfo& info) override {
 		auto desc = this->state->lockDescriptor();
 		if (!desc) {
@@ -2089,16 +2093,83 @@ static const char* writeStallConditionName(rocksdb::WriteStallCondition conditio
 	}
 }
 
+// Debounce window for the falling edge of the 'writeStall' event (recovery to
+// 'normal'), in milliseconds (`ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS`, default
+// 1000). A stalling CF flips condition many times per second; without a window,
+// each brief dip to normal during oscillation would flap the event and flood an
+// unbounded threadsafe-function queue while the JS thread is blocked in the
+// synchronous write that caused the stall. The rising edge (entering a stall) is
+// never debounced — an alert must be prompt. Read once per process (a
+// function-local static, like parkTimeoutMs: ::getenv is not safe against a
+// concurrent process.env write, and this runs on a RocksDB background thread).
+// 0 disables the window (every edge emits); malformed/negative falls back to the
+// default. Mirrors parkTimeoutMs' parsing, except 0 is honored as an explicit
+// opt-out here rather than treated as ambiguous.
+static uint64_t writeStallDebounceMs() {
+	static const uint64_t ms = []() -> uint64_t {
+		constexpr uint64_t kDefault = 1000;
+		const char* v = ::getenv("ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS");
+		if (v == nullptr) {
+			return kDefault;
+		}
+		const char* firstNonSpace = v;
+		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+			++firstNonSpace;
+		}
+		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
+			return kDefault;
+		}
+		char* end = nullptr;
+		errno = 0;
+		unsigned long long parsed = ::strtoull(v, &end, 10);
+		if (end == v || *end != '\0' || errno == ERANGE) {
+			return kDefault;
+		}
+		return static_cast<uint64_t>(parsed); // 0 = debounce disabled
+	}();
+	return ms;
+}
+
 void DBDescriptor::emitWriteStall(
 	const std::string& columnFamily,
 	rocksdb::WriteStallCondition previous,
 	rocksdb::WriteStallCondition current
 ) {
-	// Only allocate + dispatch when someone is listening — the pathological arm
-	// oscillates conditions rapidly, so a no-listener fast path matters. Mirrors
-	// setLastError's hasListeners() guard.
+	// Only allocate + dispatch when someone is listening — mirrors setLastError's
+	// hasListeners() guard.
 	if (!this->events.hasListeners()) {
 		return;
+	}
+	// Edge-triggered debounce per CF, collapsing delayed/stopped into "stalled":
+	//   - rising edge (not-stalled -> stalled): emit promptly (the alert).
+	//   - falling edge (stalled -> normal): emit only after the debounce window,
+	//     so oscillation dips back to normal don't flap.
+	//   - no change in stalled-ness: suppress.
+	// This bounds emits to ~2 per stall episode (enter + recover) plus at most one
+	// pair per window while genuinely flapping, and never reports a bare "normal"
+	// for a CF that was never reported stalled (including RocksDB's spurious first
+	// `stopped -> normal`). Trade-off: a recovery that settles within one window
+	// of the entry can be dropped until the next write activity; a consumer
+	// needing exact current state reads 'rocksdb.actual-delayed-write-rate' /
+	// 'rocksdb.is-write-stopped' on demand.
+	const bool isStalled = current != rocksdb::WriteStallCondition::kNormal;
+	const uint64_t debounceMs = writeStallDebounceMs();
+	{
+		const auto now = std::chrono::steady_clock::now();
+		std::lock_guard<std::mutex> lock(this->writeStallDebounceMutex);
+		auto& entry = this->writeStallDebounce[columnFamily];
+		if (isStalled && !entry.stalledReported) {
+			entry.stalledReported = true;
+			entry.lastEmit = now;
+		} else if (!isStalled && entry.stalledReported) {
+			if (debounceMs > 0 && now - entry.lastEmit < std::chrono::milliseconds(debounceMs)) {
+				return; // recovery within the window: keep reporting stalled
+			}
+			entry.stalledReported = false;
+			entry.lastEmit = now;
+		} else {
+			return; // no change in stalled-ness
+		}
 	}
 	this->events.notify("writeStall", ListenerData::fromStrings({
 		columnFamily,
