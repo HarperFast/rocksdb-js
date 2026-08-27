@@ -338,7 +338,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * background thread; the emit is dispatched asynchronously via the
 	 * thread-safe emitter, and is a no-op when there are no listeners.
 	 */
-	void emitWriteStall(const std::string& columnFamily, int previous, int current);
+	void emitWriteStall(
+		const std::string& columnFamily,
+		rocksdb::WriteStallCondition previous,
+		rocksdb::WriteStallCondition current
+	);
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv

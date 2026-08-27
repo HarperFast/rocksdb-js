@@ -335,11 +335,7 @@ public:
 		if (!desc) {
 			return;
 		}
-		desc->emitWriteStall(
-			info.cf_name,
-			static_cast<int>(info.condition.prev),
-			static_cast<int>(info.condition.cur)
-		);
+		desc->emitWriteStall(info.cf_name, info.condition.prev, info.condition.cur);
 	}
 
 private:
@@ -2082,18 +2078,22 @@ void DBDescriptor::setLastError(std::string json) {
 	}
 }
 
-// Maps rocksdb::WriteStallCondition (kDelayed=0, kStopped=1, kNormal=2 — see
-// rocksdb/types.h) to a stable lowercase name for the 'writeStall' event.
-static const char* writeStallConditionName(int condition) {
+// Maps rocksdb::WriteStallCondition to a stable lowercase name for the
+// 'writeStall' event.
+static const char* writeStallConditionName(rocksdb::WriteStallCondition condition) {
 	switch (condition) {
-		case static_cast<int>(rocksdb::WriteStallCondition::kDelayed): return "delayed";
-		case static_cast<int>(rocksdb::WriteStallCondition::kStopped): return "stopped";
-		case static_cast<int>(rocksdb::WriteStallCondition::kNormal): return "normal";
+		case rocksdb::WriteStallCondition::kDelayed: return "delayed";
+		case rocksdb::WriteStallCondition::kStopped: return "stopped";
+		case rocksdb::WriteStallCondition::kNormal: return "normal";
 		default: return "unknown";
 	}
 }
 
-void DBDescriptor::emitWriteStall(const std::string& columnFamily, int previous, int current) {
+void DBDescriptor::emitWriteStall(
+	const std::string& columnFamily,
+	rocksdb::WriteStallCondition previous,
+	rocksdb::WriteStallCondition current
+) {
 	// Only allocate + dispatch when someone is listening — the pathological arm
 	// oscillates conditions rapidly, so a no-listener fast path matters. Mirrors
 	// setLastError's hasListeners() guard.
