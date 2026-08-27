@@ -331,6 +331,16 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::string getLastError();
 
 	/**
+	 * Emits the per-database `'writeStall'` event when a column family's RocksDB
+	 * write-stall condition changes. Listeners receive three string args:
+	 * `(columnFamily, previousCondition, currentCondition)` where each condition
+	 * is `'normal' | 'delayed' | 'stopped'`. Safe to call from a RocksDB
+	 * background thread; the emit is dispatched asynchronously via the
+	 * thread-safe emitter, and is a no-op when there are no listeners.
+	 */
+	void emitWriteStall(const std::string& columnFamily, int previous, int current);
+
+	/**
 	 * Commit lanes executing async transaction commits off the libuv
 	 * threadpool, shared by all envs/handles on this database. In the default
 	 * single-lane mode only commitWorker runs: each commit executes its log

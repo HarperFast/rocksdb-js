@@ -324,6 +324,24 @@ public:
 		));
 	}
 
+	// POC (HarperFast/rocksdb-js): surface RocksDB write-stall transitions to JS.
+	// Fires when a column family crosses between kNormal/kDelayed/kStopped — the
+	// earliest push signal that writes are being throttled (kDelayed) or blocked
+	// (kStopped), e.g. the dbWriteBufferSize-oversubscription thrash. Runs on a
+	// RocksDB background thread; emitWriteStall touches no napi (async emit), so
+	// this is cheap and non-blocking, same discipline as OnBackgroundError.
+	void OnStallConditionsChanged(const rocksdb::WriteStallInfo& info) override {
+		auto desc = this->state->lockDescriptor();
+		if (!desc) {
+			return;
+		}
+		desc->emitWriteStall(
+			info.cf_name,
+			static_cast<int>(info.condition.prev),
+			static_cast<int>(info.condition.cur)
+		);
+	}
+
 private:
 	std::shared_ptr<DBEventListenerState> state;
 	std::mutex jobTrackersMutex;
@@ -2062,6 +2080,31 @@ void DBDescriptor::setLastError(std::string json) {
 	if (hasError && this->events.hasListeners()) {
 		this->events.notify("error", ListenerData::backgroundError(json));
 	}
+}
+
+// Maps rocksdb::WriteStallCondition (kDelayed=0, kStopped=1, kNormal=2 — see
+// rocksdb/types.h) to a stable lowercase name for the 'writeStall' event.
+static const char* writeStallConditionName(int condition) {
+	switch (condition) {
+		case static_cast<int>(rocksdb::WriteStallCondition::kDelayed): return "delayed";
+		case static_cast<int>(rocksdb::WriteStallCondition::kStopped): return "stopped";
+		case static_cast<int>(rocksdb::WriteStallCondition::kNormal): return "normal";
+		default: return "unknown";
+	}
+}
+
+void DBDescriptor::emitWriteStall(const std::string& columnFamily, int previous, int current) {
+	// Only allocate + dispatch when someone is listening — the pathological arm
+	// oscillates conditions rapidly, so a no-listener fast path matters. Mirrors
+	// setLastError's hasListeners() guard.
+	if (!this->events.hasListeners()) {
+		return;
+	}
+	this->events.notify("writeStall", ListenerData::fromStrings({
+		columnFamily,
+		writeStallConditionName(previous),
+		writeStallConditionName(current)
+	}));
 }
 
 /**
