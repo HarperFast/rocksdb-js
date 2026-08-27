@@ -1055,6 +1055,33 @@ db.on('error', (err) => {
 });
 ```
 
+### Event: `'writeStall'`
+
+Emitted when a column family's RocksDB write-stall condition changes — the push signal that writes
+are being throttled or blocked (for example when `dbWriteBufferSize` is too small for the number of
+column families and RocksDB thrashes on premature flushes). Listeners receive three string
+arguments:
+
+- `columnFamily: string` — the column family whose condition changed (`'default'` for the primary).
+- `previousCondition: string` — `'normal' | 'delayed' | 'stopped'`.
+- `currentCondition: string` — `'normal' | 'delayed' | 'stopped'`, where `'delayed'` means writes are
+  being rate-limited and `'stopped'` means they are blocked until a flush frees a memtable/L0 slot.
+
+The event is **edge-triggered and debounced** per column family: the entry into a stall fires
+promptly, and the recovery back to `'normal'` is debounced (`ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS`,
+default 1000 ms) so a rapidly oscillating condition can't flood listeners. Because it is
+edge-triggered, a listener attached mid-stall may not see a rising edge until the next episode; for
+the authoritative current state, read `db.getDBIntProperty('rocksdb.actual-delayed-write-rate')`
+(nonzero when throttled) or `'rocksdb.is-write-stopped'`.
+
+```typescript
+db.on('writeStall', (cf, prev, cur) => {
+	if (cur === 'delayed' || cur === 'stopped') {
+		console.warn(`RocksDB write stall on ${cf}: ${prev} -> ${cur}`);
+	}
+});
+```
+
 ## Event API
 
 `rocksdb-js` provides a EventEmitter-like API that lets you asynchronously notify events to one or

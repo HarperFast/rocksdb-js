@@ -339,7 +339,14 @@ public:
 		if (!desc) {
 			return;
 		}
-		desc->emitWriteStall(info.cf_name, info.condition.prev, info.condition.cur);
+		// Runs on a RocksDB background thread; an exception unwinding into RocksDB
+		// is undefined behavior. A dropped stall notification is acceptable, so
+		// contain anything the emit path throws (e.g. a bad_alloc from the payload
+		// allocation) rather than let it escape.
+		try {
+			desc->emitWriteStall(info.cf_name, info.condition.prev, info.condition.cur);
+		} catch (...) {
+		}
 	}
 
 private:
@@ -2135,47 +2142,46 @@ void DBDescriptor::emitWriteStall(
 	rocksdb::WriteStallCondition previous,
 	rocksdb::WriteStallCondition current
 ) {
-	// Only allocate + dispatch when someone is listening — mirrors setLastError's
-	// hasListeners() guard.
-	if (!this->events.hasListeners()) {
-		return;
-	}
 	// Edge-triggered debounce per CF, collapsing delayed/stopped into "stalled":
 	//   - rising edge (not-stalled -> stalled): emit promptly (the alert).
 	//   - falling edge (stalled -> normal): emit only after the debounce window,
 	//     so oscillation dips back to normal don't flap.
 	//   - no change in stalled-ness: suppress.
-	// This bounds emits to ~2 per stall episode (enter + recover) plus at most one
-	// pair per window while genuinely flapping, and never reports a bare "normal"
-	// for a CF that was never reported stalled (including RocksDB's spurious first
-	// `stopped -> normal`). Trade-off: a recovery that settles within one window
-	// of the entry can be dropped until the next write activity; a consumer
+	// The FSM update runs regardless of listeners: gating it on hasListeners()
+	// would strand `stalledReported` true after a listener detaches mid-stall,
+	// suppressing the next alert forever (only the emit is gated). The lock is held
+	// across the emit so, per CF, the transition and the enqueue cannot be
+	// reordered against a concurrent callback. Trade-off: a recovery that settles
+	// within one window of the entry is dropped until the next write activity, and
+	// delayed<->stopped escalation is not surfaced (both are "stalled"); a consumer
 	// needing exact current state reads 'rocksdb.actual-delayed-write-rate' /
 	// 'rocksdb.is-write-stopped' on demand.
 	const bool isStalled = current != rocksdb::WriteStallCondition::kNormal;
 	const uint64_t debounceMs = writeStallDebounceMs();
-	{
-		const auto now = std::chrono::steady_clock::now();
-		std::lock_guard<std::mutex> lock(this->writeStallDebounceMutex);
-		auto& entry = this->writeStallDebounce[columnFamily];
-		if (isStalled && !entry.stalledReported) {
-			entry.stalledReported = true;
-			entry.lastEmit = now;
-		} else if (!isStalled && entry.stalledReported) {
-			if (debounceMs > 0 && now - entry.lastEmit < std::chrono::milliseconds(debounceMs)) {
-				return; // recovery within the window: keep reporting stalled
-			}
-			entry.stalledReported = false;
-			entry.lastEmit = now;
-		} else {
-			return; // no change in stalled-ness
+	const auto now = std::chrono::steady_clock::now();
+	std::lock_guard<std::mutex> lock(this->writeStallDebounceMutex);
+	auto& entry = this->writeStallDebounce[columnFamily];
+	if (isStalled && !entry.stalledReported) {
+		entry.stalledReported = true;
+		entry.lastEmit = now;
+	} else if (!isStalled && entry.stalledReported) {
+		if (debounceMs > 0 && now - entry.lastEmit < std::chrono::milliseconds(debounceMs)) {
+			return; // recovery within the window: keep reporting stalled
 		}
+		entry.stalledReported = false;
+		entry.lastEmit = now;
+	} else {
+		return; // no change in stalled-ness
 	}
-	this->events.notify("writeStall", ListenerData::fromStrings({
-		columnFamily,
-		writeStallConditionName(previous),
-		writeStallConditionName(current)
-	}));
+	// Allocate + dispatch only when someone is listening (mirrors setLastError
+	// gating only the emit, not the state update).
+	if (this->events.hasListeners()) {
+		this->events.notify("writeStall", ListenerData::fromStrings({
+			columnFamily,
+			writeStallConditionName(previous),
+			writeStallConditionName(current)
+		}));
+	}
 }
 
 /**

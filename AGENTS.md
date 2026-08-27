@@ -210,6 +210,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   ambiguous "disable the bound") falls back to the default like any malformed
   value. There is no opt-out: a deployment that would rather wait than fail a
   legitimately slow holder raises the value instead
+- `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Debounce window (default `1000`) for the
+  falling edge of the per-database `'writeStall'` event (recovery to `normal`).
+  The rising edge into a stall is never debounced. Read once per process (a
+  function-local `static`, same `::getenv`-vs-`process.env` caveat as
+  `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is
+  started with. `0` disables the window (every edge emits); malformed/negative
+  falls back to the default
 
 ## Test Structure
 
