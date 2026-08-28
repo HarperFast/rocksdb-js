@@ -504,14 +504,12 @@ describe('paths', () => {
 
 	it('should reject more storage paths than it will hold', () => {
 		const dbPath = tempPath();
-		// The native parser reserves against whatever length JS reports, and a
-		// sparse array makes an enormous one free — the reserve then throws a C++
-		// allocation exception out of the N-API callback, which terminates the
-		// process rather than rejecting the open. Bounding the count first is what
-		// keeps that a JS error. Driven with a merely-too-long array: at a length
-		// near 2**32 the `paths.map()` in store.ts walks every index and takes
-		// minutes, so the astronomical case never reaches native to begin with.
-		const paths = Array.from({ length: 65 }, () => ({ path: dbPath, targetSize: 1 << 30 }));
+		const paths = Array(65);
+		Object.defineProperty(paths, 0, {
+			get() {
+				throw new Error('array was mapped before its length was checked');
+			},
+		});
 		expect(() => RocksDatabase.open(dbPath, { paths })).toThrow(/no more than 64 entries/);
 	});
 
@@ -1015,10 +1013,27 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 
 		rmSync(blobDir, { recursive: true, force: true });
 
+		// Naming the affected family with its normal configuration must not
+		// recreate a failed mount as an empty directory on the root filesystem.
+		expect(() => RocksDatabase.open(dbPath, { name: 'table1', blobs: { dir: blobDir } })).toThrow(
+			/which does not exist/
+		);
+		expect(existsSync(blobDir)).toBe(false);
+
 		// Opening a family this call never names still has to notice: its reads
 		// would fail and its first flush would error the database read-only, long
 		// after the open that could have named the volume.
 		expect(() => RocksDatabase.open(dbPath)).toThrow(/which does not exist/);
+	});
+
+	it('should reject a read-only relocation acknowledgement', () => {
+		const dbPath = tempPath();
+		const db = openDb(dbPath);
+		db.close();
+
+		expect(() =>
+			RocksDatabase.open(dbPath, { readOnly: true, blobs: { allowDirChange: true } })
+		).toThrow(/requires a writable open/);
 	});
 
 	it('should relocate every column family when the change is acknowledged', () => {

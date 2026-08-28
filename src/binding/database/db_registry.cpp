@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <limits>
 #include <chrono>
 #include <vector>
 #include "database/db_registry.h"
@@ -427,7 +429,15 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
-	instance->knownLayouts[path] = std::move(layout);
+	const bool defaultLayout = layout.dbPaths.empty() &&
+		std::all_of(layout.blobDirs.begin(), layout.blobDirs.end(), [](const auto& entry) {
+			return entry.second.empty();
+		});
+	if (defaultLayout) {
+		instance->knownLayouts.erase(path);
+	} else {
+		instance->knownLayouts[path] = std::move(layout);
+	}
 }
 
 /**

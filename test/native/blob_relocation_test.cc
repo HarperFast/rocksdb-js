@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <chrono>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -163,6 +164,19 @@ TEST(BlobDirScanner, MemoizesEachResolvedDirectory) {
 	EXPECT_EQ(env.listCalls, 2);
 }
 
+TEST(BlobDirScanner, RealAbsentDirectoryIsClear) {
+	std::filesystem::path dir = std::filesystem::temp_directory_path() /
+		("rocksdb-js-absent-blob-dir-" +
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	std::error_code error;
+	std::filesystem::remove_all(dir, error);
+	ASSERT_FALSE(std::filesystem::exists(dir));
+	EXPECT_EQ(
+		makeBlobDirScanner(rocksdb::Env::Default())(dir.string()).state,
+		BlobDirScanState::Clear
+	);
+}
+
 #ifndef _WIN32
 TEST(BlobDirScanner, RealPosixUnreadableDirectoryIsUnknown) {
 	if (geteuid() == 0) {
@@ -250,6 +264,20 @@ TEST(BlobRelocation, AcknowledgedTargetMovesOnceTheFilesAreGone) {
 	input.currentBlobDir = kNew;
 
 	BlobRelocationDecision decision = decide(input, allMovedOut());
+	EXPECT_EQ(decision.error, "");
+	EXPECT_EQ(decision.blobDir, kNew);
+}
+
+TEST(BlobRelocation, AcknowledgedMoveMayCreateItsMissingDestination) {
+	BlobRelocationInput input = family("t1", true);
+	input.persistedBlobDir = kOld;
+	input.targetPersistedBlobDir = kOld;
+	input.requestedDir = kNew;
+	input.allowDirChange = true;
+	input.currentBlobDir = kNew;
+
+	FakeDirs dirs{ { kDb, kOld }, {} };
+	BlobRelocationDecision decision = decide(input, dirs);
 	EXPECT_EQ(decision.error, "");
 	EXPECT_EQ(decision.blobDir, kNew);
 }
@@ -414,6 +442,19 @@ TEST(BlobRelocation, MissingDirectoryRefusesTheOpen) {
 	EXPECT_NE(decision.error.find("/mnt/unmounted"), std::string::npos);
 }
 
+TEST(BlobRelocation, MissingTargetDirectoryIsNotRecreatedOnPlainReopen) {
+	BlobRelocationInput input = family("t1", true);
+	input.persistedBlobDir = kOld;
+	input.targetPersistedBlobDir = kOld;
+	input.requestedDir = kOld;
+	input.currentBlobDir = kOld;
+
+	FakeDirs dirs{ { kDb }, {} };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_NE(decision.error.find("which does not exist"), std::string::npos);
+	EXPECT_NE(decision.error.find(kOld), std::string::npos);
+}
+
 // The database directory is where a flat family's blobs live and it always
 // exists by the time a family is opened, so a flat family never trips the
 // existence check.
@@ -436,7 +477,7 @@ TEST(BlobRelocation, NewFamilyHasNothingToCompareAgainst) {
 	input.requestedDir = kNew;
 	input.currentBlobDir = kNew;
 
-	FakeDirs dirs{ { kDb, kNew }, { kDb } };
+	FakeDirs dirs{ { kDb }, { kDb } };
 	BlobRelocationDecision decision = decide(input, dirs);
 	EXPECT_EQ(decision.error, "");
 	EXPECT_EQ(decision.blobDir, kNew);
