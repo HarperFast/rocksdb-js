@@ -632,7 +632,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     clear/populated; a failed enumeration is clear only when a separate metadata probe proves the
     path absent; every other result refuses the relocation. `GetChildren` alone is insufficient
     because RocksDB maps POSIX `EACCES` and `ENOENT` to the same status. An accepted relocation is
-    written to RocksDB's info LOG with the old and new directories before open restamps OPTIONS.
+    written to RocksDB's info LOG with the old and new directories after a successful open when
+    the configured logger is available. A read-only open cannot acknowledge a relocation because
+    it cannot persist the new directory in OPTIONS.
     No source-side scan can distinguish a genuinely empty directory from an empty mount point whose
     volume failed to mount, so operators must verify mounts before acknowledging a move.
     A restored copy opened without acknowledgement whose target family has no external blob directory remains a

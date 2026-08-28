@@ -1528,9 +1528,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		? deriveMaxOpenFiles(getEffectiveOpenFileLimit())
 		: options.maxOpenFiles;
 	dbOptions.keep_log_file_num = 5; // these are informational log files that clutter up the database directory
-#ifdef ROCKSDB_HAS_CF_BLOB_DIR
-	ensureBlobDirExists(dbOptions.env, options.blobs.dir);
-#endif
 
 	// Spread SST files across volumes. Left on `db_paths` rather than `cf_paths`
 	// so one tiering policy covers every column family in the database (RocksDB
@@ -1576,12 +1573,19 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	if (options.readOnly && options.blobs.allowDirChange) {
+		throw rocksdb_js::DBException(
+			"blobs.allowDirChange requires a writable open so the relocated directory is persisted"
+		);
+	}
 	struct AcceptedBlobRelocation {
 		std::string cfName;
 		std::string from;
 		std::string to;
 	};
 	std::vector<AcceptedBlobRelocation> acceptedBlobRelocations;
+	bool createRequestedBlobDirBeforeOpen = false;
+	bool createRequestedBlobDirForNewColumn = false;
 #endif
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
 		assertStoragePathsUsable(dbOptions.env, path, options.paths);
@@ -1685,6 +1689,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 #endif
 			cfDescriptors.emplace_back(cfName, cfo);
 		}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		if (!options.blobs.dir.empty()) {
+			createRequestedBlobDirBeforeOpen = !acceptedBlobRelocations.empty();
+			createRequestedBlobDirForNewColumn = !options.readOnly &&
+				std::find(columnFamilyNames.begin(), columnFamilyNames.end(), name) ==
+				columnFamilyNames.end();
+		}
+#endif
 	} else {
 		// Database doesn't exist or no column families found. Create the default
 		// column family; apply the requested compression to it only when it is the
@@ -1704,30 +1716,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			applyBlobCreationDefaults(cfo);
 		}
 		cfDescriptors = { rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfo) };
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		if (!options.blobs.dir.empty() && !options.readOnly) {
+			createRequestedBlobDirBeforeOpen = name == rocksdb::kDefaultColumnFamilyName;
+			createRequestedBlobDirForNewColumn = !createRequestedBlobDirBeforeOpen;
+		}
+#endif
 	}
 
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-	if (!acceptedBlobRelocations.empty()) {
-		if (!dbOptions.info_log) {
-			rocksdb::Status loggerStatus =
-				rocksdb::CreateLoggerFromOptions(path, dbOptions, &dbOptions.info_log);
-			if (!loggerStatus.ok()) {
-				throw rocksdb_js::DBException(
-					"Cannot record the accepted blob-directory relocation for \"" + path +
-					"\": " + loggerStatus.ToString()
-				);
-			}
-		}
-		for (const auto& relocation : acceptedBlobRelocations) {
-			rocksdb::Log(
-				rocksdb::InfoLogLevel::INFO_LEVEL,
-				dbOptions.info_log,
-				"rocksdb-js accepted blob-directory relocation for column family %s: %s -> %s",
-				relocation.cfName.c_str(),
-				relocation.from.c_str(),
-				relocation.to.c_str()
-			);
-		}
+	if (createRequestedBlobDirBeforeOpen) {
+		ensureBlobDirExists(dbOptions.env, options.blobs.dir);
 	}
 #endif
 
@@ -1775,6 +1774,31 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	}
 
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	if (!acceptedBlobRelocations.empty()) {
+		auto infoLog = db->GetDBOptions().info_log;
+		for (const auto& relocation : acceptedBlobRelocations) {
+			if (infoLog) {
+				rocksdb::Log(
+					rocksdb::InfoLogLevel::INFO_LEVEL,
+					infoLog,
+					"rocksdb-js accepted blob-directory relocation for column family %s: %s -> %s",
+					relocation.cfName.c_str(),
+					relocation.from.c_str(),
+					relocation.to.c_str()
+				);
+			} else {
+				DEBUG_LOG(
+					"Accepted blob-directory relocation for column family %s: %s -> %s (info LOG unavailable)\n",
+					relocation.cfName.c_str(),
+					relocation.from.c_str(),
+					relocation.to.c_str()
+				);
+			}
+		}
+	}
+#endif
+
 	// figure out if desired column family exists and if not create it
 	bool columnExists = false;
 	for (size_t n = 0; n < cfHandles.size(); ++n) {
@@ -1800,6 +1824,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		if (options.compression) {
 			applyCompression(cfo, *options.compression, options.compressionLevel);
 		}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		if (createRequestedBlobDirForNewColumn) {
+			ensureBlobDirExists(db->GetEnv(), options.blobs.dir);
+		}
+#endif
 		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;

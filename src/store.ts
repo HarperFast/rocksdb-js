@@ -628,6 +628,9 @@ export class Store {
 		//
 		// Anything that is not a resolvable path is passed through untouched so
 		// the native layer still produces its own validation message.
+		if (Array.isArray(options?.paths) && options.paths.length > 64) {
+			throw new Error('paths must have no more than 64 entries');
+		}
 		this.paths = Array.isArray(options?.paths)
 			? options.paths.map((entry) =>
 					entry && typeof entry.path === 'string' && entry.path

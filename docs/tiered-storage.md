@@ -164,7 +164,8 @@ source safe: scoped to the named family, the others would keep the `blob_dir` in
 colliding `NNNNNN.blob` numbers there while each one's obsolete-file scan deleted the other's live
 files.
 
-That open records the flat layout, so later opens of the restored database need nothing. The
+That open must be writable so RocksDB can persist the flat layout; a read-only open rejects the
+acknowledgement. After it succeeds, later opens of the restored database need nothing. The
 alternative is to move the `.blob` files back to the original directory before opening with the
 original configuration.
 
@@ -278,8 +279,8 @@ move, or make the old path definitively absent, then retry. Confirm the old volu
 first: a failed mount can leave an empty mount point that looks exactly like a successfully emptied
 directory, and no source-side scan can distinguish those cases. Removing an absent mount point is
 also an operator assertion that the old volume is no longer the source. Every accepted relocation
-is recorded in RocksDB's info `LOG` with the previous and new directory before the open restamps the
-`OPTIONS` file.
+is recorded after a successful open in RocksDB's info `LOG` with the previous and new directory
+when the configured logger is available.
 
 A persisted directory that remains selected but has gone missing entirely — an unmounted volume,
 for example — fails a normal open naming the family and the directory, rather than being discovered

@@ -100,8 +100,7 @@ BlobRelocationDecision decideBlobRelocation(
 	// database directory, not "no directory".
 	//
 	// Deliberately strict about a HALF-finished move: the destination holding
-	// some files is not evidence, and neither is its being empty —
-	// `ensureBlobDirExists` creates it.
+	// some files is not evidence, and neither is its being empty.
 	if (acknowledged && input.persistedBlobDir) {
 		const std::string& from = resolveBlobDir(*input.persistedBlobDir);
 		const std::string& to = resolveBlobDir(input.requestedDir);
@@ -157,12 +156,17 @@ BlobRelocationDecision decideBlobRelocation(
 
 	// A directory that is gone is not a soft failure: every read of a value >=
 	// min_blob_size fails and the first flush errors the whole database
-	// read-only, long after the open that could have named the cause. The target
-	// family's directory was created by the caller before this point if it was
-	// missing, so in practice this catches the families this open never named —
-	// including a restored database still pointing at a source volume that is
-	// not mounted here.
-	if (!decision.blobDir.empty() && !directoryExists(decision.blobDir)) {
+	// read-only, long after the open that could have named the cause. Only a new
+	// family or an acknowledged move may create its requested destination after
+	// this decision; every persisted directory that remains selected must exist.
+	const bool requestedDestinationMayBeCreated = !input.requestedDir.empty() &&
+		resolveBlobDir(decision.blobDir) == resolveBlobDir(input.requestedDir) &&
+		((!input.persistedBlobDir && input.isTarget) ||
+			(acknowledged && input.persistedBlobDir &&
+				resolveBlobDir(*input.persistedBlobDir) != resolveBlobDir(input.requestedDir)));
+	if (!decision.blobDir.empty() && !directoryExists(decision.blobDir) &&
+		!requestedDestinationMayBeCreated
+	) {
 		decision.error =
 			"Cannot open \"" + input.dbPath + "\": column family \"" + input.cfName +
 			"\" keeps its blob files in \"" + decision.blobDir + "\", which does not exist. "
