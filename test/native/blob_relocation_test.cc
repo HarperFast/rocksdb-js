@@ -1,19 +1,26 @@
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <set>
 #include <string>
+#include <utility>
 #include "core/blob_relocation.h"
+#include "rocksdb/env.h"
+#include "rocksdb/status.h"
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+using rocksdb_js::BlobDirScan;
+using rocksdb_js::BlobDirScanState;
 using rocksdb_js::BlobRelocationDecision;
 using rocksdb_js::BlobRelocationInput;
 using rocksdb_js::decideBlobRelocation;
+using rocksdb_js::makeBlobDirScanner;
 
-// The call site compiles only into a build carrying the downstream `blob_dir`
-// patch, and no prebuild carries it yet — so every integration test of these
-// rules skips on every build that exists today and these cases are the only
-// thing that executes them. What they guard is not a soft failure: a family
-// opened against the wrong directory reads every value at or above
-// `min_blob_size` as missing, and a family re-pointed at a directory it never
-// wrote to strands the files that are still where it left them.
+// A family opened against the wrong directory reads every value at or above
+// `min_blob_size` as missing.
 
 namespace {
 
@@ -26,9 +33,29 @@ constexpr const char* kTier0 = "/mnt/tier0";
 struct FakeDirs {
 	std::set<std::string> exists;
 	std::set<std::string> withBlobFiles;
+	std::set<std::string> unknown;
 
-	std::function<bool(const std::string&)> holds() const {
-		return [this](const std::string& dir) { return withBlobFiles.count(dir) > 0; };
+	FakeDirs(
+		std::set<std::string> existing = {},
+		std::set<std::string> populated = {},
+		std::set<std::string> unreadable = {}
+	) :
+		exists(std::move(existing)),
+		withBlobFiles(std::move(populated)),
+		unknown(std::move(unreadable)) {}
+
+	std::function<BlobDirScan(const std::string&)> scanner() const {
+		return [this](const std::string& dir) {
+			if (unknown.count(dir) > 0) {
+				return BlobDirScan{ BlobDirScanState::Unknown, "IO error: Permission denied" };
+			}
+			return BlobDirScan{
+				withBlobFiles.count(dir) > 0
+					? BlobDirScanState::HoldsBlobFiles
+					: BlobDirScanState::Clear,
+				{},
+			};
+		};
 	}
 	std::function<bool(const std::string&)> present() const {
 		return [this](const std::string& dir) { return exists.count(dir) > 0; };
@@ -49,10 +76,113 @@ BlobRelocationInput family(const std::string& cfName, bool isTarget) {
 }
 
 BlobRelocationDecision decide(const BlobRelocationInput& input, const FakeDirs& dirs) {
-	return decideBlobRelocation(input, dirs.holds(), dirs.present());
+	return decideBlobRelocation(input, dirs.scanner(), dirs.present());
 }
 
+class ScriptedBlobDirEnv : public rocksdb::EnvWrapper {
+public:
+	ScriptedBlobDirEnv(
+		rocksdb::Status listStatus,
+		rocksdb::Status metadataStatus,
+		std::vector<std::string> children = {}
+	) :
+		rocksdb::EnvWrapper(rocksdb::Env::Default()),
+		listStatus_(std::move(listStatus)),
+		metadataStatus_(std::move(metadataStatus)),
+		children_(std::move(children)) {}
+
+	rocksdb::Status GetChildren(
+		const std::string& /*dir*/,
+		std::vector<std::string>* children
+	) override {
+		++listCalls;
+		if (listStatus_.ok()) {
+			*children = children_;
+		}
+		return listStatus_;
+	}
+
+	rocksdb::Status GetFileSize(const std::string& /*path*/, uint64_t* size) override {
+		*size = 0;
+		return metadataStatus_;
+	}
+
+	int listCalls = 0;
+
+private:
+	rocksdb::Status listStatus_;
+	rocksdb::Status metadataStatus_;
+	std::vector<std::string> children_;
+};
+
 }
+
+TEST(BlobDirScanner, DistinguishesEmptyPopulatedAbsentAndUnknownDirectories) {
+	ScriptedBlobDirEnv empty(rocksdb::Status::OK(), rocksdb::Status::OK());
+	EXPECT_EQ(makeBlobDirScanner(&empty)(kOld).state, BlobDirScanState::Clear);
+
+	ScriptedBlobDirEnv populated(
+		rocksdb::Status::OK(),
+		rocksdb::Status::OK(),
+		{ "000001.blob", "CURRENT" }
+	);
+	EXPECT_EQ(
+		makeBlobDirScanner(&populated)(kOld).state,
+		BlobDirScanState::HoldsBlobFiles
+	);
+
+	ScriptedBlobDirEnv absent(
+		rocksdb::Status::PathNotFound("listing"),
+		rocksdb::Status::PathNotFound("metadata")
+	);
+	EXPECT_EQ(makeBlobDirScanner(&absent)(kOld).state, BlobDirScanState::Clear);
+
+	ScriptedBlobDirEnv unreadable(
+		rocksdb::Status::PathNotFound("listing"),
+		rocksdb::Status::OK()
+	);
+	BlobDirScan unreadableScan = makeBlobDirScanner(&unreadable)(kOld);
+	EXPECT_EQ(unreadableScan.state, BlobDirScanState::Unknown);
+	EXPECT_NE(unreadableScan.detail.find("listing"), std::string::npos);
+
+	ScriptedBlobDirEnv ioError(
+		rocksdb::Status::IOError("listing"),
+		rocksdb::Status::IOError("metadata")
+	);
+	BlobDirScan ioErrorScan = makeBlobDirScanner(&ioError)(kOld);
+	EXPECT_EQ(ioErrorScan.state, BlobDirScanState::Unknown);
+	EXPECT_NE(ioErrorScan.detail.find("metadata probe"), std::string::npos);
+}
+
+TEST(BlobDirScanner, MemoizesEachResolvedDirectory) {
+	ScriptedBlobDirEnv env(rocksdb::Status::OK(), rocksdb::Status::OK());
+	auto scanner = makeBlobDirScanner(&env);
+	EXPECT_EQ(scanner(kOld).state, BlobDirScanState::Clear);
+	EXPECT_EQ(scanner(kOld).state, BlobDirScanState::Clear);
+	EXPECT_EQ(scanner(kNew).state, BlobDirScanState::Clear);
+	EXPECT_EQ(env.listCalls, 2);
+}
+
+#ifndef _WIN32
+TEST(BlobDirScanner, RealPosixUnreadableDirectoryIsUnknown) {
+	if (geteuid() == 0) {
+		GTEST_SKIP() << "root can enumerate a directory without read permission";
+	}
+
+	std::filesystem::path dir = std::filesystem::temp_directory_path() /
+		("rocksdb-js-unreadable-blob-dir-" + std::to_string(getpid()));
+	std::error_code error;
+	std::filesystem::remove_all(dir, error);
+	ASSERT_TRUE(std::filesystem::create_directory(dir));
+	ASSERT_EQ(chmod(dir.c_str(), 0111), 0);
+
+	BlobDirScan scan = makeBlobDirScanner(rocksdb::Env::Default())(dir.string());
+
+	EXPECT_EQ(chmod(dir.c_str(), 0700), 0);
+	std::filesystem::remove_all(dir, error);
+	EXPECT_EQ(scan.state, BlobDirScanState::Unknown);
+}
+#endif
 
 // A plain reopen asks for nothing, so nothing is decided against the family.
 TEST(BlobRelocation, PlainReopenKeepsThePersistedDirectory) {
@@ -80,10 +210,7 @@ TEST(BlobRelocation, TargetRefusesAnUnacknowledgedChange) {
 	EXPECT_NE(decision.error.find(kOld), std::string::npos);
 }
 
-// The acknowledgement is a claim about files on disk, so it is checked against
-// them: the old directory still holding `.blob` files means the move did not
-// happen. This is the vitest case `should refuse to relocate before the blob
-// files have moved`, which skips on every build that exists.
+// The old directory still holding `.blob` files means the move did not happen.
 TEST(BlobRelocation, AcknowledgementIsCheckedAgainstTheOldDirectory) {
 	BlobRelocationInput input = family("t1", true);
 	input.persistedBlobDir = kOld;
@@ -96,6 +223,22 @@ TEST(BlobRelocation, AcknowledgementIsCheckedAgainstTheOldDirectory) {
 	BlobRelocationDecision decision = decide(input, dirs);
 	EXPECT_NE(decision.error.find("still has blob files"), std::string::npos);
 	EXPECT_NE(decision.error.find(kOld), std::string::npos);
+}
+
+TEST(BlobRelocation, UnknownSourceStateRefusesTheAcknowledgement) {
+	BlobRelocationInput input = family("t1", true);
+	input.persistedBlobDir = kOld;
+	input.targetPersistedBlobDir = kOld;
+	input.requestedDir = kNew;
+	input.allowDirChange = true;
+	input.currentBlobDir = kNew;
+
+	FakeDirs dirs{ { kDb, kOld, kNew }, {}, { kOld } };
+	BlobRelocationDecision decision = decide(input, dirs);
+	EXPECT_NE(decision.error.find("Cannot inspect"), std::string::npos);
+	EXPECT_NE(decision.error.find(kOld), std::string::npos);
+	EXPECT_NE(decision.error.find("Permission denied"), std::string::npos);
+	EXPECT_NE(decision.error.find("definitively absent"), std::string::npos);
 }
 
 TEST(BlobRelocation, AcknowledgedTargetMovesOnceTheFilesAreGone) {
@@ -114,9 +257,7 @@ TEST(BlobRelocation, AcknowledgedTargetMovesOnceTheFilesAreGone) {
 // An empty persisted `blob_dir` means the database directory, not "no
 // directory". Comparing the raw strings exempted every family that never had an
 // external directory — i.e. the flat-to-external move, the only migration an
-// untiered database can make. This is the vitest case `should refuse to
-// relocate a flat family before its blob files have moved`, which also skips
-// everywhere.
+// untiered database can make.
 TEST(BlobRelocation, FlatFamilyIsCheckedAgainstTheDatabaseDirectory) {
 	BlobRelocationInput input = family("t1", true);
 	input.persistedBlobDir = "";

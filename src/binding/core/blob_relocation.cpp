@@ -1,10 +1,58 @@
 #include "core/blob_relocation.h"
+#include "rocksdb/env.h"
+#include <cstdint>
+#include <memory>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace rocksdb_js {
 
+static BlobDirScan scanBlobDir(rocksdb::Env* env, const std::string& dir) {
+	std::vector<std::string> children;
+	rocksdb::Status listStatus = env->GetChildren(dir, &children);
+	if (listStatus.ok()) {
+		static const std::string suffix = ".blob";
+		for (const auto& child : children) {
+			if (child.size() > suffix.size() &&
+				child.compare(child.size() - suffix.size(), suffix.size(), suffix) == 0
+			) {
+				return BlobDirScan{ BlobDirScanState::HoldsBlobFiles, {} };
+			}
+		}
+		return BlobDirScan{ BlobDirScanState::Clear, {} };
+	}
+
+	// GetChildren folds POSIX EACCES into PathNotFound. GetFileSize uses stat,
+	// which keeps EACCES distinct and maps only an absent path to PathNotFound.
+	uint64_t ignoredSize = 0;
+	rocksdb::Status metadataStatus = env->GetFileSize(dir, &ignoredSize);
+	if (metadataStatus.IsPathNotFound()) {
+		return BlobDirScan{ BlobDirScanState::Clear, {} };
+	}
+
+	std::string detail = listStatus.ToString();
+	if (!metadataStatus.ok()) {
+		detail += "; metadata probe: " + metadataStatus.ToString();
+	}
+	return BlobDirScan{ BlobDirScanState::Unknown, std::move(detail) };
+}
+
+std::function<BlobDirScan(const std::string&)> makeBlobDirScanner(rocksdb::Env* env) {
+	auto cache = std::make_shared<std::unordered_map<std::string, BlobDirScan>>();
+	return [env, cache](const std::string& dir) {
+		if (auto it = cache->find(dir); it != cache->end()) {
+			return it->second;
+		}
+		auto [it, inserted] = cache->emplace(dir, scanBlobDir(env, dir));
+		(void)inserted;
+		return it->second;
+	};
+}
+
 BlobRelocationDecision decideBlobRelocation(
 	const BlobRelocationInput& input,
-	const std::function<bool(const std::string&)>& holdsBlobFiles,
+	const std::function<BlobDirScan(const std::string&)>& scanBlobDir,
 	const std::function<bool(const std::string&)>& directoryExists
 ) {
 	// An empty `blob_dir` is not "no directory", it is wherever RocksDB puts
@@ -34,7 +82,7 @@ BlobRelocationDecision decideBlobRelocation(
 	// describe more than one move.
 	//
 	// Only `dir` reaches other families. The rest of `blobs.*` stays per-family
-	// (invariant 15): none of it describes where files already are.
+	// (invariant 19): none of it describes where files already are.
 	const bool sharesTargetBlobDir = input.targetPersistedBlobDir && input.persistedBlobDir &&
 		*input.persistedBlobDir == *input.targetPersistedBlobDir;
 	const bool acknowledged = input.allowDirChange &&
@@ -56,15 +104,27 @@ BlobRelocationDecision decideBlobRelocation(
 	// `ensureBlobDirExists` creates it.
 	if (acknowledged && input.persistedBlobDir) {
 		const std::string& from = resolveBlobDir(*input.persistedBlobDir);
-		if (from != resolveBlobDir(input.requestedDir) && holdsBlobFiles(from)) {
-			decision.error =
-				"Cannot open \"" + input.dbPath + "\" with blobs.allowDirChange: column family \"" +
-				input.cfName + "\" still has blob files in \"" + from +
-				"\", the directory it recorded them in. Nothing is moved for you — finish "
-				"moving them out of that directory before reopening. If this is a restored "
-				"copy, that directory belongs to the database it was restored from and "
-				"sharing it would corrupt both: restore where it is not reachable.";
-			return decision;
+		const std::string& to = resolveBlobDir(input.requestedDir);
+		if (from != to) {
+			BlobDirScan scan = scanBlobDir(from);
+			if (scan.state == BlobDirScanState::Unknown) {
+				decision.error =
+					"Cannot inspect the persisted blob directory \"" + from + "\" for column family \"" +
+					input.cfName + "\" while applying blobs.allowDirChange: " + scan.detail +
+					". Restore access and finish moving its .blob files, or make the old path "
+					"definitively absent, then retry.";
+				return decision;
+			}
+			if (scan.state == BlobDirScanState::HoldsBlobFiles) {
+				decision.error =
+					"Cannot open \"" + input.dbPath + "\" with blobs.allowDirChange: column family \"" +
+					input.cfName + "\" still has blob files in \"" + from +
+					"\", the directory it recorded them in. Nothing is moved for you — finish "
+					"moving them out of that directory before reopening. If this is a restored "
+					"copy, that directory belongs to the database it was restored from and "
+					"sharing it would corrupt both: restore where it is not reachable.";
+				return decision;
+			}
 		}
 	}
 

@@ -121,9 +121,7 @@ const blobDirSupported = (() => {
 		// Only the build gate means "unsupported". Swallowing every error would
 		// let a real regression in open() silently skip the whole suite.
 		if (/requires a RocksDB build with the blob_dir patch/.test(err?.message ?? '')) {
-			// A prebuild that lost the patch on one platform would otherwise turn
-			// the whole suite green by skipping it. The release job sets this so
-			// the packaged artifact has to carry the feature it advertises.
+			// A caller can require the patched build instead of accepting a skip.
 			if (requireBlobDir) {
 				throw new Error(
 					'ROCKSDB_JS_REQUIRE_BLOB_DIR=1 but the linked RocksDB has no blob_dir patch'

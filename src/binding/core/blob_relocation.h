@@ -5,7 +5,24 @@
 #include <optional>
 #include <string>
 
+namespace rocksdb {
+class Env;
+}
+
 namespace rocksdb_js {
+
+enum class BlobDirScanState {
+	Clear,
+	HoldsBlobFiles,
+	Unknown,
+};
+
+struct BlobDirScan {
+	BlobDirScanState state;
+	std::string detail;
+};
+
+std::function<BlobDirScan(const std::string&)> makeBlobDirScanner(rocksdb::Env* env);
 
 /**
  * One column family's state as the cold open sees it, before this open's
@@ -63,20 +80,16 @@ struct BlobRelocationDecision {
  * Decides one column family's blob directory for a cold open, and whether the
  * open may proceed at all.
  *
- * Node-free and free of the `blob_dir` field itself so a GoogleTest can cover
- * it: the call site compiles only into a build WITH the downstream `blob_dir`
- * patch (`ROCKSDB_HAS_CF_BLOB_DIR`), and no prebuild carries that patch yet, so
- * every integration test of these rules skips on every build that exists today.
- * The same reasoning that put the unpatched-build OPTIONS scan in
- * `core/options_file.cpp` applies here in mirror image.
+ * Node-free and free of the `blob_dir` field itself so GoogleTest can cover it
+ * even when the linked RocksDB does not expose that downstream field.
  *
- * `holdsBlobFiles` reports whether a directory currently contains `.blob`
- * files; `directoryExists` reports whether a directory is present. Both are
- * injected so the rules can be exercised without a filesystem.
+ * `scanBlobDir` reports whether a directory is clear, contains `.blob` files,
+ * or could not be inspected; `directoryExists` reports whether a directory is
+ * present. Both are injected so the rules can be exercised without a filesystem.
  */
 BlobRelocationDecision decideBlobRelocation(
 	const BlobRelocationInput& input,
-	const std::function<bool(const std::string&)>& holdsBlobFiles,
+	const std::function<BlobDirScan(const std::string&)>& scanBlobDir,
 	const std::function<bool(const std::string&)>& directoryExists
 );
 
