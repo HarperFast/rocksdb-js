@@ -8,11 +8,11 @@ import { describe, expect, it } from 'vitest';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Regression for the writeStall debounce blocker (both cross-model reviewers): the
- * per-CF FSM must advance while unobserved, so a listener attached after a stall
- * episode still gets the rising edge on the next stall. Runs in a child process so
- * ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS=0 reaches native `::getenv` (a worker_threads
- * `process.env` write would not), making recovery clear the FSM deterministically.
+ * The per-CF debounce FSM must advance while unobserved, so a listener attached
+ * after a stall episode still gets the rising edge on the next stall (rather than
+ * having it suppressed by state stranded when no one was listening). Runs in a
+ * child process so ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS=0 reaches native `::getenv`
+ * (a worker_threads `process.env` write would not), making the re-arm deterministic.
  */
 describe('writeStall listener re-registration', () => {
 	it('re-emits after a listener detaches, the CF recovers unobserved, and one re-attaches', async () => {

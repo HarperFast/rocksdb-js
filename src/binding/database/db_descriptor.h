@@ -24,6 +24,7 @@
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
 #include "core/platform.h"
+#include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -345,24 +346,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	);
 
 	/**
-	 * Per-column-family debounce state for the `'writeStall'` event. RocksDB flips
-	 * a CF's stall condition many times per second under the `dbWriteBufferSize`
-	 * -oversubscription pathology, and its very first callback per CF is a spurious
-	 * `stopped -> normal`; a naive per-transition emit both floods an unbounded
-	 * threadsafe-function queue (while the JS thread is blocked in the write that
-	 * caused the stall) and, sampled arbitrarily, mostly reports `normal` — the
-	 * opposite of the alert a consumer wants. Instead we track whether each CF is
-	 * currently reported as stalled and emit edge-triggered: the rising edge
-	 * (entering delayed/stopped) fires promptly; the falling edge (back to normal)
-	 * is debounced so oscillation dips don't flap. Guarded by
-	 * `writeStallDebounceMutex`; bounded by the column-family count.
+	 * Per-column-family debounce for the `'writeStall'` event (rising-edge,
+	 * rate-limited; see `core/write_stall_debounce.h`). The window is resolved once
+	 * on the JS thread at construction into `writeStallDebounceWindowMs`, so the
+	 * emit path — a RocksDB background thread — never calls `::getenv`.
 	 */
-	struct WriteStallDebounceEntry {
-		bool stalledReported = false;
-		std::chrono::steady_clock::time_point lastEmit{};
-	};
-	std::mutex writeStallDebounceMutex;
-	std::unordered_map<std::string, WriteStallDebounceEntry> writeStallDebounce;
+	WriteStallDebounce writeStallDebounce;
+	uint64_t writeStallDebounceWindowMs = 0;
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv

@@ -5,29 +5,18 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 /**
- * Coverage for the per-database `'writeStall'` event, emitted from RocksDB's
- * `EventListener::OnStallConditionsChanged` when a column family crosses between
- * write-stall conditions (`normal`/`delayed`/`stopped`).
+ * End-to-end wiring for the per-database `'writeStall'` event and the
+ * `isWriteStalled()` pull. The debounce state machine itself is unit-tested
+ * deterministically in `test/native/write_stall_debounce_test.cc`; this only
+ * proves the RocksDB `OnStallConditionsChanged` hook reaches JS with a valid
+ * per-CF payload and that `isWriteStalled()` reflects the live condition.
  *
- * We provoke a real per-CF stall the same way the `dbWriteBufferSize`
- * -oversubscription pathology does, but at micro scale so it fires in ~1s instead
- * of the ~20-minute production arm: tiny per-CF memtables (`writeBufferSize`
- * 64 KiB) that fill in a few writes, a queue depth of 2 (`maxWriteBufferNumber`)
- * so a CF stalls after 2 unflushed memtables, and several column families sharing
- * a tiny global budget (`dbWriteBufferSize` 256 KiB) so atomic-flush triggers
- * fire constantly. A tight synchronous `putSync` burst outruns the flush
- * pipeline; the emit is dispatched asynchronously, so we yield between chunks to
- * receive events.
- *
- * The native emit is edge-triggered debounced per CF (falling-edge window default
- * 1000 ms via `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS`): the rising edge into a stall
- * fires promptly, the recovery to normal is debounced, and a CF flipping
- * condition thousands of times/sec cannot flood the threadsafe-function queue.
- * The test relies on that default: it drives the stall for well under one window
- * (~500 ms), during which each CF transitions many times but only its rising edge
- * emits — so `count === 1 per CF` proves both the emit and the debounce (without
- * it this would be hundreds per CF), and every emit's `cur` is a stalling state
- * (`delayed`/`stopped`), never a bare `normal`.
+ * A real stall is provoked at micro scale (64 KiB write buffers,
+ * `maxWriteBufferNumber` 2, several CFs, tiny `dbWriteBufferSize`) so a tight
+ * synchronous `putSync` burst outruns the flush pipeline in ~1s. Assertions avoid
+ * timing/count bounds (the event is rate-limited, so a slow run may see a
+ * heartbeat re-emit — that's the FSM's job to bound, covered natively); it only
+ * requires that a stall was observed and every emitted event is a rising edge.
  */
 describe('writeStall event', () => {
 	const CF_COUNT = 8;
@@ -58,7 +47,7 @@ describe('writeStall event', () => {
 		rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 	});
 
-	it('emits a debounced writeStall per column family with the condition transition', async () => {
+	it('emits a per-CF rising edge, and isWriteStalled() is wired', async () => {
 		type StallEvent = { cfName: string; prev: string; cur: string };
 		const events: StallEvent[] = [];
 		dbs[0].addListener('writeStall', (cfName: string, prev: string, cur: string) => {
@@ -66,38 +55,25 @@ describe('writeStall event', () => {
 		});
 
 		const value = Buffer.alloc(4096, 0x61);
-		// Drive the stall in small chunks, staying strictly inside one debounce
-		// window (< 1000 ms) so the debounce permits at most one emit per CF. Small
-		// chunks keep any single stalled putSync from overshooting the window.
-		const WINDOW_MS = 500;
-		const CHUNK = 50;
-		const FAIL_DEADLINE_MS = 5000;
-		const start = performance.now();
+		const CHUNK = 100;
+		const MAX_RECORDS = 40_000; // fail-loud bound; a stall is near-certain well before this
 		let record = 0;
-		for (;;) {
+		while (record < MAX_RECORDS && events.length === 0) {
 			for (let i = 0; i < CHUNK; i++, record++) {
 				dbs[record % CF_COUNT].putSync(`k-${record.toString().padStart(8, '0')}`, value);
 			}
 			await delay(0); // yield so async-dispatched events are delivered
-			const elapsed = performance.now() - start;
-			if (events.length > 0 && elapsed >= WINDOW_MS) break; // stalled, still within one window
-			if (elapsed >= FAIL_DEADLINE_MS) break; // fail-loud: no stall materialized
 		}
-		await delay(50); // let any in-flight emit from the final chunk land
+		await delay(50); // let any in-flight emit land
 
 		// A stall must have occurred (fail-loud rather than silently skipping).
 		expect(events.length).toBeGreaterThan(0);
-
-		// Debounce: within one <1000 ms window a CF transitions many times but is
-		// permitted at most one emit. count===1 proves both the emit and the
-		// debounce; without debouncing this would be hundreds per CF.
-		const perCf = new Map<string, number>();
-		for (const e of events) {
-			perCf.set(e.cfName, (perCf.get(e.cfName) ?? 0) + 1);
-		}
-		for (const [cf, count] of perCf) {
-			expect(count, `CF ${cf} emitted ${count}x within one debounce window`).toBe(1);
-		}
+		// isWriteStalled() reads live DB-wide properties; observing `true` is racy
+		// from the same thread that does the synchronous writes (the thread only
+		// runs between stalls), so assert the wiring (returns a boolean) rather than
+		// a flaky live-true. The event above is the stall proof; the FSM itself is
+		// covered in test/native/write_stall_debounce_test.cc.
+		expect(typeof dbs[0].isWriteStalled()).toBe('boolean');
 
 		const conditions = new Set(['normal', 'delayed', 'stopped']);
 		for (const e of events) {
@@ -105,7 +81,7 @@ describe('writeStall event', () => {
 			expect(conditions.has(e.prev)).toBe(true);
 			expect(conditions.has(e.cur)).toBe(true);
 			expect(e.prev).not.toBe(e.cur); // fires only on a real transition
-			// Every emit here is a rising edge into a stall — never a bare recovery.
+			// Rising-edge only: every emit is an entry into a stall, never a bare recovery.
 			expect(e.cur === 'delayed' || e.cur === 'stopped', `unexpected cur=${e.cur}`).toBe(true);
 		}
 	}, 30_000);

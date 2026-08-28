@@ -257,6 +257,7 @@
 				'test/native/transaction_log_validation_test.cc',
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/verification_table_test.cc',
+				'test/native/write_stall_debounce_test.cc',
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',

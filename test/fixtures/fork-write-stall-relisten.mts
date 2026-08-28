@@ -1,15 +1,14 @@
 /**
- * Regression fixture for the writeStall debounce blocker: the per-CF debounce
- * FSM must advance even while no one is listening, otherwise a CF marked stalled
- * while a listener was attached stays stuck `stalledReported` after the listener
- * detaches and the CF recovers unobserved — permanently suppressing the rising
- * edge for any listener attached later.
+ * The per-CF debounce FSM must advance even while no one is listening, otherwise
+ * a CF that stalled while a listener was attached stays stuck "reported stalled"
+ * after the listener detaches and the CF recovers unobserved — suppressing the
+ * rising edge for any listener attached later.
  *
- * Run with ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS=0 so recovery clears the FSM
- * immediately (no window), making the outcome independent of flush timing:
+ * Run with ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS=0 so the re-arm is independent of
+ * flush timing:
  *   1. attach a listener, provoke a stall (rising edge observed),
  *   2. detach it, stop writing so the CFs recover with no listener attached,
- *   3. re-attach and provoke a stall again — a fixed implementation re-emits.
+ *   3. re-attach and provoke a stall again — the rising edge must re-emit.
  */
 import { RocksDatabase, shutdown } from '../../src/index.ts';
 import { rmSync } from 'node:fs';
