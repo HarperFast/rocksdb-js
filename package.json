@@ -58,9 +58,9 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@harperfast/extended-iterable": "1.0.3",
-    "msgpackr": "2.0.6",
-    "ordered-binary": "1.6.1"
+    "@harperfast/extended-iterable": "^1.0.3",
+    "msgpackr": "^2.0.6",
+    "ordered-binary": "^1.6.1"
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
