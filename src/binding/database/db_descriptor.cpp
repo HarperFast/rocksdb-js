@@ -56,7 +56,7 @@ struct PersistedCFOptions {
 // Puts the blob settings of a column family being created back to the documented
 // creation defaults. The base options carry the opening handle's request, which
 // belongs to the family it named — the `default` family a fresh database creates
-// on the way to a named one must not persist it (invariant 15).
+// on the way to a named one must not persist it (invariant 19).
 static void applyBlobCreationDefaults(rocksdb::ColumnFamilyOptions& cfOptions) {
 	cfOptions.enable_blob_files = kDefaultBlobEnabled;
 	cfOptions.min_blob_size = kDefaultBlobMinSize;
@@ -242,24 +242,6 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
-
-#ifdef ROCKSDB_HAS_CF_BLOB_DIR
-static bool holdsBlobFiles(rocksdb::Env* env, const std::string& dir) {
-	std::vector<std::string> children;
-	if (!env->GetChildren(dir, &children).ok()) {
-		return false;
-	}
-	static const std::string suffix = ".blob";
-	for (const auto& child : children) {
-		if (child.size() > suffix.size() &&
-			child.compare(child.size() - suffix.size(), suffix.size(), suffix) == 0
-		) {
-			return true;
-		}
-	}
-	return false;
-}
-#endif
 
 void ensureBlobDirExists(rocksdb::Env* env, const std::string& blobDir) {
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
@@ -1593,6 +1575,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// try to list existing column families
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	struct AcceptedBlobRelocation {
+		std::string cfName;
+		std::string from;
+		std::string to;
+	};
+	std::vector<AcceptedBlobRelocation> acceptedBlobRelocations;
+#endif
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
 		assertStoragePathsUsable(dbOptions.env, path, options.paths);
 #ifndef ROCKSDB_HAS_CF_BLOB_DIR
@@ -1629,6 +1619,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			);
 		}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		auto scanBlobDir = rocksdb_js::makeBlobDirScanner(dbOptions.env);
 		// Where the open's target family kept its blob files before this open.
 		// Disengaged when the target is not on disk yet, in which case nothing
 		// moved out from under it and no other family can be said to have moved
@@ -1637,9 +1628,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		if (auto targetIt = persisted.find(name); targetIt != persisted.end()) {
 			targetPersistedBlobDir = targetIt->second.blobDir;
 		}
-		auto holdsBlobFilesHere = [&dbOptions](const std::string& dir) {
-			return holdsBlobFiles(dbOptions.env, dir);
-		};
 		auto blobDirExists = [&dbOptions](const std::string& dir) {
 			return dbOptions.env->FileExists(dir).ok();
 		};
@@ -1663,11 +1651,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				applyExplicitBlobOptions(cfo, options.blobs);
 			}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-			// Which directory this family opens with, and whether it may open at
-			// all. The rules live in Node-free `core/blob_relocation.cpp` so a
-			// GoogleTest can cover them: this call site compiles only into a
-			// patched build, and no prebuild carries the patch yet, so every
-			// integration test of these rules skips on every build that exists.
+			// Which directory this family opens with, and whether it may open at all.
 			rocksdb_js::BlobRelocationInput relocation;
 			relocation.dbPath = path;
 			relocation.defaultBlobDir =
@@ -1683,9 +1667,19 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			relocation.currentBlobDir = cfo.blob_dir;
 
 			rocksdb_js::BlobRelocationDecision decision =
-				rocksdb_js::decideBlobRelocation(relocation, holdsBlobFilesHere, blobDirExists);
+				rocksdb_js::decideBlobRelocation(relocation, scanBlobDir, blobDirExists);
 			if (!decision.error.empty()) {
 				throw rocksdb_js::DBException(decision.error);
+			}
+			if (relocation.allowDirChange && relocation.persistedBlobDir) {
+				const std::string& defaultBlobDir =
+					relocation.defaultBlobDir.empty() ? relocation.dbPath : relocation.defaultBlobDir;
+				const std::string& from =
+					relocation.persistedBlobDir->empty() ? defaultBlobDir : *relocation.persistedBlobDir;
+				const std::string& to = decision.blobDir.empty() ? defaultBlobDir : decision.blobDir;
+				if (from != to) {
+					acceptedBlobRelocations.push_back({ cfName, from, to });
+				}
 			}
 			cfo.blob_dir = decision.blobDir;
 #endif
@@ -1711,6 +1705,31 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		}
 		cfDescriptors = { rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfo) };
 	}
+
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+	if (!acceptedBlobRelocations.empty()) {
+		if (!dbOptions.info_log) {
+			rocksdb::Status loggerStatus =
+				rocksdb::CreateLoggerFromOptions(path, dbOptions, &dbOptions.info_log);
+			if (!loggerStatus.ok()) {
+				throw rocksdb_js::DBException(
+					"Cannot record the accepted blob-directory relocation for \"" + path +
+					"\": " + loggerStatus.ToString()
+				);
+			}
+		}
+		for (const auto& relocation : acceptedBlobRelocations) {
+			rocksdb::Log(
+				rocksdb::InfoLogLevel::INFO_LEVEL,
+				dbOptions.info_log,
+				"rocksdb-js accepted blob-directory relocation for column family %s: %s -> %s",
+				relocation.cfName.c_str(),
+				relocation.from.c_str(),
+				relocation.to.c_str()
+			);
+		}
+	}
+#endif
 
 	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
 	std::shared_ptr<rocksdb::DB> db;

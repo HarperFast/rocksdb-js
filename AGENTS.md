@@ -628,6 +628,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     (`allowDirChange` with no `dir`) is checked rather than trusted: a family whose recorded
     directory still holds `.blob` files refuses the open, avoiding an erroneous path that targets
     the live original. Grouping is by persisted directory string, so two spellings form two groups.
+    The source scan is tri-state and memoized per resolved directory: successful enumeration proves
+    clear/populated; a failed enumeration is clear only when a separate metadata probe proves the
+    path absent; every other result refuses the relocation. `GetChildren` alone is insufficient
+    because RocksDB maps POSIX `EACCES` and `ENOENT` to the same status. An accepted relocation is
+    written to RocksDB's info LOG with the old and new directories before open restamps OPTIONS.
+    No source-side scan can distinguish a genuinely empty directory from an empty mount point whose
+    volume failed to mount, so operators must verify mounts before acknowledging a move.
     A restored copy opened without acknowledgement whose target family has no external blob directory remains a
     documented procedure: OPTIONS cannot distinguish copy from original. A missing persisted
     `blob_dir` is caught at open for every family, rather than when a flush makes the whole database
@@ -653,8 +660,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means
     "everything under the database directory", which orphans exactly the files tiering moved away.
     The layout must survive the descriptor: `destroy()` accepts a closed handle, and closing the last
-    one purges the registry entry, so `DBHandle::close` copies a `DBFileLayout` onto the handle and
-    `Database::Destroy` passes it down. `blob_dir` can be recovered from OPTIONS; `db_paths` cannot.
+    one purges the registry entry, so `DBDescriptor::recordColumnFamilyLayout` mirrors a
+    `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` uses the live
+    descriptor snapshot when present and that registry record after close. `blob_dir` can be
+    recovered from OPTIONS; `db_paths` cannot.
     See [docs/tiered-storage.md](docs/tiered-storage.md).
 18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
     are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,

@@ -273,9 +273,17 @@ is running the open before the `mv`. For a restored copy the same rule says the 
 is still in use and must not be shared. Neither the destination existing nor its holding some files
 is evidence: the open creates it, and a partial copy leaves both populated.
 
-A directory that has gone missing entirely — an unmounted volume, a restore that never brought it —
-fails the open naming the family and the directory, rather than being discovered when the first
-read returns nothing and the first flush errors the database read-only.
+If the source cannot be inspected, the acknowledgement is refused. Restore access and finish the
+move, or make the old path definitively absent, then retry. Confirm the old volume's mount state
+first: a failed mount can leave an empty mount point that looks exactly like a successfully emptied
+directory, and no source-side scan can distinguish those cases. Removing an absent mount point is
+also an operator assertion that the old volume is no longer the source. Every accepted relocation
+is recorded in RocksDB's info `LOG` with the previous and new directory before the open restamps the
+`OPTIONS` file.
+
+A persisted directory that remains selected but has gone missing entirely — an unmounted volume,
+for example — fails a normal open naming the family and the directory, rather than being discovered
+when the first read returns nothing and the first flush errors the database read-only.
 
 ## Turning blob files off
 
