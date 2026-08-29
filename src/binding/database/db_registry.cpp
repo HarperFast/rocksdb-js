@@ -617,12 +617,26 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		// db_paths is fixed for the life of the open database, so a second open
 		// asking for different volumes cannot take effect on the reused handle.
 		// Reject rather than let the caller believe SST files are being tiered.
-		if (!options.paths.empty()) {
-			const auto& currentPaths = entry.descriptor->db->GetDBOptions().db_paths;
-			bool differs = currentPaths.size() != options.paths.size();
-			for (size_t i = 0; !differs && i < currentPaths.size(); i++) {
-				differs = currentPaths[i].path != options.paths[i].path ||
-					currentPaths[i].target_size != options.paths[i].targetSize;
+		if (options.pathsExplicit) {
+			const rocksdb::DBOptions currentOptions = entry.descriptor->db->GetDBOptions();
+			const auto& currentPaths = currentOptions.db_paths;
+			// An untiered database does not report an EMPTY list: SanitizeOptions
+			// rewrites it to `[{dbname, UINT64_MAX}]`. So "already open untiered"
+			// arrives here looking like an ordinary mismatch, and it is the case
+			// worth naming — it is what Harper does when a plain startup open
+			// precedes the table open that carries the migration.
+			const bool currentIsUntiered = currentPaths.size() == 1 &&
+				currentPaths[0].path == path &&
+				currentPaths[0].target_size == std::numeric_limits<uint64_t>::max();
+			bool differs = false;
+			if (options.paths.empty()) {
+				differs = !currentIsUntiered;
+			} else {
+				differs = currentPaths.size() != options.paths.size();
+				for (size_t i = 0; !differs && i < currentPaths.size(); i++) {
+					differs = currentPaths[i].path != options.paths[i].path ||
+						currentPaths[i].target_size != options.paths[i].targetSize;
+				}
 			}
 			if (differs) {
 				throw rocksdb_js::DBException(

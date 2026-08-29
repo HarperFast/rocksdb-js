@@ -2212,7 +2212,12 @@ static bool getByteSizeProperty(
 // reaching `reserve`.
 constexpr uint32_t kMaxStoragePaths = 64;
 
-static bool parseStoragePaths(napi_env env, napi_value options, std::vector<StoragePath>& result) {
+static bool parseStoragePaths(
+	napi_env env,
+	napi_value options,
+	std::vector<StoragePath>& result,
+	bool& explicitRequest
+) {
 	bool has = false;
 	NAPI_STATUS_THROWS_RVAL(::napi_has_named_property(env, options, "paths", &has), false);
 	if (!has) {
@@ -2233,6 +2238,7 @@ static bool parseStoragePaths(napi_env env, napi_value options, std::vector<Stor
 		::napi_throw_error(env, nullptr, "paths must be an array of { path, targetSize } objects");
 		return false;
 	}
+	explicitRequest = true;
 
 	uint32_t length = 0;
 	NAPI_STATUS_THROWS_RVAL(::napi_get_array_length(env, pathsValue, &length), false);
@@ -2648,7 +2654,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		? std::string()
 		: rocksdb_js::resolveIdentityPath(transactionLogsPath).string();
 
-	if (!parseStoragePaths(env, options, dbHandleOptions.paths) ||
+	if (!parseStoragePaths(env, options, dbHandleOptions.paths, dbHandleOptions.pathsExplicit) ||
 		!parseBlobOptions(env, options, dbHandleOptions.blobs)
 	) {
 		return nullptr;
