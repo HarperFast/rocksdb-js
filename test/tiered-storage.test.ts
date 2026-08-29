@@ -499,6 +499,28 @@ describe('paths', () => {
 		tiered.close();
 	});
 
+	it('should inherit omitted paths but reject an explicit empty list on warm reopen', () => {
+		const dbPath = tempPath();
+		const tiered = openDb(dbPath, { paths: [{ path: dbPath, targetSize: 1 << 30 }] });
+		const inherited = openDb(dbPath, { name: 'table1' });
+
+		expect(() => RocksDatabase.open(dbPath, { name: 'table2', paths: [] })).toThrow(
+			/already open with a different set of storage paths/
+		);
+
+		inherited.close();
+		tiered.close();
+	});
+
+	it('should accept an explicit empty list when the warm database is already untiered', () => {
+		const dbPath = tempPath();
+		const untiered = openDb(dbPath);
+		const sameLayout = openDb(dbPath, { name: 'table1', paths: [] });
+
+		sameLayout.close();
+		untiered.close();
+	});
+
 	it('should reject more storage paths than it will hold', () => {
 		const dbPath = tempPath();
 		const paths = Array(65);

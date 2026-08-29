@@ -219,6 +219,10 @@ struct DBOptions final {
 	//
 	// Blob files do NOT follow these paths — see `blobs.dir`.
 	std::vector<StoragePath> paths;
+	// Whether `paths` was an array in the caller's request. Empty is a meaningful
+	// explicit request on a warm open: it asks for the untiered layout rather than
+	// inheriting a live non-empty `db_paths` list.
+	bool pathsExplicit = false;
 	BlobOptions blobs;
 };
 
