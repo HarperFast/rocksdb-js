@@ -390,6 +390,10 @@ export type NativeBlobOptions = {
 	 * One open describes one move, so a database with several distinct blob
 	 * directories needs one open per directory.
 	 *
+	 * A read-only open accepts a leftover acknowledgement when every directory
+	 * already matches, but performing a relocation requires a writable open so
+	 * RocksDB can persist the new location.
+	 *
 	 * @default false
 	 */
 	allowDirChange?: boolean;
@@ -453,6 +457,10 @@ export type NativeDatabaseOptions = {
 	blobs?: NativeBlobOptions;
 	/**
 	 * Volumes SST files may be placed on, mapped to RocksDB's `db_paths`.
+	 * The first open of a path fixes this list for that database's in-process
+	 * lifetime. Later opens that omit it inherit the live list; an explicitly
+	 * different list is rejected.
+	 *
 	 * See {@link NativeStoragePath}.
 	 */
 	paths?: NativeStoragePath[];
