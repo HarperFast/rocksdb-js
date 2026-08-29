@@ -74,14 +74,13 @@ struct BlobRelocationDecision {
 	std::string error;
 	/** The `blob_dir` to open the family with, when `error` is empty. */
 	std::string blobDir;
+	/** Whether this open may create a missing requested destination. */
+	bool mayCreateDestination = false;
 };
 
 /**
  * Decides one column family's blob directory for a cold open, and whether the
  * open may proceed at all.
- *
- * Node-free and free of the `blob_dir` field itself so GoogleTest can cover it
- * even when the linked RocksDB does not expose that downstream field.
  *
  * `scanBlobDir` reports whether a directory is clear, contains `.blob` files,
  * or could not be inspected; `directoryExists` reports whether a directory is

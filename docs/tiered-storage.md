@@ -127,7 +127,7 @@ everything is under the database directory.
 
 That holds for `close()` followed by `destroy()` too, which is the call order most likely to lose
 the layout: closing the last handle takes the descriptor with it, and `db_paths` is not written to
-the OPTIONS file, so the handle keeps its own copy for exactly this.
+the OPTIONS file, so the process registry keeps a path-keyed copy for exactly this.
 
 ## Backups and checkpoints
 
@@ -247,6 +247,10 @@ Nothing is moved for you — `allowDirChange` only records where the files went,
 _without_ relocating them is exactly the failure the check exists to prevent. It is only needed for
 the open that performs the switch: that open records the new directory, so later opens can drop
 `allowDirChange` — but they still have to supply the same `dir`.
+
+A read-only open may keep a leftover `allowDirChange` flag when every directory already matches.
+An open that would actually change a directory requires write access so the new location can be
+persisted in the OPTIONS file.
 
 One open relocates one directory's worth of files. The `mv` above moved every blob file that was in
 `/old/blobs`, so `allowDirChange` re-points every column family whose blobs were in `/old/blobs` —

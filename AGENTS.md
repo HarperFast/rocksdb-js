@@ -633,8 +633,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     path absent; every other result refuses the relocation. `GetChildren` alone is insufficient
     because RocksDB maps POSIX `EACCES` and `ENOENT` to the same status. An accepted relocation is
     written to RocksDB's info LOG with the old and new directories after a successful open when
-    the configured logger is available. A read-only open cannot acknowledge a relocation because
-    it cannot persist the new directory in OPTIONS.
+    the configured logger is available. A read-only open may carry a leftover acknowledgement when
+    nothing changes, but cannot perform a relocation because it cannot persist the new directory in
+    OPTIONS.
     No source-side scan can distinguish a genuinely empty directory from an empty mount point whose
     volume failed to mount, so operators must verify mounts before acknowledging a move.
     A restored copy opened without acknowledgement whose target family has no external blob directory remains a
@@ -646,8 +647,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     caught before open because it is detectable from the files themselves. Removing or reordering
     an entry cannot be detected up front; `explainOpenFailure` conditionally appends guidance to a
     `Corruption` naming an `.sst` file because genuine corruption reports the same status. With no
-    `db_paths`, RocksDB sanitizes it to `[{dbname,
-...}]`, so existing SST files sit at index 0 = the database directory, and supplying `paths`
+    `db_paths`, RocksDB sanitizes it to `[{dbname, ...}]`, so existing SST files sit at index 0 = the
+    database directory, and supplying `paths`
     redefines that index. `assertStoragePathsUsable` rejects it by asking whether the database
     directory's SST files are reachable under `paths[0]`, rather than comparing directory strings,
     so RocksDB does not report the MANIFEST as corrupt and send an operator to backup restore. Two

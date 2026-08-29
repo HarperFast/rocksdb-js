@@ -280,6 +280,7 @@ TEST(BlobRelocation, AcknowledgedMoveMayCreateItsMissingDestination) {
 	BlobRelocationDecision decision = decide(input, dirs);
 	EXPECT_EQ(decision.error, "");
 	EXPECT_EQ(decision.blobDir, kNew);
+	EXPECT_TRUE(decision.mayCreateDestination);
 }
 
 // An empty persisted `blob_dir` means the database directory, not "no
@@ -410,6 +411,7 @@ TEST(BlobRelocation, LeftoverAcknowledgementDoesNotRefuseAnUnchangedOpen) {
 	BlobRelocationDecision decision = decide(input, dirs);
 	EXPECT_EQ(decision.error, "");
 	EXPECT_EQ(decision.blobDir, kOld);
+	EXPECT_FALSE(decision.mayCreateDestination);
 }
 
 // Same, spelled the other way: a flat family reopened flat with the flag set.
@@ -481,6 +483,7 @@ TEST(BlobRelocation, NewFamilyHasNothingToCompareAgainst) {
 	BlobRelocationDecision decision = decide(input, dirs);
 	EXPECT_EQ(decision.error, "");
 	EXPECT_EQ(decision.blobDir, kNew);
+	EXPECT_TRUE(decision.mayCreateDestination);
 }
 
 // With the target not yet on disk, no other family can be said to have moved

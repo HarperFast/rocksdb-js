@@ -159,13 +159,13 @@ BlobRelocationDecision decideBlobRelocation(
 	// read-only, long after the open that could have named the cause. Only a new
 	// family or an acknowledged move may create its requested destination after
 	// this decision; every persisted directory that remains selected must exist.
-	const bool requestedDestinationMayBeCreated = !input.requestedDir.empty() &&
+	decision.mayCreateDestination = !input.requestedDir.empty() &&
 		resolveBlobDir(decision.blobDir) == resolveBlobDir(input.requestedDir) &&
 		((!input.persistedBlobDir && input.isTarget) ||
 			(acknowledged && input.persistedBlobDir &&
 				resolveBlobDir(*input.persistedBlobDir) != resolveBlobDir(input.requestedDir)));
 	if (!decision.blobDir.empty() && !directoryExists(decision.blobDir) &&
-		!requestedDestinationMayBeCreated
+		!decision.mayCreateDestination
 	) {
 		decision.error =
 			"Cannot open \"" + input.dbPath + "\": column family \"" + input.cfName +

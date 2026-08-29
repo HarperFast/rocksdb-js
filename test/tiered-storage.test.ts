@@ -348,9 +348,6 @@ describe('paths', () => {
 		db.flushSync();
 		expect(filesWithExt(fast, '.sst').length).toBeGreaterThan(0);
 
-		// A default rocksdb::Options describes "everything under the database
-		// directory", which stopped being true once SSTs can live on another
-		// volume — destroy() used to orphan exactly the bulk of the data.
 		db.destroy();
 		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
 	});
@@ -978,11 +975,6 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 
 	it('should create a blob directory for a column family added to an open database', () => {
 		const dbPath = tempPath();
-		// Deliberately NOT created up front: nothing in RocksDB creates it, and a
-		// missing one does not fail anything synchronously — writes are
-		// acknowledged and the FIRST FLUSH errors the whole database read-only.
-		// The cold open creates it; a family added to an already-open database
-		// goes through CreateColumnFamily instead and used to skip that.
 		const blobDir = tempPath();
 
 		const plain = openDb(dbPath);
@@ -1026,14 +1018,27 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		expect(() => RocksDatabase.open(dbPath)).toThrow(/which does not exist/);
 	});
 
-	it('should reject a read-only relocation acknowledgement', () => {
+	it('should reject a read-only relocation acknowledgement that changes the directory', () => {
 		const dbPath = tempPath();
-		const db = openDb(dbPath);
+		const blobDir = tempDir();
+		const db = openDb(dbPath, { blobs: { dir: blobDir } });
 		db.close();
 
 		expect(() =>
 			RocksDatabase.open(dbPath, { readOnly: true, blobs: { allowDirChange: true } })
 		).toThrow(/requires a writable open/);
+	});
+
+	it('should allow a no-op read-only relocation acknowledgement', () => {
+		const dbPath = tempPath();
+		const db = openDb(dbPath);
+		db.close();
+
+		const reopened = RocksDatabase.open(dbPath, {
+			readOnly: true,
+			blobs: { allowDirChange: true },
+		});
+		reopened.close();
 	});
 
 	it('should relocate every column family when the change is acknowledged', () => {

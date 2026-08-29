@@ -1573,11 +1573,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
 	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-	if (options.readOnly && options.blobs.allowDirChange) {
-		throw rocksdb_js::DBException(
-			"blobs.allowDirChange requires a writable open so the relocated directory is persisted"
-		);
-	}
 	struct AcceptedBlobRelocation {
 		std::string cfName;
 		std::string from;
@@ -1655,7 +1650,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				applyExplicitBlobOptions(cfo, options.blobs);
 			}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
-			// Which directory this family opens with, and whether it may open at all.
 			rocksdb_js::BlobRelocationInput relocation;
 			relocation.dbPath = path;
 			relocation.defaultBlobDir =
@@ -1675,6 +1669,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			if (!decision.error.empty()) {
 				throw rocksdb_js::DBException(decision.error);
 			}
+			createRequestedBlobDirBeforeOpen =
+				createRequestedBlobDirBeforeOpen || decision.mayCreateDestination;
 			if (relocation.allowDirChange && relocation.persistedBlobDir) {
 				const std::string& defaultBlobDir =
 					relocation.defaultBlobDir.empty() ? relocation.dbPath : relocation.defaultBlobDir;
@@ -1690,8 +1686,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			cfDescriptors.emplace_back(cfName, cfo);
 		}
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
+		if (options.readOnly &&
+			(createRequestedBlobDirBeforeOpen || !acceptedBlobRelocations.empty())
+		) {
+			throw rocksdb_js::DBException(
+				"Creating or relocating blobs.dir requires a writable open so the directory is persisted"
+			);
+		}
 		if (!options.blobs.dir.empty()) {
-			createRequestedBlobDirBeforeOpen = !acceptedBlobRelocations.empty();
 			createRequestedBlobDirForNewColumn = !options.readOnly &&
 				std::find(columnFamilyNames.begin(), columnFamilyNames.end(), name) ==
 				columnFamilyNames.end();
