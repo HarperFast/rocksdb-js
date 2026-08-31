@@ -369,9 +369,8 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	// write path — load()'s post-discovery activation and getLogFile() open it
 	// before the first append — so the only way it reads size 0 and closed is the
 	// window between getLogFile() creating it and the first append, where 0 is
-	// the truth. A
-	// close() here would drop a handle (and, on Windows, the mapping) the next
-	// append expects to still hold.
+	// the truth. A close() here would drop a handle (and, on Windows, the mapping)
+	// the next append expects to still hold.
 	if (file->sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		return;
 	}
