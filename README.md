@@ -1682,7 +1682,8 @@ because RocksDB flushing is behind — every file above the floor is retained to
 `destroy: true` only to remove the store itself.
 
 - `options: object`
-  - `before?: number` Remove all transaction log files older than the specified timestamp.
+  - `before?: number` Remove transaction log files older than the specified timestamp, subject to
+    the retention floor and contiguous-prefix rules above.
   - `destroy?: boolean` When `true`, deletes transaction log stores including all log sequence files
     on disk.
   - `includeEntryCounts?: boolean` When `true`, counts the entries in each deleted log file and

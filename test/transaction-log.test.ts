@@ -2406,13 +2406,8 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFiles[2])).toBe(true);
 			}));
 
-		// Only the segment that is still current after the whole directory has been
-		// scanned may be opened or marker-enabled. A segment that is merely the
-		// highest seen so far must not be, and directory iteration order decides
-		// which those are. The open-descriptor assertion is the order-independent
-		// half — on a filesystem that enumerates in sorted order the marker
-		// assertion catches it too, but a hash-ordered one can yield the highest
-		// sequence first and leave nothing behind.
+		// Only the segment that is still current after the whole directory scan may
+		// be opened or marker-enabled; superseded candidates must remain inactive.
 		it('should activate only the surviving current segment during discovery', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

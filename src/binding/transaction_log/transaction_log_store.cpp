@@ -846,12 +846,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	if (retiredBoundary == 0 &&
 		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		// Record the candidate only; load() opens and marker-enables whichever file
-		// is still current once the whole directory has been scanned. Directory
-		// iteration order is unspecified, so any segment can hold the highest-seen
-		// sequence for a moment, and a segment opened on that transient promotion is
-		// never closed again: it keeps an append-boundary marker it will never use
-		// and, on Windows (no FILE_SHARE_DELETE), stays undeletable by anything
-		// outside this process for the life of the store.
+		// is still current once the whole directory has been scanned.
 		this->currentSequenceNumber.store(sequenceNumber, std::memory_order_relaxed);
 		this->nextLogPosition = { 0, sequenceNumber };
 	} else if (retiredBoundary > 0 &&
