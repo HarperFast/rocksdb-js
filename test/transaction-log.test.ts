@@ -2558,7 +2558,7 @@ describe('Transaction Log', () => {
 
 					db.flushSync();
 					const contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
-					const u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+					const u32s = new Uint32Array(contents.buffer, contents.byteOffset, 2);
 					expect(u32s[1]).toBe(1);
 					expect(u32s[0]).toBeGreaterThan(1);
 
@@ -2592,7 +2592,7 @@ describe('Transaction Log', () => {
 
 				await db.flush();
 				let contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
-				let u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+				let u32s = new Uint32Array(contents.buffer, contents.byteOffset, 2);
 				expect(u32s[1]).toBe(1);
 				expect(u32s[0]).toBeGreaterThan(1);
 
@@ -2628,7 +2628,7 @@ describe('Transaction Log', () => {
 				queryResults = Array.from(log.query({ startFromLastFlushed: true }));
 				expect(queryResults.length).toBe(0);
 				contents = readFileSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
-				u32s = new Uint32Array(contents.buffer, contents.byteOffset);
+				u32s = new Uint32Array(contents.buffer, contents.byteOffset, 2);
 				expect(u32s[1]).toBe(1);
 				expect(u32s[0]).toBeGreaterThan(200);
 			}));

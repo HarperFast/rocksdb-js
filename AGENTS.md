@@ -210,6 +210,15 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   ambiguous "disable the bound") falls back to the default like any malformed
   value. There is no opt-out: a deployment that would rather wait than fail a
   legitimately slow holder raises the value instead
+- `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
+  per-database `'writeStall'` event. The event is rising-edge only (fires when a
+  column family enters a stall); during a sustained oscillating stall it re-emits
+  at most once per window. Recovery is not pushed (see `isWriteStalled()`). Resolved
+  once at `DBDescriptor` construction on the JS thread (the emit path runs on a
+  RocksDB background thread; this avoids `::getenv` there — same
+  `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be
+  set in the environment a process is started with. `0` disables the window (every
+  rising edge emits); malformed/negative falls back to the default
 
 ## Test Structure
 

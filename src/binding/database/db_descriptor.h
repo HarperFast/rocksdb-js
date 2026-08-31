@@ -24,6 +24,7 @@
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
 #include "core/platform.h"
+#include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -329,6 +330,29 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/** Returns the latest serialized background error, or empty when none (JS thread). */
 	std::string getLastError();
+
+	/**
+	 * Emits the per-database `'writeStall'` event when a column family's RocksDB
+	 * write-stall condition changes. Listeners receive three string args:
+	 * `(columnFamily, previousCondition, currentCondition)` where each condition
+	 * is `'normal' | 'delayed' | 'stopped'`. Safe to call from a RocksDB
+	 * background thread; the emit is dispatched asynchronously via the
+	 * thread-safe emitter, and is a no-op when there are no listeners.
+	 */
+	void emitWriteStall(
+		const std::string& columnFamily,
+		rocksdb::WriteStallCondition previous,
+		rocksdb::WriteStallCondition current
+	);
+
+	/**
+	 * Per-column-family debounce for the `'writeStall'` event (rising-edge,
+	 * rate-limited; see `core/write_stall_debounce.h`). The window is resolved once
+	 * on the JS thread at construction into `writeStallDebounceWindowMs`, so the
+	 * emit path — a RocksDB background thread — never calls `::getenv`.
+	 */
+	WriteStallDebounce writeStallDebounce;
+	uint64_t writeStallDebounceWindowMs = 0;
 
 	/**
 	 * Commit lanes executing async transaction commits off the libuv
