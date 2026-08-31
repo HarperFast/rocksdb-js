@@ -1672,11 +1672,14 @@ const names = db.listLogs();
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
 Ordinary retention keeps the sequence file named by `txn.state` and every newer file as the live
-store's durable floor, or the highest sequence file when there is no persisted flush position. It
+store's retention floor, or the highest sequence file when there is no persisted flush position. It
 removes only an eligible contiguous prefix below that floor. An idle store can therefore retain one
-file past the cutoff until a later write rotates and flushes it; disk retained past the cutoff is
-bounded by that store's `transactionLogMaxSize` (except when a single transaction exceeds the
-target). Use `destroy: true` only to remove the store itself.
+file past the cutoff until a later write rotates and flushes it; that extra file is bounded by the
+store's `transactionLogMaxSize` (except when a single transaction exceeds the target). That bound
+covers only the floor file: when the flush position lags — `txn.state` stuck at an old sequence
+because RocksDB flushing is behind — every file above the floor is retained too, which
+`transactionLogMaxSize` does not bound. `purge.retainedUnflushedFiles` reports that case. Use
+`destroy: true` only to remove the store itself.
 
 - `options: object`
   - `before?: number` Remove all transaction log files older than the specified timestamp.
@@ -1853,8 +1856,9 @@ stats.totals.transactionsWritten; // lifetime count of transactions written
 
 The `purge.retainedUnflushedFiles` gauge is useful for diagnosing why logs are not being cleaned
 up: a file can be older than the retention period but still retained because its transactions have
-not yet been flushed to RocksDB (purging it would be unsafe for crash recovery). The durable floor
-named by `txn.state` is not counted as purgeable even when it is old and fully flushed.
+not yet been flushed to RocksDB (purging it would be unsafe for crash recovery). The retention
+floor — the sequence named by `txn.state`, or the highest sequence when there is no persisted flush
+position — is not counted as purgeable even when it is old and fully flushed.
 
 ### Transaction Log Initialization
 

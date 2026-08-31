@@ -557,11 +557,11 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	}
 
 	const bool retentionEnabled = this->retentionMs.count() > 0;
-	uint32_t durableFloorSequence = this->sequenceFiles.empty()
+	uint32_t retentionFloorSequence = this->sequenceFiles.empty()
 		? 0
 		: this->sequenceFiles.rbegin()->first;
 	if (this->sequenceFiles.find(flushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
-		durableFloorSequence = flushedPosition.logSequenceNumber;
+		retentionFloorSequence = flushedPosition.logSequenceNumber;
 	}
 
 	for (const auto& [seq, logFile] : this->sequenceFiles) {
@@ -622,7 +622,7 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 				// extent — would retain it. Gauge-only skew; nothing acts on it.
 				bool fullyFlushed = !(seq > flushedPosition.logSequenceNumber ||
 					(seq == flushedPosition.logSequenceNumber && fileSize > flushedPosition.positionInLogFile));
-				if (fullyFlushed && seq != durableFloorSequence) {
+				if (fullyFlushed && seq != retentionFloorSequence) {
 					out.purgeableFiles++;
 				} else if (!fullyFlushed) {
 					out.retainedUnflushedFiles++;
@@ -657,15 +657,15 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
-	uint32_t durableFloorSequence = this->sequenceFiles.rbegin()->first;
+	uint32_t retentionFloorSequence = this->sequenceFiles.rbegin()->first;
 	if (this->sequenceFiles.find(lastFlushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
-		durableFloorSequence = lastFlushedPosition.logSequenceNumber;
+		retentionFloorSequence = lastFlushedPosition.logSequenceNumber;
 	}
 
 	for (const auto& entry : this->sequenceFiles) {
 		auto& sequenceNumber = entry.first;
 		auto& logFile = entry.second;
-		if (!all && sequenceNumber == durableFloorSequence) {
+		if (!all && sequenceNumber == retentionFloorSequence) {
 			break;
 		}
 		bool shouldPurge = all;
