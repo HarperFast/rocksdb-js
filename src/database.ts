@@ -575,6 +575,33 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Whether RocksDB is currently applying write backpressure to this database —
+	 * either delaying (rate-limiting) or fully stopping writes. This is the
+	 * authoritative, live pull counterpart to the `'writeStall'`
+	 * [event](../README.md#event-writestall): the event pushes per-column-family
+	 * transitions (and is rate-limited), while this reads the current state on
+	 * demand and can never be stale.
+	 *
+	 * The write controller is database-wide (shared across every column family),
+	 * so this reflects the database as a whole, not a single column family — a
+	 * stall triggered by any column family stops writes for all of them. Reads
+	 * `rocksdb.is-write-stopped` and `rocksdb.actual-delayed-write-rate`.
+	 *
+	 * @example
+	 * ```typescript
+	 * db.on('writeStall', (cf) => {
+	 * 	if (db.isWriteStalled()) log.warn(`writes throttled/blocked (triggered by ${cf})`);
+	 * });
+	 * ```
+	 */
+	isWriteStalled(): boolean {
+		return (
+			this.getDBIntProperty('rocksdb.is-write-stopped') === 1 ||
+			(this.getDBIntProperty('rocksdb.actual-delayed-write-rate') ?? 0) > 0
+		);
+	}
+
+	/**
 	 * Retrieves the estimated number of keys in the database. This is an alias
 	 * for `db.estimateCount().count`; use `estimateCount()` for range support
 	 * and a confidence indicator.

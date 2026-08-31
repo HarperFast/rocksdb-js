@@ -631,6 +631,25 @@ const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
 const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
 ```
 
+### `db.isWriteStalled(): boolean`
+
+Whether RocksDB is currently applying write backpressure to this database —
+delaying (rate-limiting) or fully stopping writes. Reads the live
+`rocksdb.is-write-stopped` and `rocksdb.actual-delayed-write-rate` properties.
+
+This is the authoritative, live pull counterpart to the
+[`'writeStall'` event](#event-writestall): the event pushes per-column-family
+entries into a stall (rate-limited), while this reports the current state on
+demand and can never be stale. It is **database-wide** — the write controller is
+shared across every column family, so it answers "are writes stalled anywhere"
+rather than for one column family.
+
+```typescript
+if (db.isWriteStalled()) {
+	console.warn('writes are currently throttled or blocked');
+}
+```
+
 ### `db.getRange(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves a range of keys and their values. Supports both synchronous and asynchronous iteration.
@@ -1053,6 +1072,38 @@ db.on('error', (err) => {
 		console.warn(`recoverable background error (${err.severityName}): ${err.message}`);
 	}
 });
+```
+
+### Event: `'writeStall'`
+
+Emitted when a column family **enters** a RocksDB write-stall — the push signal that writes are being
+throttled or blocked (for example when `dbWriteBufferSize` is too small for the number of column
+families and RocksDB thrashes on premature flushes). Listeners receive three string arguments:
+
+- `columnFamily: string` — the column family that entered the stall (`'default'` for the primary).
+- `previousCondition: string` — `'normal' | 'delayed' | 'stopped'`.
+- `currentCondition: string` — `'delayed'` (writes rate-limited) or `'stopped'` (writes blocked until
+  a flush frees a memtable/L0 slot).
+
+The event is **rising-edge only and rate-limited** per column family. RocksDB oscillates a CF's stall
+condition many times per second during a sustained stall, so the event fires when a CF _enters_ a
+stall and then at most once per `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` (default 1000 ms) while it stays
+stalling — never a flood. **Recovery is not pushed**: reliably distinguishing a brief dip from a real
+recovery isn't possible without a timer, so for current state use the pull below rather than waiting
+for a `'normal'` event.
+
+For "are writes stalled right now?", call [`db.isWriteStalled()`](#dbiswritestalled-boolean) — it
+reads the live write-controller state and is authoritative. Note it is **database-wide** (the write
+controller is shared across all column families), so it answers "is anything stalling writes" while
+the event names _which_ CF; a listener attached mid-stall should consult it rather than expect a
+missed rising edge.
+
+```typescript
+db.on('writeStall', (cf, prev, cur) => {
+	console.warn(`RocksDB write stall entered on ${cf}: ${prev} -> ${cur}`);
+});
+// ...and to check the current state on demand:
+if (db.isWriteStalled()) console.warn('writes are currently throttled or blocked');
 ```
 
 ## Event API

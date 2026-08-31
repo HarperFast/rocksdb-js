@@ -9,6 +9,10 @@
 #include "rocksdb/listener.h"
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <system_error>
 #include <unordered_map>
@@ -324,11 +328,36 @@ public:
 		));
 	}
 
+	// Surface RocksDB write-stall transitions to JS. Fires when a column family
+	// crosses between kNormal/kDelayed/kStopped — the earliest push signal that
+	// writes are being throttled (kDelayed) or blocked (kStopped), e.g. the
+	// dbWriteBufferSize-oversubscription thrash. Runs on a RocksDB background
+	// thread; emitWriteStall touches no napi (async emit) and debounces, so this
+	// is cheap and non-blocking, same discipline as OnBackgroundError.
+	void OnStallConditionsChanged(const rocksdb::WriteStallInfo& info) override {
+		auto desc = this->state->lockDescriptor();
+		if (!desc) {
+			return;
+		}
+		// Runs on a RocksDB background thread; an exception unwinding into RocksDB
+		// is undefined behavior. A dropped stall notification is acceptable, so
+		// contain anything the emit path throws (e.g. a bad_alloc from the payload
+		// allocation) rather than let it escape.
+		try {
+			desc->emitWriteStall(info.cf_name, info.condition.prev, info.condition.cur);
+		} catch (...) {
+		}
+	}
+
 private:
 	std::shared_ptr<DBEventListenerState> state;
 	std::mutex jobTrackersMutex;
 	std::unordered_map<int, JobTracker> jobTrackers;
 };
+
+// Defined below; forward-declared so the constructor can resolve the debounce
+// window on the JS thread (see writeStallDebounceWindowMs).
+static uint64_t writeStallDebounceMs();
 
 /**
  * Creates a new database descriptor. This constructor is private. To create a
@@ -350,7 +379,11 @@ DBDescriptor::DBDescriptor(
 	db(db),
 	columns(std::move(columns)),
 	statistics(statistics)
-{}
+{
+	// Resolve the debounce window here (JS thread, open path) so the emit path on
+	// a RocksDB background thread reads a plain field instead of calling ::getenv.
+	this->writeStallDebounceWindowMs = writeStallDebounceMs();
+}
 
 /**
  * Destroy the database descriptor and any resources associated to it
@@ -1472,6 +1505,9 @@ uint32_t DBDescriptor::transactionGetNextId() {
  */
 void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	// Retire debounce state so the map stays bounded and a recreated CF of the
+	// same name starts fresh rather than inheriting a stale reported-stalled bit.
+	this->writeStallDebounce.forget(columnName);
 	if (this->columns.erase(columnName)) {
 		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
 			this, columnName.c_str());
@@ -2062,6 +2098,76 @@ void DBDescriptor::setLastError(std::string json) {
 	if (hasError && this->events.hasListeners()) {
 		this->events.notify("error", ListenerData::backgroundError(json));
 	}
+}
+
+// Maps rocksdb::WriteStallCondition to a stable lowercase name for the
+// 'writeStall' event.
+static const char* writeStallConditionName(rocksdb::WriteStallCondition condition) {
+	switch (condition) {
+		case rocksdb::WriteStallCondition::kDelayed: return "delayed";
+		case rocksdb::WriteStallCondition::kStopped: return "stopped";
+		case rocksdb::WriteStallCondition::kNormal: return "normal";
+		default: return "unknown";
+	}
+}
+
+// Rate-limit window for the 'writeStall' rising edge, in milliseconds
+// (`ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS`, default 1000): during one oscillating
+// stall episode a CF re-emits at most once per window. Resolved once at
+// DBDescriptor construction (JS thread) rather than on the emit path, so the
+// RocksDB background thread never touches ::getenv (the parkTimeoutMs
+// getenv-vs-setenv caveat). 0 disables the window (every rising edge emits);
+// malformed/negative falls back to the default. Mirrors parkTimeoutMs' parsing,
+// except 0 is honored as an explicit opt-out here rather than treated as ambiguous.
+static uint64_t writeStallDebounceMs() {
+	static const uint64_t ms = []() -> uint64_t {
+		constexpr uint64_t kDefault = 1000;
+		const char* v = ::getenv("ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS");
+		if (v == nullptr) {
+			return kDefault;
+		}
+		const char* firstNonSpace = v;
+		while (*firstNonSpace != '\0' && ::isspace(static_cast<unsigned char>(*firstNonSpace))) {
+			++firstNonSpace;
+		}
+		if (*firstNonSpace == '\0' || *firstNonSpace == '-') {
+			return kDefault;
+		}
+		char* end = nullptr;
+		errno = 0;
+		unsigned long long parsed = ::strtoull(v, &end, 10);
+		if (end == v || *end != '\0' || errno == ERANGE) {
+			return kDefault;
+		}
+		return static_cast<uint64_t>(parsed); // 0 = debounce disabled
+	}();
+	return ms;
+}
+
+void DBDescriptor::emitWriteStall(
+	const std::string& columnFamily,
+	rocksdb::WriteStallCondition previous,
+	rocksdb::WriteStallCondition current
+) {
+	// The FSM decides and emits under one lock so a CF's decision -> enqueue is
+	// atomic: RocksDB does not guarantee serialized per-CF listener callbacks, so
+	// releasing between them could let a later transition's enqueue overtake this
+	// one and reorder what JS sees. The enqueue is a non-blocking tsfn call, so the
+	// critical section stays short. The FSM advances regardless of listeners (a
+	// detach mid-stall can't strand state); only the enqueue is gated on
+	// hasListeners() to avoid building a payload nobody will receive.
+	const bool isStalled = current != rocksdb::WriteStallCondition::kNormal;
+	this->writeStallDebounce.onTransition(
+		columnFamily, isStalled, std::chrono::steady_clock::now(), this->writeStallDebounceWindowMs,
+		[&]() {
+			if (this->events.hasListeners()) {
+				this->events.notify("writeStall", ListenerData::fromStrings({
+					columnFamily,
+					writeStallConditionName(previous),
+					writeStallConditionName(current)
+				}));
+			}
+		});
 }
 
 /**
