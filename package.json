@@ -58,21 +58,21 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@harperfast/extended-iterable": "1.0.3",
-    "msgpackr": "2.0.6",
-    "ordered-binary": "1.6.1"
+    "@harperfast/extended-iterable": "^1.0.3",
+    "msgpackr": "^2.0.6",
+    "ordered-binary": "^1.6.1"
   },
   "devDependencies": {
     "@rollup/plugin-replace": "6.0.3",
-    "@types/node": "26.2.0",
+    "@types/node": "26.3.0",
     "@vitest/coverage-v8": "4.1.11",
     "cross-env": "10.1.0",
     "dotenv": "17.4.2",
     "lefthook": "2.1.10",
     "lmdb": "3.5.6",
     "node-gyp": "13.0.1",
-    "oxfmt": "0.64.0",
-    "oxlint": "1.79.0",
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
     "prebuildify": "6.0.1",
     "semver": "7.8.5",
     "tar": "7.5.22",
