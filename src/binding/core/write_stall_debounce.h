@@ -36,12 +36,21 @@ public:
 	using Clock = std::chrono::steady_clock;
 
 	/**
-	 * Records a stall-condition transition for `columnFamily` and returns whether
-	 * it should emit a `'writeStall'` event. `isStalled` is true when the current
-	 * condition is delayed or stopped (normal collapses to false). `windowMs` is
-	 * the rate-limit window; 0 emits every rising edge.
+	 * Records a stall-condition transition for `columnFamily` and, when it warrants
+	 * an emit, invokes `emit` **while still holding the internal lock** so the
+	 * decision and the downstream enqueue are one atomic step. RocksDB does not
+	 * promise to serialize a CF's listener callbacks (they can fire from the
+	 * producing threads), so without this a callback could decide to emit, pause,
+	 * and be overtaken by a later transition's enqueue — delivering events to JS
+	 * out of order. `emit` is expected to be a fast, non-blocking enqueue (a
+	 * threadsafe-function call), not slow work. Returns whether it emitted.
+	 *
+	 * `isStalled` is true when the current condition is delayed or stopped (normal
+	 * collapses to false). `windowMs` is the rate-limit window; 0 emits every
+	 * rising edge.
 	 */
-	bool onTransition(const std::string& columnFamily, bool isStalled, Clock::time_point now, uint64_t windowMs) {
+	template <typename EmitFn>
+	bool onTransition(const std::string& columnFamily, bool isStalled, Clock::time_point now, uint64_t windowMs, EmitFn&& emit) {
 		std::lock_guard<std::mutex> lock(this->mutex);
 		Entry& entry = this->entries[columnFamily];
 		if (!isStalled) {
@@ -58,6 +67,7 @@ public:
 		}
 		entry.lastEmit = now;
 		entry.everEmitted = true;
+		emit(); // under the lock: decision -> enqueue is atomic and ordered
 		return true;
 	}
 

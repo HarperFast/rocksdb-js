@@ -2149,23 +2149,25 @@ void DBDescriptor::emitWriteStall(
 	rocksdb::WriteStallCondition previous,
 	rocksdb::WriteStallCondition current
 ) {
-	// The FSM (WriteStallDebounce) decides emit under its own lock, released before
-	// notify: per-CF ordering is already serialized by RocksDB, and this callback
-	// must not hold a lock across notify (the header warns it must not block long).
-	// It advances regardless of listeners so a detach mid-stall can't strand state;
-	// only the emit is gated on hasListeners().
+	// The FSM decides and emits under one lock so a CF's decision -> enqueue is
+	// atomic: RocksDB does not guarantee serialized per-CF listener callbacks, so
+	// releasing between them could let a later transition's enqueue overtake this
+	// one and reorder what JS sees. The enqueue is a non-blocking tsfn call, so the
+	// critical section stays short. The FSM advances regardless of listeners (a
+	// detach mid-stall can't strand state); only the enqueue is gated on
+	// hasListeners() to avoid building a payload nobody will receive.
 	const bool isStalled = current != rocksdb::WriteStallCondition::kNormal;
-	if (!this->writeStallDebounce.onTransition(
-			columnFamily, isStalled, std::chrono::steady_clock::now(), this->writeStallDebounceWindowMs)) {
-		return;
-	}
-	if (this->events.hasListeners()) {
-		this->events.notify("writeStall", ListenerData::fromStrings({
-			columnFamily,
-			writeStallConditionName(previous),
-			writeStallConditionName(current)
-		}));
-	}
+	this->writeStallDebounce.onTransition(
+		columnFamily, isStalled, std::chrono::steady_clock::now(), this->writeStallDebounceWindowMs,
+		[&]() {
+			if (this->events.hasListeners()) {
+				this->events.notify("writeStall", ListenerData::fromStrings({
+					columnFamily,
+					writeStallConditionName(previous),
+					writeStallConditionName(current)
+				}));
+			}
+		});
 }
 
 /**

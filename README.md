@@ -631,6 +631,25 @@ const blobFiles = db.getDBIntProperty('rocksdb.num-blob-files');
 const numKeys = db.getDBIntProperty('rocksdb.estimate-num-keys');
 ```
 
+### `db.isWriteStalled(): boolean`
+
+Whether RocksDB is currently applying write backpressure to this database —
+delaying (rate-limiting) or fully stopping writes. Reads the live
+`rocksdb.is-write-stopped` and `rocksdb.actual-delayed-write-rate` properties.
+
+This is the authoritative, live pull counterpart to the
+[`'writeStall'` event](#event-writestall): the event pushes per-column-family
+entries into a stall (rate-limited), while this reports the current state on
+demand and can never be stale. It is **database-wide** — the write controller is
+shared across every column family, so it answers "are writes stalled anywhere"
+rather than for one column family.
+
+```typescript
+if (db.isWriteStalled()) {
+	console.warn('writes are currently throttled or blocked');
+}
+```
+
 ### `db.getRange(options?: IteratorOptions): ExtendedIterable`
 
 Retrieves a range of keys and their values. Supports both synchronous and asynchronous iteration.
