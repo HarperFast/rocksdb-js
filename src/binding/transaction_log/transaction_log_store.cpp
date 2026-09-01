@@ -870,7 +870,14 @@ void TransactionLogStore::rotateForDomainGenerationLocked(LocalStampState& stamp
 }
 
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
-	auto stamp = this->stampState;
+	// The member is installed/replaced under writeMutex (a writable descriptor
+	// re-registering over a read-only-created entry), so take the pointer under
+	// the same lock before the pre-lock headroom work.
+	std::shared_ptr<LocalStampState> stamp;
+	{
+		std::lock_guard<std::mutex> stampLock(this->writeMutex);
+		stamp = this->stampState;
+	}
 	const bool stampKeys = stamp && stamp->activated();
 	if (stampKeys) {
 		// Reserve headroom is secured BEFORE the append mutex: a durable ceiling

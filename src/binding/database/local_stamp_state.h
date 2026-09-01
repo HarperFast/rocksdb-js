@@ -171,6 +171,14 @@ struct LocalStampState final : std::enable_shared_from_this<LocalStampState> {
 	void extendReserve(double target);
 
 	/**
+	 * Proactive renewal: pushes the ceiling a full window past
+	 * max(now, watermark) even though no claim needs it yet — extendReserve's
+	 * ensure-coverage semantics would no-op (its target sits below the current
+	 * ceiling by construction on the margin path). Never throws.
+	 */
+	void renewReserve();
+
+	/**
 	 * Writes the clean-close floor row (the exact watermark) — called from
 	 * DBDescriptor::finishClose after commits have drained.
 	 */

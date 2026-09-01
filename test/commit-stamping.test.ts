@@ -85,8 +85,6 @@ describe('commit stamping', () => {
 
 			const a = db.getSync('a') as Buffer;
 			const b = db.getSync('b') as Buffer;
-			// Keep path: the txn's own monotonic timestamp is above the watermark
-			// and becomes the stamp of every record in the commit.
 			expect(firstWord(a)).toBe(txnTimestamp);
 			expect(firstWord(b)).toBe(txnTimestamp);
 			expect(a.subarray(8).toString()).toBe('alpha');

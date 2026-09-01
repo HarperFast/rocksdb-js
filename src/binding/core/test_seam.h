@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
 // delay read from an environment variable (0 = disabled). They are inert in
@@ -45,14 +46,23 @@ inline bool testForceTryAgain() {
 
 // Crash-point seam for the commit-stamping fault matrix
 // (docs/design/local-mutation-stamping.md §5): a spawned child process armed
-// with ROCKSDB_JS_CRASH_POINT=<name> exits hard (137) at the named boundary so
-// nothing "cleans up". Read once from the environment at first use — startup
-// configuration only, deliberately NOT settable at runtime (an externally
-// callable exit switch in a production binding is an outage primitive), and
-// getenv-once avoids the ::getenv-vs-setenv race the other seams document.
+// with ROCKSDB_JS_CRASH_POINT=<name> AND ROCKSDB_JS_TEST_SEAMS=1 exits hard
+// (137) at the named boundary so nothing "cleans up". Both variables are
+// required so a stray inherited CRASH_POINT alone can never kill a production
+// process; both are read once at first use into OWNED storage (a retained
+// ::getenv pointer can dangle across a later setenv) and are deliberately NOT
+// settable at runtime — an externally callable exit switch in a production
+// binding is an outage primitive.
 inline void crashIfArmed(const char* name) {
-	static const char* armed = ::getenv("ROCKSDB_JS_CRASH_POINT");
-	if (armed && ::strcmp(armed, name) == 0) {
+	static const std::string armed = [] {
+		const char* seams = ::getenv("ROCKSDB_JS_TEST_SEAMS");
+		if (!seams || ::strcmp(seams, "1") != 0) {
+			return std::string();
+		}
+		const char* point = ::getenv("ROCKSDB_JS_CRASH_POINT");
+		return point ? std::string(point) : std::string();
+	}();
+	if (!armed.empty() && armed == name) {
 		::_exit(137);
 	}
 }

@@ -66,6 +66,20 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 		it->second->refCount++;
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Incremented refCount for \"%s\" (refCount=%zu)\n",
 			instance.get(), dbPath.c_str(), it->second->refCount);
+		if (config.stampState) {
+			// A writable descriptor's stamp state is authoritative: the entry may
+			// have been created by a read-only open (null state) or hold a prior
+			// writable descriptor's shut-down state. Install it on the entry and
+			// on every live store — under each store's writeMutex, which is what
+			// writeBatch reads the pointer under.
+			it->second->config.stampState = config.stampState;
+			std::lock_guard<std::mutex> storesLock(it->second->storesMutex);
+			for (auto& [storeName, store] : it->second->stores) {
+				std::lock_guard<std::mutex> writeLock(store->writeMutex);
+				store->stampState = config.stampState;
+				store->rotatedForGeneration = 0;
+			}
+		}
 	}
 }
 

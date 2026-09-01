@@ -22,11 +22,9 @@ import { isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:pa
 
 /** Subdirectory (under a backup directory) holding per-backup transaction log snapshots. */
 const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
-// Backup floor artifact (docs/design/local-mutation-stamping.md §3.7): captured
-// with the log snapshot; restore publishes a pending copy in the destination
-// BEFORE the destructive database restore so no crash window can leave logs
-// carrying stamps above the restored metadata ceiling. Open reconciles and
-// leaves the files in place (idempotent across re-runs).
+// The stamp-floor artifact must be in the destination BEFORE the destructive
+// database restore: no crash window may leave restored logs carrying stamps
+// above the restored metadata ceiling.
 const STAMP_FLOOR_ARTIFACT_NAME = 'STAMP_FLOOR';
 const STAMP_FLOOR_PENDING_NAME = '.stamp-floor-pending';
 
@@ -37,6 +35,22 @@ async function exists(path: string): Promise<boolean> {
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * Fail-closed existence check for the stamp-floor artifact: only ENOENT means
+ * absent — an EACCES/EIO must not classify a protected backup as pre-stamping.
+ */
+async function stampFloorExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+			return false;
+		}
+		throw error;
 	}
 }
 
@@ -377,7 +391,7 @@ async function resolveRestoredLogsSource(
  */
 async function publishPendingStampFloor(logsSrc: string, dbDir: string): Promise<void> {
 	const artifactSrc = join(logsSrc, STAMP_FLOOR_ARTIFACT_NAME);
-	if (!(await exists(artifactSrc))) {
+	if (!(await stampFloorExists(artifactSrc))) {
 		return; // pre-stamping backup
 	}
 	const logsDest = join(dbDir, TRANSACTION_LOGS_DIRNAME);
@@ -402,9 +416,14 @@ async function publishPendingStampFloor(logsSrc: string, dbDir: string): Promise
 		} finally {
 			await handle.close();
 		}
-	} catch {
-		// Directory fsync is best-effort where unsupported (matches the native
-		// backup writer's discipline).
+	} catch (error) {
+		// Platforms that cannot fsync a directory handle (Windows) are the only
+		// tolerated case; a real I/O failure must fail the restore rather than
+		// leave the floor's directory entry non-durable.
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== 'EISDIR' && code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EINVAL') {
+			throw error;
+		}
 	}
 }
 

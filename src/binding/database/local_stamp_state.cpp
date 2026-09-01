@@ -68,8 +68,6 @@ void LocalStampState::ensureHeadroom(double candidate, bool candidateIsReceiverT
 	}
 	const double ceiling = localStampFromBits(this->reserve.load(std::memory_order_acquire));
 	if (needed >= ceiling) {
-		// Out of headroom: extend synchronously before the caller takes any log
-		// append lock.
 		this->extendReserve(needed);
 		return;
 	}
@@ -98,10 +96,7 @@ void LocalStampState::scheduleProactiveExtensionIfNearMargin() {
 			this->extenderThread.join();
 		}
 		this->extenderThread = std::thread([self] {
-			try {
-				self->extendReserve(getMonotonicTimestamp());
-			} catch (...) {
-			}
+			self->renewReserve();
 			self->extensionScheduled.store(false, std::memory_order_release);
 		});
 	} catch (...) {
@@ -139,6 +134,36 @@ void LocalStampState::extendReserve(double target) {
 	crashIfArmed("after-reserve-extend");
 	// Publish only after the ceiling is durable (the reserve invariant).
 	this->reserve.store(localStampToBits(newCeiling), std::memory_order_release);
+}
+
+void LocalStampState::renewReserve() {
+	try {
+		std::lock_guard<std::mutex> lock(this->extendMutex);
+		if (this->closed.load(std::memory_order_acquire)) {
+			return;
+		}
+		const double current = localStampFromBits(this->reserve.load(std::memory_order_acquire));
+		const double now = getMonotonicTimestamp();
+		const double watermarkValue =
+			localStampFromBits(this->watermark.load(std::memory_order_acquire));
+		const double base = watermarkValue > now ? watermarkValue : now;
+		const double newCeiling = localStampReserveTarget(base, now, STAMP_RESERVE_WINDOW_MS);
+		if (newCeiling <= current) {
+			return;
+		}
+		char value[8];
+		writeDoubleBE(value, newCeiling);
+		rocksdb::WriteOptions writeOptions;
+		writeOptions.sync = true;
+		rocksdb::Status status = this->db->Put(
+			writeOptions, this->metaCf.get(),
+			rocksdb::Slice(STAMP_META_KEY_RESERVE), rocksdb::Slice(value, sizeof value));
+		if (!status.ok()) {
+			return; // the claim path re-extends synchronously when headroom runs out
+		}
+		this->reserve.store(localStampToBits(newCeiling), std::memory_order_release);
+	} catch (...) {
+	}
 }
 
 void LocalStampState::persistCfMarker(uint32_t cfId, const std::string& name) {
@@ -212,7 +237,15 @@ double readStampFloorArtifacts(const std::vector<std::string>& logDirs) {
 		for (const char* name : { STAMP_FLOOR_ARTIFACT_NAME, STAMP_FLOOR_ARTIFACT_PENDING_NAME }) {
 			const std::filesystem::path path = std::filesystem::path(dir) / name;
 			std::error_code ec;
-			if (!std::filesystem::exists(path, ec) || ec) continue;
+			const bool present = std::filesystem::exists(path, ec);
+			if (ec) {
+				// EACCES/EIO must not read as "no artifact": the artifact exists
+				// precisely to stop a restored store from re-minting stamps.
+				throw rocksdb_js::DBException(
+					"Cannot check the local-stamp floor artifact at " + path.string() +
+					": " + ec.message());
+			}
+			if (!present) continue;
 			std::ifstream in(path, std::ios::binary);
 			char bytes[STAMP_FLOOR_ARTIFACT_SIZE];
 			if (!in || !in.read(bytes, sizeof bytes)) {

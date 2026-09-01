@@ -339,8 +339,8 @@ rocksdb::Status backupTransactionLogsToDir(
 
 	status = copySnapshotEntries(stagingDir, entries, sync);
 
-	// The ceiling is monotone, so read AFTER the log capture it bounds every
-	// stamp the captured logs carry; staged so the atomic publish covers it.
+	// Read after the log capture: the monotone ceiling then bounds every stamp
+	// the captured logs carry.
 	if (status.ok() && descriptor->stampState) {
 		const double ceiling = localStampFromBits(
 			descriptor->stampState->reserve.load(std::memory_order_acquire));

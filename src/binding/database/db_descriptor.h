@@ -435,12 +435,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	void releaseCommitCompletionsByEnv(napi_env env);
 
 	/**
-	 * Bounded waits for this database's parked coordinated-retry commits.
-	 * Never null; owned by shared_ptr so a LockTracker wake callback can hold
-	 * a weak reference to it without referencing the descriptor (see
-	 * `ParkTimeoutRegistry`). Drained and joined by `finishClose()`.
-	 */
-	/**
 	 * Commit-time local-stamp state (watermark, durable reserve, stamped-CF
 	 * markers). Null on a database that never enabled stamping — every stamping
 	 * code path is behind that null check (the dormant contract). Owned through
@@ -449,6 +443,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::shared_ptr<LocalStampState> stampState;
 
+	/**
+	 * Bounded waits for this database's parked coordinated-retry commits.
+	 * Never null; owned by shared_ptr so a LockTracker wake callback can hold
+	 * a weak reference to it without referencing the descriptor (see
+	 * `ParkTimeoutRegistry`). Drained and joined by `finishClose()`.
+	 */
 	const std::shared_ptr<ParkTimeoutRegistry> parkTimeouts =
 		std::make_shared<ParkTimeoutRegistry>();
 

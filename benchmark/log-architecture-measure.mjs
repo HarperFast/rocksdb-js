@@ -1,18 +1,9 @@
 import { RocksDatabase } from '../dist/index.mjs';
 /**
- * Decision-support measurements for the dual-clock stage-1 log-architecture
- * ruling (docs/design/local-mutation-stamping.md §3.4, issue #811). Not part
- * of any suite — run directly after `pnpm build`:
- *
- *   node benchmark/log-architecture-measure.mjs
- *
- * M1: marginal cost of one full log-append path per commit — the per-commit
- *     write tax a second receiver-local journal (the rejected variant (ii))
- *     would add, as a lower bound.
- * M2: sequential scan rate of the log reader — a positional/in-band local
- *     cursor's seek cost is O(scan distance) at this rate.
- * M3: seek-by-timestamp latency through the per-file binary index — the
- *     machinery the stamp-as-key ruling gets for free (the stamp IS the key).
+ * Log-architecture measurements for the stage-1 ruling (design §3.4). Run
+ * after `pnpm build`: node benchmark/log-architecture-measure.mjs
+ * M1 marginal log-append cost/commit; M2 sequential scan rate; M3 indexed
+ * seek-by-timestamp latency.
  */
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

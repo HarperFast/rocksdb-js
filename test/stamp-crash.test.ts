@@ -44,8 +44,10 @@ function runChild(path: string, mode: string, crashPoint?: string): Promise<Chil
 	return new Promise((resolve, reject) => {
 		const env: NodeJS.ProcessEnv = { ...process.env };
 		delete env.ROCKSDB_JS_CRASH_POINT;
+		delete env.ROCKSDB_JS_TEST_SEAMS;
 		if (crashPoint) {
 			env.ROCKSDB_JS_CRASH_POINT = crashPoint;
+			env.ROCKSDB_JS_TEST_SEAMS = '1';
 		}
 		const child = spawn(process.execPath, [fixturePath, path, mode], { env });
 		let stdout = '';
@@ -92,8 +94,6 @@ function reopenAndInspect(path: string): RecoveredState {
 		}));
 		const baseline = db.getSync('baseline') as Buffer | undefined;
 		const crashRecord = db.getSync('crash') as Buffer | undefined;
-		// The marker inherits stamping; a fresh commit proves the recovered floor
-		// exceeds every durable stamp.
 		const txn = db.transactionSync((t: Transaction): Transaction => {
 			t.putSync('post-recovery', Buffer.alloc(16));
 			return t;

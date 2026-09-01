@@ -681,10 +681,8 @@ rocksdb::Status TransactionHandle::putSync(
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status;
 	if (dbHandle->columnDescriptor && dbHandle->columnDescriptor->commitStamping) {
-		// This CF's first word belongs to commit stamping. Stage the candidate
-		// through SliceParts: an owned stack prefix plus the caller's bytes 8..,
-		// so the caller's buffer is never mutated (shared/SAB-backed memory can
-		// never observe a transient stamp).
+		// SliceParts staging: the caller's (possibly SAB-backed, shared) buffer
+		// must never observe a transient stamp.
 		if (value.size() < 8) {
 			return rocksdb::Status::InvalidArgument(
 				"Values on a commitStamping column family must be at least 8 bytes");

@@ -2142,10 +2142,12 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
-		// Claim BEFORE the VT write-intent lock so no failure path leaks it.
 		const bool stampedCf = (*dbHandle)->columnDescriptor &&
 			(*dbHandle)->columnDescriptor->commitStamping;
-		auto stampState = stampedCf ? (*dbHandle)->descriptor->stampState : nullptr;
+		LocalStampState* stampStateRaw =
+			stampedCf ? (*dbHandle)->descriptor->stampState.get() : nullptr;
+		LocalStampState* stampState =
+			stampStateRaw && stampStateRaw->activated() ? stampStateRaw : nullptr;
 		double stamp = 0;
 		if (stampState) {
 			if (valueEnd - valueStart < 8) {

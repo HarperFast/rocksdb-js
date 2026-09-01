@@ -397,12 +397,9 @@ struct RestampRebuilder final : rocksdb::WriteBatch::Handler {
 	void LogData(const rocksdb::Slice& blob) override { this->copy.PutLogData(blob); }
 };
 
-/**
- * Commit-stamping finalization for every commit shape: claims for unlogged
- * transactions (logged ones adopted the batch key), and rebuilds stamped-CF
- * record first words when the finalized stamp differs from the pre-stamp.
- * Throws; the caller converts to a commit status.
- */
+// Claims for unlogged transactions (logged ones adopted the batch key) and
+// rebuilds stamped-CF record first words when the finalized stamp differs
+// from the pre-stamp. Throws; the caller converts to a commit status.
 static void finalizeLocalStamp(
 	const std::shared_ptr<TransactionHandle>& txnHandle,
 	double candidate,
@@ -427,7 +424,7 @@ static void finalizeLocalStamp(
 		return;
 	}
 	if (!txnHandle->mixedPreStamp && txnHandle->preStampValue == txnHandle->localStamp) {
-		return; // keep path: the pre-stamped first words are already the stamp
+		return;
 	}
 
 	// RebuildFromWriteBatch APPENDS the full-order copy (verified:

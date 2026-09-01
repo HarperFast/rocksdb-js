@@ -1261,9 +1261,11 @@ static std::shared_ptr<LocalStampState> setupLocalStamping(
 		metaCf = metaIt->second->column;
 		contents = loadStampMeta(db.get(), metaCf.get());
 		if (!contents.schemaValid) {
-			if (contents.empty && !options.readOnly) {
+			if (contents.empty && wantsEnable) {
 				// Interrupted initialization (CF created, schema row not yet
-				// durable): complete it rather than misclassify as a collision.
+				// durable): the ENABLING open completes it. A dormant open must
+				// not adopt or mutate an empty CF that could be a legacy
+				// application's — it stays untouched and stamping stays off.
 				rocksdb::Status status = db->Put(
 					syncWrite, metaCf.get(),
 					rocksdb::Slice(STAMP_META_KEY_SCHEMA),
@@ -1275,6 +1277,8 @@ static std::shared_ptr<LocalStampState> setupLocalStamping(
 				}
 				contents.schemaPresent = true;
 				contents.schemaValid = true;
+			} else if (contents.empty) {
+				return nullptr;
 			} else {
 				throw rocksdb_js::DBException(
 					"Column family \"" + std::string(STAMP_META_CF_NAME) + "\" in \"" + path +
@@ -1346,6 +1350,15 @@ static std::shared_ptr<LocalStampState> setupLocalStamping(
 		// A valid metadata CF with nothing enabled (e.g. crash after schema row,
 		// before the first marker): still dormant.
 		return nullptr;
+	}
+	if (!contents.stampedCfIds.empty() && contents.logDomainGeneration == 0) {
+		// Markers without the key-domain row (partial metadata restore or manual
+		// repair) would stamp record words with unclaimed candidates while every
+		// commit path believed itself dormant — fail closed like every other
+		// shape violation in loadStampMeta.
+		throw rocksdb_js::DBException(
+			"Commit-stamping metadata for \"" + path + "\" carries column family "
+			"markers without a log key-domain row; repair the metadata before opening");
 	}
 
 	auto state = std::make_shared<LocalStampState>();
@@ -1607,8 +1620,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		columns[options.name] = columnDescriptor;
 	}
 
-	// Commit-stamping setup must complete (durable markers, floor reconciliation)
-	// before the descriptor or any log store becomes reachable.
 	auto stampState = setupLocalStamping(db, columns, options, name, path);
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
@@ -1622,7 +1633,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;
-	logConfig.stampState = stampState;
+	// Only a writable descriptor's allocator may key log batches; a read-only
+	// open's loaded state is for marker enforcement only.
+	logConfig.stampState = options.readOnly ? nullptr : stampState;
 	logConfig.transactionLogsPath = options.transactionLogsPath;
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;

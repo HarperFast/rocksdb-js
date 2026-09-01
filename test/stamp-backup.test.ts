@@ -67,7 +67,6 @@ describe('commit stamping lifecycle', () => {
 			db.close();
 		}
 
-		// The floor artifact rides the log snapshot.
 		const artifact = join(backupDir, 'transaction_logs', '1', 'STAMP_FLOOR');
 		expect(existsSync(artifact)).toBe(true);
 		const bytes = await readFile(artifact);
@@ -76,11 +75,8 @@ describe('commit stamping lifecycle', () => {
 		expect(bytes.readDoubleBE(4)).toBeGreaterThan(futureStamp);
 
 		await backups.restore(backupDir, restorePath);
-		// Restore published the pending copy in the destination too.
 		expect(existsSync(join(restorePath, 'transaction_logs', '.stamp-floor-pending'))).toBe(true);
 
-		// The restored database enforces the marker (no option passed) and never
-		// re-mints: its first stamp must exceed the pre-backup future stamp.
 		const restored = RocksDatabase.open(restorePath, {
 			encoding: 'binary',
 			transactionLogsPath: join(restorePath, 'transaction_logs'),
