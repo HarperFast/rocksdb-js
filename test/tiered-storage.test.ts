@@ -517,10 +517,10 @@ describe('paths', () => {
 		}
 	);
 
-	// The mirror image of those two: destroy() deletes every SST it finds in each
-	// recorded directory, so a second open naming a DIFFERENT second volume must
-	// not be accumulated either, or one mistyped `paths` takes another database's
-	// files down with this one.
+	// destroy() deletes every SST it finds in each recorded directory, so a second
+	// open naming a DIFFERENT second volume must be ignored twice over: by the
+	// record, and by the destroy merge when that open is the live descriptor it
+	// captures. Otherwise one mistyped `paths` takes a neighbour down with it.
 	it('should ignore a storage path that diverges from the recorded list', async () => {
 		const dbPath = tempPath();
 		const ownVolume = tempDir();
@@ -559,15 +559,16 @@ describe('paths', () => {
 		db.flushSync();
 		db.close();
 
-		// The open itself succeeds — every file still sits at path index 0 — so it
-		// is the recording that has to reject the neighbor's volume.
+		// The open itself succeeds — every file still sits at path index 0. Left
+		// live through the destroy() below, so it is both the layout the record
+		// must refuse and the only live descriptor the destroy can capture.
 		openDb(dbPath, {
 			readOnly: true,
 			paths: [
 				{ path: dbPath, targetSize: 0 },
 				{ path: neighborVolume, targetSize: 1 << 30 },
 			],
-		}).close();
+		});
 
 		db.destroy();
 		expect(existsSync(dbPath)).toBe(false);
