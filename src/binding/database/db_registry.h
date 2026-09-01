@@ -81,8 +81,8 @@ private:
 
 	/**
 	 * Where every database this process has opened keeps its files: the latest
-	 * blob directory per column family, and the longest `db_paths` its opens have
-	 * agreed on (`DBRegistry::RecordLayout`).
+	 * blob directory per column family, and the canonical `db_paths` established
+	 * by writable opens (`DBRegistry::RecordLayout`).
 	 *
 	 * `destroy()` accepts a CLOSED handle, and closing the last handle to a
 	 * path takes the descriptor — and the registry entry the layout would be
@@ -94,11 +94,10 @@ private:
 	 * Retained across `PurgeAll`, deliberately: that is reached from the public
 	 * `shutdown()`, and a handle retained across it can still be destroyed.
 	 * `destroy()` erases the whole path; a successful column-family drop removes
-	 * that family's entry and may erase a layout that has become the default.
-	 * Default layouts are omitted because ordinary DestroyDB options already
-	 * describe them; only external paths need a retained record.
+	 * that family's entry. Default layouts remain as authoritative empty markers,
+	 * so a later reader cannot turn an unrelated directory into a destroy target.
 	 *
-	 * Its own mutex, deliberately a leaf: `DestroyDB` reaches a descriptor's
+	 * Its own mutex, deliberately a leaf: `DropColumnFamily` reaches a descriptor's
 	 * `layoutMutex` while holding `databasesMutex`, so anything recording a
 	 * layout from under `layoutMutex` must not reach back for a registry lock.
 	 */
@@ -121,7 +120,7 @@ public:
 		const std::string& columnName,
 		rocksdb::ColumnFamilyHandle* column
 	);
-	static void RecordLayout(const std::string& path, DBFileLayout layout);
+	static void RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();

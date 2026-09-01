@@ -23,6 +23,7 @@
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
+#include "core/destroy_layout.h"
 #include "core/platform.h"
 #include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
@@ -44,16 +45,6 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	rocksdb::ColumnFamilyOptions cfOptions = {}
 );
-
-/**
- * Where a database keeps its files: the `db_paths` it was opened with and each
- * column family's `blob_dir`. A copy rather than a reference so it can outlive
- * the descriptor it was taken from — see `DBRegistry::knownLayouts`.
- */
-struct DBFileLayout {
-	std::vector<rocksdb::DbPath> dbPaths;
-	std::unordered_map<std::string, std::string> blobDirs;
-};
 
 /**
  * Creates a column family's blob directory if it does not exist, throwing a
@@ -260,11 +251,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Where this database's files actually live: the `db_paths` it was opened
 	 * with and each column family's `blob_dir`.
 	 *
-	 * `destroy()` needs this to delete the files a default `rocksdb::Options`
-	 * would miss, and it cannot read it back off the live `DB`: that races a
-	 * concurrent close resetting `db` and clearing `columns`. Recorded here under
-	 * its own mutex, never cleared by close, and mirrored into
-	 * `DBRegistry::knownLayouts` so it outlives the descriptor.
+	 * Captured here under its own mutex and mirrored into
+	 * `DBRegistry::knownLayouts`, which is the canonical record `destroy()` uses
+	 * after this descriptor is gone.
 	 */
 	std::vector<rocksdb::DbPath> layoutDbPaths;
 	std::unordered_map<std::string, std::string> layoutBlobDirs;

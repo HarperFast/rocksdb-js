@@ -1,9 +1,8 @@
-#include <algorithm>
 #include <limits>
-#include <optional>
 #include <chrono>
 #include <thread>
 #include <vector>
+#include "core/destroy_layout.h"
 #include "core/test_seam.h"
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
@@ -145,23 +144,6 @@ void DBRegistry::DebugLogDescriptorRefs() {
 #endif
 
 /**
- * Whether `candidate` is the retained list plus zero or more appended entries.
- * That this is the only legal shape for `db_paths`, and why neither a shorter
- * nor a divergent list may replace the record, is AGENTS invariant 18. Compared
- * by directory: `target_size` is a sizing knob `destroy()` ignores.
- */
-static bool extendsDbPaths(
-	const std::vector<rocksdb::DbPath>& retained,
-	const std::vector<rocksdb::DbPath>& candidate
-) {
-	return candidate.size() >= retained.size() &&
-		std::equal(retained.begin(), retained.end(), candidate.begin(),
-			[](const rocksdb::DbPath& a, const rocksdb::DbPath& b) {
-				return a.path == b.path;
-			});
-}
-
-/**
  * Destroy a RocksDB database.
  *
  * @param path - The path to the database to destroy.
@@ -183,19 +165,12 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
 
-	// Retained record first, then the live layout: paths only where they extend
-	// the record, blob directories only for families it does not already name.
+	// The retained record is canonical, including empty path and blob-directory
+	// values; a live reader's frozen snapshot must not expand deletion targets.
 	std::unordered_map<std::string, std::string> destroyBlobDirs;
 	auto applyLayout = [&](const DBFileLayout& layout) {
-		if (extendsDbPaths(destroyOptions.db_paths, layout.dbPaths)) {
-			destroyOptions.db_paths = layout.dbPaths;
-		}
-		for (const auto& [cfName, blobDir] : layout.blobDirs) {
-			auto [it, inserted] = destroyBlobDirs.emplace(cfName, blobDir);
-			if (!inserted && it->second.empty()) {
-				it->second = blobDir;
-			}
-		}
+		destroyOptions.db_paths = layout.dbPaths;
+		destroyBlobDirs = layout.blobDirs;
 		capturedLayout = true;
 	};
 	auto materializeBlobDirs = [&]() {
@@ -218,19 +193,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// descriptor — the close's own release pass would then touch freed tsfns.
 	// It also keeps a concurrent OpenDB waiting on the entry's condition
 	// instead of re-opening the path while its files are being destroyed.
-	//
-	// The layout is captured here too, and deliberately NOT gated on winning the
-	// claim: losing to a concurrent close would otherwise leave the destroy
-	// running against default options and orphaning the external files. It comes
-	// from the descriptor's own snapshot rather than the live `DB` precisely
-	// because we may have lost that claim — the winner can be inside
-	// `finishClose()` resetting `db` and clearing `columns`.
-	std::optional<DBFileLayout> liveLayout;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path == path && entry.descriptor) {
-				liveLayout = entry.descriptor->captureLayout();
 				if (entry.descriptor->beginClose()) {
 					descriptor = entry.descriptor;
 					condition = entry.condition;
@@ -248,10 +214,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			applyLayout(it->second);
 		}
 	}
-	if (liveLayout) {
-		applyLayout(*liveLayout);
-	}
-
 	materializeBlobDirs();
 
 	// Nothing live and nothing remembered — a path this process never opened.
@@ -352,29 +314,27 @@ void DBRegistry::DestroyDB(const std::string& path) {
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
  *
- * `db_paths` only ever extends (`extendsDbPaths`); blob directories are per
- * column family and re-derived from OPTIONS on every open, so they are replaced
- * as given.
+ * Writable opens may extend `db_paths`; readers may refresh OPTIONS-derived
+ * blob directories but cannot add destroy targets. Empty layouts are retained
+ * because they are authoritative default placements, not missing state.
  */
-void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
+void DBRegistry::RecordLayout(
+	const std::string& path,
+	DBFileLayout layout,
+	bool writableOpen
+) {
 	if (!instance) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
-	if (auto known = instance->knownLayouts.find(path);
-		known != instance->knownLayouts.end() &&
-		!extendsDbPaths(known->second.dbPaths, layout.dbPaths)
-	) {
-		layout.dbPaths = known->second.dbPaths;
-	}
-	const bool defaultLayout = layout.dbPaths.empty() &&
-		std::all_of(layout.blobDirs.begin(), layout.blobDirs.end(), [](const auto& entry) {
-			return entry.second.empty();
-		});
-	if (defaultLayout) {
-		instance->knownLayouts.erase(path);
-	} else {
-		instance->knownLayouts[path] = std::move(layout);
+	auto known = instance->knownLayouts.try_emplace(path).first;
+	if (!updateRetainedDestroyLayout(known->second, std::move(layout), writableOpen)) {
+		DEBUG_LOG(
+			"%p DBRegistry::RecordLayout Refused %s db_paths change for \"%s\"\n",
+			instance.get(),
+			writableOpen ? "non-append-only" : "read-only",
+			path.c_str()
+		);
 	}
 }
 
@@ -390,8 +350,7 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
  * or wholly gone.
  *
  * Layouts are erased by family name because several families may share one blob
- * directory; a layout that becomes the default no longer needs a retained
- * registry entry. Nothing is retired unless this call performed the drop — on
+ * directory. Nothing is retired unless this call performed the drop — on
  * an already-dropped status the name may belong to a freshly created family, so
  * the status is returned for the caller's idempotence rule
  * (`isColumnFamilyAlreadyDropped`).
@@ -452,13 +411,6 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 		auto layout = instance->knownLayouts.find(path);
 		if (layout != instance->knownLayouts.end()) {
 			layout->second.blobDirs.erase(columnName);
-			const bool defaultLayout = layout->second.dbPaths.empty() &&
-				std::all_of(layout->second.blobDirs.begin(), layout->second.blobDirs.end(), [](const auto& entry) {
-					return entry.second.empty();
-				});
-			if (defaultLayout) {
-				instance->knownLayouts.erase(layout);
-			}
 		}
 	}
 

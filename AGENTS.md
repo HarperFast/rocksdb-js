@@ -660,25 +660,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `db.createCheckpoint()`: `GetLiveFilesStorageInfo`, which both use, returns
     `Status::NotSupported` whenever `db_paths`/`cf_paths` is non-empty, so a tiered database has no
     in-process copy path, only a volume snapshot. `destroy()` has to receive the real layout
-    (`db_paths` from the live `DB`, per-CF `blob_dir`) — a default `rocksdb::Options` means
+    (`db_paths` from the retained record, per-CF `blob_dir`) — a default `rocksdb::Options` means
     "everything under the database directory", which orphans exactly the files tiering moved away.
     The layout must survive the descriptor: `destroy()` accepts a closed handle, and closing the last
     one purges the registry entry, so `DBDescriptor::recordColumnFamilyLayout` mirrors a
-    `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` merges the live
-    descriptor snapshot with that registry record rather than picking one, and the record's
-    `blob_dir` wins there because OPTIONS re-derives it on every open while a live descriptor's
-    is frozen at the open that created it. `blob_dir` can be recovered from OPTIONS; `db_paths`
-    cannot — so the retained `db_paths` grows only along its append-only chain rather than being
-    last-writer-wins: `RecordLayout` takes a new list only when it EXTENDS the retained one
-    (`extendsDbPaths`) and keeps the retained one otherwise. Both halves of that rule are
-    load-bearing, in opposite directions: a shorter list must not shorten the record, since it is
-    the only trace of the volumes it leaves out; a divergent list must not extend it, since
-    `destroy()` deletes every SST it finds in each recorded directory and one mistyped `paths`
-    would then take another database's files down with this one. Read-only and read-write opens
-    of one path are separate registry entries, and a read-only handle that omits `paths` — or
-    passes a shorter list — succeeds while the files it needs still sit at path index 0, so
-    without the first half its shorter layout erased the only record of the other volumes and a
-    later `destroy()` reported success while orphaning every SST on them.
+    `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` uses that canonical
+    record rather than a live descriptor snapshot, which may belong to a stale read-only open.
+    Empty path lists and empty `blob_dir` values are authoritative default placements, not absent
+    state, so default layouts remain in the registry until `destroy()` too. `blob_dir` can be
+    recovered from OPTIONS and is replaced as given on each successful open, including by an empty
+    value; `db_paths` cannot be recovered, so only a writable cold open may establish or extend the
+    retained list. It takes a new list only when it EXTENDS the retained one (`extendsDbPaths`) and
+    keeps the retained one otherwise. Both halves are load-bearing: a shorter list must not shorten
+    the record, since it is the only trace of omitted volumes; a divergent list must not extend it,
+    since `destroy()` deletes every SST it finds in each recorded directory and one mistyped
+    `paths` would then take another database's files down with this one. Read-only and read-write
+    opens of one path are separate registry entries, and a reader may successfully pass a shorter,
+    longer, or divergent list while every file it needs still sits at path index 0; it may refresh
+    OPTIONS-derived blob placement but must never expand the destroy targets. A reader that opens
+    before any writer seeds an empty path record. Retaining default markers across `PurgeAll` grows
+    this cold-path map by one small entry per opened database until it is destroyed; that bounded
+    per-path cost is deliberate because dropping the marker reopens the cross-database deletion.
     A successful column-family drop removes that family
     from every live descriptor layout for the path and from `knownLayouts` before its by-name handle
     is unregistered, so a concurrent same-name recreation cannot be removed from the destroy layout.
