@@ -274,6 +274,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
+	if (name == STAMP_META_CF_NAME) {
+		throw rocksdb_js::DBException(
+			"Column family name \"" + name + "\" is reserved for rocksdb-js metadata");
+	}
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
@@ -364,6 +368,34 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				columnExists = true;
 			}
 		}
+		// Commit-stamping gate on a REUSED live descriptor: first activation is
+		// only permitted while constructing the descriptor (no racing writers can
+		// exist then); an existing CF on a live descriptor cannot be enabled here,
+		// and explicit false conflicts with a stamped CF rather than bypassing it.
+		// (docs/design/local-mutation-stamping.md §3.1)
+		auto liveStampState = entry.descriptor->stampState;
+		if (options.commitStamping.has_value()) {
+			const bool wantsEnable = *options.commitStamping;
+			const bool cfStamped = columnExists && columns[name]->commitStamping;
+			if (wantsEnable && columnExists && !cfStamped) {
+				throw rocksdb_js::DBException(
+					"Cannot enable commitStamping on column family \"" + name + "\": the "
+					"database is already open; activation requires an exclusive first open");
+			}
+			if (wantsEnable && !columnExists && !(liveStampState && liveStampState->activated())) {
+				throw rocksdb_js::DBException(
+					"Cannot enable commitStamping on column family \"" + name + "\": the "
+					"database is already open and not activated; activation requires an "
+					"exclusive first open");
+			}
+			if (!wantsEnable && cfStamped) {
+				throw rocksdb_js::DBException(
+					"Column family \"" + name + "\" is durably marked for commit stamping; "
+					"opening it with commitStamping: false would bypass the stamped-value "
+					"contract");
+			}
+		}
+
 		if (!columnExists) {
 			if (entry.descriptor->readOnly) {
 				throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
@@ -383,6 +415,15 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				entry.descriptor->db, name, cfOptions
 			);
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+			// A NEW CF may be created stamped on an already-activated database: the
+			// marker lands durably before the CF is visible to any writer (we still
+			// hold columnsMutex), so no write can straddle it.
+			if (options.commitStamping.has_value() && *options.commitStamping &&
+				liveStampState && liveStampState->activated()) {
+				liveStampState->persistCfMarker(column->GetID(), name);
+				liveStampState->addStampedCf(column->GetID(), name);
+				columnDescriptor->commitStamping = true;
+			}
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
 		} else if (options.compressionExplicit && options.compression) {

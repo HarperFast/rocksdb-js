@@ -66,6 +66,13 @@ constexpr uint64_t VT_SETTLED_GEN_MASK = (1ULL << 62) - 1;  // bits 61..0:  62-b
 // costs caching rather than correctness.
 constexpr uint8_t VERSION_HEADER_TAG = 0x0E;
 constexpr uint32_t VERSION_NOT_UNIQUE_FLAG = 0x10000;
+// Producer flag in the same metadata word: the record carries a distinct
+// 8-byte BE version word at offset 12 (its first word being the receiver-local
+// mutation stamp — dual-clock stage 2, harper#2412). This library only
+// interprets it in getEntry-style word parsing; exported so producers set the
+// same bit readers decode. 0x20000 is unused in harper's record-metadata
+// bitmap.
+constexpr uint32_t HAS_DISTINCT_VERSION_FLAG = 0x20000;
 
 // A real version: bit 63 clear and nonzero.
 inline bool vtIsVersion(uint64_t v) { return v != 0 && (v & VT_TAG_BIT) == 0; }

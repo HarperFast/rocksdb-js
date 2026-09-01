@@ -1,5 +1,5 @@
 import type { BufferWithDataView, Key } from './encoding.ts';
-import { FRESH_VERSION_FLAG } from './load-binding.ts';
+import { FRESH_VERSION_FLAG, HAS_DISTINCT_VERSION_FLAG } from './load-binding.ts';
 import type { NativeTransaction, TransactionLog } from './load-binding.ts';
 import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.ts';
 import type { Transaction } from './transaction.ts';
@@ -368,6 +368,78 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		return this.store.decodeValue(this.store.getSync(this._context, key, true, options));
+	}
+
+	/**
+	 * Synchronously retrieves the value for the given key together with its two
+	 * clock words per the value-header contract (dual-clock stage 1,
+	 * docs/design/local-mutation-stamping.md): `localTime` is the first 8-byte
+	 * big-endian float64 word — the receiver-local mutation stamp on a
+	 * commit-stamping column family — and `version` is the distinct 8-byte word
+	 * at offset 12 when the metadata word carries `HAS_DISTINCT_VERSION_FLAG`,
+	 * else it equals `localTime`. Both are `undefined` when the value is too
+	 * short to carry them or a word is not a finite positive number.
+	 *
+	 * Only meaningful for stores whose producer writes the value-header
+	 * contract (the same rule as the VerificationTable's flag read); on other
+	 * stores the words are arbitrary value bytes.
+	 */
+	getEntrySync(key: Key): { value: any; localTime?: number; version?: number } | undefined {
+		const raw = this.getBinarySync(key);
+		if (raw === undefined || typeof raw === 'number') {
+			return undefined;
+		}
+		return this.#buildEntry(raw as Buffer);
+	}
+
+	/**
+	 * Retrieves the value for the given key together with its two clock words;
+	 * the asynchronous counterpart of `getEntrySync()` (see it for the word
+	 * semantics).
+	 */
+	getEntry(
+		key: Key
+	): MaybePromise<{ value: any; localTime?: number; version?: number } | undefined> {
+		const raw = this.getBinary(key);
+		if (raw instanceof Promise) {
+			return raw.then((resolved) =>
+				resolved === undefined || typeof resolved === 'number'
+					? undefined
+					: this.#buildEntry(resolved as Buffer)
+			);
+		}
+		if (raw === undefined || typeof raw === 'number') {
+			return undefined;
+		}
+		return this.#buildEntry(raw as Buffer);
+	}
+
+	#buildEntry(raw: Buffer): { value: any; localTime?: number; version?: number } {
+		let localTime: number | undefined;
+		let version: number | undefined;
+		if (raw.length >= 8) {
+			const first = raw.readDoubleBE(0);
+			if (Number.isFinite(first) && first > 0) {
+				localTime = first;
+				version = first;
+			}
+			// Metadata word: 4 big-endian bytes at offset 8, top byte 0x0e (the
+			// version-header tag), low 24 bits producer flags. The distinct-version
+			// word requires >= 20 bytes so a crafted 12-byte flagged value can
+			// never cause an out-of-range read.
+			if (raw.length >= 20) {
+				const metadata = raw.readUInt32BE(8);
+				if (metadata >>> 24 === 0x0e && (metadata & HAS_DISTINCT_VERSION_FLAG) !== 0) {
+					const distinct = raw.readDoubleBE(12);
+					version = Number.isFinite(distinct) && distinct > 0 ? distinct : undefined;
+				}
+			}
+		}
+		const value =
+			this.store.encoding === 'binary' || !this.store.decoder
+				? raw
+				: this.store.decodeValue(raw as BufferWithDataView);
+		return { value, localTime, version };
 	}
 
 	/**

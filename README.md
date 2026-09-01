@@ -58,6 +58,15 @@ Creates a new database instance.
   - `compressionForAllColumnFamilies: boolean` When `true`, applies `compression` to every column
     family opened for the database rather than only the column family specified by `name`. Requires an explicit
     `compression`. Defaults to `false`. See [Compression](#compression).
+  - `commitStamping: boolean` Commit-time local mutation stamping for this column family
+    (dual-clock stage 1). When enabled, rocksdb-js owns the first 8 bytes of every value on this
+    column family, writing a receiver-local monotonic stamp at commit, and the database's
+    transaction-log batch keys become those stamps. Tri-state: `true` enables (the first
+    activation must be the database's exclusive first open in the process); leaving it unset
+    inherits the live value or the durable marker (a marked column family stays enabled across
+    reopens); an explicit `false` conflicts with a marked/enabled column family and throws.
+    DORMANT by default — nothing changes without the option. See
+    [Commit Stamping](#commit-stamping).
   - `dbWriteBufferSize: number` The total memtable memory budget in bytes shared across all of the
     database's column families. When the combined size of all memtables reaches this value, RocksDB
     flushes the largest one. `0` (the default) disables this global trigger, so per-column-family
@@ -476,6 +485,19 @@ if (result === constants.FRESH_VERSION_FLAG) {
 
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
+
+### `db.getEntry(key: Key): MaybePromise<{ value, localTime?, version? } | undefined>`
+
+### `db.getEntrySync(key: Key): { value, localTime?, version? } | undefined`
+
+Retrieves the value together with its two clock words per the value-header contract shared with the
+[Verification Table](#verification-table): `localTime` is the first 8-byte big-endian float64 word
+of the raw value — the receiver-local mutation stamp on a [commit-stamping](#commit-stamping)
+column family — and `version` is the distinct 8-byte word at offset 12 when the 4-byte metadata
+word at offset 8 (tag byte `0x0e`) carries `HAS_DISTINCT_VERSION_FLAG`, otherwise it equals
+`localTime`. A word that is missing (value too short) or not a finite positive number is
+`undefined`. Only meaningful for stores whose producer writes the value-header contract; on other
+stores the words are arbitrary value bytes.
 
 ### `db.getEstimatedKeyCount(): number`
 
@@ -907,10 +929,19 @@ thread. Once called, no further transaction operations are permitted.
 Synchronously commits and closes the transaction. This is a blocking operation on the main thread.
 Once called, no further transaction operations are permitted.
 
+#### `txn.getCommittedLocalTime(): number | undefined`
+
+Returns the finalized commit-time local mutation stamp (`localTime`, milliseconds) after a
+successful commit on a [commit-stamping](#commit-stamping) database, or `undefined` before the
+commit or when stamping is not enabled. On the common keep path it equals `getTimestamp()`; on a
+re-stamped commit (e.g. a replicated apply whose origin timestamp is at or below the local
+watermark) it is the receiver-local stamp actually written into the record first words and the
+transaction-log batch key.
+
 #### `txn.getTimestamp(): number`
 
-Retrieves the transaction start timestamp in seconds as a decimal. It defaults to the time at which
-the transaction was created.
+Retrieves the transaction start timestamp in milliseconds since the Unix epoch, as a decimal. It
+defaults to the time at which the transaction was created.
 
 #### `txn.id`
 
@@ -922,11 +953,16 @@ RocksDB database path, regardless the database name/column family.
 #### `txn.setTimestamp(ts: number?): void`
 
 Overrides the transaction start timestamp. If called without a timestamp, it will set the timestamp
-to the current time. The value must be in seconds with higher precision in the decimal.
+to the current time. The value is in milliseconds since the Unix epoch (sub-millisecond precision in
+the decimal) and must be a finite positive number below `8640000000000000` (the maximum date
+timestamp); the transaction must still be pending. On a [commit-stamping](#commit-stamping)
+database this value is the commit stamp _candidate_: it is kept only when it exceeds the
+database's committed watermark (and, for caller-supplied values, stays within an hour of the
+receiver clock) — otherwise the commit re-stamps at receiver time.
 
 ```typescript
 await db.transaction(async (txn) => {
-	txn.setTimestamp(Date.now() / 1000);
+	txn.setTimestamp(Date.now());
 });
 ```
 
@@ -1540,6 +1576,58 @@ Releases the file lock for the given token.
 import { fileLockRelease } from '@harperfast/rocksdb-js';
 
 fileLockRelease(token);
+```
+
+## Commit Stamping
+
+Commit-time local mutation stamping (stage 1 of the dual-clock model,
+[#811](https://github.com/HarperFast/rocksdb-js/issues/811); design:
+`docs/design/local-mutation-stamping.md`) separates a record's **local write identity** from its
+application-level **version**. When enabled for a column family, rocksdb-js claims one
+receiver-local monotonic stamp per commit and writes it identically into:
+
+- the **first 8 bytes of every value** written by the commit (big-endian float64), and
+- the **transaction-log batch key** (the entry-header timestamp) of the commit's log batch.
+
+The claim is _keep-if-greater_: a transaction whose timestamp already exceeds every previously
+claimed stamp keeps it — the overwhelmingly common case, measured at ~zero cost — while a
+duplicate, stale, or far-future caller timestamp (e.g. a replicated apply carrying its origin's
+clock) is re-stamped at receiver time, with the staged record values patched through a supported
+batch rebuild at commit. Stamps are unique per write per database by construction (a
+compare-and-swap watermark admits each value once), monotonic in claim order, and never reused
+across restarts, backup/restore, or checkpoints: a durable reserve ceiling and the enable markers
+live in a hidden internal metadata column family (`__rocksdbjs.meta` — the name is reserved), so
+every copy lifecycle carries them, and mixed database+log backups additionally carry a floor
+artifact that restore reconciles.
+
+Because the stamp is the log batch key, an enabled database's transaction-log stores are keyed in
+the receiver's clock domain with **strictly monotonic keys per post-activation segment**, and
+seeking by local stamp is the ordinary indexed timestamp seek. Values on a stamped column family
+must be at least 8 bytes (shorter puts throw), and the caller's buffer is never mutated — the
+stamp is staged into the write, not written back.
+
+Two ordering caveats are part of the contract: stamps order by _claim_, not by RocksDB
+durable-write order across concurrent writers, and a transaction retried after its log batch was
+already durably written (`#668` write-once semantics) re-applies its _pinned_ stamp — so a key can,
+in that one case, commit at a stamp claimed before a conflicting winner's. Consumers should treat
+stamps as **write identity** (equality) or use log order/positions; both are exact.
+
+**This capability ships dormant and must stay off until the reader side is paired.** A consumer
+whose decoder maps the record first word straight to its version (as Harper's current decoder
+does) would silently lose source versions if stamping were activated first — activation is a
+single atomic gate on the reader/writer pair (HarperFast/harper#2412). Enabling requires an
+exclusive first open of the database; thereafter the durable marker keeps the column family
+enabled (an option-less reopen inherits it, and `commitStamping: false` refuses to open rather
+than write unstamped first words into stamped data).
+
+```typescript
+const db = RocksDatabase.open('path/to/db', { commitStamping: true, encoding: 'binary' });
+
+const txn = db.transactionSync((t) => {
+	t.putSync('key', valueWithReservedFirstWord); // >= 8 bytes; first word is rocksdb-js's
+	return t;
+});
+txn.getCommittedLocalTime(); // the stamp in the record's first word and the log batch key
 ```
 
 ## Verification Table

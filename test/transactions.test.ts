@@ -390,7 +390,21 @@ for (const { name, options, txnOptions } of testOptions) {
 					ts = txn.getTimestamp();
 					expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
-					expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+					// Deliberate hardening (#811): non-positive, non-finite, and
+					// out-of-domain timestamps are rejected — a NaN or Infinity key
+					// corrupts transaction-log ordering even without commit stamping.
+					expect(() => txn.setTimestamp(-1)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
+					expect(() => txn.setTimestamp(NaN)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
+					expect(() => txn.setTimestamp(Infinity)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
+					expect(() => txn.setTimestamp(8.64e15)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
 					expect(() => txn.setTimestamp('foo' as any)).toThrow(
 						'Invalid timestamp, expected positive number'
 					);
@@ -628,7 +642,21 @@ for (const { name, options, txnOptions } of testOptions) {
 					ts = txn.getTimestamp();
 					expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
-					expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+					// Deliberate hardening (#811): non-positive, non-finite, and
+					// out-of-domain timestamps are rejected — a NaN or Infinity key
+					// corrupts transaction-log ordering even without commit stamping.
+					expect(() => txn.setTimestamp(-1)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
+					expect(() => txn.setTimestamp(NaN)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
+					expect(() => txn.setTimestamp(Infinity)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
+					expect(() => txn.setTimestamp(8.64e15)).toThrow(
+						'Invalid timestamp, expected a finite positive number'
+					);
 					expect(() => txn.setTimestamp('foo' as any)).toThrow(
 						'Invalid timestamp, expected positive number'
 					);

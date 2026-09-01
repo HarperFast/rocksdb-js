@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include "rocksdb/db.h"
 #include "core/local_stamp.h"
 
@@ -45,6 +46,15 @@ constexpr const char* STAMP_META_KEY_LOG_PREFIX = "stamp.log.";
 // open closed — collision detection, not authentication (the metadata CF is
 // trusted content, same trust class as the database bytes).
 constexpr const char* STAMP_META_SCHEMA_VALUE = "rocksdbjs.stamp.v1";
+
+// Backup floor artifact: written into the transaction-log snapshot (and by
+// restore as a pending copy in the destination) so a restored store never
+// re-mints a stamp its logs carry. 4-byte token + BE double ceiling + BE
+// uint64 complement of the ceiling bits (a torn write fails validation).
+constexpr const char* STAMP_FLOOR_ARTIFACT_NAME = "STAMP_FLOOR";
+constexpr const char* STAMP_FLOOR_ARTIFACT_PENDING_NAME = ".stamp-floor-pending";
+constexpr const char* STAMP_FLOOR_ARTIFACT_TOKEN = "RJSF";
+constexpr size_t STAMP_FLOOR_ARTIFACT_SIZE = 20;
 
 // Reserve ceiling extension window and the proactive-extension margin.
 constexpr double STAMP_RESERVE_WINDOW_MS = 300000.0; // 5 minutes
@@ -174,6 +184,14 @@ struct StampMetaContents {
  * open closed rather than seed a bogus clock.
  */
 StampMetaContents loadStampMeta(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* metaCf);
+
+/**
+ * Reads the backup floor artifacts (STAMP_FLOOR and the restore's pending
+ * copy) from the given transaction-log directories, returning the highest
+ * valid ceiling found. A present-but-corrupt artifact throws (fail closed:
+ * it exists precisely to stop a restored store from re-minting stamps).
+ */
+double readStampFloorArtifacts(const std::vector<std::string>& logDirs);
 
 } // namespace rocksdb_js
 

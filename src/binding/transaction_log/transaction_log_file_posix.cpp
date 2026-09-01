@@ -1,4 +1,5 @@
 #include "transaction_log_file.h"
+#include "core/test_seam.h"
 
 #ifdef PLATFORM_POSIX
 
@@ -544,6 +545,11 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 		}
 
 		totalWritten += written;
+		// Fault-matrix F2 (docs/design/local-mutation-stamping.md §5): die after
+		// the first writev chunk of a multi-chunk batch, leaving a torn append.
+		if (pendingIdx == 0 && iovcnt > static_cast<int>(IOV_MAX)) {
+			crashIfArmed("mid-log-append");
+		}
 
 		size_t remainingBytes = static_cast<size_t>(written);
 		while (remainingBytes > 0 && pendingIdx < iovcnt) {

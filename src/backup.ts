@@ -8,11 +8,18 @@ import {
 	nativeBackupVerify,
 } from './load-binding.ts';
 import { validateTransactionLogStore } from './validate-transaction-log.ts';
-import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { access, copyFile, cp, mkdir, open as openFile, readdir, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 
 /** Subdirectory (under a backup directory) holding per-backup transaction log snapshots. */
 const TRANSACTION_LOGS_DIRNAME = 'transaction_logs';
+// Backup floor artifact (docs/design/local-mutation-stamping.md §3.7): captured
+// with the log snapshot; restore publishes a pending copy in the destination
+// BEFORE the destructive database restore so no crash window can leave logs
+// carrying stamps above the restored metadata ceiling. Open reconciles and
+// leaves the files in place (idempotent across re-runs).
+const STAMP_FLOOR_ARTIFACT_NAME = 'STAMP_FLOOR';
+const STAMP_FLOOR_PENDING_NAME = '.stamp-floor-pending';
 
 /** Non-blocking existence check (`fs.existsSync` would block the event loop). */
 async function exists(path: string): Promise<boolean> {
@@ -325,14 +332,13 @@ async function pruneOrphanedTransactionLogs(backupDir: string): Promise<void> {
  * are preserved because the store derives file age (rotation/retention) from
  * mtime — a fresh mtime would break retention.
  */
-async function restoreTransactionLogs(
+async function resolveRestoredLogsSource(
 	backupDir: string,
-	dbDir: string,
 	backupId?: number
-): Promise<void> {
+): Promise<string | undefined> {
 	const logsRoot = join(backupDir, TRANSACTION_LOGS_DIRNAME);
 	if (!(await exists(logsRoot))) {
-		return; // this backup directory has no transaction log snapshots
+		return undefined; // this backup directory has no transaction log snapshots
 	}
 
 	// Resolve the restored backup id (the latest, when unspecified).
@@ -342,21 +348,54 @@ async function restoreTransactionLogs(
 			nativeBackupList(resolve, reject, backupDir)
 		);
 		if (list.length === 0) {
-			return;
+			return undefined;
 		}
 		id = Math.max(...list.map((info) => info.backupId));
 	}
 
 	const logsSrc = join(logsRoot, String(id));
-	if (!(await exists(logsSrc))) {
-		// The restored backup captured no logs — do not touch the destination's
-		// existing transaction logs.
-		return;
-	}
+	// The restored backup captured no logs — do not touch the destination's
+	// existing transaction logs.
+	return (await exists(logsSrc)) ? logsSrc : undefined;
+}
 
-	// This backup has logs: wipe the destination, then restore its snapshot.
+/**
+ * Durably publishes the backup's floor artifact into the destination as a
+ * pending copy, BEFORE the destructive database restore: a crash after the
+ * (older-ceilinged) database lands but before the (higher-stamped) logs do
+ * must still leave the floor for open() to reconcile. The transaction_logs
+ * subdirectory survives the native restore's file purge.
+ */
+async function publishPendingStampFloor(logsSrc: string, dbDir: string): Promise<void> {
+	const artifactSrc = join(logsSrc, STAMP_FLOOR_ARTIFACT_NAME);
+	if (!(await exists(artifactSrc))) {
+		return; // pre-stamping backup
+	}
 	const logsDest = join(dbDir, TRANSACTION_LOGS_DIRNAME);
-	await rm(logsDest, { recursive: true, force: true });
+	await mkdir(logsDest, { recursive: true });
+	const pending = join(logsDest, STAMP_FLOOR_PENDING_NAME);
+	await copyFile(artifactSrc, pending);
+	const handle = await openFile(pending, 'r+');
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function restoreTransactionLogs(logsSrc: string, dbDir: string): Promise<void> {
+	// This backup has logs: wipe the destination — preserving the pending floor
+	// artifact published before the database restore, so no crash window inside
+	// this copy leaves partially restored logs without their floor — then
+	// restore the snapshot (which carries its own STAMP_FLOOR copy).
+	const logsDest = join(dbDir, TRANSACTION_LOGS_DIRNAME);
+	if (await exists(logsDest)) {
+		for (const entry of await readdir(logsDest)) {
+			if (entry !== STAMP_FLOOR_PENDING_NAME) {
+				await rm(join(logsDest, entry), { recursive: true, force: true });
+			}
+		}
+	}
 	await cp(logsSrc, logsDest, { recursive: true, preserveTimestamps: true });
 }
 
@@ -409,6 +448,11 @@ export const backups = {
 					await mkdir(walDir, { recursive: true });
 				}
 
+				const logsSrc = await resolveRestoredLogsSource(backupDir, options?.backupId);
+				if (logsSrc) {
+					await publishPendingStampFloor(logsSrc, dbDir);
+				}
+
 				await new Promise<void>((resolve, reject) =>
 					nativeBackupRestore(resolve, reject, backupDir, dbDir, walDir, {
 						backupId: options?.backupId,
@@ -419,7 +463,9 @@ export const backups = {
 
 				// Restore the transaction log snapshot (if this backup included one). Wipes
 				// the destination first so an older restore leaves no newer log stragglers.
-				await restoreTransactionLogs(backupDir, dbDir, options?.backupId);
+				if (logsSrc) {
+					await restoreTransactionLogs(logsSrc, dbDir);
+				}
 			},
 			{ shared: true }
 		);

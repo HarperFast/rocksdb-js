@@ -1,4 +1,6 @@
 #include "database/backup_transaction_logs.h"
+#include "database/local_stamp_state.h"
+#include "core/encoding.h"
 #include "database/db_descriptor.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include <algorithm>
@@ -336,6 +338,26 @@ rocksdb::Status backupTransactionLogsToDir(
 		destBaseDir.parent_path() / (TRANSACTION_LOG_STAGING_PREFIX + destBaseDir.filename().string());
 
 	status = copySnapshotEntries(stagingDir, entries, sync);
+
+	// Floor capture (docs/design/local-mutation-stamping.md §3.7): the log
+	// capture above is complete, and the reserve ceiling is monotone, so the
+	// live ceiling read NOW bounds every local stamp the captured logs can
+	// carry. Staged with the snapshot so the atomic publish below covers it —
+	// restore reconciles it into the destination's metadata CF before writes.
+	if (status.ok() && descriptor->stampState) {
+		const double ceiling = localStampFromBits(
+			descriptor->stampState->reserve.load(std::memory_order_acquire));
+		std::string artifact(STAMP_FLOOR_ARTIFACT_SIZE, '\0');
+		std::memcpy(artifact.data(), STAMP_FLOOR_ARTIFACT_TOKEN, 4);
+		writeDoubleBE(artifact.data() + 4, ceiling);
+		writeUint64BE(artifact.data() + 12, ~localStampToBits(ceiling));
+		const std::filesystem::path artifactPath = stagingDir / STAMP_FLOOR_ARTIFACT_NAME;
+		status = writeBytesWithMtime(
+			artifactPath, artifact, std::filesystem::file_time_type::clock::now());
+		if (status.ok() && sync) {
+			status = syncFile(artifactPath);
+		}
+	}
 
 	if (status.ok()) {
 		std::error_code ec;

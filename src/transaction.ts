@@ -84,6 +84,7 @@ export class Transaction extends DBI {
 			this.abandonWrites = this.abort = this.commitSync = this.setTimestamp = () => {};
 			this.commit = async () => {};
 			this.getTimestamp = () => 0;
+			this.getCommittedLocalTime = () => undefined;
 		} else {
 			const txn = new NativeTransaction(store.db, options);
 			super(store, txn);
@@ -175,13 +176,25 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Returns the transaction start timestamp in seconds. Defaults to the time at which
-	 * the transaction was created.
+	 * Returns the transaction start timestamp in milliseconds since the Unix
+	 * epoch. Defaults to the time at which the transaction was created.
 	 *
-	 * @returns The transaction start timestamp in seconds.
+	 * @returns The transaction start timestamp in milliseconds.
 	 */
 	getTimestamp(): number {
 		return this.#txn.getTimestamp();
+	}
+
+	/**
+	 * Returns the finalized commit-time local mutation stamp (`localTime`) in
+	 * milliseconds, or `undefined` before a successful commit or when commit
+	 * stamping is not enabled. On the common keep path this equals
+	 * `getTimestamp()`; on a re-stamped commit (e.g. a replicated apply whose
+	 * origin timestamp is behind the local clock) it is the receiver-local
+	 * stamp actually written into record first words and the log batch key.
+	 */
+	getCommittedLocalTime(): number | undefined {
+		return this.#txn.getCommittedLocalTime();
 	}
 
 	/**
@@ -192,9 +205,11 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Set the transaction start timestamp in seconds.
+	 * Set the transaction start timestamp in milliseconds since the Unix epoch.
+	 * The value must be a finite positive number below 8640000000000000
+	 * (the maximum date timestamp) and the transaction must still be pending.
 	 *
-	 * @param timestamp - The timestamp to set in seconds.
+	 * @param timestamp - The timestamp to set in milliseconds.
 	 */
 	setTimestamp(timestamp?: number): void {
 		this.#txn.setTimestamp(timestamp);

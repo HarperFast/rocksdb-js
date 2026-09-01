@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
@@ -17,7 +18,9 @@
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
+#include "core/encoding.h"
 #include "core/platform.h"
+#include "rocksdb/write_batch.h"
 #include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -280,6 +283,11 @@ static unsigned parkTimeoutMs() {
  */
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
+	// Commit-stamping candidate, snapshotted on the JS thread at commit entry so
+	// the lanes never race a concurrent setTimestamp (which is additionally
+	// rejected outside Pending).
+	double stampCandidate = 0;
+	bool stampCandidateFromCaller = false;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
@@ -325,12 +333,137 @@ static void rejectRetryNowSetupFailure(
 }
 
 /**
- * Log-lane stage of the commit: validates the handle and writes the
- * transaction-log batch (recording the committed position). Runs off the JS
- * thread — on the database's log lane, or on a libuv threadpool thread in the
- * legacy path (which runs both stages back to back). A pass-through no-op for
- * transactions with no log entries so total dispatch order is preserved into
- * the commit lane.
+ * WriteBatch handler that copies every operation, in order, into `copy`,
+ * substituting the finalized stamp into the first 8 bytes of puts on stamped
+ * column families (docs/design/local-mutation-stamping.md §3.3). Operations
+ * this binding never produces fail closed via the base class defaults.
+ */
+struct RestampRebuilder final : rocksdb::WriteBatch::Handler {
+	rocksdb::WriteBatch copy;
+	double stamp;
+	const std::unordered_map<uint32_t, std::pair<rocksdb::ColumnFamilyHandle*, bool>>& cfs;
+
+	RestampRebuilder(
+		double stamp,
+		const std::unordered_map<uint32_t, std::pair<rocksdb::ColumnFamilyHandle*, bool>>& cfs
+	) : stamp(stamp), cfs(cfs) {}
+
+	rocksdb::ColumnFamilyHandle* handleFor(uint32_t cfId) const {
+		auto it = this->cfs.find(cfId);
+		return it == this->cfs.end() ? nullptr : it->second.first;
+	}
+
+	bool stampedCf(uint32_t cfId) const {
+		auto it = this->cfs.find(cfId);
+		return it != this->cfs.end() && it->second.second;
+	}
+
+	rocksdb::Status PutCF(uint32_t cfId, const rocksdb::Slice& key, const rocksdb::Slice& value) override {
+		auto* handle = this->handleFor(cfId);
+		if (!handle) return rocksdb::Status::InvalidArgument("Unknown column family in write batch");
+		if (this->stampedCf(cfId) && value.size() >= 8) {
+			char prefix[8];
+			writeDoubleBE(prefix, this->stamp);
+			rocksdb::Slice keyPart = key;
+			rocksdb::Slice valueParts[2] = {
+				rocksdb::Slice(prefix, sizeof prefix),
+				rocksdb::Slice(value.data() + 8, value.size() - 8),
+			};
+			return this->copy.Put(handle, rocksdb::SliceParts(&keyPart, 1), rocksdb::SliceParts(valueParts, 2));
+		}
+		return this->copy.Put(handle, key, value);
+	}
+
+	rocksdb::Status DeleteCF(uint32_t cfId, const rocksdb::Slice& key) override {
+		auto* handle = this->handleFor(cfId);
+		if (!handle) return rocksdb::Status::InvalidArgument("Unknown column family in write batch");
+		return this->copy.Delete(handle, key);
+	}
+
+	rocksdb::Status SingleDeleteCF(uint32_t cfId, const rocksdb::Slice& key) override {
+		auto* handle = this->handleFor(cfId);
+		if (!handle) return rocksdb::Status::InvalidArgument("Unknown column family in write batch");
+		return this->copy.SingleDelete(handle, key);
+	}
+
+	rocksdb::Status MergeCF(uint32_t cfId, const rocksdb::Slice& key, const rocksdb::Slice& value) override {
+		auto* handle = this->handleFor(cfId);
+		if (!handle) return rocksdb::Status::InvalidArgument("Unknown column family in write batch");
+		return this->copy.Merge(handle, key, value);
+	}
+
+	void LogData(const rocksdb::Slice& blob) override { this->copy.PutLogData(blob); }
+};
+
+/**
+ * Commit-stamping finalization shared by every commit shape
+ * (docs/design/local-mutation-stamping.md §3.2/§3.3). Called with the handle
+ * validated and, for logged transactions, after writeBatch keyed the batch
+ * with the claimed stamp. Patches stamped-CF record first words through the
+ * supported append-rebuild when the finalized stamp differs from the
+ * pre-stamp. Throws on failure; the caller converts to a commit status.
+ */
+static void finalizeLocalStamp(
+	const std::shared_ptr<TransactionHandle>& txnHandle,
+	double candidate,
+	bool candidateFromCaller,
+	bool batchWasWritten
+) {
+	auto descriptor = txnHandle->dbHandle->descriptor;
+	auto stampState = descriptor ? descriptor->stampState : nullptr;
+	if (!stampState || !stampState->activated()) {
+		return;
+	}
+	if (txnHandle->committedPosition.logSequenceNumber > 0 && !batchWasWritten) {
+		// #668 pinned retry: the durable WAL batch fixed the stamp; the re-put
+		// records below are re-patched to it.
+	} else if (!batchWasWritten) {
+		txnHandle->localStamp = stampState->claim(candidate, !candidateFromCaller);
+	}
+	// batchWasWritten: the caller already adopted the batch key as localStamp.
+
+	if (!txnHandle->hasStampedPuts || txnHandle->localStamp == 0) {
+		return;
+	}
+	if (!txnHandle->mixedPreStamp && txnHandle->preStampValue == txnHandle->localStamp) {
+		return; // keep path: the pre-stamped first words are already the stamp
+	}
+
+	// Order-preserving reconstruction through supported APIs; RebuildFromWriteBatch
+	// appends the full-order copy (verified semantics — restamp_rebuild_test.cc),
+	// which is terminal-state-exact per key and preserves conflict tracking.
+	std::unordered_map<uint32_t, std::pair<rocksdb::ColumnFamilyHandle*, bool>> cfs;
+	{
+		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
+		for (auto& [columnName, column] : descriptor->columns) {
+			cfs.emplace(
+				column->column->GetID(),
+				std::make_pair(column->column.get(), column->commitStamping));
+		}
+	}
+	RestampRebuilder rebuilder(txnHandle->localStamp, cfs);
+	rocksdb::WriteBatch* writeBatch = txnHandle->txn->GetWriteBatch()->GetWriteBatch();
+	rocksdb::Status status = writeBatch->Iterate(&rebuilder);
+	if (!status.ok()) {
+		throw rocksdb_js::DBException(
+			"Failed to re-stamp transaction write batch: " + status.ToString());
+	}
+	status = txnHandle->txn->RebuildFromWriteBatch(&rebuilder.copy);
+	if (!status.ok()) {
+		throw rocksdb_js::DBException(
+			"Failed to rebuild transaction write batch: " + status.ToString());
+	}
+}
+
+/**
+ * Log-lane stage of the commit: validates the handle, finalizes the local
+ * mutation stamp, and writes the transaction-log batch (recording the
+ * committed position). Runs off the JS thread — on the database's log lane, or
+ * on a libuv threadpool thread in the legacy path (which runs both stages back
+ * to back). A pass-through no-op for transactions with no log entries so total
+ * dispatch order is preserved into the commit lane. Every failure (including
+ * stamp finalization and reserve I/O) converts to state->status here — nothing
+ * may unwind into CommitWorker::run, which has no catch.
  */
 static void executeLogWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
@@ -352,18 +485,39 @@ static void executeLogWork(TransactionCommitState* state) {
 		auto store = txnHandle->boundLogStore.lock();
 		if (store) {
 			try {
-				// write the batch to the store
+				crashIfArmed("stamp-before-log-write");
+				// write the batch to the store (on a stamping-activated store this
+				// keys the batch with the claimed receiver-local stamp)
 				store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
+				crashIfArmed("after-log-write");
+				auto descriptor = txnHandle->dbHandle->descriptor;
+				if (descriptor && descriptor->stampState && descriptor->stampState->activated()) {
+					txnHandle->localStamp = txnHandle->logEntryBatch->timestamp;
+				}
 				// free the batch after writing to avoid memory leak
 				txnHandle->logEntryBatch.reset();
 				state->hasLog = true;
+				finalizeLocalStamp(
+					txnHandle, state->stampCandidate, state->stampCandidateFromCaller, true);
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
 				state->status = rocksdb::Status::Aborted(e.what());
+			} catch (...) {
+				state->status = rocksdb::Status::Aborted("Commit finalization failed");
 			}
 		} else {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
 			state->status = rocksdb::Status::Aborted("Log store not found for transaction");
+		}
+	} else {
+		try {
+			finalizeLocalStamp(
+				txnHandle, state->stampCandidate, state->stampCandidateFromCaller, false);
+		} catch (const std::exception& e) {
+			DEBUG_LOG("%p Transaction::Commit ERROR: stamp finalization failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
+			state->status = rocksdb::Status::Aborted(e.what());
+		} catch (...) {
+			state->status = rocksdb::Status::Aborted("Commit finalization failed");
 		}
 	}
 }
@@ -414,6 +568,9 @@ static void executeCommitWork(TransactionCommitState* state) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
 				}
 				state->status = txnHandle->txn->Commit();
+				if (state->status.ok()) {
+					crashIfArmed("after-rocksdb-commit");
+				}
 			}
 
 			// For coordinated retry: save slot pointers before
@@ -444,6 +601,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			auto store = txnHandle->boundLogStore.lock();
 			if (store) {
 				store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
+				crashIfArmed("after-commit-finished");
 			} else {
 				DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
 				state->status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -767,6 +925,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+	state->stampCandidate = (*txnHandle)->startTimestamp;
+	state->stampCandidateFromCaller = (*txnHandle)->timestampSetByCaller;
 
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;
@@ -818,7 +978,19 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				// through both lanes so total order is preserved.
 				descriptor->logWorker.enqueue([descriptor, state, commitStage]() {
 					executeLogWork(state);
-					descriptor->commitWorker.enqueue(commitStage);
+					// The forwarding enqueue itself can throw (allocation, thread
+					// creation); nothing may unwind into CommitWorker::run, so fail
+					// the commit and run the stage inline — it skips the RocksDB
+					// commit on a failed status and still dispatches completion.
+					try {
+						descriptor->commitWorker.enqueue(commitStage);
+					} catch (...) {
+						if (state->status.ok()) {
+							state->status = rocksdb::Status::Aborted(
+								"Failed to dispatch commit stage");
+						}
+						commitStage();
+					}
 				});
 			} else {
 				// Single lane (default): both stages run back to back on the
@@ -907,20 +1079,50 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (store) {
 			hasLog = true;
 			try {
+				crashIfArmed("stamp-before-log-write");
 				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+				crashIfArmed("after-log-write");
 			} catch (const std::exception& e) {
 				(*txnHandle)->state = TransactionState::Pending;
 				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
 			}
+			{
+				auto descriptor = (*txnHandle)->dbHandle->descriptor;
+				if (descriptor && descriptor->stampState && descriptor->stampState->activated()) {
+					(*txnHandle)->localStamp = (*txnHandle)->logEntryBatch->timestamp;
+				}
+			}
 			// free the batch after writing to avoid memory leak
 			(*txnHandle)->logEntryBatch.reset();
+			try {
+				finalizeLocalStamp(
+					*txnHandle, (*txnHandle)->startTimestamp,
+					(*txnHandle)->timestampSetByCaller, true);
+			} catch (const std::exception& e) {
+				(*txnHandle)->state = TransactionState::Pending;
+				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
+			}
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id);
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
 		}
 	}
 
+	if (!hasLog) {
+		try {
+			finalizeLocalStamp(
+				*txnHandle, (*txnHandle)->startTimestamp,
+				(*txnHandle)->timestampSetByCaller, false);
+		} catch (const std::exception& e) {
+			(*txnHandle)->state = TransactionState::Pending;
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
+		}
+	}
+
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	if (status.ok()) {
+		crashIfArmed("after-rocksdb-commit");
+	}
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();
@@ -935,6 +1137,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 		if (store) {
 			store->commitFinished((*txnHandle)->committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+			crashIfArmed("after-commit-finished");
 		} else {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", (*txnHandle).get(), (*txnHandle)->committedPosition.logSequenceNumber, (*txnHandle)->id);
 			status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -1289,24 +1492,56 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
+	// A timestamp change outside Pending races the commit lanes (the candidate
+	// snapshot is taken at commit entry) and was already meaningless — reject
+	// rather than tear a plain double across threads.
+	if ((*txnHandle)->state != TransactionState::Pending) {
+		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction is not pending");
+		return nullptr;
+	}
+
 	if (type == napi_undefined) {
 		// use current timestamp
 		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+		(*txnHandle)->timestampSetByCaller = false;
 	} else if (type == napi_number) {
 		double timestampMs = 0.0;
 		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
 			"Invalid timestamp, expected positive number");
-		if (timestampMs <= 0) {
-			::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
+		// Non-finite values corrupt transaction-log key ordering (NaN poisons the
+		// index; Infinity has no successor), and values at/above 8.64e15 are
+		// outside the millisecond-timestamp domain. Rejected regardless of
+		// commit-stamping state — deliberate hardening (#811).
+		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
+			::napi_throw_error(env, nullptr,
+				"Invalid timestamp, expected a finite positive number below 8640000000000000");
 			return nullptr;
 		}
 		(*txnHandle)->startTimestamp = timestampMs;
+		(*txnHandle)->timestampSetByCaller = true;
 	} else {
 		::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
 		return nullptr;
 	}
 
 	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Returns the finalized commit-time local mutation stamp, or undefined when
+ * the transaction has not committed (or stamping is not enabled). On the keep
+ * path this equals getTimestamp(); defined for delete-only transactions too.
+ */
+napi_value Transaction::GetCommittedLocalTime(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("GetCommittedLocalTime");
+
+	if ((*txnHandle)->state != TransactionState::Committed || (*txnHandle)->localStamp == 0) {
+		NAPI_RETURN_UNDEFINED();
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, (*txnHandle)->localStamp, &result));
+	return result;
 }
 
 /**
@@ -1419,6 +1654,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getCommittedLocalTime", nullptr, GetCommittedLocalTime, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },

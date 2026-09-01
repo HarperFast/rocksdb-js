@@ -560,6 +560,13 @@ export class Store {
 	verificationTable?: boolean;
 
 	/**
+	 * Commit-time local mutation stamping for this column family (dual-clock
+	 * stage 1); see `RocksDatabaseOptions.commitStamping`. Tri-state — leave
+	 * unset to inherit the durable marker.
+	 */
+	commitStamping?: boolean;
+
+	/**
 	 * The per-column-family memtable size in bytes at which the memtable is
 	 * sealed and flushed.
 	 */
@@ -624,6 +631,7 @@ export class Store {
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = options?.transactionLogsPath;
 		this.verificationTable = options?.verificationTable;
+		this.commitStamping = options?.commitStamping;
 		this.writeBufferSize = options?.writeBufferSize;
 		this.writeKey = writeKey;
 	}
@@ -1164,6 +1172,7 @@ export class Store {
 				: undefined,
 			transactionLogsPath: this.transactionLogsPath,
 			verificationTable: this.verificationTable,
+			commitStamping: this.commitStamping,
 			writeBufferSize: this.writeBufferSize,
 		});
 

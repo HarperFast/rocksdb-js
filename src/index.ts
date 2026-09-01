@@ -24,6 +24,8 @@ export {
 	type BackgroundErrorOptions,
 	constants,
 	coolTransactionLogs,
+	FRESH_VERSION_FLAG,
+	HAS_DISTINCT_VERSION_FLAG,
 	currentThreadId,
 	fileLockRelease,
 	tryFileLock,

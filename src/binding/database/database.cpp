@@ -1851,6 +1851,28 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", dbHandleOptions.disableWAL));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "verificationTable", dbHandleOptions.verificationTable));
 
+	// commitStamping is tri-state (unset = inherit); parse presence explicitly
+	// so absent and false stay distinguishable (db_options.h).
+	{
+		bool hasCommitStamping = false;
+		NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "commitStamping", &hasCommitStamping));
+		if (hasCommitStamping) {
+			napi_value stampingValue;
+			NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "commitStamping", &stampingValue));
+			napi_valuetype stampingType;
+			NAPI_STATUS_THROWS(::napi_typeof(env, stampingValue, &stampingType));
+			if (stampingType != napi_undefined && stampingType != napi_null) {
+				if (stampingType != napi_boolean) {
+					::napi_throw_error(env, nullptr, "commitStamping must be a boolean");
+					return nullptr;
+				}
+				bool stamping = false;
+				NAPI_STATUS_THROWS(::napi_get_value_bool(env, stampingValue, &stamping));
+				dbHandleOptions.commitStamping = stamping;
+			}
+		}
+	}
+
 	// compression: a friendly algorithm name (e.g. "lz4", "zstd", "none"). The
 	// TypeScript layer normalizes the string|object public option and validates
 	// against the supported list before we get here; this is the defensive
@@ -2115,6 +2137,28 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
+		// Commit stamping: validate and claim BEFORE the VT write-intent lock so
+		// no failure path (short value, reserve I/O error) can leak the intent.
+		const bool stampedCf = (*dbHandle)->columnDescriptor &&
+			(*dbHandle)->columnDescriptor->commitStamping;
+		auto stampState = stampedCf ? (*dbHandle)->descriptor->stampState : nullptr;
+		double stamp = 0;
+		if (stampState) {
+			if (valueEnd - valueStart < 8) {
+				::napi_throw_error(env, nullptr,
+					"Values on a commitStamping column family must be at least 8 bytes");
+				return nullptr;
+			}
+			try {
+				// Direct writes claim a fresh receiver-time stamp (always the keep
+				// path).
+				stamp = stampState->claim(rocksdb_js::getMonotonicTimestamp(), true);
+			} catch (const std::exception& e) {
+				::napi_throw_error(env, nullptr, e.what());
+				return nullptr;
+			}
+		}
+
 		// Lock the VT slot before the write and settle it after, so
 		// readers see a lock (not a stale version) during the write window.
 		// This mirrors the transactional path (putSync → lockVTSlot → commit →
@@ -2136,6 +2180,28 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
+		if (stampState) {
+			// Stage the claimed stamp through SliceParts so the caller's buffer is
+			// never mutated.
+			char stampPrefix[8];
+			writeDoubleBE(stampPrefix, stamp);
+			rocksdb::Slice keyPart(key + keyStart, keyEnd - keyStart);
+			rocksdb::Slice valueParts[2] = {
+				rocksdb::Slice(stampPrefix, sizeof stampPrefix),
+				rocksdb::Slice(value + valueStart + 8, (valueEnd - valueStart) - 8),
+			};
+			// DB::Put has no SliceParts overload; a single-op WriteBatch is the
+			// supported equivalent.
+			rocksdb::WriteBatch stampedWrite;
+			status = stampedWrite.Put(
+				(*dbHandle)->getColumnFamilyHandle(),
+				rocksdb::SliceParts(&keyPart, 1),
+				rocksdb::SliceParts(valueParts, 2)
+			);
+			if (status.ok()) {
+				status = (*dbHandle)->descriptor->db->Write(writeOptions, &stampedWrite);
+			}
+		} else
 		status = (*dbHandle)->descriptor->db->Put(
 			writeOptions,
 			(*dbHandle)->getColumnFamilyHandle(),

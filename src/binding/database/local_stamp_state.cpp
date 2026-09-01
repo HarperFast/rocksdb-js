@@ -2,11 +2,14 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include "rocksdb/iterator.h"
 #include "rocksdb/write_batch.h"
 #include "core/encoding.h"
 #include "core/exception.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 
 namespace rocksdb_js {
 
@@ -118,6 +121,7 @@ void LocalStampState::extendReserve(double target) {
 		throw rocksdb_js::DBException(
 			"Failed to persist the local-stamp reserve ceiling: " + status.ToString());
 	}
+	crashIfArmed("after-reserve-extend");
 	// Publish only after the ceiling is durable (the reserve invariant).
 	this->reserve.store(localStampToBits(newCeiling), std::memory_order_release);
 }
@@ -178,6 +182,37 @@ void LocalStampState::shutdown() {
 	if (extender.joinable()) {
 		extender.join();
 	}
+}
+
+double readStampFloorArtifacts(const std::vector<std::string>& logDirs) {
+	double best = 0.0;
+	for (const auto& dir : logDirs) {
+		if (dir.empty()) continue;
+		for (const char* name : { STAMP_FLOOR_ARTIFACT_NAME, STAMP_FLOOR_ARTIFACT_PENDING_NAME }) {
+			const std::filesystem::path path = std::filesystem::path(dir) / name;
+			std::error_code ec;
+			if (!std::filesystem::exists(path, ec) || ec) continue;
+			std::ifstream in(path, std::ios::binary);
+			char bytes[STAMP_FLOOR_ARTIFACT_SIZE];
+			if (!in || !in.read(bytes, sizeof bytes)) {
+				throw rocksdb_js::DBException(
+					"Corrupt local-stamp floor artifact (short read): " + path.string());
+			}
+			if (std::memcmp(bytes, STAMP_FLOOR_ARTIFACT_TOKEN, 4) != 0) {
+				throw rocksdb_js::DBException(
+					"Corrupt local-stamp floor artifact (bad token): " + path.string());
+			}
+			const double ceiling = readDoubleBE(bytes + 4);
+			const uint64_t complement = readUint64BE(bytes + 12);
+			if (complement != ~localStampToBits(ceiling) || !std::isfinite(ceiling) ||
+				ceiling < 0.0 || ceiling >= LOCAL_STAMP_MAX) {
+				throw rocksdb_js::DBException(
+					"Corrupt local-stamp floor artifact: " + path.string());
+			}
+			if (ceiling > best) best = ceiling;
+		}
+	}
+	return best;
 }
 
 StampMetaContents loadStampMeta(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* metaCf) {

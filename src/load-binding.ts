@@ -124,6 +124,7 @@ export type NativeTransaction = {
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
+	getCommittedLocalTime(): number | undefined;
 	getTimestamp(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
@@ -326,6 +327,19 @@ export type NativeDatabaseOptions = {
 	 * cached (e.g. the primary CF of a table). Default: false.
 	 */
 	verificationTable?: boolean;
+	/**
+	 * Commit-time local mutation stamping (dual-clock stage 1). Tri-state:
+	 * `true` enables stamping for this column family (first activation requires
+	 * the enabling open to be the database's exclusive first open); absent
+	 * inherits the live value or the durable marker; explicit `false` conflicts
+	 * with a marked/enabled column family instead of silently bypassing the
+	 * stamped-value contract. When enabled, rocksdb-js owns the first 8 bytes
+	 * of every value on this column family (values must be >= 8 bytes), the
+	 * database's transaction-log batch keys become receiver-local stamps, and a
+	 * durable clock floor is maintained in a hidden metadata column family.
+	 * DORMANT by default: no behavior changes without this option.
+	 */
+	commitStamping?: boolean;
 	writeBufferSize?: number;
 };
 
@@ -667,6 +681,7 @@ export const BackgroundError: new (
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
+export const HAS_DISTINCT_VERSION_FLAG: number = binding.constants.HAS_DISTINCT_VERSION_FLAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;
 export const removeGlobalListener: (event: string, callback: (...args: any[]) => void) => boolean =
@@ -694,6 +709,13 @@ export const constants: {
 	 * cannot enforce this flag.
 	 */
 	VERSION_NOT_UNIQUE_FLAG: number;
+	/**
+	 * Producer flag in the same metadata word: the record carries a distinct 8-byte big-endian
+	 * version word at offset 12, its first word being the receiver-local mutation stamp
+	 * (`localTime`) assigned by commit stamping (dual-clock stage 2, harper#2412). Written by the
+	 * producer; decoded by `getEntry()`.
+	 */
+	HAS_DISTINCT_VERSION_FLAG: number;
 	/**
 	 * Sentinel value resolved (not rejected) by `commit()` when
 	 * `coordinatedRetry: true` and the transaction encountered an IsBusy

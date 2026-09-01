@@ -638,6 +638,53 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
+18. **Commit stamping owns the first word and the log key on an enabled database — dormant
+    otherwise**: `commitStamping` (dual-clock stage 1, #811; design in
+    `docs/design/local-mutation-stamping.md`) is tri-state and DORMANT by default — with no marker
+    and no option, `DBDescriptor::stampState` is null and every stamping code path is behind that
+    null check (byte-identical writes; the only added default-path work is the flag branch). When
+    enabled, one receiver-local stamp is claimed per commit (`core/local_stamp.{h,cpp}` —
+    lock-free keep-if-greater CAS against a per-descriptor watermark; caller-supplied candidates
+    are skew-bounded, receiver-generated candidates skip the clock read) and lands identically in
+    every stamped record's first 8 bytes and as the transaction-log batch key. Non-obvious points:
+    - **The claim happens under the log store's `writeMutex`** (`TransactionLogStore::writeBatch`)
+      so append order equals claim order — strict per-segment key monotonicity — but **reserve
+      I/O must never happen under that mutex**: `ensureHeadroom` runs before the lock, and the
+      under-lock claim (`tryClaimNoExtend`) retries through unlock→extend→relock. No-log commits
+      claim in `executeLogWork`/`CommitSync` (`finalizeLocalStamp`), where every failure converts
+      to the commit status — nothing may unwind into `CommitWorker::run`, which has no catch.
+    - **The stamp is pinned once the WAL batch is durable** (`TransactionHandle::localStamp`
+      survives `resetTransaction` alongside `committedPosition`, #668): a retried commit
+      re-applies the SAME stamp to its re-put records — the only alternative diverges record
+      first words from the durable batch key. Consequence: stamps order by claim, not per-key
+      commit order across a lost conflict; consumers use equality/positions.
+    - **Values are staged, never mutated**: `putSync` writes the candidate through `SliceParts`
+      (stack prefix + caller bytes 8..), so shared/SAB-backed buffers can't observe a transient
+      stamp; values < 8 bytes on a stamped CF are rejected. Re-stamping rebuilds the batch via
+      `RebuildFromWriteBatch`, whose verified 11.8.1 semantics are **append, not replace**
+      (`test/native/restamp_rebuild_test.cc` is the acceptance gate: terminal-state-exact because
+      the full-order copy is appended — a puts-only re-put would resurrect `Put→Delete` keys —
+      and conflict tracking survives at original sequence numbers). ~2× batch bytes on the
+      re-stamp path only; budgets in `stress-test/commit-stamping-budgets.stress.test.ts`.
+    - **Durable clock state lives in the hidden metadata CF** (`__rocksdbjs.meta`, name reserved
+      at open): schema row, reserve ceiling (no stamp is ever issued above the durable ceiling;
+      extension is single-flight on a state-owned thread), clean-close floor (invalidated
+      durably during open's reconciliation batch — lazy deletion would let a crash resurrect a
+      stale floor), CF markers keyed by **CF ID** (drop/recreate safe; rows never deleted), and
+      per-log domain generations (a pre-activation active segment rotates before its first
+      stamped append). Backups/checkpoints/streams inherit it as CF data; mixed DB+log backups
+      also carry a `STAMP_FLOOR` artifact in the log snapshot which restore publishes as
+      `.stamp-floor-pending` in the destination BEFORE the destructive DB restore and open
+      reconciles (max-fold, idempotent, corrupt fails closed).
+    - **Activation is exclusive and one-way**: first enable only while constructing the
+      descriptor (`DBRegistry::OpenDB` rejects enabling an existing CF on a live descriptor —
+      a racing direct put could straddle the marker); a marked CF opened without the option IS
+      enabled (the data format demands stamping); explicit `false` fails closed. New CFs may be
+      created stamped on an activated database (marker lands before the CF is visible).
+    - The fault matrix (`test/stamp-crash.test.ts` + `ROCKSDB_JS_CRASH_POINT`, env-armed at
+      startup only — never a runtime setter) proves no record-word/batch-key divergence survives
+      a crash at any stamping/WAL boundary, and the floor never re-mints a durable stamp.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

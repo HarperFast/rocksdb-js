@@ -1354,6 +1354,21 @@ static std::shared_ptr<LocalStampState> setupLocalStamping(
 	state->logDomainGeneration.store(contents.logDomainGeneration, std::memory_order_release);
 	state->logGenerations = contents.logGenerations;
 
+	// Fold the backup floor artifacts (a restored store's logs can carry stamps
+	// above the restored metadata ceiling — the DB-snapshot-before-log-snapshot
+	// race; §3.7). The artifact stays in place: reconciliation is idempotent.
+	{
+		std::vector<std::string> logDirs;
+		if (!options.transactionLogsPath.empty()) {
+			logDirs.push_back(options.transactionLogsPath);
+		}
+		logDirs.push_back((std::filesystem::path(path) / "transaction_logs").string());
+		const double artifactFloor = readStampFloorArtifacts(logDirs);
+		if (artifactFloor > contents.reserve) {
+			contents.reserve = artifactFloor;
+		}
+	}
+
 	// Seed: the clean-close floor when the last shutdown was orderly (no skew),
 	// else the reserve ceiling (a crash consumes at most one reserve window of
 	// logical skew).
