@@ -1,4 +1,5 @@
 #include "transaction_log_file.h"
+#include "core/test_seam.h"
 
 #ifdef PLATFORM_WINDOWS
 
@@ -517,6 +518,12 @@ int64_t TransactionLogFile::writeBatchToFile(iovec* iovecs, int iovcnt, int64_t&
 	int64_t totalBytesWritten = 0;
 
 	for (int i = 0; i < iovcnt; i++) {
+		// Fault-matrix F2 (docs/design/local-mutation-stamping.md §5): die after a
+		// prefix of a multi-entry batch has landed, leaving a torn append. Gated
+		// to large batches like the POSIX first-writev-chunk seam.
+		if (i == 1024 && iovcnt > 1024) {
+			crashIfArmed("mid-log-append");
+		}
 		char* basePtr = static_cast<char*>(iovecs[i].iov_base);
 		size_t remaining = iovecs[i].iov_len;
 
