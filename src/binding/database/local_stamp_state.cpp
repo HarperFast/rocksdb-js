@@ -10,6 +10,7 @@
 #include "core/exception.h"
 #include "core/platform.h"
 #include "core/test_seam.h"
+#include "napi/global_events.h"
 
 namespace rocksdb_js {
 
@@ -79,8 +80,15 @@ void LocalStampState::ensureHeadroom(double candidate, bool candidateIsReceiverT
 void LocalStampState::scheduleProactiveExtensionIfNearMargin() {
 	const double watermarkValue = localStampFromBits(this->watermark.load(std::memory_order_acquire));
 	const double ceiling = localStampFromBits(this->reserve.load(std::memory_order_acquire));
-	if (watermarkValue + STAMP_RESERVE_MARGIN_MS < ceiling ||
-		this->extensionScheduled.exchange(true, std::memory_order_acq_rel)) {
+	if (watermarkValue + STAMP_RESERVE_MARGIN_MS < ceiling) {
+		return;
+	}
+	const double backoffUntil =
+		localStampFromBits(this->renewBackoffUntil.load(std::memory_order_acquire));
+	if (backoffUntil > 0 && getMonotonicTimestamp() < backoffUntil) {
+		return;
+	}
+	if (this->extensionScheduled.exchange(true, std::memory_order_acq_rel)) {
 		return;
 	}
 	// Single-flight, state-owned thread; failure is not a commit failure — the
@@ -159,8 +167,18 @@ void LocalStampState::renewReserve() {
 			writeOptions, this->metaCf.get(),
 			rocksdb::Slice(STAMP_META_KEY_RESERVE), rocksdb::Slice(value, sizeof value));
 		if (!status.ok()) {
-			return; // the claim path re-extends synchronously when headroom runs out
+			// Name the cause and back off: the claim path re-extends synchronously
+			// when headroom actually runs out, but per-claim renewal churn under a
+			// persistently failing metadata volume must not reach the JS thread.
+			this->renewBackoffUntil.store(
+				localStampToBits(getMonotonicTimestamp() + 5000.0), std::memory_order_release);
+			emitGlobalEvent(
+				"localStamp:warning",
+				ListenerData::fromStrings(
+					{ "Failed to renew the local-stamp reserve ceiling: " + status.ToString() }));
+			return;
 		}
+		this->renewBackoffUntil.store(0, std::memory_order_release);
 		this->reserve.store(localStampToBits(newCeiling), std::memory_order_release);
 	} catch (...) {
 	}

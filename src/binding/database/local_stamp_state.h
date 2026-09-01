@@ -80,6 +80,9 @@ struct LocalStampState final : std::enable_shared_from_this<LocalStampState> {
 	std::mutex extendMutex;
 	std::atomic<bool> closed{false};
 	std::atomic<bool> extensionScheduled{false};
+	// Backoff after a failed proactive renewal (float64 ms bits): prevents
+	// per-claim thread churn under a persistently failing metadata volume.
+	std::atomic<uint64_t> renewBackoffUntil{0};
 
 	// Proactive margin-triggered extension runs on this state-owned thread (a
 	// plain std::thread like ParkTimeoutRegistry's — libuv structs are not part

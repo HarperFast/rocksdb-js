@@ -10,11 +10,11 @@ import {
 import { validateTransactionLogStore } from './validate-transaction-log.ts';
 import {
 	access,
-	copyFile,
 	cp,
 	mkdir,
 	open as openFile,
 	readdir,
+	readFile,
 	rename,
 	rm,
 } from 'node:fs/promises';
@@ -404,22 +404,25 @@ async function publishPendingStampFloor(logsSrc: string, dbDir: string): Promise
 	// then fsync the directory entry.
 	const pending = join(logsDest, STAMP_FLOOR_PENDING_NAME);
 	const staging = `${pending}.staging`;
-	await copyFile(artifactSrc, staging);
-	// 'r' suffices for fsync and works when copyFile preserved a read-only
-	// mode from a WORM/immutable backup source.
-	let handle = await openFile(staging, 'r');
+	// Write the 20 artifact bytes fresh instead of copyFile: copyFile inherits
+	// the source mode, and a 0444 WORM source would break the Windows sync
+	// (FlushFileBuffers needs GENERIC_WRITE) and a repeat restore's rename over
+	// a read-only target.
+	const artifactBytes = await readFile(artifactSrc);
+	const handle = await openFile(staging, 'w');
 	try {
+		await handle.writeFile(artifactBytes);
 		await handle.sync();
 	} finally {
 		await handle.close();
 	}
 	await rename(staging, pending);
 	try {
-		handle = await openFile(logsDest, 'r');
+		const directoryHandle = await openFile(logsDest, 'r');
 		try {
-			await handle.sync();
+			await directoryHandle.sync();
 		} finally {
-			await handle.close();
+			await directoryHandle.close();
 		}
 	} catch (error) {
 		// Platforms that cannot fsync a directory handle (Windows) are the only

@@ -581,12 +581,15 @@ static void executeCommitWork(TransactionCommitState* state) {
 			if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
 				state->savedSlots = txnHandle->lockedVTSlots;
 			}
+		}
 
-			// Release VT locks that were installed at putSync/removeSync
-			// time, regardless of commit outcome (success or IsBusy).
-			if (!txnHandle->lockedVTSlots.empty()) {
-				txnHandle->releaseIntent();
-			}
+		// Release VT locks that were installed at putSync/removeSync time,
+		// regardless of outcome — INCLUDING a failed log/finalize stage that
+		// skipped the RocksDB commit entirely: leaving intents installed until
+		// the handle is finalized starves conflicting coordinated-retry parks
+		// and cache reads for the whole window.
+		if (!txnHandle->lockedVTSlots.empty()) {
+			txnHandle->releaseIntent();
 		}
 
 		// Publish the log entries (advance the committed-read watermark) only when the data
