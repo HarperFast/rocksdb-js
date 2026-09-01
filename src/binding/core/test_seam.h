@@ -30,19 +30,34 @@ inline std::atomic<int>& forceTryAgainCounter() {
 	return counter;
 }
 
-// Test-only latch for DBRegistry::DropColumnFamily: milliseconds the drop sleeps while holding
-// databasesMutex, between the successful RocksDB drop and the registry cleanup — i.e. exactly
-// where a warm DBRegistry::OpenDB would slip in if that section ever released the mutex early.
-// Armed from JS rather than an env var for the same reason as forceTryAgainCounter() above.
-// 0 = inert.
+// Test-only latch for DBRegistry::DropColumnFamily, armed from JS rather than an env var for the
+// same reason as forceTryAgainCounter() above. When armed, a successful drop parks between the
+// RocksDB drop and the registry cleanup — exactly where a warm DBRegistry::OpenDB would slip in
+// if that section ever released databasesMutex early — until an open has reached that mutex, and
+// then for this many further milliseconds. Anchoring the hold to the opener's arrival rather than
+// to a timer is what makes the interleaving a fact instead of an assumption. 0 = inert, and the
+// counters below are then maintained by neither side.
 inline std::atomic<int>& dropColumnFamilyDelayMs() {
 	static std::atomic<int> ms{0};
 	return ms;
 }
 
-// Incremented each time an armed drop enters that sleep, so a test thread can wait for the drop
-// to be provably inside the critical section instead of guessing with a timer.
-inline std::atomic<uint32_t>& dropColumnFamilyDelayCount() {
+// Incremented as an armed drop enters the latch, so a test thread knows when the drop is provably
+// inside the critical section, and again once that drop has seen an opener reach the registry
+// mutex, so the test can assert the interleaving happened rather than hoping it did.
+inline std::atomic<uint32_t>& dropColumnFamilyLatchEntered() {
+	static std::atomic<uint32_t> count{0};
+	return count;
+}
+
+inline std::atomic<uint32_t>& dropColumnFamilyLatchObservedOpen() {
+	static std::atomic<uint32_t> count{0};
+	return count;
+}
+
+// Incremented by DBRegistry::OpenDB immediately before it acquires databasesMutex, but only while
+// the latch is armed — production pays one relaxed load per open.
+inline std::atomic<uint32_t>& openDbMutexAttempts() {
 	static std::atomic<uint32_t> count{0};
 	return count;
 }

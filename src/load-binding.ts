@@ -968,11 +968,14 @@ export const delayDropColumnFamilyForTesting: (ms: number) => void =
 	binding.delayDropColumnFamilyForTesting;
 
 /**
- * Test-only: how many drops have entered that latch. Monotonic and process-wide, so a waiter
- * compares against a baseline it read before arming.
+ * Test-only: how many drops have parked in that latch (`entered`), and how many of those saw an
+ * open reach the registry mutex (`observedOpen`). Both are monotonic and process-wide, so a
+ * waiter compares against baselines it read before arming.
  */
-export const dropColumnFamilyDelayCountForTesting: () => number =
-	binding.dropColumnFamilyDelayCountForTesting;
+export const dropColumnFamilyLatchStatsForTesting: () => {
+	entered: number;
+	observedOpen: number;
+} = binding.dropColumnFamilyLatchStatsForTesting;
 
 /**
  * Creates a native file lock using the specified file path (`flock` on POSIX,

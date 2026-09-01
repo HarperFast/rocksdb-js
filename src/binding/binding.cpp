@@ -76,14 +76,21 @@ napi_value DelayDropColumnFamilyForTesting(napi_env env, napi_callback_info info
 }
 
 /**
- * Test-only: how many drops have entered that latch. See core/test_seam.h.
+ * Test-only: `{ entered, observedOpen }` for that latch — how many drops have parked in it, and
+ * how many of those saw an open reach the registry mutex. See core/test_seam.h.
  */
-napi_value DropColumnFamilyDelayCountForTesting(napi_env env, napi_callback_info info) {
+napi_value DropColumnFamilyLatchStatsForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	napi_value result;
+	napi_value result, entered, observedOpen;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
 	NAPI_STATUS_THROWS(::napi_create_uint32(
-		env, dropColumnFamilyDelayCount().load(std::memory_order_relaxed), &result
+		env, dropColumnFamilyLatchEntered().load(std::memory_order_relaxed), &entered
 	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "entered", entered));
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env, dropColumnFamilyLatchObservedOpen().load(std::memory_order_relaxed), &observedOpen
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "observedOpen", observedOpen));
 	return result;
 }
 
@@ -296,9 +303,9 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "delayDropColumnFamilyForTesting", NAPI_AUTO_LENGTH, DelayDropColumnFamilyForTesting, nullptr, &delayDropCfFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "delayDropColumnFamilyForTesting", delayDropCfFn));
 
-	napi_value dropCfDelayCountFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "dropColumnFamilyDelayCountForTesting", NAPI_AUTO_LENGTH, DropColumnFamilyDelayCountForTesting, nullptr, &dropCfDelayCountFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "dropColumnFamilyDelayCountForTesting", dropCfDelayCountFn));
+	napi_value dropCfLatchStatsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "dropColumnFamilyLatchStatsForTesting", NAPI_AUTO_LENGTH, DropColumnFamilyLatchStatsForTesting, nullptr, &dropCfLatchStatsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "dropColumnFamilyLatchStatsForTesting", dropCfLatchStatsFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

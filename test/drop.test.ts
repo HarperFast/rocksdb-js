@@ -1,7 +1,7 @@
 import { RocksDatabase } from '../src/index.ts';
 import {
 	delayDropColumnFamilyForTesting,
-	dropColumnFamilyDelayCountForTesting,
+	dropColumnFamilyLatchStatsForTesting,
 } from '../src/load-binding.ts';
 import type { Transaction } from '../src/transaction.ts';
 import { dbRunner, terminateWorker } from './lib/util.ts';
@@ -306,13 +306,17 @@ describe('Drop', () => {
 	// handed the already-dropped RocksDB column family: the open succeeded and
 	// every write through it was silently discarded.
 	//
-	// The latch makes the interleaving deterministic instead of timed: the
-	// worker waits for the drop to be provably inside its critical section
-	// before opening, so a slow worker can only weaken the test, never fail it.
+	// The latch makes the interleaving a fact rather than a timing assumption:
+	// the worker opens only once the drop has parked mid-section, and the drop
+	// holds on only once that open has reached the registry mutex. `observedOpen`
+	// is what proves the two actually met, so a starved worker fails the test
+	// instead of quietly passing it.
 	it('should not hand a concurrent warm open the column family it is dropping', () =>
 		dbRunner({ dbOptions: [{ name: 'racy' }] }, async ({ db, dbPath }) => {
-			const delayMs = 1000;
 			db.putSync('before-drop', 'value');
+			// The latch counters are process-wide and monotonic, so a rerun in this
+			// process must compare against a baseline rather than against zero.
+			const baseline = dropColumnFamilyLatchStatsForTesting();
 
 			const worker = new Worker(
 				createWorkerBootstrapScript('./test/workers/drop-warm-open-worker.mts'),
@@ -321,9 +325,7 @@ describe('Drop', () => {
 					workerData: {
 						dbPath,
 						columnName: 'racy',
-						// The counter is process-wide and monotonic, so a rerun in this
-						// process must wait for an increment, not for a nonzero value.
-						baselineDelayCount: dropColumnFamilyDelayCountForTesting(),
+						baselineEntered: baseline.entered,
 						waitTimeoutMs: 10_000,
 					},
 				}
@@ -365,21 +367,19 @@ describe('Drop', () => {
 				// The worker is spinning on the latch counter by the time it reports
 				// ready, so arming now cannot be missed.
 				await workerReady;
-				delayDropColumnFamilyForTesting(delayMs);
-
-				const dropStartedAt = Date.now();
+				delayDropColumnFamilyForTesting(250);
 				db.dropSync();
+
+				const stats = dropColumnFamilyLatchStatsForTesting();
+				expect(stats.entered).toBe(baseline.entered + 1);
+				// The worker's open really did reach the registry mutex while the drop
+				// was mid-section...
+				expect(stats.observedOpen).toBe(baseline.observedOpen + 1);
 
 				const event = await result;
 				expect(event.error).toBeUndefined();
-				// The latch starts after the RocksDB drop, so the open cannot return
-				// before `dropStartedAt + delayMs` unless it slipped into a gap in the
-				// critical section. Scheduling can only push the open later, so this
-				// never fails for a starved worker (the clock-granularity slack keeps
-				// a coarse Windows timer from tipping the boundary).
-				expect(event.openEndedAt).toBeGreaterThanOrEqual(dropStartedAt + delayMs - 50);
-				// ...and it got a fresh family whose writes actually land, not the
-				// dropped one whose writes RocksDB discards.
+				// ...and it still came back with a fresh family whose writes land,
+				// not the dropped one whose writes RocksDB discards.
 				expect(event.readBack).toBe('value');
 				expect(event.columns).toContain('racy');
 			} finally {

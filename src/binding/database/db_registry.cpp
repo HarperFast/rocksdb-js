@@ -369,7 +369,17 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 
 	// Test-only latch; inert unless armed. See core/test_seam.h.
 	if (const int delayMs = dropColumnFamilyDelayMs().load(std::memory_order_relaxed); delayMs > 0) {
-		dropColumnFamilyDelayCount().fetch_add(1, std::memory_order_relaxed);
+		const uint32_t opensBefore = openDbMutexAttempts().load(std::memory_order_relaxed);
+		dropColumnFamilyLatchEntered().fetch_add(1, std::memory_order_relaxed);
+		const auto barrierDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (openDbMutexAttempts().load(std::memory_order_relaxed) == opensBefore &&
+			std::chrono::steady_clock::now() < barrierDeadline
+		) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (openDbMutexAttempts().load(std::memory_order_relaxed) != opensBefore) {
+			dropColumnFamilyLatchObservedOpen().fetch_add(1, std::memory_order_relaxed);
+		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 	}
 
@@ -438,6 +448,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
+	// Test-only: lets a parked drop know an open has reached this mutex. See core/test_seam.h.
+	if (dropColumnFamilyDelayMs().load(std::memory_order_relaxed) > 0) {
+		openDbMutexAttempts().fetch_add(1, std::memory_order_relaxed);
+	}
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
 	// get or create entry for this path + mode + readOnly combination
