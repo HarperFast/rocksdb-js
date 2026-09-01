@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <memory>
 #include <system_error>
 #include <unordered_map>
@@ -32,6 +33,30 @@ static std::atomic<uint64_t> vtEpochCounter{1};
 
 static uint64_t nextVtEpoch() {
 	return vtEpochCounter.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void warnRefusedWritableDestroyPaths(
+	const std::shared_ptr<rocksdb::DB>& db,
+	const std::string& path
+) {
+	auto infoLog = db->GetDBOptions().info_log;
+	if (infoLog) {
+		rocksdb::Log(
+			rocksdb::InfoLogLevel::WARN_LEVEL,
+			infoLog,
+			"rocksdb-js refused non-append-only db_paths for the retained destroy layout of %s; "
+			"destroy will continue using the previously retained path list",
+			path.c_str()
+		);
+	} else {
+		::fprintf(
+			stderr,
+			"rocksdb-js warning: refused non-append-only db_paths for the retained "
+			"destroy layout of %s; destroy will continue using the previously retained "
+			"path list\n",
+			path.c_str()
+		);
+	}
 }
 
 // A column family's persisted per-CF options, recovered from the on-disk OPTIONS
@@ -1843,7 +1868,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 	descriptor->layoutDbPaths = dbOptions.db_paths;
 	descriptor->layoutBlobDirs = std::move(layoutBlobDirs);
-	DBRegistry::RecordLayout(path, descriptor->captureLayout(), !options.readOnly);
+	if (!DBRegistry::RecordLayout(path, descriptor->captureLayout(), !options.readOnly) &&
+		!options.readOnly
+	) {
+		warnRefusedWritableDestroyPaths(descriptor->db, path);
+	}
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -2706,7 +2735,11 @@ void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::
 		this->layoutBlobDirs[name] = blobDir;
 		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
 	}
-	DBRegistry::RecordLayout(this->path, std::move(layout), !this->readOnly);
+	if (!DBRegistry::RecordLayout(this->path, std::move(layout), !this->readOnly) &&
+		!this->readOnly
+	) {
+		warnRefusedWritableDestroyPaths(this->db, this->path);
+	}
 }
 
 void DBDescriptor::removeColumnFamilyLayout(const std::string& name) {

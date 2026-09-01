@@ -604,6 +604,34 @@ describe('paths', () => {
 		expect(filesWithExt(neighborVolume, '.sst')).toEqual(neighborFiles);
 	});
 
+	it('should log a refused writable destroy-layout change', () => {
+		const dbPath = tempPath();
+		const retainedVolume = tempDir();
+		const refusedVolume = tempDir();
+
+		const first = openDb(dbPath, {
+			paths: [
+				{ path: dbPath, targetSize: 0 },
+				{ path: retainedVolume, targetSize: 1 << 30 },
+			],
+		});
+		first.close();
+
+		const divergent = openDb(dbPath, {
+			paths: [
+				{ path: dbPath, targetSize: 0 },
+				{ path: refusedVolume, targetSize: 1 << 30 },
+			],
+		});
+		divergent.close();
+
+		const logs = readdirSync(dbPath)
+			.filter((name) => name.startsWith('LOG'))
+			.map((name) => readFileSync(join(dbPath, name), 'utf8'))
+			.join('\n');
+		expect(logs).toContain('refused non-append-only db_paths for the retained destroy layout');
+	});
+
 	it('should refuse to add paths while the database is already open untiered', () => {
 		const dbPath = tempPath();
 		const fast = tempDir();
@@ -1515,7 +1543,7 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		}
 	);
 
-	it('should remove a dropped family from the live destroy layout', () => {
+	it('should not re-record a dropped family blob directory after a warm create', () => {
 		const oldDbPath = tempPath();
 		const replacementDbPath = tempPath();
 		const reusedBlobDir = tempDir();
@@ -1527,6 +1555,8 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 
 		dropped.dropSync();
 		dropped.close();
+		const warm = openDb(oldDbPath, { name: 'warm' });
+		warm.close();
 		const replacement = openDb(replacementDbPath, { blobs: { dir: reusedBlobDir } });
 		replacement.putSync('live', largeValue(3));
 		replacement.flushSync();

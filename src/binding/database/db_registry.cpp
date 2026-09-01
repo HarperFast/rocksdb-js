@@ -165,8 +165,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
 
-	// The retained record is canonical, including empty path and blob-directory
-	// values; a live reader's frozen snapshot must not expand deletion targets.
+	// The retained record is canonical, including empty values.
 	std::unordered_map<std::string, std::string> destroyBlobDirs;
 	auto applyLayout = [&](const DBFileLayout& layout) {
 		destroyOptions.db_paths = layout.dbPaths;
@@ -314,21 +313,21 @@ void DBRegistry::DestroyDB(const std::string& path) {
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
  *
- * Writable opens may extend `db_paths`; readers may refresh OPTIONS-derived
- * blob directories but cannot add destroy targets. Empty layouts are retained
- * because they are authoritative default placements, not missing state.
+ * Path authority and default-marker retention are AGENTS invariant 18.
  */
-void DBRegistry::RecordLayout(
+bool DBRegistry::RecordLayout(
 	const std::string& path,
 	DBFileLayout layout,
 	bool writableOpen
 ) {
 	if (!instance) {
-		return;
+		return true;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 	auto known = instance->knownLayouts.try_emplace(path).first;
-	if (!updateRetainedDestroyLayout(known->second, std::move(layout), writableOpen)) {
+	const bool pathsAccepted =
+		updateRetainedDestroyLayout(known->second, std::move(layout), writableOpen);
+	if (!pathsAccepted) {
 		DEBUG_LOG(
 			"%p DBRegistry::RecordLayout Refused %s db_paths change for \"%s\"\n",
 			instance.get(),
@@ -336,6 +335,7 @@ void DBRegistry::RecordLayout(
 			path.c_str()
 		);
 	}
+	return pathsAccepted;
 }
 
 /**

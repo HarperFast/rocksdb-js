@@ -89,13 +89,9 @@ private:
 	 * read from — with it. `db_paths` is written nowhere (RocksDB serializes it
 	 * in its "not yet supported" block), so nothing on disk can put it back.
 	 *
-	 * Keyed by path rather than by handle, so a handle closed before a later
-	 * open appended a storage path cannot destroy from its own older copy.
-	 * Retained across `PurgeAll`, deliberately: that is reached from the public
-	 * `shutdown()`, and a handle retained across it can still be destroyed.
-	 * `destroy()` erases the whole path; a successful column-family drop removes
-	 * that family's entry. Default layouts remain as authoritative empty markers,
-	 * so a later reader cannot turn an unrelated directory into a destroy target.
+	 * Keyed by path rather than by handle and retained across `PurgeAll`, which is
+	 * reached from the public `shutdown()`. Authority, default-marker lifetime,
+	 * and column-family drop rules are AGENTS invariant 18.
 	 *
 	 * Its own mutex, deliberately a leaf: `DropColumnFamily` reaches a descriptor's
 	 * `layoutMutex` while holding `databasesMutex`, so anything recording a
@@ -120,7 +116,7 @@ public:
 		const std::string& columnName,
 		rocksdb::ColumnFamilyHandle* column
 	);
-	static void RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
+	static bool RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
