@@ -8,7 +8,16 @@ import {
 	nativeBackupVerify,
 } from './load-binding.ts';
 import { validateTransactionLogStore } from './validate-transaction-log.ts';
-import { access, copyFile, cp, mkdir, open as openFile, readdir, rm } from 'node:fs/promises';
+import {
+	access,
+	copyFile,
+	cp,
+	mkdir,
+	open as openFile,
+	readdir,
+	rename,
+	rm,
+} from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 
 /** Subdirectory (under a backup directory) holding per-backup transaction log snapshots. */
@@ -373,13 +382,29 @@ async function publishPendingStampFloor(logsSrc: string, dbDir: string): Promise
 	}
 	const logsDest = join(dbDir, TRANSACTION_LOGS_DIRNAME);
 	await mkdir(logsDest, { recursive: true });
+	// Atomic publication: a crash mid-copy onto the final name would leave a
+	// torn artifact that fails every later open closed. Stage, fsync, rename,
+	// then fsync the directory entry.
 	const pending = join(logsDest, STAMP_FLOOR_PENDING_NAME);
-	await copyFile(artifactSrc, pending);
-	const handle = await openFile(pending, 'r+');
+	const staging = `${pending}.staging`;
+	await copyFile(artifactSrc, staging);
+	let handle = await openFile(staging, 'r+');
 	try {
 		await handle.sync();
 	} finally {
 		await handle.close();
+	}
+	await rename(staging, pending);
+	try {
+		handle = await openFile(logsDest, 'r');
+		try {
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		// Directory fsync is best-effort where unsupported (matches the native
+		// backup writer's discipline).
 	}
 }
 

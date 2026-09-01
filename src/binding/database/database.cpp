@@ -220,6 +220,11 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 		const auto& columns = (*dbHandle)->descriptor->columns;
 		columnNames.reserve(columns.size());
 		for (const auto& [name, _column] : columns) {
+			// The internal metadata CF is not part of the public column list — a
+			// consumer reopening what it listed would hit the reserved-name check.
+			if (name == STAMP_META_CF_NAME) {
+				continue;
+			}
 			columnNames.push_back(name);
 		}
 	}
@@ -2137,8 +2142,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			*dbHandle
 		);
 	} else {
-		// Commit stamping: validate and claim BEFORE the VT write-intent lock so
-		// no failure path (short value, reserve I/O error) can leak the intent.
+		// Claim BEFORE the VT write-intent lock so no failure path leaks it.
 		const bool stampedCf = (*dbHandle)->columnDescriptor &&
 			(*dbHandle)->columnDescriptor->commitStamping;
 		auto stampState = stampedCf ? (*dbHandle)->descriptor->stampState : nullptr;
@@ -2150,8 +2154,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 				return nullptr;
 			}
 			try {
-				// Direct writes claim a fresh receiver-time stamp (always the keep
-				// path).
 				stamp = stampState->claim(rocksdb_js::getMonotonicTimestamp(), true);
 			} catch (const std::exception& e) {
 				::napi_throw_error(env, nullptr, e.what());
@@ -2181,8 +2183,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
 		if (stampState) {
-			// Stage the claimed stamp through SliceParts so the caller's buffer is
-			// never mutated.
 			char stampPrefix[8];
 			writeDoubleBE(stampPrefix, stamp);
 			rocksdb::Slice keyPart(key + keyStart, keyEnd - keyStart);
@@ -2190,8 +2190,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 				rocksdb::Slice(stampPrefix, sizeof stampPrefix),
 				rocksdb::Slice(value + valueStart + 8, (valueEnd - valueStart) - 8),
 			};
-			// DB::Put has no SliceParts overload; a single-op WriteBatch is the
-			// supported equivalent.
+			// DB::Put has no SliceParts overload.
 			rocksdb::WriteBatch stampedWrite;
 			status = stampedWrite.Put(
 				(*dbHandle)->getColumnFamilyHandle(),
@@ -2201,13 +2200,14 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			if (status.ok()) {
 				status = (*dbHandle)->descriptor->db->Write(writeOptions, &stampedWrite);
 			}
-		} else
-		status = (*dbHandle)->descriptor->db->Put(
-			writeOptions,
-			(*dbHandle)->getColumnFamilyHandle(),
-			keySlice,
-			valueSlice
-		);
+		} else {
+			status = (*dbHandle)->descriptor->db->Put(
+				writeOptions,
+				(*dbHandle)->getColumnFamilyHandle(),
+				keySlice,
+				valueSlice
+			);
+		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
 		}

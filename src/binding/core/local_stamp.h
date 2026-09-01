@@ -8,20 +8,12 @@
 namespace rocksdb_js {
 
 /**
- * Commit-time local mutation stamp allocator (dual-clock stage 1).
- *
- * A stamp is a positive float64 in milliseconds-since-epoch space, claimed at
- * commit against a per-database watermark with a keep-if-greater shortcut:
- * a candidate above every previously claimed stamp is kept, otherwise a fresh
- * receiver-time value is minted. The compare-and-swap claim admits any given
- * double at most once per database, which is what makes stamps unique per
- * write even when callers supply duplicate or origin-derived timestamps.
- *
- * Durability contract: no claim may exceed the persisted reserve ceiling
- * (see docs/design/local-mutation-stamping.md §3.7). This module is Node-free
- * and does no I/O — a claim that needs more ceiling reports NeedsReserve and
- * the caller extends the reserve durably before retrying, never while holding
- * a transaction-log append mutex.
+ * Commit-time local mutation stamp allocator (dual-clock stage 1;
+ * docs/design/local-mutation-stamping.md). The CAS claim admits any given
+ * double at most once per database — uniqueness holds even for duplicate or
+ * origin-derived candidates — and no claim may exceed the durable reserve
+ * ceiling: NeedsReserve is extended by the caller, never under a
+ * transaction-log append mutex.
  */
 
 // Upper bound of the stamp domain (harper's MAX_DATE_TIMESTAMP). No candidate,

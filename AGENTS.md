@@ -642,7 +642,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     otherwise**: `commitStamping` (dual-clock stage 1, #811; design in
     `docs/design/local-mutation-stamping.md`) is tri-state and DORMANT by default — with no marker
     and no option, `DBDescriptor::stampState` is null and every stamping code path is behind that
-    null check (byte-identical writes; the only added default-path work is the flag branch). When
+    null check (byte-identical writes; the dormant gate is a raw-pointer null test — no
+    shared_ptr refcount traffic). When
     enabled, one receiver-local stamp is claimed per commit (`core/local_stamp.{h,cpp}` —
     lock-free keep-if-greater CAS against a per-descriptor watermark; caller-supplied candidates
     are skew-bounded, receiver-generated candidates skip the clock read) and lands identically in
@@ -671,8 +672,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       extension is single-flight on a state-owned thread), clean-close floor (invalidated
       durably during open's reconciliation batch — lazy deletion would let a crash resurrect a
       stale floor), CF markers keyed by **CF ID** (drop/recreate safe; rows never deleted), and
-      per-log domain generations (a pre-activation active segment rotates before its first
-      stamped append). Backups/checkpoints/streams inherit it as CF data; mixed DB+log backups
+      per-log domain generations anchored to the post-rotation sequence number (a durable row
+      never certifies an in-memory-only rotation; a pre-activation active segment rotates
+      before its first stamped append). Backups/checkpoints/streams inherit it as CF data; mixed DB+log backups
       also carry a `STAMP_FLOOR` artifact in the log snapshot which restore publishes as
       `.stamp-floor-pending` in the destination BEFORE the destructive DB restore and open
       reconciles (max-fold, idempotent, corrupt fails closed).

@@ -339,11 +339,8 @@ rocksdb::Status backupTransactionLogsToDir(
 
 	status = copySnapshotEntries(stagingDir, entries, sync);
 
-	// Floor capture (docs/design/local-mutation-stamping.md §3.7): the log
-	// capture above is complete, and the reserve ceiling is monotone, so the
-	// live ceiling read NOW bounds every local stamp the captured logs can
-	// carry. Staged with the snapshot so the atomic publish below covers it —
-	// restore reconciles it into the destination's metadata CF before writes.
+	// The ceiling is monotone, so read AFTER the log capture it bounds every
+	// stamp the captured logs carry; staged so the atomic publish covers it.
 	if (status.ok() && descriptor->stampState) {
 		const double ceiling = localStampFromBits(
 			descriptor->stampState->reserve.load(std::memory_order_acquire));

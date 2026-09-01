@@ -843,20 +843,29 @@ void TransactionLogStore::rotateForDomainGenerationLocked(LocalStampState& stamp
 		return;
 	}
 	// The persisted per-store generation (loaded at open) short-circuits the
-	// rotation for stores that already rotated in an earlier process.
+	// rotation — but only when the on-disk sequence reached the recorded
+	// post-rotation sequence: rotateToNextSequence is in-memory, so a crash
+	// before the new segment materialized must rotate again on reload rather
+	// than let a durable row certify a rotation that never existed.
 	auto persisted = stamp.logGenerations.find(this->name);
-	if (persisted != stamp.logGenerations.end() && persisted->second >= generation) {
+	if (persisted != stamp.logGenerations.end() &&
+		persisted->second.generation >= generation &&
+		this->currentSequenceNumber.load(std::memory_order_relaxed) >=
+			persisted->second.sequenceAfterRotation) {
 		this->rotatedForGeneration = generation;
 		return;
 	}
 	// Rotate a pre-activation active segment so no file mixes key domains; a
-	// fresh or empty segment needs nothing. Crash between the rotation and the
-	// generation row landing durably only causes one spurious re-rotation.
+	// fresh or empty segment needs nothing.
 	auto logFile = this->getLogFile(this->currentSequenceNumber.load(std::memory_order_relaxed));
 	if (logFile && logFile->size > TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		this->rotateToNextSequence(logFile);
 	}
-	stamp.persistLogGeneration(this->name, generation);
+	// One small non-sync row under writeMutex, once per store per generation
+	// (design permits it: the blocked writers would stall on their own commits
+	// anyway, and the row must record the post-rotation sequence).
+	stamp.persistLogGeneration(
+		this->name, generation, this->currentSequenceNumber.load(std::memory_order_relaxed));
 	this->rotatedForGeneration = generation;
 }
 
@@ -867,7 +876,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		// Reserve headroom is secured BEFORE the append mutex: a durable ceiling
 		// extension (sync metadata write) must never stall every later log
 		// commit behind one holder of this lock.
-		stamp->ensureHeadroom(batch.timestamp);
+		stamp->ensureHeadroom(batch.timestamp, !batch.timestampFromCaller);
 	}
 
 	std::unique_lock<std::mutex> lock(this->writeMutex);

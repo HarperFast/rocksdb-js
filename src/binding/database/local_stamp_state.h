@@ -94,9 +94,18 @@ struct LocalStampState final : std::enable_shared_from_this<LocalStampState> {
 	std::mutex cfsMutex;
 	std::unordered_map<uint32_t, std::string> stampedCfIds;
 
+	struct LogGenerationRow {
+		uint64_t generation;
+		// The store's current sequence number recorded AFTER the rotation, so a
+		// crash between the in-memory rotation and the first append cannot leave
+		// a durable row certifying a rotation that never materialized: on reload
+		// the on-disk sequence is below this and the store rotates again.
+		uint64_t sequenceAfterRotation;
+	};
+
 	// Per log store: the domain generation each store last rotated for, loaded
 	// at open; consumed once per store under its writeMutex (cold).
-	std::unordered_map<std::string, uint64_t> logGenerations;
+	std::unordered_map<std::string, LogGenerationRow> logGenerations;
 
 	bool activated() const {
 		return this->logDomainGeneration.load(std::memory_order_acquire) > 0;
@@ -118,10 +127,13 @@ struct LocalStampState final : std::enable_shared_from_this<LocalStampState> {
 	void persistCfMarker(uint32_t cfId, const std::string& name);
 
 	/**
-	 * Persists a log store's rotated-for domain generation (non-sync: a crash
-	 * before durability only causes one spurious re-rotation on next load).
+	 * Persists a log store's rotated-for domain generation together with the
+	 * post-rotation sequence number (non-sync: a crash before durability only
+	 * causes one spurious re-rotation on next load). Throws on an invalid store
+	 * name — the loader rejects rows it could not have written.
 	 */
-	void persistLogGeneration(const std::string& storeName, uint64_t generation);
+	void persistLogGeneration(
+		const std::string& storeName, uint64_t generation, uint64_t sequenceAfterRotation);
 
 	/**
 	 * Claims a stamp, durably extending the reserve if needed (never call while
@@ -139,12 +151,18 @@ struct LocalStampState final : std::enable_shared_from_this<LocalStampState> {
 	StampClaim tryClaimNoExtend(double candidate, bool candidateIsReceiverTime);
 
 	/**
-	 * Ensures the durable ceiling covers `candidate` plus the margin; extends
-	 * synchronously when required, schedules a proactive extension when merely
-	 * near the margin. Safe to call from any thread NOT holding a log store's
-	 * writeMutex.
+	 * Ensures the durable ceiling covers what a claim of `candidate` could
+	 * actually produce — applying the same provenance/skew rule as the claim
+	 * itself, so a caller-supplied far-future timestamp (which the claim would
+	 * re-stamp at receiver time) can never durably poison the ceiling — plus
+	 * the margin; extends synchronously when required, schedules a proactive
+	 * extension when merely near the margin. Safe to call from any thread NOT
+	 * holding a log store's writeMutex.
 	 */
-	void ensureHeadroom(double candidate);
+	void ensureHeadroom(double candidate, bool candidateIsReceiverTime);
+
+	/** Margin-triggered single-flight proactive reserve extension. */
+	void scheduleProactiveExtensionIfNearMargin();
 
 	/**
 	 * Durably persists a new ceiling >= target. Synchronous write
@@ -175,7 +193,7 @@ struct StampMetaContents {
 	std::optional<double> cleanFloor;
 	uint64_t logDomainGeneration = 0;
 	std::unordered_map<uint32_t, std::string> stampedCfIds;
-	std::unordered_map<std::string, uint64_t> logGenerations;
+	std::unordered_map<std::string, LocalStampState::LogGenerationRow> logGenerations;
 };
 
 /**

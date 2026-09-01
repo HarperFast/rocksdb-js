@@ -341,16 +341,18 @@ static void rejectRetryNowSetupFailure(
 struct RestampRebuilder final : rocksdb::WriteBatch::Handler {
 	rocksdb::WriteBatch copy;
 	double stamp;
-	const std::unordered_map<uint32_t, std::pair<rocksdb::ColumnFamilyHandle*, bool>>& cfs;
+	// shared_ptr handles, not raw: a concurrent dropColumnFamily must not free a
+	// handle out from under the commit lane's rebuild (AGENTS invariant 9).
+	const std::unordered_map<uint32_t, std::pair<std::shared_ptr<rocksdb::ColumnFamilyHandle>, bool>>& cfs;
 
 	RestampRebuilder(
 		double stamp,
-		const std::unordered_map<uint32_t, std::pair<rocksdb::ColumnFamilyHandle*, bool>>& cfs
+		const std::unordered_map<uint32_t, std::pair<std::shared_ptr<rocksdb::ColumnFamilyHandle>, bool>>& cfs
 	) : stamp(stamp), cfs(cfs) {}
 
 	rocksdb::ColumnFamilyHandle* handleFor(uint32_t cfId) const {
 		auto it = this->cfs.find(cfId);
-		return it == this->cfs.end() ? nullptr : it->second.first;
+		return it == this->cfs.end() ? nullptr : it->second.first.get();
 	}
 
 	bool stampedCf(uint32_t cfId) const {
@@ -396,12 +398,10 @@ struct RestampRebuilder final : rocksdb::WriteBatch::Handler {
 };
 
 /**
- * Commit-stamping finalization shared by every commit shape
- * (docs/design/local-mutation-stamping.md §3.2/§3.3). Called with the handle
- * validated and, for logged transactions, after writeBatch keyed the batch
- * with the claimed stamp. Patches stamped-CF record first words through the
- * supported append-rebuild when the finalized stamp differs from the
- * pre-stamp. Throws on failure; the caller converts to a commit status.
+ * Commit-stamping finalization for every commit shape: claims for unlogged
+ * transactions (logged ones adopted the batch key), and rebuilds stamped-CF
+ * record first words when the finalized stamp differs from the pre-stamp.
+ * Throws; the caller converts to a commit status.
  */
 static void finalizeLocalStamp(
 	const std::shared_ptr<TransactionHandle>& txnHandle,
@@ -409,8 +409,9 @@ static void finalizeLocalStamp(
 	bool candidateFromCaller,
 	bool batchWasWritten
 ) {
-	auto descriptor = txnHandle->dbHandle->descriptor;
-	auto stampState = descriptor ? descriptor->stampState : nullptr;
+	// Raw pointers: the dormant gate must add no shared_ptr refcount traffic.
+	DBDescriptor* descriptor = txnHandle->dbHandle->descriptor.get();
+	LocalStampState* stampState = descriptor ? descriptor->stampState.get() : nullptr;
 	if (!stampState || !stampState->activated()) {
 		return;
 	}
@@ -429,16 +430,15 @@ static void finalizeLocalStamp(
 		return; // keep path: the pre-stamped first words are already the stamp
 	}
 
-	// Order-preserving reconstruction through supported APIs; RebuildFromWriteBatch
-	// appends the full-order copy (verified semantics — restamp_rebuild_test.cc),
-	// which is terminal-state-exact per key and preserves conflict tracking.
-	std::unordered_map<uint32_t, std::pair<rocksdb::ColumnFamilyHandle*, bool>> cfs;
+	// RebuildFromWriteBatch APPENDS the full-order copy (verified:
+	// restamp_rebuild_test.cc) — terminal-state-exact, conflict tracking kept.
+	std::unordered_map<uint32_t, std::pair<std::shared_ptr<rocksdb::ColumnFamilyHandle>, bool>> cfs;
 	{
 		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);
 		for (auto& [columnName, column] : descriptor->columns) {
 			cfs.emplace(
 				column->column->GetID(),
-				std::make_pair(column->column.get(), column->commitStamping));
+				std::make_pair(column->column, column->commitStamping));
 		}
 	}
 	RestampRebuilder rebuilder(txnHandle->localStamp, cfs);
@@ -499,11 +499,14 @@ static void executeLogWork(TransactionCommitState* state) {
 				state->hasLog = true;
 				finalizeLocalStamp(
 					txnHandle, state->stampCandidate, state->stampCandidateFromCaller, true);
+			} catch (const std::bad_alloc&) {
+				// Message-less status: building a message here would allocate again.
+				state->status = rocksdb::Status::Aborted();
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
 				state->status = rocksdb::Status::Aborted(e.what());
 			} catch (...) {
-				state->status = rocksdb::Status::Aborted("Commit finalization failed");
+				state->status = rocksdb::Status::Aborted();
 			}
 		} else {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
@@ -513,11 +516,13 @@ static void executeLogWork(TransactionCommitState* state) {
 		try {
 			finalizeLocalStamp(
 				txnHandle, state->stampCandidate, state->stampCandidateFromCaller, false);
+		} catch (const std::bad_alloc&) {
+			state->status = rocksdb::Status::Aborted();
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Transaction::Commit ERROR: stamp finalization failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
 			state->status = rocksdb::Status::Aborted(e.what());
 		} catch (...) {
-			state->status = rocksdb::Status::Aborted("Commit finalization failed");
+			state->status = rocksdb::Status::Aborted();
 		}
 	}
 }
@@ -1087,8 +1092,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
 			}
 			{
-				auto descriptor = (*txnHandle)->dbHandle->descriptor;
-				if (descriptor && descriptor->stampState && descriptor->stampState->activated()) {
+				LocalStampState* stampState = (*txnHandle)->dbHandle->descriptor
+					? (*txnHandle)->dbHandle->descriptor->stampState.get()
+					: nullptr;
+				if (stampState && stampState->activated()) {
 					(*txnHandle)->localStamp = (*txnHandle)->logEntryBatch->timestamp;
 				}
 			}

@@ -1,6 +1,8 @@
 #include "core/background_error.h"
 #include "core/encoding.h"
 #include "core/platform.h"
+#include "napi/global_events.h"
+#include <sstream>
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "napi/helpers.h"
@@ -453,9 +455,8 @@ void DBDescriptor::finishClose() {
 		this->commitCompletionsClosed = true;
 	}
 
-	// Persist the exact watermark as the clean-close floor (the commit lanes are
-	// drained, so no further claims can happen), then drain the reserve extender
-	// before RocksDB teardown below.
+	// Commit lanes are drained: persist the clean-close floor, then drain the
+	// reserve extender before RocksDB teardown.
 	if (this->stampState) {
 		this->stampState->persistCleanCloseFloor();
 		this->stampState->shutdown();
@@ -1373,6 +1374,18 @@ static std::shared_ptr<LocalStampState> setupLocalStamping(
 	// else the reserve ceiling (a crash consumes at most one reserve window of
 	// logical skew).
 	const double seed = contents.cleanFloor.value_or(contents.reserve);
+	{
+		const double now = getMonotonicTimestamp();
+		if (seed > now + LOCAL_STAMP_MAX_KEPT_SKEW_MS + STAMP_RESERVE_WINDOW_MS) {
+			std::ostringstream msg;
+			msg << "Local-stamp clock floor for \"" << path << "\" is "
+				<< ((seed - now) / 60000.0) << " minutes ahead of the wall clock; "
+				<< "stamps will run ahead until the clock catches up. If this floor "
+				<< "came from a tampered or clock-skewed backup, repair the metadata "
+				<< "ceiling before writing.";
+			emitGlobalEvent("localStamp:warning", ListenerData::fromStrings({ msg.str() }));
+		}
+	}
 	state->watermark.store(localStampToBits(seed), std::memory_order_release);
 	state->reserve.store(localStampToBits(contents.reserve), std::memory_order_release);
 

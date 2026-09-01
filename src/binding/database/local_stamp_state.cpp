@@ -31,6 +31,7 @@ double readStampRow(const std::string& value, const char* rowName) {
 } // namespace
 
 double LocalStampState::claim(double candidate, bool candidateIsReceiverTime) {
+	this->scheduleProactiveExtensionIfNearMargin();
 	for (;;) {
 		StampClaim result = tryClaimLocalStamp(
 			this->watermark, this->reserve, candidate, candidateIsReceiverTime,
@@ -56,9 +57,15 @@ StampClaim LocalStampState::tryClaimNoExtend(double candidate, bool candidateIsR
 		&getMonotonicTimestamp);
 }
 
-void LocalStampState::ensureHeadroom(double candidate) {
+void LocalStampState::ensureHeadroom(double candidate, bool candidateIsReceiverTime) {
 	const double now = getMonotonicTimestamp();
-	const double needed = (candidate > now ? candidate : now);
+	// Only a candidate the claim could KEEP may raise the ceiling; anything
+	// else re-stamps at receiver time, already at or below the ceiling.
+	double needed = now;
+	if (candidate > needed && candidate < LOCAL_STAMP_MAX &&
+		(candidateIsReceiverTime || candidate <= now + LOCAL_STAMP_MAX_KEPT_SKEW_MS)) {
+		needed = candidate;
+	}
 	const double ceiling = localStampFromBits(this->reserve.load(std::memory_order_acquire));
 	if (needed >= ceiling) {
 		// Out of headroom: extend synchronously before the caller takes any log
@@ -66,31 +73,39 @@ void LocalStampState::ensureHeadroom(double candidate) {
 		this->extendReserve(needed);
 		return;
 	}
-	if (needed + STAMP_RESERVE_MARGIN_MS >= ceiling &&
-		!this->extensionScheduled.exchange(true, std::memory_order_acq_rel)) {
-		// Near the margin: extend proactively off the claim path (single-flight,
-		// state-owned thread). Failure here is not a commit failure — the claim
-		// path re-extends synchronously when headroom actually runs out.
-		auto self = this->shared_from_this();
-		try {
-			std::lock_guard<std::mutex> lock(this->extendMutex);
-			if (this->closed.load(std::memory_order_acquire)) {
-				this->extensionScheduled.store(false, std::memory_order_release);
-				return;
-			}
-			if (this->extenderThread.joinable()) {
-				this->extenderThread.join();
-			}
-			this->extenderThread = std::thread([self] {
-				try {
-					self->extendReserve(getMonotonicTimestamp());
-				} catch (...) {
-				}
-				self->extensionScheduled.store(false, std::memory_order_release);
-			});
-		} catch (...) {
+	if (needed + STAMP_RESERVE_MARGIN_MS >= ceiling) {
+		this->scheduleProactiveExtensionIfNearMargin();
+	}
+}
+
+void LocalStampState::scheduleProactiveExtensionIfNearMargin() {
+	const double watermarkValue = localStampFromBits(this->watermark.load(std::memory_order_acquire));
+	const double ceiling = localStampFromBits(this->reserve.load(std::memory_order_acquire));
+	if (watermarkValue + STAMP_RESERVE_MARGIN_MS < ceiling ||
+		this->extensionScheduled.exchange(true, std::memory_order_acq_rel)) {
+		return;
+	}
+	// Single-flight, state-owned thread; failure is not a commit failure — the
+	// claim path re-extends synchronously when headroom actually runs out.
+	auto self = this->shared_from_this();
+	try {
+		std::lock_guard<std::mutex> lock(this->extendMutex);
+		if (this->closed.load(std::memory_order_acquire)) {
 			this->extensionScheduled.store(false, std::memory_order_release);
+			return;
 		}
+		if (this->extenderThread.joinable()) {
+			this->extenderThread.join();
+		}
+		this->extenderThread = std::thread([self] {
+			try {
+				self->extendReserve(getMonotonicTimestamp());
+			} catch (...) {
+			}
+			self->extensionScheduled.store(false, std::memory_order_release);
+		});
+	} catch (...) {
+		this->extensionScheduled.store(false, std::memory_order_release);
 	}
 }
 
@@ -139,9 +154,15 @@ void LocalStampState::persistCfMarker(uint32_t cfId, const std::string& name) {
 	}
 }
 
-void LocalStampState::persistLogGeneration(const std::string& storeName, uint64_t generation) {
-	char value[8];
+void LocalStampState::persistLogGeneration(
+	const std::string& storeName, uint64_t generation, uint64_t sequenceAfterRotation) {
+	if (storeName.empty() || storeName.size() > 4096) {
+		throw rocksdb_js::DBException(
+			"Invalid transaction log store name for commit stamping");
+	}
+	char value[16];
 	writeUint64BE(value, generation);
+	writeUint64BE(value + 8, sequenceAfterRotation);
 	const std::string key = std::string(STAMP_META_KEY_LOG_PREFIX) + storeName;
 	rocksdb::Status status = this->db->Put(
 		rocksdb::WriteOptions(), this->metaCf.get(),
@@ -253,11 +274,14 @@ StampMetaContents loadStampMeta(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* me
 			contents.stampedCfIds.emplace(static_cast<uint32_t>(id), value);
 		} else if (key.rfind(logPrefix, 0) == 0) {
 			const std::string storeName = key.substr(logPrefix.size());
-			if (storeName.empty() || storeName.size() > 4096 || value.size() != 8) {
+			if (storeName.empty() || storeName.size() > 4096 || value.size() != 16) {
 				throw rocksdb_js::DBException(
 					"Invalid local-stamp metadata row \"" + key + "\": malformed log generation");
 			}
-			contents.logGenerations.emplace(storeName, readUint64BE(value.data()));
+			contents.logGenerations.emplace(
+				storeName,
+				LocalStampState::LogGenerationRow{
+					readUint64BE(value.data()), readUint64BE(value.data() + 8) });
 		}
 		// Unknown keys are tolerated (forward compatibility within the schema
 		// version); the schema row gates structural changes.

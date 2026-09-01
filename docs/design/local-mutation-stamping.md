@@ -409,10 +409,11 @@ Windows torn-payload gap remains exactly today's, out of scope). Rotation surviv
 different role: not a format boundary but an ordering boundary at the key-domain flip (§3.1),
 with a **durable lazy-log protocol** for stores not instantiated during activation — the
 key-domain marker carries a monotonic domain generation, each log store persists the
-generation it last rotated for, and a store whose recorded generation predates the marker's
-rotates its active segment before its first stamp-keyed append (idempotent across a crash
-between rotate and append: the check re-runs on next load, and open fails before writes if
-the rotation itself cannot complete). Post-flip segments are therefore purely
+generation it last rotated for **together with the post-rotation sequence number** — the
+in-memory rotation is only certified once the on-disk sequence reaches it, so a crash between
+the rotation and the first append re-rotates on reload instead of trusting a row for a
+rotation that never materialized — and a store whose recorded generation predates the marker's
+rotates its active segment before its first stamp-keyed append. Post-flip segments are therefore purely
 receiver-domain on every store, whether or not it was open at activation.
 
 **Seek-by-local-stamp comes free.** Because the stamp is the key, the existing per-file
@@ -516,7 +517,10 @@ created lazily on first enable:
   which is also correct, since the drop destroyed the stamped data the marker guarded. No
   cleanup ordering exists to race.
 - **Reserve invariant**: no stamp above the persisted ceiling is ever returned by
-  `claimLocalStamp`. The ceiling is extended ahead of need (`RESERVE_WINDOW_MS`, 5 minutes
+  `claimLocalStamp`, and **the ceiling itself can only be raised by values the claim could
+  actually produce** — `ensureHeadroom` applies the same provenance/skew rule as the claim, so a
+  caller-supplied far-future timestamp (which would re-stamp at receiver time) can never durably
+  poison the ceiling. The ceiling is extended ahead of need (`RESERVE_WINDOW_MS`, 5 minutes
   above `max(now, watermark)`) by a **single-flight** off-thread task triggered when the
   watermark crosses `ceiling − margin`; the claim path blocks on extension only if claims
   outrun the asynchronous extension (pathological — bounded, surfaced as a commit failure if
@@ -577,8 +581,9 @@ created lazily on first enable:
   clock-exhaustion error** naming the operator recovery path (rewrite the ceiling after
   fixing the source) — a warning alone is not a control, and unchecked extension from a
   near-bound ceiling would otherwise persist an invalid value or wedge every write.
-- The metadata CF is not user-openable by name (the reserved name is rejected at open); it does
-  appear in the `registryStatus()` diagnostic listing — diagnostics report what exists — and
+- The metadata CF is not user-openable by name (the reserved name is rejected at open) and is
+  excluded from the public `db.columns` listing; it does appear in the `registryStatus()`
+  diagnostic listing — diagnostics report what exists — and
   `LoadLatestOptions`-based per-CF option preservation treats it like any other CF (its
   options are fixed internally: tiny write buffer, no compression concerns). Read-only opens
   read the floor but never extend it (no writes can claim stamps there).

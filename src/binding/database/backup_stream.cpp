@@ -1,5 +1,7 @@
 #include "core/platform.h"
 #include "database/backup_transaction_logs.h"
+#include "database/local_stamp_state.h"
+#include "core/encoding.h"
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
@@ -547,6 +549,33 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 				streamFilePrefix(state, env, named.file.sourcePath.string(), named.file.byteLimit, buffer);
 			if (!ls.ok()) {
 				return ls;
+			}
+		}
+
+		// Floor capture, mirroring the directory-backup path: read the live
+		// ceiling AFTER the log capture (the ceiling is monotone, so it bounds
+		// every stamp the captured logs can carry) and emit it as the snapshot's
+		// STAMP_FLOOR artifact so a restored stream backup can never re-mint.
+		if (state->descriptor->stampState) {
+			const double ceiling = localStampFromBits(
+				state->descriptor->stampState->reserve.load(std::memory_order_acquire));
+			char artifact[STAMP_FLOOR_ARTIFACT_SIZE];
+			std::memcpy(artifact, STAMP_FLOOR_ARTIFACT_TOKEN, 4);
+			writeDoubleBE(artifact + 4, ceiling);
+			writeUint64BE(artifact + 12, ~localStampToBits(ceiling));
+			auto fileEv = std::make_unique<StreamEvent>();
+			fileEv->kind = kEventFile;
+			fileEv->name = std::string("transaction_logs/") + STAMP_FLOOR_ARTIFACT_NAME;
+			fileEv->fileSize = sizeof artifact;
+			if (!state->emit(std::move(fileEv))) {
+				return rocksdb::Status::Aborted(state->abortMessage);
+			}
+			auto chunkEv = std::make_unique<StreamEvent>();
+			chunkEv->kind = kEventChunk;
+			chunkEv->data = reinterpret_cast<const uint8_t*>(artifact);
+			chunkEv->size = sizeof artifact;
+			if (!state->emit(std::move(chunkEv))) {
+				return rocksdb::Status::Aborted(state->abortMessage);
 			}
 		}
 	}
