@@ -63,7 +63,7 @@ inline void crashIfArmed(const char* name) {
 		return point ? std::string(point) : std::string();
 	}();
 	if (!armed.empty() && armed == name) {
-		::_exit(137);
+		std::_Exit(137);
 	}
 }
 
