@@ -114,8 +114,12 @@ public:
 	static void DebugLogDescriptorRefs();
 #endif
 	static void DestroyDB(const std::string& path);
+	static rocksdb::Status DropColumnFamily(
+		const std::shared_ptr<DBDescriptor>& descriptor,
+		const std::string& columnName,
+		rocksdb::ColumnFamilyHandle* column
+	);
 	static void RecordLayout(const std::string& path, DBFileLayout layout);
-	static void RemoveColumnFamilyLayout(const std::string& path, const std::string& name);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();

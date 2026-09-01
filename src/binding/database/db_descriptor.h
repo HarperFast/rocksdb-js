@@ -598,6 +598,9 @@ public:
 	 * the descriptor keep it alive via their shared_ptr; only the by-name
 	 * lookup is removed.
 	 *
+	 * Requires `DBRegistry::databasesMutex`; call `DBRegistry::DropColumnFamily`
+	 * rather than this directly.
+	 *
 	 * @param columnName The name of the dropped column family.
 	 */
 	void unregisterColumnFamily(const std::string& columnName);

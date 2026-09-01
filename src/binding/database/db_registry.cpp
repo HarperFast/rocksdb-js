@@ -332,34 +332,76 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 }
 
 /**
- * Erases by family name because several families may share one blob directory;
- * a layout that becomes the default no longer needs a retained registry entry.
+ * Drops a column family and retires every registry trace of it as ONE
+ * operation under `databasesMutex`.
+ *
+ * The three steps have to be atomic with respect to `OpenDB`, which takes
+ * `databasesMutex` and then `columnsMutex` to decide whether a warm open
+ * reuses an existing family or creates a fresh one. Releasing the registry
+ * mutex anywhere in here lets a warm open land in the gap, find the name still
+ * in `columns`, and hand back a `ColumnFamilyDescriptor` for a family RocksDB
+ * has already dropped: the open succeeds and every later write fails with
+ * "Invalid column family specified in write batch". Holding it across
+ * `DropColumnFamily` itself (not just the cleanup) is what makes an open
+ * observe the family either wholly present or wholly gone.
+ *
+ * Layouts are still retired BEFORE the `columns` entry, even though one lock
+ * makes the order unobservable: erasing the entry is what lets an open create
+ * a fresh same-name family, so the reverse order would delete the
+ * replacement's blob directory from the destroy layout if this section were
+ * ever split again. They are erased by family name because several families
+ * may share one blob directory; a layout that becomes the default no longer
+ * needs a retained registry entry.
+ *
+ * Returns the RocksDB status so the caller can apply its own idempotence rule
+ * for an already-dropped family (see `isColumnFamilyAlreadyDropped`); nothing
+ * is retired unless this call is the one that performed the drop, since the
+ * name may by then belong to a freshly created family.
  */
-void DBRegistry::RemoveColumnFamilyLayout(const std::string& path, const std::string& name) {
+rocksdb::Status DBRegistry::DropColumnFamily(
+	const std::shared_ptr<DBDescriptor>& descriptor,
+	const std::string& columnName,
+	rocksdb::ColumnFamilyHandle* column
+) {
 	if (!instance) {
-		return;
+		return descriptor->db->DropColumnFamily(column);
 	}
 
 	std::lock_guard<std::mutex> databasesLock(instance->databasesMutex);
+
+	rocksdb::Status status = descriptor->db->DropColumnFamily(column);
+	if (!status.ok()) {
+		return status;
+	}
+
+	const std::string& path = descriptor->path;
 	for (auto& [key, entry] : instance->databases) {
 		if (key.path == path && entry.descriptor) {
-			entry.descriptor->removeColumnFamilyLayout(name);
+			entry.descriptor->removeColumnFamilyLayout(columnName);
+		}
+	}
+	// A descriptor mid-purge has already left the map but is still reachable
+	// through the caller's handle, so retire its layout explicitly; erasing an
+	// absent name is a no-op when the loop above already covered it.
+	descriptor->removeColumnFamilyLayout(columnName);
+
+	{
+		std::lock_guard<std::mutex> layoutsLock(instance->knownLayoutsMutex);
+		auto layout = instance->knownLayouts.find(path);
+		if (layout != instance->knownLayouts.end()) {
+			layout->second.blobDirs.erase(columnName);
+			const bool defaultLayout = layout->second.dbPaths.empty() &&
+				std::all_of(layout->second.blobDirs.begin(), layout->second.blobDirs.end(), [](const auto& entry) {
+					return entry.second.empty();
+				});
+			if (defaultLayout) {
+				instance->knownLayouts.erase(layout);
+			}
 		}
 	}
 
-	std::lock_guard<std::mutex> layoutsLock(instance->knownLayoutsMutex);
-	auto layout = instance->knownLayouts.find(path);
-	if (layout == instance->knownLayouts.end()) {
-		return;
-	}
-	layout->second.blobDirs.erase(name);
-	const bool defaultLayout = layout->second.dbPaths.empty() &&
-		std::all_of(layout->second.blobDirs.begin(), layout->second.blobDirs.end(), [](const auto& entry) {
-			return entry.second.empty();
-		});
-	if (defaultLayout) {
-		instance->knownLayouts.erase(layout);
-	}
+	descriptor->unregisterColumnFamily(columnName);
+	return status;
 }
 
 /**
