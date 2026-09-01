@@ -293,18 +293,31 @@ describe('commit stamping budgets', () => {
 
 				await run(plain); // warm-up
 				await run(stamped);
-				const plainRun = await run(plain);
-				const stampedRun = await run(stamped);
+				// Median of paired-pass p95 ratios — single-run p95s at microsecond
+				// scales are scheduling-noisy.
+				const ratios: number[] = [];
+				let stampedRestamps = 0;
 				const total = ROUNDS * WINDOW;
-				const p95Ratio = percentile(stampedRun.samples, 0.95) / percentile(plainRun.samples, 0.95);
+				let lastPlainP95 = 0;
+				let lastStampedP95 = 0;
+				for (let pass = 0; pass < 5; pass++) {
+					const plainRun = await run(plain);
+					const stampedRun = await run(stamped);
+					stampedRestamps = stampedRun.restamps;
+					lastPlainP95 = percentile(plainRun.samples, 0.95);
+					lastStampedP95 = percentile(stampedRun.samples, 0.95);
+					ratios.push(lastStampedP95 / lastPlainP95);
+				}
+				const p95Ratio = percentile(ratios, 0.5);
 				console.log(
-					`B10 overlap: re-stamp rate=${((stampedRun.restamps / total) * 100).toFixed(1)}% ` +
-						`(${stampedRun.restamps}/${total}), plain p95=${percentile(plainRun.samples, 0.95).toFixed(1)}µs ` +
-						`stamped p95=${percentile(stampedRun.samples, 0.95).toFixed(1)}µs ratio=${p95Ratio.toFixed(3)}`
+					`B10 overlap: re-stamp rate=${((stampedRestamps / total) * 100).toFixed(1)}% ` +
+						`(${stampedRestamps}/${total}), last plain p95=${lastPlainP95.toFixed(1)}µs ` +
+						`stamped p95=${lastStampedP95.toFixed(1)}µs median ratio=${p95Ratio.toFixed(3)}`
 				);
-				// Overlapped commits re-stamp by design; the gate bounds the latency
-				// consequence for small batches (large-batch head-of-line cost scales
-				// with batch size and is priced by B4).
+				// Overlapped commits re-stamp by design; the gate must prove the
+				// path was exercised AND bound its latency consequence for small
+				// batches (large-batch head-of-line cost is priced by B4).
+				expect(stampedRestamps / total).toBeGreaterThan(0.5);
 				expect(p95Ratio).toBeLessThanOrEqual(2.0);
 			} finally {
 				stamped.close();
