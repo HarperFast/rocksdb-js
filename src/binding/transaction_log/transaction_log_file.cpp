@@ -713,7 +713,15 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// Set when indexing stops early at a committed-but-not-yet-visible tail (a concurrent append we
 	// couldn't read this pass); used below to start the scan at lastIndexedPosition rather than EOF.
 	bool stoppedAtUnindexedTail = false;
-	while (this->lastIndexedPosition < this->size) {
+	while (true) {
+		uint32_t writtenExtent = this->size.load(std::memory_order_relaxed);
+		if (this->lastIndexedPosition >= writtenExtent) {
+			break;
+		}
+		if (static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > memoryMap->mapSize) {
+			stoppedAtUnindexedTail = true;
+			break;
+		}
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
 		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
 		// zero there (e.g. an unset/epoch file timestamp) must not be mistaken for the
@@ -745,6 +753,20 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			}
 			break;
 		}
+		uint32_t entryLength = readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+		if (entryLength == 0 ||
+			static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > writtenExtent) {
+			// A framing break. It cannot be an in-flight append: size is bumped only after the
+			// bytes are written, so a non-zero header inside the written extent is a complete
+			// entry. Striding through the declared length would carry the walk past every
+			// later entry and freeze the index there, so resume where framing does (the same
+			// rule readers use for CorruptFrameError.resyncPosition) or, for a torn tail, at
+			// the written extent so later appends still get indexed.
+			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
+			uint32_t resume = findFramingResumeOffset(mappedFile, searchable, this->lastIndexedPosition + 1);
+			this->lastIndexedPosition = resume != 0 ? resume : writtenExtent;
+			continue;
+		}
 		// check that the timestamp is greater than any previously indexed timestamp,
 		// otherwise we don't record it, because we want to start at the first position with a timestamp that
 		// is greater than the requested timestamp:
@@ -752,8 +774,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
 		}
-		// read size of the entry and move on
-		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
 	}
 	// now do the actual search: just a search for the lower bound
 	auto it = this->positionByTimestampIndex.lower_bound(timestamp);

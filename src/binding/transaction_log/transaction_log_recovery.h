@@ -40,7 +40,8 @@ struct RecoveryScan final {
 	/**
 	 * Offset just past the last entry carrying `TRANSACTION_LOG_ENTRY_LAST_FLAG`
 	 * — i.e. the end of the last COMPLETE transaction in this file — or 0 if the
-	 * file contains no complete transaction. Always <= `validEnd`.
+	 * file contains no complete transaction. <= `validEnd` for `Clean` and
+	 * `TruncateTail`.
 	 *
 	 * A batch's entries are written together but only its final entry carries the
 	 * flag, so a crash mid-batch can leave whole, well-framed entries that are
@@ -48,9 +49,20 @@ struct RecoveryScan final {
 	 * are intact); this is the stricter bound for anything that must not observe a
 	 * partial transaction, notably the committed-read watermark and the open-time
 	 * discard of an interrupted batch.
+	 *
+	 * For `MidFileCorruption` the scan resumes where framing does and keeps
+	 * advancing this past every break, so it can exceed `validEnd`: the entries
+	 * after a break stay reachable through the committed-read watermark, and readers
+	 * report the break itself as a CorruptFrameError with the resync offset. A
+	 * flagged entry after a break closes whatever group precedes it, including a
+	 * group the break tore; that group is reported through the error, not excluded.
 	 */
 	uint32_t lastCompleteTransactionEnd;
-	/** Number of entries between `lastCompleteTransactionEnd` and the end of the entries. */
+	/**
+	 * Number of entries between `lastCompleteTransactionEnd` (or the last framing
+	 * break, whichever is later) and the end of the entries. Unused for
+	 * `MidFileCorruption`.
+	 */
 	uint32_t unclosedTailEntries;
 	/**
 	 * True when that trailing run exists and every entry in it carries the same
@@ -100,6 +112,19 @@ RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize);
  * instead (the mutex is not recursive). Throws DBException on I/O failure.
  */
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file);
+
+/**
+ * Finds where valid framing resumes at or after `from`, using the same rule as
+ * the recovery scan: the first offset that starts a run of well-formed frames
+ * which is either RESYNC_MIN_FRAMES long or lands exactly on `fileSize`. Returns
+ * 0 when nothing resumes (0 is never a valid entry offset). Throws DBException on
+ * a failed read.
+ */
+uint32_t findFramingResumeOffset(
+	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from);
+
+/** In-memory adapter over findFramingResumeOffset(fileSize, read, context, from). */
+uint32_t findFramingResumeOffset(const char* data, uint32_t fileSize, uint32_t from);
 
 /**
  * Counts the well-formed v1 entry frames in an in-memory transaction log image.

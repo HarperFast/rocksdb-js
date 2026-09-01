@@ -21,6 +21,7 @@
 
 using rocksdb_js::countTransactionLogEntries;
 using rocksdb_js::DBException;
+using rocksdb_js::findFramingResumeOffset;
 using rocksdb_js::RecoveryScan;
 using rocksdb_js::scanTransactionLogForRecovery;
 using rocksdb_js::TransactionLogFile;
@@ -181,6 +182,125 @@ TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated)
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
 	EXPECT_EQ(scan.validEnd, breakOffset);
+}
+
+// A mid-file break must not amputate the committed watermark: the scan resumes
+// where framing does and keeps advancing lastCompleteTransactionEnd, while the
+// classification stays pinned to the FIRST break.
+
+TEST(TransactionLogRecovery, WatermarkAdvancesPastAMidFileBreak) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, img.size());
+	EXPECT_EQ(scan.unclosedTailEntries, 0u);
+}
+
+TEST(TransactionLogRecovery, WatermarkAdvancesPastAShortRunReachingEof) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	img.entry(16).entry(16).entry(16);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, img.size());
+}
+
+TEST(TransactionLogRecovery, WatermarkAdvancesPastMultipleBreaks) {
+	LogImage img;
+	img.entry(10);
+	uint32_t firstBreak = img.size();
+	img.entryRaw(/*declaredLength=*/0, /*actualDataLen=*/0);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, firstBreak);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, img.size());
+}
+
+TEST(TransactionLogRecovery, FlaggedEntryAfterABreakClosesTheTornGroup) {
+	// The break tore a multi-entry transaction. Its later entries are still on
+	// disk, and the first flagged entry after the break advances the watermark
+	// over all of them: readers see the tear through CorruptFrameError, not
+	// through a watermark that hides everything behind it.
+	LogImage img;
+	img.entry(10, /*flags=*/1, /*timestamp=*/2.0);
+	img.entry(20, /*flags=*/0, /*timestamp=*/3.0);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, /*flags=*/0, /*timestamp=*/3.0);
+	for (int i = 0; i < 11; ++i) {
+		img.entry(16, /*flags=*/0, /*timestamp=*/3.0);
+	}
+	img.entry(16, /*flags=*/1, /*timestamp=*/3.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, img.size());
+}
+
+TEST(TransactionLogRecovery, TornTailAfterAMidFileBreakStaysMidFileCorruption) {
+	// A file with a mid-file break is never truncated, even when a torn tail
+	// follows the resumed run: the watermark stops at the run's last boundary.
+	LogImage img;
+	img.entry(10);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	uint32_t runEnd = img.size();
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, runEnd);
+}
+
+TEST(TransactionLogRecovery, ZeroPaddingAfterAMidFileBreakStaysMidFileCorruption) {
+	LogImage img;
+	img.entry(10);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	uint32_t runEnd = img.size();
+	img.zeros(64);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, runEnd);
+}
+
+TEST(TransactionLogRecovery, UnflaggedRunAfterAMidFileBreakDoesNotAdvanceTheWatermark) {
+	LogImage img;
+	img.entry(10);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16, /*flags=*/1);
+	}
+	uint32_t lastClosed = img.size();
+	img.entry(16, /*flags=*/0).entry(16, /*flags=*/0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, lastClosed);
 }
 
 TEST(TransactionLogRecovery, ZeroLengthFrameAtTailTruncates) {
@@ -505,6 +625,97 @@ TEST(TransactionLogRecoveryFile, MatchesBufferScanOnARealFile) {
 	EXPECT_EQ(fromFile.lastCompleteTransactionEnd, fromBuffer.lastCompleteTransactionEnd);
 	EXPECT_EQ(fromFile.unclosedTailEntries, fromBuffer.unclosedTailEntries);
 	EXPECT_EQ(fromFile.unclosedTailIsOneTransaction, fromBuffer.unclosedTailIsOneTransaction);
+}
+
+TEST(TransactionLogResumeOffset, FindsTheFirstFrameAfterABreak) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	uint32_t resumeOffset = img.size();
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), breakOffset + 1), resumeOffset);
+	CountingRead counted{ img.data(), img.size() };
+	EXPECT_EQ(findFramingResumeOffset(img.size(), countingRead, &counted, breakOffset + 1), resumeOffset);
+}
+
+TEST(TransactionLogResumeOffset, ZeroWhenNothingResumes) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t tornStart = img.size();
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12);
+	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), tornStart + 1), 0u);
+	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), img.size()), 0u);
+	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), 0), 0u);
+}
+
+TEST(TransactionLogResumeOffset, IoFailureThrows) {
+	LogImage img;
+	img.entry(10);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	FailingRead failing{ img.data(), img.size(), /*succeedCount=*/0 };
+	EXPECT_THROW(findFramingResumeOffset(img.size(), failingRead, &failing, breakOffset + 1), DBException);
+}
+
+// The timestamp index walks the same framing. Striding through a broken frame's
+// declared length used to carry it past the written extent, freezing the index
+// so every seek at or after the break reported "past this file".
+
+TEST(TransactionLogTimestampIndex, SeeksPastAMidFileBreak) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, /*flags=*/1, /*timestamp=*/11.0);
+	uint32_t resumeOffset = img.size();
+	std::vector<uint32_t> offsets;
+	for (int i = 0; i < 12; ++i) {
+		offsets.push_back(img.size());
+		img.entry(16, /*flags=*/1, /*timestamp=*/20.0 + i);
+	}
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	EXPECT_EQ(file.findPositionByTimestamp(10.0, img.size(), /*isCurrent=*/true), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(file.findPositionByTimestamp(11.0, img.size(), /*isCurrent=*/true), resumeOffset);
+	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
+	EXPECT_EQ(file.findPositionByTimestamp(25.5, img.size(), /*isCurrent=*/true), offsets[6]);
+	EXPECT_EQ(file.findPositionByTimestamp(31.0, img.size(), /*isCurrent=*/true), offsets[11]);
+	EXPECT_EQ(file.findPositionByTimestamp(32.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
+	EXPECT_EQ(breakOffset + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 8u, resumeOffset);
+}
+
+TEST(TransactionLogTimestampIndex, SeeksPastMultipleBreaks) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	img.entryRaw(/*declaredLength=*/0, /*actualDataLen=*/0, /*flags=*/1, /*timestamp=*/11.0);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16, /*flags=*/1, /*timestamp=*/20.0 + i);
+	}
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, /*flags=*/1, /*timestamp=*/40.0);
+	uint32_t lastRun = img.size();
+	img.entry(16, /*flags=*/1, /*timestamp=*/50.0).entry(16, /*flags=*/1, /*timestamp=*/51.0);
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	EXPECT_EQ(file.findPositionByTimestamp(50.0, img.size(), /*isCurrent=*/true), lastRun);
+	EXPECT_EQ(file.findPositionByTimestamp(51.0, img.size(), /*isCurrent=*/true), lastRun + 13u + 16u);
+	EXPECT_EQ(file.findPositionByTimestamp(52.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
+}
+
+TEST(TransactionLogTimestampIndex, TornTailLeavesEarlierEntriesSeekable) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	uint32_t second = img.size();
+	img.entry(16, /*flags=*/1, /*timestamp=*/11.0);
+	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12, /*flags=*/1, /*timestamp=*/12.0);
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	EXPECT_EQ(file.findPositionByTimestamp(11.0, img.size(), /*isCurrent=*/true), second);
+	EXPECT_EQ(file.findPositionByTimestamp(12.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
 TEST(TransactionLogRecoveryFile, MatchesBufferScanOnMidFileCorruption) {

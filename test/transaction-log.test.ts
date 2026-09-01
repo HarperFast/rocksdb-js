@@ -2070,6 +2070,168 @@ describe('Transaction Log', () => {
 					database.close();
 				}
 			}));
+
+		// A mid-file break (a frame whose declared length overruns the file, with intact entries
+		// behind it) is left in place by recovery. Two engine walks stride through framing and
+		// used to stop dead at that break: the open-time scan, whose lastCompleteTransactionEnd
+		// seeds the committed watermark on an unflushed reopen (so committed reads ended at the
+		// break with no error at all), and the timestamp index, which followed the broken
+		// frame's declared length past the written extent and froze there (so every seek at or
+		// after the break, and every entry appended after reopen, reported as past the file).
+		// Both now resume where framing does, the same rule query() uses for resyncPosition.
+		describe('mid-file break on reopen', () => {
+			const ENTRY_DATA = 24;
+			const FRAME = TRANSACTION_LOG_ENTRY_HEADER_SIZE + ENTRY_DATA;
+			const frameOffset = (index: number) => TRANSACTION_LOG_FILE_HEADER_SIZE + index * FRAME;
+
+			async function writeEntries(database: RocksDatabase, count: number) {
+				const log = database.useLog('foo');
+				for (let i = 0; i < count; i++) {
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.from(`r${i}`.padEnd(ENTRY_DATA, 'x')), txn.id);
+					});
+				}
+				return Array.from(log.query({ start: 0 })).map((entry) => entry.timestamp as number);
+			}
+
+			// Overruns the declared length of frame `index` past both the file and the pre-extended
+			// map an uncommitted read is bounded by; its bytes stay, so framing resumes at the next frame.
+			function tearFrames(logPath: string, ...indexes: number[]) {
+				const image = readFileSync(logPath);
+				for (const index of indexes) {
+					image.writeUInt32BE(0x7fffffff, frameOffset(index) + 8);
+				}
+				return writeFile(logPath, image);
+			}
+
+			const dataOf = (entry: any) => Buffer.from(entry.data).toString().replace(/x+$/, '');
+
+			it('keeps the entries after the break readable and seekable', () =>
+				dbRunner(async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const timestamps = await writeEntries(database, 60);
+						database.close();
+						const logPath = logPathFor(dbPath, 'foo');
+						const fullSize = statSync(logPath).size;
+						await tearFrames(logPath, 39);
+
+						database = RocksDatabase.open(dbPath);
+						const reopened = database.useLog('foo');
+						expect(reopened.getLogFileSize(1)).toBe(fullSize);
+
+						for (const readUncommitted of [false, true]) {
+							const { entries, errors } = drainPastCorruption(
+								reopened.query({ start: 0, readUncommitted })
+							);
+							expect(entries.length).toBe(59);
+							expect(dataOf(entries[38])).toBe('r38');
+							expect(dataOf(entries[39])).toBe('r40');
+							expect(dataOf(entries[58])).toBe('r59');
+							expect(errors.length).toBe(1);
+							expect(errors[0]).toBeInstanceOf(CorruptFrameError);
+							expect(errors[0].position).toBe(frameOffset(39));
+							expect(errors[0].resyncPosition).toBe(frameOffset(40));
+						}
+
+						// seeks at and after the break land on the next entry, not "past this file";
+						// the torn frame itself is not indexed, so a seek to its timestamp starts past it
+						const fromBreak = drainPastCorruption(reopened.query({ start: timestamps[39] }));
+						expect(fromBreak.entries.map(dataOf)).toEqual(
+							Array.from({ length: 20 }, (_, i) => `r${40 + i}`)
+						);
+						expect(fromBreak.errors).toEqual([]);
+						const afterBreak = drainPastCorruption(reopened.query({ start: timestamps[45] }));
+						expect(afterBreak.entries.map(dataOf)).toEqual(
+							Array.from({ length: 15 }, (_, i) => `r${45 + i}`)
+						);
+						expect(afterBreak.errors).toEqual([]);
+						expect(Array.from(reopened.query({ start: timestamps[59] })).length).toBe(1);
+
+						// an append after reopen is indexed and readable
+						await database.transaction(async (txn) => {
+							reopened.addEntry(Buffer.from('r60'.padEnd(ENTRY_DATA, 'x')), txn.id);
+						});
+						const appended = Array.from(
+							reopened.query({ start: timestamps[59], exclusiveStart: true })
+						);
+						expect(appended.map(dataOf)).toEqual(['r60']);
+						const all = drainPastCorruption(reopened.query({ start: 0 }));
+						expect(all.entries.length).toBe(60);
+						expect(dataOf(all.entries[59])).toBe('r60');
+						expect(all.errors.length).toBe(1);
+					} finally {
+						database.close();
+					}
+				}));
+
+			it('reports each of several breaks and reads past all of them', () =>
+				dbRunner(async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const timestamps = await writeEntries(database, 60);
+						database.close();
+						await tearFrames(logPathFor(dbPath, 'foo'), 20, 40);
+
+						database = RocksDatabase.open(dbPath);
+						const reopened = database.useLog('foo');
+						const { entries, errors } = drainPastCorruption(reopened.query({ start: 0 }));
+						expect(entries.length).toBe(58);
+						expect(dataOf(entries[57])).toBe('r59');
+						expect(errors.map((error) => error.position)).toEqual([
+							frameOffset(20),
+							frameOffset(40),
+						]);
+						expect(errors.map((error) => error.resyncPosition)).toEqual([
+							frameOffset(21),
+							frameOffset(41),
+						]);
+						const tail = drainPastCorruption(reopened.query({ start: timestamps[50] }));
+						expect(tail.entries.length).toBe(10);
+						expect(tail.errors).toEqual([]);
+					} finally {
+						database.close();
+					}
+				}));
+
+			it('leaves the file intact when a torn tail follows the break', () =>
+				dbRunner(async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						await writeEntries(database, 60);
+						database.close();
+						const logPath = logPathFor(dbPath, 'foo');
+						await tearFrames(logPath, 39);
+						await writeFile(
+							logPath,
+							Buffer.concat([readFileSync(logPath), tornEntry(0x7fffffff, 16)])
+						);
+						const fullSize = statSync(logPath).size;
+
+						database = RocksDatabase.open(dbPath);
+						const reopened = database.useLog('foo');
+						expect(statSync(logPath).size).toBe(fullSize);
+						// the committed watermark stops at the run's last closed transaction
+						const committed = drainPastCorruption(reopened.query({ start: 0 }));
+						expect(committed.entries.length).toBe(59);
+						expect(dataOf(committed.entries[58])).toBe('r59');
+						expect(committed.errors.map((error) => error.position)).toEqual([frameOffset(39)]);
+						// an uncommitted read reaches the torn tail and reports it as end-of-log
+						const { entries, errors } = drainPastCorruption(
+							reopened.query({ start: 0, readUncommitted: true })
+						);
+						expect(entries.length).toBe(59);
+						expect(errors.map((error) => error.position)).toEqual([
+							frameOffset(39),
+							frameOffset(60),
+						]);
+						expect(errors[0].resyncPosition).toBe(frameOffset(40));
+						expect(errors[1].resyncPosition).toBeUndefined();
+					} finally {
+						database.close();
+					}
+				}));
+		});
 	});
 
 	describe('purgeLogs', () => {

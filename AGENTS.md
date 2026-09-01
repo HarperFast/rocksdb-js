@@ -294,7 +294,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
    so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
    append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
-   will not repair, so every entry after it is unreachable (HarperFast/rocksdb-js#748). On
+   will not repair and every later read must resync past (invariant 11; HarperFast/rocksdb-js#748). On
    Windows `size` is the logical end of entries only — an active segment is pre-extended to
    `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
    size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
@@ -431,12 +431,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     entries appended _after_ it; `recoverTail()` deliberately leaves such a file alone rather than
     discard them, and rotated files are never rescanned at all. `query()` therefore reports the
     break as a `CorruptFrameError` carrying `resyncPosition` (where framing resumes, per the same
-    heuristic as `validFramingResumes()`) and **leaves iteration positioned there**, so a caller
+    heuristic as `findFramingResumeOffset()`) and **leaves iteration positioned there**, so a caller
     that calls `next()` again recovers the entries past it. Treating the throw as terminal amputates
     every later entry in the file permanently — each drain restarts from the same resume cursor and
     re-throws at the same offset, which is how HarperFast/harper#2016 lost 2.2 days of acknowledged
     writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
+
+    The engine owes the same discipline, or the reader's resync is moot. Every native walk of the
+    framing — the open-time recovery scan and `findPositionByTimestamp`'s index walk — resumes at
+    `findFramingResumeOffset()` instead of stopping at the break, so the committed-read watermark
+    (`lastCompleteTransactionEnd`, which may therefore exceed `validEnd` for `MidFileCorruption`)
+    and the timestamp index both cover the entries past it. Stopping at the break clamped every
+    committed read to the entries _before_ it (39 of 60 rows reached the replica) and froze the index
+    so every seek at or after the break reported "past this file". Striding through a broken frame's
+    declared length is never an in-flight append: `size` is bumped only after the bytes land, so a
+    nonzero header below `size` is a complete entry and a length overrunning it is a break.
 
     The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
     append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
