@@ -367,8 +367,7 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 		return status;
 	}
 
-	// Test-only: hold the section open here so a concurrent warm open proves it
-	// is serialized behind it. Inert unless armed. See core/test_seam.h.
+	// Test-only latch; inert unless armed. See core/test_seam.h.
 	if (const int delayMs = dropColumnFamilyDelayMs().load(std::memory_order_relaxed); delayMs > 0) {
 		dropColumnFamilyDelayCount().fetch_add(1, std::memory_order_relaxed);
 		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));

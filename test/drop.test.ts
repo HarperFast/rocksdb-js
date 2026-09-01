@@ -306,12 +306,9 @@ describe('Drop', () => {
 	// handed the already-dropped RocksDB column family: the open succeeded and
 	// every write through it was silently discarded.
 	//
-	// The seam holds the critical section open after the RocksDB drop so the
-	// interleaving is deterministic rather than timed: the worker waits for the
-	// drop to be provably inside the section, then opens. With the section
-	// intact its open blocks on the registry mutex for the rest of the delay and
-	// yields a fresh, writable family; split the section and the same open
-	// returns immediately with the dropped one.
+	// The latch makes the interleaving deterministic instead of timed: the
+	// worker waits for the drop to be provably inside its critical section
+	// before opening, so a slow worker can only weaken the test, never fail it.
 	it('should not hand a concurrent warm open the column family it is dropping', () =>
 		dbRunner({ dbOptions: [{ name: 'racy' }] }, async ({ db, dbPath }) => {
 			const delayMs = 1000;
@@ -321,29 +318,42 @@ describe('Drop', () => {
 				createWorkerBootstrapScript('./test/workers/drop-warm-open-worker.mts'),
 				{
 					eval: true,
-					workerData: { dbPath, columnName: 'racy', waitTimeoutMs: 10_000 },
+					workerData: {
+						dbPath,
+						columnName: 'racy',
+						// The counter is process-wide and monotonic, so a rerun in this
+						// process must wait for an increment, not for a nonzero value.
+						baselineDelayCount: dropColumnFamilyDelayCountForTesting(),
+						waitTimeoutMs: 10_000,
+					},
 				}
 			);
 
-			let ready: () => void;
-			const workerReady = new Promise<void>((resolve) => {
-				ready = resolve;
+			let markReady: () => void;
+			let failWorker: (err: Error) => void;
+			const workerReady = new Promise<void>((resolve, reject) => {
+				markReady = resolve;
+				failWorker = reject;
 			});
 			let reported = false;
 			const result = new Promise<Record<string, unknown>>((resolve, reject) => {
-				worker.on('error', reject);
+				const fail = (err: Error) => {
+					failWorker(err);
+					reject(err);
+				};
+				worker.on('error', fail);
 				worker.on('exit', () => {
-					// A message posted just before exit can still be in flight, so
-					// only treat the exit as a failure once it has had a turn to land.
+					// A message posted just before exit can still be in flight, so only
+					// treat the exit as a failure once it has had a turn to land.
 					setTimeout(() => {
 						if (!reported) {
-							reject(new Error('worker exited without reporting'));
+							fail(new Error('worker exited without reporting'));
 						}
 					}, 50);
 				});
 				worker.on('message', (event) => {
 					if (event.ready) {
-						ready();
+						markReady();
 					} else {
 						reported = true;
 						resolve(event);
@@ -352,22 +362,23 @@ describe('Drop', () => {
 			});
 
 			try {
-				// The worker is spinning on the seam counter by the time it reports
+				// The worker is spinning on the latch counter by the time it reports
 				// ready, so arming now cannot be missed.
 				await workerReady;
 				delayDropColumnFamilyForTesting(delayMs);
 
-				// Blocks for `delayMs` inside the critical section while the worker
-				// races its open against it.
+				const dropStartedAt = Date.now();
 				db.dropSync();
-				expect(dropColumnFamilyDelayCountForTesting()).toBeGreaterThan(0);
 
 				const event = await result;
 				expect(event.error).toBeUndefined();
-				// The open was serialized behind the whole section rather than
-				// slipping into a gap in it.
-				expect(event.openDurationMs).toBeGreaterThan(delayMs / 2);
-				// ...so it got a fresh family whose writes actually land, not the
+				// The latch starts after the RocksDB drop, so the open cannot return
+				// before `dropStartedAt + delayMs` unless it slipped into a gap in the
+				// critical section. Scheduling can only push the open later, so this
+				// never fails for a starved worker (the clock-granularity slack keeps
+				// a coarse Windows timer from tipping the boundary).
+				expect(event.openEndedAt).toBeGreaterThanOrEqual(dropStartedAt + delayMs - 50);
+				// ...and it got a fresh family whose writes actually land, not the
 				// dropped one whose writes RocksDB discards.
 				expect(event.readBack).toBe('value');
 				expect(event.columns).toContain('racy');

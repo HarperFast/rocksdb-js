@@ -62,9 +62,8 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Test-only: make a successful column-family drop hold DBRegistry's databasesMutex for `ms`
- * milliseconds between the RocksDB drop and the registry cleanup, so another thread can prove
- * its warm open is serialized behind the whole section. Pass 0 to disarm. See core/test_seam.h.
+ * Test-only: arm the column-family drop latch for `ms` milliseconds (0 disarms). See
+ * core/test_seam.h.
  */
 napi_value DelayDropColumnFamilyForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
@@ -77,9 +76,7 @@ napi_value DelayDropColumnFamilyForTesting(napi_env env, napi_callback_info info
 }
 
 /**
- * Test-only: how many drops have entered the delay armed by
- * `delayDropColumnFamilyForTesting`. Lets a waiter block until the drop is provably inside the
- * critical section rather than guessing with a timer.
+ * Test-only: how many drops have entered that latch. See core/test_seam.h.
  */
 napi_value DropColumnFamilyDelayCountForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();

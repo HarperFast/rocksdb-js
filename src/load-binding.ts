@@ -961,16 +961,15 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
 /**
- * Test-only: make a successful column-family drop hold the registry mutex for `ms` milliseconds
- * between the RocksDB drop and the registry cleanup, so another thread can prove its warm open is
- * serialized behind the whole critical section. Pass 0 to disarm.
+ * Test-only: arm the column-family drop latch for `ms` milliseconds (0 disarms), so another
+ * thread can race a warm open against the drop's critical section.
  */
 export const delayDropColumnFamilyForTesting: (ms: number) => void =
 	binding.delayDropColumnFamilyForTesting;
 
 /**
- * Test-only: how many drops have entered the delay armed by `delayDropColumnFamilyForTesting`,
- * so a waiter can block until the drop is provably inside the critical section.
+ * Test-only: how many drops have entered that latch. Monotonic and process-wide, so a waiter
+ * compares against a baseline it read before arming.
  */
 export const dropColumnFamilyDelayCountForTesting: () => number =
 	binding.dropColumnFamilyDelayCountForTesting;
