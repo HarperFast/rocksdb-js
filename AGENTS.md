@@ -664,15 +664,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     "everything under the database directory", which orphans exactly the files tiering moved away.
     The layout must survive the descriptor: `destroy()` accepts a closed handle, and closing the last
     one purges the registry entry, so `DBDescriptor::recordColumnFamilyLayout` mirrors a
-    `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` uses the live
-    descriptor snapshot when present and that registry record after close. `blob_dir` can be
-    recovered from OPTIONS; `db_paths` cannot — so the retained `db_paths` is canonical rather
-    than last-writer-wins: `RecordLayout` never shortens it, and `DestroyDB` falls back to it
-    whenever the live descriptor described no volumes. Read-only and read-write opens of one path
-    are separate registry entries, and a read-only handle that omits `paths` succeeds while the
-    files it needs still sit at path index 0, so without those two rules its empty layout erased
-    the only record of the other volumes and a later `destroy()` reported success while orphaning
-    every SST on them. A successful column-family drop removes that family
+    `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` merges the live
+    descriptor snapshot with that registry record rather than picking one. `blob_dir` can be
+    recovered from OPTIONS; `db_paths` cannot — so the retained `db_paths` accumulates rather
+    than being last-writer-wins: `RecordLayout` unions each open's list into the record instead
+    of replacing it (`mergeDbPaths`), which is enough because the record feeds only `destroy()`,
+    where `rocksdb::DestroyDB` collects the paths into a set and the order carries no meaning.
+    Read-only and read-write opens of one path are separate registry entries, and a read-only
+    handle that omits `paths` — or passes a shorter list — succeeds while the files it needs still
+    sit at path index 0, so without those two rules its shorter layout erased the only record of
+    the other volumes and a later `destroy()` reported success while orphaning every SST on them.
+    A successful column-family drop removes that family
     from every live descriptor layout for the path and from `knownLayouts` before its by-name handle
     is unregistered, so a concurrent same-name recreation cannot be removed from the destroy layout.
     That ordering only holds because the drop is atomic: `DBRegistry::DropColumnFamily` holds

@@ -80,7 +80,9 @@ private:
 	std::mutex databasesMutex;
 
 	/**
-	 * The last known file layout of every database this process has opened.
+	 * Where every database this process has opened keeps its files: the latest
+	 * blob directory per column family, and the accumulated `db_paths` of all
+	 * its opens (`DBRegistry::RecordLayout`).
 	 *
 	 * `destroy()` accepts a CLOSED handle, and closing the last handle to a
 	 * path takes the descriptor — and the registry entry the layout would be

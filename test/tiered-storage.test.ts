@@ -460,53 +460,62 @@ describe('paths', () => {
 		expect(existsSync(dbPath)).toBe(false);
 	});
 
-	it('should keep the tiered layout when a read-only open omits paths', async () => {
-		const dbPath = tempPath();
-		const slow = tempDir();
+	// A read-only handle is a separate registry entry with its own descriptor and
+	// its own, shorter `paths`. The two cases cover the two places that shorter
+	// list could win: the layout the reader records on open, and the live
+	// descriptor destroy() reads.
+	it.each([
+		{ label: 'omits paths', readerListsDbPathOnly: false, leaveReaderOpen: false },
+		{ label: 'passes a shorter list', readerListsDbPathOnly: true, leaveReaderOpen: true },
+	])(
+		'should keep the tiered layout when a read-only open $label',
+		async ({ readerListsDbPathOnly, leaveReaderOpen }) => {
+			const dbPath = tempPath();
+			const slow = tempDir();
 
-		// Index 0 is the database directory, which is the shape that lets the
-		// read-only open below succeed at all: a handle that omits `paths` gets
-		// `db_paths` sanitized to `[dbname]`, so it can still find every file
-		// while they all sit at path index 0.
-		const writer = openDb(dbPath, {
-			paths: [
-				{ path: dbPath, targetSize: 0 },
-				{ path: slow, targetSize: 1 << 30 },
-			],
-			writeBufferSize: 64 * 1024,
-		});
-		writer.putSync('key', 'value');
-		writer.flushSync();
-
-		// The read-only handle is a separate registry entry with its own
-		// descriptor, and its layout names no volumes. Recording it must not
-		// shorten the remembered list: `db_paths` is written nowhere on disk, so
-		// that record is the only thing that still knows about `slow`, and a
-		// destroy() without it reports success while leaving every file there.
-		const reader = RocksDatabase.open(dbPath, { readOnly: true });
-		reader.close();
-
-		for (let batch = 0; batch < 8; batch++) {
-			for (let i = 0; i < 200; i++) {
-				writer.putSync(`key-${batch}-${i}`, `value-${i}`.padEnd(512, 'x'));
-			}
+			// Index 0 is the database directory, which is what lets the reader open at
+			// all: without `paths` its `db_paths` is sanitized to `[dbname]`.
+			const writer = openDb(dbPath, {
+				paths: [
+					{ path: dbPath, targetSize: 0 },
+					{ path: slow, targetSize: 1 << 30 },
+				],
+				writeBufferSize: 64 * 1024,
+			});
+			writer.putSync('key', 'value');
 			writer.flushSync();
-		}
 
-		// Waited for rather than forced, for the reason given above the same wait
-		// in the appended-path case: only automatic compaction distributes across
-		// paths.
-		const deadline = Date.now() + 30_000;
-		while (filesWithExt(slow, '.sst').length === 0 && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
-		expect(filesWithExt(slow, '.sst').length).toBeGreaterThan(0);
+			const reader = openDb(dbPath, {
+				readOnly: true,
+				...(readerListsDbPathOnly ? { paths: [{ path: dbPath, targetSize: 0 }] } : {}),
+			});
+			// Left open, the reader is also the live descriptor destroy() captures,
+			// since closing the writer below purges the writer's own entry.
+			if (!leaveReaderOpen) {
+				reader.close();
+			}
 
-		writer.close();
-		writer.destroy();
-		expect(filesWithExt(slow, '.sst')).toHaveLength(0);
-		expect(existsSync(dbPath)).toBe(false);
-	});
+			for (let batch = 0; batch < 8; batch++) {
+				for (let i = 0; i < 200; i++) {
+					writer.putSync(`key-${batch}-${i}`, `value-${i}`.padEnd(512, 'x'));
+				}
+				writer.flushSync();
+			}
+
+			// Waited for rather than forced, for the reason given above the same wait
+			// in the appended-path case.
+			const deadline = Date.now() + 30_000;
+			while (filesWithExt(slow, '.sst').length === 0 && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			expect(filesWithExt(slow, '.sst').length).toBeGreaterThan(0);
+
+			writer.close();
+			writer.destroy();
+			expect(filesWithExt(slow, '.sst')).toHaveLength(0);
+			expect(existsSync(dbPath)).toBe(false);
+		}
+	);
 
 	it('should refuse to add paths while the database is already open untiered', () => {
 		const dbPath = tempPath();
