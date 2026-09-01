@@ -173,9 +173,20 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<std::pair<std::shared_ptr<DBDescriptor>, std::shared_ptr<std::condition_variable>>> claimed;
 	rocksdb::Options destroyOptions;
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
+	std::unordered_map<std::string, std::string> destroyBlobDirs;
 	auto applyLayout = [&](const DBFileLayout& layout) {
-		destroyOptions.db_paths = layout.dbPaths;
+		if (layout.dbPaths.size() > destroyOptions.db_paths.size()) {
+			destroyOptions.db_paths = layout.dbPaths;
+		}
 		for (const auto& [cfName, blobDir] : layout.blobDirs) {
+			auto [it, inserted] = destroyBlobDirs.emplace(cfName, blobDir);
+			if (!inserted && it->second.empty()) {
+				it->second = blobDir;
+			}
+		}
+	};
+	auto materializeBlobDirs = [&]() {
+		for (const auto& [cfName, blobDir] : destroyBlobDirs) {
 			rocksdb::ColumnFamilyOptions cfOptions;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 			cfOptions.blob_dir = blobDir;
@@ -272,13 +283,14 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 	}
-	if (!capturedLayout) {
+	if (!capturedLayout || destroyOptions.db_paths.empty()) {
 		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 		if (auto it = instance->knownLayouts.find(identityPath); it != instance->knownLayouts.end()) {
 			applyLayout(it->second);
 			capturedLayout = true;
 		}
 	}
+	materializeBlobDirs();
 	if (!capturedLayout) {
 		rocksdb::ConfigOptions configOptions;
 		configOptions.ignore_unknown_options = true;
@@ -431,6 +443,12 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	if (auto known = instance->knownLayouts.find(path);
+		known != instance->knownLayouts.end() &&
+		layout.dbPaths.size() < known->second.dbPaths.size()
+	) {
+		layout.dbPaths = known->second.dbPaths;
+	}
 	const bool defaultLayout = layout.dbPaths.empty() &&
 		std::all_of(layout.blobDirs.begin(), layout.blobDirs.end(), [](const auto& entry) {
 			return entry.second.empty();
