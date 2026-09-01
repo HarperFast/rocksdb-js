@@ -517,6 +517,63 @@ describe('paths', () => {
 		}
 	);
 
+	// The mirror image of those two: destroy() deletes every SST it finds in each
+	// recorded directory, so a second open naming a DIFFERENT second volume must
+	// not be accumulated either, or one mistyped `paths` takes another database's
+	// files down with this one.
+	it('should ignore a storage path that diverges from the recorded list', async () => {
+		const dbPath = tempPath();
+		const ownVolume = tempDir();
+		const neighborPath = tempPath();
+		const neighborVolume = tempDir();
+
+		const neighbor = openDb(neighborPath, {
+			paths: [
+				{ path: neighborPath, targetSize: 0 },
+				{ path: neighborVolume, targetSize: 1 << 30 },
+			],
+			writeBufferSize: 64 * 1024,
+		});
+		for (let batch = 0; batch < 8; batch++) {
+			for (let i = 0; i < 200; i++) {
+				neighbor.putSync(`key-${batch}-${i}`, `value-${i}`.padEnd(512, 'x'));
+			}
+			neighbor.flushSync();
+		}
+		const deadline = Date.now() + 30_000;
+		while (filesWithExt(neighborVolume, '.sst').length === 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		expect(filesWithExt(neighborVolume, '.sst').length).toBeGreaterThan(0);
+		// Closed so compaction cannot move its files while the assertion runs.
+		neighbor.close();
+		const neighborFiles = filesWithExt(neighborVolume, '.sst');
+
+		const db = openDb(dbPath, {
+			paths: [
+				{ path: dbPath, targetSize: 0 },
+				{ path: ownVolume, targetSize: 1 << 30 },
+			],
+		});
+		db.putSync('key', 'value');
+		db.flushSync();
+		db.close();
+
+		// The open itself succeeds — every file still sits at path index 0 — so it
+		// is the recording that has to reject the neighbor's volume.
+		openDb(dbPath, {
+			readOnly: true,
+			paths: [
+				{ path: dbPath, targetSize: 0 },
+				{ path: neighborVolume, targetSize: 1 << 30 },
+			],
+		}).close();
+
+		db.destroy();
+		expect(existsSync(dbPath)).toBe(false);
+		expect(filesWithExt(neighborVolume, '.sst')).toEqual(neighborFiles);
+	});
+
 	it('should refuse to add paths while the database is already open untiered', () => {
 		const dbPath = tempPath();
 		const fast = tempDir();
