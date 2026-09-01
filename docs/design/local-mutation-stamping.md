@@ -1,8 +1,8 @@
 # Design: commit-time local mutation stamping (dual-clock stage 1)
 
-Status: revision 5 — planning gate cleared (`Framing-Verdict: chosen-approach-sound`, round 3;
-graded codex leg each round), then the task owner's log-architecture ruling recorded and folded
-in (§3.4). Issue #811. Stage 1 of the three-clock model per the
+Status: revision 6 (implemented) — planning gate cleared twice (`Framing-Verdict:
+chosen-approach-sound`, rounds 3 and 5; graded codex leg each round), with the task owner's
+log-architecture ruling recorded and folded in between (§3.4). Issue #811. Stage 1 of the three-clock model per the
 reviewed dual-timestamp plan behind HarperFast/harper#2409 (rulings D1–D4); companion adoption
 issue HarperFast/harper#2412 (stages 0b/2), apply-side HarperFast/harper-pro#790, replay
 fidelity HarperFast/harper#2411.
