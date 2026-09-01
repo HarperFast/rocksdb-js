@@ -2238,7 +2238,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  * @returns The transaction log store.
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
-	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
+	return TransactionLogStoreRegistry::ResolveStore(this->path, name, this->readOnly);
 }
 
 void DBDescriptor::setLastError(std::string json) {

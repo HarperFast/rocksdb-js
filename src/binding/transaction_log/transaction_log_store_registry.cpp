@@ -214,7 +214,8 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
  */
 std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	const std::string& dbPath,
-	const std::string& name
+	const std::string& name,
+	bool callerReadOnly
 ) {
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::ResolveStore Registry not initialized\n");
@@ -255,15 +256,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			instance.get(), name.c_str(), dbPath.c_str());
 	}
 
-	// A read-only registration must not conjure a store in the writer's tree
-	// (mkdir + writable files + a phantom entry that would later fail
-	// EnsureWritableRegistrationSafe), and must not lazily load one either:
-	// publishing a post-open store would both break the documented
-	// frozen-at-open log view and hand a writable open that already passed
-	// EnsureWritableRegistrationSafe an unrecovered, O_RDONLY store to adopt.
-	// Stores discovered at open were found above; everything else is not found
-	// until the handle reopens.
-	if (config.readOnly) {
+	// A read-only caller's log view is frozen at open: an unresolved store is
+	// not found — never created (mkdir in what may be a foreign live primary's
+	// tree) and never lazily loaded/published (see the header comment).
+	if (callerReadOnly) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Store \"%s\" not found for read-only \"%s\"\n",
 			instance.get(), name.c_str(), dbPath.c_str());
 		return nullptr;

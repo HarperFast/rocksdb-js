@@ -180,11 +180,19 @@ public:
 	 *
 	 * @param dbPath The database path.
 	 * @param name The name of the transaction log store.
-	 * @returns The transaction log store.
+	 * @param callerReadOnly Whether the resolving handle's database is
+	 * read-only/secondary. The CALLER's mode — not the path-global entry
+	 * config, which a since-closed writable handle may have flipped — decides
+	 * whether a missing store may be created: a read-only caller gets only
+	 * stores already live in this process (its log view is frozen at open) and
+	 * never mkdirs into what may by now be a foreign live primary's tree.
+	 * @returns The transaction log store, or null for a read-only caller whose
+	 * store is not resident.
 	 */
 	static std::shared_ptr<TransactionLogStore> ResolveStore(
 		const std::string& dbPath,
-		const std::string& name
+		const std::string& name,
+		bool callerReadOnly
 	);
 
 	/**

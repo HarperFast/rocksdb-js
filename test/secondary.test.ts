@@ -180,17 +180,12 @@ describe('Secondary Instances', () => {
 
 			secondary.open();
 			expect(Array.from(secondary.useLog('exists').query({ start: 0 })).length).toBeGreaterThan(0);
-			// The log view is frozen at open: a store the open never discovered
-			// is reported as not found, not conjured (mkdir + writable files)
-			// into the primary's tree.
 			expect(() => secondary.useLog('never-created')).toThrow(
 				'Transaction log "never-created" not found'
 			);
 			expect(existsSync(join(dbPath, 'transaction_logs', 'never-created'))).toBe(false);
 			expect(secondary.listLogs()).toEqual(['exists']);
 
-			// A read-only transaction is a JS shim over the database context —
-			// same frozen-view contract through txn.useLog.
 			await secondary.transaction(async (txn) => {
 				expect(() => txn.useLog('never-created')).toThrow(
 					'Transaction log "never-created" not found'
