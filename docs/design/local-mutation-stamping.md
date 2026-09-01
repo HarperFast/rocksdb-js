@@ -49,7 +49,25 @@ strict per-log key monotonicity (the claim moves under the store append lock for
 transactions); seek-by-local-stamp becomes the existing binary-index seek; and the issue's
 "per-node log key domain stays origin clock" acceptance line is amended per the ruling —
 dormant unchanged, receiver-domain keys at activation (per-hop cursors, LMDB's existing model),
-with the cursor migration owned by harper#2412 (§3.4).
+with the cursor migration owned by harper#2412 (§3.4). **Rev 6 folds in the round-4 review of
+the amended design**: the gate is split two-tier — per-CF markers gate the *record value*
+format, while the **log key domain is a database-wide one-way marker** (logs are shared across
+CFs via the store registry, so a per-CF gate cannot own a per-log property; once flipped, every
+batch in every log of that database is stamp-keyed regardless of initiating CF, and active
+segments rotate at the flip so the strict-monotonicity claim is scoped to post-activation
+segments — §3.1, §3.4); first activation requires the enabling open to be the descriptor's sole
+handle (no opportunistic marker publication racing in-flight writers; metadata-CF
+initialization is defined as recoverable across a crash between CF creation and schema row —
+§3.1); the clean-close floor row is durably invalidated during open, in the same synchronous
+batch as the open-time reserve extension, before any claim (§3.7); reserve extension never runs
+while holding a log store's write mutex (pre-reserve outside the lock — §3.2); the reserve
+extender gets an explicit lifecycle (descriptor-pinned, registered in `operationsInFlight`,
+drained at close, failures caught at every scheduling boundary — §3.2); restore-time floor
+reconciliation is a defined pending-floor artifact protocol with crash coverage (§3.7);
+database/backup metadata is declared trusted with an extreme-ceiling warning (§3.7); budgets
+gain dormant same-process numeric thresholds, an overlapping-transaction re-stamp-rate
+benchmark, and a forced-reserve-rollover contention test (§6); and rev-5 editing leftovers
+(§7 key-domain bullet, §8 caller-buffer/marker-cleanup/re-put mentions) are reconciled.
 
 ## 1. Problem and goal
 
@@ -151,6 +169,32 @@ branch and zero new calls, allocations, or I/O** (asserted structurally, §6 B0 
 dormant regression gate would be noise-bound, so benchmarks are reported, not asserted). A
 second in-process open of an already-open CF with an explicitly different value is rejected in
 `DBRegistry::OpenDB`.
+
+**The gate is two-tier, because its two effects have different owners.** Per-CF marker rows
+gate the *record value* format (rocksdb-js owning the first word of values on that CF). The
+*log key domain* is a **database-wide, one-way marker row**: transaction-log stores are
+resolved per (database path, name) and shared by every CF's transactions
+(`transaction.cpp:1369-1373`, `transaction_log_store_registry.cpp:193-229`), so a per-CF flag
+cannot own a per-log property — with a split gate, an unstamped CF's transaction appending an
+origin-keyed batch to the same physical log would silently break the domain promise. Once any
+CF is enabled, the database's log key domain flips with it (first enable writes both rows in
+one batch): **every subsequent batch in every log of that database is stamp-keyed, regardless
+of which CF's transaction wrote it**, and each log's active segment is rotated at the flip so
+post-activation segments are purely receiver-domain (the strict-monotonicity guarantee of
+§3.4 is scoped to them; pre-activation segments keep their historical keys and the existing
+mostly-monotonic reader tolerances).
+
+**First activation is exclusive, not opportunistic.** Publishing the marker while other
+handles are mid-write would let a racing direct `PutSync` (already inside `db->Put` having
+observed stamping off) land an unstamped value in a just-marked CF — `OperationGuard` pins
+lifetime, it does not exclude writes. First enable therefore succeeds only when the enabling
+open is the descriptor's **sole live handle** (the normal deployment shape: options set at
+boot, first open); otherwise the open fails with an explicit "activation requires exclusive
+open" error. Later opens merely inherit/assert. Metadata-CF initialization is defined
+recoverably: create the CF, then write the schema row — a crash between the two leaves an
+*empty* CF with no schema row, which the next open completes (writes the row) rather than
+misclassifying as a hostile collision; a *non-empty* CF without a valid schema row still fails
+closed (§3.7).
 
 The durable marker is the storage layer's own fail-closed backstop (covering non-harper users
 too); the harper-side durable data-format floor (harper#2412 stage 2) remains the
@@ -323,12 +367,17 @@ written").
 Mechanically, on an enabled store:
 
 - `TransactionLogStore::writeBatch` assigns `batch.timestamp` from `claimLocalStamp` **under
-  the store's write mutex at append time**, so per-store append order equals claim order and
-  the keys are **strictly monotonic per log** — an upgrade over today's mostly-monotonic keys
-  that gives `findPositionByTimestamp` a true upper bound on enabled stores. (Claims are
-  already strictly monotonic globally; taking the claim under the append lock is what pins
-  append order to claim order across sync commits interleaving with the commit lanes.) The
-  keep path is byte-for-byte today's write: candidate == stamp == key.
+  the store's write mutex at append time** (reserve pre-checked outside the mutex, §3.2), so
+  per-store append order equals claim order and the keys are **strictly monotonic per log
+  segment created after activation** — an upgrade over today's mostly-monotonic keys that
+  gives `findPositionByTimestamp` a true upper bound on those segments (active segments are
+  rotated at the key-domain flip, §3.1, so no file mixes domains; pre-activation segments
+  keep the existing tolerances). Stamp-keying is governed by the database-wide key-domain
+  marker, not the initiating CF (§3.1) — a shared log never mixes origin-keyed and
+  stamp-keyed batches after the flip. (Claims are already strictly monotonic globally; taking
+  the claim under the append lock is what pins append order to claim order across sync
+  commits interleaving with the commit lanes.) The keep path is byte-for-byte today's write:
+  candidate == stamp == key.
 - Transactions with no log batch claim at commit entry as before (uniqueness only; no ordering
   constraint exists without an append).
 - The record patch (§3.3) uses the same claimed stamp, before `txn->Commit` — the atomicity
@@ -453,27 +502,53 @@ created lazily on first enable:
   above `max(now, watermark)`) by a **single-flight** off-thread task triggered when the
   watermark crosses `ceiling − margin`; the claim path blocks on extension only if claims
   outrun the asynchronous extension (pathological — bounded, surfaced as a commit failure if
-  the sync write itself fails, never silent, never a spin).
+  the sync write itself fails, never silent, never a spin). **Reserve extension never runs
+  under a log store's `writeMutex`**: the logged-commit path pre-checks the reserve *before*
+  acquiring the append mutex (extending there if needed) and the under-mutex claim only
+  proceeds when headroom exists — so a metadata fsync can never stall every later log commit
+  behind one holder of the append lock. The extender itself has an explicit lifecycle: it
+  holds a `shared_ptr` pin on the descriptor, registers in `operationsInFlight`, is drained
+  by `close()` before the metadata CF is destroyed, and every scheduling boundary
+  (thread/queue creation, enqueue, inline-run fallback) catches failures and converts them to
+  a rejected extension (surfacing as a rejected commit), never an unhandled throw.
 - **On open**: the watermark seeds from the clean-close floor when present (orderly shutdown —
   no skew, no reserve consumption), else from the ceiling row (crash — consuming at most one
   `RESERVE_WINDOW_MS` of logical skew per crash, so even a crash loop advances the clock
   boundedly: N crashes ≤ N × 5 minutes, and only relative to a wall clock that failed to catch
-  up). The clean-close row is deleted at first claim so a later crash cannot resurrect a stale
-  low floor. When stamping is enabled, open extends the reserve synchronously (one small sync
-  write, part of open's existing I/O budget) so the first commit never stalls; cold-open
-  latency and restart-skew bounds are tested. A CF marker row present is honored per §3.1
-  (unspecified ⇒ enabled; explicit `false` ⇒ fail closed). A database that never enabled
-  stamping has no metadata CF and no new open-time work.
+  up). **The clean-close row is durably invalidated during open itself — deleted in the same
+  synchronous batch that performs the open-time reserve extension, before any handle can
+  claim** (deleting it lazily at first claim would let this sequence re-mint a stamp: close
+  records floor F, reopen, claim and durably log S, crash before the lazy deletion is durable,
+  reopen seeds F again). Crash tests cover both sides of that batch. The open-time extension
+  also means the first commit never stalls; cold-open latency and restart-skew bounds are
+  tested. A CF marker row present is honored per §3.1 (unspecified ⇒ enabled; explicit
+  `false` ⇒ fail closed). A database that never enabled stamping has no metadata CF and no new
+  open-time work.
 - **Mixed DB+log backup coherence.** Directory backup and the backup stream capture RocksDB
   first and transaction logs afterward (`backup.cpp:253-279`, `backup_stream.cpp:435-499`), so
   a commit landing between the captures can put a stamp in the log snapshot that exceeds the
   ceiling in the DB snapshot. The transaction-log snapshot section therefore carries a **floor
   capture** (the live ceiling, read after the log capture completes — ceiling monotonicity
-  makes "after" sufficient), and `backups.restore` reconciles it into the metadata CF before
-  the restored database accepts writes. Checkpoints need nothing: a checkpoint is a single
-  RocksDB point-in-time snapshot, so data and ceiling are already mutually consistent.
-  Concurrent-backup tests crash at both capture boundaries (plus the stream variant) and
-  assert the restored store never re-mints a stamp its logs carry.
+  makes "after" sufficient), written as a small validated record in the log-snapshot
+  directory. **Restore's reconciliation protocol is crash-safe by construction**: restore
+  copies the artifact with the logs into the restored transaction-log directory; the artifact
+  is idempotent and persists until consumed, and **open reconciles it before any claim** —
+  folding `max(ceiling row, artifact)` into the metadata CF in the same synchronous open-time
+  batch as the clean-close invalidation above, then leaving the artifact in place (a re-run
+  after a crashed restore or a crashed first open simply re-applies the same maximum). Crash
+  tests cover restore before/after log publication, before/after reconciliation, and re-run.
+  Checkpoints need nothing: a checkpoint is a single RocksDB point-in-time snapshot, so data
+  and ceiling are already mutually consistent. Concurrent-backup tests crash at both capture
+  boundaries (plus the stream variant) and assert the restored store never re-mints a stamp
+  its logs carry.
+- **Trust boundary, stated plainly**: the metadata CF and the backup floor artifact are
+  *trusted* content, in the same trust class as the database bytes themselves — schema magic
+  is collision detection, not authentication, and a crafted database or backup can already
+  fabricate arbitrary data. Values are validated for shape (finite, positive, < 8.64e15), and
+  a recovered ceiling far ahead of wall clock (beyond `MAX_KEPT_SKEW_MS` + one reserve window)
+  additionally emits a loud global warning event naming the skew and the recovery option, so
+  an operator restoring a clock-poisoned artifact is told rather than left with silently
+  future-dated local time.
 - The metadata CF is excluded from user-visible CF listings, is not user-openable by name, and
   `LoadLatestOptions`-based per-CF option preservation treats it like any other CF (its
   options are fixed internally: tiny write buffer, no compression concerns). Read-only opens
@@ -560,6 +635,8 @@ stress-gated:
 | B6 | Contended: 4 worker envs committing concurrently (mixed keep/re-stamp) across all three commit modes (legacy/single-lane/two-lane) **plus concurrent direct `PutSync` writers** (the unserialized path — real cache-line contention on watermark/reserve) | p95 and p99 ratios ≤ **1.25**; uniqueness asserted across the full interleaving |
 | B7 | Lock-freedom | `static_assert(std::atomic<uint64_t>::is_always_lock_free)` compiled on all platforms; claim function exercised from N threads in GTest for progress + uniqueness |
 | B8 | Enabled, logged single-entry commit (claim under the store append lock) | p50 ratio enabled/disabled ≤ **1.05**; strict per-log key monotonicity asserted across the B6 interleavings; entry bytes asserted format-identical to dormant output for the same inputs |
+| B9 | Dormant numeric backstop (same process, interleaved dormant-vs-baseline `git` build not required — dormant run of this build vs the structural-counter run) | p50 ratio ≤ **1.03**, p99 ratio ≤ **1.10** over ≥ 5 interleaved repetitions (generous margins — the structural B0 counters remain the primary dormant proof; this bounds branch/layout effects counters cannot see) |
+| B10 | Overlapping transactions: long (10k-write) transactions begun before concurrent short commits, plus a replicated-apply-shaped workload | re-stamp *rate* reported; p95 commit ratio ≤ **1.5×** the non-overlapping B4 figure; forced reserve rollover (tiny `RESERVE_WINDOW_MS`) under this load shows no commit queued behind a metadata fsync holding a log `writeMutex` (asserted via lock-hold instrumentation in the test build) |
 
 ## 7. Dormancy / adoption contract
 
@@ -574,13 +651,16 @@ stress-gated:
   old-binary package-floor enforcement — recorded there, not re-owned here. rocksdb-js
   enforces what it can locally: the marker fails a forgetful reopen closed, and the cross-open
   conflict check keeps one process from mixing stamped and unstamped writers on a CF.
-- The per-node transaction-log **key domain is untouched** in both variants and on both paths
-  (keep and re-stamp): resume cursors and `findPositionByTimestamp` semantics are unchanged.
+- Log key domain, per the §3.4 amended constraint: **dormant databases are untouched**;
+  activation flips the database-wide key domain to receiver-local stamps (per-hop cursors),
+  rotating active segments at the flip. `findPositionByTimestamp` mechanics are unchanged and
+  gain a true upper bound on post-activation segments.
 
 ## 8. Verification route
 
 - **Unit (Vitest)**: stamp uniqueness/keep semantics across txn + non-txn writes;
-  caller-buffer unconditional restore (success, failure, abort, re-stamp); short-value
+  caller-buffer never mutated (SliceParts staging; SharedArrayBuffer observer/writer test,
+  including abort and re-stamp paths); short-value
   rejection on stamped CFs; `setTimestamp` hardening (NaN/Infinity/≥8.64e15 rejected;
   non-Pending rejected; between-puts value still patched); `setTimestamp`-after-`addLogEntry`
   (enabled store: the key is assigned at `writeBatch` from the claim regardless of the staged
@@ -594,7 +674,12 @@ stress-gated:
   strict per-log key monotonicity under sync+async+two-lane interleaving, entry bytes
   format-identical to dormant output, purge/rotation on enabled stores; metadata CF:
   enable-marker fail-closed
-  reopen, explicit-false conflict, hidden from listings, drop-CF marker cleanup, read-only
+  reopen, explicit-false conflict, hidden from listings, dropped-CF marker rows retained and
+  recreated same-name CF starting unmarked, first-activation exclusivity (second live handle
+  present fails the enabling open; racing direct writes cannot straddle the marker),
+  mixed-gate/shared-log coverage (stamped and unstamped CFs appending to one log after the
+  flip are all stamp-keyed), interrupted metadata-CF initialization (empty-CF-no-schema-row
+  resumes; non-empty fails closed), read-only
   open; **lifecycle**: backup + restore, backup stream, and checkpoint each carry the metadata
   CF (floor + markers) and stamped data coherently — restore then reopen enforces the marker
   and never re-mints a stamp, including **concurrent** backups with commits landing between
@@ -609,9 +694,9 @@ stress-gated:
   dormant-visible `setTimestamp` rejections**.
 - **GoogleTest (Node-free)**: `claimLocalStamp` keep/re-stamp/skew-cap/reserve semantics with
   an injected clock (rollback > `MAX_KEPT_SKEW_MS` terminates — the rev-2 spin case; no-log;
-  post-purge), uniqueness under threads, B5/B7; the batch rebuild-or-reput substitution
+  post-purge), uniqueness under threads, B5/B7; the order-preserving batch reconstruction
   round-trip against a real `WriteBatchWithIndex` (including the conflict-tracking gate for
-  `RebuildFromWriteBatch`).
+  `RebuildFromWriteBatch` and the `Put→Delete`/`Delete→Put`/repeated-key order assertions).
 - **Fault injection**: §5 matrix as spawned-child crash tests (fixtures pattern) plus the
   non-crash failure-injection companions (rejection + survival), F2/F6 on Windows CI.
 - **Benchmarks**: §6 budgets asserted (B0 structural); existing bench suite for regression
