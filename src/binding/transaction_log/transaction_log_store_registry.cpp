@@ -66,6 +66,33 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 		it->second->refCount++;
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Incremented refCount for \"%s\" (refCount=%zu)\n",
 			instance.get(), dbPath.c_str(), it->second->refCount);
+		if (it->second->config.readOnly && !config.readOnly) {
+			// A writer is joining an entry created by a read-only open whose
+			// stores are empty (EnsureWritableRegistrationSafe rejected the
+			// non-empty case before this open began). Adopt writer semantics so
+			// this open's discovery runs recovery and retention normally.
+			it->second->config.readOnly = false;
+		}
+	}
+}
+
+void TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(const std::string& dbPath, bool readOnly) {
+	if (!instance || readOnly) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(instance->entriesMutex);
+	auto it = instance->entries.find(dbPath);
+	if (it == instance->entries.end() || !it->second->config.readOnly) {
+		return;
+	}
+	std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
+	if (!it->second->stores.empty()) {
+		throw rocksdb_js::DBException(
+			"Cannot open \"" + dbPath + "\" for writing: its transaction logs are open read-only in "
+			"this process (loaded without tail recovery, which appends must not skip). Close the "
+			"read-only or secondary handle first, or open the writable handle before it."
+		);
 	}
 }
 
@@ -128,8 +155,7 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 	}
 
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
-	std::string transactionLogsPath;
-	const TransactionLogStoreConfig* config = nullptr;
+	TransactionLogStoreConfig config;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -141,13 +167,14 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 			return;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		// Take a shared_ptr copy to keep the entry alive after releasing the
+		// lock, and a config copy so Register's writer-upgrade flip cannot race
+		// this read.
 		entry = it->second;
-		transactionLogsPath = entry->config.transactionLogsPath;
-		config = &entry->config;
+		config = entry->config;
 	}
 
-	if (transactionLogsPath.empty() || !std::filesystem::exists(transactionLogsPath)) {
+	if (config.transactionLogsPath.empty() || !std::filesystem::exists(config.transactionLogsPath)) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores No transaction logs path or directory does not exist for \"%s\"\n",
 			instance.get(), dbPath.c_str());
 		return;
@@ -155,13 +182,14 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
 
-	for (const auto& dirEntry : std::filesystem::directory_iterator(transactionLogsPath)) {
+	for (const auto& dirEntry : std::filesystem::directory_iterator(config.transactionLogsPath)) {
 		if (dirEntry.is_directory()) {
 			auto store = TransactionLogStore::load(
 				dirEntry.path(),
-				config->transactionLogMaxSize,
-				config->transactionLogRetentionMs,
-				config->transactionLogMaxAgeThreshold
+				config.transactionLogMaxSize,
+				config.transactionLogRetentionMs,
+				config.transactionLogMaxAgeThreshold,
+				config.readOnly
 			);
 			if (store) {
 				DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Found store \"%s\" for \"%s\"\n",

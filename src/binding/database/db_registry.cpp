@@ -150,12 +150,18 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<std::condition_variable> condition;
+	// One path can hold several descriptors — read-write, read-only, and any
+	// number of secondaries (the registry key is {path, readOnly,
+	// secondaryPath}) — and destroy deletes the files under all of them, so
+	// every one must be claimed and closed, not just the first found: an entry
+	// erased unclosed leaks its resources for the life of the process (a
+	// secondary's workspace `.secondary.lock` is only released by
+	// finishClose(), so a leaked secondary wedges its workspace permanently).
+	std::vector<std::pair<std::shared_ptr<DBDescriptor>, std::shared_ptr<std::condition_variable>>> claimed;
 
-	// Claim the descriptor under the lock but leave the entry in the map until
-	// the close completes (same discipline as CloseDB): the entry is how the
-	// env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
+	// Claim the descriptors under the lock but leave the entries in the map
+	// until the closes complete (same discipline as CloseDB): the entry is how
+	// the env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
 	// find shared descriptors, so erasing before close would let a worker env
 	// tear down in that window without scrubbing its tsfns from this
 	// descriptor — the close's own release pass would then touch freed tsfns.
@@ -164,26 +170,24 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
-			if (key.path == path && entry.descriptor) {
-				if (entry.descriptor->beginClose()) {
-					descriptor = entry.descriptor;
-					condition = entry.condition;
-					DEBUG_LOG("%p DBRegistry::DestroyDB Claimed descriptor close (ref count = %ld)\n",
-						instance.get(), descriptor.use_count());
-				}
-				break;
+			if (key.path == path && entry.descriptor && entry.descriptor->beginClose()) {
+				DEBUG_LOG("%p DBRegistry::DestroyDB Claimed descriptor close (ref count = %ld)\n",
+					instance.get(), entry.descriptor.use_count());
+				claimed.emplace_back(entry.descriptor, entry.condition);
 			}
 		}
 	}
 
-	if (descriptor) {
-		// Close all closables (iterators, transactions, handles) attached to this descriptor
-		// This should release all DBHandle references
-		DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
-			instance.get(), descriptor.use_count());
-		descriptor->finishClose();
+	if (!claimed.empty()) {
+		// Close all closables (iterators, transactions, handles) attached to
+		// each descriptor; this should release all DBHandle references
+		for (auto& [descriptor, condition] : claimed) {
+			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
+				instance.get(), descriptor.use_count());
+			descriptor->finishClose();
+		}
 
-		// Now that the close is complete, remove the path's entries and wake
+		// Now that the closes are complete, remove the path's entries and wake
 		// any OpenDB waiting on this path.
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
@@ -195,24 +199,28 @@ void DBRegistry::DestroyDB(const std::string& path) {
 				}
 			}
 		}
-		if (condition) {
-			condition->notify_all();
+		for (auto& [descriptor, condition] : claimed) {
+			if (condition) {
+				condition->notify_all();
+			}
 		}
 
-		// After closing, check if there are still lingering references
-		// Should only be our local reference (= 1) at this point
-		size_t refCountAfterClose = descriptor.use_count();
-		if (refCountAfterClose > 1) {
-			std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 1) +
-				" reference(s) still held after closing all handles. This may indicate handles not properly closed or JavaScript objects not yet garbage collected.";
-			DEBUG_LOG("%p DBRegistry::DestroyDB Error: %s\n", instance.get(), errorMsg.c_str());
-			throw rocksdb_js::DBException(errorMsg);
+		// After closing, check for lingering references — each descriptor
+		// should only have our local claim (= 1) at this point
+		for (auto& [descriptor, condition] : claimed) {
+			size_t refCountAfterClose = descriptor.use_count();
+			if (refCountAfterClose > 1) {
+				std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 1) +
+					" reference(s) still held after closing all handles. This may indicate handles not properly closed or JavaScript objects not yet garbage collected.";
+				DEBUG_LOG("%p DBRegistry::DestroyDB Error: %s\n", instance.get(), errorMsg.c_str());
+				throw rocksdb_js::DBException(errorMsg);
+			}
 		}
 
-		// Release our reference to the descriptor
-		// This will trigger the destructor which properly closes the DB
-		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor reference\n", instance.get());
-		descriptor.reset();
+		// Release our references to the descriptors
+		// This will trigger the destructors which properly close the DBs
+		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor references\n", instance.get());
+		claimed.clear();
 	} else {
 		// No open descriptor claimed; remove any placeholder entries for the
 		// path (an entry mid-close is erased by its closer's guarded erase).
@@ -299,7 +307,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 	}
 
-	// get or create entry for this path + mode + readOnly + secondaryPath combination
 	DBKey key{path, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.find(key);
 	if (entryIterator == instance->databases.end()) {

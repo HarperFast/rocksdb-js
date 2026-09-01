@@ -666,9 +666,25 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     files unconditionally — the pinned build fd-holds blob files like SSTs (verified empirically),
     so `secondary_blob_test.cc` is the regression net that must stay green on every RocksDB
     upgrade. The missing-file open race classifier (`core/open_status.cpp`,
-    `ERR_CONCURRENT_COMPACTION`) matches `.sst`, `.blob`, AND `.log` — a live writer reclaims all
-    three (compaction inputs, blob GC, flushed WAL segments) and each was observed as the file the
-    read-only open tripped on.
+    `ERR_CONCURRENT_COMPACTION`) matches `.sst`, `.blob`, AND `.log` at a filename-token boundary —
+    a live writer reclaims all three (compaction inputs, blob GC, flushed WAL segments) and each
+    was observed as the file the read-only open tripped on. (A secondary open rarely needs it: its
+    point-in-time replay falls back to the last fully-present version instead of failing.)
+
+    Two adjacent rules the mode forced into existence. **A read-only or secondary open must not
+    mutate the primary's transaction logs**: `TransactionLogStoreConfig::readOnly` makes discovery
+    load stores with no retention purge and no `recoverTail` truncation — the log directory may
+    belong to a live writer in another process whose append-owned `size` would keep appending past
+    a reader's truncation (invariant 5, the harper#2016 class); readers tolerate the unrecovered
+    torn tail via the CorruptFrameError/resync protocol. The inverse hazard is a WRITER adopting
+    stores a read-only open loaded without recovery (appends would land past a torn tail), so
+    `EnsureWritableRegistrationSafe` — called at the top of `DBDescriptor::open`, NOT from
+    `Register` (a throw there would run the half-built descriptor's close and decrement a refcount
+    it never incremented) — rejects the writable open while read-only-loaded stores are live.
+    And **`DBRegistry::DestroyDB` must claim and close EVERY descriptor for the path** (read-write,
+    read-only, each secondary): erasing an entry unclosed leaks its resources for the life of the
+    process — for a secondary, the workspace `.secondary.lock` is only released by `finishClose()`,
+    so a leaked one wedges its workspace permanently.
 
 ## Debugging native heap corruption
 

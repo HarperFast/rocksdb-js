@@ -310,10 +310,14 @@ export interface StoreOptions extends Omit<
 	 *
 	 * The value is the secondary instance's own workspace directory (RocksDB
 	 * keeps the secondary's private state there; it is created if missing).
-	 * It must be distinct from the database `path` and exclusive to one
-	 * secondary instance — two secondaries sharing a workspace corrupt each
-	 * other's state, and in-process reuse for a different database path is
-	 * rejected at open.
+	 * It must be distinct from the database `path` (enforced at open) and
+	 * exclusive to one secondary instance — two secondaries sharing a
+	 * workspace corrupt each other's state. In-process reuse is rejected at
+	 * open, and a kernel advisory lock on `<secondaryPath>/.secondary.lock`
+	 * excludes other processes — but on filesystems without advisory locking
+	 * (e.g. FUSE/9p mounts behind Docker Desktop bind mounts) the lock
+	 * degrades to a no-op, and on network filesystems it does not exclude
+	 * across hosts, so workspace exclusivity is the caller's job there.
 	 *
 	 * Implies `readOnly: true` (combining with an explicit `readOnly: false`
 	 * throws) and forces `maxOpenFiles: -1`: every table and blob file is
@@ -664,10 +668,6 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
-		// A secondary is read-only by construction: an explicit readOnly: false
-		// alongside secondaryPath is a contradiction (rejected in the native
-		// layer too), while absent readOnly normalizes to true so every
-		// read-only guard applies to secondary handles.
 		if (options?.secondaryPath !== undefined && options?.readOnly === false) {
 			throw new Error(
 				'A secondary open is read-only; secondaryPath cannot be combined with readOnly: false'

@@ -128,10 +128,14 @@ Creates a new database instance.
     [`catchUpWithPrimary()`](#dbcatchupwithprimary-promisevoid) call. This is the supported way to
     read a database another process is actively writing. The value is the secondary instance's own
     workspace directory (created if missing) where RocksDB keeps the secondary's private state — it
-    must be distinct from `path` and exclusive to one secondary instance. Exclusivity is enforced:
-    reusing a workspace in-process is rejected at open, and a kernel advisory lock on
+    must be distinct from `path` (enforced) and exclusive to one secondary instance. Exclusivity is
+    enforced: reusing a workspace in-process is rejected at open, and a kernel advisory lock on
     `<secondaryPath>/.secondary.lock` (same discipline and caveats as the
-    [backup directory lock](#backups)) excludes other processes. Implies
+    [backup directory lock](#backups)) excludes other processes — with the same limits: on
+    filesystems without advisory locking (`flock` unsupported — e.g. the FUSE/9p mounts behind
+    Docker Desktop bind mounts) the lock degrades to a no-op, and on network filesystems with
+    node-local `flock` (NFS `local_lock`, CIFS, 9p) it does not exclude across hosts, so workspace
+    exclusivity is the caller's job there. Implies
     `readOnly: true` (an explicit `readOnly: false` throws), so all read-only behavior above
     applies. Forces `maxOpenFiles: -1`: every table and blob file is opened and held for the life
     of each version, which is what makes the primary's deletions safe — budget file descriptors

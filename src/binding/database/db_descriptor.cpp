@@ -1230,6 +1230,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
+	// Before any real work: a writable open must not adopt transaction log
+	// stores a read-only open loaded without tail recovery (see the method's
+	// header comment for why this cannot live inside Register).
+	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(path, options.readOnly);
+
 	DBSettings& settings = DBSettings::getInstance();
 
 	// set the database options
@@ -1376,6 +1381,21 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			);
 		}
 
+		// The workspace must not BE the primary's data directory: the lock file
+		// and the secondary's info-LOG rotation would land among the primary's
+		// files. Canonical comparison (after creation, so both paths resolve)
+		// catches differently-spelled aliases and symlinks.
+		std::error_code canonicalError;
+		auto canonicalSecondary = std::filesystem::weakly_canonical(options.secondaryPath, canonicalError);
+		auto canonicalPrimary = canonicalError
+			? std::filesystem::path()
+			: std::filesystem::weakly_canonical(path, canonicalError);
+		if (!canonicalError && canonicalSecondary == canonicalPrimary) {
+			throw rocksdb_js::DBException(
+				"secondaryPath must be a separate directory from the database path \"" + path + "\""
+			);
+		}
+
 		// A workspace is exclusive to ONE secondary instance, and RocksDB does
 		// not enforce that itself (a second OpenAsSecondary on the same
 		// workspace succeeds — see test/native/secondary_blob_test.cc), so a
@@ -1397,6 +1417,18 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		rocksdb::Status status = rocksdb::DB::OpenAsSecondary(dbOptions, path, options.secondaryPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open secondary db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			// The initial replay is point-in-time tolerant (a missing file makes
+			// it fall back to the last fully-present version rather than fail —
+			// covered in test/secondary.test.ts), so this classification is a
+			// safety net for shapes that still error, not the expected path.
+			if (rocksdb_js::isMissingSstOpenRace(status)) {
+				throw rocksdb_js::DBException(
+					"ERR_CONCURRENT_COMPACTION",
+					"Secondary open failed: a file this open needed was already gone when it tried to "
+					"read it — the primary removed it (compaction, blob GC, or flush) mid-open. The "
+					"database is not corrupt; retry the open. (" + status.ToString() + ")"
+				);
+			}
 			throw rocksdb_js::DBException(
 				"Failed to open database \"" + path + "\" as secondary (secondary path \"" +
 				options.secondaryPath + "\"): " + status.ToString()
@@ -1506,6 +1538,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
+	logConfig.readOnly = options.readOnly;
 	TransactionLogStoreRegistry::Register(path, logConfig);
 	TransactionLogStoreRegistry::DiscoverStores(path);
 

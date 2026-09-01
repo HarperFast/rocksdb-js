@@ -1,7 +1,7 @@
 import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { rmSync, writeFileSync } from 'node:fs';
+import { readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -205,6 +205,81 @@ describe('Secondary Instances', () => {
 			secondary.close();
 			primary.close();
 			cleanup(dbPath, secondaryPath, childSecondaryPath);
+		}
+	});
+
+	it('should tolerate a missing file at secondary open (point-in-time fallback)', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const setup = new RocksDatabase(dbPath);
+		try {
+			setup.open();
+			setup.putSync('foo', 'bar');
+			setup.flushSync();
+			setup.close();
+
+			const sst = readdirSync(dbPath).find((file) => file.endsWith('.sst'));
+			expect(sst).toBeDefined();
+			rmSync(join(dbPath, sst!));
+
+			// The exact deletion that fails a plain readOnly open (see
+			// readonly.test.ts) does not fail a secondary open: its point-in-time
+			// recovery falls back to the last version whose files all exist, so
+			// the handle serves an older consistent view instead of erroring —
+			// the design property that makes secondary the live-follower mode.
+			const secondary = new RocksDatabase(dbPath, { secondaryPath });
+			secondary.open();
+			expect(secondary.getSync('foo')).toBeUndefined();
+			secondary.close();
+		} finally {
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	it('should reject a secondaryPath that is the database path', async () => {
+		const dbPath = generateDBPath();
+		const primary = new RocksDatabase(dbPath);
+		try {
+			primary.open();
+			const aliased = new RocksDatabase(dbPath, { secondaryPath: `${dbPath}/` });
+			expect(() => aliased.open()).toThrow(
+				'secondaryPath must be a separate directory from the database path'
+			);
+		} finally {
+			primary.close();
+			cleanup(dbPath);
+		}
+	});
+
+	it('should close secondaries on destroy and release their workspaces', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		let primary = new RocksDatabase(dbPath);
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		try {
+			primary.open();
+			primary.putSync('foo', 'bar');
+			secondary.open();
+
+			// Destroy must claim and close EVERY descriptor for the path — a
+			// secondary left unclosed would hold its workspace lock for the life
+			// of the process.
+			primary.destroy();
+			expect(secondary.isOpen()).toBe(false);
+
+			// The workspace lock was released by the close, so a fresh secondary
+			// can use the same workspace against a recreated database.
+			primary = new RocksDatabase(dbPath);
+			primary.open();
+			primary.putSync('foo', 'baz');
+			const again = new RocksDatabase(dbPath, { secondaryPath });
+			again.open();
+			expect(again.getSync('foo')).toBe('baz');
+			again.close();
+		} finally {
+			secondary.close();
+			primary.close();
+			cleanup(dbPath, secondaryPath);
 		}
 	});
 

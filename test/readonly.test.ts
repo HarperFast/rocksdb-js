@@ -1,7 +1,7 @@
 import { TransactionLog } from '../src/load-binding.ts';
 import { dbRunner } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -221,6 +221,69 @@ describe('Readonly Operations', () => {
 			const value4 = Array.from(txnLog2.query({ start: 0 }));
 			expect(value3).toEqual(value4);
 		}));
+
+	it('should not recover (truncate) transaction logs on a readonly open', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }, {}] },
+			async ({ db, dbPath }, { db: readOnly }, { db: writer }) => {
+				// Write real log entries, then fully close so the registry entry is
+				// released and the next open re-discovers the store from disk.
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+				db.close();
+
+				// Simulate a torn append: garbage past the last complete entry. A
+				// writer's recovery truncates this; a read-only open must not — the
+				// file may belong to a live writer in another process, and reader
+				// truncation is how acknowledged writes vanish (invariant 5).
+				const logDir = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = readdirSync(logDir).find((file) => file.endsWith('.txnlog'));
+				expect(logFile).toBeDefined();
+				const logPath = join(logDir, logFile!);
+				appendFileSync(logPath, Buffer.alloc(64, 0xff));
+				const tornSize = statSync(logPath).size;
+
+				readOnly.open();
+				// Intact entries are still readable through the read-only handle.
+				const entries = Array.from(readOnly.useLog('foo').query({ start: 0 }));
+				expect(entries.length).toBeGreaterThan(0);
+				expect(statSync(logPath).size).toBe(tornSize);
+				readOnly.close();
+				expect(statSync(logPath).size).toBe(tornSize);
+
+				// A writable open owns recovery and truncates the torn tail.
+				writer.open();
+				expect(statSync(logPath).size).toBeLessThan(tornSize);
+			}
+		));
+
+	it('should refuse a writable open while transaction logs are held readonly', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }, {}] },
+			async ({ db }, { db: readOnly }, { db: writer }) => {
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+				db.close();
+
+				// The read-only open loaded the store without tail recovery, so a
+				// writer must not adopt it: appends would land past a torn tail.
+				readOnly.open();
+				expect(() => writer.open()).toThrow('transaction logs are open read-only in this process');
+
+				// Once the read-only handle closes, the writer loads with recovery.
+				readOnly.close();
+				writer.open();
+				expect(writer.getSync('foo')).toBe('bar');
+			}
+		));
 
 	it('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {

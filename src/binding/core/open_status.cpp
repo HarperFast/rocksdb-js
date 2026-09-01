@@ -1,8 +1,34 @@
 #include "open_status.h"
 
+#include <cctype>
 #include <string>
 
 namespace rocksdb_js {
+
+// True when `extension` appears in `message` at the END of a filename token —
+// followed by a separator (space, quote, colon, paren, comma) or the end of
+// the string. A directory merely named like "archive.log/" or "exports.sst/"
+// is followed by a path separator and does not match, so a genuine corruption
+// inside such a path cannot ride the directory name into the race
+// classification.
+static bool namesFileWithExtension(const std::string& message, const char* extension) {
+	const size_t extensionLength = std::char_traits<char>::length(extension);
+	size_t offset = 0;
+	while ((offset = message.find(extension, offset)) != std::string::npos) {
+		const size_t end = offset + extensionLength;
+		if (end == message.size()) {
+			return true;
+		}
+		const char next = message[end];
+		if (next == ':' || next == ' ' || next == '\'' || next == '"' ||
+			next == ')' || next == ',' || next == '\n'
+		) {
+			return true;
+		}
+		offset = end;
+	}
+	return false;
+}
 
 bool isMissingSstOpenRace(const rocksdb::Status& status) {
 	if (status.ok()) {
@@ -19,9 +45,9 @@ bool isMissingSstOpenRace(const rocksdb::Status& status) {
 	// (compaction inputs), blob files (blob GC), or WAL segments (deleted by
 	// flush — `.log` here is the numbered WAL, not the extensionless info LOG).
 	const std::string message = status.ToString();
-	if (message.find(".sst") == std::string::npos &&
-		message.find(".blob") == std::string::npos &&
-		message.find(".log") == std::string::npos
+	if (!namesFileWithExtension(message, ".sst") &&
+		!namesFileWithExtension(message, ".blob") &&
+		!namesFileWithExtension(message, ".log")
 	) {
 		return false;
 	}

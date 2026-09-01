@@ -88,3 +88,24 @@ TEST(OpenStatus, MissingColumnFamilyIsNotTheRace) {
 TEST(OpenStatus, OkIsNotTheRace) {
 	EXPECT_FALSE(isMissingSstOpenRace(rocksdb::Status::OK()));
 }
+
+// The extension must end a filename token: a DIRECTORY named like an SST/WAL
+// must not ride the path text into the race classification.
+TEST(OpenStatus, DirectoryNamedLikeExtensionIsNotTheRace) {
+	rocksdb::Status status = rocksdb::Status::PathNotFound(
+		"While opening a file for sequentially read: /data/exports.sst/CURRENT",
+		"No such file or directory");
+	EXPECT_FALSE(isMissingSstOpenRace(status));
+	status = rocksdb::Status::IOError(
+		"While open a file for random read: /data/archive.log/MANIFEST-000005",
+		"No such file or directory");
+	EXPECT_FALSE(isMissingSstOpenRace(status));
+}
+
+// ...while a real file of that name inside such a directory still matches.
+TEST(OpenStatus, MissingSstInsideOddDirectoryIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::IOError(
+		"While open a file for random read: /data/archive.log/000046.sst",
+		"No such file or directory");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}

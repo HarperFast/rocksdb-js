@@ -521,13 +521,17 @@ struct TransactionLogStore final {
 	 * @param maxFileSize The maximum size of a transaction log before it is
 	 * rotated to the next sequence number.
 	 * @param retentionMs The retention period for transaction logs.
+	 * @param readOnly When true the load mutates nothing on disk: no retention
+	 * purge and no tail recovery, because the directory may belong to a live
+	 * writer in another process (see TransactionLogStoreConfig::readOnly).
 	 * @returns The transaction log store.
 	 */
 	static std::shared_ptr<TransactionLogStore> load(
 		const std::filesystem::path& path,
 		const uint32_t maxFileSize,
 		const std::chrono::milliseconds& retentionMs,
-		const float maxAgeThreshold
+		const float maxAgeThreshold,
+		const bool readOnly = false
 	);
 
 private:

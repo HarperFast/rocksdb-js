@@ -37,6 +37,18 @@ struct TransactionLogStoreConfig final {
 	 * The retention period of transaction logs in milliseconds.
 	 */
 	std::chrono::milliseconds transactionLogRetentionMs;
+
+	/**
+	 * True when the registering database was opened read-only (including as a
+	 * secondary). Store discovery must then MUTATE NOTHING: no tail recovery
+	 * (truncation), no retention purge — the log directory may belong to a live
+	 * writer in another process, and a reader truncating the writer's active
+	 * file loses acknowledged writes (the writer's append-owned `size` keeps
+	 * appending past the new EOF — invariant 5, the harper#2016 class). Readers
+	 * tolerate an unrecovered torn tail through the CorruptFrameError/resync
+	 * protocol instead.
+	 */
+	bool readOnly = false;
 };
 
 /**
@@ -133,6 +145,17 @@ public:
 	 * @param config The transaction log store configuration.
 	 */
 	static void Register(const std::string& dbPath, const TransactionLogStoreConfig& config);
+
+	/**
+	 * Throws when a writable open would reuse transaction log stores that were
+	 * loaded read-only (no tail recovery ran, so writer appends would land past
+	 * a torn tail — invariant 5). Call BEFORE constructing the descriptor: a
+	 * throw from Register itself would run the half-built descriptor's close()
+	 * and its Unregister would decrement the read-only entry's refcount it
+	 * never incremented. Opens are serialized by DBRegistry's databasesMutex,
+	 * so check-then-register cannot interleave with another open.
+	 */
+	static void EnsureWritableRegistrationSafe(const std::string& dbPath, bool readOnly);
 
 	/**
 	 * Unregisters a DBDescriptor for the given database path. Decrements the

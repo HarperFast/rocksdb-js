@@ -453,8 +453,6 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	}
 };
 
-// Shared guard for both catch-up entry points: only a database opened with
-// `secondaryPath` can catch up. Throws (returns false) otherwise.
 static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& dbHandle) {
 	if (dbHandle->descriptor->secondaryPath.empty()) {
 		::napi_throw_error(
@@ -477,6 +475,23 @@ static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& d
  * await db.catchUpWithPrimary();
  * ```
  */
+/**
+ * RAII release for a descriptor `operationsInFlight` claim made on the JS
+ * thread, mirroring CheckpointInFlightClaim: decrements (and wakes a waiting
+ * `finishClose()`) on any early return, unless the claim was handed off to the
+ * async worker, which then owns the matching decrement at the end of execute.
+ */
+struct CatchUpInFlightClaim {
+	DBDescriptor* descriptor;
+	const bool& handedOff;
+
+	~CatchUpInFlightClaim() {
+		if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
+		}
+	}
+};
+
 napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
@@ -488,6 +503,23 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
+	// Claim an in-flight operation BEFORE queuing so teardown paths that call
+	// DBDescriptor::finishClose() — which waits on this counter unbounded, while
+	// DBHandle::close()'s async-work drain is bounded and its failure ignored —
+	// cannot reset descriptor->db under a long replay (a follower catching up on
+	// a big backlog opens every new SST/blob eagerly and routinely exceeds the
+	// drain timeout). Same discipline, same isClosing() ordering rationale, as
+	// CreateCheckpoint's claim.
+	auto descriptor = (*dbHandle)->descriptor;
+	++descriptor->operationsInFlight;
+	bool handedOff = false;
+	CatchUpInFlightClaim claim{descriptor.get(), handedOff};
+
+	if (descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
 		env,
@@ -496,7 +528,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new AsyncCatchUpState(env, *dbHandle, (*dbHandle)->descriptor);
+	auto state = new AsyncCatchUpState(env, *dbHandle, descriptor);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -512,7 +544,12 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			} else {
 				state->status = state->descriptor->catchUpWithPrimary();
 			}
-			// signal that execute handler is complete
+			// Release the in-flight claim made on the JS thread (the worker owns
+			// this decrement once the work was queued); wake any finishClose()
+			// waiting on it before it tears down descriptor->db.
+			if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -540,6 +577,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	(*dbHandle)->registerAsyncWork();
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	handedOff = true;
 
 	NAPI_RETURN_UNDEFINED();
 }
