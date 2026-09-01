@@ -1,0 +1,72 @@
+#include <gtest/gtest.h>
+#include <string>
+#include "core/open_status.h"
+#include "rocksdb/status.h"
+
+using rocksdb_js::isMissingSstOpenRace;
+
+// The Corruption-coded shape observed in the wild (HarperFast/rocksdb-js#812):
+// RocksDB wraps the missing-file IO error and blames the MANIFEST.
+TEST(OpenStatus, CorruptionWrappingMissingSstIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::Corruption(
+		"IO error: No such file or directory: While open a file for random read: "
+		"/data/db/000046.sst: No such file or directory",
+		"The file /data/db/MANIFEST-000005 may be corrupted");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+// The IOError-coded shape: the open trips on the missing file directly.
+TEST(OpenStatus, IOErrorNamingMissingSstIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::IOError(
+		"While open a file for random read: /data/db/000046.sst",
+		"No such file or directory");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+TEST(OpenStatus, PathNotFoundSubcodeNamingSstIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::PathNotFound(
+		"While open a file for random read: /data/db/000046.sst");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+TEST(OpenStatus, WindowsNotFoundTextNamingSstIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::IOError(
+		"While open a file for random read: C:\\data\\db\\000046.sst",
+		"The system cannot find the file specified.");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+// Real corruption inside an SST names the file but carries no not-found
+// signal; it must keep failing as corruption.
+TEST(OpenStatus, ChecksumMismatchInSstIsNotTheRace) {
+	rocksdb::Status status = rocksdb::Status::Corruption(
+		"block checksum mismatch: stored = 123, computed = 456 in /data/db/000046.sst offset 0 size 4096");
+	EXPECT_FALSE(isMissingSstOpenRace(status));
+}
+
+// A corrupt MANIFEST (bad record, no missing SST) must keep failing as
+// corruption.
+TEST(OpenStatus, CorruptManifestIsNotTheRace) {
+	rocksdb::Status status = rocksdb::Status::Corruption(
+		"CURRENT points to /data/db/MANIFEST-000005", "checksum mismatch");
+	EXPECT_FALSE(isMissingSstOpenRace(status));
+}
+
+// A database that does not exist fails on CURRENT — a not-found with no .sst.
+TEST(OpenStatus, MissingCurrentFileIsNotTheRace) {
+	rocksdb::Status status = rocksdb::Status::PathNotFound(
+		"While opening a file for sequentially read: /data/db/CURRENT",
+		"No such file or directory");
+	EXPECT_FALSE(isMissingSstOpenRace(status));
+}
+
+// A missing column family is InvalidArgument, not an IO shape at all.
+TEST(OpenStatus, MissingColumnFamilyIsNotTheRace) {
+	rocksdb::Status status =
+		rocksdb::Status::InvalidArgument("Column family not found", "baz");
+	EXPECT_FALSE(isMissingSstOpenRace(status));
+}
+
+TEST(OpenStatus, OkIsNotTheRace) {
+	EXPECT_FALSE(isMissingSstOpenRace(rocksdb::Status::OK()));
+}

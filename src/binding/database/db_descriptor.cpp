@@ -1,4 +1,5 @@
 #include "core/background_error.h"
+#include "core/open_status.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -1341,6 +1342,22 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open readonly db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			// A missing SST is NOT the corruption RocksDB's wording claims: a
+			// read-only open replays the MANIFEST and then opens each file it
+			// names holding no reference on any of them, so a compaction in a
+			// process actively writing this database can unlink an input file
+			// between those steps. Report the race as itself — never as MANIFEST
+			// corruption, and never as the database not existing.
+			if (rocksdb_js::isMissingSstOpenRace(status)) {
+				throw rocksdb_js::DBException(
+					"ERR_CONCURRENT_COMPACTION",
+					"Read-only open failed: an SST file named in the MANIFEST was already gone when this "
+					"open tried to read it. If another process is actively writing this database, a "
+					"concurrent compaction removed the file and the database is not corrupt — retry the "
+					"open, or open as a secondary to follow a live database. If nothing is writing this "
+					"database, the file is genuinely missing. (" + status.ToString() + ")"
+				);
+			}
 			if (status.IsIOError()) {
 				DEBUG_LOG("DBDescriptor::open IOError: %s\n", status.ToString().c_str());
 				throw rocksdb_js::DBException("Database does not exist");

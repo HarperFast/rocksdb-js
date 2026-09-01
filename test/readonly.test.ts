@@ -1,6 +1,7 @@
 import { TransactionLog } from '../src/load-binding.ts';
 import { dbRunner } from './lib/util.ts';
 import { spawn } from 'node:child_process';
+import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -9,6 +10,36 @@ describe('Readonly Operations', () => {
 		dbRunner({ skipOpen: true, dbOptions: [{ readOnly: true }] }, async ({ db }) => {
 			expect(() => db.open()).toThrow('Database does not exist');
 		}));
+
+	it('should report a missing SST as the concurrent-compaction race, not corruption', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db }, { db: db2, dbPath }) => {
+				// Produce an SST, then remove it out from under the MANIFEST — the
+				// same shape a live writer's compaction produces mid-open.
+				db.open();
+				db.putSync('foo', 'bar');
+				db.flushSync();
+				db.close();
+
+				const sst = readdirSync(dbPath).find((file) => file.endsWith('.sst'));
+				expect(sst).toBeDefined();
+				rmSync(join(dbPath, sst!));
+
+				let error: Error & { code?: string };
+				try {
+					db2.open();
+					expect.fail('expected the read-only open to throw');
+				} catch (err) {
+					error = err as Error;
+				}
+				expect(error!.code).toBe('ERR_CONCURRENT_COMPACTION');
+				expect(error!.message).toMatch(/concurrent compaction/);
+				expect(error!.message).not.toMatch(/Database does not exist/);
+				// The original RocksDB status text is preserved for diagnosis.
+				expect(error!.message).toContain(sst);
+			}
+		));
 
 	it('should error write operations and transactions in readonly mode', () =>
 		dbRunner(
