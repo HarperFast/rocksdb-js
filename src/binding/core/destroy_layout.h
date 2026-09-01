@@ -18,10 +18,7 @@ bool extendsDbPaths(
 	const std::vector<rocksdb::DbPath>& candidate
 );
 
-/**
- * Records one successful open without letting a reader expand destroy targets.
- * Returns false when the candidate path list was refused.
- */
+/** Applies the retained-layout authority rule from AGENTS invariant 18. */
 bool updateRetainedDestroyLayout(
 	DBFileLayout& retained,
 	DBFileLayout observed,

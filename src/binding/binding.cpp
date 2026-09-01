@@ -82,14 +82,14 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 }
 
 /**
- * Test-only: arm the column-family drop latch for `ms` milliseconds (0 disarms). See
- * core/test_seam.h.
+ * Test-only: arm the column-family drop latch for up to 5 seconds (0 disarms).
+ * See core/test_seam.h.
  */
 napi_value DelayDropColumnFamilyForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	int32_t ms = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &ms));
-	dropColumnFamilyDelayMs().store(ms, std::memory_order_relaxed);
+	dropColumnFamilyDelayMs().store(std::clamp(ms, 0, 5000), std::memory_order_relaxed);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
