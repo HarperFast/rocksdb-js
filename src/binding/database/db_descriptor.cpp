@@ -1950,11 +1950,8 @@ uint32_t DBDescriptor::transactionGetNextId() {
  * shared_ptr and can continue reading until they close; only the by-name
  * lookup is removed.
  *
- * Callable only from `DBRegistry::DropColumnFamily`, which holds
- * `databasesMutex` across the drop and this erase so a warm `OpenDB` cannot
- * observe the intermediate state. Do not call it directly: taking
- * `columnsMutex` first and then reaching for a registry lock inverts the
- * documented ordering (see `columnsMutex`).
+ * Requires `DBRegistry::databasesMutex`; call `DBRegistry::DropColumnFamily`,
+ * which holds it across the whole drop.
  */
 void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	std::lock_guard<std::mutex> lock(this->columnsMutex);

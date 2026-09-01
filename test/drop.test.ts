@@ -1,6 +1,12 @@
 import { RocksDatabase } from '../src/index.ts';
+import {
+	delayDropColumnFamilyForTesting,
+	dropColumnFamilyDelayCountForTesting,
+} from '../src/load-binding.ts';
 import type { Transaction } from '../src/transaction.ts';
-import { dbRunner } from './lib/util.ts';
+import { dbRunner, terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
+import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
 describe('Drop', () => {
@@ -290,4 +296,84 @@ describe('Drop', () => {
 				}
 			}
 		));
+
+	// A drop is only safe if it is atomic against `DBRegistry::OpenDB`. The drop
+	// used to retire its registry state in two lock acquisitions - the destroy
+	// layouts under `databasesMutex`, then the by-name column entry under
+	// `columnsMutex` - and the warm open path takes those same two locks in that
+	// order to decide whether to reuse a family or create a fresh one. A thread
+	// opening the family in that gap still found its name in `columns` and was
+	// handed the already-dropped RocksDB column family: the open succeeded and
+	// every write through it was silently discarded.
+	//
+	// The seam holds the critical section open after the RocksDB drop so the
+	// interleaving is deterministic rather than timed: the worker waits for the
+	// drop to be provably inside the section, then opens. With the section
+	// intact its open blocks on the registry mutex for the rest of the delay and
+	// yields a fresh, writable family; split the section and the same open
+	// returns immediately with the dropped one.
+	it('should not hand a concurrent warm open the column family it is dropping', () =>
+		dbRunner({ dbOptions: [{ name: 'racy' }] }, async ({ db, dbPath }) => {
+			const delayMs = 1000;
+			db.putSync('before-drop', 'value');
+
+			const worker = new Worker(
+				createWorkerBootstrapScript('./test/workers/drop-warm-open-worker.mts'),
+				{
+					eval: true,
+					workerData: { dbPath, columnName: 'racy', waitTimeoutMs: 10_000 },
+				}
+			);
+
+			let ready: () => void;
+			const workerReady = new Promise<void>((resolve) => {
+				ready = resolve;
+			});
+			let reported = false;
+			const result = new Promise<Record<string, unknown>>((resolve, reject) => {
+				worker.on('error', reject);
+				worker.on('exit', () => {
+					// A message posted just before exit can still be in flight, so
+					// only treat the exit as a failure once it has had a turn to land.
+					setTimeout(() => {
+						if (!reported) {
+							reject(new Error('worker exited without reporting'));
+						}
+					}, 50);
+				});
+				worker.on('message', (event) => {
+					if (event.ready) {
+						ready();
+					} else {
+						reported = true;
+						resolve(event);
+					}
+				});
+			});
+
+			try {
+				// The worker is spinning on the seam counter by the time it reports
+				// ready, so arming now cannot be missed.
+				await workerReady;
+				delayDropColumnFamilyForTesting(delayMs);
+
+				// Blocks for `delayMs` inside the critical section while the worker
+				// races its open against it.
+				db.dropSync();
+				expect(dropColumnFamilyDelayCountForTesting()).toBeGreaterThan(0);
+
+				const event = await result;
+				expect(event.error).toBeUndefined();
+				// The open was serialized behind the whole section rather than
+				// slipping into a gap in it.
+				expect(event.openDurationMs).toBeGreaterThan(delayMs / 2);
+				// ...so it got a fresh family whose writes actually land, not the
+				// dropped one whose writes RocksDB discards.
+				expect(event.readBack).toBe('value');
+				expect(event.columns).toContain('racy');
+			} finally {
+				delayDropColumnFamilyForTesting(0);
+				await terminateWorker(worker);
+			}
+		}));
 });

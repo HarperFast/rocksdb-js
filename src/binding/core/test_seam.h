@@ -30,6 +30,23 @@ inline std::atomic<int>& forceTryAgainCounter() {
 	return counter;
 }
 
+// Test-only latch for DBRegistry::DropColumnFamily: milliseconds the drop sleeps while holding
+// databasesMutex, between the successful RocksDB drop and the registry cleanup — i.e. exactly
+// where a warm DBRegistry::OpenDB would slip in if that section ever released the mutex early.
+// Armed from JS rather than an env var for the same reason as forceTryAgainCounter() above.
+// 0 = inert.
+inline std::atomic<int>& dropColumnFamilyDelayMs() {
+	static std::atomic<int> ms{0};
+	return ms;
+}
+
+// Incremented each time an armed drop enters that sleep, so a test thread can wait for the drop
+// to be provably inside the critical section instead of guessing with a timer.
+inline std::atomic<uint32_t>& dropColumnFamilyDelayCount() {
+	static std::atomic<uint32_t> count{0};
+	return count;
+}
+
 // Consumes one forced failure if any remain. Returns true when the caller should treat this
 // commit as a stranded-snapshot TryAgain (rolling back so no data is committed).
 inline bool testForceTryAgain() {

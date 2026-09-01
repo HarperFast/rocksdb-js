@@ -62,6 +62,35 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Test-only: make a successful column-family drop hold DBRegistry's databasesMutex for `ms`
+ * milliseconds between the RocksDB drop and the registry cleanup, so another thread can prove
+ * its warm open is serialized behind the whole section. Pass 0 to disarm. See core/test_seam.h.
+ */
+napi_value DelayDropColumnFamilyForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t ms = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &ms));
+	dropColumnFamilyDelayMs().store(ms, std::memory_order_relaxed);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+/**
+ * Test-only: how many drops have entered the delay armed by
+ * `delayDropColumnFamilyForTesting`. Lets a waiter block until the drop is provably inside the
+ * critical section rather than guessing with a timer.
+ */
+napi_value DropColumnFamilyDelayCountForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env, dropColumnFamilyDelayCount().load(std::memory_order_relaxed), &result
+	));
+	return result;
+}
+
+/**
  * Returns the current thread id.
  */
 napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
@@ -264,6 +293,15 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	// test-only column-family drop latch (see core/test_seam.h)
+	napi_value delayDropCfFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "delayDropColumnFamilyForTesting", NAPI_AUTO_LENGTH, DelayDropColumnFamilyForTesting, nullptr, &delayDropCfFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "delayDropColumnFamilyForTesting", delayDropCfFn));
+
+	napi_value dropCfDelayCountFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "dropColumnFamilyDelayCountForTesting", NAPI_AUTO_LENGTH, DropColumnFamilyDelayCountForTesting, nullptr, &dropCfDelayCountFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "dropColumnFamilyDelayCountForTesting", dropCfDelayCountFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

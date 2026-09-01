@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <limits>
 #include <chrono>
+#include <thread>
 #include <vector>
+#include "core/test_seam.h"
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
 #include "napi/macros.h"
@@ -332,31 +334,22 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 }
 
 /**
- * Drops a column family and retires every registry trace of it as ONE
- * operation under `databasesMutex`.
+ * Drops a column family and retires every registry trace of it as ONE operation
+ * under `databasesMutex` — the same mutex `OpenDB` takes before `columnsMutex`
+ * to decide whether a warm open reuses a family or creates a fresh one. Release
+ * it anywhere in here and a warm open lands in the gap, finds the name still in
+ * `columns`, and is handed a `ColumnFamilyDescriptor` for a family RocksDB has
+ * already dropped: the open succeeds and every later write fails with "Invalid
+ * column family specified in write batch". `DropColumnFamily` itself is inside
+ * the section, not just the cleanup, so an open sees the family wholly present
+ * or wholly gone.
  *
- * The three steps have to be atomic with respect to `OpenDB`, which takes
- * `databasesMutex` and then `columnsMutex` to decide whether a warm open
- * reuses an existing family or creates a fresh one. Releasing the registry
- * mutex anywhere in here lets a warm open land in the gap, find the name still
- * in `columns`, and hand back a `ColumnFamilyDescriptor` for a family RocksDB
- * has already dropped: the open succeeds and every later write fails with
- * "Invalid column family specified in write batch". Holding it across
- * `DropColumnFamily` itself (not just the cleanup) is what makes an open
- * observe the family either wholly present or wholly gone.
- *
- * Layouts are still retired BEFORE the `columns` entry, even though one lock
- * makes the order unobservable: erasing the entry is what lets an open create
- * a fresh same-name family, so the reverse order would delete the
- * replacement's blob directory from the destroy layout if this section were
- * ever split again. They are erased by family name because several families
- * may share one blob directory; a layout that becomes the default no longer
- * needs a retained registry entry.
- *
- * Returns the RocksDB status so the caller can apply its own idempotence rule
- * for an already-dropped family (see `isColumnFamilyAlreadyDropped`); nothing
- * is retired unless this call is the one that performed the drop, since the
- * name may by then belong to a freshly created family.
+ * Layouts are erased by family name because several families may share one blob
+ * directory; a layout that becomes the default no longer needs a retained
+ * registry entry. Nothing is retired unless this call performed the drop — on
+ * an already-dropped status the name may belong to a freshly created family, so
+ * the status is returned for the caller's idempotence rule
+ * (`isColumnFamilyAlreadyDropped`).
  */
 rocksdb::Status DBRegistry::DropColumnFamily(
 	const std::shared_ptr<DBDescriptor>& descriptor,
@@ -374,16 +367,23 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 		return status;
 	}
 
+	// Test-only: hold the section open here so a concurrent warm open proves it
+	// is serialized behind it. Inert unless armed. See core/test_seam.h.
+	if (const int delayMs = dropColumnFamilyDelayMs().load(std::memory_order_relaxed); delayMs > 0) {
+		dropColumnFamilyDelayCount().fetch_add(1, std::memory_order_relaxed);
+		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+	}
+
+	// Every registry entry for the path, so the read-only and read-write
+	// descriptors of one database are both retired. A closing descriptor is
+	// still in the map (PurgeIfUnreferenced leaves it there until finishClose()
+	// returns), so this covers it too.
 	const std::string& path = descriptor->path;
 	for (auto& [key, entry] : instance->databases) {
 		if (key.path == path && entry.descriptor) {
 			entry.descriptor->removeColumnFamilyLayout(columnName);
 		}
 	}
-	// A descriptor mid-purge has already left the map but is still reachable
-	// through the caller's handle, so retire its layout explicitly; erasing an
-	// absent name is a no-op when the loop above already covered it.
-	descriptor->removeColumnFamilyLayout(columnName);
 
 	{
 		std::lock_guard<std::mutex> layoutsLock(instance->knownLayoutsMutex);

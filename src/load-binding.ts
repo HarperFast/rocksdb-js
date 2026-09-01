@@ -961,6 +961,21 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
 /**
+ * Test-only: make a successful column-family drop hold the registry mutex for `ms` milliseconds
+ * between the RocksDB drop and the registry cleanup, so another thread can prove its warm open is
+ * serialized behind the whole critical section. Pass 0 to disarm.
+ */
+export const delayDropColumnFamilyForTesting: (ms: number) => void =
+	binding.delayDropColumnFamilyForTesting;
+
+/**
+ * Test-only: how many drops have entered the delay armed by `delayDropColumnFamilyForTesting`,
+ * so a waiter can block until the drop is provably inside the critical section.
+ */
+export const dropColumnFamilyDelayCountForTesting: () => number =
+	binding.dropColumnFamilyDelayCountForTesting;
+
+/**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
  * `LockFileEx` on Windows), creating the file and any missing parent
  * directories. Exclusive by default; pass `shared` for a shared (reader) lock

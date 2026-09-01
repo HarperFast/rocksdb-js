@@ -492,9 +492,6 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	// The drop and its registry cleanup run as one operation under the registry
-	// mutex; see DBRegistry::DropColumnFamily for why a warm open must never
-	// see the intermediate state.
 	rocksdb::Status status = DBRegistry::DropColumnFamily(
 		(*dbHandle)->descriptor,
 		(*dbHandle)->getColumnFamilyName(),
@@ -509,18 +506,13 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	}
 
 	if (status.ok()) {
-		// We performed the drop, so DBRegistry::DropColumnFamily has already
-		// removed the by-name registry entry and the destroy layouts. On the
-		// already-dropped path another handle owns that cleanup; the name may
-		// now point to a freshly-created family, so repeating it here would
-		// corrupt the registry.
-		//
 		// Dropping a column family bulk-deletes its data exactly like clear();
 		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Deliberately outside the registry mutex: the VT's
-		// writer mutex is process-global and must never be taken under it.
-		// Only on the ok path — on already-dropped, the handle that performed
-		// the drop owns the sweep.
+		// DBHandle::clear). Deliberately outside DBRegistry::DropColumnFamily's
+		// critical section: the VT's writer mutex is process-global and must
+		// never be taken under the registry mutex. Only on the ok path — on
+		// already-dropped, the handle that performed the drop owns the sweep,
+		// as it owns the registry cleanup.
 		if ((*dbHandle)->enableVerificationTable) {
 			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
 			if (vt) vt->settleAllSlots();
@@ -554,7 +546,6 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	// See Database::Drop: the drop and its registry cleanup are one operation.
 	rocksdb::Status status = DBRegistry::DropColumnFamily(
 		(*dbHandle)->descriptor,
 		(*dbHandle)->getColumnFamilyName(),
@@ -568,18 +559,13 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (status.ok()) {
-		// We performed the drop, so DBRegistry::DropColumnFamily has already
-		// removed the by-name registry entry and the destroy layouts. On the
-		// already-dropped path another handle owns that cleanup; the name may
-		// now point to a freshly-created family, so repeating it here would
-		// corrupt the registry.
-		//
 		// Dropping a column family bulk-deletes its data exactly like clear();
 		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Deliberately outside the registry mutex: the VT's
-		// writer mutex is process-global and must never be taken under it.
-		// Only on the ok path — on already-dropped, the handle that performed
-		// the drop owns the sweep.
+		// DBHandle::clear). Deliberately outside DBRegistry::DropColumnFamily's
+		// critical section: the VT's writer mutex is process-global and must
+		// never be taken under the registry mutex. Only on the ok path — on
+		// already-dropped, the handle that performed the drop owns the sweep,
+		// as it owns the registry cleanup.
 		if ((*dbHandle)->enableVerificationTable) {
 			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
 			if (vt) vt->settleAllSlots();
