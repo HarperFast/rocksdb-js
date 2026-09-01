@@ -1,7 +1,8 @@
 # Design: commit-time local mutation stamping (dual-clock stage 1)
 
-Status: revision 4 — planning gate cleared (`Framing-Verdict: chosen-approach-sound`, round 3;
-graded codex leg each round). Issue #811. Stage 1 of the three-clock model per the
+Status: revision 5 — planning gate cleared (`Framing-Verdict: chosen-approach-sound`, round 3;
+graded codex leg each round), then the task owner's log-architecture ruling recorded and folded
+in (§3.4). Issue #811. Stage 1 of the three-clock model per the
 reviewed dual-timestamp plan behind HarperFast/harper#2409 (rulings D1–D4); companion adoption
 issue HarperFast/harper#2412 (stages 0b/2), apply-side HarperFast/harper-pro#790, replay
 fidelity HarperFast/harper#2411.
@@ -39,7 +40,16 @@ is resolved (marker + unspecified ⇒ enabled, §3.1); `setTimestamp`'s non-fini
 state-gating are documented as deliberate, dormant-mode-visible bug fixes (§3.2); claim-order
 (not per-key commit-order) monotonicity is a documented public contract with the cross-repo
 consumer audit recorded as an activation gate (§3.2); the measurement harness ships in-repo
-(§3.4).
+(§3.4). **Rev 5 records the owner's ruling and simplifies to the stamp-as-key model**: variant
+(i) refined — on an enabled store the local stamp IS the batch key (first word of entry and
+record alike); the clock that diverges is the record *version*, owned by the harper layer.
+Consequently there is **no log-format change at all**: rev 3/4's flagged-entry extension,
+payload CRC, v2 header gate, and forced activation rotation are withdrawn; enabled stores gain
+strict per-log key monotonicity (the claim moves under the store append lock for logged
+transactions); seek-by-local-stamp becomes the existing binary-index seek; and the issue's
+"per-node log key domain stays origin clock" acceptance line is amended per the ruling —
+dormant unchanged, receiver-domain keys at activation (per-hop cursors, LMDB's existing model),
+with the cursor migration owned by harper#2412 (§3.4).
 
 ## 1. Problem and goal
 
@@ -54,7 +64,7 @@ plan's consumer table). The end state is three clocks with one owner each:
 |---|---|---|
 | Record version | Conflict resolution, CRDT ordering, replica convergence | Origin-defined; legitimately NON-unique per key |
 | Local mutation stamp (`localTime`) | "This exact write on this node": VT/cache freshness, write identity, subscription staleness | Receiver-locally assigned at commit, unique per write — no replicated-write opt-out |
-| Resume cursor | Per-origin log position for replication resume | Per-node transaction-log key stays in the origin's clock domain, unchanged |
+| Resume cursor | Per-origin log position for replication resume | Per-hop: a subscriber's cursor indexes the log it reads, in the local clock of the node that wrote it (LMDB's model today; see §3.4's amended constraint) |
 
 Stage 1 (this repo): rocksdb-js assigns a monotonically increasing local stamp at commit into
 the first word of each record encoding and into each transaction-log batch, with a
@@ -226,13 +236,16 @@ whose log batch is already durable re-applies the *same* stamp to its re-put rec
 alternative would diverge record first words from the durable batch stamp (§5 F7). A retry with
 no durable batch re-finalizes fresh.
 
-**Finalization site and exception safety.** Finalization (claim + reserve interaction + batch
-re-stamp when needed) runs at the top of `executeLogWork` (which runs first on every async
-lane — two-lane, single-lane, legacy — and is a deliberate pass-through even for txns with no
-log batch) and at the equivalent point in `CommitSync` before its inline log stage; the
-candidate is the snapshot taken at the commit entry point on the JS thread. That places it
-before the batch header write (which needs the stamp) and before `txn->Commit` (which needs the
-records patched), on the thread that owns the txn at that moment. **No-unwind is enforced at
+**Finalization site and exception safety.** For a transaction **with** a log batch, the claim
+runs inside `TransactionLogStore::writeBatch` **under the store's write mutex, immediately
+before the entry headers are stamped** — so per-store append order equals claim order and the
+enabled store's keys are strictly monotonic (§3.4); the batch re-stamp of record values then
+runs on the same thread after `writeBatch` returns and before `txn->Commit`. For a transaction
+**without** a log batch, finalization runs at the top of `executeLogWork` (a deliberate
+pass-through on every async lane — two-lane, single-lane, legacy) and at the equivalent point
+in `CommitSync`; only uniqueness matters there. In both shapes the candidate is the snapshot
+taken at the commit entry point on the JS thread, and everything precedes `txn->Commit` on the
+thread that owns the txn at that moment. **No-unwind is enforced at
 the lane boundary, not inside one operation**: the entire dispatched stage is wrapped in a
 `catch (...)` whose failure path is non-allocating — it sets a pre-existing failure marker on
 the state (an enum + a static status, never a message-constructing `Status` that could itself
@@ -292,93 +305,83 @@ Deletes carry no value and need no stamp (their write identity lives in the log 
 delete-only transaction still claims a stamp for its batch, and `committedLocalTime` — §3.6 —
 reports it). `Merge` is not exposed by this binding.
 
-### 3.4 The transaction-log batch stamp — and the log-architecture decision
+### 3.4 The batch key IS the local stamp — log-architecture ruling (recorded)
 
-The batch header timestamp (the log key) **does not change domain**: it remains the value
-snapshotted from the txn at `addLogEntry` — the local monotonic clock for ordinary writes, the
-origin's clock for replicated applies. Resume cursors depend on that (acceptance constraint).
-What stage 1 adds is the batch's **local stamp**:
+**Ruling (task owner, recorded 2026-09-01): variant (i), refined to the stamp-as-key model.**
+The commit-time local stamp is not carried *beside* the log key — on an enabled store it **is**
+the batch key: the first word of every entry header, exactly as it is the first word of every
+record. The clock that diverges from it is the record **version** (LWW resolution,
+`updatedTime`/`createdTime`, `record.getVersion()`), which is not owed the first word of
+anything: harper carries it in the record's distinct-version word (§3.6) and already carries it
+in-band in every audit payload (`createAuditEntry` writes it; `readAuditEntry` decodes it).
+This is LMDB's existing model — lmdb's audit store is keyed by receiver-local commit time with
+the version as a separate field — and it is what the entry format has anticipated all along:
+the entry timestamp is deliberately left blank at staging and stamped at write time
+(`transaction_log_entry.h:46` "skip timestamp for now, it will be written when the batch is
+written").
 
-- **Keep path with stamp == batch key** (the ordinary local write): the existing entry header
-  already carries exactly the stamp. Nothing new is written.
-- **Stamp ≠ batch key** (every behind-the-watermark replicated apply, contended local commits,
-  pinned retries, `setTimestamp`-after-`addLogEntry`): the stamp must travel with the batch.
-  **How is the open architecture decision** (issue requirement: decided with measurements
-  before any disk format is committed):
+Mechanically, on an enabled store:
 
-**Variant (i) — in-band only.** Entries whose batch stamp ≠ key carry the stamp in-band:
-new entry flag `TRANSACTION_LOG_ENTRY_LOCAL_STAMP_FLAG (0x02)`; a 12-byte extension —
-8-byte BE-float64 stamp + 4-byte CRC32C computed over **the stamp bytes plus the user payload
-(everything in the payload extent except the CRC field itself)**, so a bit flip in the stamp
-cannot pass as another valid finite double — is prepended to the payload extent, so the
-header's length field covers it and every length-driven scanner (recovery, resync, validation)
-is untouched: only entry *decode* and the writer learn the flag. Corruption tests flip each
-extension byte individually.
-**Unflagged entries are byte-identical to v1 entries** — the keep path pays nothing, in v2
-files too. Every entry of a flagged batch carries the extension, so mid-batch seeks see it.
-Decode-side validation fails closed: a flagged entry whose payload extent is shorter than the
-extension, whose stamp is non-finite, zero, negative, or ≥ 8.64e15, or whose CRC mismatches is
-a corrupt frame, never delivered data. The CRC exists because flagged entries must not be
-exposed to the documented Windows torn-payload case (a durable header with a partially durable
-payload over pre-extended zero fill reads as complete without a checksum — invariant 14's known
-gap); unflagged entries keep today's exposure, unregressed and unfixed (out of scope).
-`TransactionEntry` gains a decoded `localTime` field (= the in-band stamp when flagged, else
-the entry timestamp), and the extension bytes are stripped from the user-visible payload.
+- `TransactionLogStore::writeBatch` assigns `batch.timestamp` from `claimLocalStamp` **under
+  the store's write mutex at append time**, so per-store append order equals claim order and
+  the keys are **strictly monotonic per log** — an upgrade over today's mostly-monotonic keys
+  that gives `findPositionByTimestamp` a true upper bound on enabled stores. (Claims are
+  already strictly monotonic globally; taking the claim under the append lock is what pins
+  append order to claim order across sync commits interleaving with the commit lanes.) The
+  keep path is byte-for-byte today's write: candidate == stamp == key.
+- Transactions with no log batch claim at commit entry as before (uniqueness only; no ordering
+  constraint exists without an append).
+- The record patch (§3.3) uses the same claimed stamp, before `txn->Commit` — the atomicity
+  contract (§5) becomes simply: **record first words == batch key**.
+- Pinned retries (#668) are unchanged: the durable batch's key is the pinned stamp; later
+  batches claim later stamps; per-log monotonicity holds because the pinned batch was appended
+  at its claim position.
 
-Segments that may contain flagged entries are **file-format v2**: today's readers refuse any
-version ≠ 1 (`transaction_log_file.cpp:216-219`), so a pre-stage-1 binary fails closed on a v2
-file instead of misreading stamped payloads — a per-file local downgrade gate complementing
-harper#2412's store-level floor. **Activation on an existing store forces a rotation**: under
-the store write mutex, the first stamped `writeBatch` against an active v1 segment rotates it
-before writing, and v2 is sticky for the store thereafter — an old reader never encounters
-flagged entries inside a v1 file.
+**There is no log-format change at all.** No entry extension, no flag, no CRC, no v2 header:
+enabled and dormant stores write identical bytes for identical inputs — what changes at
+activation is only the *value domain* of the key for divergent commits (a replicated apply's
+batch is keyed by the receiver's stamp instead of the origin's timestamp). A pre-stage-1
+binary parses enabled logs perfectly; the *semantic* migration of cursors is exactly what
+harper#2412 stages 0b/2 gate atomically with the record decoder (and the wire/peer floor).
+Consequently rev 3's log-level artifacts are withdrawn: the v2 downgrade gate (nothing to
+gate — bytes are unchanged), the flagged-entry CRC (no new bytes to protect; the documented
+Windows torn-payload gap remains exactly today's, out of scope), and the forced
+activation rotation (no per-file format bit exists to make sticky).
 
-**Variant (ii) — receiver-local ordered journal.** A second, receiver-local log keyed by the
-local stamp, with per-origin resume metadata per entry (origin log name + key or position), so
-local-stamp seeks are independently indexable and per-origin cursors can be recovered from one
-journal. Costs a second append path per commit and a full second file-lifecycle surface
-(rotation, recovery, retirement markers, purge, backup snapshot, validation — each an
-invariant-bearing subsystem in this repo).
+**Seek-by-local-stamp comes free.** Because the stamp is the key, the existing per-file
+running-maxima binary index *is* the local-stamp index: measured 60µs cold / 6µs warm to seek,
+10.1M entries/s (1.4 GB/s) to scan — strictly better than either original variant, with
+neither variant (ii)'s +0.93µs/commit (+10%) second append path and doubled file-lifecycle
+invariant surface (rotation, recovery, retirement, purge, backup, validation), nor original
+variant (i)'s +12B flagged entries and O(scan)-only local seeks. The decision-support harness
+ships in-repo as `benchmark/log-architecture-measure.mjs`.
 
-**Measurements** (this machine, release build, sync commits, 128B payloads; the harness ships
-in-repo as `benchmark/log-architecture-measure.mjs` so the numbers are reproducible before any
-v2 format byte is committed):
+**Amended acceptance constraint (supersedes the issue's "per-node log key domain stays origin
+clock" line, per the owner's ruling).** Dormant behavior is unchanged everywhere. At
+activation, an enabled store's keys are receiver-local stamps — the per-hop cursor domain: a
+subscriber's resume cursor indexes the log it reads, in the clock of the node that wrote that
+log, which is LMDB's model today ("on LMDB the cursor must stay on the sender's audit sequence
+id", `replicationConnection.ts:4085-4088`). The cursor-site migration is harper#2412 stage
+0b/2 work (0b already moves harper-pro cursor sites to `localTime`). One consumer is flagged
+to #2412 explicitly: the origin-version keyed dedup/resequencing lookup
+(`Table.ts:2525` `auditStore.get(txnTime, tableId, id, nodeId)`) loses its direct key seek at
+activation and must move to payload-carried refs, per-node seq-state, or a bounded scan —
+recorded there, not solvable here.
 
-| Measure | Result | Bearing |
-|---|---|---|
-| Full log-append path, marginal per commit | **+0.93µs** on a 9.2µs no-log commit (+10%); +0.44µs per extra entry | Variant (ii)'s steady-state write tax (lower bound — a real journal adds its own rotation/fsync/recovery costs) |
-| Sequential scan rate, `query()` drain | **10.1M entries/s** (1.4 GB/s, mmap) | Variant (i)'s seek cost is O(scan distance) at this rate: a 100k-entry scan ≈ 10ms |
-| Seek by timestamp via the existing per-file binary index | 60µs cold / 6µs warm | The index machinery an in-band stamp could reuse later if a true local-stamp seek API is ever needed |
+**Consumer survey and measurements retained as the decision record** (this machine, release
+build, sync commits, 128B payloads):
 
-**Who actually needs local-stamp seeks** (from the harper/harper-pro consumer survey):
+| Measure | Result |
+|---|---|
+| Full log-append path, marginal per commit | +0.93µs on a 9.2µs no-log commit (+10%); +0.44µs per extra entry |
+| Sequential scan rate, `query()` drain | 10.1M entries/s (1.4 GB/s, mmap) |
+| Seek by timestamp via the per-file binary index | 60µs cold / 6µs warm |
 
-- The cross-thread broadcaster (`transactionBroadcast.ts`) holds a **live reusable iterator**
-  (a position checkpoint by construction) and only re-seeks on restart/fallback — its real
-  defect today (a back-dated origin entry gated out at `:202` because the cursor is a
-  timestamp) is fixed by having the stamp *available on each entry*, not by a seekable stamp
-  index.
-- Replication resume is **origin-keyed by requirement** (the invariant this change must not
-  break) — no local-stamp seek.
-- The CRDT resequencing walk (`Table.ts:2436-2760`) needs **origin-version** seeks into
-  per-node logs — unaffected, and the reason the origin key domain stays.
-- Table `startTime` subscriptions and MQTT durable sessions resume by timestamp values in the
-  mostly-monotonic key domain today and tolerate bounded out-of-order; in-band stamps keep that
-  working and make the cursor domain well-defined.
-- Boot replay resumes by **physical position** (`startFromLastFlushed`) — already variant
-  (i)'s model.
-
-A middle option also exists — variant (i) plus a **sparse per-segment sidecar index** of
-in-band stamps — and is deliberately *not* part of stage 1: in-band stamps are mostly-monotonic
-per file for the same reason entry keys are today, so the existing running-maxima index pattern
-(or a sidecar) can be added later without a format change if a real local-stamp seek consumer
-appears. That future-compatibility is itself a point for (i).
-
-**Recommendation: variant (i)**, on the evidence that no consumer needs an indexed local-stamp
-seek (every local-order consumer either holds a position or tolerates bounded scan), the scan
-fallback costs ~0.1µs/entry, and variant (ii) buys that unneeded index for +10% on every logged
-commit plus a doubled file-lifecycle invariant surface. **This ruling is the task owner's**
-(issue requirement); implementation of §3.4's format work waits on it, and the ruling will be
-recorded here when given.
+No local-stamp *seek* consumer existed even before the ruling made seeks free: the broadcaster
+holds a live positional iterator; replication resume reads its upstream's key domain; the CRDT
+resequencing walk needs origin-version lookups (now #2412's migration item above); table/MQTT
+resumes tolerate bounded out-of-order; boot replay is position-based
+(`startFromLastFlushed`).
 
 ### 3.5 VT freshness: superseding #766 without breaking it
 
@@ -519,8 +522,8 @@ repo's existing crash tests also stand on.
 | # | Crash point (seam) | Durable at crash | Recovery assertion (child respawn + reopen) |
 |---|---|---|---|
 | F1 | after stamp finalize, before `writeBatch` | reserve only | no batch visible, no records; next claims exceed the pre-crash watermark (reserve seeding) |
-| F2 | mid `writeBatchToFile` (partial append, after first writev chunk) | torn entry prefix | `recoverTail`/boundary-marker retirement behaves exactly as today with v2/flagged entries; the flagged-entry CRC rejects the Windows durable-header/partial-payload case; no records committed; `validateTransactionLogStore` clean |
-| F3 | after `writeBatch`, before `txn->Commit` | full flagged batch | batch readable with correct in-band stamp and CRC; records absent; a replay-style re-apply after reopen produces records whose *new* stamps exceed the recovered reserve (never equal to any durable stamp) |
+| F2 | mid `writeBatchToFile` (partial append, after first writev chunk) | torn entry prefix | `recoverTail`/boundary-marker retirement behaves exactly as today (entry bytes are format-identical); no records committed; `validateTransactionLogStore` clean |
+| F3 | after `writeBatch`, before `txn->Commit` | full batch keyed at the claimed stamp | batch readable at that key; records absent; a replay-style re-apply after reopen produces records whose *new* stamps exceed the recovered reserve (never equal to any durable stamp) |
 | F4 | after `txn->Commit`, before `commitFinished` | batch + records | record first words == batch stamp; recovered floor ≥ that stamp |
 | F5 | after `commitFinished`, before completion callback | batch + records + watermark bookkeeping | same as F4 (bookkeeping is in-memory) |
 | F6 | ENOSPC / short append (existing injection machinery) | partial batch, segment retired | retirement/rotation invariants unchanged with stamped entries; commit never ran; no stamp divergence |
@@ -531,9 +534,9 @@ Failure-injection (non-crash) companions, asserting **rejection + process surviv
 `std::terminate` through the commit lanes): reserve-row write failure (sync-write error),
 allocation failure in the rebuild path, batch-rebuild refusal, log-append open/short-write
 failures — each surfaces as a rejected commit with the transaction intact per existing #668
-semantics. F2/F6 also run on Windows (pre-extended zero-padded tail semantics, invariant 5):
-the length field covering the in-band extension keeps every existing scanner correct, and the
-CRC is what makes the F2 assertion provable there.
+semantics. F2/F6 also run on Windows (pre-extended zero-padded tail semantics, invariant 5);
+the F2 assertion there is scoped to today's semantics — the entry format is unchanged, so the
+documented durable-header/partial-payload ambiguity is neither widened nor fixed by stage 1.
 
 ## 6. Performance budgets (numeric pass/fail, not comparative-only)
 
@@ -556,21 +559,21 @@ stress-gated:
 | B5 | Keep-path claim allocation count | **0** heap allocations — GoogleTest with an operator-new counter around the Node-free `claimLocalStamp` + pre-stamp helpers |
 | B6 | Contended: 4 worker envs committing concurrently (mixed keep/re-stamp) across all three commit modes (legacy/single-lane/two-lane) **plus concurrent direct `PutSync` writers** (the unserialized path — real cache-line contention on watermark/reserve) | p95 and p99 ratios ≤ **1.25**; uniqueness asserted across the full interleaving |
 | B7 | Lock-freedom | `static_assert(std::atomic<uint64_t>::is_always_lock_free)` compiled on all platforms; claim function exercised from N threads in GTest for progress + uniqueness |
-| B8 | Flagged-entry storage/write overhead (variant (i)) | flagged entries: +12B/entry, write-path throughput ratio for a fully flagged log ≤ **1.10** vs unflagged; **unflagged v2 entries: byte-identical to v1** (format-test assertion, so the keep path pays nothing after activation) |
+| B8 | Enabled, logged single-entry commit (claim under the store append lock) | p50 ratio enabled/disabled ≤ **1.05**; strict per-log key monotonicity asserted across the B6 interleavings; entry bytes asserted format-identical to dormant output for the same inputs |
 
 ## 7. Dormancy / adoption contract
 
 - `commitStamping` absent on an unmarked CF ⇒ zero behavior change; the full existing suite
   must pass unchanged on all platforms (including Windows) with the feature merely compiled in
   (plus B0's structural proof).
-- Enabled ⇒ record first words, the metadata-CF floor/marker, and (per the §3.4 ruling) log
-  format v2 segments. harper must not enable before its distinct-version decoder + durable
-  data-format floor (harper#2412 stage 2); cluster-level activation additionally needs #2412's
-  peer gate (new-format bytes and semantics must not reach peers below the format floor) and
-  its old-binary package-floor enforcement — recorded there, not re-owned here. rocksdb-js
-  enforces what it can locally: v2 segment headers fail old readers closed, the marker fails a
-  forgetful reopen closed, and the cross-open conflict check keeps one process from mixing
-  stamped and unstamped writers on a CF.
+- Enabled ⇒ record first words, the metadata-CF floor/marker, and (per the §3.4 ruling)
+  receiver-domain log keys — with **no log-format byte change**. harper must not enable before
+  its distinct-version decoder + durable data-format floor (harper#2412 stage 2);
+  cluster-level activation additionally needs #2412's peer gate (new-format bytes and
+  *semantics* — the key-domain change — must not reach peers below the floor) and its
+  old-binary package-floor enforcement — recorded there, not re-owned here. rocksdb-js
+  enforces what it can locally: the marker fails a forgetful reopen closed, and the cross-open
+  conflict check keeps one process from mixing stamped and unstamped writers on a CF.
 - The per-node transaction-log **key domain is untouched** in both variants and on both paths
   (keep and re-stamp): resume cursors and `findPositionByTimestamp` semantics are unchanged.
 
@@ -580,23 +583,24 @@ stress-gated:
   caller-buffer unconditional restore (success, failure, abort, re-stamp); short-value
   rejection on stamped CFs; `setTimestamp` hardening (NaN/Infinity/≥8.64e15 rejected;
   non-Pending rejected; between-puts value still patched); `setTimestamp`-after-`addLogEntry`
-  (batch key keeps its snapshot, stamp diverges → flagged entry); multi-CF txn with mixed
+  (enabled store: the key is assigned at `writeBatch` from the claim regardless of the staged
+  snapshot; dormant store: today's snapshot behavior pinned unchanged); multi-CF txn with mixed
   stamped/unstamped CFs; delete-only txns; repeated-key puts; both txn modes incl. conflict +
   retry with the adopted re-stamp shape; `getEntry` bounds/word parsing incl.
   `HAS_DISTINCT_VERSION_FLAG`, 12-byte flagged corpse, non-finite words;
   `committedLocalTime`; VT: stamped value FRESH round-trip, flagged legacy value still refused
-  (#766 tests untouched and green); log: flagged-entry read/write round-trip incl.
-  `TransactionEntry.localTime` and payload-extension stripping, malformed flagged entries
-  (short payload, non-finite/zero/negative/out-of-domain stamp, bad CRC) fail closed,
-  v1-active-segment activation forces rotation and v2 stickiness, v2 header refusal by a
-  v1-only reader, purge/rotation with flagged entries; metadata CF: enable-marker fail-closed
+  (#766 tests untouched and green); log: divergent-commit batches keyed at the claimed stamp
+  (read back via `query()`, `findPositionByTimestamp` upper bound honored on enabled stores),
+  strict per-log key monotonicity under sync+async+two-lane interleaving, entry bytes
+  format-identical to dormant output, purge/rotation on enabled stores; metadata CF:
+  enable-marker fail-closed
   reopen, explicit-false conflict, hidden from listings, drop-CF marker cleanup, read-only
   open; **lifecycle**: backup + restore, backup stream, and checkpoint each carry the metadata
   CF (floor + markers) and stamped data coherently — restore then reopen enforces the marker
   and never re-mints a stamp, including **concurrent** backups with commits landing between
   the DB and log captures (floor-capture reconciliation) and crashes at both capture
   boundaries; drop-then-recreate-same-name (ID-keyed markers: recreated CF starts unmarked);
-  crash between marker publication and the forced v1→v2 rotation; metadata-CF namespace
+  crash between marker publication and the first stamped commit; metadata-CF namespace
   collision (pre-existing user CF named `__rocksdbjs.meta` fails closed) and crafted/malformed
   rows; SharedArrayBuffer-backed value buffers observed by a second worker during puts (no
   transient stamp visible, no lost concurrent write); cold-open latency and restart-skew
