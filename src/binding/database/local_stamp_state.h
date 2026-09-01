@@ -191,6 +191,13 @@ struct LocalStampState final : std::enable_shared_from_this<LocalStampState> {
 	 * Marks close: no further durable writes; drains any in-flight extension.
 	 */
 	void shutdown();
+
+	// Safety net mirroring ParkTimeoutRegistry: finishClose() is the real join
+	// point; the destructor repeats it idempotently so an extender thread can
+	// never outlive the state.
+	~LocalStampState() {
+		this->shutdown();
+	}
 };
 
 /**

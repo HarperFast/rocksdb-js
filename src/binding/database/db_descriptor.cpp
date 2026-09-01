@@ -1376,7 +1376,7 @@ static std::shared_ptr<LocalStampState> setupLocalStamping(
 		if (!options.transactionLogsPath.empty()) {
 			logDirs.push_back(options.transactionLogsPath);
 		}
-		logDirs.push_back((std::filesystem::path(path) / "transaction_logs").string());
+		logDirs.push_back(path + "/transaction_logs");
 		const double artifactFloor = readStampFloorArtifacts(logDirs);
 		if (artifactFloor > contents.reserve) {
 			contents.reserve = artifactFloor;
