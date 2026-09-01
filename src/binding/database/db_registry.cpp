@@ -479,12 +479,20 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 	// Test-only latch; inert unless armed. See core/test_seam.h.
 	if (const int delayMs = dropColumnFamilyDelayMs().load(std::memory_order_relaxed); delayMs > 0) {
 		const uint32_t opensBefore = openDbMutexAttempts().load(std::memory_order_relaxed);
+		{
+			std::lock_guard<std::mutex> pathLock(dropColumnFamilyLatchPathMutex());
+			dropColumnFamilyLatchPath() = descriptor->path;
+		}
 		dropColumnFamilyLatchEntered().fetch_add(1, std::memory_order_relaxed);
 		const auto barrierDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 		while (openDbMutexAttempts().load(std::memory_order_relaxed) == opensBefore &&
 			std::chrono::steady_clock::now() < barrierDeadline
 		) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		{
+			std::lock_guard<std::mutex> pathLock(dropColumnFamilyLatchPathMutex());
+			dropColumnFamilyLatchPath().clear();
 		}
 		if (openDbMutexAttempts().load(std::memory_order_relaxed) != opensBefore) {
 			dropColumnFamilyLatchObservedOpen().fetch_add(1, std::memory_order_relaxed);
@@ -570,9 +578,13 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// descriptors. Resolved before the lock — it touches the filesystem, and
 	// databasesMutex serializes every open and close in the process.
 	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
-	// Test-only: lets a parked drop know an open has reached this mutex. See core/test_seam.h.
+	// Test-only: lets a parked drop know an open on ITS database has reached this mutex. See
+	// core/test_seam.h.
 	if (dropColumnFamilyDelayMs().load(std::memory_order_relaxed) > 0) {
-		openDbMutexAttempts().fetch_add(1, std::memory_order_relaxed);
+		std::lock_guard<std::mutex> pathLock(dropColumnFamilyLatchPathMutex());
+		if (dropColumnFamilyLatchPath() == path) {
+			openDbMutexAttempts().fetch_add(1, std::memory_order_relaxed);
+		}
 	}
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
