@@ -718,6 +718,32 @@ TEST(TransactionLogTimestampIndex, TornTailLeavesEarlierEntriesSeekable) {
 	EXPECT_EQ(file.findPositionByTimestamp(12.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
+// A header-only file has no entry to bound-check against the map: the header's
+// own timestamp slot must still be indexed rather than reported as a tail the
+// map could not reach (which would hand a reader offset 5, mid-header).
+TEST(TransactionLogTimestampIndex, HeaderOnlyFileIsNotAnUnindexedTail) {
+	LogImage img;
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	EXPECT_EQ(file.findPositionByTimestamp(0.5, img.size(), /*isCurrent=*/true), 0u);
+	EXPECT_EQ(file.findPositionByTimestamp(1.0, img.size(), /*isCurrent=*/true), 0u);
+	EXPECT_EQ(file.findPositionByTimestamp(1.5, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
+}
+
+// A partial header below the written extent (fewer than 13 bytes) is a torn
+// tail the map may not fully cover; the walk must stop short of it instead of
+// reading past the mapping.
+TEST(TransactionLogTimestampIndex, PartialTrailingHeaderStopsTheWalk) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	uint32_t tail = img.size();
+	img.raw({ '\x40', '\x24', '\x00', '\x00', '\x00' });
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	EXPECT_EQ(file.findPositionByTimestamp(10.0, img.size(), /*isCurrent=*/true), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(file.findPositionByTimestamp(11.0, img.size(), /*isCurrent=*/true), tail);
+}
+
 TEST(TransactionLogRecoveryFile, MatchesBufferScanOnMidFileCorruption) {
 	LogImage img;
 	img.entry(10).entry(20);
