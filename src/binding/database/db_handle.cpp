@@ -409,7 +409,18 @@ napi_value DBHandle::useLog(napi_env env, napi_value jsDatabase, std::string& na
 
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]));
 
-	NAPI_STATUS_THROWS(::napi_new_instance(env, transactionLogCtor, 2, args, &instance));
+	// The constructor can throw (e.g. an undiscovered store on a read-only
+	// handle); a NAPI_STATUS_THROWS here would throw a second, generic error
+	// over the pending one, which Bun surfaces as "An exception is pending".
+	napi_status newInstanceStatus = ::napi_new_instance(env, transactionLogCtor, 2, args, &instance);
+	if (newInstanceStatus != napi_ok) {
+		bool exceptionPending = false;
+		::napi_is_exception_pending(env, &exceptionPending);
+		if (!exceptionPending) {
+			::napi_throw_error(env, nullptr, "Failed to create TransactionLog instance");
+		}
+		return nullptr;
+	}
 
 	napi_ref ref;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, instance, 0, &ref));
