@@ -666,7 +666,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     one purges the registry entry, so `DBDescriptor::recordColumnFamilyLayout` mirrors a
     `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` uses the live
     descriptor snapshot when present and that registry record after close. `blob_dir` can be
-    recovered from OPTIONS; `db_paths` cannot.
+    recovered from OPTIONS; `db_paths` cannot. A successful column-family drop removes that family
+    from every live descriptor layout for the path and from `knownLayouts` before its by-name handle
+    is unregistered, so a concurrent same-name recreation cannot be removed from the destroy layout.
+    An already-dropped stale handle must not repeat either mutation: the name may now identify a
+    newly created family.
     See [docs/tiered-storage.md](docs/tiered-storage.md).
 18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
     are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,

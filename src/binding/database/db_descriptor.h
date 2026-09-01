@@ -271,6 +271,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::mutex layoutMutex;
 
 	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir);
+	void removeColumnFamilyLayout(const std::string& name);
 
 	DBFileLayout captureLayout() {
 		std::lock_guard<std::mutex> lock(this->layoutMutex);

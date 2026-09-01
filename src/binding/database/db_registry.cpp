@@ -332,6 +332,36 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 }
 
 /**
+ * Removes a dropped column family from every layout for the database path.
+ */
+void DBRegistry::RemoveColumnFamilyLayout(const std::string& path, const std::string& name) {
+	if (!instance) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> databasesLock(instance->databasesMutex);
+	for (auto& [key, entry] : instance->databases) {
+		if (key.path == path && entry.descriptor) {
+			entry.descriptor->removeColumnFamilyLayout(name);
+		}
+	}
+
+	std::lock_guard<std::mutex> layoutsLock(instance->knownLayoutsMutex);
+	auto layout = instance->knownLayouts.find(path);
+	if (layout == instance->knownLayouts.end()) {
+		return;
+	}
+	layout->second.blobDirs.erase(name);
+	const bool defaultLayout = layout->second.dbPaths.empty() &&
+		std::all_of(layout->second.blobDirs.begin(), layout->second.blobDirs.end(), [](const auto& entry) {
+			return entry.second.empty();
+		});
+	if (defaultLayout) {
+		instance->knownLayouts.erase(layout);
+	}
+}
+
+/**
  * Initialize the singleton instance of the registry.
  */
 void DBRegistry::Init(napi_env env, napi_value exports) {

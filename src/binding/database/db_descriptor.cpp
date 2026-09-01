@@ -1948,9 +1948,11 @@ uint32_t DBDescriptor::transactionGetNextId() {
  * creates a fresh column family instead of reusing the dangling dropped
  * handle. DBHandles still holding the descriptor keep it alive via their
  * shared_ptr and can continue reading until they close; only the by-name
- * lookup is removed.
+ * lookup is removed. The family is removed from the destroy layout first so a
+ * concurrent open cannot register a fresh same-name family before that cleanup.
  */
 void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
+	DBRegistry::RemoveColumnFamilyLayout(this->path, columnName);
 	std::lock_guard<std::mutex> lock(this->columnsMutex);
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
@@ -2704,6 +2706,11 @@ void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::
 		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
 	}
 	DBRegistry::RecordLayout(this->path, std::move(layout));
+}
+
+void DBDescriptor::removeColumnFamilyLayout(const std::string& name) {
+	std::lock_guard<std::mutex> lock(this->layoutMutex);
+	this->layoutBlobDirs.erase(name);
 }
 
 } // namespace rocksdb_js

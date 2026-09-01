@@ -89,10 +89,12 @@ private:
 	 *
 	 * Keyed by path rather than by handle, so a handle closed before a later
 	 * open appended a storage path cannot destroy from its own older copy.
-	 * Erased only by `destroy()`, deliberately: `PurgeAll` is reached from the
-	 * public `shutdown()`, and a handle retained across it can still be
-	 * destroyed. Default layouts are omitted because ordinary DestroyDB options
-	 * already describe them; only external paths need a retained record.
+	 * Retained across `PurgeAll`, deliberately: that is reached from the public
+	 * `shutdown()`, and a handle retained across it can still be destroyed.
+	 * `destroy()` erases the whole path; a successful column-family drop removes
+	 * that family's entry and may erase a layout that has become the default.
+	 * Default layouts are omitted because ordinary DestroyDB options already
+	 * describe them; only external paths need a retained record.
 	 *
 	 * Its own mutex, deliberately a leaf: `DestroyDB` reaches a descriptor's
 	 * `layoutMutex` while holding `databasesMutex`, so anything recording a
@@ -113,6 +115,7 @@ public:
 #endif
 	static void DestroyDB(const std::string& path);
 	static void RecordLayout(const std::string& path, DBFileLayout layout);
+	static void RemoveColumnFamilyLayout(const std::string& path, const std::string& name);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();
