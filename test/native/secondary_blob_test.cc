@@ -58,7 +58,6 @@ TEST(SecondarySpike, BlobEnabledDatabase) {
 	s = rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, secondaryPath, &secondary);
 	ASSERT_TRUE(s.ok()) << s.ToString();
 
-	// Blob-resident (>= min_blob_size) values must read through a secondary.
 	std::string value;
 	s = secondary->Get({}, "small", &value);
 	EXPECT_TRUE(s.ok() && value == "small-v1") << s.ToString();
@@ -159,9 +158,8 @@ TEST(SecondarySpike, CatchUpInstalledBlobSurvivesPrimaryGC) {
 	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
 
 #ifdef __linux__
-	// Direct evidence of the mechanism: the secondary holds fds on files the
-	// primary already deleted (SSTs, the WAL, and — decisive for BlobDB — the
-	// GC'd blob file).
+	// Supporting evidence only: the count includes this process's own primary
+	// handles, so the value assertions below are the actual proof.
 	EXPECT_GT(countDeletedFdsUnder(primaryPath), 0u);
 #endif
 

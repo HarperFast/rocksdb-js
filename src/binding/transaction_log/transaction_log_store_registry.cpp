@@ -255,34 +255,22 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			instance.get(), name.c_str(), dbPath.c_str());
 	}
 
-	auto logDirectory = std::filesystem::path(config.transactionLogsPath) / name;
-
 	// A read-only registration must not conjure a store in the writer's tree
 	// (mkdir + writable files + a phantom entry that would later fail
-	// EnsureWritableRegistrationSafe). Load one that exists on disk — created
-	// by the primary after this handle opened — read-only; report the rest as
-	// not found.
+	// EnsureWritableRegistrationSafe), and must not lazily load one either:
+	// publishing a post-open store would both break the documented
+	// frozen-at-open log view and hand a writable open that already passed
+	// EnsureWritableRegistrationSafe an unrecovered, O_RDONLY store to adopt.
+	// Stores discovered at open were found above; everything else is not found
+	// until the handle reopens.
 	if (config.readOnly) {
-		std::error_code existsError;
-		if (!std::filesystem::is_directory(logDirectory, existsError) || existsError) {
-			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Store \"%s\" not found for read-only \"%s\"\n",
-				instance.get(), name.c_str(), dbPath.c_str());
-			return nullptr;
-		}
-		auto loaded = TransactionLogStore::load(
-			logDirectory,
-			config.transactionLogMaxSize,
-			config.transactionLogRetentionMs,
-			config.transactionLogMaxAgeThreshold,
-			true
-		);
-		if (loaded) {
-			entry->stores.insert_or_assign(loaded->name, loaded);
-		}
-		return loaded;
+		DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Store \"%s\" not found for read-only \"%s\"\n",
+			instance.get(), name.c_str(), dbPath.c_str());
+		return nullptr;
 	}
 
 	// Create new store
+	auto logDirectory = std::filesystem::path(config.transactionLogsPath) / name;
 	DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Creating new store \"%s\" for \"%s\"\n",
 		instance.get(), name.c_str(), dbPath.c_str());
 

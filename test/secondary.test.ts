@@ -147,9 +147,6 @@ describe('Secondary Instances', () => {
 
 	it('should treat secondaryPath: null as absent, matching the native layer', async () => {
 		const dbPath = generateDBPath();
-		// null is the natural absent value from JSON/env-derived config; it must
-		// not imply readOnly while the native layer ignores it (which would
-		// silently produce the point-in-time open this option exists to replace).
 		const db = new RocksDatabase(dbPath, { secondaryPath: null as unknown as string });
 		try {
 			db.open();
@@ -182,13 +179,23 @@ describe('Secondary Instances', () => {
 			primary.close();
 
 			secondary.open();
-			// an existing store reads fine...
 			expect(Array.from(secondary.useLog('exists').query({ start: 0 })).length).toBeGreaterThan(0);
-			// ...but a store the primary never created must not be conjured
-			// (mkdir + writable files) in the primary's tree
-			secondary.useLog('never-created');
+			// The log view is frozen at open: a store the open never discovered
+			// is reported as not found, not conjured (mkdir + writable files)
+			// into the primary's tree.
+			expect(() => secondary.useLog('never-created')).toThrow(
+				'Transaction log "never-created" not found'
+			);
 			expect(existsSync(join(dbPath, 'transaction_logs', 'never-created'))).toBe(false);
 			expect(secondary.listLogs()).toEqual(['exists']);
+
+			// A read-only transaction is a JS shim over the database context —
+			// same frozen-view contract through txn.useLog.
+			await secondary.transaction(async (txn) => {
+				expect(() => txn.useLog('never-created')).toThrow(
+					'Transaction log "never-created" not found'
+				);
+			});
 		} finally {
 			secondary.close();
 			primary.close();

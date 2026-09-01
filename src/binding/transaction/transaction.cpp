@@ -1374,6 +1374,14 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
+	if (!store) {
+		// Resolvable to null only on a read-only/secondary handle whose open
+		// never discovered the store (a read-only registration never creates
+		// or lazily loads one — the log view is frozen at open).
+		std::string errorMsg = "Transaction log \"" + name + "\" not found";
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
 	if (!boundStore) {
 		// Bind under transactionBindMutex so the bind+increment is atomic with
 		// respect to tryClose()'s phase-3 check-and-mark-closing sequence.

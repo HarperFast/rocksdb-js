@@ -67,6 +67,19 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	);
 	(*txnLogHandle)->transactionId = transactionId;
 
+	// A read-only registration never creates or lazily loads a store (the log
+	// view is frozen at open), so an unresolved store here means the log does
+	// not exist for this handle — fail now with a clear error rather than hand
+	// back a handle whose reads would break on a null store.
+	if ((*dbHandle)->descriptor->readOnly && (*txnLogHandle)->store.expired()) {
+		(*txnLogHandle)->close();
+		txnLogHandle->reset();
+		delete txnLogHandle;
+		std::string errorMsg = "Transaction log \"" + name + "\" not found";
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
+
 	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get());
 
 	NAPI_STATUS_THROWS(::napi_wrap(

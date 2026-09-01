@@ -46,6 +46,9 @@ void TransactionLogHandle::addEntry(
 		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed or closing, re-resolving \"%s\"\n", this, this->logName.c_str());
 		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
 		this->store = store; // update weak_ptr to point to new store
+		if (!store) {
+			throw rocksdb_js::DBException("Transaction log \"" + this->logName + "\" not found");
+		}
 	}
 
 	// check if transaction is already bound to a different log store
