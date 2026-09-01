@@ -1985,7 +1985,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	secondaryLock.token = 0;
 	descriptor->layoutDbPaths = dbOptions.db_paths;
 	descriptor->layoutBlobDirs = std::move(layoutBlobDirs);
-	DBRegistry::RecordLayout(path, descriptor->captureLayout());
+	DBRegistry::RecordLayout(path, descriptor->captureLayout(), !options.readOnly);
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -2860,7 +2860,7 @@ rocksdb::Status DBDescriptor::compactRange(
  * Records where a column family created after the open keeps its blob files,
  * and mirrors the layout into the registry so it survives this descriptor.
  *
- * `layoutMutex` is released before that call: `DBRegistry::DestroyDB` takes it
+ * `layoutMutex` is released before that call: `DBRegistry::DropColumnFamily` takes it
  * while holding `databasesMutex`, so recording must not reach back for a
  * registry lock from under it.
  */
@@ -2871,7 +2871,7 @@ void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::
 		this->layoutBlobDirs[name] = blobDir;
 		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
 	}
-	DBRegistry::RecordLayout(this->path, std::move(layout));
+	DBRegistry::RecordLayout(this->path, std::move(layout), !this->readOnly);
 }
 
 void DBDescriptor::removeColumnFamilyLayout(const std::string& name) {

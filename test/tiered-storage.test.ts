@@ -572,6 +572,38 @@ describe('paths', () => {
 		expect(filesWithExt(neighborVolume, '.sst')).toEqual(neighborFiles);
 	});
 
+	it('should not let a read-only open extend an untiered destroy layout', () => {
+		const dbPath = tempPath();
+		const neighborPath = tempPath();
+		const neighborVolume = tempDir();
+
+		const neighbor = openDb(neighborPath, {
+			paths: [{ path: neighborVolume, targetSize: 1 << 30 }],
+		});
+		neighbor.putSync('live', 'neighbor');
+		neighbor.flushSync();
+		neighbor.close();
+		const neighborFiles = filesWithExt(neighborVolume, '.sst');
+		expect(neighborFiles.length).toBeGreaterThan(0);
+
+		const db = openDb(dbPath);
+		db.putSync('key', 'value');
+		db.flushSync();
+		db.close();
+
+		openDb(dbPath, {
+			readOnly: true,
+			paths: [
+				{ path: dbPath, targetSize: 0 },
+				{ path: neighborVolume, targetSize: 1 << 30 },
+			],
+		});
+
+		db.destroy();
+		expect(existsSync(dbPath)).toBe(false);
+		expect(filesWithExt(neighborVolume, '.sst')).toEqual(neighborFiles);
+	});
+
 	it('should refuse to add paths while the database is already open untiered', () => {
 		const dbPath = tempPath();
 		const fast = tempDir();
@@ -1418,6 +1450,35 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 
 		db.destroy();
 		expect(filesWithExt(blobDir, '.blob')).toHaveLength(0);
+	});
+
+	it('should keep an empty retained blob directory over a stale reader', () => {
+		const dbPath = tempPath();
+		const oldBlobDir = tempDir();
+		const replacementPath = tempPath();
+
+		const original = openDb(dbPath, { blobs: { dir: oldBlobDir } });
+		original.putSync('key', largeValue(5));
+		original.flushSync();
+		original.close();
+
+		openDb(dbPath, { readOnly: true, blobs: { dir: oldBlobDir } });
+		for (const name of filesWithExt(oldBlobDir, '.blob')) {
+			renameSync(join(oldBlobDir, name), join(dbPath, name));
+		}
+		const relocated = openDb(dbPath, { blobs: { allowDirChange: true } });
+		expect(relocated.getSync('key')).toBe(largeValue(5));
+		relocated.close();
+
+		const replacement = openDb(replacementPath, { blobs: { dir: oldBlobDir } });
+		replacement.putSync('live', largeValue(6));
+		replacement.flushSync();
+		const replacementFiles = filesWithExt(oldBlobDir, '.blob');
+		expect(replacementFiles.length).toBeGreaterThan(0);
+
+		relocated.destroy();
+		expect(filesWithExt(oldBlobDir, '.blob')).toEqual(replacementFiles);
+		expect(replacement.getSync('live')).toBe(largeValue(6));
 	});
 
 	it.each(['dropSync', 'drop'] as const)(

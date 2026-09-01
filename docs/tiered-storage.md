@@ -129,6 +129,11 @@ That holds for `close()` followed by `destroy()` too, which is the call order mo
 the layout: closing the last handle takes the descriptor with it, and `db_paths` is not written to
 the OPTIONS file, so the process registry keeps a path-keyed copy for exactly this.
 
+Only a successful writable cold open can establish or append storage paths in that copy. A
+read-only open may use a shorter or different list while all files it needs are still at path index
+0, but its list never becomes a destroy target. Default placement is retained explicitly too, so an
+empty path list or `blob_dir` cannot be replaced by a stale reader's external directory.
+
 After a non-default column family is successfully dropped, its former `blobs.dir` is removed from
 that destroy layout. RocksDB owns cleanup of the dropped family's files; wait for any remaining
 handles to close and verify that no blob files remain before reusing the directory. Once reassigned,
