@@ -244,7 +244,14 @@ void LocalStampState::shutdown() {
 		}
 	}
 	if (extender.joinable()) {
-		extender.join();
+		if (extender.get_id() == std::this_thread::get_id()) {
+			// The destructor safety net can run ON the extender thread (its
+			// lambda may hold the last reference); a self-join would terminate.
+			// The thread is executing its final statements — detach is safe.
+			extender.detach();
+		} else {
+			extender.join();
+		}
 	}
 }
 
