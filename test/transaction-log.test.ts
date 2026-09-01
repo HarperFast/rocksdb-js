@@ -2079,6 +2079,8 @@ describe('Transaction Log', () => {
 			const FRAME = TRANSACTION_LOG_ENTRY_HEADER_SIZE + ENTRY_DATA;
 			const frameOffset = (index: number) => TRANSACTION_LOG_FILE_HEADER_SIZE + index * FRAME;
 
+			// No read here: a query would map the file, and the map outlives close() while its entries are
+			// reachable, which on Windows makes the truncating rewrite in tearFrames fail (ERROR_USER_MAPPED_FILE).
 			async function writeEntries(database: RocksDatabase, count: number) {
 				const log = database.useLog('foo');
 				for (let i = 0; i < count; i++) {
@@ -2086,7 +2088,11 @@ describe('Transaction Log', () => {
 						log.addEntry(Buffer.from(`r${i}`.padEnd(ENTRY_DATA, 'x')), txn.id);
 					});
 				}
-				return Array.from(log.query({ start: 0 })).map((entry) => entry.timestamp as number);
+			}
+
+			function headerTimestamps(logPath: string, count: number) {
+				const image = readFileSync(logPath);
+				return Array.from({ length: count }, (_, index) => image.readDoubleBE(frameOffset(index)));
 			}
 
 			// Overruns the declared length of frame `index` past both the file and the pre-extended
@@ -2105,9 +2111,10 @@ describe('Transaction Log', () => {
 				dbRunner(async ({ db, dbPath }) => {
 					let database = db;
 					try {
-						const timestamps = await writeEntries(database, 60);
+						await writeEntries(database, 60);
 						database.close();
 						const logPath = logPathFor(dbPath, 'foo');
+						const timestamps = headerTimestamps(logPath, 60);
 						const fullSize = statSync(logPath).size;
 						await tearFrames(logPath, 39);
 
@@ -2163,8 +2170,9 @@ describe('Transaction Log', () => {
 				dbRunner(async ({ db, dbPath }) => {
 					let database = db;
 					try {
-						const timestamps = await writeEntries(database, 60);
+						await writeEntries(database, 60);
 						database.close();
+						const timestamps = headerTimestamps(logPathFor(dbPath, 'foo'), 60);
 						await tearFrames(logPathFor(dbPath, 'foo'), 20, 40);
 
 						database = RocksDatabase.open(dbPath);
@@ -2193,9 +2201,10 @@ describe('Transaction Log', () => {
 				dbRunner(async ({ db, dbPath }) => {
 					let database = db;
 					try {
-						const timestamps = await writeEntries(database, 60);
+						await writeEntries(database, 60);
 						database.close();
 						const logPath = logPathFor(dbPath, 'foo');
+						const timestamps = headerTimestamps(logPath, 60);
 						await tearFrames(logPath, 57);
 						await writeFile(logPath, Buffer.concat([readFileSync(logPath), Buffer.alloc(1 << 20)]));
 
