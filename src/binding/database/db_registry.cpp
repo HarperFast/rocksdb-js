@@ -143,6 +143,36 @@ void DBRegistry::DebugLogDescriptorRefs() {
 #endif
 
 /**
+ * Adds the storage paths `from` names that `into` does not already carry.
+ *
+ * The layout `destroy()` runs on accumulates across a database's opens instead
+ * of tracking whichever descriptor opened last: registry entries are keyed by
+ * path AND read-only, and an open succeeds with a `paths` shorter than another
+ * descriptor's — or with none — whenever the files it needs still sit at path
+ * index 0. `db_paths` is serialized nowhere, so a record shortened by such an
+ * open is the only trace of the remaining volumes gone, and `destroy()` then
+ * reports success with their SST files still on disk. A union needs no rule
+ * about which of the lists is authoritative, and suffices because the record
+ * feeds `destroy()` alone, where `rocksdb::DestroyDB` collects the paths into a
+ * set and their order carries no meaning. Deduplicated by directory;
+ * `target_size` is not part of the identity because `destroy()` ignores it.
+ */
+static void mergeDbPaths(
+	std::vector<rocksdb::DbPath>& into,
+	const std::vector<rocksdb::DbPath>& from
+) {
+	for (const auto& candidate : from) {
+		const bool known = std::any_of(into.begin(), into.end(),
+			[&candidate](const rocksdb::DbPath& existing) {
+				return existing.path == candidate.path;
+			});
+		if (!known) {
+			into.push_back(candidate);
+		}
+	}
+}
+
+/**
  * Destroy a RocksDB database.
  *
  * @param path - The path to the database to destroy.
@@ -173,17 +203,20 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<std::pair<std::shared_ptr<DBDescriptor>, std::shared_ptr<std::condition_variable>>> claimed;
 	rocksdb::Options destroyOptions;
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
+	bool capturedLayout = false;
+
+	// Applied to both the live descriptor and the retained record, so it merges
+	// rather than overwrites: neither is guaranteed to name every volume.
 	std::unordered_map<std::string, std::string> destroyBlobDirs;
 	auto applyLayout = [&](const DBFileLayout& layout) {
-		if (layout.dbPaths.size() > destroyOptions.db_paths.size()) {
-			destroyOptions.db_paths = layout.dbPaths;
-		}
+		mergeDbPaths(destroyOptions.db_paths, layout.dbPaths);
 		for (const auto& [cfName, blobDir] : layout.blobDirs) {
 			auto [it, inserted] = destroyBlobDirs.emplace(cfName, blobDir);
 			if (!inserted && it->second.empty()) {
 				it->second = blobDir;
 			}
 		}
+		capturedLayout = true;
 	};
 	auto materializeBlobDirs = [&]() {
 		for (const auto& [cfName, blobDir] : destroyBlobDirs) {
@@ -200,8 +233,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		applyLayout(descriptor->captureLayout());
 		return true;
 	};
-	bool capturedLayout = false;
-
 	// Claim the descriptors under the lock but leave the entries in the map
 	// until the closes complete (same discipline as CloseDB): the entry is how
 	// the env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
@@ -283,11 +314,13 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 	}
-	if (!capturedLayout || destroyOptions.db_paths.empty()) {
+	// Unconditionally, not just when the loop above found nothing: the descriptor
+	// it found may itself be the read-only entry with the shorter list. See
+	// DBRegistry::knownLayouts and mergeDbPaths.
+	{
 		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 		if (auto it = instance->knownLayouts.find(identityPath); it != instance->knownLayouts.end()) {
 			applyLayout(it->second);
-			capturedLayout = true;
 		}
 	}
 	materializeBlobDirs();
@@ -438,16 +471,23 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 	return true;
 }
 
+/**
+ * Records where a database's files live, so `destroy()` can still find them
+ * after the descriptor is gone. See `DBRegistry::knownLayouts`.
+ *
+ * `db_paths` accumulates across opens rather than tracking the newest one — see
+ * `mergeDbPaths`. Blob directories are per column family and re-derived from the
+ * persisted OPTIONS on every open, so they are replaced as given.
+ */
 void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 	if (!instance) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
-	if (auto known = instance->knownLayouts.find(path);
-		known != instance->knownLayouts.end() &&
-		layout.dbPaths.size() < known->second.dbPaths.size()
-	) {
-		layout.dbPaths = known->second.dbPaths;
+	if (auto known = instance->knownLayouts.find(path); known != instance->knownLayouts.end()) {
+		auto merged = known->second.dbPaths;
+		mergeDbPaths(merged, layout.dbPaths);
+		layout.dbPaths = std::move(merged);
 	}
 	const bool defaultLayout = layout.dbPaths.empty() &&
 		std::all_of(layout.blobDirs.begin(), layout.blobDirs.end(), [](const auto& entry) {
