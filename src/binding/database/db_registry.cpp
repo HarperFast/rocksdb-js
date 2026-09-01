@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -144,15 +145,12 @@ void DBRegistry::DebugLogDescriptorRefs() {
 #endif
 
 /**
- * Whether `candidate` is the retained list plus zero or more appended entries.
- *
- * The retained `db_paths` grows only along that chain. A shorter list must not
- * shorten it — `db_paths` is serialized nowhere, so the record is the only trace
- * of the volumes the shorter one leaves out — and a DIVERGENT list must not
- * extend it either: `destroy()` deletes every SST and blob file it finds in each
- * recorded directory, so accumulating an alternate second volume would let one
- * mistyped `paths` take another database's files down with this one. Compared by
- * directory alone, `target_size` being a sizing knob `destroy()` ignores.
+ * Whether `candidate` is the retained list plus zero or more appended entries —
+ * the only shape `db_paths` may legally take (invariant 18). Refusing a
+ * DIVERGENT list is the half the name does not give away: `destroy()` deletes
+ * every SST it finds in each recorded directory, so one `paths` typo naming
+ * another database's volume must never enter the record. Compared by directory;
+ * `target_size` is a sizing knob `destroy()` ignores.
  */
 static bool extendsDbPaths(
 	const std::vector<rocksdb::DbPath>& retained,
@@ -187,19 +185,19 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
 
-	// Applied to the live descriptor and then to the retained record, since
-	// neither is guaranteed to name every volume. The retained blob directory
-	// wins outright — OPTIONS re-derives it on every open, while a live
-	// descriptor's is frozen at the open that created it, so a relocation the
-	// descriptor predates would otherwise sweep the old directory.
+	// Retained record first: only it grew along the append-only chain, while the
+	// entry the loop below happens to pick may be a read-only descriptor opened
+	// with a shorter or divergent `paths`. The live layout then adds only what
+	// extends it, and blob directories only for families the record does not
+	// name — OPTIONS re-derives those per open, so a descriptor's are frozen.
 	std::unordered_map<std::string, std::string> destroyBlobDirs;
-	auto applyLayout = [&](const DBFileLayout& layout, bool retainedRecord) {
+	auto applyLayout = [&](const DBFileLayout& layout) {
 		if (extendsDbPaths(destroyOptions.db_paths, layout.dbPaths)) {
 			destroyOptions.db_paths = layout.dbPaths;
 		}
 		for (const auto& [cfName, blobDir] : layout.blobDirs) {
 			auto [it, inserted] = destroyBlobDirs.emplace(cfName, blobDir);
-			if (!inserted && (retainedRecord || it->second.empty())) {
+			if (!inserted && it->second.empty()) {
 				it->second = blobDir;
 			}
 		}
@@ -226,17 +224,18 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// It also keeps a concurrent OpenDB waiting on the entry's condition
 	// instead of re-opening the path while its files are being destroyed.
 	//
-	// The layout is read here too, and deliberately NOT gated on winning the
+	// The layout is captured here too, and deliberately NOT gated on winning the
 	// claim: losing to a concurrent close would otherwise leave the destroy
 	// running against default options and orphaning the external files. It comes
 	// from the descriptor's own snapshot rather than the live `DB` precisely
 	// because we may have lost that claim — the winner can be inside
 	// `finishClose()` resetting `db` and clearing `columns`.
+	std::optional<DBFileLayout> liveLayout;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path == path && entry.descriptor) {
-				applyLayout(entry.descriptor->captureLayout(), false);
+				liveLayout = entry.descriptor->captureLayout();
 				if (entry.descriptor->beginClose()) {
 					descriptor = entry.descriptor;
 					condition = entry.condition;
@@ -248,13 +247,14 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
-	// Unconditionally, not just when the loop above found nothing: the descriptor
-	// it found may itself be a read-only entry opened with a shorter `paths`.
 	{
 		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 		if (auto it = instance->knownLayouts.find(path); it != instance->knownLayouts.end()) {
-			applyLayout(it->second, true);
+			applyLayout(it->second);
 		}
+	}
+	if (liveLayout) {
+		applyLayout(*liveLayout);
 	}
 
 	materializeBlobDirs();
@@ -357,10 +357,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
  *
- * `db_paths` grows only along its append-only chain (`extendsDbPaths`), so an
- * open naming fewer or different volumes than an earlier one leaves the record
- * alone. Blob directories are per column family and re-derived from the
- * persisted OPTIONS on every open, so they are replaced as given.
+ * `db_paths` only ever extends (`extendsDbPaths`), so an open naming fewer or
+ * different volumes than an earlier one leaves the record alone. Blob
+ * directories are per column family and re-derived from OPTIONS on every open,
+ * so they are replaced as given.
  */
 void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 	if (!instance) {
