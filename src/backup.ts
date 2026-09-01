@@ -39,8 +39,9 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * Fail-closed existence check for the stamp-floor artifact: only ENOENT means
- * absent — an EACCES/EIO must not classify a protected backup as pre-stamping.
+ * Fail-closed existence check for the restore path (log snapshot directories
+ * and the stamp-floor artifact): only ENOENT means absent — an EACCES/EIO
+ * must not classify a protected backup as log-less or pre-stamping.
  */
 async function stampFloorExists(path: string): Promise<boolean> {
 	try {
@@ -360,7 +361,9 @@ async function resolveRestoredLogsSource(
 	backupId?: number
 ): Promise<string | undefined> {
 	const logsRoot = join(backupDir, TRANSACTION_LOGS_DIRNAME);
-	if (!(await exists(logsRoot))) {
+	// Fail-closed probes: an EACCES/EIO here must not classify a protected
+	// backup as log-less and let the destructive restore skip the floor.
+	if (!(await stampFloorExists(logsRoot))) {
 		return undefined; // this backup directory has no transaction log snapshots
 	}
 
@@ -379,7 +382,7 @@ async function resolveRestoredLogsSource(
 	const logsSrc = join(logsRoot, String(id));
 	// The restored backup captured no logs — do not touch the destination's
 	// existing transaction logs.
-	return (await exists(logsSrc)) ? logsSrc : undefined;
+	return (await stampFloorExists(logsSrc)) ? logsSrc : undefined;
 }
 
 /**
@@ -402,7 +405,9 @@ async function publishPendingStampFloor(logsSrc: string, dbDir: string): Promise
 	const pending = join(logsDest, STAMP_FLOOR_PENDING_NAME);
 	const staging = `${pending}.staging`;
 	await copyFile(artifactSrc, staging);
-	let handle = await openFile(staging, 'r+');
+	// 'r' suffices for fsync and works when copyFile preserved a read-only
+	// mode from a WORM/immutable backup source.
+	let handle = await openFile(staging, 'r');
 	try {
 		await handle.sync();
 	} finally {

@@ -384,6 +384,14 @@ struct TransactionLogStore final {
 	std::shared_ptr<LocalStampState> stampState;
 
 	/**
+	 * Lock-free dormant gate mirroring `stampState`: writeBatch loads this
+	 * before taking any lock, so a dormant append pays one relaxed atomic load
+	 * and nothing else. Set together with the member (creation sites plain;
+	 * the live-install site under writeMutex, gate last with release).
+	 */
+	std::atomic<LocalStampState*> stampStateGate{nullptr};
+
+	/**
 	 * The key-domain generation this store has already rotated for (consulted
 	 * and updated only under writeMutex).
 	 */

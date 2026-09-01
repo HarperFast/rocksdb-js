@@ -52,34 +52,40 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 		return;
 	}
 
-	std::lock_guard<std::mutex> lock(instance->entriesMutex);
-
-	auto it = instance->entries.find(dbPath);
-	if (it == instance->entries.end()) {
-		// Create new entry
-		auto entry = std::make_shared<TransactionLogStoreRegistryEntry>(config);
-		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Created entry for \"%s\" (refCount=1)\n",
-			instance.get(), dbPath.c_str());
-		instance->entries.emplace(dbPath, entry);
-	} else {
-		// Increment reference count
+	// Lock rule: never touch a store's writeMutex while holding the
+	// process-global entriesMutex — an in-flight append would stall every
+	// open/close/useLog across ALL databases. Capture the entry, release, then
+	// install under storesMutex (which also covers config.stampState reads in
+	// DiscoverStores/ResolveStore) and each store's writeMutex.
+	std::shared_ptr<TransactionLogStoreRegistryEntry> existing;
+	{
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		auto it = instance->entries.find(dbPath);
+		if (it == instance->entries.end()) {
+			auto entry = std::make_shared<TransactionLogStoreRegistryEntry>(config);
+			DEBUG_LOG("%p TransactionLogStoreRegistry::Register Created entry for \"%s\" (refCount=1)\n",
+				instance.get(), dbPath.c_str());
+			instance->entries.emplace(dbPath, entry);
+			return;
+		}
 		it->second->refCount++;
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Incremented refCount for \"%s\" (refCount=%zu)\n",
 			instance.get(), dbPath.c_str(), it->second->refCount);
-		if (config.stampState) {
-			// A writable descriptor's stamp state is authoritative: the entry may
-			// have been created by a read-only open (null state) or hold a prior
-			// writable descriptor's shut-down state. Install it on the entry and
-			// on every live store — under each store's writeMutex, which is what
-			// writeBatch reads the pointer under.
-			it->second->config.stampState = config.stampState;
-			std::lock_guard<std::mutex> storesLock(it->second->storesMutex);
-			for (auto& [storeName, store] : it->second->stores) {
-				std::lock_guard<std::mutex> writeLock(store->writeMutex);
-				store->stampState = config.stampState;
-				store->rotatedForGeneration = 0;
-			}
+		if (!config.stampState) {
+			return;
 		}
+		existing = it->second;
+	}
+
+	// A writable descriptor's allocator is authoritative over a read-only-
+	// created or shut-down predecessor.
+	std::lock_guard<std::mutex> storesLock(existing->storesMutex);
+	existing->config.stampState = config.stampState;
+	for (auto& [storeName, store] : existing->stores) {
+		std::lock_guard<std::mutex> writeLock(store->writeMutex);
+		store->stampState = config.stampState;
+		store->rotatedForGeneration = 0;
+		store->stampStateGate.store(config.stampState.get(), std::memory_order_release);
 	}
 }
 
@@ -179,6 +185,8 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 			);
 			if (store) {
 				store->stampState = entry->config.stampState;
+				store->stampStateGate.store(
+					entry->config.stampState.get(), std::memory_order_release);
 				DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Found store \"%s\" for \"%s\"\n",
 					instance.get(), store->name.c_str(), dbPath.c_str());
 				entry->stores.emplace(store->name, store);
@@ -248,6 +256,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	);
 
 	txnLogStore->stampState = config->stampState;
+	txnLogStore->stampStateGate.store(config->stampState.get(), std::memory_order_release);
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);

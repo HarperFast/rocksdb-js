@@ -427,8 +427,8 @@ static void finalizeLocalStamp(
 		return;
 	}
 
-	// RebuildFromWriteBatch APPENDS the full-order copy (verified:
-	// restamp_rebuild_test.cc) — terminal-state-exact, conflict tracking kept.
+	// RebuildFromWriteBatch APPENDS the full-order copy — terminal-state-exact
+	// per key, conflict tracking preserved.
 	std::unordered_map<uint32_t, std::pair<std::shared_ptr<rocksdb::ColumnFamilyHandle>, bool>> cfs;
 	{
 		std::lock_guard<std::mutex> lock(descriptor->columnsMutex);

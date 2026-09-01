@@ -870,11 +870,12 @@ void TransactionLogStore::rotateForDomainGenerationLocked(LocalStampState& stamp
 }
 
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
-	// The member is installed/replaced under writeMutex (a writable descriptor
-	// re-registering over a read-only-created entry), so take the pointer under
-	// the same lock before the pre-lock headroom work.
+	// Dormant gate: one relaxed-ish atomic load, no lock, no shared_ptr copy.
+	// The owning member is installed/replaced under writeMutex (a writable
+	// descriptor re-registering over a read-only-created entry), so an enabled
+	// store copies it under that lock before the pre-lock headroom work.
 	std::shared_ptr<LocalStampState> stamp;
-	{
+	if (this->stampStateGate.load(std::memory_order_acquire) != nullptr) {
 		std::lock_guard<std::mutex> stampLock(this->writeMutex);
 		stamp = this->stampState;
 	}

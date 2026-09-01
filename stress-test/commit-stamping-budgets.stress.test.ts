@@ -244,6 +244,76 @@ describe('commit stamping budgets', () => {
 	});
 
 	stressTest(
+		'B10: overlapping transactions re-stamp rate and p95',
+		{ mode: 'essential' },
+		async () => {
+			// The re-stamp trigger is transaction OVERLAP (a commit landing after a
+			// concurrent transaction's candidate was fixed), not replication alone —
+			// this measures the concurrency shape harper actually runs: hold a
+			// window of open transactions, commit them in sequence, repeat.
+			const plain = RocksDatabase.open(trackedPath(), { encoding: 'binary' });
+			const stamped = RocksDatabase.open(trackedPath(), {
+				encoding: 'binary',
+				commitStamping: true,
+			});
+			try {
+				const WINDOW = 8;
+				const ROUNDS = 250;
+				const run = async (db: RocksDatabase): Promise<{ samples: number[]; restamps: number }> => {
+					const samples: number[] = [];
+					let restamps = 0;
+					for (let round = 0; round < ROUNDS; round++) {
+						const holds: { resolve: () => void; done: Promise<unknown> }[] = [];
+						for (let i = 0; i < WINDOW; i++) {
+							let release!: () => void;
+							const gate = new Promise<void>((r) => (release = r));
+							const done = db.transaction(async (t: Transaction) => {
+								t.putSync(`o${round & 63}-${i}`, payload);
+								await gate;
+								return t;
+							});
+							holds.push({ resolve: release, done });
+						}
+						// Commit in REVERSE creation order — the worst case: the newest
+						// candidate commits first and pushes the watermark above every
+						// earlier-created transaction's candidate.
+						for (const hold of holds.reverse()) {
+							const start = process.hrtime.bigint();
+							hold.resolve();
+							const txn = (await hold.done) as Transaction;
+							samples.push(Number(process.hrtime.bigint() - start) / 1000);
+							const committed = txn.getCommittedLocalTime();
+							if (committed !== undefined && committed !== txn.getTimestamp()) {
+								restamps++;
+							}
+						}
+					}
+					return { samples, restamps };
+				};
+
+				await run(plain); // warm-up
+				await run(stamped);
+				const plainRun = await run(plain);
+				const stampedRun = await run(stamped);
+				const total = ROUNDS * WINDOW;
+				const p95Ratio = percentile(stampedRun.samples, 0.95) / percentile(plainRun.samples, 0.95);
+				console.log(
+					`B10 overlap: re-stamp rate=${((stampedRun.restamps / total) * 100).toFixed(1)}% ` +
+						`(${stampedRun.restamps}/${total}), plain p95=${percentile(plainRun.samples, 0.95).toFixed(1)}µs ` +
+						`stamped p95=${percentile(stampedRun.samples, 0.95).toFixed(1)}µs ratio=${p95Ratio.toFixed(3)}`
+				);
+				// Overlapped commits re-stamp by design; the gate bounds the latency
+				// consequence for small batches (large-batch head-of-line cost scales
+				// with batch size and is priced by B4).
+				expect(p95Ratio).toBeLessThanOrEqual(2.0);
+			} finally {
+				stamped.close();
+				plain.close();
+			}
+		}
+	);
+
+	stressTest(
 		'B6: cross-env contention keeps every stamp unique',
 		{ mode: 'essential' },
 		async () => {
