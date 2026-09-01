@@ -417,6 +417,13 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 		}
 	}
 
+	// Only the descriptor that performed the drop. A read-only entry for the same
+	// path is a separate `DB::OpenForReadOnly` instance whose column-family
+	// handles this drop does not invalidate, and which by design never observes
+	// later changes; unregistering the name there would make the next read-only
+	// open throw "cannot create column family in read-only mode" for a family its
+	// own frozen manifest view still contains. Layouts differ because deleted
+	// files are path-global, while column registration is per-DB-instance.
 	descriptor->unregisterColumnFamily(columnName);
 	return status;
 }
